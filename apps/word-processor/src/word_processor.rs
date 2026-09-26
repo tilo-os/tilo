@@ -3169,646 +3169,859 @@ mod tests {
         );
     }
 
+    /// Corrupt docx and odt imports preserve the document; a successful import preserves the live document
+    /// identity and commit boundary; bind creates the initial paragraph and caret, refreshes the body caret
+    /// without order scans while clamping remote Unicode edits, accepts an empty byte order and recovers after
+    /// the last body deletion, and rejects non-canonical body carets keeping region fallbacks.
     #[test]
-    fn corrupt_docx_import_preserves_document() {
-        assert_failed_import_preserves_document(crate::WpFormat::Docx);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn imports_and_binding_keep_the_live_document_and_its_caret() {
+        // Phase: corrupt_docx_import_preserves_document.
+        {
+            assert_failed_import_preserves_document(crate::WpFormat::Docx);
+        }
 
-    #[test]
-    fn corrupt_odt_import_preserves_document() {
-        assert_failed_import_preserves_document(crate::WpFormat::Odt);
-    }
+        // Phase: corrupt_odt_import_preserves_document.
+        {
+            assert_failed_import_preserves_document(crate::WpFormat::Odt);
+        }
 
-    #[test]
-    fn successful_format_import_preserves_live_document_identity_and_commit_boundary() {
-        for format in [crate::WpFormat::Docx, crate::WpFormat::Odt] {
-            let (mut source, mut source_state) = bound();
-            source.insert_str(&mut source_state, "Imported document");
-            let bytes = format
-                .export(
-                    qdoc::DocRef {
-                        doc: &source_state,
-                        c: source.containers.as_ref().unwrap(),
-                    },
-                    &tilo_content::NoContent,
+        // Phase: successful_format_import_preserves_live_document_identity_and_commit_boundary.
+        {
+            for format in [crate::WpFormat::Docx, crate::WpFormat::Odt] {
+                let (mut source, mut source_state) = bound();
+                source.insert_str(&mut source_state, "Imported document");
+                let bytes = format
+                    .export(
+                        qdoc::DocRef {
+                            doc: &source_state,
+                            c: source.containers.as_ref().unwrap(),
+                        },
+                        &tilo_content::NoContent,
+                    )
+                    .unwrap();
+                let (mut wp, mut state) = bound();
+                state.put(ROOT, "host-marker", "preserve me").unwrap();
+                wp.insert_str(&mut state, "Previous document");
+                let heads = state.get_heads();
+                let actor = state.get_actor().clone();
+                let blocks = wp.containers.as_ref().unwrap().blocks.clone();
+
+                assert!(wp.replace_with_format(&mut state, &bytes, format));
+                assert_eq!(wp.block_texts(&state), vec!["Imported document"]);
+                assert_eq!(state.get_actor(), &actor);
+                assert_eq!(wp.containers.as_ref().unwrap().blocks, blocks);
+                assert_eq!(
+                    state.get(ROOT, "host-marker").unwrap().unwrap().0.as_str(),
+                    Some("preserve me")
+                );
+                assert!(
+                    state.pending_ops() > 0,
+                    "the host still owns the commit boundary"
+                );
+                state.commit();
+                assert_eq!(
+                    state.get_changes(&heads).len(),
+                    1,
+                    "replacement is one undoable change"
+                );
+            }
+        }
+
+        // Phase: bind_creates_initial_paragraph_and_caret.
+        {
+            let (wp, state) = bound();
+            assert_eq!(wp.block_texts(&state), vec![String::new()]);
+            assert_eq!(wp.caret.offset, 0);
+            assert!(!wp.caret.block.is_empty());
+        }
+
+        // Phase: bound_body_caret_refresh_avoids_order_scans_and_clamps_remote_unicode_edits.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "abcdef");
+            let anchor = Caret {
+                block: wp.caret.block.clone(),
+                offset: 1,
+            };
+            wp.selection_anchor = Some(anchor.clone());
+            let before = qdoc::model::ordered_keys_scan_count();
+            for _ in 0..3 {
+                wp.bind(&mut state, &ROOT);
+            }
+            assert_eq!(
+                qdoc::model::ordered_keys_scan_count(),
+                before,
+                "valid body caret must not enumerate the body"
+            );
+            let c = wp.containers.as_ref().unwrap();
+            let (_, block) = state.get(&c.blocks, &wp.caret.block).unwrap().unwrap();
+            let (_, text) = state
+                .get(&block, qdoc::schema::BLOCK_TEXT)
+                .unwrap()
+                .unwrap();
+            let mut remote = state.fork();
+            remote.splice_text(&text, 0, 6, "é🦀").unwrap();
+            state.merge_incoming(&mut remote).unwrap();
+            let before = qdoc::model::ordered_keys_scan_count();
+            wp.bind(&mut state, &ROOT);
+            assert_eq!(qdoc::model::ordered_keys_scan_count(), before);
+            assert_eq!(
+                wp.caret.offset, 2,
+                "clamp counts Unicode scalars, not bytes"
+            );
+            assert_eq!(
+                wp.selection_anchor,
+                Some(anchor),
+                "valid caret retains existing selection behavior"
+            );
+            assert_eq!(wp.current_text(&state), "é🦀");
+        }
+
+        // Phase: bind_accepts_empty_byte_order_and_recovers_after_last_body_deletion.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "text");
+            let c = wp.containers.as_ref().unwrap().clone();
+            let id = wp.caret.block.clone();
+            let (_, block) = state.get(&c.blocks, &id).unwrap().unwrap();
+            state
+                .put(
+                    &block,
+                    qdoc::schema::BLOCK_ORDER,
+                    automerge::ScalarValue::Bytes(vec![]),
                 )
                 .unwrap();
-            let (mut wp, mut state) = bound();
-            state.put(ROOT, "host-marker", "preserve me").unwrap();
-            wp.insert_str(&mut state, "Previous document");
-            let heads = state.get_heads();
-            let actor = state.get_actor().clone();
-            let blocks = wp.containers.as_ref().unwrap().blocks.clone();
-
-            assert!(wp.replace_with_format(&mut state, &bytes, format));
-            assert_eq!(wp.block_texts(&state), vec!["Imported document"]);
-            assert_eq!(state.get_actor(), &actor);
-            assert_eq!(wp.containers.as_ref().unwrap().blocks, blocks);
-            assert_eq!(
-                state.get(ROOT, "host-marker").unwrap().unwrap().0.as_str(),
-                Some("preserve me")
-            );
-            assert!(
-                state.pending_ops() > 0,
-                "the host still owns the commit boundary"
-            );
-            state.commit();
-            assert_eq!(
-                state.get_changes(&heads).len(),
-                1,
-                "replacement is one undoable change"
-            );
-        }
-    }
-
-    #[test]
-    fn bind_creates_initial_paragraph_and_caret() {
-        let (wp, state) = bound();
-        assert_eq!(wp.block_texts(&state), vec![String::new()]);
-        assert_eq!(wp.caret.offset, 0);
-        assert!(!wp.caret.block.is_empty());
-    }
-
-    #[test]
-    fn bound_body_caret_refresh_avoids_order_scans_and_clamps_remote_unicode_edits() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "abcdef");
-        let anchor = Caret {
-            block: wp.caret.block.clone(),
-            offset: 1,
-        };
-        wp.selection_anchor = Some(anchor.clone());
-        let before = qdoc::model::ordered_keys_scan_count();
-        for _ in 0..3 {
+            state.delete(&block, qdoc::schema::BLOCK_TEXT).unwrap();
+            assert_eq!(qdoc::model::blocks_in_order(&state, &c), vec![id.clone()]);
+            let before = qdoc::model::ordered_keys_scan_count();
             wp.bind(&mut state, &ROOT);
-        }
-        assert_eq!(
-            qdoc::model::ordered_keys_scan_count(),
-            before,
-            "valid body caret must not enumerate the body"
-        );
-        let c = wp.containers.as_ref().unwrap();
-        let (_, block) = state.get(&c.blocks, &wp.caret.block).unwrap().unwrap();
-        let (_, text) = state
-            .get(&block, qdoc::schema::BLOCK_TEXT)
-            .unwrap()
-            .unwrap();
-        let mut remote = state.fork();
-        remote.splice_text(&text, 0, 6, "é🦀").unwrap();
-        state.merge_incoming(&mut remote).unwrap();
-        let before = qdoc::model::ordered_keys_scan_count();
-        wp.bind(&mut state, &ROOT);
-        assert_eq!(qdoc::model::ordered_keys_scan_count(), before);
-        assert_eq!(
-            wp.caret.offset, 2,
-            "clamp counts Unicode scalars, not bytes"
-        );
-        assert_eq!(
-            wp.selection_anchor,
-            Some(anchor),
-            "valid caret retains existing selection behavior"
-        );
-        assert_eq!(wp.current_text(&state), "é🦀");
-    }
-
-    #[test]
-    fn bind_accepts_empty_byte_order_and_recovers_after_last_body_deletion() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "text");
-        let c = wp.containers.as_ref().unwrap().clone();
-        let id = wp.caret.block.clone();
-        let (_, block) = state.get(&c.blocks, &id).unwrap().unwrap();
-        state
-            .put(
-                &block,
-                qdoc::schema::BLOCK_ORDER,
-                automerge::ScalarValue::Bytes(vec![]),
-            )
-            .unwrap();
-        state.delete(&block, qdoc::schema::BLOCK_TEXT).unwrap();
-        assert_eq!(qdoc::model::blocks_in_order(&state, &c), vec![id.clone()]);
-        let before = qdoc::model::ordered_keys_scan_count();
-        wp.bind(&mut state, &ROOT);
-        assert_eq!(qdoc::model::ordered_keys_scan_count(), before);
-        assert_eq!(
-            wp.caret,
-            Caret {
-                block: id.clone(),
-                offset: 0
-            }
-        );
-        wp.selection_anchor = Some(wp.caret.clone());
-        state.delete(&c.blocks, &id).unwrap();
-        wp.bind(&mut state, &ROOT);
-        let canonical = qdoc::model::blocks_in_order(&state, &c);
-        assert_eq!(canonical.len(), 1, "empty body is reseeded");
-        assert_ne!(canonical[0], id);
-        assert_eq!(
-            wp.caret,
-            Caret {
-                block: canonical[0].clone(),
-                offset: 0
-            }
-        );
-        assert_eq!(wp.selection_anchor, None);
-    }
-
-    #[test]
-    fn bind_rejects_noncanonical_body_carets_and_keeps_region_fallbacks() {
-        for damage in ["deleted", "scalar_block", "missing_order", "scalar_order"] {
-            let (mut wp, mut state) = bound();
-            let first = wp.caret.block.clone();
-            wp.insert_str(&mut state, "first");
-            wp.enter(&mut state);
-            wp.insert_str(&mut state, "second");
-            wp.selection_anchor = Some(Caret {
-                block: first.clone(),
-                offset: 1,
-            });
-            let c = wp.containers.as_ref().unwrap().clone();
-            let target = wp.caret.block.clone();
-            let (_, block) = state.get(&c.blocks, &target).unwrap().unwrap();
-            match damage {
-                "deleted" => state.delete(&c.blocks, &target).unwrap(),
-                "scalar_block" => state.put(&c.blocks, &target, "not a block").unwrap(),
-                "missing_order" => state.delete(&block, qdoc::schema::BLOCK_ORDER).unwrap(),
-                _ => state
-                    .put(&block, qdoc::schema::BLOCK_ORDER, 42_i64)
-                    .unwrap(),
-            }
+            assert_eq!(qdoc::model::ordered_keys_scan_count(), before);
+            assert_eq!(
+                wp.caret,
+                Caret {
+                    block: id.clone(),
+                    offset: 0
+                }
+            );
+            wp.selection_anchor = Some(wp.caret.clone());
+            state.delete(&c.blocks, &id).unwrap();
+            wp.bind(&mut state, &ROOT);
             let canonical = qdoc::model::blocks_in_order(&state, &c);
-            assert!(!canonical.contains(&target));
-            wp.bind(&mut state, &ROOT);
+            assert_eq!(canonical.len(), 1, "empty body is reseeded");
+            assert_ne!(canonical[0], id);
             assert_eq!(
                 wp.caret,
                 Caret {
                     block: canonical[0].clone(),
                     offset: 0
-                },
-                "{damage}"
-            );
-            assert_eq!(wp.selection_anchor, None, "{damage}");
-        }
-        for region in [Region::Header, Region::Footer] {
-            let (mut wp, mut state) = bound();
-            let body = wp.caret.block.clone();
-            wp.focus_region(&mut state, region);
-            wp.insert_str(&mut state, "running text");
-            wp.bind(&mut state, &ROOT);
-            assert_eq!(wp.region, region);
-            assert_eq!(wp.caret.offset, 12);
-            let caret_block = wp.caret.block.clone();
-            let mut ids = wp.ids.clone().unwrap();
-            qdoc::DocMut {
-                doc: &mut state,
-                c: wp.containers.as_ref().unwrap(),
-                ids: &mut ids,
-            }
-            .remove_block_in(region, &caret_block);
-            wp.bind(&mut state, &ROOT);
-            assert_eq!(wp.region, Region::Body);
-            assert_eq!(
-                wp.caret,
-                Caret {
-                    block: body,
-                    offset: 0
                 }
             );
+            assert_eq!(wp.selection_anchor, None);
+        }
+
+        // Phase: bind_rejects_noncanonical_body_carets_and_keeps_region_fallbacks.
+        {
+            for damage in ["deleted", "scalar_block", "missing_order", "scalar_order"] {
+                let (mut wp, mut state) = bound();
+                let first = wp.caret.block.clone();
+                wp.insert_str(&mut state, "first");
+                wp.enter(&mut state);
+                wp.insert_str(&mut state, "second");
+                wp.selection_anchor = Some(Caret {
+                    block: first.clone(),
+                    offset: 1,
+                });
+                let c = wp.containers.as_ref().unwrap().clone();
+                let target = wp.caret.block.clone();
+                let (_, block) = state.get(&c.blocks, &target).unwrap().unwrap();
+                match damage {
+                    "deleted" => state.delete(&c.blocks, &target).unwrap(),
+                    "scalar_block" => state.put(&c.blocks, &target, "not a block").unwrap(),
+                    "missing_order" => state.delete(&block, qdoc::schema::BLOCK_ORDER).unwrap(),
+                    _ => state
+                        .put(&block, qdoc::schema::BLOCK_ORDER, 42_i64)
+                        .unwrap(),
+                }
+                let canonical = qdoc::model::blocks_in_order(&state, &c);
+                assert!(!canonical.contains(&target));
+                wp.bind(&mut state, &ROOT);
+                assert_eq!(
+                    wp.caret,
+                    Caret {
+                        block: canonical[0].clone(),
+                        offset: 0
+                    },
+                    "{damage}"
+                );
+                assert_eq!(wp.selection_anchor, None, "{damage}");
+            }
+            for region in [Region::Header, Region::Footer] {
+                let (mut wp, mut state) = bound();
+                let body = wp.caret.block.clone();
+                wp.focus_region(&mut state, region);
+                wp.insert_str(&mut state, "running text");
+                wp.bind(&mut state, &ROOT);
+                assert_eq!(wp.region, region);
+                assert_eq!(wp.caret.offset, 12);
+                let caret_block = wp.caret.block.clone();
+                let mut ids = wp.ids.clone().unwrap();
+                qdoc::DocMut {
+                    doc: &mut state,
+                    c: wp.containers.as_ref().unwrap(),
+                    ids: &mut ids,
+                }
+                .remove_block_in(region, &caret_block);
+                wp.bind(&mut state, &ROOT);
+                assert_eq!(wp.region, Region::Body);
+                assert_eq!(
+                    wp.caret,
+                    Caret {
+                        block: body,
+                        offset: 0
+                    }
+                );
+            }
         }
     }
 
+    /// `bind` seeds builtin styles into the container, `set_stylesheet` persists through it, and legacy meta-JSON
+    /// stylesheets migrate into it.
     #[test]
-    fn bind_seeds_builtin_styles_into_the_container() {
-        let (wp, state) = bound();
-        let c = wp.containers.as_ref().unwrap();
-        let ids = qdoc::model::style_ids(&state, c);
-        for k in ["body", "heading1", "heading2", "heading3", "list", "quote"] {
+    fn stylesheets_seed_persist_and_migrate_through_the_container() {
+        // Phase: bind_seeds_builtin_styles_into_the_container.
+        {
+            let (wp, state) = bound();
+            let c = wp.containers.as_ref().unwrap();
+            let ids = qdoc::model::style_ids(&state, c);
+            for k in ["body", "heading1", "heading2", "heading3", "list", "quote"] {
+                assert!(
+                    ids.contains(&k.to_string()),
+                    "built-in style {k} seeded into container: {ids:?}"
+                );
+            }
+            // And `stylesheet()` reads them back faithfully (incl. fractional size).
+            let sheet = wp.stylesheet(&state);
+            assert_eq!(sheet.get("body").name, "Body");
             assert!(
-                ids.contains(&k.to_string()),
-                "built-in style {k} seeded into container: {ids:?}"
+                (sheet.get("body").size - 16.5).abs() < 1e-6,
+                "fractional size survived the container"
+            );
+            assert!(sheet.get("quote").italic, "quote stays italic");
+        }
+
+        // Phase: set_stylesheet_persists_through_the_container.
+        {
+            let (mut wp, mut state) = bound();
+            let mut sheet = wp.stylesheet(&state);
+            sheet.styles.get_mut("body").unwrap().size = 42.0;
+            sheet.styles.insert(
+                "custom".into(),
+                StyleProps {
+                    name: "Custom".into(),
+                    font: "serif".into(),
+                    size: 19.0,
+                    ..Default::default()
+                },
+            );
+            wp.set_stylesheet(&mut state, &sheet);
+
+            // Read back via the container (a fresh read path, not the in-memory sheet).
+            let back = wp.stylesheet(&state);
+            assert_eq!(back.get("body").size, 42.0, "edited built-in persisted");
+            assert_eq!(back.get("custom").name, "Custom", "new style persisted");
+            assert_eq!(back.get("custom").size, 19.0);
+        }
+
+        // Phase: legacy_meta_json_stylesheet_migrates_into_container.
+        {
+            // An "old" document: schema initialized + a stylesheet stored as the
+            // legacy meta-JSON blob, with the styles container still empty.
+            let mut state = AutoCommit::new();
+            let c = qdoc::model::init(&mut state, &ROOT);
+            let mut ids = qdoc::IdGen::new(state.get_actor().to_hex_string());
+            let mut legacy = StyleSheet::default();
+            legacy.styles.get_mut("body").unwrap().size = 99.0;
+            {
+                let mut dm = DocMut {
+                    doc: &mut state,
+                    c: &c,
+                    ids: &mut ids,
+                };
+                dm.set_meta_str("stylesheet", &legacy.to_json());
+            }
+            assert!(
+                qdoc::model::style_ids(&state, &c).is_empty(),
+                "container starts empty (old doc)"
+            );
+
+            // Binding the editor migrates the legacy JSON into the container.
+            let mut wp = WordProcessor::new();
+            wp.bind(&mut state, &ROOT);
+            let migrated = qdoc::model::style_ids(&state, wp.containers.as_ref().unwrap());
+            assert!(
+                migrated.contains(&"body".to_string()),
+                "legacy styles migrated into container: {migrated:?}"
+            );
+            assert!(
+                (wp.stylesheet(&state).get("body").size - 99.0).abs() < 1e-6,
+                "custom legacy value survived migration"
             );
         }
-        // And `stylesheet()` reads them back faithfully (incl. fractional size).
-        let sheet = wp.stylesheet(&state);
-        assert_eq!(sheet.get("body").name, "Body");
-        assert!(
-            (sheet.get("body").size - 16.5).abs() < 1e-6,
-            "fractional size survived the container"
-        );
-        assert!(sheet.get("quote").italic, "quote stays italic");
     }
 
+    /// Typing advances the caret; Enter splits a block; Backspace works within and across blocks; Delete
+    /// forward merges the next; caret motion crosses blocks and extends an active selection; selection delete
+    /// and replace; select word picks the word under the caret.
     #[test]
-    fn set_stylesheet_persists_through_the_container() {
-        let (mut wp, mut state) = bound();
-        let mut sheet = wp.stylesheet(&state);
-        sheet.styles.get_mut("body").unwrap().size = 42.0;
-        sheet.styles.insert(
-            "custom".into(),
-            StyleProps {
-                name: "Custom".into(),
-                font: "serif".into(),
-                size: 19.0,
-                ..Default::default()
-            },
-        );
-        wp.set_stylesheet(&mut state, &sheet);
-
-        // Read back via the container (a fresh read path, not the in-memory sheet).
-        let back = wp.stylesheet(&state);
-        assert_eq!(back.get("body").size, 42.0, "edited built-in persisted");
-        assert_eq!(back.get("custom").name, "Custom", "new style persisted");
-        assert_eq!(back.get("custom").size, 19.0);
-    }
-
-    #[test]
-    fn legacy_meta_json_stylesheet_migrates_into_container() {
-        // An "old" document: schema initialized + a stylesheet stored as the
-        // legacy meta-JSON blob, with the styles container still empty.
-        let mut state = AutoCommit::new();
-        let c = qdoc::model::init(&mut state, &ROOT);
-        let mut ids = qdoc::IdGen::new(state.get_actor().to_hex_string());
-        let mut legacy = StyleSheet::default();
-        legacy.styles.get_mut("body").unwrap().size = 99.0;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn typing_and_deleting_edit_blocks_and_move_the_caret() {
+        // Phase: type_text_advances_caret.
         {
-            let mut dm = DocMut {
-                doc: &mut state,
-                c: &c,
-                ids: &mut ids,
-            };
-            dm.set_meta_str("stylesheet", &legacy.to_json());
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "hello");
+            assert_eq!(wp.current_text(&state), "hello");
+            assert_eq!(wp.caret.offset, 5);
         }
-        assert!(
-            qdoc::model::style_ids(&state, &c).is_empty(),
-            "container starts empty (old doc)"
-        );
 
-        // Binding the editor migrates the legacy JSON into the container.
-        let mut wp = WordProcessor::new();
-        wp.bind(&mut state, &ROOT);
-        let migrated = qdoc::model::style_ids(&state, wp.containers.as_ref().unwrap());
-        assert!(
-            migrated.contains(&"body".to_string()),
-            "legacy styles migrated into container: {migrated:?}"
-        );
-        assert!(
-            (wp.stylesheet(&state).get("body").size - 99.0).abs() < 1e-6,
-            "custom legacy value survived migration"
-        );
-    }
-
-    #[test]
-    fn type_text_advances_caret() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "hello");
-        assert_eq!(wp.current_text(&state), "hello");
-        assert_eq!(wp.caret.offset, 5);
-    }
-
-    #[test]
-    fn enter_splits_block() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "helloworld");
-        // move caret back to between "hello" and "world"
-        for _ in 0..5 {
-            wp.move_left(&state);
-        }
-        assert_eq!(wp.caret.offset, 5);
-        wp.enter(&mut state);
-        assert_eq!(
-            wp.block_texts(&state),
-            vec!["hello".to_string(), "world".to_string()]
-        );
-        assert_eq!(wp.caret.offset, 0);
-        assert_eq!(wp.current_text(&state), "world");
-    }
-
-    #[test]
-    fn backspace_within_and_across_blocks() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "ab");
-        wp.enter(&mut state);
-        wp.insert_str(&mut state, "cd");
-        assert_eq!(
-            wp.block_texts(&state),
-            vec!["ab".to_string(), "cd".to_string()]
-        );
-
-        // delete 'd'
-        wp.backspace(&mut state);
-        assert_eq!(wp.current_text(&state), "c");
-        // delete 'c'
-        wp.backspace(&mut state);
-        assert_eq!(wp.current_text(&state), "");
-        // now at offset 0 of second block → merge into first
-        wp.backspace(&mut state);
-        assert_eq!(wp.block_texts(&state), vec!["ab".to_string()]);
-        assert_eq!(wp.caret.offset, 2, "caret lands at the merge point");
-    }
-
-    #[test]
-    fn delete_forward_merges_next() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "ab");
-        wp.enter(&mut state);
-        wp.insert_str(&mut state, "cd");
-        // caret at end of "cd"; move to end of first block
-        wp.move_to_block(&state, 0);
-        wp.move_end(&state);
-        assert_eq!(wp.current_text(&state), "ab");
-        wp.delete_forward(&mut state);
-        assert_eq!(wp.block_texts(&state), vec!["abcd".to_string()]);
-    }
-
-    #[test]
-    fn caret_motion_crosses_blocks() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "ab");
-        wp.enter(&mut state);
-        wp.insert_str(&mut state, "cd");
-        // caret at end of "cd"; move_right at end → no-op (last block)
-        wp.move_right(&state);
-        assert_eq!(wp.current_text(&state), "cd");
-        assert_eq!(wp.caret.offset, 2);
-        // move_left from offset 0 of "cd" → end of "ab"
-        wp.move_home();
-        wp.move_left(&state);
-        assert_eq!(wp.current_text(&state), "ab");
-        assert_eq!(wp.caret.offset, 2);
-    }
-
-    #[test]
-    fn caret_motion_extends_an_active_selection() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "abcd");
-
-        wp.move_home();
-        wp.set_anchor();
-        wp.move_right(&state);
-        assert_eq!(
-            wp.selection_blocks(&state)[0].1..wp.selection_blocks(&state)[0].2,
-            0..1
-        );
-
-        wp.clear_anchor();
-        wp.move_end(&state);
-        wp.set_anchor();
-        wp.move_home();
-        assert_eq!(
-            wp.selection_blocks(&state)[0].1..wp.selection_blocks(&state)[0].2,
-            0..4
-        );
-    }
-
-    #[test]
-    fn selection_delete_and_replace() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "hello world");
-        // select "hello" (0..5)
-        wp.caret.offset = 0;
-        wp.set_anchor();
-        wp.caret.offset = 5;
-        assert_eq!(
-            wp.selection_blocks(&state)
-                .into_iter()
-                .map(|(_, s, e)| (s, e))
-                .collect::<Vec<_>>(),
-            vec![(0, 5)]
-        );
-        // typing replaces the selection
-        wp.insert_str(&mut state, "HI");
-        assert_eq!(wp.current_text(&state), "HI world");
-        assert_eq!(wp.caret.offset, 2);
-        assert!(wp.selection_anchor.is_none());
-    }
-
-    #[test]
-    fn inline_color_font_size_marks_apply_to_selection() {
-        use qdoc::document::MarkValue;
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "hello world");
-        // select "hello" (0..5)
-        wp.caret.offset = 0;
-        wp.set_anchor();
-        wp.caret.offset = 5;
-        wp.set_text_color(&mut state, "#ff0000");
-        wp.set_font_size(&mut state, 24);
-        wp.set_font_family(&mut state, "serif");
-        let c = wp.containers.as_ref().unwrap();
-        let snap = qdoc::model::materialize(&state, c);
-        let blk = &snap.blocks[0];
-        let mark = |name: &str| {
-            blk.marks
-                .iter()
-                .find(|m| m.name == name && m.start == 0 && m.end == 5)
-                .map(|m| m.value.clone())
-        };
-        match mark("color") {
-            Some(MarkValue::Str(s)) => assert_eq!(s, "#ff0000"),
-            _ => panic!("color mark missing over selection"),
-        }
-        match mark("size") {
-            Some(MarkValue::Int(n)) => assert_eq!(n, 24),
-            _ => panic!("size mark missing over selection"),
-        }
-        match mark("font") {
-            Some(MarkValue::Str(s)) => assert_eq!(s, "serif"),
-            _ => panic!("font mark missing over selection"),
-        }
-    }
-
-    #[test]
-    fn highlight_mark_applies_to_selection() {
-        use qdoc::document::MarkValue;
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "hello world");
-        wp.caret.offset = 0;
-        wp.set_anchor();
-        wp.caret.offset = 5;
-        wp.set_highlight(&mut state, "#fff35c");
-        let c = wp.containers.as_ref().unwrap();
-        let snap = qdoc::model::materialize(&state, c);
-        let blk = &snap.blocks[0];
-        match blk
-            .marks
-            .iter()
-            .find(|m| m.name == "highlight" && m.start == 0 && m.end == 5)
-            .map(|m| m.value.clone())
+        // Phase: enter_splits_block.
         {
-            Some(MarkValue::Str(s)) => assert_eq!(s, "#fff35c"),
-            _ => panic!("highlight mark missing over selection"),
-        }
-        // Clearing removes it.
-        wp.caret.offset = 0;
-        wp.set_anchor();
-        wp.caret.offset = 5;
-        wp.clear_mark(&mut state, "highlight");
-        let snap = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
-        assert!(
-            !snap.blocks[0].marks.iter().any(|m| m.name == "highlight"),
-            "highlight cleared"
-        );
-    }
-
-    #[test]
-    fn super_and_sub_are_mutually_exclusive() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "x2");
-        // Select "2".
-        wp.caret.offset = 1;
-        wp.set_anchor();
-        wp.caret.offset = 2;
-        wp.toggle_super(&mut state);
-        let c = wp.containers.clone().unwrap();
-        assert!(
-            qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"),
-            "super applied"
-        );
-        assert!(
-            !qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"),
-            "no sub yet"
-        );
-
-        // Re-select and toggle sub: it must clear super (mutual exclusion).
-        wp.caret.offset = 1;
-        wp.set_anchor();
-        wp.caret.offset = 2;
-        wp.toggle_sub(&mut state);
-        assert!(
-            qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"),
-            "sub applied"
-        );
-        assert!(
-            !qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"),
-            "super cleared"
-        );
-
-        // Toggling sub again removes it (off).
-        wp.caret.offset = 1;
-        wp.set_anchor();
-        wp.caret.offset = 2;
-        wp.toggle_sub(&mut state);
-        assert!(
-            !qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"),
-            "sub toggled off"
-        );
-    }
-
-    #[test]
-    fn line_spacing_writes_block_attr_and_reads_back() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "a paragraph");
-        assert!(
-            (wp.caret_line_spacing(&state) - 1.0).abs() < 1e-9,
-            "default 1.0 when unset"
-        );
-        wp.set_line_spacing(&mut state, 2.0);
-        let c = wp.containers.as_ref().unwrap();
-        let snap = qdoc::model::materialize(&state, c);
-        match snap.blocks[0].attrs.get("line_spacing") {
-            Some(qdoc::AttrVal::Float(f)) => {
-                assert!((f - 2.0).abs() < 1e-9, "line_spacing=2.0 stored");
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "helloworld");
+            // move caret back to between "hello" and "world"
+            for _ in 0..5 {
+                wp.move_left(&state);
             }
-            other => panic!("expected line_spacing Float attr, got {other:?}"),
+            assert_eq!(wp.caret.offset, 5);
+            wp.enter(&mut state);
+            assert_eq!(
+                wp.block_texts(&state),
+                vec!["hello".to_string(), "world".to_string()]
+            );
+            assert_eq!(wp.caret.offset, 0);
+            assert_eq!(wp.current_text(&state), "world");
         }
-        assert!(
-            (wp.caret_line_spacing(&state) - 2.0).abs() < 1e-9,
-            "caret reads 2.0 back"
-        );
+
+        // Phase: backspace_within_and_across_blocks.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "ab");
+            wp.enter(&mut state);
+            wp.insert_str(&mut state, "cd");
+            assert_eq!(
+                wp.block_texts(&state),
+                vec!["ab".to_string(), "cd".to_string()]
+            );
+
+            // delete 'd'
+            wp.backspace(&mut state);
+            assert_eq!(wp.current_text(&state), "c");
+            // delete 'c'
+            wp.backspace(&mut state);
+            assert_eq!(wp.current_text(&state), "");
+            // now at offset 0 of second block → merge into first
+            wp.backspace(&mut state);
+            assert_eq!(wp.block_texts(&state), vec!["ab".to_string()]);
+            assert_eq!(wp.caret.offset, 2, "caret lands at the merge point");
+        }
+
+        // Phase: delete_forward_merges_next.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "ab");
+            wp.enter(&mut state);
+            wp.insert_str(&mut state, "cd");
+            // caret at end of "cd"; move to end of first block
+            wp.move_to_block(&state, 0);
+            wp.move_end(&state);
+            assert_eq!(wp.current_text(&state), "ab");
+            wp.delete_forward(&mut state);
+            assert_eq!(wp.block_texts(&state), vec!["abcd".to_string()]);
+        }
+
+        // Phase: caret_motion_crosses_blocks.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "ab");
+            wp.enter(&mut state);
+            wp.insert_str(&mut state, "cd");
+            // caret at end of "cd"; move_right at end → no-op (last block)
+            wp.move_right(&state);
+            assert_eq!(wp.current_text(&state), "cd");
+            assert_eq!(wp.caret.offset, 2);
+            // move_left from offset 0 of "cd" → end of "ab"
+            wp.move_home();
+            wp.move_left(&state);
+            assert_eq!(wp.current_text(&state), "ab");
+            assert_eq!(wp.caret.offset, 2);
+        }
+
+        // Phase: caret_motion_extends_an_active_selection.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "abcd");
+
+            wp.move_home();
+            wp.set_anchor();
+            wp.move_right(&state);
+            assert_eq!(
+                wp.selection_blocks(&state)[0].1..wp.selection_blocks(&state)[0].2,
+                0..1
+            );
+
+            wp.clear_anchor();
+            wp.move_end(&state);
+            wp.set_anchor();
+            wp.move_home();
+            assert_eq!(
+                wp.selection_blocks(&state)[0].1..wp.selection_blocks(&state)[0].2,
+                0..4
+            );
+        }
+
+        // Phase: selection_delete_and_replace.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "hello world");
+            // select "hello" (0..5)
+            wp.caret.offset = 0;
+            wp.set_anchor();
+            wp.caret.offset = 5;
+            assert_eq!(
+                wp.selection_blocks(&state)
+                    .into_iter()
+                    .map(|(_, s, e)| (s, e))
+                    .collect::<Vec<_>>(),
+                vec![(0, 5)]
+            );
+            // typing replaces the selection
+            wp.insert_str(&mut state, "HI");
+            assert_eq!(wp.current_text(&state), "HI world");
+            assert_eq!(wp.caret.offset, 2);
+            assert!(wp.selection_anchor.is_none());
+        }
+
+        // Phase: select_word_picks_word_under_caret.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "hello world foo");
+            wp.caret.offset = 7; // inside "world" (chars 6..11)
+            wp.select_word(&state);
+            let sel = wp.selection_blocks(&state);
+            assert_eq!(sel.len(), 1);
+            assert_eq!((sel[0].1, sel[0].2), (6, 11));
+        }
     }
 
+    /// Inline colour and font-size marks, highlight and toggled marks apply to the selection; super and sub
+    /// are mutually exclusive; line spacing writes and reads back; alignment applies across selected
+    /// paragraphs and cells; set align and paragraph style.
     #[test]
-    fn multi_block_selection_copy_and_delete() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "first");
-        wp.enter(&mut state);
-        wp.insert_str(&mut state, "second");
-        wp.enter(&mut state);
-        wp.insert_str(&mut state, "third");
-        let blocks = wp.ordered_blocks(&state);
-        assert_eq!(blocks.len(), 3);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn marks_and_paragraph_attributes_apply_to_the_selection() {
+        // Phase: inline_color_font_size_marks_apply_to_selection.
+        {
+            use qdoc::document::MarkValue;
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "hello world");
+            // select "hello" (0..5)
+            wp.caret.offset = 0;
+            wp.set_anchor();
+            wp.caret.offset = 5;
+            wp.set_text_color(&mut state, "#ff0000");
+            wp.set_font_size(&mut state, 24);
+            wp.set_font_family(&mut state, "serif");
+            let c = wp.containers.as_ref().unwrap();
+            let snap = qdoc::model::materialize(&state, c);
+            let blk = &snap.blocks[0];
+            let mark = |name: &str| {
+                blk.marks
+                    .iter()
+                    .find(|m| m.name == name && m.start == 0 && m.end == 5)
+                    .map(|m| m.value.clone())
+            };
+            match mark("color") {
+                Some(MarkValue::Str(s)) => assert_eq!(s, "#ff0000"),
+                _ => panic!("color mark missing over selection"),
+            }
+            match mark("size") {
+                Some(MarkValue::Int(n)) => assert_eq!(n, 24),
+                _ => panic!("size mark missing over selection"),
+            }
+            match mark("font") {
+                Some(MarkValue::Str(s)) => assert_eq!(s, "serif"),
+                _ => panic!("font mark missing over selection"),
+            }
+        }
 
-        // Select from "rst" of block 0 through "thi" of block 2.
-        wp.set_caret(Caret {
-            block: blocks[0].clone(),
-            offset: 2,
-        });
-        wp.set_anchor();
-        wp.set_caret(Caret {
-            block: blocks[2].clone(),
-            offset: 3,
-        });
+        // Phase: highlight_mark_applies_to_selection.
+        {
+            use qdoc::document::MarkValue;
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "hello world");
+            wp.caret.offset = 0;
+            wp.set_anchor();
+            wp.caret.offset = 5;
+            wp.set_highlight(&mut state, "#fff35c");
+            let c = wp.containers.as_ref().unwrap();
+            let snap = qdoc::model::materialize(&state, c);
+            let blk = &snap.blocks[0];
+            match blk
+                .marks
+                .iter()
+                .find(|m| m.name == "highlight" && m.start == 0 && m.end == 5)
+                .map(|m| m.value.clone())
+            {
+                Some(MarkValue::Str(s)) => assert_eq!(s, "#fff35c"),
+                _ => panic!("highlight mark missing over selection"),
+            }
+            // Clearing removes it.
+            wp.caret.offset = 0;
+            wp.set_anchor();
+            wp.caret.offset = 5;
+            wp.clear_mark(&mut state, "highlight");
+            let snap = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
+            assert!(
+                !snap.blocks[0].marks.iter().any(|m| m.name == "highlight"),
+                "highlight cleared"
+            );
+        }
 
-        // Selected text spans three blocks, joined by newlines.
-        assert_eq!(wp.selection_text(&state), "rst\nsecond\nthi");
+        // Phase: super_and_sub_are_mutually_exclusive.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "x2");
+            // Select "2".
+            wp.caret.offset = 1;
+            wp.set_anchor();
+            wp.caret.offset = 2;
+            wp.toggle_super(&mut state);
+            let c = wp.containers.clone().unwrap();
+            assert!(
+                qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"),
+                "super applied"
+            );
+            assert!(
+                !qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"),
+                "no sub yet"
+            );
 
-        // Deleting the selection merges the surviving heads/tails into one block.
-        assert!(wp.delete_selection(&mut state));
-        assert_eq!(wp.block_texts(&state), vec!["fird".to_string()]);
-        assert!(!wp.has_selection());
+            // Re-select and toggle sub: it must clear super (mutual exclusion).
+            wp.caret.offset = 1;
+            wp.set_anchor();
+            wp.caret.offset = 2;
+            wp.toggle_sub(&mut state);
+            assert!(
+                qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"),
+                "sub applied"
+            );
+            assert!(
+                !qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"),
+                "super cleared"
+            );
+
+            // Toggling sub again removes it (off).
+            wp.caret.offset = 1;
+            wp.set_anchor();
+            wp.caret.offset = 2;
+            wp.toggle_sub(&mut state);
+            assert!(
+                !qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"),
+                "sub toggled off"
+            );
+        }
+
+        // Phase: line_spacing_writes_block_attr_and_reads_back.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "a paragraph");
+            assert!(
+                (wp.caret_line_spacing(&state) - 1.0).abs() < 1e-9,
+                "default 1.0 when unset"
+            );
+            wp.set_line_spacing(&mut state, 2.0);
+            let c = wp.containers.as_ref().unwrap();
+            let snap = qdoc::model::materialize(&state, c);
+            match snap.blocks[0].attrs.get("line_spacing") {
+                Some(qdoc::AttrVal::Float(f)) => {
+                    assert!((f - 2.0).abs() < 1e-9, "line_spacing=2.0 stored");
+                }
+                other => panic!("expected line_spacing Float attr, got {other:?}"),
+            }
+            assert!(
+                (wp.caret_line_spacing(&state) - 2.0).abs() < 1e-9,
+                "caret reads 2.0 back"
+            );
+        }
+
+        // Phase: align_applies_across_selected_paragraphs.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "one");
+            wp.enter(&mut state);
+            wp.insert_str(&mut state, "two");
+            wp.enter(&mut state);
+            wp.insert_str(&mut state, "three");
+            let blocks = wp.ordered_blocks(&state);
+            assert_eq!(blocks.len(), 3);
+            wp.set_caret(Caret {
+                block: blocks[0].clone(),
+                offset: 0,
+            });
+            wp.set_anchor();
+            wp.set_caret(Caret {
+                block: blocks[2].clone(),
+                offset: 5,
+            });
+            wp.set_align(&mut state, "center");
+            for b in &blocks {
+                assert_eq!(
+                    align_of(&wp, &state, b).as_deref(),
+                    Some("center"),
+                    "paragraph {b} centered"
+                );
+            }
+        }
+
+        // Phase: align_applies_across_selected_cells.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_table(&mut state, 2, 2);
+            let snap = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
+            let cells: Vec<String> = snap
+                .blocks
+                .iter()
+                .filter(|b| b.kind == "cell")
+                .map(|b| b.id.clone())
+                .collect();
+            assert_eq!(cells.len(), 4);
+            wp.set_caret(Caret {
+                block: cells[0].clone(),
+                offset: 0,
+            });
+            wp.set_anchor();
+            wp.set_caret(Caret {
+                block: cells[3].clone(),
+                offset: 0,
+            });
+            wp.set_align(&mut state, "center");
+            for c in &cells {
+                assert_eq!(
+                    align_of(&wp, &state, c).as_deref(),
+                    Some("center"),
+                    "cell {c} centered"
+                );
+            }
+        }
+
+        // Phase: toggle_mark_adds_then_removes.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "hello");
+            wp.caret.offset = 0;
+            wp.set_anchor();
+            wp.caret.offset = 5;
+            let c = wp.containers.clone().unwrap();
+            let block = wp.caret.block.clone();
+
+            wp.toggle_mark(&mut state, "strong");
+            assert!(
+                qdoc::model::has_mark_over(&state, &c, &block, 0, 5, "strong"),
+                "mark applied"
+            );
+            wp.toggle_mark(&mut state, "strong");
+            assert!(
+                !qdoc::model::has_mark_over(&state, &c, &block, 0, 5, "strong"),
+                "mark toggled off"
+            );
+        }
+
+        // Phase: set_align_and_paragraph_style.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "Title");
+            wp.set_align(&mut state, "center");
+            wp.set_paragraph_style(&mut state, "heading", Some(2), None);
+            let c = wp.containers.clone().unwrap();
+            let snap = qdoc::model::materialize(&state, &c);
+            assert_eq!(snap.blocks[0].kind, "heading");
+            assert_eq!(
+                snap.blocks[0].attrs.get("level"),
+                Some(&qdoc::AttrVal::Int(2))
+            );
+            assert_eq!(
+                snap.blocks[0].attrs.get("align"),
+                Some(&qdoc::AttrVal::Str("center".into()))
+            );
+        }
     }
 
+    /// Multi-block selection copy and delete; multiline insert splits into paragraphs; rich copy/paste
+    /// preserves formatting; Markdown prefixes autoformat; Enter continues and exits lists; Backspace at list
+    /// start unlists.
     #[test]
-    fn insert_multiline_splits_into_paragraphs() {
-        let (mut wp, mut state) = bound();
-        wp.insert_multiline(&mut state, "alpha\nbeta\ngamma");
-        assert_eq!(
-            wp.block_texts(&state),
-            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn clipboard_and_multiline_input_keep_structure_and_formatting() {
+        // Phase: multi_block_selection_copy_and_delete.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "first");
+            wp.enter(&mut state);
+            wp.insert_str(&mut state, "second");
+            wp.enter(&mut state);
+            wp.insert_str(&mut state, "third");
+            let blocks = wp.ordered_blocks(&state);
+            assert_eq!(blocks.len(), 3);
 
-    #[test]
-    fn autoformat_markdown_prefixes() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "-");
-        assert!(wp.autoformat_on_space(&mut state), "'- ' autoformatted");
-        let b = wp.caret.block.clone();
-        let (kind, ordered, _) = wp.block_meta(&state, &b);
-        assert_eq!(kind, "list_item");
-        assert!(!ordered, "dash → bullet");
-        assert_eq!(wp.current_text(&state), "", "prefix consumed");
-        assert_eq!(wp.caret.offset, 0);
+            // Select from "rst" of block 0 through "thi" of block 2.
+            wp.set_caret(Caret {
+                block: blocks[0].clone(),
+                offset: 2,
+            });
+            wp.set_anchor();
+            wp.set_caret(Caret {
+                block: blocks[2].clone(),
+                offset: 3,
+            });
 
-        // "## " → heading 2
-        wp.set_paragraph_style(&mut state, "paragraph", None, None);
-        wp.move_end(&state);
-        wp.insert_str(&mut state, "##");
-        assert!(wp.autoformat_on_space(&mut state));
-        let b = wp.caret.block.clone();
-        let (kind, _, level) = wp.block_meta(&state, &b);
-        assert_eq!(kind, "heading");
-        assert_eq!(level, Some(2));
+            // Selected text spans three blocks, joined by newlines.
+            assert_eq!(wp.selection_text(&state), "rst\nsecond\nthi");
 
-        // No false positive in the middle of text.
-        let (mut wp2, mut s2) = bound();
-        wp2.insert_str(&mut s2, "a-");
-        assert!(
-            !wp2.autoformat_on_space(&mut s2),
-            "mid-line dash not autoformatted"
-        );
-    }
+            // Deleting the selection merges the surviving heads/tails into one block.
+            assert!(wp.delete_selection(&mut state));
+            assert_eq!(wp.block_texts(&state), vec!["fird".to_string()]);
+            assert!(!wp.has_selection());
+        }
 
-    #[test]
-    fn enter_continues_and_exits_lists() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "-");
-        wp.autoformat_on_space(&mut state);
-        wp.insert_str(&mut state, "first");
-        wp.enter(&mut state);
-        let b = wp.caret.block.clone();
-        assert_eq!(
-            wp.block_meta(&state, &b).0,
-            "list_item",
-            "Enter continues the list"
-        );
-        wp.enter(&mut state); // empty item → exit
-        let b = wp.caret.block.clone();
-        assert_eq!(
-            wp.block_meta(&state, &b).0,
-            "paragraph",
-            "Enter on empty item exits the list"
-        );
+        // Phase: insert_multiline_splits_into_paragraphs.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_multiline(&mut state, "alpha\nbeta\ngamma");
+            assert_eq!(
+                wp.block_texts(&state),
+                vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+            );
+        }
+
+        // Phase: rich_copy_paste_preserves_formatting.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "hello world");
+            // bold "hello"
+            wp.caret.offset = 0;
+            wp.set_anchor();
+            wp.caret.offset = 5;
+            wp.toggle_mark(&mut state, "strong");
+
+            // re-select "hello" and copy a rich fragment
+            wp.caret.offset = 0;
+            wp.clear_anchor();
+            wp.set_anchor();
+            wp.caret.offset = 5;
+            let (plain, blocks) = wp.copy_fragment(&state);
+            assert_eq!(plain, "hello");
+            assert_eq!(blocks.len(), 1);
+            assert!(
+                blocks[0]
+                    .marks
+                    .iter()
+                    .any(|m| m.name == "strong" && m.start == 0 && m.end == 5)
+            );
+
+            // paste rich at the end → the pasted run keeps its bold
+            wp.clear_anchor();
+            wp.move_end(&state);
+            wp.insert_rich(&mut state, &blocks);
+            let c = wp.containers.clone().unwrap();
+            let block = wp.caret.block.clone();
+            assert_eq!(wp.current_text(&state), "hello worldhello");
+            assert!(
+                qdoc::model::has_mark_over(&state, &c, &block, 11, 16, "strong"),
+                "pasted bold preserved"
+            );
+        }
+
+        // Phase: autoformat_markdown_prefixes.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "-");
+            assert!(wp.autoformat_on_space(&mut state), "'- ' autoformatted");
+            let b = wp.caret.block.clone();
+            let (kind, ordered, _) = wp.block_meta(&state, &b);
+            assert_eq!(kind, "list_item");
+            assert!(!ordered, "dash → bullet");
+            assert_eq!(wp.current_text(&state), "", "prefix consumed");
+            assert_eq!(wp.caret.offset, 0);
+
+            // "## " → heading 2
+            wp.set_paragraph_style(&mut state, "paragraph", None, None);
+            wp.move_end(&state);
+            wp.insert_str(&mut state, "##");
+            assert!(wp.autoformat_on_space(&mut state));
+            let b = wp.caret.block.clone();
+            let (kind, _, level) = wp.block_meta(&state, &b);
+            assert_eq!(kind, "heading");
+            assert_eq!(level, Some(2));
+
+            // No false positive in the middle of text.
+            let (mut wp2, mut s2) = bound();
+            wp2.insert_str(&mut s2, "a-");
+            assert!(
+                !wp2.autoformat_on_space(&mut s2),
+                "mid-line dash not autoformatted"
+            );
+        }
+
+        // Phase: enter_continues_and_exits_lists.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "-");
+            wp.autoformat_on_space(&mut state);
+            wp.insert_str(&mut state, "first");
+            wp.enter(&mut state);
+            let b = wp.caret.block.clone();
+            assert_eq!(
+                wp.block_meta(&state, &b).0,
+                "list_item",
+                "Enter continues the list"
+            );
+            wp.enter(&mut state); // empty item → exit
+            let b = wp.caret.block.clone();
+            assert_eq!(
+                wp.block_meta(&state, &b).0,
+                "paragraph",
+                "Enter on empty item exits the list"
+            );
+        }
+
+        // Phase: backspace_at_list_start_unlists.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "-");
+            wp.autoformat_on_space(&mut state);
+            wp.insert_str(&mut state, "item");
+            wp.move_home();
+            wp.backspace(&mut state);
+            let b = wp.caret.block.clone();
+            assert_eq!(
+                wp.block_meta(&state, &b).0,
+                "paragraph",
+                "backspace at list start un-lists"
+            );
+            assert_eq!(wp.current_text(&state), "item", "text preserved");
+        }
     }
 
     fn align_of(wp: &WordProcessor, state: &AutoCommit, id: &str) -> Option<String> {
@@ -3823,225 +4036,214 @@ mod tests {
             })
     }
 
+    /// Table rows and columns add and delete; an inserted table has editable cells; inserted image bytes
+    /// round-trip blob and dims and split text around the caret; inserted rows and columns keep the table
+    /// rectangular; deleting the last row removes the table.
     #[test]
-    fn align_applies_across_selected_paragraphs() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "one");
-        wp.enter(&mut state);
-        wp.insert_str(&mut state, "two");
-        wp.enter(&mut state);
-        wp.insert_str(&mut state, "three");
-        let blocks = wp.ordered_blocks(&state);
-        assert_eq!(blocks.len(), 3);
-        wp.set_caret(Caret {
-            block: blocks[0].clone(),
-            offset: 0,
-        });
-        wp.set_anchor();
-        wp.set_caret(Caret {
-            block: blocks[2].clone(),
-            offset: 5,
-        });
-        wp.set_align(&mut state, "center");
-        for b in &blocks {
-            assert_eq!(
-                align_of(&wp, &state, b).as_deref(),
-                Some("center"),
-                "paragraph {b} centered"
-            );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn tables_and_images_stay_rectangular_and_editable() {
+        // Phase: table_add_and_delete_rows_cols.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_table(&mut state, 2, 2);
+            let count = |wp: &WordProcessor, st: &AutoCommit| {
+                qdoc::model::materialize(st, wp.containers.as_ref().unwrap())
+                    .blocks
+                    .iter()
+                    .filter(|b| b.kind == "cell")
+                    .count()
+            };
+            assert_eq!(count(&wp, &state), 4);
+            wp.table_add_row(&mut state);
+            assert_eq!(count(&wp, &state), 6);
+            wp.table_add_col(&mut state);
+            assert_eq!(count(&wp, &state), 9);
+            wp.table_del_row(&mut state);
+            assert_eq!(count(&wp, &state), 6);
+            wp.table_del_col(&mut state);
+            assert_eq!(count(&wp, &state), 4);
+            wp.table_delete(&mut state);
+            assert_eq!(count(&wp, &state), 0);
         }
-    }
 
-    #[test]
-    fn align_applies_across_selected_cells() {
-        let (mut wp, mut state) = bound();
-        wp.insert_table(&mut state, 2, 2);
-        let snap = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
-        let cells: Vec<String> = snap
-            .blocks
-            .iter()
-            .filter(|b| b.kind == "cell")
-            .map(|b| b.id.clone())
-            .collect();
-        assert_eq!(cells.len(), 4);
-        wp.set_caret(Caret {
-            block: cells[0].clone(),
-            offset: 0,
-        });
-        wp.set_anchor();
-        wp.set_caret(Caret {
-            block: cells[3].clone(),
-            offset: 0,
-        });
-        wp.set_align(&mut state, "center");
-        for c in &cells {
-            assert_eq!(
-                align_of(&wp, &state, c).as_deref(),
-                Some("center"),
-                "cell {c} centered"
+        // Phase: insert_table_creates_editable_cells.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "before");
+            wp.insert_table(&mut state, 2, 3);
+            let snap = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
+            let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
+            assert_eq!(cells.len(), 6, "2x3 = 6 cells");
+            // every cell shares one table id; rows/cols are tagged
+            let tid = match cells[0].attrs.get("table") {
+                Some(qdoc::AttrVal::Str(s)) => s.clone(),
+                other => panic!("cell missing table attr: {other:?}"),
+            };
+            assert!(
+                cells
+                    .iter()
+                    .all(|c| c.attrs.get("table") == Some(&qdoc::AttrVal::Str(tid.clone())))
             );
-        }
-    }
-
-    #[test]
-    fn rich_copy_paste_preserves_formatting() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "hello world");
-        // bold "hello"
-        wp.caret.offset = 0;
-        wp.set_anchor();
-        wp.caret.offset = 5;
-        wp.toggle_mark(&mut state, "strong");
-
-        // re-select "hello" and copy a rich fragment
-        wp.caret.offset = 0;
-        wp.clear_anchor();
-        wp.set_anchor();
-        wp.caret.offset = 5;
-        let (plain, blocks) = wp.copy_fragment(&state);
-        assert_eq!(plain, "hello");
-        assert_eq!(blocks.len(), 1);
-        assert!(
-            blocks[0]
-                .marks
-                .iter()
-                .any(|m| m.name == "strong" && m.start == 0 && m.end == 5)
-        );
-
-        // paste rich at the end → the pasted run keeps its bold
-        wp.clear_anchor();
-        wp.move_end(&state);
-        wp.insert_rich(&mut state, &blocks);
-        let c = wp.containers.clone().unwrap();
-        let block = wp.caret.block.clone();
-        assert_eq!(wp.current_text(&state), "hello worldhello");
-        assert!(
-            qdoc::model::has_mark_over(&state, &c, &block, 11, 16, "strong"),
-            "pasted bold preserved"
-        );
-    }
-
-    #[test]
-    fn select_word_picks_word_under_caret() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "hello world foo");
-        wp.caret.offset = 7; // inside "world" (chars 6..11)
-        wp.select_word(&state);
-        let sel = wp.selection_blocks(&state);
-        assert_eq!(sel.len(), 1);
-        assert_eq!((sel[0].1, sel[0].2), (6, 11));
-    }
-
-    #[test]
-    fn backspace_at_list_start_unlists() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "-");
-        wp.autoformat_on_space(&mut state);
-        wp.insert_str(&mut state, "item");
-        wp.move_home();
-        wp.backspace(&mut state);
-        let b = wp.caret.block.clone();
-        assert_eq!(
-            wp.block_meta(&state, &b).0,
-            "paragraph",
-            "backspace at list start un-lists"
-        );
-        assert_eq!(wp.current_text(&state), "item", "text preserved");
-    }
-
-    #[test]
-    fn table_add_and_delete_rows_cols() {
-        let (mut wp, mut state) = bound();
-        wp.insert_table(&mut state, 2, 2);
-        let count = |wp: &WordProcessor, st: &AutoCommit| {
-            qdoc::model::materialize(st, wp.containers.as_ref().unwrap())
+            // caret landed in the first cell; typing edits it
+            assert!(cells.iter().any(|c| c.id == wp.caret.block));
+            wp.insert_str(&mut state, "A1");
+            let snap2 = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
+            let first = snap2
                 .blocks
                 .iter()
-                .filter(|b| b.kind == "cell")
-                .count()
-        };
-        assert_eq!(count(&wp, &state), 4);
-        wp.table_add_row(&mut state);
-        assert_eq!(count(&wp, &state), 6);
-        wp.table_add_col(&mut state);
-        assert_eq!(count(&wp, &state), 9);
-        wp.table_del_row(&mut state);
-        assert_eq!(count(&wp, &state), 6);
-        wp.table_del_col(&mut state);
-        assert_eq!(count(&wp, &state), 4);
-        wp.table_delete(&mut state);
-        assert_eq!(count(&wp, &state), 0);
-    }
+                .find(|b| b.id == wp.caret.block)
+                .unwrap();
+            assert_eq!(first.text, "A1");
+        }
 
-    #[test]
-    fn insert_table_creates_editable_cells() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "before");
-        wp.insert_table(&mut state, 2, 3);
-        let snap = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
-        let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
-        assert_eq!(cells.len(), 6, "2x3 = 6 cells");
-        // every cell shares one table id; rows/cols are tagged
-        let tid = match cells[0].attrs.get("table") {
-            Some(qdoc::AttrVal::Str(s)) => s.clone(),
-            other => panic!("cell missing table attr: {other:?}"),
-        };
-        assert!(
-            cells
+        // Phase: insert_image_bytes_round_trips_blob_and_dims.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "above");
+            wp.insert_image_bytes(&mut state, TINY_PNG);
+
+            let c = wp.containers.clone().unwrap();
+            let snap = qdoc::model::materialize(&state, &c);
+            let img = snap
+                .blocks
                 .iter()
-                .all(|c| c.attrs.get("table") == Some(&qdoc::AttrVal::Str(tid.clone())))
-        );
-        // caret landed in the first cell; typing edits it
-        assert!(cells.iter().any(|c| c.id == wp.caret.block));
-        wp.insert_str(&mut state, "A1");
-        let snap2 = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
-        let first = snap2
-            .blocks
-            .iter()
-            .find(|b| b.id == wp.caret.block)
-            .unwrap();
-        assert_eq!(first.text, "A1");
-    }
+                .find(|b| b.kind == "image")
+                .expect("an image block was inserted");
 
-    #[test]
-    fn toggle_mark_adds_then_removes() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "hello");
-        wp.caret.offset = 0;
-        wp.set_anchor();
-        wp.caret.offset = 5;
-        let c = wp.containers.clone().unwrap();
-        let block = wp.caret.block.clone();
+            // The blob attr references a blob whose bytes round-trip exactly.
+            let hash = match img.attrs.get("blob") {
+                Some(qdoc::AttrVal::Str(s)) => s.clone(),
+                other => panic!("image block missing blob attr: {other:?}"),
+            };
+            assert_eq!(
+                wp.content_store().read(&hash).as_deref(),
+                Some(TINY_PNG),
+                "image bytes round-trip through the content store"
+            );
 
-        wp.toggle_mark(&mut state, "strong");
-        assert!(
-            qdoc::model::has_mark_over(&state, &c, &block, 0, 5, "strong"),
-            "mark applied"
-        );
-        wp.toggle_mark(&mut state, "strong");
-        assert!(
-            !qdoc::model::has_mark_over(&state, &c, &block, 0, 5, "strong"),
-            "mark toggled off"
-        );
-    }
+            // Intrinsic pixel dimensions were recorded (mirrors the ODF import path).
+            assert_eq!(img.attrs.get("width"), Some(&qdoc::AttrVal::Int(2)));
+            assert_eq!(img.attrs.get("height"), Some(&qdoc::AttrVal::Int(3)));
 
-    #[test]
-    fn set_align_and_paragraph_style() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "Title");
-        wp.set_align(&mut state, "center");
-        wp.set_paragraph_style(&mut state, "heading", Some(2), None);
-        let c = wp.containers.clone().unwrap();
-        let snap = qdoc::model::materialize(&state, &c);
-        assert_eq!(snap.blocks[0].kind, "heading");
-        assert_eq!(
-            snap.blocks[0].attrs.get("level"),
-            Some(&qdoc::AttrVal::Int(2))
-        );
-        assert_eq!(
-            snap.blocks[0].attrs.get("align"),
-            Some(&qdoc::AttrVal::Str("center".into()))
-        );
+            // The image landed after the original text, and the caret sits in a fresh
+            // paragraph below it so typing continues beneath the image.
+            let order = wp.ordered_blocks(&state);
+            let img_pos = order.iter().position(|id| id == &img.id).unwrap();
+            assert!(img_pos >= 1, "image inserted after the original paragraph");
+            assert_eq!(wp.caret.offset, 0);
+            assert_ne!(wp.caret.block, img.id, "caret moved off the image block");
+        }
+
+        // Phase: insert_image_splits_text_around_caret.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "helloworld");
+            // caret between "hello" and "world"
+            for _ in 0..5 {
+                wp.move_left(&state);
+            }
+            wp.insert_image_bytes(&mut state, TINY_PNG);
+            let texts = wp.block_texts(&state);
+            // head paragraph, image (empty text), tail paragraph
+            assert_eq!(
+                texts,
+                vec!["hello".to_string(), String::new(), "world".to_string()]
+            );
+            assert_eq!(
+                wp.current_text(&state),
+                "world",
+                "caret follows the tail below the image"
+            );
+        }
+
+        // Phase: insert_row_grows_table_and_stays_rectangular.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_table(&mut state, 2, 3);
+            assert_rectangular(&table_grid(&wp, &state), 2, 3);
+            // Caret is in the first cell (row 0) after insert_table.
+            wp.insert_row_below(&mut state);
+            let grid = table_grid(&wp, &state);
+            let rows = grid.iter().map(|(r, _)| *r).max().unwrap() + 1;
+            assert_eq!(rows, 3, "row count increased by one");
+            assert_rectangular(&grid, 3, 3);
+            // The caret landed on the freshly-inserted row (row 1, below row 0).
+            let (cr, _) = wp.caret_rc(&wp.caret_table(&state).unwrap().1);
+            assert_eq!(cr, 1, "caret moved into the new row");
+        }
+
+        // Phase: insert_row_above_inserts_before_caret_row.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_table(&mut state, 2, 2);
+            // Move caret to row 1.
+            let (_, cells) = wp.caret_table(&state).unwrap();
+            let r1c0 = cells
+                .iter()
+                .find(|(_, r, c)| *r == 1 && *c == 0)
+                .unwrap()
+                .0
+                .clone();
+            wp.set_caret(Caret {
+                block: r1c0,
+                offset: 0,
+            });
+            wp.insert_row_above(&mut state);
+            assert_rectangular(&table_grid(&wp, &state), 3, 2);
+            let (cr, _) = wp.caret_rc(&wp.caret_table(&state).unwrap().1);
+            assert_eq!(cr, 1, "the new row took row 1's slot; caret is on it");
+        }
+
+        // Phase: delete_col_removes_one_cell_per_row.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_table(&mut state, 3, 3);
+            let before = table_grid(&wp, &state).len();
+            assert_eq!(before, 9);
+            wp.table_del_col(&mut state);
+            let grid = table_grid(&wp, &state);
+            assert_eq!(grid.len(), before - 3, "exactly one cell removed per row");
+            assert_rectangular(&grid, 3, 2);
+        }
+
+        // Phase: insert_col_left_and_right_stay_rectangular.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_table(&mut state, 2, 2);
+            // Move to col 1 so left/right are unambiguous.
+            let (_, cells) = wp.caret_table(&state).unwrap();
+            let r0c1 = cells
+                .iter()
+                .find(|(_, r, c)| *r == 0 && *c == 1)
+                .unwrap()
+                .0
+                .clone();
+            wp.set_caret(Caret {
+                block: r0c1,
+                offset: 0,
+            });
+            wp.insert_col_left(&mut state);
+            assert_rectangular(&table_grid(&wp, &state), 2, 3);
+            wp.insert_col_right(&mut state);
+            assert_rectangular(&table_grid(&wp, &state), 2, 4);
+        }
+
+        // Phase: delete_last_row_removes_table.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_table(&mut state, 1, 2);
+            wp.table_del_row(&mut state);
+            let c = wp.containers.as_ref().unwrap();
+            let snap = qdoc::model::materialize(&state, c);
+            assert!(
+                snap.blocks.iter().all(|b| b.kind != "cell"),
+                "deleting the last row removed the whole table"
+            );
+            assert!(!wp.caret_in_cell(&state), "caret is no longer in a cell");
+        }
     }
 
     /// A minimal 2×3 RGB PNG (red pixels) — small enough to embed yet a real,
@@ -4052,66 +4254,6 @@ mod tests {
         159, 1, 140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174,
         66, 96, 130,
     ];
-
-    #[test]
-    fn insert_image_bytes_round_trips_blob_and_dims() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "above");
-        wp.insert_image_bytes(&mut state, TINY_PNG);
-
-        let c = wp.containers.clone().unwrap();
-        let snap = qdoc::model::materialize(&state, &c);
-        let img = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "image")
-            .expect("an image block was inserted");
-
-        // The blob attr references a blob whose bytes round-trip exactly.
-        let hash = match img.attrs.get("blob") {
-            Some(qdoc::AttrVal::Str(s)) => s.clone(),
-            other => panic!("image block missing blob attr: {other:?}"),
-        };
-        assert_eq!(
-            wp.content_store().read(&hash).as_deref(),
-            Some(TINY_PNG),
-            "image bytes round-trip through the content store"
-        );
-
-        // Intrinsic pixel dimensions were recorded (mirrors the ODF import path).
-        assert_eq!(img.attrs.get("width"), Some(&qdoc::AttrVal::Int(2)));
-        assert_eq!(img.attrs.get("height"), Some(&qdoc::AttrVal::Int(3)));
-
-        // The image landed after the original text, and the caret sits in a fresh
-        // paragraph below it so typing continues beneath the image.
-        let order = wp.ordered_blocks(&state);
-        let img_pos = order.iter().position(|id| id == &img.id).unwrap();
-        assert!(img_pos >= 1, "image inserted after the original paragraph");
-        assert_eq!(wp.caret.offset, 0);
-        assert_ne!(wp.caret.block, img.id, "caret moved off the image block");
-    }
-
-    #[test]
-    fn insert_image_splits_text_around_caret() {
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "helloworld");
-        // caret between "hello" and "world"
-        for _ in 0..5 {
-            wp.move_left(&state);
-        }
-        wp.insert_image_bytes(&mut state, TINY_PNG);
-        let texts = wp.block_texts(&state);
-        // head paragraph, image (empty text), tail paragraph
-        assert_eq!(
-            texts,
-            vec!["hello".to_string(), String::new(), "world".to_string()]
-        );
-        assert_eq!(
-            wp.current_text(&state),
-            "world",
-            "caret follows the tail below the image"
-        );
-    }
 
     // ---- table editing -----------------------------------------------------
 
@@ -4149,154 +4291,73 @@ mod tests {
         );
     }
 
+    /// Tab walks cells leaving structural append to the action host, Shift-Tab walks backwards, and vertical
+    /// arrows move between cells.
     #[test]
-    fn insert_row_grows_table_and_stays_rectangular() {
-        let (mut wp, mut state) = bound();
-        wp.insert_table(&mut state, 2, 3);
-        assert_rectangular(&table_grid(&wp, &state), 2, 3);
-        // Caret is in the first cell (row 0) after insert_table.
-        wp.insert_row_below(&mut state);
-        let grid = table_grid(&wp, &state);
-        let rows = grid.iter().map(|(r, _)| *r).max().unwrap() + 1;
-        assert_eq!(rows, 3, "row count increased by one");
-        assert_rectangular(&grid, 3, 3);
-        // The caret landed on the freshly-inserted row (row 1, below row 0).
-        let (cr, _) = wp.caret_rc(&wp.caret_table(&state).unwrap().1);
-        assert_eq!(cr, 1, "caret moved into the new row");
-    }
-
-    #[test]
-    fn insert_row_above_inserts_before_caret_row() {
-        let (mut wp, mut state) = bound();
-        wp.insert_table(&mut state, 2, 2);
-        // Move caret to row 1.
-        let (_, cells) = wp.caret_table(&state).unwrap();
-        let r1c0 = cells
-            .iter()
-            .find(|(_, r, c)| *r == 1 && *c == 0)
-            .unwrap()
-            .0
-            .clone();
-        wp.set_caret(Caret {
-            block: r1c0,
-            offset: 0,
-        });
-        wp.insert_row_above(&mut state);
-        assert_rectangular(&table_grid(&wp, &state), 3, 2);
-        let (cr, _) = wp.caret_rc(&wp.caret_table(&state).unwrap().1);
-        assert_eq!(cr, 1, "the new row took row 1's slot; caret is on it");
-    }
-
-    #[test]
-    fn delete_col_removes_one_cell_per_row() {
-        let (mut wp, mut state) = bound();
-        wp.insert_table(&mut state, 3, 3);
-        let before = table_grid(&wp, &state).len();
-        assert_eq!(before, 9);
-        wp.table_del_col(&mut state);
-        let grid = table_grid(&wp, &state);
-        assert_eq!(grid.len(), before - 3, "exactly one cell removed per row");
-        assert_rectangular(&grid, 3, 2);
-    }
-
-    #[test]
-    fn insert_col_left_and_right_stay_rectangular() {
-        let (mut wp, mut state) = bound();
-        wp.insert_table(&mut state, 2, 2);
-        // Move to col 1 so left/right are unambiguous.
-        let (_, cells) = wp.caret_table(&state).unwrap();
-        let r0c1 = cells
-            .iter()
-            .find(|(_, r, c)| *r == 0 && *c == 1)
-            .unwrap()
-            .0
-            .clone();
-        wp.set_caret(Caret {
-            block: r0c1,
-            offset: 0,
-        });
-        wp.insert_col_left(&mut state);
-        assert_rectangular(&table_grid(&wp, &state), 2, 3);
-        wp.insert_col_right(&mut state);
-        assert_rectangular(&table_grid(&wp, &state), 2, 4);
-    }
-
-    #[test]
-    fn tab_walks_cells_but_leaves_structural_append_to_the_action_host() {
-        let (mut wp, mut state) = bound();
-        wp.insert_table(&mut state, 2, 2); // caret in (0,0)
-        // Tab forward through every cell: (0,0)->(0,1)->(1,0)->(1,1).
-        for expect in [(0, 1), (1, 0), (1, 1)] {
-            assert!(
-                wp.tab_cell(&mut state, true),
-                "tab handled inside the table"
+    fn table_navigation_walks_cells_and_leaves_structure_to_the_host() {
+        // Phase: tab_walks_cells_but_leaves_structural_append_to_the_action_host.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_table(&mut state, 2, 2); // caret in (0,0)
+            // Tab forward through every cell: (0,0)->(0,1)->(1,0)->(1,1).
+            for expect in [(0, 1), (1, 0), (1, 1)] {
+                assert!(
+                    wp.tab_cell(&mut state, true),
+                    "tab handled inside the table"
+                );
+                assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), expect);
+            }
+            // The editing core deliberately does not perform a hidden structural
+            // mutation at the edge. The widget detects this position and dispatches
+            // an absolute `EditTable::InsertRow` through the shared action host.
+            assert!(wp.tab_cell(&mut state, true));
+            let grid = table_grid(&wp, &state);
+            assert_rectangular(&grid, 2, 2);
+            assert_eq!(
+                wp.caret_rc(&wp.caret_table(&state).unwrap().1),
+                (1, 1),
+                "caret stays at the stable edge target for the action host"
             );
-            assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), expect);
         }
-        // The editing core deliberately does not perform a hidden structural
-        // mutation at the edge. The widget detects this position and dispatches
-        // an absolute `EditTable::InsertRow` through the shared action host.
-        assert!(wp.tab_cell(&mut state, true));
-        let grid = table_grid(&wp, &state);
-        assert_rectangular(&grid, 2, 2);
-        assert_eq!(
-            wp.caret_rc(&wp.caret_table(&state).unwrap().1),
-            (1, 1),
-            "caret stays at the stable edge target for the action host"
-        );
-    }
 
-    #[test]
-    fn shift_tab_walks_backwards() {
-        let (mut wp, mut state) = bound();
-        wp.insert_table(&mut state, 2, 2);
-        // Jump to the last cell, then Shift-Tab back one.
-        let (_, cells) = wp.caret_table(&state).unwrap();
-        let last = cells
-            .iter()
-            .find(|(_, r, c)| *r == 1 && *c == 1)
-            .unwrap()
-            .0
-            .clone();
-        wp.set_caret(Caret {
-            block: last,
-            offset: 0,
-        });
-        assert!(wp.tab_cell(&mut state, false));
-        assert_eq!(
-            wp.caret_rc(&wp.caret_table(&state).unwrap().1),
-            (1, 0),
-            "shift-tab moved to the previous cell"
-        );
-    }
+        // Phase: shift_tab_walks_backwards.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_table(&mut state, 2, 2);
+            // Jump to the last cell, then Shift-Tab back one.
+            let (_, cells) = wp.caret_table(&state).unwrap();
+            let last = cells
+                .iter()
+                .find(|(_, r, c)| *r == 1 && *c == 1)
+                .unwrap()
+                .0
+                .clone();
+            wp.set_caret(Caret {
+                block: last,
+                offset: 0,
+            });
+            assert!(wp.tab_cell(&mut state, false));
+            assert_eq!(
+                wp.caret_rc(&wp.caret_table(&state).unwrap().1),
+                (1, 0),
+                "shift-tab moved to the previous cell"
+            );
+        }
 
-    #[test]
-    fn vertical_arrows_move_between_cells() {
-        let (mut wp, mut state) = bound();
-        wp.insert_table(&mut state, 2, 2); // caret in (0,0)
-        assert!(wp.cell_vertical(&state, true), "down moved into a cell");
-        assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), (1, 0));
-        assert!(wp.cell_vertical(&state, false), "up moved back");
-        assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), (0, 0));
-        // Up from the top row has no cell above → not handled here.
-        assert!(
-            !wp.cell_vertical(&state, false),
-            "no cell above the top row"
-        );
-    }
-
-    #[test]
-    fn delete_last_row_removes_table() {
-        let (mut wp, mut state) = bound();
-        wp.insert_table(&mut state, 1, 2);
-        wp.table_del_row(&mut state);
-        let c = wp.containers.as_ref().unwrap();
-        let snap = qdoc::model::materialize(&state, c);
-        assert!(
-            snap.blocks.iter().all(|b| b.kind != "cell"),
-            "deleting the last row removed the whole table"
-        );
-        assert!(!wp.caret_in_cell(&state), "caret is no longer in a cell");
+        // Phase: vertical_arrows_move_between_cells.
+        {
+            let (mut wp, mut state) = bound();
+            wp.insert_table(&mut state, 2, 2); // caret in (0,0)
+            assert!(wp.cell_vertical(&state, true), "down moved into a cell");
+            assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), (1, 0));
+            assert!(wp.cell_vertical(&state, false), "up moved back");
+            assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), (0, 0));
+            // Up from the top row has no cell above → not handled here.
+            assert!(
+                !wp.cell_vertical(&state, false),
+                "no cell above the top row"
+            );
+        }
     }
 
     /// Build a small document with three headings of differing levels and a body
@@ -4320,100 +4381,105 @@ mod tests {
         (wp, state)
     }
 
+    /// Headings list one entry per heading in order with levels; generating a TOC inserts one block per
+    /// heading at the top and regenerating replaces without duplicating.
     #[test]
-    fn headings_lists_one_entry_per_heading_in_order_with_levels() {
-        let (wp, state) = doc_with_headings();
-        let h = wp.headings(&state);
-        assert_eq!(h.len(), 3, "one outline entry per heading block");
-        assert_eq!(
-            h.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(),
-            vec!["Introduction", "Background", "Conclusion"],
-            "headings in document order"
-        );
-        assert_eq!(
-            h.iter().map(|e| e.level).collect::<Vec<_>>(),
-            vec![1, 2, 1],
-            "levels preserved per heading"
-        );
-    }
+    fn headings_drive_the_outline_and_a_non_duplicating_toc() {
+        // Phase: headings_lists_one_entry_per_heading_in_order_with_levels.
+        {
+            let (wp, state) = doc_with_headings();
+            let h = wp.headings(&state);
+            assert_eq!(h.len(), 3, "one outline entry per heading block");
+            assert_eq!(
+                h.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(),
+                vec!["Introduction", "Background", "Conclusion"],
+                "headings in document order"
+            );
+            assert_eq!(
+                h.iter().map(|e| e.level).collect::<Vec<_>>(),
+                vec![1, 2, 1],
+                "levels preserved per heading"
+            );
+        }
 
-    #[test]
-    fn generate_toc_inserts_one_block_per_heading_at_top() {
-        let (mut wp, mut state) = doc_with_headings();
-        let entries: Vec<TocEntry> = wp
-            .headings(&state)
-            .iter()
-            .map(|h| TocEntry {
-                level: h.level,
-                text: h.text.clone(),
-                page: Some(1),
-            })
-            .collect();
-        let inserted = wp.generate_toc(&mut state, &entries);
-        assert_eq!(inserted.len(), 3, "one TOC block per heading");
+        // Phase: generate_toc_inserts_one_block_per_heading_at_top.
+        {
+            let (mut wp, mut state) = doc_with_headings();
+            let entries: Vec<TocEntry> = wp
+                .headings(&state)
+                .iter()
+                .map(|h| TocEntry {
+                    level: h.level,
+                    text: h.text.clone(),
+                    page: Some(1),
+                })
+                .collect();
+            let inserted = wp.generate_toc(&mut state, &entries);
+            assert_eq!(inserted.len(), 3, "one TOC block per heading");
 
-        let c = wp.containers.clone().unwrap();
-        let snap = qdoc::model::materialize(&state, &c);
-        let toc_count = snap.blocks.iter().filter(|b| block_is_toc(b)).count();
-        assert_eq!(toc_count, 3, "exactly three toc-marked blocks exist");
-        // They sit at the very top of the document, in heading order.
-        assert_eq!(
-            &snap.blocks[0].id, &inserted[0],
-            "TOC begins at the document top"
-        );
-        assert!(snap.blocks[0].text.contains("Introduction"));
-        assert!(snap.blocks[1].text.contains("Background"));
-        assert!(snap.blocks[2].text.contains("Conclusion"));
-        // The page number appears on each line.
-        assert!(
-            snap.blocks[0].text.trim_end().ends_with('1'),
-            "line carries the page number"
-        );
-    }
+            let c = wp.containers.clone().unwrap();
+            let snap = qdoc::model::materialize(&state, &c);
+            let toc_count = snap.blocks.iter().filter(|b| block_is_toc(b)).count();
+            assert_eq!(toc_count, 3, "exactly three toc-marked blocks exist");
+            // They sit at the very top of the document, in heading order.
+            assert_eq!(
+                &snap.blocks[0].id, &inserted[0],
+                "TOC begins at the document top"
+            );
+            assert!(snap.blocks[0].text.contains("Introduction"));
+            assert!(snap.blocks[1].text.contains("Background"));
+            assert!(snap.blocks[2].text.contains("Conclusion"));
+            // The page number appears on each line.
+            assert!(
+                snap.blocks[0].text.trim_end().ends_with('1'),
+                "line carries the page number"
+            );
+        }
 
-    #[test]
-    fn regenerating_toc_replaces_without_duplicating() {
-        let (mut wp, mut state) = doc_with_headings();
-        let entries: Vec<TocEntry> = wp
-            .headings(&state)
-            .iter()
-            .map(|h| TocEntry {
-                level: h.level,
-                text: h.text.clone(),
-                page: Some(2),
-            })
-            .collect();
-        wp.generate_toc(&mut state, &entries);
-        // Regenerate from the (now TOC-prefixed) document: headings() excludes the
-        // TOC's own lines, so the entry set is unchanged.
-        let entries2: Vec<TocEntry> = wp
-            .headings(&state)
-            .iter()
-            .map(|h| TocEntry {
-                level: h.level,
-                text: h.text.clone(),
-                page: Some(2),
-            })
-            .collect();
-        assert_eq!(
-            entries2.len(),
-            3,
-            "TOC lines are not mistaken for headings on regen"
-        );
-        wp.generate_toc(&mut state, &entries2);
+        // Phase: regenerating_toc_replaces_without_duplicating.
+        {
+            let (mut wp, mut state) = doc_with_headings();
+            let entries: Vec<TocEntry> = wp
+                .headings(&state)
+                .iter()
+                .map(|h| TocEntry {
+                    level: h.level,
+                    text: h.text.clone(),
+                    page: Some(2),
+                })
+                .collect();
+            wp.generate_toc(&mut state, &entries);
+            // Regenerate from the (now TOC-prefixed) document: headings() excludes the
+            // TOC's own lines, so the entry set is unchanged.
+            let entries2: Vec<TocEntry> = wp
+                .headings(&state)
+                .iter()
+                .map(|h| TocEntry {
+                    level: h.level,
+                    text: h.text.clone(),
+                    page: Some(2),
+                })
+                .collect();
+            assert_eq!(
+                entries2.len(),
+                3,
+                "TOC lines are not mistaken for headings on regen"
+            );
+            wp.generate_toc(&mut state, &entries2);
 
-        let c = wp.containers.clone().unwrap();
-        let snap = qdoc::model::materialize(&state, &c);
-        let toc_count = snap.blocks.iter().filter(|b| block_is_toc(b)).count();
-        assert_eq!(
-            toc_count, 3,
-            "regenerating replaces the old TOC (no duplicate)"
-        );
-        let heading_count = snap.blocks.iter().filter(|b| b.kind == "heading").count();
-        assert_eq!(
-            heading_count, 3,
-            "headings are untouched by TOC regeneration"
-        );
+            let c = wp.containers.clone().unwrap();
+            let snap = qdoc::model::materialize(&state, &c);
+            let toc_count = snap.blocks.iter().filter(|b| block_is_toc(b)).count();
+            assert_eq!(
+                toc_count, 3,
+                "regenerating replaces the old TOC (no duplicate)"
+            );
+            let heading_count = snap.blocks.iter().filter(|b| b.kind == "heading").count();
+            assert_eq!(
+                heading_count, 3,
+                "headings are untouched by TOC regeneration"
+            );
+        }
     }
 
     // ---- editable headers / footers (edit-context routing) -----------------
@@ -4441,155 +4507,165 @@ mod tests {
             .collect()
     }
 
+    /// Focusing the header routes typing into it and switching back edits the body; footer Enter splits
+    /// footer blocks; header Backspace works within and merges blocks; header bold routes to the header block;
+    /// a page number in the footer writes a field mark; body editing is unchanged by the region machinery.
     #[test]
-    fn focusing_header_and_typing_writes_into_header_not_body() {
-        let (mut wp, mut state) = bound();
-        // Body has its seeded empty paragraph.
-        wp.insert_str(&mut state, "body-content");
-        assert_eq!(wp.region(), Region::Body);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn header_and_footer_regions_edit_independently_of_the_body() {
+        // Phase: focusing_header_and_typing_writes_into_header_not_body.
+        {
+            let (mut wp, mut state) = bound();
+            // Body has its seeded empty paragraph.
+            wp.insert_str(&mut state, "body-content");
+            assert_eq!(wp.region(), Region::Body);
 
-        // Focus the header context — an empty header paragraph is created lazily.
-        wp.focus_region(&mut state, Region::Header);
-        assert_eq!(wp.region(), Region::Header);
-        assert!(wp.in_running_region());
-        wp.insert_str(&mut state, "My Title");
+            // Focus the header context — an empty header paragraph is created lazily.
+            wp.focus_region(&mut state, Region::Header);
+            assert_eq!(wp.region(), Region::Header);
+            assert!(wp.in_running_region());
+            wp.insert_str(&mut state, "My Title");
 
-        // The text lands in the HEADER container, asserted on the materialized snap.
-        assert_eq!(header_texts(&wp, &state), vec!["My Title".to_string()]);
-        // The body is untouched.
-        assert_eq!(body_texts(&wp, &state), vec!["body-content".to_string()]);
-    }
-
-    #[test]
-    fn switching_back_to_body_edits_the_body_again() {
-        let (mut wp, mut state) = bound();
-        wp.focus_region(&mut state, Region::Header);
-        wp.insert_str(&mut state, "Head");
-        // Return to the body and type — edits go to the body, header preserved.
-        wp.focus_body(&mut state);
-        assert_eq!(wp.region(), Region::Body);
-        wp.insert_str(&mut state, "Body");
-        assert_eq!(body_texts(&wp, &state), vec!["Body".to_string()]);
-        assert_eq!(header_texts(&wp, &state), vec!["Head".to_string()]);
-        // Returning to the header restores its caret (end of "Head") and appends.
-        wp.focus_region(&mut state, Region::Header);
-        wp.insert_str(&mut state, "er");
-        assert_eq!(header_texts(&wp, &state), vec!["Header".to_string()]);
-    }
-
-    #[test]
-    fn footer_enter_splits_into_two_footer_blocks() {
-        let (mut wp, mut state) = bound();
-        wp.focus_region(&mut state, Region::Footer);
-        wp.insert_str(&mut state, "ab");
-        wp.enter(&mut state);
-        wp.insert_str(&mut state, "cd");
-        assert_eq!(
-            footer_texts(&wp, &state),
-            vec!["ab".to_string(), "cd".to_string()]
-        );
-        // Body never gained a block beyond its seeded empty paragraph.
-        assert_eq!(body_texts(&wp, &state), vec![String::new()]);
-    }
-
-    #[test]
-    fn header_backspace_within_and_merges_blocks() {
-        let (mut wp, mut state) = bound();
-        wp.focus_region(&mut state, Region::Header);
-        wp.insert_str(&mut state, "ab");
-        wp.enter(&mut state);
-        wp.insert_str(&mut state, "cd");
-        assert_eq!(
-            header_texts(&wp, &state),
-            vec!["ab".to_string(), "cd".to_string()]
-        );
-        // Delete 'd', 'c', then merge into the previous header block.
-        wp.backspace(&mut state);
-        wp.backspace(&mut state);
-        assert_eq!(
-            header_texts(&wp, &state),
-            vec!["ab".to_string(), String::new()]
-        );
-        wp.backspace(&mut state);
-        assert_eq!(header_texts(&wp, &state), vec!["ab".to_string()]);
-        assert_eq!(
-            wp.caret.offset, 2,
-            "caret lands at the merge point in the header"
-        );
-    }
-
-    #[test]
-    fn header_bold_mark_routes_to_the_header_block() {
-        let (mut wp, mut state) = bound();
-        wp.focus_region(&mut state, Region::Header);
-        wp.insert_str(&mut state, "Title");
-        // Select the whole word, then toggle bold.
-        wp.select_all(&state);
-        wp.toggle_mark(&mut state, "strong");
-
-        let c = wp.containers.as_ref().unwrap();
-        let hv = qdoc::model::materialize_region(&state, c, Region::Header);
-        let marks = &hv[0].marks;
-        assert!(
-            marks
-                .iter()
-                .any(|m| m.name == "strong" && m.start == 0 && m.end >= 5),
-            "bold mark applied to the header run: {marks:?}"
-        );
-        // Toggling again clears it (uses the region-aware unmark path).
-        wp.select_all(&state);
-        wp.toggle_mark(&mut state, "strong");
-        let hv2 = qdoc::model::materialize_region(
-            &state,
-            wp.containers.as_ref().unwrap(),
-            Region::Header,
-        );
-        assert!(
-            !hv2[0].marks.iter().any(|m| m.name == "strong"),
-            "bold mark cleared in the header"
-        );
-    }
-
-    #[test]
-    fn insert_page_number_in_footer_writes_a_field_mark() {
-        let (mut wp, mut state) = bound();
-        wp.focus_region(&mut state, Region::Footer);
-        wp.insert_str(&mut state, "Page ");
-        wp.insert_page_number(&mut state);
-
-        let c = wp.containers.as_ref().unwrap();
-        let fv = qdoc::model::materialize_region(&state, c, Region::Footer);
-        assert!(
-            fv[0].text.starts_with("Page "),
-            "footer keeps its literal text: {:?}",
-            fv[0].text
-        );
-        assert!(
-            fv[0]
-                .marks
-                .iter()
-                .any(|m| m.name == qdoc::schema::MARK_FIELD),
-            "a page-number field mark is present in the footer: {:?}",
-            fv[0].marks
-        );
-    }
-
-    #[test]
-    fn body_editing_is_unchanged_by_the_region_machinery() {
-        // Regression guard: with the default Body context the ops behave exactly
-        // as before (the body path must stay intact).
-        let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "helloworld");
-        for _ in 0..5 {
-            wp.move_left(&state);
+            // The text lands in the HEADER container, asserted on the materialized snap.
+            assert_eq!(header_texts(&wp, &state), vec!["My Title".to_string()]);
+            // The body is untouched.
+            assert_eq!(body_texts(&wp, &state), vec!["body-content".to_string()]);
         }
-        wp.enter(&mut state);
-        assert_eq!(
-            wp.block_texts(&state),
-            vec!["hello".to_string(), "world".to_string()]
-        );
-        // No header/footer were created by body editing.
-        assert!(header_texts(&wp, &state).is_empty());
-        assert!(footer_texts(&wp, &state).is_empty());
+
+        // Phase: switching_back_to_body_edits_the_body_again.
+        {
+            let (mut wp, mut state) = bound();
+            wp.focus_region(&mut state, Region::Header);
+            wp.insert_str(&mut state, "Head");
+            // Return to the body and type — edits go to the body, header preserved.
+            wp.focus_body(&mut state);
+            assert_eq!(wp.region(), Region::Body);
+            wp.insert_str(&mut state, "Body");
+            assert_eq!(body_texts(&wp, &state), vec!["Body".to_string()]);
+            assert_eq!(header_texts(&wp, &state), vec!["Head".to_string()]);
+            // Returning to the header restores its caret (end of "Head") and appends.
+            wp.focus_region(&mut state, Region::Header);
+            wp.insert_str(&mut state, "er");
+            assert_eq!(header_texts(&wp, &state), vec!["Header".to_string()]);
+        }
+
+        // Phase: footer_enter_splits_into_two_footer_blocks.
+        {
+            let (mut wp, mut state) = bound();
+            wp.focus_region(&mut state, Region::Footer);
+            wp.insert_str(&mut state, "ab");
+            wp.enter(&mut state);
+            wp.insert_str(&mut state, "cd");
+            assert_eq!(
+                footer_texts(&wp, &state),
+                vec!["ab".to_string(), "cd".to_string()]
+            );
+            // Body never gained a block beyond its seeded empty paragraph.
+            assert_eq!(body_texts(&wp, &state), vec![String::new()]);
+        }
+
+        // Phase: header_backspace_within_and_merges_blocks.
+        {
+            let (mut wp, mut state) = bound();
+            wp.focus_region(&mut state, Region::Header);
+            wp.insert_str(&mut state, "ab");
+            wp.enter(&mut state);
+            wp.insert_str(&mut state, "cd");
+            assert_eq!(
+                header_texts(&wp, &state),
+                vec!["ab".to_string(), "cd".to_string()]
+            );
+            // Delete 'd', 'c', then merge into the previous header block.
+            wp.backspace(&mut state);
+            wp.backspace(&mut state);
+            assert_eq!(
+                header_texts(&wp, &state),
+                vec!["ab".to_string(), String::new()]
+            );
+            wp.backspace(&mut state);
+            assert_eq!(header_texts(&wp, &state), vec!["ab".to_string()]);
+            assert_eq!(
+                wp.caret.offset, 2,
+                "caret lands at the merge point in the header"
+            );
+        }
+
+        // Phase: header_bold_mark_routes_to_the_header_block.
+        {
+            let (mut wp, mut state) = bound();
+            wp.focus_region(&mut state, Region::Header);
+            wp.insert_str(&mut state, "Title");
+            // Select the whole word, then toggle bold.
+            wp.select_all(&state);
+            wp.toggle_mark(&mut state, "strong");
+
+            let c = wp.containers.as_ref().unwrap();
+            let hv = qdoc::model::materialize_region(&state, c, Region::Header);
+            let marks = &hv[0].marks;
+            assert!(
+                marks
+                    .iter()
+                    .any(|m| m.name == "strong" && m.start == 0 && m.end >= 5),
+                "bold mark applied to the header run: {marks:?}"
+            );
+            // Toggling again clears it (uses the region-aware unmark path).
+            wp.select_all(&state);
+            wp.toggle_mark(&mut state, "strong");
+            let hv2 = qdoc::model::materialize_region(
+                &state,
+                wp.containers.as_ref().unwrap(),
+                Region::Header,
+            );
+            assert!(
+                !hv2[0].marks.iter().any(|m| m.name == "strong"),
+                "bold mark cleared in the header"
+            );
+        }
+
+        // Phase: insert_page_number_in_footer_writes_a_field_mark.
+        {
+            let (mut wp, mut state) = bound();
+            wp.focus_region(&mut state, Region::Footer);
+            wp.insert_str(&mut state, "Page ");
+            wp.insert_page_number(&mut state);
+
+            let c = wp.containers.as_ref().unwrap();
+            let fv = qdoc::model::materialize_region(&state, c, Region::Footer);
+            assert!(
+                fv[0].text.starts_with("Page "),
+                "footer keeps its literal text: {:?}",
+                fv[0].text
+            );
+            assert!(
+                fv[0]
+                    .marks
+                    .iter()
+                    .any(|m| m.name == qdoc::schema::MARK_FIELD),
+                "a page-number field mark is present in the footer: {:?}",
+                fv[0].marks
+            );
+        }
+
+        // Phase: body_editing_is_unchanged_by_the_region_machinery.
+        {
+            // Regression guard: with the default Body context the ops behave exactly
+            // as before (the body path must stay intact).
+            let (mut wp, mut state) = bound();
+            wp.insert_str(&mut state, "helloworld");
+            for _ in 0..5 {
+                wp.move_left(&state);
+            }
+            wp.enter(&mut state);
+            assert_eq!(
+                wp.block_texts(&state),
+                vec!["hello".to_string(), "world".to_string()]
+            );
+            // No header/footer were created by body editing.
+            assert!(header_texts(&wp, &state).is_empty());
+            assert!(footer_texts(&wp, &state).is_empty());
+        }
     }
 }

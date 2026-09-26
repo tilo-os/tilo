@@ -564,138 +564,146 @@ mod tests {
         ],
     }
 
-    /// Ctrl+K publishes a bounded contextual root; a stable id lazily resolves
-    /// one snippet with every action the model implies.
+    /// Ctrl+K publishes the library tree; delete removes exactly one row; malformed ids are no-ops.
     #[test]
-    fn ctrl_k_publishes_the_library_and_snippet_tree() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one library root");
-        let lib = &resources[0];
-        assert_eq!(lib.kind, "snippets.library");
-        let lib_actions: Vec<&str> = lib.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(lib_actions.contains(&"new-snippet"), "{lib_actions:?}");
-        assert!(lib.children.is_empty(), "the contextual root stays bounded");
-        let snippet = first_snippet(&doc);
-        let resource_id = snippet_resource_id(snippet.id);
-        let snip = Widget::resource(&app, &doc, &resource_id).expect("lazy snippet resource");
-        assert_eq!(snip.kind, "snippets.snippet");
-        let ids: Vec<&str> = snip.actions.iter().map(|a| a.id.as_str()).collect();
-        for want in [
-            "rename",
-            "set-language",
-            "move-to-folder",
-            "set-tags",
-            "edit-description",
-            "toggle-favorite",
-            "delete",
-        ] {
+    fn snippet_tree_and_actions_touch_exactly_the_addressed_row() {
+        // Case `ctrl_k_publishes_the_library_and_snippet_tree`.
+        // Ctrl+K publishes a bounded contextual root; a stable id lazily resolves
+        // one snippet with every action the model implies.
+        {
+            let (app, doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            assert_eq!(resources.len(), 1, "one library root");
+            let lib = &resources[0];
+            assert_eq!(lib.kind, "snippets.library");
+            let lib_actions: Vec<&str> = lib.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(lib_actions.contains(&"new-snippet"), "{lib_actions:?}");
+            assert!(lib.children.is_empty(), "the contextual root stays bounded");
+            let snippet = first_snippet(&doc);
+            let resource_id = snippet_resource_id(snippet.id);
+            let snip = Widget::resource(&app, &doc, &resource_id).expect("lazy snippet resource");
+            assert_eq!(snip.kind, "snippets.snippet");
+            let ids: Vec<&str> = snip.actions.iter().map(|a| a.id.as_str()).collect();
+            for want in [
+                "rename",
+                "set-language",
+                "move-to-folder",
+                "set-tags",
+                "edit-description",
+                "toggle-favorite",
+                "delete",
+            ] {
+                assert!(
+                    ids.contains(&want),
+                    "snippet resource missing {want}: {ids:?}"
+                );
+            }
+
+            let tag_name = snippet
+                .tags
+                .first()
+                .expect("seeded snippet has a tag")
+                .clone();
+            let tag = Widget::resource(&app, &doc, &tag_resource_id(&tag_name))
+                .expect("seeded snippets lazily publish tag resources");
+            let reveal = tag
+                .actions
+                .iter()
+                .find(|action| action.id == "reveal")
+                .expect("tag exports its reveal action");
+            assert_eq!(reveal.kind, OperationKind::View);
+            let decoded_tag_name = match decode_operation(
+                SNIPPETS_OPERATION_TYPE,
+                &ui::testing::action_contract::spec_encoding(reveal, None).payload,
+            ) {
+                Ok(Some(SnippetsOperation::RevealTag { tag })) => tag,
+                other => panic!("unexpected tag operation: {other:?}"),
+            };
+            assert_eq!(decoded_tag_name, tag_name);
+            assert_eq!(
+                reveal_tag_address(&tag_name),
+                ActionAddress::new(&tag.id.0, &reveal.id)
+            );
+
+            let open = snip
+                .actions
+                .iter()
+                .find(|action| action.id == "open")
+                .expect("snippet exports open");
+            assert_eq!(open.kind, OperationKind::View);
             assert!(
-                ids.contains(&want),
-                "snippet resource missing {want}: {ids:?}"
+                snip.actions
+                    .iter()
+                    .filter(|action| action.id != "open")
+                    .all(|action| action.kind == OperationKind::Document),
+                "snippet edits and deletes remain document actions"
             );
         }
 
-        let tag_name = snippet
-            .tags
-            .first()
-            .expect("seeded snippet has a tag")
-            .clone();
-        let tag = Widget::resource(&app, &doc, &tag_resource_id(&tag_name))
-            .expect("seeded snippets lazily publish tag resources");
-        let reveal = tag
-            .actions
-            .iter()
-            .find(|action| action.id == "reveal")
-            .expect("tag exports its reveal action");
-        assert_eq!(reveal.kind, OperationKind::View);
-        let decoded_tag_name = match decode_operation(
-            SNIPPETS_OPERATION_TYPE,
-            &ui::testing::action_contract::spec_encoding(reveal, None).payload,
-        ) {
-            Ok(Some(SnippetsOperation::RevealTag { tag })) => tag,
-            other => panic!("unexpected tag operation: {other:?}"),
-        };
-        assert_eq!(decoded_tag_name, tag_name);
-        assert_eq!(
-            reveal_tag_address(&tag_name),
-            ActionAddress::new(&tag.id.0, &reveal.id)
-        );
+        // Case `delete_action_removes_the_snippet`.
+        // Deleting a snippet through its action removes exactly that row from the
+        // authoritative document.
+        {
+            let (_app, mut doc) = seeded();
+            let before = SnippetsDoc::list(&doc).len();
+            let target = first_snippet(&doc);
 
-        let open = snip
-            .actions
-            .iter()
-            .find(|action| action.id == "open")
-            .expect("snippet exports open");
-        assert_eq!(open.kind, OperationKind::View);
-        assert!(
-            snip.actions
-                .iter()
-                .filter(|action| action.id != "open")
-                .all(|action| action.kind == OperationKind::Document),
-            "snippet edits and deletes remain document actions"
-        );
+            let action = delete_snippet_action(target.id);
+            let encoded = encode(&action);
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+
+            let left = SnippetsDoc::list(&doc);
+            assert_eq!(left.len(), before - 1, "exactly one snippet removed");
+            assert!(
+                left.iter().all(|s| s.id != target.id),
+                "the target row is gone"
+            );
+        }
+
+        // Case `malformed_id_is_a_no_op`.
+        // A malformed id is a no-op, not an error — a bad replay can't wedge a peer.
+        {
+            let mut doc = AutoCommit::new();
+            let bogus = SnippetsAction::DeleteSnippet {
+                id: "not-a-uuid".into(),
+            };
+            assert!(bogus.apply(&mut doc).is_ok());
+            let rename = SnippetsAction::Rename {
+                id: "also-bad".into(),
+                title: "x".into(),
+            };
+            assert!(rename.apply(&mut doc).is_ok());
+            assert!(
+                SnippetsDoc::list(&doc).is_empty(),
+                "nothing was created by malformed actions"
+            );
+        }
     }
 
-    /// Deleting a snippet through its action removes exactly that row from the
-    /// authoritative document.
+    /// Tag parsing and language slugs.
     #[test]
-    fn delete_action_removes_the_snippet() {
-        let (_app, mut doc) = seeded();
-        let before = SnippetsDoc::list(&doc).len();
-        let target = first_snippet(&doc);
+    fn tag_and_language_inputs_normalise_and_round_trip() {
+        // Case `parse_tags_trims_dedups_and_drops_empties`.
+        {
+            assert_eq!(parse_tags("  k8s , deploy ,, k8s "), vec!["k8s", "deploy"]);
+            assert!(parse_tags("  ,  , ").is_empty());
+        }
 
-        let action = delete_snippet_action(target.id);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-
-        let left = SnippetsDoc::list(&doc);
-        assert_eq!(left.len(), before - 1, "exactly one snippet removed");
-        assert!(
-            left.iter().all(|s| s.id != target.id),
-            "the target row is gone"
-        );
-    }
-
-    /// A malformed id is a no-op, not an error — a bad replay can't wedge a peer.
-    #[test]
-    fn malformed_id_is_a_no_op() {
-        let mut doc = AutoCommit::new();
-        let bogus = SnippetsAction::DeleteSnippet {
-            id: "not-a-uuid".into(),
-        };
-        assert!(bogus.apply(&mut doc).is_ok());
-        let rename = SnippetsAction::Rename {
-            id: "also-bad".into(),
-            title: "x".into(),
-        };
-        assert!(rename.apply(&mut doc).is_ok());
-        assert!(
-            SnippetsDoc::list(&doc).is_empty(),
-            "nothing was created by malformed actions"
-        );
-    }
-
-    #[test]
-    fn parse_tags_trims_dedups_and_drops_empties() {
-        assert_eq!(parse_tags("  k8s , deploy ,, k8s "), vec!["k8s", "deploy"]);
-        assert!(parse_tags("  ,  , ").is_empty());
-    }
-
-    #[test]
-    fn set_language_round_trips_through_the_slug() {
-        let mut doc = AutoCommit::new();
-        let mut s = Snippet::blank("Ops");
-        s.language = Language::PlainText;
-        SnippetsDoc::upsert(&mut doc, &s);
-        set_language_action(s.id, Language::Rust)
-            .apply(&mut doc)
-            .unwrap();
-        assert_eq!(
-            SnippetsDoc::get(&doc, s.id).unwrap().language,
-            Language::Rust
-        );
+        // Case `set_language_round_trips_through_the_slug`.
+        {
+            let mut doc = AutoCommit::new();
+            let mut s = Snippet::blank("Ops");
+            s.language = Language::PlainText;
+            SnippetsDoc::upsert(&mut doc, &s);
+            set_language_action(s.id, Language::Rust)
+                .apply(&mut doc)
+                .unwrap();
+            assert_eq!(
+                SnippetsDoc::get(&doc, s.id).unwrap().language,
+                Language::Rust
+            );
+        }
     }
 }

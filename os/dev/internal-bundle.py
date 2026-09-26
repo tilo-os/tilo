@@ -205,7 +205,6 @@ def validate_cmdline(cmdline, digest):
     require(not any(c in cmdline for c in '\\"\''), 'quoted or escaped command line unsupported')
     tokens = cmdline.split()
     require(len(tokens) <= 64, 'too many kernel arguments')
-    require(not any(token.startswith('qos.') for token in tokens), 'legacy qos.* kernel argument')
     names = [token.split('=', 1)[0] for token in tokens]
     require(all(names.count(name) == 1 for name in names if name != 'console'), 'duplicate kernel argument')
     consoles = [token for token in tokens if token.startswith('console=')]
@@ -473,7 +472,7 @@ def inspect_uki(data):
     require(optional_size >= 112 and base+40*count <= len(data), 'truncated PE headers')
     require(struct.unpack_from('<H', data, pe+24)[0] == 0x20b and
             struct.unpack_from('<H', data, pe+24+68)[0] == 10, 'not a PE32+ EFI application')
-    spec = importlib.util.spec_from_file_location('qos_uki_cmdline', Path(__file__).with_name('uki-cmdline.py'))
+    spec = importlib.util.spec_from_file_location('tilo_uki_cmdline', Path(__file__).with_name('uki-cmdline.py'))
     uki = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(uki)
     sections, ranges, virtual = {}, [], []

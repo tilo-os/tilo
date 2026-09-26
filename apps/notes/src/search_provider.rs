@@ -18,8 +18,8 @@ use std::sync::{Arc, RwLock};
 
 use ui::icons::Icon;
 use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
+    DEFAULT_SEARCH_RESULT_LIMIT, FieldWeight, SearchCatalog, SearchCursor, SearchPage,
+    SearchProvider, SearchRecord, SearchResult,
 };
 
 use crate::model::{PageId, PageMeta, Workspace};
@@ -120,10 +120,9 @@ impl NoteSearchProvider {
                     crate::actions::open_page_address(page.id),
                 )
                 .with_icon(Icon::FileText);
-                let _ = self.catalog.upsert(
-                    crate::actions::page_resource_id(page.id),
-                    Self::display_title(page),
-                    result,
+                let _ = self.catalog.upsert_record(
+                    SearchRecord::new(crate::actions::page_resource_id(page.id), result)
+                        .field(Self::display_title(page), FieldWeight::TITLE),
                 );
             }
             let old_blocks = snapshot.blocks.get(&page.id).cloned().unwrap_or_default();
@@ -162,10 +161,10 @@ impl NoteSearchProvider {
                 )
                 .with_subtitle(Self::display_title(page))
                 .with_icon(Icon::List);
-                let _ = self.catalog.upsert(
-                    resource,
-                    format!("{}\n{}", Self::display_title(page), block.text),
-                    result,
+                let _ = self.catalog.upsert_record(
+                    SearchRecord::new(resource, result)
+                        .field(&block.text, FieldWeight::BODY)
+                        .field(Self::display_title(page), FieldWeight::SUBTITLE),
                 );
             }
         }
@@ -317,164 +316,171 @@ mod tests {
     }
 
     #[test]
-    fn provider_finds_a_real_page_by_title() {
-        let ws = populated();
-        let provider = NoteSearchProvider::new(&ws);
-        let hits = provider.search("meeting");
-        assert!(
-            hits.iter().any(|r| r.title == "Meeting notes"),
-            "the provider surfaces the matching page, got {:?}",
-            hits.iter().map(|r| &r.title).collect::<Vec<_>>()
-        );
-        assert!(
-            hits.iter().all(|r| r.kind == NOTE_KIND),
-            "all hits are tagged Notes"
-        );
+    fn search_finds_titled_untitled_and_browsed_pages_within_budget() {
+        eprintln!("phase provider_finds_a_real_page_by_title");
+        {
+            let ws = populated();
+            let provider = NoteSearchProvider::new(&ws);
+            let hits = provider.search("meeting");
+            assert!(
+                hits.iter().any(|r| r.title == "Meeting notes"),
+                "the provider surfaces the matching page, got {:?}",
+                hits.iter().map(|r| &r.title).collect::<Vec<_>>()
+            );
+            assert!(
+                hits.iter().all(|r| r.kind == NOTE_KIND),
+                "all hits are tagged Notes"
+            );
+        }
+
+        eprintln!("phase untitled_page_is_still_findable");
+        {
+            let mut ws = Workspace::new();
+            ws.create_page(None); // left untitled
+            let provider = NoteSearchProvider::new(&ws);
+            let hits = provider.search("untitled");
+            assert_eq!(
+                hits.len(),
+                1,
+                "a blank-titled page surfaces under its placeholder"
+            );
+        }
+
+        eprintln!("phase empty_query_browses_the_whole_notebook");
+        {
+            let ws = populated();
+            let provider = NoteSearchProvider::new(&ws);
+            assert_eq!(provider.search("").len(), ws.pages().len());
+        }
+
+        eprintln!("phase limited_search_honours_the_materialisation_budget");
+        {
+            let provider = NoteSearchProvider::new(&populated());
+            assert_eq!(provider.search_limited("", 1).len(), 1);
+            assert!(provider.search_limited("", 0).is_empty());
+        }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn empty_query_browses_the_whole_notebook() {
-        let ws = populated();
-        let provider = NoteSearchProvider::new(&ws);
-        assert_eq!(provider.search("").len(), ws.pages().len());
-    }
+    fn search_results_address_exported_actions_with_bounded_snippets() {
+        eprintln!("phase page_result_addresses_the_exported_open_action");
+        {
+            let ws = populated();
+            let mut registry = SearchRegistry::new();
+            registry.register(Box::new(NoteSearchProvider::new(&ws)));
 
-    #[test]
-    fn limited_search_honours_the_materialisation_budget() {
-        let provider = NoteSearchProvider::new(&populated());
-        assert_eq!(provider.search_limited("", 1).len(), 1);
-        assert!(provider.search_limited("", 0).is_empty());
-    }
+            let groups = registry.query_grouped("trip");
+            assert_eq!(groups[0].kind, NOTE_KIND);
+            let top = &groups[0].results[0];
+            assert_eq!(top.title, "Trip planning", "the best match leads");
 
-    #[test]
-    fn page_result_addresses_the_exported_open_action() {
-        let ws = populated();
-        let mut registry = SearchRegistry::new();
-        registry.register(Box::new(NoteSearchProvider::new(&ws)));
+            assert_eq!(
+                top.action_address(),
+                Some(crate::actions::open_page_address(
+                    ws.pages()
+                        .iter()
+                        .find(|page| page.title == top.title)
+                        .unwrap()
+                        .id
+                )),
+                "search and the resource tree publish one canonical address"
+            );
+        }
 
-        let groups = registry.query_grouped("trip");
-        assert_eq!(groups[0].kind, NOTE_KIND);
-        let top = &groups[0].results[0];
-        assert_eq!(top.title, "Trip planning", "the best match leads");
+        eprintln!("phase block_result_addresses_its_exported_reveal_action");
+        {
+            let ws = populated();
+            let page = ws
+                .pages()
+                .iter()
+                .find(|page| page.title == "Meeting notes")
+                .unwrap();
+            let provider = NoteSearchProvider::with_blocks(
+                &ws,
+                &std::collections::HashMap::from([(
+                    page.id,
+                    vec![crate::actions::NoteBlockResource {
+                        id: "block-object".into(),
+                        text: "Budget decisions".into(),
+                    }],
+                )]),
+            );
+            let hit = provider.search("budget").pop().expect("block hit");
+            assert_eq!(hit.kind, BLOCK_KIND);
+            assert_eq!(hit.subtitle.as_deref(), Some("Meeting notes"));
+            assert_eq!(
+                hit.action_address(),
+                Some(crate::actions::open_block_address(page.id, "block-object"))
+            );
+        }
 
-        assert_eq!(
-            top.action_address(),
-            Some(crate::actions::open_page_address(
-                ws.pages()
-                    .iter()
-                    .find(|page| page.title == top.title)
-                    .unwrap()
-                    .id
-            )),
-            "search and the resource tree publish one canonical address"
-        );
-    }
+        eprintln!("phase contextual_body_snippets_preserve_short_blocks_and_word_boundaries");
+        {
+            let ws = populated();
+            let page = ws.pages()[0].id;
+            let long = format!(
+                "{}Write the migration guide with the release team",
+                "Earlier context. ".repeat(12)
+            );
+            let provider = NoteSearchProvider::with_blocks(
+                &ws,
+                &HashMap::from([(
+                    page,
+                    vec![
+                        crate::actions::NoteBlockResource {
+                            id: "short".into(),
+                            text: "Write the migration guide".into(),
+                        },
+                        crate::actions::NoteBlockResource {
+                            id: "long".into(),
+                            text: long,
+                        },
+                    ],
+                )]),
+            );
+            let hits = provider.search_page("migration", None, 512, 64).results;
+            let short = hits
+                .iter()
+                .find(|hit| {
+                    hit.action_address() == Some(crate::actions::open_block_address(page, "short"))
+                })
+                .unwrap();
+            assert_eq!(short.title, "Write the migration guide");
+            let long = hits
+                .iter()
+                .find(|hit| {
+                    hit.action_address() == Some(crate::actions::open_block_address(page, "long"))
+                })
+                .unwrap();
+            assert_eq!(
+                long.title,
+                "…Write the migration guide with the release team"
+            );
+        }
 
-    #[test]
-    fn block_result_addresses_its_exported_reveal_action() {
-        let ws = populated();
-        let page = ws
-            .pages()
-            .iter()
-            .find(|page| page.title == "Meeting notes")
-            .unwrap();
-        let provider = NoteSearchProvider::with_blocks(
-            &ws,
-            &std::collections::HashMap::from([(
-                page.id,
-                vec![crate::actions::NoteBlockResource {
-                    id: "block-object".into(),
-                    text: "Budget decisions".into(),
-                }],
-            )]),
-        );
-        let hit = provider.search("budget").pop().expect("block hit");
-        assert_eq!(hit.kind, BLOCK_KIND);
-        assert_eq!(hit.subtitle.as_deref(), Some("Meeting notes"));
-        assert_eq!(
-            hit.action_address(),
-            Some(crate::actions::open_block_address(page.id, "block-object"))
-        );
-    }
-
-    #[test]
-    fn contextual_body_snippets_preserve_short_blocks_and_word_boundaries() {
-        let ws = populated();
-        let page = ws.pages()[0].id;
-        let long = format!(
-            "{}Write the migration guide with the release team",
-            "Earlier context. ".repeat(12)
-        );
-        let provider = NoteSearchProvider::with_blocks(
-            &ws,
-            &HashMap::from([(
-                page,
-                vec![
-                    crate::actions::NoteBlockResource {
-                        id: "short".into(),
-                        text: "Write the migration guide".into(),
-                    },
-                    crate::actions::NoteBlockResource {
-                        id: "long".into(),
-                        text: long,
-                    },
-                ],
-            )]),
-        );
-        let hits = provider.search_page("migration", None, 512, 64).results;
-        let short = hits
-            .iter()
-            .find(|hit| {
-                hit.action_address() == Some(crate::actions::open_block_address(page, "short"))
-            })
-            .unwrap();
-        assert_eq!(short.title, "Write the migration guide");
-        let long = hits
-            .iter()
-            .find(|hit| {
-                hit.action_address() == Some(crate::actions::open_block_address(page, "long"))
-            })
-            .unwrap();
-        assert_eq!(
-            long.title,
-            "…Write the migration guide with the release team"
-        );
-    }
-
-    #[test]
-    fn retained_catalog_pages_adversarial_queries_without_omitting_late_blocks() {
-        let (provider, hit) = assert_late_hit_reachable(
-            |corpus| {
-                let ws = populated();
-                let page = ws.pages()[0].id;
-                let blocks = corpus
-                    .map(|row| crate::actions::NoteBlockResource {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        text: row.text,
-                    })
-                    .collect();
-                NoteSearchProvider::with_blocks(&ws, &HashMap::from([(page, blocks)]))
-            },
-            3_000,
-        );
-        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-        let first = provider.search_page("ordinary", None, 7, 3);
-        assert!(first.next.is_some(), "broad query exposes a continuation");
-        assert!(first.inspected <= 7 && first.results.len() <= 3);
-        let second = provider.search_page("ordinary", first.next.as_ref(), 7, 3);
-        assert!(second.inspected <= 7 && second.results.len() <= 3);
-    }
-
-    #[test]
-    fn untitled_page_is_still_findable() {
-        let mut ws = Workspace::new();
-        ws.create_page(None); // left untitled
-        let provider = NoteSearchProvider::new(&ws);
-        let hits = provider.search("untitled");
-        assert_eq!(
-            hits.len(),
-            1,
-            "a blank-titled page surfaces under its placeholder"
-        );
+        eprintln!("phase retained_catalog_pages_adversarial_queries_without_omitting_late_blocks");
+        {
+            let (provider, hit) = assert_late_hit_reachable(
+                |corpus| {
+                    let ws = populated();
+                    let page = ws.pages()[0].id;
+                    let blocks = corpus
+                        .map(|row| crate::actions::NoteBlockResource {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            text: row.text,
+                        })
+                        .collect();
+                    NoteSearchProvider::with_blocks(&ws, &HashMap::from([(page, blocks)]))
+                },
+                3_000,
+            );
+            assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+            let first = provider.search_page("ordinary", None, 7, 3);
+            assert!(first.next.is_some(), "broad query exposes a continuation");
+            assert!(first.inspected <= 7 && first.results.len() <= 3);
+            let second = provider.search_page("ordinary", first.next.as_ref(), 7, 3);
+            assert!(second.inspected <= 7 && second.results.len() <= 3);
+        }
     }
 }

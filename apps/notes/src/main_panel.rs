@@ -2390,304 +2390,315 @@ mod tests {
         Uuid::new_v4()
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn surface_hints_follow_hit_targets_and_reveal_exact_compact_dates() {
-        let mut panel = MainPanel::new();
-        panel.load_page(fresh_page_id(), "Launch", "");
-        panel.rect = Rect::new(0.0, 0.0, 300.0, 600.0);
-        panel.title_rect = Rect::new(32.0, 32.0, 268.0, 76.0);
-        panel.dates = crate::metadata::NoteDates {
-            created: Some(1_700_000_000),
-            edited: Some(1_700_003_600),
-        };
-        panel.set_tags(vec![TagChip {
-            id: fresh_page_id(),
-            name: "Research".into(),
-        }]);
-        panel.layout_tag_chips();
-        panel.set_backlinks(vec![BacklinkChip {
-            page: fresh_page_id(),
-            title: "A long source note title".into(),
-            references: 1,
-        }]);
-        panel.layout_backlink_chips();
-        assert_eq!(
-            panel.cursor_shape(panel.title_rect.center()),
-            Some(winit::window::CursorIcon::Text)
-        );
-        assert!(panel.tooltip_target_at(panel.title_rect.center()).is_some());
-        assert!(
-            panel
-                .tooltip_target_at(panel.tag_rects[0].center())
-                .unwrap()
-                .1
-                .contains("Research")
-        );
-        assert!(
-            panel
-                .tooltip_target_at(panel.backlink_rects[0].center())
-                .unwrap()
-                .1
-                .contains("A long source note title")
-        );
-        for row in 0..2 {
-            let rect = panel.date_row_rect(row);
-            let (target, label) = panel.tooltip_target_at(rect.center()).unwrap();
-            assert_eq!(target, rect);
-            assert_eq!(label, panel.dates.labels()[row]);
+    fn page_titles_and_empty_state_are_accessible_rename_boundaries() {
+        eprintln!("phase set_title_marks_dirty_when_changed");
+        {
+            let mut p = MainPanel::new();
+            p.mark_drawn();
+            assert!(!p.needs_redraw());
+            p.set_title(Some("Hello".into()));
+            assert!(p.needs_redraw());
+            p.mark_drawn();
+            p.set_title(Some("Hello".into()));
+            assert!(!p.needs_redraw());
+        }
+
+        eprintln!("phase accessible_page_title_queues_the_same_rename_boundary");
+        {
+            let mut panel = MainPanel::new();
+            let id = fresh_page_id();
+            panel.load_page(id, "Launch", "");
+            let node = panel
+                .accessibility()
+                .expect("open pages expose their title");
+            assert_eq!(node.role, ui::a11y::Role::Group);
+            let title = node
+                .children
+                .first()
+                .expect("header exposes the page title");
+            assert_eq!(title.role, ui::a11y::Role::TextInput);
+            assert_eq!(title.action_target.as_deref(), Some("notes.page-title"));
+
+            let mut doc = AutoCommit::new();
+            assert!(panel.perform_action(
+                &ui::a11y::Action::SetValue("Launch plan".into()),
+                &mut doc,
+                &ObjId::Root,
+            ));
+            assert_eq!(panel.take_title_rename().as_deref(), Some("Launch plan"));
+        }
+
+        eprintln!("phase empty_state_primary_action_is_a_focused_accessible_button");
+        {
+            let mut p = MainPanel::new();
+            p.set_focus(true);
+            let node = p.accessibility().expect("empty state is exposed");
+            assert_eq!(node.role, ui::a11y::Role::Button);
+            assert_eq!(node.name.as_deref(), Some("New note"));
+            assert!(node.state.focusable);
+            assert!(node.state.focused);
+
+            let mut doc = AutoCommit::new();
+            assert!(p.perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root));
+            assert!(p.take_empty_action());
+        }
+
+        eprintln!("phase surface_hints_follow_hit_targets_and_reveal_exact_compact_dates");
+        {
+            let mut panel = MainPanel::new();
+            panel.load_page(fresh_page_id(), "Launch", "");
+            panel.rect = Rect::new(0.0, 0.0, 300.0, 600.0);
+            panel.title_rect = Rect::new(32.0, 32.0, 268.0, 76.0);
+            panel.dates = crate::metadata::NoteDates {
+                created: Some(1_700_000_000),
+                edited: Some(1_700_003_600),
+            };
+            panel.set_tags(vec![TagChip {
+                id: fresh_page_id(),
+                name: "Research".into(),
+            }]);
+            panel.layout_tag_chips();
+            panel.set_backlinks(vec![BacklinkChip {
+                page: fresh_page_id(),
+                title: "A long source note title".into(),
+                references: 1,
+            }]);
+            panel.layout_backlink_chips();
+            assert_eq!(
+                panel.cursor_shape(panel.title_rect.center()),
+                Some(winit::window::CursorIcon::Text)
+            );
+            assert!(panel.tooltip_target_at(panel.title_rect.center()).is_some());
             assert!(
-                label.contains("UTC"),
-                "compact metadata must expose the exact time"
+                panel
+                    .tooltip_target_at(panel.tag_rects[0].center())
+                    .unwrap()
+                    .1
+                    .contains("Research")
+            );
+            assert!(
+                panel
+                    .tooltip_target_at(panel.backlink_rects[0].center())
+                    .unwrap()
+                    .1
+                    .contains("A long source note title")
+            );
+            for row in 0..2 {
+                let rect = panel.date_row_rect(row);
+                let (target, label) = panel.tooltip_target_at(rect.center()).unwrap();
+                assert_eq!(target, rect);
+                assert_eq!(label, panel.dates.labels()[row]);
+                assert!(
+                    label.contains("UTC"),
+                    "compact metadata must expose the exact time"
+                );
+            }
+            assert!(panel.tooltip_target_at(Point::new(400.0, 400.0)).is_none());
+            assert!(panel.tooltip_target_at(Point::new(100.0, 500.0)).is_none());
+            panel.suppress_tooltips(true);
+            assert!(panel.tooltip_target_at(panel.title_rect.center()).is_none());
+            assert!(
+                panel
+                    .tooltip_target_at(panel.tag_rects[0].center())
+                    .is_none()
+            );
+            panel.suppress_tooltips(false);
+            assert!(panel.tooltip_target_at(panel.title_rect.center()).is_some());
+            panel.begin_title_edit();
+            assert!(
+                panel.tooltip_target_at(panel.title_rect.center()).is_none(),
+                "rename hint must not cover an active title edit"
             );
         }
-        assert!(panel.tooltip_target_at(Point::new(400.0, 400.0)).is_none());
-        assert!(panel.tooltip_target_at(Point::new(100.0, 500.0)).is_none());
-        panel.suppress_tooltips(true);
-        assert!(panel.tooltip_target_at(panel.title_rect.center()).is_none());
-        assert!(
-            panel
-                .tooltip_target_at(panel.tag_rects[0].center())
-                .is_none()
-        );
-        panel.suppress_tooltips(false);
-        assert!(panel.tooltip_target_at(panel.title_rect.center()).is_some());
-        panel.begin_title_edit();
-        assert!(
-            panel.tooltip_target_at(panel.title_rect.center()).is_none(),
-            "rename hint must not cover an active title edit"
-        );
     }
 
     #[test]
-    fn set_title_marks_dirty_when_changed() {
-        let mut p = MainPanel::new();
-        p.mark_drawn();
-        assert!(!p.needs_redraw());
-        p.set_title(Some("Hello".into()));
-        assert!(p.needs_redraw());
-        p.mark_drawn();
-        p.set_title(Some("Hello".into()));
-        assert!(!p.needs_redraw());
+    fn main_panel_loads_snapshots_and_clears_page_bodies() {
+        eprintln!("phase load_page_seeds_editor_from_markdown");
+        {
+            let mut p = MainPanel::new();
+            let id = fresh_page_id();
+            p.load_page(id, "Hello", "# H\n\nbody\n");
+            assert_eq!(p.page_id(), Some(id));
+            assert_eq!(p.editor().blocks().len(), 2);
+            assert!(matches!(p.editor().blocks()[0].kind, BlockKind::Heading(1)));
+        }
+
+        eprintln!("phase load_page_preserves_external_link_presentation");
+        {
+            let mut panel = MainPanel::new();
+            panel.load_page(
+                fresh_page_id(),
+                "Links",
+                "Read [the guide](https://example.test/guide).\n",
+            );
+            assert!(matches!(
+                &panel.editor().blocks()[0].line.marks()[0].mark,
+                ui::widget::Mark::ExternalLink(url) if url == "https://example.test/guide"
+            ));
+        }
+
+        eprintln!("phase take_body_snapshot_round_trips");
+        {
+            let mut p = MainPanel::new();
+            p.load_page(fresh_page_id(), "T", "# H\n\nbody\n");
+            let snap = p.take_body_snapshot();
+            assert_eq!(snap, "# H\n\nbody\n");
+        }
+
+        eprintln!("phase clear_resets_state");
+        {
+            let mut p = MainPanel::new();
+            p.load_page(fresh_page_id(), "T", "# H\n");
+            p.clear();
+            assert!(p.page_id().is_none());
+            assert!(p.title().is_none());
+        }
     }
 
-    #[test]
-    fn accessible_page_title_queues_the_same_rename_boundary() {
-        let mut panel = MainPanel::new();
-        let id = fresh_page_id();
-        panel.load_page(id, "Launch", "");
-        let node = panel
-            .accessibility()
-            .expect("open pages expose their title");
-        assert_eq!(node.role, ui::a11y::Role::Group);
-        let title = node
-            .children
-            .first()
-            .expect("header exposes the page title");
-        assert_eq!(title.role, ui::a11y::Role::TextInput);
-        assert_eq!(title.action_target.as_deref(), Some("notes.page-title"));
-
-        let mut doc = AutoCommit::new();
-        assert!(panel.perform_action(
-            &ui::a11y::Action::SetValue("Launch plan".into()),
-            &mut doc,
-            &ObjId::Root,
-        ));
-        assert_eq!(panel.take_title_rename().as_deref(), Some("Launch plan"));
-    }
-
-    #[test]
-    fn empty_state_primary_action_is_a_focused_accessible_button() {
-        let mut p = MainPanel::new();
-        p.set_focus(true);
-        let node = p.accessibility().expect("empty state is exposed");
-        assert_eq!(node.role, ui::a11y::Role::Button);
-        assert_eq!(node.name.as_deref(), Some("New note"));
-        assert!(node.state.focusable);
-        assert!(node.state.focused);
-
-        let mut doc = AutoCommit::new();
-        assert!(p.perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root));
-        assert!(p.take_empty_action());
-    }
-
-    #[test]
-    fn load_page_seeds_editor_from_markdown() {
-        let mut p = MainPanel::new();
-        let id = fresh_page_id();
-        p.load_page(id, "Hello", "# H\n\nbody\n");
-        assert_eq!(p.page_id(), Some(id));
-        assert_eq!(p.editor().blocks().len(), 2);
-        assert!(matches!(p.editor().blocks()[0].kind, BlockKind::Heading(1)));
-    }
-
-    #[test]
-    fn load_page_preserves_external_link_presentation() {
-        let mut panel = MainPanel::new();
-        panel.load_page(
-            fresh_page_id(),
-            "Links",
-            "Read [the guide](https://example.test/guide).\n",
-        );
-        assert!(matches!(
-            &panel.editor().blocks()[0].line.marks()[0].mark,
-            ui::widget::Mark::ExternalLink(url) if url == "https://example.test/guide"
-        ));
-    }
-
-    #[test]
-    fn take_body_snapshot_round_trips() {
-        let mut p = MainPanel::new();
-        p.load_page(fresh_page_id(), "T", "# H\n\nbody\n");
-        let snap = p.take_body_snapshot();
-        assert_eq!(snap, "# H\n\nbody\n");
-    }
-
-    #[test]
-    fn clear_resets_state() {
-        let mut p = MainPanel::new();
-        p.load_page(fresh_page_id(), "T", "# H\n");
-        p.clear();
-        assert!(p.page_id().is_none());
-        assert!(p.title().is_none());
-    }
-
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "the band geometry is built by adding the same spacing tokens, so exact equality is the property under test"
     )]
-    fn high_text_title_tags_and_first_block_have_separate_bands() {
-        let mut panel = MainPanel::new();
-        panel.text_scale = 2.0;
-        panel.set_tags(vec![
-            TagChip {
-                id: fresh_page_id(),
-                name: "Release".into(),
-            },
-            TagChip {
-                id: fresh_page_id(),
-                name: "Writing".into(),
-            },
-        ]);
-
-        let title_top = PADDING_PX;
-        let title_bottom = title_top + panel.title_height();
-        let theme = Theme::dark();
-        let label_line_h = ui::text_metrics::line_height_px(
-            TagChipBand::label_size(),
-            num::f32_of_f64(panel.text_scale),
-        );
-        let band = tag_chip_band(&theme.tokens.spacing, title_bottom, label_line_h);
-        let tags_bottom = band.y0 + band.height;
-        let first_block_top = panel.editor_top_inset();
-
-        assert!(title_bottom < band.y0, "title must not overlap tag chips");
-        assert!(
-            tags_bottom <= first_block_top,
-            "tag chips ({tags_bottom}) must clear the first block ({first_block_top})"
-        );
-        // Neighbouring chips keep the related-sibling step apart, and the
-        // chip row keeps the title + explanation step under the title — clear
-        // of a focused title's 2 px ring as well.
-        assert_eq!(band.gap, f64::from(theme.tokens.spacing.s2));
-        assert_eq!(band.y0 - title_bottom, f64::from(theme.tokens.spacing.s2));
-        assert!(band.y0 - title_bottom - 2.0 >= f64::from(theme.tokens.spacing.s1));
-    }
-
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn first_metadata_row_starts_inside_the_scrolling_viewport() {
-        let mut panel = MainPanel::new();
-        panel.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-        panel.title_rect = Rect::new(32.0, 32.0, 768.0, 76.0);
-        panel.page_id = Some(fresh_page_id());
-
-        assert!(
-            panel.date_row_rect(0).y0 >= panel.scroll_viewport().y0,
-            "created/edited metadata must not be clipped under the sticky title"
-        );
-
-        panel.set_parent_path("Projects / Launch".into());
-        assert!(
-            panel.parent_path_rect().expect("parent path").y0 >= panel.scroll_viewport().y0,
-            "the parent path must share the same visible metadata origin"
-        );
-    }
-
-    #[test]
-    fn wrapped_tags_reserve_space_before_the_editor() {
-        let mut panel = MainPanel::new();
-        panel.text_scale = 2.0;
-        panel.title_rect = Rect::new(32.0, 32.0, 250.0, 120.0);
-        panel.set_tags(
-            ["Release planning", "Customer research", "Accessibility"]
-                .into_iter()
-                .map(|name| TagChip {
+    fn metadata_bands_tags_and_backlinks_clear_the_editor_and_keep_identity() {
+        eprintln!("phase high_text_title_tags_and_first_block_have_separate_bands");
+        {
+            let mut panel = MainPanel::new();
+            panel.text_scale = 2.0;
+            panel.set_tags(vec![
+                TagChip {
                     id: fresh_page_id(),
-                    name: name.into(),
-                })
-                .collect(),
-        );
+                    name: "Release".into(),
+                },
+                TagChip {
+                    id: fresh_page_id(),
+                    name: "Writing".into(),
+                },
+            ]);
 
-        panel.layout_tag_chips();
-        assert_eq!(panel.tag_rects.len(), 3);
-        assert!(
-            panel.tag_rects[1].y0 > panel.tag_rects[0].y0,
-            "long tags should wrap instead of disappearing beyond the panel edge"
-        );
-        assert!(
-            panel.editor_top_inset() >= panel.tag_rects.last().expect("tag rect").y1,
-            "the editor must start below every wrapped tag row"
-        );
-    }
+            let title_top = PADDING_PX;
+            let title_bottom = title_top + panel.title_height();
+            let theme = Theme::dark();
+            let label_line_h = ui::text_metrics::line_height_px(
+                TagChipBand::label_size(),
+                num::f32_of_f64(panel.text_scale),
+            );
+            let band = tag_chip_band(&theme.tokens.spacing, title_bottom, label_line_h);
+            let tags_bottom = band.y0 + band.height;
+            let first_block_top = panel.editor_top_inset();
 
-    #[test]
-    fn semantic_tag_activation_retains_the_stable_tag_id() {
-        let mut panel = MainPanel::new();
-        let tag = fresh_page_id();
-        panel.page_id = Some(fresh_page_id());
-        panel.set_tags(vec![TagChip {
-            id: tag,
-            name: "Release".into(),
-        }]);
-        panel.tag_rects = vec![Rect::new(32.0, 90.0, 120.0, 112.0)];
-        let mut doc = AutoCommit::new();
+            assert!(title_bottom < band.y0, "title must not overlap tag chips");
+            assert!(
+                tags_bottom <= first_block_top,
+                "tag chips ({tags_bottom}) must clear the first block ({first_block_top})"
+            );
+            // Neighbouring chips keep the related-sibling step apart, and the
+            // chip row keeps the title + explanation step under the title — clear
+            // of a focused title's 2 px ring as well.
+            assert_eq!(band.gap, f64::from(theme.tokens.spacing.s2));
+            assert_eq!(band.y0 - title_bottom, f64::from(theme.tokens.spacing.s2));
+            assert!(band.y0 - title_bottom - 2.0 >= f64::from(theme.tokens.spacing.s1));
+        }
 
-        assert!(Widget::perform_semantic_action(
-            &mut panel,
-            &format!("notes.tag-chip:{tag}"),
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &ObjId::Root,
-        ));
-        assert_eq!(panel.take_tag_open(), Some(tag));
-    }
+        eprintln!("phase first_metadata_row_starts_inside_the_scrolling_viewport");
+        {
+            let mut panel = MainPanel::new();
+            panel.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+            panel.title_rect = Rect::new(32.0, 32.0, 768.0, 76.0);
+            panel.page_id = Some(fresh_page_id());
 
-    #[test]
-    fn backlinks_wrap_clear_the_editor_and_activate_by_page_identity() {
-        let mut panel = MainPanel::new();
-        let source = fresh_page_id();
-        panel.page_id = Some(fresh_page_id());
-        panel.text_scale = 2.0;
-        panel.title_rect = Rect::new(32.0, 32.0, 250.0, 120.0);
-        panel.set_backlinks(vec![BacklinkChip {
-            page: source,
-            title: "Long-running launch notes".into(),
-            references: 2,
-        }]);
-        panel.layout_backlink_chips();
-        assert_eq!(panel.backlink_rects.len(), 1);
-        assert!(
-            panel.editor_top_inset() >= panel.backlink_rects[0].y1,
-            "incoming-link metadata must clear the first block"
-        );
-        let mut doc = AutoCommit::new();
-        assert!(Widget::perform_semantic_action(
-            &mut panel,
-            &format!("notes.backlink-chip:{source}"),
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &ObjId::Root,
-        ));
-        assert_eq!(panel.take_backlink_open(), Some(source));
+            assert!(
+                panel.date_row_rect(0).y0 >= panel.scroll_viewport().y0,
+                "created/edited metadata must not be clipped under the sticky title"
+            );
+
+            panel.set_parent_path("Projects / Launch".into());
+            assert!(
+                panel.parent_path_rect().expect("parent path").y0 >= panel.scroll_viewport().y0,
+                "the parent path must share the same visible metadata origin"
+            );
+        }
+
+        eprintln!("phase wrapped_tags_reserve_space_before_the_editor");
+        {
+            let mut panel = MainPanel::new();
+            panel.text_scale = 2.0;
+            panel.title_rect = Rect::new(32.0, 32.0, 250.0, 120.0);
+            panel.set_tags(
+                ["Release planning", "Customer research", "Accessibility"]
+                    .into_iter()
+                    .map(|name| TagChip {
+                        id: fresh_page_id(),
+                        name: name.into(),
+                    })
+                    .collect(),
+            );
+
+            panel.layout_tag_chips();
+            assert_eq!(panel.tag_rects.len(), 3);
+            assert!(
+                panel.tag_rects[1].y0 > panel.tag_rects[0].y0,
+                "long tags should wrap instead of disappearing beyond the panel edge"
+            );
+            assert!(
+                panel.editor_top_inset() >= panel.tag_rects.last().expect("tag rect").y1,
+                "the editor must start below every wrapped tag row"
+            );
+        }
+
+        eprintln!("phase semantic_tag_activation_retains_the_stable_tag_id");
+        {
+            let mut panel = MainPanel::new();
+            let tag = fresh_page_id();
+            panel.page_id = Some(fresh_page_id());
+            panel.set_tags(vec![TagChip {
+                id: tag,
+                name: "Release".into(),
+            }]);
+            panel.tag_rects = vec![Rect::new(32.0, 90.0, 120.0, 112.0)];
+            let mut doc = AutoCommit::new();
+
+            assert!(Widget::perform_semantic_action(
+                &mut panel,
+                &format!("notes.tag-chip:{tag}"),
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &ObjId::Root,
+            ));
+            assert_eq!(panel.take_tag_open(), Some(tag));
+        }
+
+        eprintln!("phase backlinks_wrap_clear_the_editor_and_activate_by_page_identity");
+        {
+            let mut panel = MainPanel::new();
+            let source = fresh_page_id();
+            panel.page_id = Some(fresh_page_id());
+            panel.text_scale = 2.0;
+            panel.title_rect = Rect::new(32.0, 32.0, 250.0, 120.0);
+            panel.set_backlinks(vec![BacklinkChip {
+                page: source,
+                title: "Long-running launch notes".into(),
+                references: 2,
+            }]);
+            panel.layout_backlink_chips();
+            assert_eq!(panel.backlink_rects.len(), 1);
+            assert!(
+                panel.editor_top_inset() >= panel.backlink_rects[0].y1,
+                "incoming-link metadata must clear the first block"
+            );
+            let mut doc = AutoCommit::new();
+            assert!(Widget::perform_semantic_action(
+                &mut panel,
+                &format!("notes.backlink-chip:{source}"),
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &ObjId::Root,
+            ));
+            assert_eq!(panel.take_backlink_open(), Some(source));
+        }
     }
 }

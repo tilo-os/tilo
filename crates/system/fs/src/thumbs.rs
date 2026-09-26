@@ -1,8 +1,9 @@
 //! Host-side thumbnail generation + caching for the FUSE mount.
 //!
 //! A thumbnail is metadata generated ahead of (or independent of) the content
-//! bytes: a small PNG preview cached under `<cache-dir>/thumbs`, served
-//! through the `user.tilo.thumb` xattr and gossiped via the namespace node.
+//! bytes: a small PNG preview kept in the shared preview cache under
+//! `<cache-dir>/thumbs`, served through the `user.tilo.thumb` xattr and
+//! gossiped via the namespace node.
 //!
 //! Only light, pure-Rust preview types are host-generated (raster images,
 //! EPUB covers) — `thumbnail` uses default features so the daemon never
@@ -11,9 +12,6 @@
 use std::path::Path;
 
 use thumbnail::{FileCategory, ThumbCache, ThumbKey};
-
-/// A file larger than this is never read whole just to make a thumbnail — a pathological source must not stall the FUSE thread or blow up memory.
-const MAX_SOURCE_BYTES: usize = 96 * 1024 * 1024;
 
 /// Longest-edge target for host-generated previews — smaller than the file
 /// manager's grid, on purpose: it must stay under [`MAX_XATTR_THUMB`] to ride the xattr.
@@ -64,7 +62,7 @@ impl ThumbProvider {
         category: FileCategory,
         bytes: &[u8],
     ) -> Option<Vec<u8>> {
-        if !category.has_preview() || bytes.len() > MAX_SOURCE_BYTES {
+        if !category.has_preview() || bytes.len() > thumbnail::MAX_SOURCE_BYTES {
             return None;
         }
         let thumb = thumbnail::generate(&thumbnail::Source::Bytes(bytes), category, self.edge)?;
@@ -99,56 +97,58 @@ mod tests {
     }
 
     #[test]
-    fn generates_caches_and_reopens() {
-        let dir = tempfile::tempdir().unwrap();
-        let src = solid_png(400, 300, [30, 120, 210]);
-        let content_hash = *blake3::hash(&src).as_bytes();
+    fn thumbnails_generate_cache_reopen_and_decline_junk() {
+        // Phase `generates_caches_and_reopens`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let src = solid_png(400, 300, [30, 120, 210]);
+            let content_hash = *blake3::hash(&src).as_bytes();
 
-        let png = {
-            let provider = ThumbProvider::open(dir.path()).unwrap();
-            assert!(provider.cached(content_hash).is_none(), "cold");
-            let png = provider
-                .generate(content_hash, FileCategory::Image, &src)
-                .expect("generates a preview");
-            // It is a real, smaller PNG at the host preview size.
-            let decoded = thumbnail::decode_png(&png).unwrap();
-            assert!(decoded.is_valid());
-            assert_eq!(decoded.max_edge(), HOST_EDGE);
-            // Small enough to ride the xattr metadata channel.
-            assert!(
-                png.len() <= MAX_XATTR_THUMB,
-                "host preview fits the xattr: {} bytes",
-                png.len()
+            let png = {
+                let provider = ThumbProvider::open(dir.path()).unwrap();
+                assert!(provider.cached(content_hash).is_none(), "cold");
+                let png = provider
+                    .generate(content_hash, FileCategory::Image, &src)
+                    .expect("generates a preview");
+                // It is a real, smaller PNG at the host preview size.
+                let decoded = thumbnail::decode_png(&png).unwrap();
+                assert!(decoded.is_valid());
+                assert_eq!(decoded.max_edge(), HOST_EDGE);
+                // Small enough to ride the xattr metadata channel.
+                assert!(
+                    png.len() <= MAX_XATTR_THUMB,
+                    "host preview fits the xattr: {} bytes",
+                    png.len()
+                );
+                // Second lookup hits the cache.
+                assert_eq!(provider.cached(content_hash).unwrap(), png, "cache hit");
+                png
+            };
+
+            // A fresh provider on the same dir finds it on disk (survives a remount).
+            let reopened = ThumbProvider::open(dir.path()).unwrap();
+            assert_eq!(
+                reopened.cached(content_hash).unwrap(),
+                png,
+                "thumbnail survives a reopen via the on-disk cache"
             );
-            // Second lookup hits the cache.
-            assert_eq!(provider.cached(content_hash).unwrap(), png, "cache hit");
-            png
-        };
-
-        // A fresh provider on the same dir finds it on disk (survives a remount).
-        let reopened = ThumbProvider::open(dir.path()).unwrap();
-        assert_eq!(
-            reopened.cached(content_hash).unwrap(),
-            png,
-            "thumbnail survives a reopen via the on-disk cache"
-        );
-    }
-
-    #[test]
-    fn declines_badge_types_and_junk() {
-        let dir = tempfile::tempdir().unwrap();
-        let provider = ThumbProvider::open(dir.path()).unwrap();
-        assert!(
-            provider
-                .generate([1u8; 32], FileCategory::Archive, b"PK\x03\x04")
-                .is_none(),
-            "a non-previewable type is never generated"
-        );
-        assert!(
-            provider
-                .generate([2u8; 32], FileCategory::Image, b"not an image")
-                .is_none(),
-            "undecodable bytes yield no thumbnail"
-        );
+        }
+        // Phase `declines_badge_types_and_junk`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = ThumbProvider::open(dir.path()).unwrap();
+            assert!(
+                provider
+                    .generate([1u8; 32], FileCategory::Archive, b"PK\x03\x04")
+                    .is_none(),
+                "a non-previewable type is never generated"
+            );
+            assert!(
+                provider
+                    .generate([2u8; 32], FileCategory::Image, b"not an image")
+                    .is_none(),
+                "undecodable bytes yield no thumbnail"
+            );
+        }
     }
 }

@@ -6,7 +6,8 @@
 //! (fanotify filesystem marks, pre-content events, bind mounts). Name the
 //! volumes in `TILO_FS_NATIVE_STORES=/store/a:/store/b` and run as root.
 //! Without them the tests skip with a message; `TILO_REQUIRE_FANOTIFY=1`
-//! turns every skip into a failure.
+//! turns every skip into a failure. `tools/native-tier1.sh` makes the two
+//! volumes on loop devices, runs the suite as root and removes them again.
 
 #![allow(
     clippy::unwrap_used,
@@ -417,36 +418,25 @@ struct Pair {
     _dir: Option<tempfile::TempDir>,
 }
 
-fn start_pair(store_a: &Path, store_b: &Path, seed: u8) -> Pair {
-    start_pair_with(store_a, store_b, seed, &[], &[])
+fn start_pair(store_a: &Path, store_b: &Path) -> Pair {
+    start_pair_with(store_a, store_b, &[], &[])
 }
 
 /// [`start_pair`] with extra arguments for the host (the always-on device)
 /// and extra environment for both.
-fn start_pair_with(
-    store_a: &Path,
-    store_b: &Path,
-    seed: u8,
-    extra: &[&str],
-    env: &[(&str, &str)],
-) -> Pair {
+fn start_pair_with(store_a: &Path, store_b: &Path, extra: &[&str], env: &[(&str, &str)]) -> Pair {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().to_path_buf();
     // Owner-only, as the daemons require of their control sockets' parent.
     std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
-    let person = [seed; 32];
-    install_identity(
-        &dir.join("host-identity"),
-        person,
-        [seed.wrapping_add(1); 32],
-        true,
-    );
-    install_identity(
-        &dir.join("peer-identity"),
-        person,
-        [seed.wrapping_add(2); 32],
-        false,
-    );
+    // The daemons advertise their Iroh endpoints beyond this machine and
+    // dial each other by device key, so every pair gets identities no other
+    // run shares. With fixed seeds, a concurrent copy of a scenario, or
+    // another suite's fixture built from the same bytes, answered as the
+    // restarted host's peer and handed it a foreign workspace.
+    let person: [u8; 32] = rand::random();
+    install_identity(&dir.join("host-identity"), person, rand::random(), true);
+    install_identity(&dir.join("peer-identity"), person, rand::random(), false);
     full_access_acl(&dir.join("acl.json"), person);
     for mount in ["host-mount", "peer-mount"] {
         let m = dir.join(mount);
@@ -502,7 +492,7 @@ fn local_changes_publish_in_journal_order_and_arrive_as_placeholders_and_files()
     let Some((a, b)) = stores("native_sync") else {
         return;
     };
-    let mut pair = start_pair(&a, &b, 0x31);
+    let mut pair = start_pair(&a, &b);
     let m1 = pair.host.mount.clone();
     let m2 = pair.peer.mount.clone();
     assert_eq!(
@@ -790,7 +780,7 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
         assert!(!required(), "git is not installed");
         return;
     }
-    let mut pair = start_pair(&a, &b, 0x41);
+    let mut pair = start_pair(&a, &b);
     let repo1 = pair.host.mount.join("repo");
     let repo2 = pair.peer.mount.join("repo");
     std::fs::create_dir_all(&repo1).unwrap();
@@ -931,7 +921,7 @@ fn modes_links_and_ownership_replicate_and_hard_links_stay_consistent() {
     let Some((a, b)) = stores("native_posix") else {
         return;
     };
-    let mut pair = start_pair(&a, &b, 0x71);
+    let mut pair = start_pair(&a, &b);
     let m1 = pair.host.mount.clone();
     let m2 = pair.peer.mount.clone();
 
@@ -1032,7 +1022,7 @@ fn a_crashed_daemon_resumes_from_its_last_epoch_and_publishes_only_what_changed(
     let Some((a, b)) = stores("native_restart") else {
         return;
     };
-    let mut pair = start_pair(&a, &b, 0x51);
+    let mut pair = start_pair(&a, &b);
     let m1 = pair.host.mount.clone();
     let m2 = pair.peer.mount.clone();
     for i in 0..50u8 {
@@ -1138,7 +1128,7 @@ fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none()
         assert!(!required(), "git is not installed");
         return;
     }
-    let mut pair = start_pair(&a, &b, 0x71);
+    let mut pair = start_pair(&a, &b);
     let m1 = pair.host.mount.clone();
     let m2 = pair.peer.mount.clone();
     let live = pair.host.live.clone().unwrap();
@@ -1331,7 +1321,7 @@ fn a_file_modified_in_place_takes_a_lease_and_a_second_writer_gets_ebusy() {
     let Some((a, b)) = stores("native_lease") else {
         return;
     };
-    let mut pair = start_pair(&a, &b, 0x61);
+    let mut pair = start_pair(&a, &b);
     let db1 = pair.host.mount.join("db.bin");
     let db2 = pair.peer.mount.join("db.bin");
     let original = pattern(3, 64 * 1024);
@@ -1473,7 +1463,7 @@ fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_wr
         assert!(!required(), "sqlite3 is not installed");
         return;
     }
-    let mut pair = start_pair(&a, &b, 0x81);
+    let mut pair = start_pair(&a, &b);
     let db1 = pair.host.mount.join("app.db");
     let db2 = pair.peer.mount.join("app.db");
     sqlite(
@@ -1636,7 +1626,7 @@ fn the_lease_authority_gives_a_free_lease_to_one_of_two_devices_asking_at_once()
     let Some((a, b)) = stores("native_authority") else {
         return;
     };
-    let mut pair = start_pair_with(&a, &b, 0x91, &["--lease-authority"], &[]);
+    let mut pair = start_pair_with(&a, &b, &["--lease-authority"], &[]);
     assert_eq!(pair.host.log_count("arbitrating write leases"), 1);
     assert_eq!(pair.peer.log_count("arbitrating write leases"), 0);
     let content = pattern(9, 64 * 1024);
@@ -1721,7 +1711,6 @@ fn a_version_from_a_tenancy_its_author_did_not_hold_is_kept_as_a_conflict_and_ne
     let mut pair = start_pair_with(
         &a,
         &b,
-        0xa1,
         &["--lease-authority"],
         &[("TILO_FS_TRANSPORT_GATE_SOCKET", "@profile-gate.sock")],
     );

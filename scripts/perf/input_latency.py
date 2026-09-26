@@ -30,7 +30,7 @@ def _bounds(presented, lower, upper):
 
 def summarize_input_latency(scenario, lines, frames):
     summarize_native_delivery(scenario, lines, frames)
-    inputs = rows(lines, 'qos-native-input ')
+    inputs = rows(lines, 'tilo-native-input ')
     available = [row.get('host_clock') == 'mach_absolute_seconds' for row in inputs]
     if not any(available):
         for row in inputs:
@@ -55,9 +55,9 @@ def summarize_input_latency(scenario, lines, frames):
                          or dispatch_lo < previous['dispatch_host_hi_s']):
             raise ValueError('Host clock moved backwards')
         previous = row
-    if rows(lines, 'qos-native-clock-event '):
+    if rows(lines, 'tilo-native-clock-event '):
         raise ValueError('Clock lifecycle event invalidates continuous capture')
-    mappings = rows(lines, 'qos-native-frame ')
+    mappings = rows(lines, 'tilo-native-frame ')
     expected = [row['cpu_frame_id'] for row in mappings]
     if ([identity for row in mappings for identity in row['input_ids']]
             != list(range(len(scenario['steps'])))
@@ -67,7 +67,7 @@ def summarize_input_latency(scenario, lines, frames):
     if not presentation['feedback_complete']:
         raise ValueError('Incomplete positive presentation feedback for latency')
     times = {row['cpu_frame_id']:row['presented_time_s']
-             for row in rows(lines, 'qos-display-frame ')}
+             for row in rows(lines, 'tilo-display-frame ')}
     frame_for = {identity:row for row in mappings for identity in row['input_ids']}
     samples, unresolved = [], []
     for row in inputs[scenario.get('warmup_steps', 0):]:

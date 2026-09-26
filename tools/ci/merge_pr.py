@@ -15,8 +15,8 @@ import urllib.error
 import urllib.request
 
 
-HOST = "code.podesta.ai"
-REPO = "qos/qos"
+HOST = "code.tilo.so"
+REPO = "tilo/tilo"
 BRANCH = "main"
 INTEGRATOR = "tilo-integrator"
 REVIEWERS = {"claude"}

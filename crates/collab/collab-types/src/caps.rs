@@ -858,27 +858,31 @@ pub fn decide_capability(
 mod tests {
     use super::*;
 
+    /// Verbs imply the ones below them, and each role's cap ceiling matches its verb ceiling.
     #[test]
-    fn implies_ladder() {
-        assert!(Verb::Admin.implies(Verb::Invite));
-        assert!(Verb::Admin.implies(Verb::Write));
-        assert!(Verb::Write.implies(Verb::Comment));
-        assert!(Verb::Write.implies(Verb::Read));
-        assert!(!Verb::Write.implies(Verb::Admin));
-        assert!(!Verb::Comment.implies(Verb::Write));
-        assert!(Verb::Comment.implies(Verb::Read));
-        assert!(Verb::Invite.implies(Verb::Read));
-        assert!(!Verb::Invite.implies(Verb::Write));
-        assert!(Verb::Read.implies(Verb::Read));
-        assert!(!Verb::Read.implies(Verb::Comment));
-    }
+    fn capability_verbs_form_a_ladder_that_bounds_each_role() {
+        // Phase: implies_ladder.
+        {
+            assert!(Verb::Admin.implies(Verb::Invite));
+            assert!(Verb::Admin.implies(Verb::Write));
+            assert!(Verb::Write.implies(Verb::Comment));
+            assert!(Verb::Write.implies(Verb::Read));
+            assert!(!Verb::Write.implies(Verb::Admin));
+            assert!(!Verb::Comment.implies(Verb::Write));
+            assert!(Verb::Comment.implies(Verb::Read));
+            assert!(Verb::Invite.implies(Verb::Read));
+            assert!(!Verb::Invite.implies(Verb::Write));
+            assert!(Verb::Read.implies(Verb::Read));
+            assert!(!Verb::Read.implies(Verb::Comment));
+        }
 
-    #[test]
-    fn role_caps_match_verb_ceiling() {
-        assert_eq!(role_caps(Role::Owner), Some(Verb::Admin));
-        assert_eq!(role_caps(Role::Editor), Some(Verb::Write));
-        assert_eq!(role_caps(Role::Commenter), Some(Verb::Comment));
-        assert_eq!(role_caps(Role::Viewer), Some(Verb::Read));
-        assert_eq!(role_caps(Role::Denied), None);
+        // Phase: role_caps_match_verb_ceiling.
+        {
+            assert_eq!(role_caps(Role::Owner), Some(Verb::Admin));
+            assert_eq!(role_caps(Role::Editor), Some(Verb::Write));
+            assert_eq!(role_caps(Role::Commenter), Some(Verb::Comment));
+            assert_eq!(role_caps(Role::Viewer), Some(Verb::Read));
+            assert_eq!(role_caps(Role::Denied), None);
+        }
     }
 }

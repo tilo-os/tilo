@@ -21,7 +21,7 @@ printf '%s\n' "$1" >> "$SLEEPS"
 SH
 chmod +x "$work/bin/docker" "$work/bin/sleep"
 
-ref="code.podesta.ai/qos/fedora-bootc@sha256:$(printf 'a%.0s' {1..64})"
+ref="registry.tilo.so/tilo/fedora-bootc@sha256:$(printf 'a%.0s' {1..64})"
 export PATH="$work/bin:$PATH" CALLS="$work/calls" SLEEPS="$work/sleeps" FAILURES=2
 : > "$CALLS"
 : > "$SLEEPS"
@@ -43,7 +43,7 @@ grep -Fq 'remained unavailable after 3 attempts' "$work/final.err"
 [[ $(wc -l < "$CALLS") == 3 ]]
 
 : > "$CALLS"
-if "$helper" relay-builder code.podesta.ai/qos/fedora-bootc:latest >"$work/tag.out" 2>"$work/tag.err"; then
+if "$helper" relay-builder registry.tilo.so/tilo/fedora-bootc:latest >"$work/tag.out" 2>"$work/tag.err"; then
   echo 'helper accepted a mutable base tag' >&2
   exit 1
 fi

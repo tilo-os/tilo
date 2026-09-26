@@ -23,6 +23,7 @@ use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Handshake, Request, Res
 use tilo_clock::unix_now;
 use wire_frame::FrameError;
 
+use crate::shell::channel_encryption::{ChannelAccess, ChannelKeyAccess, ChannelKeyProvider};
 use crate::shell::state::{RoomId, WorkspaceTreeHandle};
 
 pub struct IdentityBrokerHandle {
@@ -48,7 +49,11 @@ impl Drop for IdentityBrokerHandle {
 ///
 /// Returns an error if binding the unix socket at `path` or putting it into
 /// non-blocking mode fails, or if the listener thread cannot be spawned.
-pub fn spawn(path: PathBuf, tree: WorkspaceTreeHandle) -> io::Result<IdentityBrokerHandle> {
+pub fn spawn(
+    path: PathBuf,
+    tree: WorkspaceTreeHandle,
+    channels: ChannelKeyProvider,
+) -> io::Result<IdentityBrokerHandle> {
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path)?;
     listener.set_nonblocking(true)?;
@@ -61,9 +66,10 @@ pub fn spawn(path: PathBuf, tree: WorkspaceTreeHandle) -> io::Result<IdentityBro
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let tree = tree.clone();
+                        let channels = channels.clone();
                         if let Err(error) = thread::Builder::new()
                             .name("tilo-identity-client".into())
-                            .spawn(move || serve(stream, &tree))
+                            .spawn(move || serve(stream, &tree, &channels))
                         {
                             tracing::warn!(%error, "identity broker could not spawn client worker");
                         }
@@ -85,7 +91,7 @@ pub fn spawn(path: PathBuf, tree: WorkspaceTreeHandle) -> io::Result<IdentityBro
     })
 }
 
-fn serve(mut stream: UnixStream, tree: &WorkspaceTreeHandle) {
+fn serve(mut stream: UnixStream, tree: &WorkspaceTreeHandle, channels: &ChannelKeyProvider) {
     // Darwin inherits the listener's nonblocking flag on accept. This worker
     // uses blocking framed I/O; an empty receive is not the end of a session.
     if let Err(error) = stream.set_nonblocking(false) {
@@ -124,6 +130,23 @@ fn serve(mut stream: UnixStream, tree: &WorkspaceTreeHandle) {
                 &app_id,
                 &record_id,
                 &unsigned_op,
+            ),
+            Request::ChannelKeys {
+                workspace_id,
+                app_id,
+                record_id,
+                known_generation,
+            } => channel_keys(
+                tree,
+                channels.get().as_ref(),
+                &ChannelKeyRoute {
+                    bound_room: &room,
+                    bound_app_id: &handshake.app_id,
+                    workspace_id: &workspace_id,
+                    app_id: &app_id,
+                    record_id: &record_id,
+                },
+                known_generation,
             ),
         };
         if write_action_frame(&mut stream, &response).is_err() {
@@ -347,6 +370,87 @@ fn sign_collaboration_op(
     Response::Signature(device.sign(&signing_bytes).to_bytes().to_vec())
 }
 
+/// The route a [`Request::ChannelKeys`] names, with the launch binding it
+/// must match.
+struct ChannelKeyRoute<'a> {
+    bound_room: &'a RoomId,
+    bound_app_id: &'a str,
+    workspace_id: &'a str,
+    app_id: &'a str,
+    record_id: &'a str,
+}
+
+/// Hand an app the content keys of one route of its own launch, only while
+/// this device is trusted and its person may read the workspace. The keys
+/// open the route's content and nothing else: no MLS secret leaves the
+/// channel service, and another app's or workspace's route is refused.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the role check reads one coherent workspace snapshot"
+)]
+fn channel_keys(
+    tree: &WorkspaceTreeHandle,
+    channels: Option<&ChannelKeyAccess>,
+    route: &ChannelKeyRoute<'_>,
+    known_generation: u64,
+) -> Response {
+    if route.workspace_id != route.bound_room.to_string() || route.app_id != route.bound_app_id {
+        return Response::Denied("channel keys requested for a different launch route".into());
+    }
+    let profile = match crate::identity_registry::selected_identity_profile(route.workspace_id) {
+        Ok(Some(profile)) => profile,
+        Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
+        Err(error) => return Response::Error(error.to_string()),
+    };
+    if let Err(error) = require_trusted_current_device(&profile) {
+        return Response::Denied(error.to_string());
+    }
+    let principal_id =
+        Principal::person_from_key(Ed25519PublicKey::from_bytes(profile.user_public_key))
+            .id()
+            .to_string();
+    let reads = {
+        let tree = tree.read();
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| &workspace.room == route.bound_room)
+            .and_then(|workspace| workspace.role_of(&principal_id))
+            .is_some_and(|role| role != crate::shell::state::CapRole::Denied)
+    };
+    if !reads {
+        return Response::Denied("identity may not read this workspace".into());
+    }
+    let Some(channels) = channels else {
+        return Response::ChannelKeys {
+            access: runtime_identity::wire::ChannelAccess::Unavailable,
+            generation: 0,
+            keys: Vec::new(),
+        };
+    };
+    let channel =
+        collab_types::document_channel_id(route.app_id, route.workspace_id, route.record_id);
+    let (access, generation) = channels.access(*route.bound_room, channel);
+    let (access, keys) = match access {
+        ChannelAccess::Ready(keys) if generation != known_generation => match keys.to_bytes() {
+            Ok(bytes) => (runtime_identity::wire::ChannelAccess::Ready, bytes.to_vec()),
+            Err(error) => return Response::Error(error.to_string()),
+        },
+        ChannelAccess::Ready(_) => (runtime_identity::wire::ChannelAccess::Ready, Vec::new()),
+        ChannelAccess::Waiting => (runtime_identity::wire::ChannelAccess::Waiting, Vec::new()),
+        ChannelAccess::Removed => (runtime_identity::wire::ChannelAccess::Removed, Vec::new()),
+        ChannelAccess::Unavailable => (
+            runtime_identity::wire::ChannelAccess::Unavailable,
+            Vec::new(),
+        ),
+    };
+    Response::ChannelKeys {
+        access,
+        generation,
+        keys,
+    }
+}
+
 /// Root-key operations are available only while this machine is covered by
 /// a valid, non-revoked `identity -> device` certificate. Apps never receive
 /// either key; this check makes revocation effective at the local broker too.
@@ -419,107 +523,110 @@ mod tests {
     use std::io::Read as _;
     use std::os::fd::IntoRawFd;
 
-    /// The identity service's bytes: the launcher's handshake is a
-    /// little-endian `u32` length then JSON; every later frame is a
-    /// little-endian `u32` length then postcard.
     #[test]
-    fn identity_service_wire_bytes_are_pinned() {
-        let (mut app, mut service) = UnixStream::pair().expect("pair");
-        app.write_all(b"\x21\0\0\0{\"workspace_id\":\"w\",\"app_id\":\"a\"}")
-            .expect("handshake");
-        let handshake = read_frame::<Handshake>(&mut service).expect("handshake");
-        assert_eq!(
-            (handshake.workspace_id.as_str(), handshake.app_id.as_str()),
-            ("w", "a")
-        );
+    fn identity_service_wire_is_pinned_and_signing_requires_the_exact_capability() {
+        // Phase `identity_service_wire_bytes_are_pinned`.
+        // The identity service's bytes: the launcher's handshake is a
+        // little-endian `u32` length then JSON; every later frame is a
+        // little-endian `u32` length then postcard.
+        {
+            let (mut app, mut service) = UnixStream::pair().expect("pair");
+            app.write_all(b"\x21\0\0\0{\"workspace_id\":\"w\",\"app_id\":\"a\"}")
+                .expect("handshake");
+            let handshake = read_frame::<Handshake>(&mut service).expect("handshake");
+            assert_eq!(
+                (handshake.workspace_id.as_str(), handshake.app_id.as_str()),
+                ("w", "a")
+            );
 
-        write_action_frame(&mut service, &Response::Denied("no".into())).expect("write");
-        let mut sent = [0_u8; 8];
-        app.read_exact(&mut sent).expect("response");
-        assert_eq!(sent, [4, 0, 0, 0, 2, 2, b'n', b'o']);
-        app.write_all(&[3, 0, 0, 0, 2, 1, b'w']).expect("request");
-        assert!(matches!(
-            read_action_frame::<Request>(&mut service).expect("request"),
-            Request::CollaborationJoin { workspace_id } if workspace_id == "w"
-        ));
-    }
-
-    #[test]
-    fn signing_requires_the_exact_app_action_capability() {
-        let temp = tempfile::tempdir().expect("temp");
-        let xdg = temp.path().join("config");
-        let system_root = temp.path().join("system");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", &xdg)
-            .set("TILO_IDENTITY_ROOT", &system_root);
-        let identity_dir = xdg.join("tilo/identity");
-        let paths = tilo_user_identity::IdentityPaths::under(&system_root);
-        crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
-
-        let room = RoomId::new();
-        let mut workspace =
-            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Room");
-        workspace.room = room;
-        let mut tree = crate::shell::state::WorkspaceTree::default();
-        tree.desktop.workspaces.push(workspace);
-        let tree = tree.shared();
-
-        assert!(matches!(
-            sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
-            Response::Denied(_)
-        ));
-        tree.write().desktop.workspaces[0]
-            .capabilities
-            .push(CapOverride::grant(
-                Subject::app("so.tilo.notes"),
-                Scope::Action {
-                    app: "so.tilo.notes".into(),
-                    action: "document.save".into(),
-                },
-                Verb::Write,
+            write_action_frame(&mut service, &Response::Denied("no".into())).expect("write");
+            let mut sent = [0_u8; 8];
+            app.read_exact(&mut sent).expect("response");
+            assert_eq!(sent, [4, 0, 0, 0, 2, 2, b'n', b'o']);
+            app.write_all(&[3, 0, 0, 0, 2, 1, b'w']).expect("request");
+            assert!(matches!(
+                read_action_frame::<Request>(&mut service).expect("request"),
+                Request::CollaborationJoin { workspace_id } if workspace_id == "w"
             ));
-        let Response::Signature(signature) =
-            sign(&tree, &room, "so.tilo.notes", "document.save", b"payload")
-        else {
-            panic!("granted action was not signed");
-        };
-        let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
-            .expect("registry")
-            .expect("profile");
-        let cert = tilo_user_identity::persist::read_device_cert(
-            &paths.device_cert_for_user(&profile.user_public_key),
-        )
-        .expect("device certificate");
-        tilo_user_identity::verify_device_cert(&cert).expect("root-signed certificate");
-        assert_eq!(cert.user_public_key, profile.user_public_key);
-        VerifyingKey::from_bytes(&cert.device_public_key)
-            .expect("key")
-            .verify(
-                b"payload",
-                &Signature::from_slice(&signature).expect("signature"),
-            )
-            .expect("valid device signature");
-        assert!(matches!(
-            sign(&tree, &room, "so.tilo.notes", "document.delete", b"payload"),
-            Response::Denied(_)
-        ));
+        }
+        // Phase `signing_requires_the_exact_app_action_capability`.
+        {
+            let temp = tempfile::tempdir().expect("temp");
+            let xdg = temp.path().join("config");
+            let system_root = temp.path().join("system");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .set("TILO_IDENTITY_ROOT", &system_root);
+            let identity_dir = xdg.join("tilo/identity");
+            let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+            crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths)
+                .expect("identity");
 
-        let device_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
-            .expect("device key")
-            .verifying_key()
-            .to_bytes();
-        crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
-            .revoke(
-                &profile.id,
-                device_key,
-                tilo_user_identity::RevocationReason::Compromised,
-                1,
+            let room = RoomId::new();
+            let mut workspace =
+                crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Room");
+            workspace.room = room;
+            let mut tree = crate::shell::state::WorkspaceTree::default();
+            tree.desktop.workspaces.push(workspace);
+            let tree = tree.shared();
+
+            assert!(matches!(
+                sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
+                Response::Denied(_)
+            ));
+            tree.write().desktop.workspaces[0]
+                .capabilities
+                .push(CapOverride::grant(
+                    Subject::app("so.tilo.notes"),
+                    Scope::Action {
+                        app: "so.tilo.notes".into(),
+                        action: "document.save".into(),
+                    },
+                    Verb::Write,
+                ));
+            let Response::Signature(signature) =
+                sign(&tree, &room, "so.tilo.notes", "document.save", b"payload")
+            else {
+                panic!("granted action was not signed");
+            };
+            let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
+                .expect("registry")
+                .expect("profile");
+            let cert = tilo_user_identity::persist::read_device_cert(
+                &paths.device_cert_for_user(&profile.user_public_key),
             )
-            .expect("revoke current device");
-        assert!(matches!(
-            sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
-            Response::Denied(reason) if reason.contains("revoked")
-        ));
+            .expect("device certificate");
+            tilo_user_identity::verify_device_cert(&cert).expect("root-signed certificate");
+            assert_eq!(cert.user_public_key, profile.user_public_key);
+            VerifyingKey::from_bytes(&cert.device_public_key)
+                .expect("key")
+                .verify(
+                    b"payload",
+                    &Signature::from_slice(&signature).expect("signature"),
+                )
+                .expect("valid device signature");
+            assert!(matches!(
+                sign(&tree, &room, "so.tilo.notes", "document.delete", b"payload"),
+                Response::Denied(_)
+            ));
+
+            let device_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+                .expect("device key")
+                .verifying_key()
+                .to_bytes();
+            crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
+                .revoke(
+                    &profile.id,
+                    device_key,
+                    tilo_user_identity::RevocationReason::Compromised,
+                    1,
+                )
+                .expect("revoke current device");
+            assert!(matches!(
+                sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
+                Response::Denied(reason) if reason.contains("revoked")
+            ));
+        }
     }
 
     #[test]
@@ -758,7 +865,8 @@ mod tests {
         let mut tree = crate::shell::state::WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let socket = temp.path().join("identity.sock");
-        let _broker = spawn(socket.clone(), tree.shared()).expect("broker");
+        let _broker =
+            spawn(socket.clone(), tree.shared(), ChannelKeyProvider::default()).expect("broker");
         let mut client = UnixStream::connect(socket).expect("connect");
         write_frame(
             &mut client,

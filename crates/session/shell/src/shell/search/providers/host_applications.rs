@@ -21,6 +21,7 @@ use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
+use ui::search::{FieldWeight, RankField};
 
 /// Chip label / group header, mirroring [`ResourceKind::HostApplication`].
 pub const HOST_APPLICATIONS_KIND: &str = "Host Apps";
@@ -337,61 +338,31 @@ fn shadowed_by_a_tilo_package(
         .any(|pkg| pkg.package_id.eq_ignore_ascii_case(&app.desktop_id))
 }
 
-/// Same scale as the applications provider, one step lower at each rung so
-/// a confined Tilo app sorts first at an equal match. `Keywords=` and
-/// categories are matched too — how typing "browser" finds Firefox.
+/// Ranks lower than a Tilo app at an equal match, so a confined Tilo app
+/// sorts first.
+const HOST_APP_STEP: i32 = 5;
+
+/// The applications provider's ranking, one step lower so a confined Tilo
+/// app sorts first at an equal match. `Keywords=` and categories are matched
+/// too — how typing "browser" finds Firefox.
 fn match_score(needle: &str, name: &str, desktop_id: &str, app: &HostApp) -> Option<i32> {
-    if needle.is_empty() {
+    if needle.trim().is_empty() {
         return Some(0);
     }
-    if name.starts_with(needle) {
-        return Some(95);
-    }
-    // The full id, or its last segment — `org.gnome.TextEditor` named
-    // either way identifies exactly one application.
-    if desktop_id == needle || desktop_id.rsplit('.').next() == Some(needle) {
-        return Some(95);
-    }
-    if name.contains(needle) {
-        return Some(45);
-    }
-    if desktop_id.starts_with(needle) {
-        return Some(55);
-    }
-    if desktop_id.contains(needle) {
-        return Some(24);
-    }
-    if app
-        .keywords
-        .iter()
-        .any(|k| k.to_lowercase().contains(needle))
-    {
-        return Some(22);
-    }
-    if app
-        .categories
-        .iter()
-        .any(|c| c.to_lowercase().contains(needle))
-    {
-        return Some(19);
-    }
-    if fuzzy_subsequence(needle, name) {
-        return Some(9);
-    }
-    None
-}
-
-fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
-    let mut hi = hay.chars();
-    'ch: for nc in needle.chars() {
-        for hc in hi.by_ref() {
-            if hc == nc {
-                continue 'ch;
-            }
-        }
-        return false;
-    }
-    true
+    let last_segment = desktop_id.rsplit('.').next().unwrap_or(desktop_id);
+    let keywords = app.keywords.join(" ");
+    let categories = app.categories.join(" ");
+    crate::shell::search::rank_fields(
+        needle,
+        &[
+            RankField::new(name, FieldWeight::TITLE),
+            RankField::new(last_segment, FieldWeight::TITLE),
+            RankField::new(desktop_id, super::applications::PACKAGE_ID_WEIGHT),
+            RankField::new(&keywords, FieldWeight::METADATA),
+            RankField::new(&categories, FieldWeight::METADATA),
+        ],
+    )
+    .map(|rank| rank.saturating_sub(HOST_APP_STEP).max(1))
 }
 
 impl Default for HostApplicationsProvider {
@@ -537,18 +508,78 @@ mod tests {
             source_label: "Flatpak",
             categories: Vec::new(),
             keywords: Vec::new(),
+            mime_types: Vec::new(),
+            terminal: false,
+            icon: None,
             window_identities: vec![desktop_id.to_string()],
         }
     }
 
     #[test]
-    fn a_matching_host_app_offers_an_open_row() {
-        let p = HostApplicationsProvider::new();
-        let out = p.results_against("spot", vec![app("com.spotify.Client", "Spotify")], &[]);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].title, "Open Spotify");
-        assert_eq!(out[0].id, "com.spotify.Client");
-        assert_eq!(out[0].kind, ResourceKind::HostApplication);
+    fn host_app_matching_lists_offers_or_returns_nothing() {
+        // Phase `a_matching_host_app_offers_an_open_row`.
+        {
+            let p = HostApplicationsProvider::new();
+            let out = p.results_against("spot", vec![app("com.spotify.Client", "Spotify")], &[]);
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].title, "Open Spotify");
+            assert_eq!(out[0].id, "com.spotify.Client");
+            assert_eq!(out[0].kind, ResourceKind::HostApplication);
+        }
+
+        // Phase `keywords_and_categories_are_matchable`.
+        {
+            let p = HostApplicationsProvider::new();
+            let mut firefox = app("org.mozilla.firefox", "Firefox");
+            firefox.keywords = vec!["Internet".into(), "WWW".into()];
+            firefox.categories = vec!["Network".into(), "WebBrowser".into()];
+            let by_keyword = p.results_against("internet", vec![firefox.clone()], &[]);
+            assert_eq!(by_keyword.len(), 1, "{by_keyword:?}");
+            let by_category = p.results_against("webbrowser", vec![firefox], &[]);
+            assert_eq!(by_category.len(), 1, "{by_category:?}");
+            assert!(
+                by_keyword[0].score > by_category[0].score,
+                "a declared keyword is a stronger signal than a category bucket"
+            );
+        }
+
+        // Phase `an_empty_needle_lists_every_host_app`.
+        {
+            let p = HostApplicationsProvider::new();
+            let out =
+                p.results_against("", vec![app("a.b.One", "One"), app("a.b.Two", "Two")], &[]);
+            assert_eq!(out.len(), 2);
+            assert!(out.iter().all(|r| r.score == 0));
+        }
+
+        // Phase `a_non_matching_needle_returns_nothing`.
+        {
+            let p = HostApplicationsProvider::new();
+            assert!(
+                p.results_against("zzzqqq", vec![app("com.spotify.Client", "Spotify")], &[])
+                    .is_empty()
+            );
+        }
+
+        // Phase `unrequested_kind_returns_empty`.
+        {
+            let p = HostApplicationsProvider::new();
+            let c = chrome_rc();
+            let cs = c.borrow();
+            let doc = AutoCommit::new();
+            let out = p.query(SearchContext {
+                needle: "spotify",
+                wanted: &[ResourceKind::Application],
+                chrome: &cs,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            });
+            assert!(
+                out.is_empty(),
+                "the Applications chip must not pull in host apps — that is \
+                 the distinction the separate kind exists to draw"
+            );
+        }
     }
 
     #[test]
@@ -744,128 +775,78 @@ mod tests {
         assert_eq!(page.results[0].title, "Open unique-source-tail");
     }
 
-    /// "Unconfined" in the subtitle is the whole point of the separate kind.
     #[test]
-    fn the_row_names_the_source_and_says_it_is_unconfined() {
-        let p = HostApplicationsProvider::new();
-        let out = p.results_against("spot", vec![app("com.spotify.Client", "Spotify")], &[]);
-        let subtitle = out[0].subtitle.as_deref().expect("a subtitle");
-        assert!(subtitle.contains("Flatpak"), "{subtitle}");
-        assert!(
-            subtitle.contains("unconfined"),
-            "the user must be able to tell a confined Tilo app from an \
-             unconfined host app without opening anything: {subtitle}"
-        );
-        assert!(subtitle.contains("com.spotify.Client"), "{subtitle}");
-    }
+    fn host_app_rows_are_a_separate_lower_ranked_kind_that_names_its_provenance() {
+        // Phase `the_row_names_the_source_and_says_it_is_unconfined`.
+        // "Unconfined" in the subtitle is the whole point of the separate kind.
+        {
+            let p = HostApplicationsProvider::new();
+            let out = p.results_against("spot", vec![app("com.spotify.Client", "Spotify")], &[]);
+            let subtitle = out[0].subtitle.as_deref().expect("a subtitle");
+            assert!(subtitle.contains("Flatpak"), "{subtitle}");
+            assert!(
+                subtitle.contains("unconfined"),
+                "the user must be able to tell a confined Tilo app from an \
+                 unconfined host app without opening anything: {subtitle}"
+            );
+            assert!(subtitle.contains("com.spotify.Client"), "{subtitle}");
+        }
 
-    #[test]
-    fn a_system_app_row_names_system_provenance() {
-        let p = HostApplicationsProvider::new();
-        let system = HostApp {
-            source_label: "System",
-            ..app("org.gnome.Console", "Terminal")
-        };
-        let out = p.results_against("terminal", vec![system], &[]);
-        let subtitle = out[0].subtitle.as_deref().expect("a subtitle");
-        assert!(subtitle.starts_with("System · unconfined host app ·"));
-    }
+        // Phase `a_system_app_row_names_system_provenance`.
+        {
+            let p = HostApplicationsProvider::new();
+            let system = HostApp {
+                source_label: "System",
+                ..app("org.gnome.Console", "Terminal")
+            };
+            let out = p.results_against("terminal", vec![system], &[]);
+            let subtitle = out[0].subtitle.as_deref().expect("a subtitle");
+            assert!(subtitle.starts_with("System · unconfined host app ·"));
+        }
 
-    #[test]
-    fn host_apps_are_a_separate_kind_from_tilo_applications() {
-        let p = HostApplicationsProvider::new();
-        assert_eq!(p.resource_kinds(), &[ResourceKind::HostApplication]);
-        assert_eq!(ResourceKind::HostApplication.label(), "Host Apps");
-        assert_ne!(
-            ResourceKind::HostApplication.label(),
-            ResourceKind::Application.label()
-        );
-    }
+        // Phase `host_apps_are_a_separate_kind_from_tilo_applications`.
+        {
+            let p = HostApplicationsProvider::new();
+            assert_eq!(p.resource_kinds(), &[ResourceKind::HostApplication]);
+            assert_eq!(ResourceKind::HostApplication.label(), "Host Apps");
+            assert_ne!(
+                ResourceKind::HostApplication.label(),
+                ResourceKind::Application.label()
+            );
+        }
 
-    /// Equal-quality matches rank the confined app first — Enter takes the top row.
-    #[test]
-    fn a_host_app_scores_below_an_equally_good_tilo_match() {
-        use crate::shell::search::providers::applications::ApplicationsProvider;
-        let host = HostApplicationsProvider::new();
-        let tilo = ApplicationsProvider::new();
-        // Different name/id tail, so this measures the scale, not shadowing.
-        let host_rows =
-            host.results_against("term", vec![app("org.x.Terminator", "Terminator")], &[]);
-        let tilo_rows = tilo.results_for(
-            "term",
-            vec![crate::shell::launcher::InstalledApp {
-                package_id: "so.tilo.terminal".into(),
-                display_name: "Terminal".into(),
-                category: None,
-                version: "1".into(),
-                manifest_path: std::path::PathBuf::from("/x/manifest.toml"),
-                payload_root: std::path::PathBuf::from("/x"),
-                has_gui: true,
-                opens_extensions: Vec::new(),
-                opens_mime_types: Vec::new(),
-                opens_uri_schemes: Vec::new(),
-            }],
-            crate::shell::chrome_state::OpenTarget::Beside,
-        );
-        assert!(
-            tilo_rows[0].score > host_rows[0].score,
-            "tilo {} must outrank host {}",
-            tilo_rows[0].score,
-            host_rows[0].score
-        );
-    }
-
-    #[test]
-    fn keywords_and_categories_are_matchable() {
-        let p = HostApplicationsProvider::new();
-        let mut firefox = app("org.mozilla.firefox", "Firefox");
-        firefox.keywords = vec!["Internet".into(), "WWW".into()];
-        firefox.categories = vec!["Network".into(), "WebBrowser".into()];
-        let by_keyword = p.results_against("internet", vec![firefox.clone()], &[]);
-        assert_eq!(by_keyword.len(), 1, "{by_keyword:?}");
-        let by_category = p.results_against("webbrowser", vec![firefox], &[]);
-        assert_eq!(by_category.len(), 1, "{by_category:?}");
-        assert!(
-            by_keyword[0].score > by_category[0].score,
-            "a declared keyword is a stronger signal than a category bucket"
-        );
-    }
-
-    #[test]
-    fn an_empty_needle_lists_every_host_app() {
-        let p = HostApplicationsProvider::new();
-        let out = p.results_against("", vec![app("a.b.One", "One"), app("a.b.Two", "Two")], &[]);
-        assert_eq!(out.len(), 2);
-        assert!(out.iter().all(|r| r.score == 0));
-    }
-
-    #[test]
-    fn a_non_matching_needle_returns_nothing() {
-        let p = HostApplicationsProvider::new();
-        assert!(
-            p.results_against("zzzqqq", vec![app("com.spotify.Client", "Spotify")], &[])
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn unrequested_kind_returns_empty() {
-        let p = HostApplicationsProvider::new();
-        let c = chrome_rc();
-        let cs = c.borrow();
-        let doc = AutoCommit::new();
-        let out = p.query(SearchContext {
-            needle: "spotify",
-            wanted: &[ResourceKind::Application],
-            chrome: &cs,
-            doc: &doc,
-            doc_root: &automerge::ROOT,
-        });
-        assert!(
-            out.is_empty(),
-            "the Applications chip must not pull in host apps — that is \
-             the distinction the separate kind exists to draw"
-        );
+        // Phase `a_host_app_scores_below_an_equally_good_tilo_match`.
+        // Equal-quality matches rank the confined app first — Enter takes the top row.
+        {
+            use crate::shell::search::providers::applications::ApplicationsProvider;
+            let host = HostApplicationsProvider::new();
+            let tilo = ApplicationsProvider::new();
+            // Different name/id tail, so this measures the scale, not shadowing.
+            let host_rows =
+                host.results_against("term", vec![app("org.x.Terminator", "Terminator")], &[]);
+            let tilo_rows = tilo.results_for(
+                "term",
+                vec![crate::shell::launcher::InstalledApp {
+                    package_id: "so.tilo.terminal".into(),
+                    display_name: "Terminal".into(),
+                    category: None,
+                    version: "1".into(),
+                    manifest_path: std::path::PathBuf::from("/x/manifest.toml"),
+                    payload_root: std::path::PathBuf::from("/x"),
+                    has_gui: true,
+                    opens_extensions: Vec::new(),
+                    opens_mime_types: Vec::new(),
+                    opens_uri_schemes: Vec::new(),
+                }],
+                crate::shell::chrome_state::OpenTarget::Beside,
+            );
+            assert!(
+                tilo_rows[0].score > host_rows[0].score,
+                "tilo {} must outrank host {}",
+                tilo_rows[0].score,
+                host_rows[0].score
+            );
+        }
     }
 
     /// Must surface a visible error, not fail silently. Drives the
@@ -911,38 +892,41 @@ mod tests {
     }
 
     #[test]
-    fn only_an_exact_tilo_package_identity_hides_the_host_row() {
-        let installed = vec![installed("so.tilo.terminal", "Terminal")];
-        assert!(shadowed_by_a_tilo_package(
-            &app("so.tilo.terminal", "Terminal"),
-            &installed
-        ));
-    }
+    fn only_an_exact_tilo_package_identity_hides_a_host_row() {
+        // Phase `only_an_exact_tilo_package_identity_hides_the_host_row`.
+        {
+            let installed = vec![installed("so.tilo.terminal", "Terminal")];
+            assert!(shadowed_by_a_tilo_package(
+                &app("so.tilo.terminal", "Terminal"),
+                &installed
+            ));
+        }
 
-    #[test]
-    fn tilo_terminal_does_not_hide_a_distinct_host_terminal() {
-        let installed = vec![installed("so.tilo.terminal", "Terminal")];
-        assert!(!shadowed_by_a_tilo_package(
-            &app("org.gnome.Console", "Terminal"),
-            &installed
-        ));
-    }
+        // Phase `tilo_terminal_does_not_hide_a_distinct_host_terminal`.
+        {
+            let installed = vec![installed("so.tilo.terminal", "Terminal")];
+            assert!(!shadowed_by_a_tilo_package(
+                &app("org.gnome.Console", "Terminal"),
+                &installed
+            ));
+        }
 
-    #[test]
-    fn tilo_calendar_does_not_hide_gnome_calendar() {
-        let installed = vec![installed("so.tilo.calendar", "Calendar")];
-        assert!(!shadowed_by_a_tilo_package(
-            &app("org.gnome.Calendar", "Calendar"),
-            &installed
-        ));
-    }
+        // Phase `tilo_calendar_does_not_hide_gnome_calendar`.
+        {
+            let installed = vec![installed("so.tilo.calendar", "Calendar")];
+            assert!(!shadowed_by_a_tilo_package(
+                &app("org.gnome.Calendar", "Calendar"),
+                &installed
+            ));
+        }
 
-    #[test]
-    fn a_generic_shared_name_does_not_hide_a_host_app() {
-        let installed = vec![installed("so.tilo.notes", "Notes")];
-        assert!(!shadowed_by_a_tilo_package(
-            &app("org.example.PrivateNotes", "Notes"),
-            &installed
-        ));
+        // Phase `a_generic_shared_name_does_not_hide_a_host_app`.
+        {
+            let installed = vec![installed("so.tilo.notes", "Notes")];
+            assert!(!shadowed_by_a_tilo_package(
+                &app("org.example.PrivateNotes", "Notes"),
+                &installed
+            ));
+        }
     }
 }

@@ -10,12 +10,18 @@ image="${2:?missing signed ARM64 child}"
 output="${3:?missing output directory}"
 index_image="${4:-}"
 case "$profile" in
-  generic) [[ "$index_image" =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ]] \
+  generic) [[ "$index_image" =~ ^registry\.tilo\.so/tilo/tilo@sha256:[0-9a-f]{64}$ ]] \
     || die "generic target requires a signed generic release index" ;;
   lenovo-83ed) [ -z "$index_image" ] || die "Lenovo target is a single signed child" ;;
   *) die "unsupported installer target profile" ;;
 esac
-[[ "$image" =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ]] \
+# A board child carries private firmware and stays on the forge's private
+# registry; the generic child is public.
+case "$profile" in
+  generic) repository='registry\.tilo\.so/tilo/tilo' ;;
+  lenovo-83ed) repository='code\.tilo\.so/tilo/tilo' ;;
+esac
+[[ "$image" =~ ^${repository}@sha256:[0-9a-f]{64}$ ]] \
   || die "installer target must be the immutable CI ARM64 child manifest"
 [ ! -e "$output" ] && [ ! -L "$output" ] \
   || die "offline target output must not already exist"
@@ -103,7 +109,7 @@ else:
                      and details["builder"].get("id") == module.BUILDER_ID
                      and external.get("generation") == evidence["generation"]
                      and "hardwareProfile" not in external and "children" not in external
-                     and any(item.get("uri") == "git+ssh://code.podesta.ai/qos/qos@"
+                     and any(item.get("uri") == "git+ssh://code.tilo.so/tilo/tilo@"
                              + evidence["source_revision"] for item in dependencies)
                      and re.fullmatch(r"[0-9]+", details["metadata"]["invocationId"]) is not None
                      and any(item.get("name") == "independent-rebuild"
@@ -139,8 +145,8 @@ from pathlib import Path
 import sys
 
 profile, image, revision, generation, target = sys.argv[1:]
-origin = ("code.podesta.ai/qos/tilo:lenovo-83ed-" + revision if profile == "lenovo-83ed"
-          else "code.podesta.ai/qos/tilo:gen" + generation)
+origin = ("code.tilo.so/tilo/tilo:lenovo-83ed-" + revision if profile == "lenovo-83ed"
+          else "registry.tilo.so/tilo/tilo:gen" + generation)
 Path(target).write_text(json.dumps({
     "schema": "tilo.installer-offline-target.v1",
     "target_ref": image,

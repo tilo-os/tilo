@@ -793,14 +793,19 @@ fn format_compact(value: f64) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn quartiles_interpolate() {
-        let summary = Summary::from_samples(&[1.0, 2.0, 3.0, 4.0], 1.5).unwrap();
-        assert_eq!(summary.median, 2.5);
-        assert_eq!(summary.q1, 1.75);
-        assert_eq!(summary.q3, 3.25);
-    }
-    #[test]
-    fn empty_distribution_has_no_summary() {
-        assert!(Summary::from_samples(&[], 1.5).is_none());
+    fn distribution_summary_interpolates_quartiles_or_is_absent() {
+        fn quartiles_interpolate() {
+            let summary = Summary::from_samples(&[1.0, 2.0, 3.0, 4.0], 1.5).unwrap();
+            assert_eq!(summary.median, 2.5);
+            assert_eq!(summary.q1, 1.75);
+            assert_eq!(summary.q3, 3.25);
+        }
+
+        fn empty_distribution_has_no_summary() {
+            assert!(Summary::from_samples(&[], 1.5).is_none());
+        }
+
+        quartiles_interpolate();
+        empty_distribution_has_no_summary();
     }
 }

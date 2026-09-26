@@ -103,7 +103,7 @@ compatibility channel.
 
 App publication requires `TILO_PACKAGE_PUBLIC_BASE_URL`, set to the public
 HTTPS generic-package base (currently
-`https://code.podesta.ai/api/packages/qos/generic`). Registry traffic may use
+`https://code.tilo.so/api/packages/tilo/generic`). Registry traffic may use
 the runner's internal endpoint, but receipts and persisted collection-channel
 URLs always derive from this public base.
 
@@ -163,7 +163,7 @@ desktop payload publication does not release an OS version.
 ## Nightly OS publication
 
 Developers and agents build dev VMs from a published, signed OS image, so
-`code.podesta.ai/qos/tilo:latest` must not depend on someone remembering to
+`registry.tilo.so/tilo/tilo:latest` must not depend on someone remembering to
 dispatch CI. **Release / OS** therefore runs every night at 02:00 UTC on
 `main` and publishes a signed generation through exactly the protected manual
 `main` path: the same native `runner-large`/`runner-large-arm64`
@@ -214,7 +214,7 @@ two-architecture release per day and none on days without `main` changes.
 
 Dev VMs must not wait on release gating. Every branch build that gets past the
 image build pushes that image, unsigned, as
-`code.podesta.ai/qos/tilo-ci:<series>-<arch>`, where `<series>` is
+`registry.tilo.so/tilo/tilo-ci:<series>-<arch>`, where `<series>` is
 `main-<sha7>` on `main` and `<branch>-<sha7>` elsewhere. `tilo-ci` is a
 development-only repository: production policy
 (`os/etc/containers/policy.json`) rejects it, and
@@ -257,7 +257,7 @@ carry the release signature and provenance naming the source revision; a
 `-ci` tags, so it can never take a name a signed release would use. The disk
 manifest records `baseImage` and `baseTrust`. `tilo-vm vm create` takes the
 newest `main-*` tag that has a disk for the host's architecture. Dispatch
-`dev-disk.yml` with `base_image=code.podesta.ai/qos/tilo-ci:main-<sha7>-x86_64`
+`dev-disk.yml` with `base_image=registry.tilo.so/tilo/tilo-ci:main-<sha7>-x86_64`
 to rebuild a disk by hand.
 
 A manual **Release / OS** dispatch is build-only by default. Enable its
@@ -281,7 +281,7 @@ manual rehearsals retain the single generic x86-64 lane,
 so absent native release capacity does not block ordinary integration feedback.
 
 A publication reads the next generation from the signed published series and
-refuses to run when `code.podesta.ai/qos/tilo` does not exist, so a renamed
+refuses to run when `registry.tilo.so/tilo/tilo` does not exist, so a renamed
 or deleted repository can never silently restart the series at `gen1`. The
 very first publication therefore needs an explicit operator decision: set the
 repository variable `TILO_OS_SERIES_GENESIS_REVISION` to the full 40-hex
@@ -306,8 +306,8 @@ authority.
 
 `os/dev/publish-dev-disk.sh` then writes, for one architecture:
 
-- `code.podesta.ai/qos/tilo-vm:<tag>-<arch>`: the dev image child.
-- `code.podesta.ai/qos/tilo-vm:<tag>`: an OCI index of every child of `<tag>`
+- `registry.tilo.so/tilo/tilo-vm:<tag>-<arch>`: the dev image child.
+- `registry.tilo.so/tilo/tilo-vm:<tag>`: an OCI index of every child of `<tag>`
   published so far. It is rebuilt from the child tags, and each lane repeats
   that until a fresh read agrees, so it grows from one architecture to both
   without either lane waiting. The installed disk updates from this tag.
@@ -331,7 +331,7 @@ tag, `<series>-ci` for an integration build (`main-<sha7>-ci` on `main`), and
 To fetch a disk, use a Forgejo token with package read access:
 
 ```sh
-base=https://code.podesta.ai/api/packages/qos/generic/tilo-vm-disk/$TAG
+base=https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk/$TAG
 curl -fsSL -H "Authorization: token $FORGEJO_TOKEN" "$base/tilo-vm-disk-x86_64.json" -o tilo-vm-disk.json
 url=$(jq -er '.disks[] | select(.format == "qcow2") | .url' tilo-vm-disk.json)
 sha=$(jq -er '.disks[] | select(.format == "qcow2") | .sha256' tilo-vm-disk.json)
@@ -341,12 +341,20 @@ echo "$sha  tilo-vm.qcow2" | sha256sum --check --strict
 
 To find the current tag, read the `org.opencontainers.image.version` label of
 `tilo-vm:latest`, for example
-`skopeo inspect docker://code.podesta.ai/qos/tilo-vm:latest | jq -r '.Labels["org.opencontainers.image.version"]'`.
+`skopeo inspect docker://registry.tilo.so/tilo/tilo-vm:latest | jq -r '.Labels["org.opencontainers.image.version"]'`.
 
 ## Forgejo-specific rules
 
 - Do not add `permissions:`. Forgejo ignores it; repository capabilities belong
   in Authorized Integrations. OIDC jobs use `enable-openid-connect: true`.
+- Container images live on `registry.tilo.so/tilo/<image>`. Anyone may pull
+  them, so job containers and pulls carry no credentials. A job that pushes
+  logs in the way GitHub workflows log in to ghcr: `docker/login-action` with
+  `registry: registry.tilo.so`, `username: ${{ github.actor }}` and
+  `password: ${{ secrets.GITHUB_TOKEN }}` (or `podman`/`skopeo login` with the
+  same values). The registry's token service checks the job token against the
+  forge. Board (Lenovo) images and firmware carry private firmware and stay on
+  the forge's private registry at `code.tilo.so`.
 - App publication uses two narrowly restricted Forgejo Actions (Local)
   integrations: app release tags and manual dispatches from `main`. Their
   audiences are stored in `TILO_APP_RELEASE_TAG_AUDIENCE` and
@@ -368,7 +376,8 @@ To find the current tag, read the `org.opencontainers.image.version` label of
 - Dev VM disks are development artifacts, never release-signed, so
   `os/dev/publish-dev-disk.sh` (in the OS lane and in `dev-disk.yml`) uploads them with the CI account's package token
   (`secrets.REGISTRY_TOKEN`, as `build-kernel.yml` uses) rather than an
-  Authorized Integration, and needs no OIDC. Disk uploads go to
+  Authorized Integration; the job token pushes the dev image to
+  `registry.tilo.so`. Disk uploads go to
   `TILO_PACKAGE_PUBLIC_BASE_URL`, because the 100 GiB runners do not resolve the
   in-cluster Forgejo service.
 - Keep remote actions pinned to full commit hashes.

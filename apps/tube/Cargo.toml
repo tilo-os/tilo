@@ -50,9 +50,10 @@ libc.workspace = true
 # Live YouTube backend (off by default): rustypipe handles InnerTube requests
 # and botguard tokens without ffmpeg or yt-dlp.
 #
-# rustls with bundled webpki roots avoids an OpenSSL dependency and keeps the
-# TLS stack consistent with reqwest.
-rustypipe = { workspace = true, optional = true, features = ["rustls-tls-webpki-roots"] }
+# rustls without a bundled provider avoids OpenSSL and aws-lc: the client uses
+# the ring provider `tilo_net::install_crypto_provider` installs and the system
+# trust bundle, like the workspace's reqwest.
+rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 
 # Grayjay device sync uses the Noise protocol over TCP. `snow`, `flate2`, and
 # `base64` are gated behind `grayjay-sync`.
@@ -81,12 +82,9 @@ default = ["live", "media", "grayjay-sync"]
 # YouTube data via yt-dlp with rustypipe as a fallback source.
 live = ["dep:rustypipe"]
 # Video decode, playback, and audio through the shared GStreamer media engine.
-media = [
-    "media/decode",
-    # Desktop media integration: the watch-page player publishes now-playing +
-    # accepts media keys through the toolkit's MPRIS service.
-    "ui/mpris",
-]
+# The watch-page player publishes now-playing and accepts media keys through
+# the toolkit's MPRIS service, which `ui` always provides.
+media = ["media/decode"]
 # Grayjay account/device sync over Noise (TCP 12315 + pairing), including its
 # portal-backed lifecycle.
 grayjay-sync = [

@@ -16,14 +16,14 @@ pub fn launch() -> Result<(), String> {
 fn launch_executable(executable: &Path) -> Result<(), String> {
     let child = Command::new(executable)
         .arg("--private")
-        .env("QOS_BROWSER_PRIVATE", "1")
-        .env_remove("QOS_BROWSER_APP_ROOT")
-        .env_remove("QOS_CHROMIUM_PROFILE")
+        .env("TILO_BROWSER_PRIVATE", "1")
+        .env_remove("TILO_BROWSER_APP_ROOT")
+        .env_remove("TILO_CHROMIUM_PROFILE")
         // Runtime sockets belong to the parent process. The SDK closes them
         // across exec; their environment values must not reach a new window.
-        .env_remove("QOS_SVC_COLLAB_FD")
-        .env_remove("QOS_SVC_IDENTITY_FD")
-        .env_remove("QOS_RUNTIME_RESUME_LIVE")
+        .env_remove("TILO_SVC_COLLAB_FD")
+        .env_remove("TILO_SVC_IDENTITY_FD")
+        .env_remove("TILO_RUNTIME_RESUME_LIVE")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -59,19 +59,19 @@ mod tests {
         // Set parent-only runtime state in a subprocess; process-global env
         // mutation would race with other tests. A real attached parent has
         // these variables even though SDK sockets close during child exec.
-        if std::env::var_os("QOS_TEST_PRIVATE_LAUNCH_PARENT").is_none() {
+        if std::env::var_os("TILO_TEST_PRIVATE_LAUNCH_PARENT").is_none() {
             let result = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
                     "private_window::tests::launch_uses_only_private_mode_and_reaps_the_child",
                     "--nocapture",
                 ])
-                .env("QOS_TEST_PRIVATE_LAUNCH_PARENT", "1")
-                .env("QOS_SVC_COLLAB_FD", "998")
-                .env("QOS_SVC_IDENTITY_FD", "999")
-                .env("QOS_RUNTIME_RESUME_LIVE", "so.tilo.browser")
-                .env("QOS_RUNTIME_PROFILE", "/fixture/runtime")
-                .env("QOS_RUNTIME_BINARY", "/fixture/qos-runtime-mcp")
+                .env("TILO_TEST_PRIVATE_LAUNCH_PARENT", "1")
+                .env("TILO_SVC_COLLAB_FD", "998")
+                .env("TILO_SVC_IDENTITY_FD", "999")
+                .env("TILO_RUNTIME_RESUME_LIVE", "so.tilo.browser")
+                .env("TILO_RUNTIME_PROFILE", "/fixture/runtime")
+                .env("TILO_RUNTIME_BINARY", "/fixture/tilo-runtime-mcp")
                 .output()
                 .unwrap();
             assert!(
@@ -79,6 +79,12 @@ mod tests {
                 "private child launch failed: {} {}",
                 String::from_utf8_lossy(&result.stdout),
                 String::from_utf8_lossy(&result.stderr),
+            );
+            // libtest exits 0 when `--exact` selects nothing; require the child ran.
+            assert!(
+                String::from_utf8_lossy(&result.stdout).contains("test result: ok. 1 passed"),
+                "the child ran no test: {}",
+                String::from_utf8_lossy(&result.stdout)
             );
             return;
         }
@@ -88,7 +94,7 @@ mod tests {
         std::fs::write(
             &executable,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$@\" \"$QOS_BROWSER_PRIVATE\" \"$QOS_BROWSER_APP_ROOT\" \"$QOS_CHROMIUM_PROFILE\" \"$QOS_SVC_COLLAB_FD\" \"$QOS_SVC_IDENTITY_FD\" \"$QOS_RUNTIME_RESUME_LIVE\" \"$QOS_RUNTIME_PROFILE\" \"$QOS_RUNTIME_BINARY\" > '{capture}.tmp'\nmv '{capture}.tmp' '{capture}'\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$@\" \"$TILO_BROWSER_PRIVATE\" \"$TILO_BROWSER_APP_ROOT\" \"$TILO_CHROMIUM_PROFILE\" \"$TILO_SVC_COLLAB_FD\" \"$TILO_SVC_IDENTITY_FD\" \"$TILO_RUNTIME_RESUME_LIVE\" \"$TILO_RUNTIME_PROFILE\" \"$TILO_RUNTIME_BINARY\" > '{capture}.tmp'\nmv '{capture}.tmp' '{capture}'\n",
                 capture = capture.display()
             ),
         )
@@ -102,7 +108,7 @@ mod tests {
         let lines = std::fs::read_to_string(capture).unwrap();
         assert_eq!(
             lines,
-            "1\n--private\n1\n\n\n\n\n\n/fixture/runtime\n/fixture/qos-runtime-mcp\n"
+            "1\n--private\n1\n\n\n\n\n\n/fixture/runtime\n/fixture/tilo-runtime-mcp\n"
         );
     }
 }

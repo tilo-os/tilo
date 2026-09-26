@@ -222,6 +222,21 @@ pub fn local_physical_gamepads() -> Result<Vec<LocalPhysicalGamepadView>, String
     Ok(manager.views())
 }
 
+/// Controllers currently leased to a remote device. Local desktop navigation
+/// stays off for these so one press never acts in two places.
+pub fn forwarded_physical_gamepads() -> Vec<PhysicalGamepadId> {
+    manager().lock().map_or_else(
+        |_| Vec::new(),
+        |manager| {
+            manager
+                .active
+                .values()
+                .map(|active| active.source_id.clone())
+                .collect()
+        },
+    )
+}
+
 /// Begin forwarding after a trusted shell action. The source token is local
 /// and the app/workspace/session binding must have been derived from current
 /// compositor focus by the native integration.
@@ -479,111 +494,119 @@ mod tests {
     use os_actions::{GamepadAxis, GamepadButton};
 
     #[test]
-    fn backpressure_coalesces_motion_but_preserves_button_edges() {
-        let mut buffer = EventBuffer::default();
-        buffer
-            .push(ForwardedGamepadEvent::Axis {
-                axis: GamepadAxis::LeftX,
-                value: 10,
-            })
-            .unwrap();
-        buffer
-            .push(ForwardedGamepadEvent::Button {
-                button: GamepadButton::South,
-                pressed: true,
-            })
-            .unwrap();
-        buffer
-            .push(ForwardedGamepadEvent::Axis {
-                axis: GamepadAxis::LeftX,
-                value: 30,
-            })
-            .unwrap();
-        buffer
-            .push(ForwardedGamepadEvent::Button {
-                button: GamepadButton::South,
-                pressed: false,
-            })
-            .unwrap();
-        assert_eq!(
-            buffer.pop_front(),
-            Some(ForwardedGamepadEvent::Axis {
-                axis: GamepadAxis::LeftX,
-                value: 10
-            })
-        );
-        assert!(matches!(
-            buffer.pop_front(),
-            Some(ForwardedGamepadEvent::Button { pressed: true, .. })
-        ));
-        assert_eq!(
-            buffer.pop_front(),
-            Some(ForwardedGamepadEvent::Axis {
-                axis: GamepadAxis::LeftX,
-                value: 30
-            })
-        );
-        assert!(matches!(
-            buffer.pop_front(),
-            Some(ForwardedGamepadEvent::Button { pressed: false, .. })
-        ));
-    }
-
-    #[test]
-    fn consecutive_motion_coalesces_without_an_ordering_barrier() {
-        let mut buffer = EventBuffer::default();
-        for value in [10, 20, 30] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn gamepad_backpressure_coalesces_motion_and_hats_but_keeps_button_edges() {
+        fn backpressure_coalesces_motion_but_preserves_button_edges() {
+            let mut buffer = EventBuffer::default();
             buffer
                 .push(ForwardedGamepadEvent::Axis {
-                    axis: GamepadAxis::RightY,
-                    value,
+                    axis: GamepadAxis::LeftX,
+                    value: 10,
                 })
                 .unwrap();
-        }
-        assert_eq!(
-            buffer.pop_front(),
-            Some(ForwardedGamepadEvent::Axis {
-                axis: GamepadAxis::RightY,
-                value: 30
-            })
-        );
-        assert_eq!(buffer.pop_front(), None);
-    }
-
-    #[test]
-    fn button_edge_overflow_fails_closed() {
-        let mut buffer = EventBuffer::default();
-        for pressed in (0..EVENT_QUEUE_CAPACITY).map(|index| index % 2 == 0) {
             buffer
                 .push(ForwardedGamepadEvent::Button {
-                    button: GamepadButton::East,
-                    pressed,
-                })
-                .unwrap();
-        }
-        assert!(
-            buffer
-                .push(ForwardedGamepadEvent::Button {
-                    button: GamepadButton::East,
+                    button: GamepadButton::South,
                     pressed: true,
                 })
-                .is_err()
-        );
-    }
+                .unwrap();
+            buffer
+                .push(ForwardedGamepadEvent::Axis {
+                    axis: GamepadAxis::LeftX,
+                    value: 30,
+                })
+                .unwrap();
+            buffer
+                .push(ForwardedGamepadEvent::Button {
+                    button: GamepadButton::South,
+                    pressed: false,
+                })
+                .unwrap();
+            assert_eq!(
+                buffer.pop_front(),
+                Some(ForwardedGamepadEvent::Axis {
+                    axis: GamepadAxis::LeftX,
+                    value: 10
+                })
+            );
+            assert!(matches!(
+                buffer.pop_front(),
+                Some(ForwardedGamepadEvent::Button { pressed: true, .. })
+            ));
+            assert_eq!(
+                buffer.pop_front(),
+                Some(ForwardedGamepadEvent::Axis {
+                    axis: GamepadAxis::LeftX,
+                    value: 30
+                })
+            );
+            assert!(matches!(
+                buffer.pop_front(),
+                Some(ForwardedGamepadEvent::Button { pressed: false, .. })
+            ));
+        }
 
-    #[test]
-    fn hats_are_coalesced_as_one_atomic_semantic_event() {
-        let mut buffer = EventBuffer::default();
-        buffer
-            .push(ForwardedGamepadEvent::Hat { x: -1, y: 0 })
-            .unwrap();
-        buffer
-            .push(ForwardedGamepadEvent::Hat { x: 1, y: 1 })
-            .unwrap();
-        assert_eq!(
-            buffer.pop_front(),
-            Some(ForwardedGamepadEvent::Hat { x: 1, y: 1 })
-        );
-        assert_eq!(buffer.pop_front(), None);
+        fn consecutive_motion_coalesces_without_an_ordering_barrier() {
+            let mut buffer = EventBuffer::default();
+            for value in [10, 20, 30] {
+                buffer
+                    .push(ForwardedGamepadEvent::Axis {
+                        axis: GamepadAxis::RightY,
+                        value,
+                    })
+                    .unwrap();
+            }
+            assert_eq!(
+                buffer.pop_front(),
+                Some(ForwardedGamepadEvent::Axis {
+                    axis: GamepadAxis::RightY,
+                    value: 30
+                })
+            );
+            assert_eq!(buffer.pop_front(), None);
+        }
+
+        fn button_edge_overflow_fails_closed() {
+            let mut buffer = EventBuffer::default();
+            for pressed in (0..EVENT_QUEUE_CAPACITY).map(|index| index % 2 == 0) {
+                buffer
+                    .push(ForwardedGamepadEvent::Button {
+                        button: GamepadButton::East,
+                        pressed,
+                    })
+                    .unwrap();
+            }
+            assert!(
+                buffer
+                    .push(ForwardedGamepadEvent::Button {
+                        button: GamepadButton::East,
+                        pressed: true,
+                    })
+                    .is_err()
+            );
+        }
+
+        fn hats_are_coalesced_as_one_atomic_semantic_event() {
+            let mut buffer = EventBuffer::default();
+            buffer
+                .push(ForwardedGamepadEvent::Hat { x: -1, y: 0 })
+                .unwrap();
+            buffer
+                .push(ForwardedGamepadEvent::Hat { x: 1, y: 1 })
+                .unwrap();
+            assert_eq!(
+                buffer.pop_front(),
+                Some(ForwardedGamepadEvent::Hat { x: 1, y: 1 })
+            );
+            assert_eq!(buffer.pop_front(), None);
+        }
+
+        backpressure_coalesces_motion_but_preserves_button_edges();
+        consecutive_motion_coalesces_without_an_ordering_barrier();
+        button_edge_overflow_fails_closed();
+        hats_are_coalesced_as_one_atomic_semantic_event();
     }
 }

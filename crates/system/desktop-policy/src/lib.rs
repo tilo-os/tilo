@@ -19,6 +19,7 @@
 )]
 
 pub mod defaults;
+pub mod mimeapps;
 #[cfg(feature = "host-storage")]
 pub mod storage;
 
@@ -26,6 +27,7 @@ pub use defaults::{
     AppCandidate, DefaultAppError, DefaultAppResolver, DefaultAppSelection, PersonalDefaults,
     ResourceKind, UserWorkspaceChoice, WorkspaceDefaultPolicy, WorkspaceDefaults,
 };
+pub use mimeapps::{MimeAppsChain, MimeAppsList, host_app_id, host_desktop_id};
 #[cfg(feature = "host-storage")]
 pub use storage::{
     CleanupError, CleanupItem, CleanupKind, CleanupPreview, CleanupReport, StorageCategory,

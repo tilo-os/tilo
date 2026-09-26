@@ -207,35 +207,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn newest_progress_line_is_a_stable_polite_live_region() {
-        let log = StatusLog::new(
-            vec![
-                "Preparing encrypted storage…".into(),
-                "Creating your account…".into(),
-            ],
-            200.0,
-        );
-        let node = log.accessibility().expect("status semantics");
-        assert_eq!(node.name.as_deref(), Some("Creating your account…"));
-        assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
-        assert_eq!(
-            node.semantic_key.as_deref(),
-            Some("installer.install-status")
-        );
-    }
-
-    #[test]
-    fn failures_and_hardware_touch_prompts_are_assertive() {
-        for line in [
-            "error: target identity changed",
-            "Touch your security key to continue…",
-        ] {
-            let log = StatusLog::new(vec![line.into()], 200.0);
-            assert_eq!(
-                log.accessibility().and_then(|node| node.live),
-                Some(ui::a11y::Politeness::Assertive),
-                "did not announce {line:?} immediately"
+    fn status_log_live_region_politeness_follows_severity() {
+        // Phase `newest_progress_line_is_a_stable_polite_live_region`.
+        {
+            let log = StatusLog::new(
+                vec![
+                    "Preparing encrypted storage…".into(),
+                    "Creating your account…".into(),
+                ],
+                200.0,
             );
+            let node = log.accessibility().expect("status semantics");
+            assert_eq!(node.name.as_deref(), Some("Creating your account…"));
+            assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
+            assert_eq!(
+                node.semantic_key.as_deref(),
+                Some("installer.install-status")
+            );
+        }
+        // Phase `failures_and_hardware_touch_prompts_are_assertive`.
+        {
+            for line in [
+                "error: target identity changed",
+                "Touch your security key to continue…",
+            ] {
+                let log = StatusLog::new(vec![line.into()], 200.0);
+                assert_eq!(
+                    log.accessibility().and_then(|node| node.live),
+                    Some(ui::a11y::Politeness::Assertive),
+                    "did not announce {line:?} immediately"
+                );
+            }
         }
     }
 }

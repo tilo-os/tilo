@@ -76,7 +76,7 @@ pub const ACCENT_PALETTE: [[u8; 3]; 8] = [
     [244, 114, 182], // pink
 ];
 
-const TITLE: &str = "Create your qOS identity";
+const TITLE: &str = "Create your Tilo identity";
 const EXPLANATION: &str =
     "Your identity signs every action you take and lets you join shared channels.";
 const NAME_LABEL: &str = "Display name";
@@ -725,193 +725,201 @@ mod tests {
     use crate::widget::identity_flow::MemoryIdentityStore;
 
     #[test]
-    fn submit_disabled_until_name_provided() {
-        let s = CreateIdentityScreen::new();
-        assert!(!s.is_submit_enabled(), "empty name must disable submit");
-    }
-
-    #[test]
-    fn submit_disabled_for_whitespace_only_name() {
-        let mut s = CreateIdentityScreen::new();
-        s.set_display_name("   \t  ");
-        assert!(
-            !s.is_submit_enabled(),
-            "whitespace must be treated as empty"
-        );
-    }
-
-    #[test]
-    fn submit_to_store_creates_record() {
-        let mut s = CreateIdentityScreen::new();
-        s.set_display_name("alice");
-        s.set_accent_index(2);
-        let store = MemoryIdentityStore::new();
-        let rec = s.submit_to_store(&store).expect("submit must succeed");
-        assert_eq!(rec.display_name, "alice");
-        assert_eq!(rec.avatar_color, ACCENT_PALETTE[2]);
-        // Persisted into the store.
-        let loaded = store.load().unwrap().unwrap();
-        assert_eq!(loaded.display_name, "alice");
-        // Cached on the screen for the container to pick up.
-        assert!(s.last_record().is_some());
-    }
-
-    #[test]
-    fn submit_with_empty_name_errors() {
-        let mut s = CreateIdentityScreen::new();
-        let store = MemoryIdentityStore::new();
-        let err = s.submit_to_store(&store).unwrap_err();
-        assert!(matches!(err, IdentityFlowError::DecodeFailed(_)));
-        assert!(s.last_record().is_none());
-    }
-
-    #[test]
-    fn accent_index_clamps_to_palette_bound() {
-        let mut s = CreateIdentityScreen::new();
-        s.set_accent_index(99);
-        // Out-of-range index leaves the previous selection in place.
-        assert_eq!(s.selected_accent, 0);
-        s.set_accent_index(3);
-        assert_eq!(s.selected_accent, 3);
-    }
-
-    /// The rows the screen paints are the rows it hit-tests, laid on the
-    /// spacing scale: label → field one `s1` apart, groups `s6` apart, the
-    /// tiles under their label rather than centred on the card.
-    #[test]
-    fn plan_stacks_rows_on_the_spacing_scale_under_one_reading_edge() {
-        let mut s = CreateIdentityScreen::new();
-        s.submit_error = Some("boom".to_string());
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let body = Rect::new(100.0, 200.0, 620.0, 200.0);
-        let plan = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
-        let sp = &theme.tokens.spacing;
-        assert_eq!(plan.explanation.y0, body.y0);
-        assert!((plan.name_label.y0 - plan.explanation.y1 - f64::from(sp.s6)).abs() < 1e-9);
-        assert!((plan.input.y0 - plan.name_label.y1 - f64::from(sp.s1)).abs() < 1e-9);
-        assert_eq!(plan.input.height(), 34.0);
-        assert_eq!(plan.input.x0, body.x0);
-        assert_eq!(plan.input.x1, body.x1);
-        assert!((plan.accent_label.y0 - plan.input.y1 - f64::from(sp.s6)).abs() < 1e-9);
-        let first = plan.tiles.first().expect("eight tiles");
-        assert_eq!(
-            first.x0, plan.accent_label.x0,
-            "tiles start on the label's edge"
-        );
-        assert_eq!(first.width(), f64::from(sp.s8));
-        for pair in plan.tiles.windows(2) {
-            assert!((pair[1].x0 - pair[0].x1 - f64::from(sp.s2)).abs() < 1e-9);
+    fn create_identity_submit_validates_name_and_stores_record() {
+        fn submit_disabled_until_name_provided() {
+            let s = CreateIdentityScreen::new();
+            assert!(!s.is_submit_enabled(), "empty name must disable submit");
         }
-        let error = plan.error.expect("an error row when there is an error");
-        assert!(error.y0 > first.y1);
-        assert!((plan.bottom - error.y1).abs() < 1e-9);
-    }
 
-    /// The name field is the shared input, embedded: a click in its row
-    /// focuses it and hands the host its own node, typed keys land in its
-    /// value (and enable submit), Enter submits through the store, and the
-    /// field is the screen's addressable child.
-    #[test]
-    fn clicking_and_typing_drive_the_shared_field_and_enter_submits() {
-        use crate::widget::identity_flow::test_events as ev;
-        let theme = Theme::dark();
-        let store = MemoryIdentityStore::new();
-        let mut s = CreateIdentityScreen::new();
-        s.name.set_focus(false);
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map = HashMap::new();
-        let node = s.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(1280.0),
-                    height: taffy::AvailableSpace::Definite(800.0),
-                },
-            )
-            .expect("layout");
-        s.apply_layout(&taffy, node, Point::ORIGIN);
-        let field_node = s.name_node.expect("the field has a node");
-        assert!(
-            node_map.contains_key(&field_node),
-            "registered for the host"
-        );
-        assert_eq!(
-            s.children()
-                .iter()
-                .filter_map(|c| c.test_id())
-                .collect::<Vec<_>>(),
-            vec![NAME_INPUT_ID]
-        );
-
-        let mut doc = AutoCommit::new();
-        let mut send = |s: &mut CreateIdentityScreen, e: &WindowEvent| {
-            let mut handled = false;
-            let mut target = None;
-            let outcome = s.handle_event_screen(
-                e,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut doc,
-                &automerge::ROOT,
-                &mut handled,
-                &mut target,
-                node,
-                &taffy,
-                &store,
+        fn submit_disabled_for_whitespace_only_name() {
+            let mut s = CreateIdentityScreen::new();
+            s.set_display_name("   \t  ");
+            assert!(
+                !s.is_submit_enabled(),
+                "whitespace must be treated as empty"
             );
-            (outcome, target)
-        };
-        let centre = s.input_rect.center();
-        send(&mut s, &ev::cursor_at(centre));
-        let (_, target) = send(&mut s, &ev::left_press());
-        assert!(s.name.is_focused(), "a click in the row focuses the field");
-        assert_eq!(
-            target,
-            Some(field_node),
-            "and hands the host the field's node"
-        );
-        assert!(!s.is_submit_enabled());
-        send(&mut s, &ev::char("B"));
-        send(&mut s, &ev::char("o"));
-        assert_eq!(
-            s.display_name(),
-            "Bo",
-            "typed keys land in the shared field"
-        );
-        assert!(s.is_submit_enabled());
-        let (outcome, _) = send(&mut s, &ev::named(NamedKey::Enter));
-        assert!(matches!(outcome, ScreenOutcome::Advance), "Enter submits");
-        assert_eq!(s.last_record().map(|r| r.display_name.as_str()), Some("Bo"));
+        }
+
+        fn submit_to_store_creates_record() {
+            let mut s = CreateIdentityScreen::new();
+            s.set_display_name("alice");
+            s.set_accent_index(2);
+            let store = MemoryIdentityStore::new();
+            let rec = s.submit_to_store(&store).expect("submit must succeed");
+            assert_eq!(rec.display_name, "alice");
+            assert_eq!(rec.avatar_color, ACCENT_PALETTE[2]);
+            // Persisted into the store.
+            let loaded = store.load().unwrap().unwrap();
+            assert_eq!(loaded.display_name, "alice");
+            // Cached on the screen for the container to pick up.
+            assert!(s.last_record().is_some());
+        }
+
+        fn submit_with_empty_name_errors() {
+            let mut s = CreateIdentityScreen::new();
+            let store = MemoryIdentityStore::new();
+            let err = s.submit_to_store(&store).unwrap_err();
+            assert!(matches!(err, IdentityFlowError::DecodeFailed(_)));
+            assert!(s.last_record().is_none());
+        }
+
+        fn accent_index_clamps_to_palette_bound() {
+            let mut s = CreateIdentityScreen::new();
+            s.set_accent_index(99);
+            // Out-of-range index leaves the previous selection in place.
+            assert_eq!(s.selected_accent, 0);
+            s.set_accent_index(3);
+            assert_eq!(s.selected_accent, 3);
+        }
+
+        submit_disabled_until_name_provided();
+        submit_disabled_for_whitespace_only_name();
+        submit_to_store_creates_record();
+        submit_with_empty_name_errors();
+        accent_index_clamps_to_palette_bound();
     }
 
-    /// The pointer targets exist after the layout pass alone — a click
-    /// before the first paint hits the same rects the paint will draw.
     #[test]
-    fn hit_rects_are_resolved_by_apply_layout_without_a_paint() {
-        let theme = Theme::dark();
-        let mut s = CreateIdentityScreen::new();
-        s.set_display_name("Alice");
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map = HashMap::new();
-        let node = s.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(1280.0),
-                    height: taffy::AvailableSpace::Definite(800.0),
-                },
-            )
-            .expect("layout");
-        s.apply_layout(&taffy, node, Point::ORIGIN);
-        assert!(s.submit_rect.area() > 0.0, "the submit button is a target");
-        assert!(s.input_rect.area() > 0.0, "the name field is a target");
-        assert_eq!(s.tile_rects.len(), ACCENT_PALETTE.len());
-        assert!(
-            s.input_rect.y1 < s.submit_rect.y0,
-            "the field sits above the action row"
-        );
+    fn create_identity_layout_and_shared_field_input() {
+        /// The rows the screen paints are the rows it hit-tests, laid on the
+        /// spacing scale: label → field one `s1` apart, groups `s6` apart, the
+        /// tiles under their label rather than centred on the card.
+        fn plan_stacks_rows_on_the_spacing_scale_under_one_reading_edge() {
+            let mut s = CreateIdentityScreen::new();
+            s.submit_error = Some("boom".to_string());
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let body = Rect::new(100.0, 200.0, 620.0, 200.0);
+            let plan = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+            let sp = &theme.tokens.spacing;
+            assert_eq!(plan.explanation.y0, body.y0);
+            assert!((plan.name_label.y0 - plan.explanation.y1 - f64::from(sp.s6)).abs() < 1e-9);
+            assert!((plan.input.y0 - plan.name_label.y1 - f64::from(sp.s1)).abs() < 1e-9);
+            assert_eq!(plan.input.height(), 34.0);
+            assert_eq!(plan.input.x0, body.x0);
+            assert_eq!(plan.input.x1, body.x1);
+            assert!((plan.accent_label.y0 - plan.input.y1 - f64::from(sp.s6)).abs() < 1e-9);
+            let first = plan.tiles.first().expect("eight tiles");
+            assert_eq!(
+                first.x0, plan.accent_label.x0,
+                "tiles start on the label's edge"
+            );
+            assert_eq!(first.width(), f64::from(sp.s8));
+            for pair in plan.tiles.windows(2) {
+                assert!((pair[1].x0 - pair[0].x1 - f64::from(sp.s2)).abs() < 1e-9);
+            }
+            let error = plan.error.expect("an error row when there is an error");
+            assert!(error.y0 > first.y1);
+            assert!((plan.bottom - error.y1).abs() < 1e-9);
+        }
+
+        /// The name field is the shared input, embedded: a click in its row
+        /// focuses it and hands the host its own node, typed keys land in its
+        /// value (and enable submit), Enter submits through the store, and the
+        /// field is the screen's addressable child.
+        fn clicking_and_typing_drive_the_shared_field_and_enter_submits() {
+            use crate::widget::identity_flow::test_events as ev;
+            let theme = Theme::dark();
+            let store = MemoryIdentityStore::new();
+            let mut s = CreateIdentityScreen::new();
+            s.name.set_focus(false);
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map = HashMap::new();
+            let node = s.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(1280.0),
+                        height: taffy::AvailableSpace::Definite(800.0),
+                    },
+                )
+                .expect("layout");
+            s.apply_layout(&taffy, node, Point::ORIGIN);
+            let field_node = s.name_node.expect("the field has a node");
+            assert!(
+                node_map.contains_key(&field_node),
+                "registered for the host"
+            );
+            assert_eq!(
+                s.children()
+                    .iter()
+                    .filter_map(|c| c.test_id())
+                    .collect::<Vec<_>>(),
+                vec![NAME_INPUT_ID]
+            );
+
+            let mut doc = AutoCommit::new();
+            let mut send = |s: &mut CreateIdentityScreen, e: &WindowEvent| {
+                let mut handled = false;
+                let mut target = None;
+                let outcome = s.handle_event_screen(
+                    e,
+                    1.0,
+                    &winit::event::Modifiers::default(),
+                    &mut doc,
+                    &automerge::ROOT,
+                    &mut handled,
+                    &mut target,
+                    node,
+                    &taffy,
+                    &store,
+                );
+                (outcome, target)
+            };
+            let centre = s.input_rect.center();
+            send(&mut s, &ev::cursor_at(centre));
+            let (_, target) = send(&mut s, &ev::left_press());
+            assert!(s.name.is_focused(), "a click in the row focuses the field");
+            assert_eq!(
+                target,
+                Some(field_node),
+                "and hands the host the field's node"
+            );
+            assert!(!s.is_submit_enabled());
+            send(&mut s, &ev::char("B"));
+            send(&mut s, &ev::char("o"));
+            assert_eq!(
+                s.display_name(),
+                "Bo",
+                "typed keys land in the shared field"
+            );
+            assert!(s.is_submit_enabled());
+            let (outcome, _) = send(&mut s, &ev::named(NamedKey::Enter));
+            assert!(matches!(outcome, ScreenOutcome::Advance), "Enter submits");
+            assert_eq!(s.last_record().map(|r| r.display_name.as_str()), Some("Bo"));
+        }
+
+        /// The pointer targets exist after the layout pass alone — a click
+        /// before the first paint hits the same rects the paint will draw.
+        fn hit_rects_are_resolved_by_apply_layout_without_a_paint() {
+            let theme = Theme::dark();
+            let mut s = CreateIdentityScreen::new();
+            s.set_display_name("Alice");
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map = HashMap::new();
+            let node = s.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(1280.0),
+                        height: taffy::AvailableSpace::Definite(800.0),
+                    },
+                )
+                .expect("layout");
+            s.apply_layout(&taffy, node, Point::ORIGIN);
+            assert!(s.submit_rect.area() > 0.0, "the submit button is a target");
+            assert!(s.input_rect.area() > 0.0, "the name field is a target");
+            assert_eq!(s.tile_rects.len(), ACCENT_PALETTE.len());
+            assert!(
+                s.input_rect.y1 < s.submit_rect.y0,
+                "the field sits above the action row"
+            );
+        }
+
+        plan_stacks_rows_on_the_spacing_scale_under_one_reading_edge();
+        clicking_and_typing_drive_the_shared_field_and_enter_submits();
+        hit_rects_are_resolved_by_apply_layout_without_a_paint();
     }
 }

@@ -32,7 +32,7 @@ def present_rows(lines):
 
 
 def worker_summary(lines):
-    prefix = "qos-render-frame "
+    prefix = "tilo-render-frame "
     rows = [json.loads(line[len(prefix):]) for line in lines if line.startswith(prefix)]
     if not rows:
         raise ValueError("No worker outcome samples; rebuild with frame-outcome instrumentation")
@@ -55,7 +55,7 @@ def binary_hashes(bin_dir):
 
 
 def resource_summary(lines):
-    prefix = "qos-resource-stage "
+    prefix = "tilo-resource-stage "
     groups = {}
     for line in lines:
         if not line.startswith(prefix):
@@ -66,7 +66,7 @@ def resource_summary(lines):
             raise ValueError("Invalid resource timing sample")
         groups.setdefault(row["stage"], {}).setdefault(row["cache_result"], []).append(duration)
     if not groups:
-        raise ValueError("No resource-stage diagnostics; enable QOS_PROFILE_RESOURCES=1")
+        raise ValueError("No resource-stage diagnostics; enable TILO_PROFILE_RESOURCES=1")
     return {stage: {result: distribution(values, scale=0.001)
                     for result, values in outcomes.items()} for stage, outcomes in groups.items()}
 
@@ -81,9 +81,9 @@ def correlate_frames(frames, lines):
     worker = {}
     unprofiled = 0
     for line in lines:
-        if not line.startswith("qos-render-frame "):
+        if not line.startswith("tilo-render-frame "):
             continue
-        row = json.loads(line[len("qos-render-frame "):])
+        row = json.loads(line[len("tilo-render-frame "):])
         if "cpu_frame_id" not in row:
             raise ValueError("Missing CPU/worker correlation; rebuild instrumented apps")
         identity = row["cpu_frame_id"]
@@ -131,7 +131,7 @@ def report(output, events, bin_dir, hashes):
              "online": display.get("spdisplays_online")}
             for gpu in display_info.get("SPDisplaysDataType", [])
             for display in gpu.get("spdisplays_ndrvs", [])]
-    for app in ["dev.qos.photos", "dev.qos.word-processor"]:
+    for app in ["dev.tilo.photos", "dev.tilo.word-processor"]:
         samples = [e for e in events if e.get("event") == "action_sample" and e["phase"] == "measure" and e["app"] == app]
         if len(samples) != config["samples_per_app"] or not all(e["succeeded"] for e in samples):
             raise ValueError(f"Incomplete/failed action samples for {app}")

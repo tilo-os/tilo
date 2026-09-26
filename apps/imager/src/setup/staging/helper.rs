@@ -2128,46 +2128,52 @@ pub fn pending_records() -> Vec<super::record::Record> {
 mod tests {
     use super::*;
 
+    /// Helper elevation, mode entry and progress polling.
     #[test]
-    fn windows_elevation_quotes_both_paths_and_runs_only_the_helper_mode() {
-        assert!(WINDOWS_ELEVATION_SCRIPT.contains("'--tilo-staging-helper'"));
-        assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[1] + '\"')"));
-        assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[2] + '\"')"));
-        assert!(WINDOWS_ELEVATION_SCRIPT.contains("-Verb RunAs"));
-    }
+    fn staging_helper_mode_is_exact_and_polls_partial_writes() {
+        // Phase `windows_elevation_quotes_both_paths_and_runs_only_the_helper_mode`.
+        {
+            assert!(WINDOWS_ELEVATION_SCRIPT.contains("'--tilo-staging-helper'"));
+            assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[1] + '\"')"));
+            assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[2] + '\"')"));
+            assert!(WINDOWS_ELEVATION_SCRIPT.contains("-Verb RunAs"));
+        }
 
-    #[test]
-    fn poll_reads_progress_then_outcome_across_partial_writes() {
-        use std::io::Write;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("progress.jsonl");
-        let mut file = std::fs::File::create(&path).unwrap();
-        let mut running = Running::watch(path, None);
-        assert_eq!(running.poll(), Poll::default());
-        file.write_all(br#"{"step":"write-root","done_bytes":5,"total_bytes":10}"#)
-            .unwrap();
-        assert_eq!(running.poll().latest, None, "no newline yet");
-        file.write_all(b"\n{\"ok\":false,\"code\":\"plan-stale\",\"message\":\"x\"}\n")
-            .unwrap();
-        let poll = running.poll();
-        assert_eq!(
-            poll.latest,
-            Some(Progress {
-                step: Step::WriteRoot,
-                done_bytes: 5,
-                total_bytes: 10
-            })
-        );
-        assert_eq!(poll.outcome.unwrap().code.as_deref(), Some("plan-stale"));
-    }
+        // Phase `poll_reads_progress_then_outcome_across_partial_writes`.
+        {
+            use std::io::Write;
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("progress.jsonl");
+            let mut file = std::fs::File::create(&path).unwrap();
+            let mut running = Running::watch(path, None);
+            assert_eq!(running.poll(), Poll::default());
+            file.write_all(br#"{"step":"write-root","done_bytes":5,"total_bytes":10}"#)
+                .unwrap();
+            assert_eq!(running.poll().latest, None, "no newline yet");
+            file.write_all(b"\n{\"ok\":false,\"code\":\"plan-stale\",\"message\":\"x\"}\n")
+                .unwrap();
+            let poll = running.poll();
+            assert_eq!(
+                poll.latest,
+                Some(Progress {
+                    step: Step::WriteRoot,
+                    done_bytes: 5,
+                    total_bytes: 10
+                })
+            );
+            assert_eq!(poll.outcome.unwrap().code.as_deref(), Some("plan-stale"));
+        }
 
-    #[test]
-    fn helper_mode_is_only_entered_by_its_exact_argument() {
-        assert_eq!(maybe_run_staging_helper(&["imager".into()]).unwrap(), None);
-        assert_eq!(
-            maybe_run_staging_helper(&["imager".into(), "--other".into()]).unwrap(),
-            None
-        );
-        assert!(maybe_run_staging_helper(&["imager".into(), STAGING_HELPER_ARG.into()]).is_err());
+        // Phase `helper_mode_is_only_entered_by_its_exact_argument`.
+        {
+            assert_eq!(maybe_run_staging_helper(&["imager".into()]).unwrap(), None);
+            assert_eq!(
+                maybe_run_staging_helper(&["imager".into(), "--other".into()]).unwrap(),
+                None
+            );
+            assert!(
+                maybe_run_staging_helper(&["imager".into(), STAGING_HELPER_ARG.into()]).is_err()
+            );
+        }
     }
 }

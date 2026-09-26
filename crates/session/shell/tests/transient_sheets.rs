@@ -1,0 +1,335 @@
+//! Wire-level tests for transient toplevels: a toplevel with an xdg parent
+//! is a sheet on its parent's tile, never a tab of its own.
+
+use std::os::unix::net::UnixStream;
+use std::sync::Arc;
+
+use smithay::reexports::calloop::EventLoop;
+use smithay::reexports::wayland_server::Display;
+use vello::kurbo::Rect;
+use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
+use wayland_protocols::xdg::dialog::v1::client::{xdg_dialog_v1, xdg_wm_dialog_v1};
+use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+
+use shell::compositor::foreign::{PointRoute, store};
+
+#[derive(Default)]
+struct Client {
+    globals: Vec<(u32, String, u32)>,
+    keyboard_enter: Option<wl_surface::WlSurface>,
+    toplevel_configures: Vec<(u32, i32, i32)>,
+    closed: Vec<u32>,
+}
+
+impl Dispatch<wl_registry::WlRegistry, ()> for Client {
+    fn event(
+        state: &mut Self,
+        _: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_registry::Event::Global {
+            name,
+            interface,
+            version,
+        } = event
+        {
+            state.globals.push((name, interface, version));
+        }
+    }
+}
+
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
+    fn event(
+        state: &mut Self,
+        _: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_keyboard::Event::Enter { surface, .. } = event {
+            state.keyboard_enter = Some(surface);
+        }
+    }
+}
+
+impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Client {
+    fn event(
+        _: &mut Self,
+        base: &xdg_wm_base::XdgWmBase,
+        event: xdg_wm_base::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            base.pong(serial);
+        }
+    }
+}
+
+impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
+    fn event(
+        _: &mut Self,
+        surface: &xdg_surface::XdgSurface,
+        event: xdg_surface::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_surface::Event::Configure { serial } = event {
+            surface.ack_configure(serial);
+        }
+    }
+}
+
+impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Client {
+    fn event(
+        state: &mut Self,
+        toplevel: &xdg_toplevel::XdgToplevel,
+        event: xdg_toplevel::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let id = toplevel.id().protocol_id();
+        match event {
+            xdg_toplevel::Event::Configure { width, height, .. } => {
+                state.toplevel_configures.push((id, width, height));
+            }
+            xdg_toplevel::Event::Close => state.closed.push(id),
+            _ => {}
+        }
+    }
+}
+
+delegate_noop!(Client: ignore wl_compositor::WlCompositor);
+delegate_noop!(Client: ignore wl_surface::WlSurface);
+delegate_noop!(Client: ignore wl_seat::WlSeat);
+delegate_noop!(Client: ignore xdg_wm_dialog_v1::XdgWmDialogV1);
+delegate_noop!(Client: ignore xdg_dialog_v1::XdgDialogV1);
+
+struct Harness {
+    display: Display<shell::compositor::state::State>,
+    state: shell::compositor::state::State,
+    queue: wayland_client::EventQueue<Client>,
+    client: Client,
+    conn: Connection,
+    _event_loop: EventLoop<'static, shell::compositor::state::State>,
+}
+
+impl Harness {
+    fn new() -> Self {
+        let event_loop = EventLoop::try_new().expect("calloop");
+        let display = Display::new().expect("display");
+        let state = shell::compositor::state::State::new(event_loop.handle(), display.handle());
+        let (server, client) = UnixStream::pair().expect("socket pair");
+        display
+            .handle()
+            .insert_client(
+                server,
+                Arc::new(shell::compositor::state::ClientState::default()),
+            )
+            .expect("client insert");
+        client.set_nonblocking(true).expect("nonblocking");
+        let conn = Connection::from_socket(client).expect("client connection");
+        let queue = conn.new_event_queue::<Client>();
+        Self {
+            display,
+            state,
+            queue,
+            client: Client::default(),
+            conn,
+            _event_loop: event_loop,
+        }
+    }
+
+    fn pump(&mut self) {
+        for _ in 0..6 {
+            let _ = self.queue.flush();
+            let _ = self.display.dispatch_clients(&mut self.state);
+            let _ = self.display.flush_clients();
+            if let Some(guard) = self.conn.prepare_read() {
+                let _ = guard.read();
+            }
+            let _ = self.queue.dispatch_pending(&mut self.client);
+        }
+    }
+
+    fn bind<I: Proxy + 'static>(&self, interface: &str, version: u32) -> Option<I>
+    where
+        Client: Dispatch<I, ()>,
+    {
+        let (name, _, advertised) = self
+            .client
+            .globals
+            .iter()
+            .find(|(_, name, _)| name == interface)?
+            .clone();
+        let registry = self.conn.display().get_registry(&self.queue.handle(), ());
+        Some(registry.bind(name, version.min(advertised), &self.queue.handle(), ()))
+    }
+}
+
+fn foreign_tabs(state: &shell::compositor::state::State) -> Vec<(u64, String)> {
+    let tree = state.workspace_tree.read();
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .filter_map(|tab| match &tab.tile {
+            shell::shell::state::TileContent::Foreign { app_id, surface_id } => {
+                Some((*surface_id, app_id.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn opaque(w: u32, h: u32) -> Vec<u8> {
+    vec![255; usize::try_from(w.saturating_mul(h).saturating_mul(4)).expect("frame size")]
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered client/server transcript from dialog open to parent close"
+)]
+#[test]
+fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h
+        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
+        .expect("compositor");
+    let wm = h
+        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3)
+        .expect("xdg shell");
+    let dialogs = h
+        .bind::<xdg_wm_dialog_v1::XdgWmDialogV1>("xdg_wm_dialog_v1", 1)
+        .expect("xdg_wm_dialog_v1 must be advertised");
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
+    let qh = h.queue.handle();
+
+    let parent = compositor.create_surface(&qh, ());
+    let parent_xdg = wm.get_xdg_surface(&parent, &qh, ());
+    let parent_top = parent_xdg.get_toplevel(&qh, ());
+    parent_top.set_app_id("org.example.Editor".into());
+    parent.commit();
+    h.pump();
+    let tabs = foreign_tabs(&h.state);
+    assert_eq!(tabs.len(), 1, "the parent is a tab");
+    let parent_id = tabs[0].0;
+
+    // What GTK sends for "Save changes?": a toplevel, its parent, the modal
+    // hint, then the initial commit.
+    let child = compositor.create_surface(&qh, ());
+    let child_xdg = wm.get_xdg_surface(&child, &qh, ());
+    let child_top = child_xdg.get_toplevel(&qh, ());
+    child_top.set_app_id("org.example.Editor".into());
+    child_top.set_parent(Some(&parent_top));
+    let dialog = dialogs.get_xdg_dialog(&child_top, &qh, ());
+    dialog.set_modal();
+    child.commit();
+    h.pump();
+
+    assert_eq!(
+        foreign_tabs(&h.state)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>(),
+        vec![parent_id],
+        "a dialog never becomes a tab of its own"
+    );
+    let sheets = store().sheets_over(parent_id);
+    assert_eq!(sheets.len(), 1, "the dialog is a sheet on its parent");
+    let child_id = sheets[0].surface;
+    assert!(sheets[0].modal, "xdg_dialog_v1.set_modal reached the sheet");
+
+    // The sheet sizes itself: its initial configure carries no size.
+    shell::compositor::foreign::flush_configures(&mut h.state);
+    h.pump();
+    let child_proto = child_top.id().protocol_id();
+    assert!(
+        h.client
+            .toplevel_configures
+            .iter()
+            .any(|&(id, w, hgt)| id == child_proto && w == 0 && hgt == 0),
+        "the sheet was configured to choose its own size: {:?}",
+        h.client.toplevel_configures
+    );
+
+    // Frames as the capture path publishes them, and the parent's tile.
+    store().publish_rgba(parent_id, &opaque(800, 600), 800, 600);
+    store().publish_rgba(child_id, &opaque(300, 120), 300, 120);
+    let tile = Rect::new(100.0, 80.0, 900.0, 680.0);
+    store().note_placement(parent_id, tile);
+
+    // The rect the control socket's state dump reports for the sheet.
+    let rects = store().sheet_rects(parent_id);
+    assert_eq!(rects.len(), 1);
+    let (link, sheet_rect) = rects[0];
+    assert_eq!(link.surface, child_id);
+    assert!(
+        sheet_rect.x0 >= tile.x0
+            && sheet_rect.y0 >= tile.y0
+            && sheet_rect.x1 <= tile.x1
+            && sheet_rect.y1 <= tile.y1,
+        "the sheet {sheet_rect:?} sits inside its parent's tile {tile:?}"
+    );
+    assert_eq!(sheet_rect.center(), tile.center(), "and is centred on it");
+
+    // Modal: the dimmed parent gets nothing, the sheet gets its own clicks.
+    assert_eq!(
+        store().route_point(parent_id, 5.0, 5.0),
+        PointRoute::Blocked
+    );
+    let local = store()
+        .sheet_rect_in_root(parent_id, child_id)
+        .expect("sheet rect in the parent's frame");
+    assert!(matches!(
+        store().route_point(parent_id, local.x0 + 4.0, local.y0 + 4.0),
+        PointRoute::Surface { surface, .. } if surface == child_id
+    ));
+
+    // Focusing the tile types into the sheet.
+    h.state.set_client_keyboard_focus(Some(parent_id));
+    h.pump();
+    assert_eq!(h.state.client_input.keyboard_focus(), Some(child_id));
+    assert_eq!(
+        h.client.keyboard_enter.as_ref().map(Proxy::id),
+        Some(child.id()),
+        "the client saw keyboard enter on the dialog"
+    );
+
+    // Dropping the modal hint gives the parent its pointer back.
+    dialog.unset_modal();
+    h.pump();
+    assert_eq!(store().route_point(parent_id, 5.0, 5.0), PointRoute::Root);
+
+    // Closing the parent asks the dialog to close too; until it does, it is
+    // a window of its own rather than an unreachable one.
+    parent_top.destroy();
+    parent_xdg.destroy();
+    parent.destroy();
+    h.pump();
+    assert!(
+        h.client.closed.contains(&child_proto),
+        "the dialog was asked to close with its parent"
+    );
+    assert!(!store().is_sheet(child_id));
+    assert_eq!(
+        foreign_tabs(&h.state)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>(),
+        vec![child_id]
+    );
+}

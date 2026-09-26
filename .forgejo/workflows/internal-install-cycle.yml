@@ -59,7 +59,7 @@ jobs:
       TILO_INTERNAL_CYCLE_RELEASE_TAG: imager-v0.0.${{ github.run_number }}
       TILO_INTERNAL_CYCLE_RUN_ID: dispatch-${{ github.run_id }}-${{ github.run_attempt }}
       TILO_INTERNAL_CYCLE_STORAGE_ROOT: /var/tmp/tilo-internal-cycle-dispatch-${{ github.run_id }}-${{ github.run_attempt }}
-      TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'qos' }}
+      TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'tilo' }}
       TILO_ACCEL: kvm
       TILO_DISTROBOX: ""
       TILO_MEM: "8192"
@@ -111,7 +111,7 @@ jobs:
           test -n "$TILO_REGISTRY_TOKEN"
           umask 077
           printf '%s' "$TILO_REGISTRY_TOKEN" | podman login \
-            --authfile "$REGISTRY_AUTH_FILE" code.podesta.ai \
+            --authfile "$REGISTRY_AUTH_FILE" code.tilo.so \
             --username '${{ github.actor }}' --password-stdin
           trap 'rm -f -- "$REGISTRY_AUTH_FILE"' EXIT
           ./os/dev/use-published-image.sh "$TILO_PUBLISHED_OS_IMAGE" >/dev/null

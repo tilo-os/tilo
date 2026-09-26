@@ -15,7 +15,7 @@ use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
@@ -25,13 +25,12 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::virtual_viewport::{
-    DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
+    DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, TaffyTreeExt, Widget};
 
 const DEFAULT_VIEWPORT_HEIGHT: f64 = 320.0;
-const WHEEL_LINE_PX: f64 = 60.0;
 const BAR_THICKNESS: f64 = 8.0;
 const BAR_MARGIN: f64 = 2.0;
 
@@ -1398,29 +1397,21 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseWheel { delta, .. }
+            WindowEvent::MouseWheel { delta, phase, .. }
                 if self
                     .last_cursor
                     .is_some_and(|point| self.rect.contains(point)) =>
             {
-                let delta = match delta {
-                    MouseScrollDelta::LineDelta(_, y) if !self.reduce_motion => {
-                        self.momentum.push(f64::from(*y) * -WHEEL_LINE_PX)
-                    }
-                    MouseScrollDelta::LineDelta(_, y) => {
-                        self.momentum.stop();
-                        f64::from(*y) * -WHEEL_LINE_PX
-                    }
-                    MouseScrollDelta::PixelDelta(position) => {
-                        self.momentum.stop();
-                        -position.y
-                    }
-                };
                 self.last_tick = Some(crate::time::now());
-                *handled = self.scroll_by(delta);
-                if !*handled {
-                    self.momentum.stop();
-                }
+                *handled = match self.momentum.wheel(delta, *phase, self.reduce_motion) {
+                    WheelStep::Scroll(delta) => {
+                        let moved = self.scroll_by(delta);
+                        self.momentum.wheel_applied(delta, moved);
+                        moved
+                    }
+                    WheelStep::Fling => true,
+                    WheelStep::Ignored => false,
+                };
             }
             WindowEvent::KeyboardInput { event, .. }
                 if self.is_focused && event.state == ElementState::Pressed =>
@@ -1650,6 +1641,7 @@ mod tests {
     use crate::time::Duration;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+    use winit::event::MouseScrollDelta;
 
     use taffy::AvailableSpace;
     use winit::dpi::PhysicalPosition;
@@ -1944,314 +1936,391 @@ mod tests {
     }
 
     #[test]
-    fn sync_retains_built_row_nodes_and_invalidates_same_key_replacements() {
-        let states = Rc::new(RefCell::new(HashMap::new()));
-        let model = PagedList {
-            count: 1,
-            states: states.clone(),
-            requests: Rc::default(),
-            changed: Rc::default(),
-            pending: Rc::default(),
-        };
-        let mut list = VirtualList::new(model, 24.0, |_, _, key| {
-            Box::new(crate::widget::Button::new(&key.to_string(), "Row", None))
-        })
-        .with_viewport_height(48.0);
-        let _ = lay_out(&mut list, 300.0);
-        list.take_structure_dirty();
-        let before = list.mounted[0].node;
-        assert!(before.is_some());
-        let mut doc = AutoCommit::new();
-        list.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            list.mounted[0].node, before,
-            "sync preserves a retained row's layout node"
-        );
-        list.take_structure_dirty();
-        states.borrow_mut().insert(0, 1);
-        list.sync(&mut doc, &automerge::ROOT);
-        assert!(list.mounted[0].node.is_none());
-        assert!(
-            list.take_structure_dirty(),
-            "same key with new state replaces a delegate and invalidates topology"
-        );
-    }
+    fn list_models_keep_stable_unique_keys_through_mutation_and_restore() {
+        // Case `vec_model_rejects_duplicate_keys`.
+        {
+            let result = VecListModel::new(vec![1, 1], |value| *value);
+            assert!(matches!(result, Err(DuplicateListKey)));
+        }
 
-    #[test]
-    fn vec_model_rejects_duplicate_keys() {
-        let result = VecListModel::new(vec![1, 1], |value| *value);
-        assert!(matches!(result, Err(DuplicateListKey)));
-    }
+        // Case `restored_selection_discards_keys_absent_from_the_model`.
+        {
+            let mut selection = KeySelection::new();
+            selection.toggle(1_u64);
+            selection.toggle(99_u64);
+            let list = VirtualList::new(HugeList { count: 10 }, 24.0, |_, index, _| {
+                Box::new(crate::widget::Text::new(&format!("Item {index}")))
+            })
+            .with_selection(selection);
 
-    #[test]
-    fn restored_selection_discards_keys_absent_from_the_model() {
-        let mut selection = KeySelection::new();
-        selection.toggle(1_u64);
-        selection.toggle(99_u64);
-        let list = VirtualList::new(HugeList { count: 10 }, 24.0, |_, index, _| {
-            Box::new(crate::widget::Text::new(&format!("Item {index}")))
-        })
-        .with_selection(selection);
+            assert!(list.selection().is_selected(&1));
+            assert!(!list.selection().is_selected(&99));
+            assert_eq!(list.selection().len(10), 1);
+        }
 
-        assert!(list.selection().is_selected(&1));
-        assert!(!list.selection().is_selected(&99));
-        assert_eq!(list.selection().len(10), 1);
-    }
+        // Case `owned_model_mutations_keep_key_index_consistent`.
+        {
+            let mut model = VecListModel::new(vec!["a", "b", "c"], |value| *value).unwrap();
+            assert!(model.move_item(0, 2));
+            assert_eq!(model.key_at(2), Some("a"));
+            assert_eq!(model.index_of(&"b"), Some(0));
+            assert_eq!(model.remove(1), Some("c"));
+            assert_eq!(model.index_of(&"a"), Some(1));
+            assert!(model.push("d", "d").is_ok());
+            assert_eq!(model.index_of(&"d"), Some(2));
+            assert_eq!(model.push("d", "duplicate"), Err(DuplicateListKey));
+        }
 
-    #[test]
-    fn owned_model_mutations_keep_key_index_consistent() {
-        let mut model = VecListModel::new(vec!["a", "b", "c"], |value| *value).unwrap();
-        assert!(model.move_item(0, 2));
-        assert_eq!(model.key_at(2), Some("a"));
-        assert_eq!(model.index_of(&"b"), Some(0));
-        assert_eq!(model.remove(1), Some("c"));
-        assert_eq!(model.index_of(&"a"), Some(1));
-        assert!(model.push("d", "d").is_ok());
-        assert_eq!(model.index_of(&"d"), Some(2));
-        assert_eq!(model.push("d", "duplicate"), Err(DuplicateListKey));
-    }
-
-    #[test]
-    fn from_items_is_a_typed_one_call_list_constructor() {
-        let list = VirtualList::from_items(
-            vec![(7_u64, "seven")],
-            24.0,
-            |item| item.0,
-            |item, _, _| Box::new(ProbeRow::new(item.1, 24.0, false, Rc::new(Cell::new(0)))),
-        )
-        .unwrap()
-        .with_id("contacts-list");
-        assert_eq!(list.model().key_at(0), Some(7));
-        assert_eq!(Widget::test_id(&list), Some("contacts-list"));
-    }
-
-    #[test]
-    fn semantic_row_actions_use_encoded_stable_keys() {
-        let activated = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&activated);
-        let model = VecListModel::new(vec![10_u64, 20], |key| *key).unwrap();
-        let mut list = VirtualList::new(model, 24.0, |_, _, key| {
-            Box::new(ProbeRow::new(
-                key.to_string(),
+        // Case `from_items_is_a_typed_one_call_list_constructor`.
+        {
+            let list = VirtualList::from_items(
+                vec![(7_u64, "seven")],
                 24.0,
-                false,
-                Rc::new(Cell::new(0)),
-            ))
-        })
-        .with_viewport_height(100.0)
-        .with_semantic_key(u64::to_string)
-        .on_activate(move |key| captured.borrow_mut().push(key));
-        let _ = lay_out(&mut list, 300.0);
+                |item| item.0,
+                |item, _, _| Box::new(ProbeRow::new(item.1, 24.0, false, Rc::new(Cell::new(0)))),
+            )
+            .unwrap()
+            .with_id("contacts-list");
+            assert_eq!(list.model().key_at(0), Some(7));
+            assert_eq!(Widget::test_id(&list), Some("contacts-list"));
+        }
 
-        let semantics = Widget::accessibility(&list).expect("list semantics");
-        assert_eq!(
-            semantics.children[1].action_target.as_deref(),
-            Some("key:20")
-        );
-        assert!(Widget::perform_semantic_action(
-            &mut list,
-            "key:20",
-            &crate::a11y::Action::Focus,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert_eq!(list.focused_key, Some(20));
-        assert!(Widget::perform_semantic_action(
-            &mut list,
-            "key:20",
-            &crate::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert!(list.selection().is_selected(&20));
-        assert_eq!(&*activated.borrow(), &[20]);
-    }
-
-    #[test]
-    fn semantic_rows_use_the_same_scrolled_variable_height_geometry_as_layout() {
-        let model = VecListModel::new(vec![1_u64, 2, 3], |key| *key).unwrap();
-        let mut list = VirtualList::new(model, 24.0, |_, _, key| {
-            Box::new(ProbeRow::new(
-                key.to_string(),
-                24.0,
-                false,
-                Rc::new(Cell::new(0)),
-            ))
-        })
-        .with_viewport_height(48.0);
-        list.set_scroll_offset(10.0);
-        let _ = lay_out(&mut list, 300.0);
-
-        let semantics = Widget::accessibility(&list).expect("list semantics");
-        let first = semantics.children.first().expect("first mounted row");
-        assert_eq!(
-            first.bounds.expect("row bounds").to_rect(),
-            Rect::new(0.0, -10.0, 300.0, 14.0)
-        );
-        assert_eq!(
-            list.mounted[0].widget.get_rect(),
-            first.bounds.expect("row bounds").to_rect(),
-            "semantic and retained delegate geometry agree",
-        );
-    }
-
-    #[test]
-    fn page_navigation_scrolls_inside_a_tall_row_without_changing_its_key() {
-        let model = VecListModel::new(vec![1_u64, 2, 3], |key| *key).unwrap();
-        let mut list = VirtualList::new(model, 24.0, |_, _, key| {
-            Box::new(ProbeRow::new(
-                key.to_string(),
-                24.0,
-                false,
-                Rc::new(Cell::new(0)),
-            ))
-        })
-        .with_viewport_height(100.0);
-        assert!(list.set_row_height(0, 300.0));
-        list.focused_key = Some(1);
-
-        assert!(list.on_key(&Key::Named(NamedKey::PageDown), false, false));
-        assert_eq!(list.focused_key, Some(1));
-        assert_eq!(list.scroll_offset(), 90.0);
-        assert!(list.on_key(&Key::Named(NamedKey::PageUp), false, false));
-        assert_eq!(list.focused_key, Some(1));
-        assert_eq!(list.scroll_offset(), 0.0);
-    }
-
-    #[test]
-    fn hundred_million_rows_mount_only_the_visible_widget_window() {
-        let builds = Rc::new(Cell::new(0_usize));
-        let captured = Rc::clone(&builds);
-        let presses = Rc::new(Cell::new(0));
-        let mut list = VirtualList::new(HugeList { count: 100_000_000 }, 20.0, move |_, _, key| {
-            captured.set(captured.get().saturating_add(1));
-            Box::new(ProbeRow::new(
-                format!("row {key}"),
-                20.0,
-                false,
-                Rc::clone(&presses),
-            ))
-        })
-        .with_viewport_height(100.0);
-        list.set_scroll_offset(50_000_000.0 * 20.0);
-        let _ = lay_out(&mut list, 300.0);
-
-        assert_eq!(list.model().len(), 100_000_000);
-        assert!(list.mounted_len() <= 10);
-        assert_eq!(builds.get(), list.mounted_len());
-        assert!(list.visible_range().len() <= 10);
-        let top = list.scrollbar_thumb().expect("overflow has a scrollbar");
-        list.set_scroll_offset(list.max_scroll_offset());
-        let bottom = list.scrollbar_thumb().expect("scrollbar remains visible");
-        assert!(bottom.y0 > top.y0);
-        assert!((bottom.y1 - (list.rect.y1 - BAR_MARGIN)).abs() < 0.001);
-    }
-
-    #[test]
-    fn paged_hundred_million_row_list_requests_only_the_window_and_wakes_on_state_changes() {
-        let states = Rc::new(RefCell::new(HashMap::new()));
-        let requests = Rc::new(RefCell::new(Vec::new()));
-        let changed = Rc::new(Cell::new(false));
-        let pending = Rc::new(Cell::new(true));
-        let builds = Rc::new(RefCell::new(Vec::new()));
-        let captured_builds = Rc::clone(&builds);
-        let model = PagedList {
-            count: 100_000_000,
-            states: Rc::clone(&states),
-            requests: Rc::clone(&requests),
-            changed: Rc::clone(&changed),
-            pending: Rc::clone(&pending),
-        };
-        let mut list = VirtualList::new_async(model, 20.0, move |_, _, key, state| {
-            let label = match state {
-                ListRowState::Ready => format!("ready {key}"),
-                ListRowState::Loading => format!("loading {key}"),
-                ListRowState::Error(message) => format!("error {key}: {message}"),
+        // Case `sync_retains_built_row_nodes_and_invalidates_same_key_replacements`.
+        {
+            let states = Rc::new(RefCell::new(HashMap::new()));
+            let model = PagedList {
+                count: 1,
+                states: states.clone(),
+                requests: Rc::default(),
+                changed: Rc::default(),
+                pending: Rc::default(),
             };
-            captured_builds.borrow_mut().push(label.clone());
-            Box::new(ProbeRow::new(label, 20.0, false, Rc::new(Cell::new(0))))
-        })
-        .with_viewport_height(40.0)
-        .with_semantic_key(u64::to_string);
-
-        let _ = lay_out(&mut list, 300.0);
-        assert!(list.mounted_len() <= 6);
-        assert!(
-            requests.borrow().iter().all(|range| range.len() <= 6),
-            "fetch requests stay bounded to the sparse viewport"
-        );
-        assert_eq!(requests.borrow().len(), 1, "one request per window");
-        let _ = lay_out(&mut list, 300.0);
-        assert_eq!(
-            requests.borrow().len(),
-            1,
-            "repeat layout does not enqueue the same window again"
-        );
-        let semantics = Widget::accessibility(&list).unwrap();
-        assert!(semantics.children[0].state.busy);
-        assert!(!Widget::perform_semantic_action(
-            &mut list,
-            "key:0",
-            &crate::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert!(Widget::needs_animation_frame(&list));
-
-        states.borrow_mut().insert(0, 1);
-        pending.set(false);
-        changed.set(true);
-        assert!(Widget::update(
-            &mut list,
-            &mut AutoCommit::new(),
-            &automerge::ROOT
-        ));
-        let _ = lay_out(&mut list, 300.0);
-        assert_eq!(
-            requests.borrow().len(),
-            2,
-            "a model wakeup may refill the same window once"
-        );
-        let semantics = Widget::accessibility(&list).unwrap();
-        assert!(!semantics.children[0].state.busy);
-        assert!(!semantics.children[0].state.invalid);
-        assert!(builds.borrow().iter().any(|label| label == "ready 0"));
-        assert!(Widget::perform_semantic_action(
-            &mut list,
-            "key:0",
-            &crate::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-
-        states.borrow_mut().insert(1, 2);
-        changed.set(true);
-        assert!(Widget::update(
-            &mut list,
-            &mut AutoCommit::new(),
-            &automerge::ROOT
-        ));
-        let _ = lay_out(&mut list, 300.0);
-        let semantics = Widget::accessibility(&list).unwrap();
-        assert!(semantics.children[1].state.invalid);
-        assert_eq!(
-            semantics.children[1].description.as_deref(),
-            Some("Fetch failed")
-        );
-        assert!(!Widget::needs_animation_frame(&list));
+            let mut list = VirtualList::new(model, 24.0, |_, _, key| {
+                Box::new(crate::widget::Button::new(&key.to_string(), "Row", None))
+            })
+            .with_viewport_height(48.0);
+            let _ = lay_out(&mut list, 300.0);
+            list.take_structure_dirty();
+            let before = list.mounted[0].node;
+            assert!(before.is_some());
+            let mut doc = AutoCommit::new();
+            list.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(
+                list.mounted[0].node, before,
+                "sync preserves a retained row's layout node"
+            );
+            list.take_structure_dirty();
+            states.borrow_mut().insert(0, 1);
+            list.sync(&mut doc, &automerge::ROOT);
+            assert!(list.mounted[0].node.is_none());
+            assert!(
+                list.take_structure_dirty(),
+                "same key with new state replaces a delegate and invalidates topology"
+            );
+        }
     }
 
     #[test]
-    fn mounted_widgets_follow_stable_keys_across_reorder() {
-        let keys = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
-        let builds = Rc::new(Cell::new(0_usize));
-        let captured = Rc::clone(&builds);
-        let mut list = VirtualList::new(
-            SharedOrder {
-                keys: Rc::clone(&keys),
-            },
-            20.0,
-            move |_, _, key| {
+    fn semantic_rows_share_scrolled_variable_geometry_and_stable_key_actions() {
+        // Case `semantic_row_actions_use_encoded_stable_keys`.
+        {
+            let activated = Rc::new(RefCell::new(Vec::new()));
+            let captured = Rc::clone(&activated);
+            let model = VecListModel::new(vec![10_u64, 20], |key| *key).unwrap();
+            let mut list = VirtualList::new(model, 24.0, |_, _, key| {
+                Box::new(ProbeRow::new(
+                    key.to_string(),
+                    24.0,
+                    false,
+                    Rc::new(Cell::new(0)),
+                ))
+            })
+            .with_viewport_height(100.0)
+            .with_semantic_key(u64::to_string)
+            .on_activate(move |key| captured.borrow_mut().push(key));
+            let _ = lay_out(&mut list, 300.0);
+
+            let semantics = Widget::accessibility(&list).expect("list semantics");
+            assert_eq!(
+                semantics.children[1].action_target.as_deref(),
+                Some("key:20")
+            );
+            assert!(Widget::perform_semantic_action(
+                &mut list,
+                "key:20",
+                &crate::a11y::Action::Focus,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert_eq!(list.focused_key, Some(20));
+            assert!(Widget::perform_semantic_action(
+                &mut list,
+                "key:20",
+                &crate::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert!(list.selection().is_selected(&20));
+            assert_eq!(&*activated.borrow(), &[20]);
+        }
+
+        // Case `semantic_rows_use_the_same_scrolled_variable_height_geometry_as_layout`.
+        {
+            let model = VecListModel::new(vec![1_u64, 2, 3], |key| *key).unwrap();
+            let mut list = VirtualList::new(model, 24.0, |_, _, key| {
+                Box::new(ProbeRow::new(
+                    key.to_string(),
+                    24.0,
+                    false,
+                    Rc::new(Cell::new(0)),
+                ))
+            })
+            .with_viewport_height(48.0);
+            list.set_scroll_offset(10.0);
+            let _ = lay_out(&mut list, 300.0);
+
+            let semantics = Widget::accessibility(&list).expect("list semantics");
+            let first = semantics.children.first().expect("first mounted row");
+            assert_eq!(
+                first.bounds.expect("row bounds").to_rect(),
+                Rect::new(0.0, -10.0, 300.0, 14.0)
+            );
+            assert_eq!(
+                list.mounted[0].widget.get_rect(),
+                first.bounds.expect("row bounds").to_rect(),
+                "semantic and retained delegate geometry agree",
+            );
+        }
+
+        // Case `page_navigation_scrolls_inside_a_tall_row_without_changing_its_key`.
+        {
+            let model = VecListModel::new(vec![1_u64, 2, 3], |key| *key).unwrap();
+            let mut list = VirtualList::new(model, 24.0, |_, _, key| {
+                Box::new(ProbeRow::new(
+                    key.to_string(),
+                    24.0,
+                    false,
+                    Rc::new(Cell::new(0)),
+                ))
+            })
+            .with_viewport_height(100.0);
+            assert!(list.set_row_height(0, 300.0));
+            list.focused_key = Some(1);
+
+            assert!(list.on_key(&Key::Named(NamedKey::PageDown), false, false));
+            assert_eq!(list.focused_key, Some(1));
+            assert_eq!(list.scroll_offset(), 90.0);
+            assert!(list.on_key(&Key::Named(NamedKey::PageUp), false, false));
+            assert_eq!(list.focused_key, Some(1));
+            assert_eq!(list.scroll_offset(), 0.0);
+        }
+    }
+
+    #[test]
+    fn hundred_million_row_lists_mount_and_request_only_the_window() {
+        // Case `hundred_million_rows_mount_only_the_visible_widget_window`.
+        {
+            let builds = Rc::new(Cell::new(0_usize));
+            let captured = Rc::clone(&builds);
+            let presses = Rc::new(Cell::new(0));
+            let mut list =
+                VirtualList::new(HugeList { count: 100_000_000 }, 20.0, move |_, _, key| {
+                    captured.set(captured.get().saturating_add(1));
+                    Box::new(ProbeRow::new(
+                        format!("row {key}"),
+                        20.0,
+                        false,
+                        Rc::clone(&presses),
+                    ))
+                })
+                .with_viewport_height(100.0);
+            list.set_scroll_offset(50_000_000.0 * 20.0);
+            let _ = lay_out(&mut list, 300.0);
+
+            assert_eq!(list.model().len(), 100_000_000);
+            assert!(list.mounted_len() <= 10);
+            assert_eq!(builds.get(), list.mounted_len());
+            assert!(list.visible_range().len() <= 10);
+            let top = list.scrollbar_thumb().expect("overflow has a scrollbar");
+            list.set_scroll_offset(list.max_scroll_offset());
+            let bottom = list.scrollbar_thumb().expect("scrollbar remains visible");
+            assert!(bottom.y0 > top.y0);
+            assert!((bottom.y1 - (list.rect.y1 - BAR_MARGIN)).abs() < 0.001);
+        }
+
+        // Case `paged_hundred_million_row_list_requests_only_the_window_and_wakes_on_state_changes`.
+        {
+            let states = Rc::new(RefCell::new(HashMap::new()));
+            let requests = Rc::new(RefCell::new(Vec::new()));
+            let changed = Rc::new(Cell::new(false));
+            let pending = Rc::new(Cell::new(true));
+            let builds = Rc::new(RefCell::new(Vec::new()));
+            let captured_builds = Rc::clone(&builds);
+            let model = PagedList {
+                count: 100_000_000,
+                states: Rc::clone(&states),
+                requests: Rc::clone(&requests),
+                changed: Rc::clone(&changed),
+                pending: Rc::clone(&pending),
+            };
+            let mut list = VirtualList::new_async(model, 20.0, move |_, _, key, state| {
+                let label = match state {
+                    ListRowState::Ready => format!("ready {key}"),
+                    ListRowState::Loading => format!("loading {key}"),
+                    ListRowState::Error(message) => format!("error {key}: {message}"),
+                };
+                captured_builds.borrow_mut().push(label.clone());
+                Box::new(ProbeRow::new(label, 20.0, false, Rc::new(Cell::new(0))))
+            })
+            .with_viewport_height(40.0)
+            .with_semantic_key(u64::to_string);
+
+            let _ = lay_out(&mut list, 300.0);
+            assert!(list.mounted_len() <= 6);
+            assert!(
+                requests.borrow().iter().all(|range| range.len() <= 6),
+                "fetch requests stay bounded to the sparse viewport"
+            );
+            assert_eq!(requests.borrow().len(), 1, "one request per window");
+            let _ = lay_out(&mut list, 300.0);
+            assert_eq!(
+                requests.borrow().len(),
+                1,
+                "repeat layout does not enqueue the same window again"
+            );
+            let semantics = Widget::accessibility(&list).unwrap();
+            assert!(semantics.children[0].state.busy);
+            assert!(!Widget::perform_semantic_action(
+                &mut list,
+                "key:0",
+                &crate::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert!(Widget::needs_animation_frame(&list));
+
+            states.borrow_mut().insert(0, 1);
+            pending.set(false);
+            changed.set(true);
+            assert!(Widget::update(
+                &mut list,
+                &mut AutoCommit::new(),
+                &automerge::ROOT
+            ));
+            let _ = lay_out(&mut list, 300.0);
+            assert_eq!(
+                requests.borrow().len(),
+                2,
+                "a model wakeup may refill the same window once"
+            );
+            let semantics = Widget::accessibility(&list).unwrap();
+            assert!(!semantics.children[0].state.busy);
+            assert!(!semantics.children[0].state.invalid);
+            assert!(builds.borrow().iter().any(|label| label == "ready 0"));
+            assert!(Widget::perform_semantic_action(
+                &mut list,
+                "key:0",
+                &crate::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+
+            states.borrow_mut().insert(1, 2);
+            changed.set(true);
+            assert!(Widget::update(
+                &mut list,
+                &mut AutoCommit::new(),
+                &automerge::ROOT
+            ));
+            let _ = lay_out(&mut list, 300.0);
+            let semantics = Widget::accessibility(&list).unwrap();
+            assert!(semantics.children[1].state.invalid);
+            assert_eq!(
+                semantics.children[1].description.as_deref(),
+                Some("Fetch failed")
+            );
+            assert!(!Widget::needs_animation_frame(&list));
+        }
+    }
+
+    #[test]
+    fn delegates_follow_stable_keys_and_rebuild_only_what_changed() {
+        // Case `mounted_widgets_follow_stable_keys_across_reorder`.
+        {
+            let keys = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
+            let builds = Rc::new(Cell::new(0_usize));
+            let captured = Rc::clone(&builds);
+            let mut list = VirtualList::new(
+                SharedOrder {
+                    keys: Rc::clone(&keys),
+                },
+                20.0,
+                move |_, _, key| {
+                    captured.set(captured.get().saturating_add(1));
+                    Box::new(ProbeRow::new(
+                        key.to_string(),
+                        20.0,
+                        false,
+                        Rc::new(Cell::new(0)),
+                    ))
+                },
+            )
+            .with_viewport_height(80.0);
+            let _ = lay_out(&mut list, 300.0);
+            assert_eq!(builds.get(), 4);
+
+            keys.borrow_mut().swap(0, 3);
+            list.notify_model_changed();
+            let _ = lay_out(&mut list, 300.0);
+            assert_eq!(builds.get(), 4, "visible keyed widgets are retained");
+        }
+
+        // Case `granular_async_changes_rebuild_only_named_delegates`.
+        {
+            let keys = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
+            let changes = Rc::new(RefCell::new(Vec::new()));
+            let builds = Rc::new(RefCell::new(Vec::new()));
+            let captured = Rc::clone(&builds);
+            let mut list = VirtualList::new(
+                NotifyingOrder {
+                    keys,
+                    changes: Rc::clone(&changes),
+                },
+                20.0,
+                move |_, _, key| {
+                    captured.borrow_mut().push(*key);
+                    Box::new(ProbeRow::new(
+                        key.to_string(),
+                        20.0,
+                        false,
+                        Rc::new(Cell::new(0)),
+                    ))
+                },
+            )
+            .with_viewport_height(80.0);
+            let _ = lay_out(&mut list, 300.0);
+            assert_eq!(*builds.borrow(), vec![1, 2, 3, 4]);
+
+            changes
+                .borrow_mut()
+                .push(ListModelChange::RowsChanged { keys: vec![2] });
+            assert!(Widget::update(
+                &mut list,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            let _ = lay_out(&mut list, 300.0);
+
+            assert_eq!(*builds.borrow(), vec![1, 2, 3, 4, 2]);
+            assert_eq!(list.mounted_len(), 4);
+        }
+
+        // Case `granular_owned_structural_batch_retains_live_delegates`.
+        {
+            let builds = Rc::new(Cell::new(0_usize));
+            let captured = Rc::clone(&builds);
+            let model = VecListModel::new(vec![1_u64, 2, 3, 4], |key| *key).unwrap();
+            let mut list = VirtualList::new(model, 20.0, move |_, _, key| {
                 captured.set(captured.get().saturating_add(1));
                 Box::new(ProbeRow::new(
                     key.to_string(),
@@ -2259,303 +2328,245 @@ mod tests {
                     false,
                     Rc::new(Cell::new(0)),
                 ))
-            },
-        )
-        .with_viewport_height(80.0);
-        let _ = lay_out(&mut list, 300.0);
-        assert_eq!(builds.get(), 4);
+            })
+            .with_viewport_height(100.0);
+            let _ = lay_out(&mut list, 300.0);
+            assert_eq!(builds.get(), 4);
 
-        keys.borrow_mut().swap(0, 3);
-        list.notify_model_changed();
-        let _ = lay_out(&mut list, 300.0);
-        assert_eq!(builds.get(), 4, "visible keyed widgets are retained");
+            list.update_model_changes(
+                &[ListModelChange::RowsInserted { index: 4, count: 1 }],
+                |model| model.push(5, 5).unwrap(),
+            );
+            let _ = lay_out(&mut list, 300.0);
+            assert_eq!(builds.get(), 5, "only the inserted key mounts");
+
+            list.update_model_changes(
+                &[ListModelChange::RowsMoved {
+                    from: 4,
+                    to: 0,
+                    count: 1,
+                }],
+                |model| assert!(model.move_item(4, 0)),
+            );
+            let _ = lay_out(&mut list, 300.0);
+            assert_eq!(builds.get(), 5, "moving stable keys retains delegates");
+        }
+
+        // Case `insertion_above_viewport_preserves_the_stable_key_anchor`.
+        {
+            let keys = Rc::new(RefCell::new((0_u64..100).collect::<Vec<_>>()));
+            let mut list = VirtualList::new(
+                SharedOrder {
+                    keys: Rc::clone(&keys),
+                },
+                20.0,
+                |_, _, key| {
+                    Box::new(ProbeRow::new(
+                        key.to_string(),
+                        20.0,
+                        false,
+                        Rc::new(Cell::new(0)),
+                    ))
+                },
+            )
+            .with_viewport_height(40.0);
+            list.set_scroll_offset(50.0 * 20.0 + 5.0);
+            let before = list.viewport.item_view_top(50);
+
+            keys.borrow_mut().insert(0, 1_000);
+            list.notify_model_changed();
+
+            assert_eq!(list.model().index_of(&50), Some(51));
+            assert_eq!(list.viewport.item_view_top(51), before);
+        }
+
+        // Case `delegated_row_layout_feeds_variable_height_geometry`.
+        {
+            let model = VecListModel::new(vec![0_u64, 1, 2], |key| *key).unwrap();
+            let mut list = VirtualList::new(model, 20.0, |_, _, key| {
+                let height = if *key == 1 { 55.0 } else { 20.0 };
+                Box::new(ProbeRow::new(
+                    key.to_string(),
+                    height,
+                    false,
+                    Rc::new(Cell::new(0)),
+                ))
+            })
+            .with_viewport_height(100.0);
+            let _ = lay_out(&mut list, 200.0);
+
+            assert_eq!(list.viewport.item_height(0), Some(20.0));
+            assert_eq!(list.viewport.item_height(1), Some(55.0));
+            assert_eq!(list.viewport.item_top(2), Some(75.0));
+        }
     }
 
     #[test]
-    fn granular_async_changes_rebuild_only_named_delegates() {
-        let keys = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
-        let changes = Rc::new(RefCell::new(Vec::new()));
-        let builds = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&builds);
-        let mut list = VirtualList::new(
-            NotifyingOrder {
-                keys,
-                changes: Rc::clone(&changes),
-            },
-            20.0,
-            move |_, _, key| {
-                captured.borrow_mut().push(*key);
+    fn pointer_input_separates_delegate_presses_drag_scroll_and_selection() {
+        // Case `interactive_delegate_consumes_press_without_selecting_its_row`.
+        {
+            let presses = Rc::new(Cell::new(0));
+            let captured = Rc::clone(&presses);
+            let model = VecListModel::new(vec![7_u64], |key| *key).unwrap();
+            let mut list = VirtualList::new(model, 30.0, move |_, _, key| {
+                Box::new(ProbeRow::new(
+                    format!("action {key}"),
+                    30.0,
+                    true,
+                    Rc::clone(&captured),
+                ))
+            })
+            .with_viewport_height(30.0);
+            let (taffy, node) = lay_out(&mut list, 200.0);
+
+            dispatch(&mut list, &cursor(15.0), &taffy, node);
+            assert!(dispatch(
+                &mut list,
+                &left(ElementState::Pressed),
+                &taffy,
+                node
+            ));
+            assert_eq!(presses.get(), 1);
+            assert!(!list.selection().is_selected(&7));
+
+            let semantics = list.accessibility().unwrap();
+            assert_eq!(semantics.role, crate::a11y::Role::List);
+            assert_eq!(semantics.children[0].role, crate::a11y::Role::ListItem);
+            assert_eq!(semantics.children[0].name.as_deref(), Some("action 7"));
+            assert_eq!(
+                semantics.children[0].children[0].role,
+                crate::a11y::Role::Button
+            );
+        }
+
+        // Case `background_drag_scrolls_but_click_selects`.
+        {
+            let model = VecListModel::new((0_u64..100).collect(), |key| *key).unwrap();
+            let mut list = VirtualList::new(model, 20.0, |_, _, key| {
                 Box::new(ProbeRow::new(
                     key.to_string(),
                     20.0,
                     false,
                     Rc::new(Cell::new(0)),
                 ))
-            },
-        )
-        .with_viewport_height(80.0);
-        let _ = lay_out(&mut list, 300.0);
-        assert_eq!(*builds.borrow(), vec![1, 2, 3, 4]);
+            })
+            .with_viewport_height(100.0);
+            let (taffy, node) = lay_out(&mut list, 200.0);
 
-        changes
-            .borrow_mut()
-            .push(ListModelChange::RowsChanged { keys: vec![2] });
-        assert!(Widget::update(
-            &mut list,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        let _ = lay_out(&mut list, 300.0);
+            dispatch(&mut list, &cursor(50.0), &taffy, node);
+            dispatch(&mut list, &left(ElementState::Pressed), &taffy, node);
+            dispatch(&mut list, &cursor(10.0), &taffy, node);
+            dispatch(&mut list, &left(ElementState::Released), &taffy, node);
+            assert_eq!(list.scroll_offset(), 40.0);
+            assert!(list.selection().is_empty(100));
 
-        assert_eq!(*builds.borrow(), vec![1, 2, 3, 4, 2]);
-        assert_eq!(list.mounted_len(), 4);
-    }
+            list.set_scroll_offset(0.0);
+            let (taffy, node) = lay_out(&mut list, 200.0);
+            dispatch(&mut list, &cursor(10.0), &taffy, node);
+            dispatch(&mut list, &left(ElementState::Pressed), &taffy, node);
+            dispatch(&mut list, &left(ElementState::Released), &taffy, node);
+            assert!(list.selection().is_selected(&0));
+        }
 
-    #[test]
-    fn granular_owned_structural_batch_retains_live_delegates() {
-        let builds = Rc::new(Cell::new(0_usize));
-        let captured = Rc::clone(&builds);
-        let model = VecListModel::new(vec![1_u64, 2, 3, 4], |key| *key).unwrap();
-        let mut list = VirtualList::new(model, 20.0, move |_, _, key| {
-            captured.set(captured.get().saturating_add(1));
-            Box::new(ProbeRow::new(
-                key.to_string(),
-                20.0,
-                false,
-                Rc::new(Cell::new(0)),
-            ))
-        })
-        .with_viewport_height(100.0);
-        let _ = lay_out(&mut list, 300.0);
-        assert_eq!(builds.get(), 4);
-
-        list.update_model_changes(
-            &[ListModelChange::RowsInserted { index: 4, count: 1 }],
-            |model| model.push(5, 5).unwrap(),
-        );
-        let _ = lay_out(&mut list, 300.0);
-        assert_eq!(builds.get(), 5, "only the inserted key mounts");
-
-        list.update_model_changes(
-            &[ListModelChange::RowsMoved {
-                from: 4,
-                to: 0,
-                count: 1,
-            }],
-            |model| assert!(model.move_item(4, 0)),
-        );
-        let _ = lay_out(&mut list, 300.0);
-        assert_eq!(builds.get(), 5, "moving stable keys retains delegates");
-    }
-
-    #[test]
-    fn insertion_above_viewport_preserves_the_stable_key_anchor() {
-        let keys = Rc::new(RefCell::new((0_u64..100).collect::<Vec<_>>()));
-        let mut list = VirtualList::new(
-            SharedOrder {
-                keys: Rc::clone(&keys),
-            },
-            20.0,
-            |_, _, key| {
+        // Case `reduced_motion_keeps_direct_scroll_without_wheel_or_drag_decay`.
+        {
+            let model = VecListModel::new((0_u64..100).collect(), |key| *key).unwrap();
+            let mut list = VirtualList::new(model, 20.0, |_, _, key| {
                 Box::new(ProbeRow::new(
                     key.to_string(),
                     20.0,
                     false,
                     Rc::new(Cell::new(0)),
                 ))
-            },
-        )
-        .with_viewport_height(40.0);
-        list.set_scroll_offset(50.0 * 20.0 + 5.0);
-        let before = list.viewport.item_view_top(50);
+            })
+            .with_viewport_height(100.0);
+            let (taffy, node) = lay_out(&mut list, 200.0);
+            list.reduce_motion = true;
 
-        keys.borrow_mut().insert(0, 1_000);
-        list.notify_model_changed();
+            dispatch(&mut list, &cursor(50.0), &taffy, node);
+            let wheel = WindowEvent::MouseWheel {
+                device_id: DeviceId::dummy(),
+                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+                phase: winit::event::TouchPhase::Moved,
+            };
+            assert!(dispatch(&mut list, &wheel, &taffy, node));
+            assert_eq!(list.scroll_offset(), 60.0);
+            assert!(!list.momentum.is_active());
 
-        assert_eq!(list.model().index_of(&50), Some(51));
-        assert_eq!(list.viewport.item_view_top(51), before);
+            let now = crate::time::now();
+            let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
+            let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
+            list.drag_scroll.begin(50.0, list.scroll_offset(), started);
+            assert!(list.drag_scroll.update(10.0, moved).is_some());
+            assert!(dispatch(
+                &mut list,
+                &left(ElementState::Released),
+                &taffy,
+                node
+            ));
+            assert!(!list.momentum.is_active());
+            assert!(!list.needs_animation_frame());
+        }
     }
 
     #[test]
-    fn delegated_row_layout_feeds_variable_height_geometry() {
-        let model = VecListModel::new(vec![0_u64, 1, 2], |key| *key).unwrap();
-        let mut list = VirtualList::new(model, 20.0, |_, _, key| {
-            let height = if *key == 1 { 55.0 } else { 20.0 };
-            Box::new(ProbeRow::new(
-                key.to_string(),
-                height,
-                false,
-                Rc::new(Cell::new(0)),
-            ))
-        })
-        .with_viewport_height(100.0);
-        let _ = lay_out(&mut list, 200.0);
-
-        assert_eq!(list.viewport.item_height(0), Some(20.0));
-        assert_eq!(list.viewport.item_height(1), Some(55.0));
-        assert_eq!(list.viewport.item_top(2), Some(75.0));
-    }
-
-    #[test]
-    fn interactive_delegate_consumes_press_without_selecting_its_row() {
-        let presses = Rc::new(Cell::new(0));
-        let captured = Rc::clone(&presses);
-        let model = VecListModel::new(vec![7_u64], |key| *key).unwrap();
-        let mut list = VirtualList::new(model, 30.0, move |_, _, key| {
-            Box::new(ProbeRow::new(
-                format!("action {key}"),
-                30.0,
-                true,
-                Rc::clone(&captured),
-            ))
-        })
-        .with_viewport_height(30.0);
-        let (taffy, node) = lay_out(&mut list, 200.0);
-
-        dispatch(&mut list, &cursor(15.0), &taffy, node);
-        assert!(dispatch(
-            &mut list,
-            &left(ElementState::Pressed),
-            &taffy,
-            node
-        ));
-        assert_eq!(presses.get(), 1);
-        assert!(!list.selection().is_selected(&7));
-
-        let semantics = list.accessibility().unwrap();
-        assert_eq!(semantics.role, crate::a11y::Role::List);
-        assert_eq!(semantics.children[0].role, crate::a11y::Role::ListItem);
-        assert_eq!(semantics.children[0].name.as_deref(), Some("action 7"));
-        assert_eq!(
-            semantics.children[0].children[0].role,
-            crate::a11y::Role::Button
-        );
-    }
-
-    #[test]
-    fn background_drag_scrolls_but_click_selects() {
-        let model = VecListModel::new((0_u64..100).collect(), |key| *key).unwrap();
-        let mut list = VirtualList::new(model, 20.0, |_, _, key| {
-            Box::new(ProbeRow::new(
-                key.to_string(),
+    fn list_reorder_previews_and_commits_valid_drops_only() {
+        // Case `owned_list_reorder_previews_and_commits_by_stable_key`.
+        {
+            let mut list = VirtualList::from_items(
+                vec![0_u64, 1, 2],
                 20.0,
-                false,
-                Rc::new(Cell::new(0)),
-            ))
-        })
-        .with_viewport_height(100.0);
-        let (taffy, node) = lay_out(&mut list, 200.0);
+                |key| *key,
+                |key, _, _| {
+                    Box::new(ProbeRow::new(
+                        key.to_string(),
+                        20.0,
+                        false,
+                        Rc::new(Cell::new(0)),
+                    ))
+                },
+            )
+            .unwrap()
+            .with_viewport_height(60.0)
+            .reorderable();
+            let (taffy, node) = lay_out(&mut list, 200.0);
 
-        dispatch(&mut list, &cursor(50.0), &taffy, node);
-        dispatch(&mut list, &left(ElementState::Pressed), &taffy, node);
-        dispatch(&mut list, &cursor(10.0), &taffy, node);
-        dispatch(&mut list, &left(ElementState::Released), &taffy, node);
-        assert_eq!(list.scroll_offset(), 40.0);
-        assert!(list.selection().is_empty(100));
+            dispatch(&mut list, &cursor(10.0), &taffy, node);
+            dispatch(&mut list, &left(ElementState::Pressed), &taffy, node);
+            dispatch(&mut list, &cursor(55.0), &taffy, node);
+            assert_eq!(
+                list.reorder_target(),
+                Some(&DropTarget::new(2, DropPlacement::After))
+            );
+            assert!(list.reorder_preview().is_some());
+            dispatch(&mut list, &left(ElementState::Released), &taffy, node);
 
-        list.set_scroll_offset(0.0);
-        let (taffy, node) = lay_out(&mut list, 200.0);
-        dispatch(&mut list, &cursor(10.0), &taffy, node);
-        dispatch(&mut list, &left(ElementState::Pressed), &taffy, node);
-        dispatch(&mut list, &left(ElementState::Released), &taffy, node);
-        assert!(list.selection().is_selected(&0));
-    }
+            assert_eq!(list.model().items(), &[1, 2, 0]);
+            assert_eq!(list.model().index_of(&0), Some(2));
+            assert_eq!(list.reorder_target(), None);
+        }
 
-    #[test]
-    fn reduced_motion_keeps_direct_scroll_without_wheel_or_drag_decay() {
-        let model = VecListModel::new((0_u64..100).collect(), |key| *key).unwrap();
-        let mut list = VirtualList::new(model, 20.0, |_, _, key| {
-            Box::new(ProbeRow::new(
-                key.to_string(),
-                20.0,
-                false,
-                Rc::new(Cell::new(0)),
-            ))
-        })
-        .with_viewport_height(100.0);
-        let (taffy, node) = lay_out(&mut list, 200.0);
-        list.reduce_motion = true;
-
-        dispatch(&mut list, &cursor(50.0), &taffy, node);
-        let wheel = WindowEvent::MouseWheel {
-            device_id: DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-            phase: winit::event::TouchPhase::Moved,
-        };
-        assert!(dispatch(&mut list, &wheel, &taffy, node));
-        assert_eq!(list.scroll_offset(), WHEEL_LINE_PX);
-        assert!(!list.momentum.is_active());
-
-        let now = crate::time::now();
-        let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
-        let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
-        list.drag_scroll.begin(50.0, list.scroll_offset(), started);
-        assert!(list.drag_scroll.update(10.0, moved).is_some());
-        assert!(dispatch(
-            &mut list,
-            &left(ElementState::Released),
-            &taffy,
-            node
-        ));
-        assert!(!list.momentum.is_active());
-        assert!(!list.needs_animation_frame());
-    }
-
-    #[test]
-    fn owned_list_reorder_previews_and_commits_by_stable_key() {
-        let mut list = VirtualList::from_items(
-            vec![0_u64, 1, 2],
-            20.0,
-            |key| *key,
-            |key, _, _| {
+        // Case `invalid_list_drop_has_no_preview_and_does_not_mutate`.
+        {
+            let model = VecListModel::new(vec![0_u64, 1], |key| *key).unwrap();
+            let mut list = VirtualList::new(model, 20.0, |_, _, key| {
                 Box::new(ProbeRow::new(
                     key.to_string(),
                     20.0,
                     false,
                     Rc::new(Cell::new(0)),
                 ))
-            },
-        )
-        .unwrap()
-        .with_viewport_height(60.0)
-        .reorderable();
-        let (taffy, node) = lay_out(&mut list, 200.0);
+            })
+            .with_viewport_height(40.0)
+            .with_reorder(|_, _, _| false, |_, _| true);
+            let (taffy, node) = lay_out(&mut list, 200.0);
 
-        dispatch(&mut list, &cursor(10.0), &taffy, node);
-        dispatch(&mut list, &left(ElementState::Pressed), &taffy, node);
-        dispatch(&mut list, &cursor(55.0), &taffy, node);
-        assert_eq!(
-            list.reorder_target(),
-            Some(&DropTarget::new(2, DropPlacement::After))
-        );
-        assert!(list.reorder_preview().is_some());
-        dispatch(&mut list, &left(ElementState::Released), &taffy, node);
-
-        assert_eq!(list.model().items(), &[1, 2, 0]);
-        assert_eq!(list.model().index_of(&0), Some(2));
-        assert_eq!(list.reorder_target(), None);
-    }
-
-    #[test]
-    fn invalid_list_drop_has_no_preview_and_does_not_mutate() {
-        let model = VecListModel::new(vec![0_u64, 1], |key| *key).unwrap();
-        let mut list = VirtualList::new(model, 20.0, |_, _, key| {
-            Box::new(ProbeRow::new(
-                key.to_string(),
-                20.0,
-                false,
-                Rc::new(Cell::new(0)),
-            ))
-        })
-        .with_viewport_height(40.0)
-        .with_reorder(|_, _, _| false, |_, _| true);
-        let (taffy, node) = lay_out(&mut list, 200.0);
-
-        dispatch(&mut list, &cursor(10.0), &taffy, node);
-        dispatch(&mut list, &left(ElementState::Pressed), &taffy, node);
-        dispatch(&mut list, &cursor(35.0), &taffy, node);
-        assert!(list.reorder_preview().is_none());
-        dispatch(&mut list, &left(ElementState::Released), &taffy, node);
-        assert_eq!(list.model().items(), &[0, 1]);
+            dispatch(&mut list, &cursor(10.0), &taffy, node);
+            dispatch(&mut list, &left(ElementState::Pressed), &taffy, node);
+            dispatch(&mut list, &cursor(35.0), &taffy, node);
+            assert!(list.reorder_preview().is_none());
+            dispatch(&mut list, &left(ElementState::Released), &taffy, node);
+            assert_eq!(list.model().items(), &[0, 1]);
+        }
     }
 }

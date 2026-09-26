@@ -13,6 +13,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
+use settings_store::hardware::{TouchpadClickMethod, TouchpadScrollMethod};
+
 /// Settings section these values live in.
 pub const SECTION: &str = "input";
 
@@ -69,7 +71,7 @@ impl KeyboardSettings {
                 let options = config.xkb_options();
                 (!options.is_empty()).then(|| options.join(","))
             },
-            active_index: config.active_source_index(),
+            active_index: config.active_layout_index(),
         }
     }
 
@@ -86,6 +88,14 @@ impl KeyboardSettings {
 pub struct AccessibilityInputSettings {
     pub sticky_keys: bool,
     pub slow_keys: bool,
+    /// Ignore a second press of the same key shortly after its release.
+    pub bounce_keys: bool,
+    /// The bounce-keys window in milliseconds.
+    pub bounce_keys_delay_ms: u32,
+    /// Flash the visual alert whenever bounce keys swallows a press.
+    pub bounce_keys_alert: bool,
+    /// The numeric keypad drives the pointer.
+    pub mouse_keys: bool,
     pub large_cursor: bool,
     pub cursor_size: u32,
     pub on_screen_keyboard: bool,
@@ -96,6 +106,10 @@ impl Default for AccessibilityInputSettings {
         Self {
             sticky_keys: false,
             slow_keys: false,
+            bounce_keys: false,
+            bounce_keys_delay_ms: settings_store::hardware::BOUNCE_KEYS_DEFAULT_DELAY_MS,
+            bounce_keys_alert: false,
+            mouse_keys: false,
             large_cursor: false,
             cursor_size: 24,
             on_screen_keyboard: false,
@@ -103,33 +117,56 @@ impl Default for AccessibilityInputSettings {
     }
 }
 
+/// `accessibility` key the Shift+Alt+Num Lock chord flips.
+pub const MOUSE_KEYS_KEY: &str = "mouse_keys";
+
 impl AccessibilityInputSettings {
     pub fn load() -> Self {
-        let section = settings_store::load_section("accessibility");
+        Self::from_section(&settings_store::load_section("accessibility"))
+    }
+
+    /// Parse the `accessibility` section; every field falls back to its
+    /// default on its own.
+    pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let d = Self::default();
+        let bool_at = |key: &str, fallback: bool| {
+            section
+                .get(key)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(fallback)
+        };
         Self {
-            sticky_keys: section
-                .get("sticky_keys")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(d.sticky_keys),
-            slow_keys: section
-                .get("slow_keys")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(d.slow_keys),
-            large_cursor: section
-                .get("large_cursor")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(d.large_cursor),
+            sticky_keys: bool_at("sticky_keys", d.sticky_keys),
+            slow_keys: bool_at("slow_keys", d.slow_keys),
+            bounce_keys: bool_at("bounce_keys", d.bounce_keys),
+            bounce_keys_delay_ms: section
+                .get("bounce_keys_delay_ms")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok())
+                .unwrap_or(d.bounce_keys_delay_ms)
+                .clamp(
+                    settings_store::hardware::BOUNCE_KEYS_MIN_DELAY_MS,
+                    settings_store::hardware::BOUNCE_KEYS_MAX_DELAY_MS,
+                ),
+            bounce_keys_alert: bool_at("bounce_keys_alert", d.bounce_keys_alert),
+            mouse_keys: bool_at(MOUSE_KEYS_KEY, d.mouse_keys),
+            large_cursor: bool_at("large_cursor", d.large_cursor),
             cursor_size: section
                 .get("cursor_size")
                 .and_then(serde_json::Value::as_u64)
                 .and_then(|v| u32::try_from(v).ok())
                 .unwrap_or(d.cursor_size)
                 .clamp(24, 64),
-            on_screen_keyboard: section
-                .get("on_screen_keyboard")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(d.on_screen_keyboard),
+            on_screen_keyboard: bool_at("on_screen_keyboard", d.on_screen_keyboard),
+        }
+    }
+
+    /// The bounce-keys window, or zero when bounce keys is off.
+    pub fn bounce_window(self) -> Duration {
+        if self.bounce_keys {
+            Duration::from_millis(u64::from(self.bounce_keys_delay_ms))
+        } else {
+            Duration::ZERO
         }
     }
 
@@ -182,6 +219,15 @@ pub struct InputSettings {
     pub left_handed: bool,
     pub flat_acceleration: bool,
     pub touchpad_gestures: bool,
+    /// Whether touchpads send events at all; the touchpad-toggle key flips it.
+    pub touchpad_enabled: bool,
+    /// Which button a clickpad press means.
+    pub touchpad_click_method: TouchpadClickMethod,
+    /// Two-finger or edge scrolling on touchpads.
+    pub touchpad_scroll_method: TouchpadScrollMethod,
+    /// Multiplier on every scroll distance, wheel and finger alike. Applied by
+    /// the compositor rather than libinput, which has no such setting.
+    pub scroll_speed: f64,
 }
 
 impl Default for InputSettings {
@@ -205,6 +251,10 @@ impl Default for InputSettings {
             left_handed: false,
             flat_acceleration: false,
             touchpad_gestures: true,
+            touchpad_enabled: true,
+            touchpad_click_method: TouchpadClickMethod::Default,
+            touchpad_scroll_method: TouchpadScrollMethod::TwoFinger,
+            scroll_speed: 1.0,
         }
     }
 }
@@ -274,6 +324,22 @@ impl InputSettings {
                 .and_then(serde_json::Value::as_str)
                 == Some("flat"),
             touchpad_gestures: bool_at("touchpad_gestures", d.touchpad_gestures),
+            touchpad_enabled: bool_at(
+                settings_store::hardware::TOUCHPAD_ENABLED_KEY,
+                d.touchpad_enabled,
+            ),
+            touchpad_click_method: section
+                .get("touchpad_click_method")
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+                .unwrap_or(d.touchpad_click_method),
+            touchpad_scroll_method: section
+                .get("touchpad_scroll_method")
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+                .unwrap_or(d.touchpad_scroll_method),
+            scroll_speed: section
+                .get(settings_store::hardware::SCROLL_SPEED_KEY)
+                .and_then(serde_json::Value::as_f64)
+                .map_or(d.scroll_speed, settings_store::hardware::clamp_scroll_speed),
         }
     }
 
@@ -426,6 +492,29 @@ pub struct DeviceCaps {
     pub is_pointer: bool,
     pub supports_left_handed: bool,
     pub supports_flat_acceleration: bool,
+    /// libinput lists software button areas among the click methods.
+    pub supports_click_areas: bool,
+    /// libinput lists clickfinger among the click methods.
+    pub supports_clickfinger: bool,
+    /// The click method libinput would use untouched, if the device has any.
+    pub default_click_method: Option<ClickMethod>,
+    pub supports_two_finger_scroll: bool,
+    pub supports_edge_scroll: bool,
+}
+
+/// A libinput click method, independent of the libinput bindings so the plan
+/// stays a pure value.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ClickMethod {
+    ButtonAreas,
+    Clickfinger,
+}
+
+/// A libinput touchpad scroll method this module can choose.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ScrollMethod {
+    TwoFinger,
+    Edge,
 }
 
 impl DeviceCaps {
@@ -448,6 +537,13 @@ pub struct DevicePlan {
     pub accel_speed_milli: Option<i32>,
     pub left_handed: Option<bool>,
     pub flat_acceleration: Option<bool>,
+    /// Whether the device sends events. Asked only of touchpads: a mouse or
+    /// keyboard is never switched off by the touchpad key.
+    pub send_events: Option<bool>,
+    /// Always a method the device listed; `Default` resolves to the device's
+    /// own default so switching back really undoes an earlier choice.
+    pub click_method: Option<ClickMethod>,
+    pub scroll_method: Option<ScrollMethod>,
 }
 
 impl DevicePlan {
@@ -488,6 +584,22 @@ pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
         flat_acceleration: caps
             .supports_flat_acceleration
             .then_some(settings.flat_acceleration),
+        send_events: caps.is_touchpad().then_some(settings.touchpad_enabled),
+        click_method: match settings.touchpad_click_method {
+            TouchpadClickMethod::Default => caps.default_click_method,
+            TouchpadClickMethod::Areas => caps
+                .supports_click_areas
+                .then_some(ClickMethod::ButtonAreas),
+            TouchpadClickMethod::Clickfinger => caps
+                .supports_clickfinger
+                .then_some(ClickMethod::Clickfinger),
+        },
+        scroll_method: match settings.touchpad_scroll_method {
+            TouchpadScrollMethod::TwoFinger => caps
+                .supports_two_finger_scroll
+                .then_some(ScrollMethod::TwoFinger),
+            TouchpadScrollMethod::Edge => caps.supports_edge_scroll.then_some(ScrollMethod::Edge),
+        },
     }
 }
 
@@ -511,15 +623,80 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_cursor_size_is_capability_safe() {
-        let normal = AccessibilityInputSettings::default();
-        assert_eq!(normal.effective_cursor_size(), 24);
-        let large = AccessibilityInputSettings {
-            large_cursor: true,
-            cursor_size: 48,
-            ..normal
-        };
-        assert_eq!(large.effective_cursor_size(), 48);
+    fn input_settings_defaults_persistence_and_fallbacks() {
+        // Phase `accessibility_cursor_size_is_capability_safe`.
+        {
+            let normal = AccessibilityInputSettings::default();
+            assert_eq!(normal.effective_cursor_size(), 24);
+            let large = AccessibilityInputSettings {
+                large_cursor: true,
+                cursor_size: 48,
+                ..normal
+            };
+            assert_eq!(large.effective_cursor_size(), 48);
+        }
+        // Phase `tap_to_click_defaults_on_for_a_laptop`.
+        // The headline default: libinput says off, but that's the wrong answer on a laptop, and an empty settings file is exactly the state a fresh install is in.
+        assert!(InputSettings::default().tap_to_click);
+        assert!(InputSettings::from_section(&section(json!({}))).tap_to_click);
+        // Phase `the_other_defaults_match_what_the_settings_pane_starts_from`.
+        {
+            let d = InputSettings::default();
+            assert!(!d.natural_scroll);
+            assert_eq!(d.touchpad_natural_scroll, Some(true));
+            assert_eq!(d.mouse_natural_scroll, Some(false));
+            assert_eq!(d.pointer_speed, 0.5);
+            assert_eq!(d.key_repeat, 0.5);
+        }
+        // Phase `unset_scroll_preferences_keep_touchpad_natural_and_wheel_conventional`.
+        {
+            let settings = InputSettings::from_section(&section(json!({})));
+            assert!(settings.natural_scroll_for(true));
+            assert!(!settings.natural_scroll_for(false));
+            assert_eq!(plan_for(&settings, &touchpad()).natural_scroll, Some(true));
+            assert_eq!(plan_for(&settings, &mouse()).natural_scroll, Some(false));
+        }
+        // Phase `legacy_global_scroll_preference_still_applies_to_both_device_classes`.
+        {
+            let settings = InputSettings::from_section(&section(json!({
+                "natural_scroll": false,
+            })));
+            assert!(!settings.natural_scroll_for(true));
+            assert!(!settings.natural_scroll_for(false));
+        }
+        // Phase `persisted_values_are_read_back`.
+        {
+            let s = InputSettings::from_section(&section(json!({
+                "natural_scroll": true,
+                "tap_to_click": false,
+                "pointer_speed": 0.9,
+                "key_repeat": 0.25,
+            })));
+            assert!(s.natural_scroll);
+            assert!(!s.tap_to_click, "an explicit off must beat the default on");
+            assert_eq!(s.pointer_speed, 0.9);
+            assert_eq!(s.key_repeat, 0.25);
+        }
+        // Phase `each_field_falls_back_independently`.
+        {
+            // A document that only mentions one key must not reset the others.
+            let s = InputSettings::from_section(&section(json!({ "pointer_speed": 0.1 })));
+            assert_eq!(s.pointer_speed, 0.1);
+            assert!(s.tap_to_click);
+            assert!(!s.natural_scroll);
+            assert_eq!(s.key_repeat, 0.5);
+        }
+        // Phase `wrong_types_and_out_of_range_values_are_survivable`.
+        {
+            let s = InputSettings::from_section(&section(json!({
+                "tap_to_click": "yes",
+                "pointer_speed": 42.0,
+                "key_repeat": -3.0,
+            })));
+            assert!(s.tap_to_click, "a string is not a bool; use the default");
+            assert_eq!(s.pointer_speed, 1.0, "out of range clamps into the slider");
+            assert_eq!(s.key_repeat, 0.0);
+        }
     }
 
     fn touchpad() -> DeviceCaps {
@@ -532,6 +709,11 @@ mod tests {
             is_pointer: true,
             supports_left_handed: true,
             supports_flat_acceleration: true,
+            supports_click_areas: true,
+            supports_clickfinger: true,
+            default_click_method: Some(ClickMethod::ButtonAreas),
+            supports_two_finger_scroll: true,
+            supports_edge_scroll: true,
         }
     }
 
@@ -545,6 +727,7 @@ mod tests {
             is_pointer: true,
             supports_left_handed: true,
             supports_flat_acceleration: true,
+            ..DeviceCaps::default()
         }
     }
 
@@ -554,300 +737,362 @@ mod tests {
 
     // settings parsing
 
-    #[test]
-    fn tap_to_click_defaults_on_for_a_laptop() {
-        // The headline default: libinput says off, but that's the wrong answer on a laptop, and an empty settings file is exactly the state a fresh install is in.
-        assert!(InputSettings::default().tap_to_click);
-        assert!(InputSettings::from_section(&section(json!({}))).tap_to_click);
-    }
-
-    #[test]
-    fn the_other_defaults_match_what_the_settings_pane_starts_from() {
-        let d = InputSettings::default();
-        assert!(!d.natural_scroll);
-        assert_eq!(d.touchpad_natural_scroll, Some(true));
-        assert_eq!(d.mouse_natural_scroll, Some(false));
-        assert_eq!(d.pointer_speed, 0.5);
-        assert_eq!(d.key_repeat, 0.5);
-    }
-
-    #[test]
-    fn unset_scroll_preferences_keep_touchpad_natural_and_wheel_conventional() {
-        let settings = InputSettings::from_section(&section(json!({})));
-        assert!(settings.natural_scroll_for(true));
-        assert!(!settings.natural_scroll_for(false));
-        assert_eq!(plan_for(&settings, &touchpad()).natural_scroll, Some(true));
-        assert_eq!(plan_for(&settings, &mouse()).natural_scroll, Some(false));
-    }
-
-    #[test]
-    fn legacy_global_scroll_preference_still_applies_to_both_device_classes() {
-        let settings = InputSettings::from_section(&section(json!({
-            "natural_scroll": false,
-        })));
-        assert!(!settings.natural_scroll_for(true));
-        assert!(!settings.natural_scroll_for(false));
-    }
-
-    #[test]
-    fn persisted_values_are_read_back() {
-        let s = InputSettings::from_section(&section(json!({
-            "natural_scroll": true,
-            "tap_to_click": false,
-            "pointer_speed": 0.9,
-            "key_repeat": 0.25,
-        })));
-        assert!(s.natural_scroll);
-        assert!(!s.tap_to_click, "an explicit off must beat the default on");
-        assert_eq!(s.pointer_speed, 0.9);
-        assert_eq!(s.key_repeat, 0.25);
-    }
-
-    #[test]
-    fn each_field_falls_back_independently() {
-        // A document that only mentions one key must not reset the others.
-        let s = InputSettings::from_section(&section(json!({ "pointer_speed": 0.1 })));
-        assert_eq!(s.pointer_speed, 0.1);
-        assert!(s.tap_to_click);
-        assert!(!s.natural_scroll);
-        assert_eq!(s.key_repeat, 0.5);
-    }
-
-    #[test]
-    fn wrong_types_and_out_of_range_values_are_survivable() {
-        let s = InputSettings::from_section(&section(json!({
-            "tap_to_click": "yes",
-            "pointer_speed": 42.0,
-            "key_repeat": -3.0,
-        })));
-        assert!(s.tap_to_click, "a string is not a bool; use the default");
-        assert_eq!(s.pointer_speed, 1.0, "out of range clamps into the slider");
-        assert_eq!(s.key_repeat, 0.0);
-    }
-
     // derived values
 
     #[test]
-    fn the_midpoint_pointer_speed_is_libinputs_neutral() {
+    fn pointer_speed_and_key_repeat_map_onto_libinput_ranges() {
+        // Phase `the_midpoint_pointer_speed_is_libinputs_neutral`.
         // 0.5 must map to exactly 0.0, or every user who never touched the slider gets a different acceleration than libinput's default.
         assert_eq!(InputSettings::default().accel_speed(), 0.0);
-    }
+        // Phase `pointer_speed_spans_the_full_libinput_range`.
+        {
+            let slow = InputSettings {
+                pointer_speed: 0.0,
+                ..Default::default()
+            };
+            let fast = InputSettings {
+                pointer_speed: 1.0,
+                ..Default::default()
+            };
+            assert_eq!(slow.accel_speed(), -1.0);
+            assert_eq!(fast.accel_speed(), 1.0);
+        }
+        // Phase `key_repeat_moves_rate_up_and_delay_down_together`.
+        {
+            let slow = InputSettings {
+                key_repeat: 0.0,
+                ..Default::default()
+            };
+            let fast = InputSettings {
+                key_repeat: 1.0,
+                ..Default::default()
+            };
+            let (slow_delay, slow_rate) = slow.key_repeat_params();
+            let (fast_delay, fast_rate) = fast.key_repeat_params();
+            assert_eq!(slow_rate, REPEAT_RATE_MIN);
+            assert_eq!(fast_rate, REPEAT_RATE_MAX);
+            assert_eq!(
+                slow_delay,
+                Duration::from_millis(u64::from(REPEAT_DELAY_MAX_MS))
+            );
+            assert_eq!(
+                fast_delay,
+                Duration::from_millis(u64::from(REPEAT_DELAY_MIN_MS))
+            );
+            assert!(
+                fast_rate > slow_rate && fast_delay < slow_delay,
+                "one slider, both directions"
+            );
+        }
+        // Phase `the_midpoint_key_repeat_is_in_the_middle_of_both_ranges`.
+        {
+            let (delay, rate) = InputSettings::default().key_repeat_params();
+            assert_eq!(rate, 30);
+            assert_eq!(delay, Duration::from_millis(400));
+        }
+        // Phase `host_repeat_values_preserve_delay_rate_and_disable_semantics`.
+        {
+            let enabled = InputSettings {
+                key_repeat_delay_ms: Some(275),
+                key_repeat_rate_hz: Some(37),
+                ..Default::default()
+            };
+            assert_eq!(
+                enabled.key_repeat_params(),
+                (Duration::from_millis(275), 37)
+            );
 
-    #[test]
-    fn pointer_speed_spans_the_full_libinput_range() {
-        let slow = InputSettings {
-            pointer_speed: 0.0,
-            ..Default::default()
-        };
-        let fast = InputSettings {
-            pointer_speed: 1.0,
-            ..Default::default()
-        };
-        assert_eq!(slow.accel_speed(), -1.0);
-        assert_eq!(fast.accel_speed(), 1.0);
-    }
-
-    #[test]
-    fn key_repeat_moves_rate_up_and_delay_down_together() {
-        let slow = InputSettings {
-            key_repeat: 0.0,
-            ..Default::default()
-        };
-        let fast = InputSettings {
-            key_repeat: 1.0,
-            ..Default::default()
-        };
-        let (slow_delay, slow_rate) = slow.key_repeat_params();
-        let (fast_delay, fast_rate) = fast.key_repeat_params();
-        assert_eq!(slow_rate, REPEAT_RATE_MIN);
-        assert_eq!(fast_rate, REPEAT_RATE_MAX);
-        assert_eq!(
-            slow_delay,
-            Duration::from_millis(u64::from(REPEAT_DELAY_MAX_MS))
-        );
-        assert_eq!(
-            fast_delay,
-            Duration::from_millis(u64::from(REPEAT_DELAY_MIN_MS))
-        );
-        assert!(
-            fast_rate > slow_rate && fast_delay < slow_delay,
-            "one slider, both directions"
-        );
-    }
-
-    #[test]
-    fn the_midpoint_key_repeat_is_in_the_middle_of_both_ranges() {
-        let (delay, rate) = InputSettings::default().key_repeat_params();
-        assert_eq!(rate, 30);
-        assert_eq!(delay, Duration::from_millis(400));
+            let disabled = InputSettings {
+                key_repeat_delay_ms: Some(500),
+                key_repeat_rate_hz: Some(0),
+                ..Default::default()
+            };
+            assert_eq!(
+                disabled.key_repeat_params(),
+                (Duration::from_millis(500), 0)
+            );
+        }
     }
 
     // per-device plans
 
     #[test]
-    fn a_touchpad_gets_tapping_dragging_and_palm_protection() {
-        let plan = plan_for(&InputSettings::default(), &touchpad());
-        assert_eq!(plan.tap, Some(true));
-        assert_eq!(
-            plan.tap_drag,
-            Some(true),
-            "tapping without tap-and-drag is a touchpad that cannot drag"
-        );
-        assert_eq!(
-            plan.disable_while_typing,
-            Some(true),
-            "disable-while-typing is what makes defaulting tap on safe"
-        );
-        assert_eq!(plan.middle_emulation, Some(true));
-    }
-
-    #[test]
-    fn turning_tap_off_turns_tap_drag_off_with_it() {
-        let s = InputSettings {
-            tap_to_click: false,
-            ..Default::default()
-        };
-        let plan = plan_for(&s, &touchpad());
-        assert_eq!(plan.tap, Some(false));
-        assert_eq!(plan.tap_drag, Some(false));
-    }
-
-    #[test]
-    fn a_mouse_is_never_asked_about_tapping() {
-        // `config_tap_set_enabled` on a device with no tap fingers errors every call; not asking is the whole point of the capability gate.
-        let plan = plan_for(&InputSettings::default(), &mouse());
-        assert_eq!(plan.tap, None);
-        assert_eq!(plan.tap_drag, None);
-        assert_eq!(plan.disable_while_typing, None);
-        assert_eq!(plan.middle_emulation, None);
-    }
-
-    #[test]
-    fn legacy_global_natural_scroll_reaches_every_device_when_device_overrides_are_absent() {
-        let s = InputSettings {
-            natural_scroll: true,
-            touchpad_natural_scroll: None,
-            mouse_natural_scroll: None,
-            ..Default::default()
-        };
-        assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(true));
-        assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(true));
-        // …and none that doesn't.
-        assert_eq!(plan_for(&s, &keyboard()).natural_scroll, None);
-    }
-
-    #[test]
-    fn mouse_and_touchpad_can_keep_independent_scroll_directions() {
-        let s = InputSettings {
-            natural_scroll: false,
-            touchpad_natural_scroll: Some(true),
-            mouse_natural_scroll: Some(false),
-            ..Default::default()
-        };
-        assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(true));
-        assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(false));
-    }
-
-    #[test]
-    fn host_repeat_values_preserve_delay_rate_and_disable_semantics() {
-        let enabled = InputSettings {
-            key_repeat_delay_ms: Some(275),
-            key_repeat_rate_hz: Some(37),
-            ..Default::default()
-        };
-        assert_eq!(
-            enabled.key_repeat_params(),
-            (Duration::from_millis(275), 37)
-        );
-
-        let disabled = InputSettings {
-            key_repeat_delay_ms: Some(500),
-            key_repeat_rate_hz: Some(0),
-            ..Default::default()
-        };
-        assert_eq!(
-            disabled.key_repeat_params(),
-            (Duration::from_millis(500), 0)
-        );
-    }
-
-    #[test]
-    fn pointer_speed_reaches_devices_with_acceleration() {
-        let s = InputSettings {
-            pointer_speed: 1.0,
-            ..Default::default()
-        };
-        assert_eq!(plan_for(&s, &mouse()).accel_speed(), Some(1.0));
-        let s = InputSettings {
-            pointer_speed: 0.0,
-            ..Default::default()
-        };
-        assert_eq!(plan_for(&s, &touchpad()).accel_speed(), Some(-1.0));
-        assert_eq!(plan_for(&s, &keyboard()).accel_speed(), None);
-    }
-
-    #[test]
-    fn a_keyboard_gets_an_empty_plan() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn device_plan_follows_settings_and_capabilities() {
+        // Phase `a_touchpad_gets_tapping_dragging_and_palm_protection`.
+        {
+            let plan = plan_for(&InputSettings::default(), &touchpad());
+            assert_eq!(plan.tap, Some(true));
+            assert_eq!(
+                plan.tap_drag,
+                Some(true),
+                "tapping without tap-and-drag is a touchpad that cannot drag"
+            );
+            assert_eq!(
+                plan.disable_while_typing,
+                Some(true),
+                "disable-while-typing is what makes defaulting tap on safe"
+            );
+            assert_eq!(plan.middle_emulation, Some(true));
+        }
+        // Phase `the_touchpad_toggle_switches_off_touchpads_and_nothing_else`.
+        {
+            assert_eq!(
+                plan_for(&InputSettings::default(), &touchpad()).send_events,
+                Some(true),
+                "an absent preference leaves the touchpad on"
+            );
+            let off = InputSettings::from_section(&section(json!({"touchpad_enabled": false})));
+            assert!(!off.touchpad_enabled);
+            assert_eq!(plan_for(&off, &touchpad()).send_events, Some(false));
+            assert_eq!(
+                plan_for(&off, &mouse()).send_events,
+                None,
+                "a mouse is never switched off by the touchpad key"
+            );
+            assert_eq!(plan_for(&off, &keyboard()).send_events, None);
+        }
+        // Phase `turning_tap_off_turns_tap_drag_off_with_it`.
+        {
+            let s = InputSettings {
+                tap_to_click: false,
+                ..Default::default()
+            };
+            let plan = plan_for(&s, &touchpad());
+            assert_eq!(plan.tap, Some(false));
+            assert_eq!(plan.tap_drag, Some(false));
+        }
+        // Phase `a_mouse_is_never_asked_about_tapping`.
+        {
+            // `config_tap_set_enabled` on a device with no tap fingers errors every call; not asking is the whole point of the capability gate.
+            let plan = plan_for(&InputSettings::default(), &mouse());
+            assert_eq!(plan.tap, None);
+            assert_eq!(plan.tap_drag, None);
+            assert_eq!(plan.disable_while_typing, None);
+            assert_eq!(plan.middle_emulation, None);
+        }
+        // Phase `legacy_global_natural_scroll_reaches_every_device_when_device_overrides_are_absent`.
+        {
+            let s = InputSettings {
+                natural_scroll: true,
+                touchpad_natural_scroll: None,
+                mouse_natural_scroll: None,
+                ..Default::default()
+            };
+            assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(true));
+            assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(true));
+            // …and none that doesn't.
+            assert_eq!(plan_for(&s, &keyboard()).natural_scroll, None);
+        }
+        // Phase `mouse_and_touchpad_can_keep_independent_scroll_directions`.
+        {
+            let s = InputSettings {
+                natural_scroll: false,
+                touchpad_natural_scroll: Some(true),
+                mouse_natural_scroll: Some(false),
+                ..Default::default()
+            };
+            assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(true));
+            assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(false));
+        }
+        // Phase `pointer_speed_reaches_devices_with_acceleration`.
+        {
+            let s = InputSettings {
+                pointer_speed: 1.0,
+                ..Default::default()
+            };
+            assert_eq!(plan_for(&s, &mouse()).accel_speed(), Some(1.0));
+            let s = InputSettings {
+                pointer_speed: 0.0,
+                ..Default::default()
+            };
+            assert_eq!(plan_for(&s, &touchpad()).accel_speed(), Some(-1.0));
+            assert_eq!(plan_for(&s, &keyboard()).accel_speed(), None);
+        }
+        // Phase `a_keyboard_gets_an_empty_plan`.
         // Nothing in the pointer half applies; the keyboard half rides on `key_repeat_params` in the seat, not a device config.
         assert_eq!(
             plan_for(&InputSettings::default(), &keyboard()),
             DevicePlan::default()
         );
-    }
-
-    #[test]
-    fn keyboard_settings_compile_order_variants_active_and_compose() {
-        let section = serde_json::json!({
-            "keyboard_layout": "de:nodeadkeys",
-            "keyboard_layouts": ["us", "de:nodeadkeys", "fr"],
-            "compose_key": "ralt"
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let settings = KeyboardSettings::from_section(&section);
-        assert_eq!(settings.layouts, "us,de,fr");
-        assert_eq!(settings.variants, ",nodeadkeys,");
-        assert_eq!(settings.active_index, 1);
-        assert_eq!(
-            settings.options.as_deref(),
-            Some("grp:alt_shift_toggle,compose:ralt")
-        );
-    }
-
-    #[test]
-    fn keyboard_settings_migrate_the_single_legacy_layout() {
-        let section = serde_json::json!({ "keyboard_layout": "gb" })
-            .as_object()
-            .unwrap()
-            .clone();
-        let settings = KeyboardSettings::from_section(&section);
-        assert_eq!(settings.source_ids, ["gb"]);
-        assert_eq!(settings.layouts, "gb");
-        assert_eq!(settings.variants, "");
-        assert_eq!(settings.active_index, 0);
-    }
-
-    #[test]
-    fn the_plan_is_a_pure_function_of_settings_and_caps() {
-        // Re-applying after a settings change must produce the same plan a freshly-plugged device would get — otherwise a re-plug silently changes behaviour.
-        let s = InputSettings {
-            tap_to_click: false,
-            natural_scroll: true,
-            pointer_speed: 0.75,
-            key_repeat: 0.2,
-            ..Default::default()
-        };
-        assert_eq!(plan_for(&s, &touchpad()), plan_for(&s, &touchpad()));
-    }
-
-    #[test]
-    fn is_touchpad_is_the_tap_capability() {
+        // Phase `the_plan_is_a_pure_function_of_settings_and_caps`.
+        {
+            // Re-applying after a settings change must produce the same plan a freshly-plugged device would get — otherwise a re-plug silently changes behaviour.
+            let s = InputSettings {
+                tap_to_click: false,
+                natural_scroll: true,
+                pointer_speed: 0.75,
+                key_repeat: 0.2,
+                ..Default::default()
+            };
+            assert_eq!(plan_for(&s, &touchpad()), plan_for(&s, &touchpad()));
+        }
+        // Phase `is_touchpad_is_the_tap_capability`.
         assert!(touchpad().is_touchpad());
         assert!(!mouse().is_touchpad());
         assert!(!keyboard().is_touchpad());
     }
 
+    #[test]
+    fn keyboard_settings_compile_layouts_and_migrate_the_legacy_one() {
+        // Phase `keyboard_settings_compile_order_variants_active_and_compose`.
+        {
+            let section = serde_json::json!({
+                "keyboard_layout": "de:nodeadkeys",
+                "keyboard_layouts": ["us", "de:nodeadkeys", "fr"],
+                "compose_key": "ralt"
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            let settings = KeyboardSettings::from_section(&section);
+            assert_eq!(settings.layouts, "us,de,fr");
+            assert_eq!(settings.variants, ",nodeadkeys,");
+            assert_eq!(settings.active_index, 1);
+            assert_eq!(
+                settings.options.as_deref(),
+                Some("grp:alt_shift_toggle,compose:ralt")
+            );
+        }
+        // Phase `keyboard_settings_migrate_the_single_legacy_layout`.
+        {
+            let section = serde_json::json!({ "keyboard_layout": "gb" })
+                .as_object()
+                .unwrap()
+                .clone();
+            let settings = KeyboardSettings::from_section(&section);
+            assert_eq!(settings.source_ids, ["gb"]);
+            assert_eq!(settings.layouts, "gb");
+            assert_eq!(settings.variants, "");
+            assert_eq!(settings.active_index, 0);
+        }
+    }
+
+    // touchpad click and scroll methods
+
+    #[test]
+    fn click_method_choices_map_onto_libinput_methods() {
+        for (choice, expected) in [
+            (TouchpadClickMethod::Areas, Some(ClickMethod::ButtonAreas)),
+            (
+                TouchpadClickMethod::Clickfinger,
+                Some(ClickMethod::Clickfinger),
+            ),
+            (TouchpadClickMethod::Default, Some(ClickMethod::ButtonAreas)),
+        ] {
+            let settings = InputSettings {
+                touchpad_click_method: choice,
+                ..Default::default()
+            };
+            assert_eq!(plan_for(&settings, &touchpad()).click_method, expected);
+        }
+    }
+
+    #[test]
+    fn default_click_method_follows_the_device_not_a_fixed_value() {
+        // An Apple-style clickpad defaults to clickfinger; "Default" must
+        // restore that rather than forcing button areas on it.
+        let apple = DeviceCaps {
+            default_click_method: Some(ClickMethod::Clickfinger),
+            ..touchpad()
+        };
+        assert_eq!(
+            plan_for(&InputSettings::default(), &apple).click_method,
+            Some(ClickMethod::Clickfinger)
+        );
+    }
+
+    #[test]
+    fn unsupported_click_methods_are_never_requested() {
+        let areas_only = DeviceCaps {
+            supports_clickfinger: false,
+            ..touchpad()
+        };
+        let settings = InputSettings {
+            touchpad_click_method: TouchpadClickMethod::Clickfinger,
+            ..Default::default()
+        };
+        assert_eq!(plan_for(&settings, &areas_only).click_method, None);
+        assert_eq!(plan_for(&settings, &mouse()).click_method, None);
+        assert_eq!(
+            plan_for(&InputSettings::default(), &mouse()).click_method,
+            None,
+            "a mouse has no default click method to restore"
+        );
+    }
+
+    #[test]
+    fn scroll_method_is_capability_checked() {
+        let edge = InputSettings {
+            touchpad_scroll_method: TouchpadScrollMethod::Edge,
+            ..Default::default()
+        };
+        assert_eq!(
+            plan_for(&InputSettings::default(), &touchpad()).scroll_method,
+            Some(ScrollMethod::TwoFinger)
+        );
+        assert_eq!(
+            plan_for(&edge, &touchpad()).scroll_method,
+            Some(ScrollMethod::Edge)
+        );
+        let single_touch = DeviceCaps {
+            supports_two_finger_scroll: false,
+            ..touchpad()
+        };
+        assert_eq!(
+            plan_for(&InputSettings::default(), &single_touch).scroll_method,
+            None
+        );
+        assert_eq!(plan_for(&edge, &mouse()).scroll_method, None);
+        assert_eq!(plan_for(&edge, &keyboard()).scroll_method, None);
+    }
+
+    #[test]
+    fn touchpad_choices_and_scroll_speed_are_read_from_the_section() {
+        let s = InputSettings::from_section(&section(json!({
+            "touchpad_click_method": "clickfinger",
+            "touchpad_scroll_method": "edge",
+            "scroll_speed": 2.5,
+        })));
+        assert_eq!(s.touchpad_click_method, TouchpadClickMethod::Clickfinger);
+        assert_eq!(s.touchpad_scroll_method, TouchpadScrollMethod::Edge);
+        assert_eq!(s.scroll_speed, 2.5);
+
+        let odd = InputSettings::from_section(&section(json!({
+            "touchpad_click_method": 3,
+            "scroll_speed": -1.0,
+        })));
+        assert_eq!(odd.touchpad_click_method, TouchpadClickMethod::Default);
+        assert_eq!(
+            odd.scroll_speed,
+            settings_store::hardware::SCROLL_SPEED_MIN,
+            "out-of-range speeds clamp into the slider"
+        );
+        assert_eq!(InputSettings::default().scroll_speed, 1.0);
+    }
+
+    // accessibility keyboard filters
+
+    #[test]
+    fn bounce_keys_window_defaults_to_300ms_and_is_off_until_enabled() {
+        let d = AccessibilityInputSettings::default();
+        assert_eq!(d.bounce_window(), Duration::ZERO);
+        let on = AccessibilityInputSettings::from_section(&section(json!({
+            "bounce_keys": true,
+        })));
+        assert_eq!(on.bounce_window(), Duration::from_millis(300));
+        let clamped = AccessibilityInputSettings::from_section(&section(json!({
+            "bounce_keys": true,
+            "bounce_keys_delay_ms": 60_000,
+            "mouse_keys": true,
+        })));
+        assert_eq!(clamped.bounce_window(), Duration::from_millis(1_000));
+        assert!(clamped.mouse_keys);
+        assert!(!clamped.sticky_keys);
+    }
     // settings watch
 
     fn scratch(name: &str) -> PathBuf {
@@ -862,72 +1107,99 @@ mod tests {
     }
 
     #[test]
-    fn the_first_look_is_a_baseline_not_a_change() {
-        // Otherwise every session start re-applies settings already applied while constructing the backend.
-        let path = scratch("baseline");
-        std::fs::write(&path, "{}").expect("write");
-        let mut w = watch(&path);
-        assert!(!w.changed(Instant::now()));
-        let _ = std::fs::remove_file(&path);
+    fn settings_watch_reports_each_real_change_once_and_rate_limits() {
+        // Phase `the_first_look_is_a_baseline_not_a_change`.
+        {
+            // Otherwise every session start re-applies settings already applied while constructing the backend.
+            let path = scratch("baseline");
+            std::fs::write(&path, "{}").expect("write");
+            let mut w = watch(&path);
+            assert!(!w.changed(Instant::now()));
+            let _ = std::fs::remove_file(&path);
+        }
+        // Phase `a_write_is_noticed_once`.
+        {
+            let path = scratch("write");
+            std::fs::write(&path, r#"{"input":{"tap_to_click":true}}"#).expect("write");
+            let mut w = watch(&path);
+            assert!(!w.changed(Instant::now()), "baseline");
+
+            // A same-second rewrite can land on the same mtime on filesystems with coarse timestamps, so move it explicitly rather than racing the clock — the watch's contract is "the mtime moved".
+            std::fs::write(&path, r#"{"input":{"tap_to_click":false}}"#).expect("rewrite");
+            let moved = std::time::SystemTime::now() + Duration::from_secs(2);
+            let f = std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .expect("open for times");
+            f.set_modified(moved).expect("set mtime");
+            drop(f);
+
+            assert!(w.changed(Instant::now()), "the rewrite must be noticed");
+            assert!(
+                !w.changed(Instant::now()),
+                "and only once — re-applying every tick would fight the user"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+        // Phase `the_file_appearing_for_the_first_time_counts_as_a_change`.
+        {
+            // A fresh install has no settings.json until the user opens Settings; the first write is exactly when the compositor has to start honouring it.
+            let path = scratch("appear");
+            let _ = std::fs::remove_file(&path);
+            let mut w = watch(&path);
+            assert!(!w.changed(Instant::now()), "baseline: no file");
+            std::fs::write(&path, "{}").expect("write");
+            assert!(w.changed(Instant::now()));
+            let _ = std::fs::remove_file(&path);
+        }
+        // Phase `checks_are_rate_limited`.
+        {
+            // The loop runs at the display's cadence; stat'ing 144 times a second for a rarely-edited file is waste.
+            let path = scratch("ratelimit");
+            std::fs::write(&path, "{}").expect("write");
+            let mut w =
+                SettingsWatch::at(Some(path.clone())).with_interval(Duration::from_secs(3600));
+            let now = Instant::now();
+            assert!(!w.changed(now), "baseline");
+            std::fs::remove_file(&path).expect("remove");
+            assert!(
+                !w.changed(now),
+                "a second call inside the interval must not even look"
+            );
+        }
+        // Phase `a_watch_with_no_settings_path_never_reports_a_change`.
+        {
+            // No config directory at all — a container with no HOME. The compositor must not spin on it.
+            let mut w = SettingsWatch::at(None).with_interval(Duration::ZERO);
+            assert!(!w.changed(Instant::now()));
+            assert!(!w.changed(Instant::now()));
+        }
     }
 
     #[test]
-    fn a_write_is_noticed_once() {
-        let path = scratch("write");
-        std::fs::write(&path, r#"{"input":{"tap_to_click":true}}"#).expect("write");
-        let mut w = watch(&path);
-        assert!(!w.changed(Instant::now()), "baseline");
-
-        // A same-second rewrite can land on the same mtime on filesystems with coarse timestamps, so move it explicitly rather than racing the clock — the watch's contract is "the mtime moved".
-        std::fs::write(&path, r#"{"input":{"tap_to_click":false}}"#).expect("rewrite");
-        let moved = std::time::SystemTime::now() + Duration::from_secs(2);
-        let f = std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .expect("open for times");
-        f.set_modified(moved).expect("set mtime");
-        drop(f);
-
-        assert!(w.changed(Instant::now()), "the rewrite must be noticed");
-        assert!(
-            !w.changed(Instant::now()),
-            "and only once — re-applying every tick would fight the user"
+    fn input_method_sources_compile_no_group_and_select_the_primary_layout() {
+        let section = serde_json::json!({
+            "keyboard_layout": "ime/pinyin",
+            "keyboard_layouts": ["de", "ime/pinyin", "fr"]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let settings = KeyboardSettings::from_section(&section);
+        assert_eq!(settings.source_ids, ["de", "fr"]);
+        assert_eq!(settings.layouts, "de,fr");
+        assert_eq!(
+            settings.active_index, 0,
+            "the engine types on the primary layout"
         );
-        let _ = std::fs::remove_file(&path);
-    }
 
-    #[test]
-    fn the_file_appearing_for_the_first_time_counts_as_a_change() {
-        // A fresh install has no settings.json until the user opens Settings; the first write is exactly when the compositor has to start honouring it.
-        let path = scratch("appear");
-        let _ = std::fs::remove_file(&path);
-        let mut w = watch(&path);
-        assert!(!w.changed(Instant::now()), "baseline: no file");
-        std::fs::write(&path, "{}").expect("write");
-        assert!(w.changed(Instant::now()));
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn checks_are_rate_limited() {
-        // The loop runs at the display's cadence; stat'ing 144 times a second for a rarely-edited file is waste.
-        let path = scratch("ratelimit");
-        std::fs::write(&path, "{}").expect("write");
-        let mut w = SettingsWatch::at(Some(path.clone())).with_interval(Duration::from_secs(3600));
-        let now = Instant::now();
-        assert!(!w.changed(now), "baseline");
-        std::fs::remove_file(&path).expect("remove");
-        assert!(
-            !w.changed(now),
-            "a second call inside the interval must not even look"
-        );
-    }
-
-    #[test]
-    fn a_watch_with_no_settings_path_never_reports_a_change() {
-        // No config directory at all — a container with no HOME. The compositor must not spin on it.
-        let mut w = SettingsWatch::at(None).with_interval(Duration::ZERO);
-        assert!(!w.changed(Instant::now()));
-        assert!(!w.changed(Instant::now()));
+        let section = serde_json::json!({
+            "keyboard_layout": "fr",
+            "keyboard_layouts": ["de", "ime/pinyin", "fr"]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(KeyboardSettings::from_section(&section).active_index, 1);
     }
 }

@@ -452,75 +452,82 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_binary_hits_common_extensions() {
-        assert!(is_binary(Path::new("/home/x/a.png")));
-        assert!(is_binary(Path::new("/home/x/a.MP3")));
-        assert!(!is_binary(Path::new("/home/x/a.md")));
-        assert!(!is_binary(Path::new("/home/x/a")));
+    fn index_filters_skip_binaries_and_bloat_and_cap_head_reads() {
+        // Phase `is_binary_hits_common_extensions`.
+        {
+            assert!(is_binary(Path::new("/home/x/a.png")));
+            assert!(is_binary(Path::new("/home/x/a.MP3")));
+            assert!(!is_binary(Path::new("/home/x/a.md")));
+            assert!(!is_binary(Path::new("/home/x/a")));
+        }
+
+        // Phase `skip_dirs_hits_common_bloat`.
+        {
+            let home = Path::new("/home/x");
+            assert!(should_skip(Path::new("/home/x/proj/node_modules"), home));
+            assert!(should_skip(Path::new("/home/x/.cache/foo"), home));
+            assert!(!should_skip(Path::new("/home/x/proj/src/lib.rs"), home));
+        }
+
+        // Phase `read_head_caps_allocation_regardless_of_file_size`.
+        {
+            let dir =
+                std::env::temp_dir().join(format!("tilo-read-head-test-{}", std::process::id()));
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("big.log");
+            let big = vec![b'a'; 5 * 1024 * 1024];
+            fs::write(&path, &big).unwrap();
+
+            let cap = 16_384u64;
+            let out = read_head(&path, big.len() as u64, cap).unwrap();
+            assert_eq!(
+                out.len(),
+                usize::try_from(cap).unwrap(),
+                "read_head must stop at the cap for a large file",
+            );
+            // Under-reporting known_len (0) still caps — bound is `take`, not `known_len`.
+            let out2 = read_head(&path, 0, cap).unwrap();
+            assert_eq!(
+                out2.len(),
+                usize::try_from(cap).unwrap(),
+                "cap holds even when known_len lies"
+            );
+
+            // A small file returns its whole content, not the cap.
+            let small = dir.join("small.txt");
+            fs::write(&small, b"hello").unwrap();
+            let out3 = read_head(&small, 5, cap).unwrap();
+            assert_eq!(out3, b"hello");
+
+            fs::remove_dir_all(&dir).ok();
+        }
     }
 
     #[test]
-    fn skip_dirs_hits_common_bloat() {
-        let home = Path::new("/home/x");
-        assert!(should_skip(Path::new("/home/x/proj/node_modules"), home));
-        assert!(should_skip(Path::new("/home/x/.cache/foo"), home));
-        assert!(!should_skip(Path::new("/home/x/proj/src/lib.rs"), home));
-    }
+    fn query_cache_is_an_lru_that_refreshes_repeats() {
+        // Phase `query_cache_lru_evicts_oldest`.
+        {
+            let mut c = QueryCache::new(2);
+            c.put("a".to_string(), 10, Vec::new());
+            c.put("b".to_string(), 10, Vec::new());
+            c.put("c".to_string(), 10, Vec::new());
+            assert!(c.get("a", 10).is_none());
+            assert!(c.get("b", 10).is_some());
+            assert!(c.get("c", 10).is_some());
+        }
 
-    #[test]
-    fn read_head_caps_allocation_regardless_of_file_size() {
-        let dir = std::env::temp_dir().join(format!("tilo-read-head-test-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("big.log");
-        let big = vec![b'a'; 5 * 1024 * 1024];
-        fs::write(&path, &big).unwrap();
-
-        let cap = 16_384u64;
-        let out = read_head(&path, big.len() as u64, cap).unwrap();
-        assert_eq!(
-            out.len(),
-            usize::try_from(cap).unwrap(),
-            "read_head must stop at the cap for a large file",
-        );
-        // Under-reporting known_len (0) still caps — bound is `take`, not `known_len`.
-        let out2 = read_head(&path, 0, cap).unwrap();
-        assert_eq!(
-            out2.len(),
-            usize::try_from(cap).unwrap(),
-            "cap holds even when known_len lies"
-        );
-
-        // A small file returns its whole content, not the cap.
-        let small = dir.join("small.txt");
-        fs::write(&small, b"hello").unwrap();
-        let out3 = read_head(&small, 5, cap).unwrap();
-        assert_eq!(out3, b"hello");
-
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn query_cache_lru_evicts_oldest() {
-        let mut c = QueryCache::new(2);
-        c.put("a".to_string(), 10, Vec::new());
-        c.put("b".to_string(), 10, Vec::new());
-        c.put("c".to_string(), 10, Vec::new());
-        assert!(c.get("a", 10).is_none());
-        assert!(c.get("b", 10).is_some());
-        assert!(c.get("c", 10).is_some());
-    }
-
-    #[test]
-    fn query_cache_moves_repeat_to_head() {
-        let mut c = QueryCache::new(2);
-        c.put("a".to_string(), 10, Vec::new());
-        c.put("b".to_string(), 10, Vec::new());
-        // Re-put "a": the next eviction should drop "b", not "a".
-        c.put("a".to_string(), 10, Vec::new());
-        c.put("c".to_string(), 10, Vec::new());
-        assert!(c.get("a", 10).is_some());
-        assert!(c.get("b", 10).is_none());
-        assert!(c.get("c", 10).is_some());
+        // Phase `query_cache_moves_repeat_to_head`.
+        {
+            let mut c = QueryCache::new(2);
+            c.put("a".to_string(), 10, Vec::new());
+            c.put("b".to_string(), 10, Vec::new());
+            // Re-put "a": the next eviction should drop "b", not "a".
+            c.put("a".to_string(), 10, Vec::new());
+            c.put("c".to_string(), 10, Vec::new());
+            assert!(c.get("a", 10).is_some());
+            assert!(c.get("b", 10).is_none());
+            assert!(c.get("c", 10).is_some());
+        }
     }
 }
 
@@ -550,94 +557,96 @@ mod content_index_integration {
 
     #[test]
     #[serial]
-    fn walk_and_index_runs_synchronously_and_writes_docs() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
-        let index_dir = tmp.path().join("idx");
-        fs::create_dir_all(&index_dir).unwrap();
+    fn walking_home_indexes_documents_and_finds_content() {
+        // Phase `walk_and_index_runs_synchronously_and_writes_docs`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let index_dir = tmp.path().join("idx");
+            fs::create_dir_all(&index_dir).unwrap();
 
-        fs::write(home.join("hello.md"), "world").unwrap();
+            fs::write(home.join("hello.md"), "world").unwrap();
 
-        let schema = build_schema();
-        let idx = Index::create_in_dir(&index_dir, schema.clone()).unwrap();
-        let path_f = schema.get_field("path").unwrap();
-        let stem_f = schema.get_field("stem").unwrap();
-        let body_f = schema.get_field("body").unwrap();
-        let mtime_f = schema.get_field("mtime").unwrap();
-        let mut writer = idx.writer(WRITER_HEAP_BYTES).unwrap();
-        let empty: HashMap<PathBuf, u64> = HashMap::new();
-        walk_and_index(
-            home,
-            &empty,
-            &mut writer,
-            Fields {
-                path: path_f,
-                stem: stem_f,
-                body: body_f,
-                mtime: mtime_f,
-            },
-        );
-        writer.commit().unwrap();
-        drop(writer);
+            let schema = build_schema();
+            let idx = Index::create_in_dir(&index_dir, schema.clone()).unwrap();
+            let path_f = schema.get_field("path").unwrap();
+            let stem_f = schema.get_field("stem").unwrap();
+            let body_f = schema.get_field("body").unwrap();
+            let mtime_f = schema.get_field("mtime").unwrap();
+            let mut writer = idx.writer(WRITER_HEAP_BYTES).unwrap();
+            let empty: HashMap<PathBuf, u64> = HashMap::new();
+            walk_and_index(
+                home,
+                &empty,
+                &mut writer,
+                Fields {
+                    path: path_f,
+                    stem: stem_f,
+                    body: body_f,
+                    mtime: mtime_f,
+                },
+            );
+            writer.commit().unwrap();
+            drop(writer);
 
-        let reader = idx
-            .reader_builder()
-            .reload_policy(ReloadPolicy::Manual)
-            .try_into()
+            let reader = idx
+                .reader_builder()
+                .reload_policy(ReloadPolicy::Manual)
+                .try_into()
+                .unwrap();
+            reader.reload().unwrap();
+            let searcher = reader.searcher();
+            assert!(
+                searcher.num_docs() > 0,
+                "walk_and_index must add at least one doc; got {}",
+                searcher.num_docs()
+            );
+        }
+
+        // Phase `walks_home_and_finds_content_match`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let cache_dir = tmp.path().join(".cache/tilo/files-index");
+            fs::create_dir_all(&cache_dir).ok();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_FILES_INDEX_DIR", &cache_dir);
+
+            fs::write(
+                home.join("shopping.md"),
+                "# Shopping list\n\napples oranges pears\n",
+            )
             .unwrap();
-        reader.reload().unwrap();
-        let searcher = reader.searcher();
-        assert!(
-            searcher.num_docs() > 0,
-            "walk_and_index must add at least one doc; got {}",
-            searcher.num_docs()
-        );
-    }
+            fs::write(
+                home.join("notes.md"),
+                "# Notes\n\nsearch registry uses BM25.\n",
+            )
+            .unwrap();
+            fs::write(home.join("binary.png"), [0u8, 1, 2, 3]).unwrap();
 
-    #[test]
-    #[serial]
-    fn walks_home_and_finds_content_match() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
-        let cache_dir = tmp.path().join(".cache/tilo/files-index");
-        fs::create_dir_all(&cache_dir).ok();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_FILES_INDEX_DIR", &cache_dir);
+            let index = FilesIndex::open_or_create(home).expect("open index");
+            let ready = wait_for(
+                || {
+                    let hits = index.query("registry BM25", 10);
+                    !hits.is_empty()
+                },
+                Duration::from_secs(15),
+            );
+            assert!(ready, "index walker didn't produce hits within 15s");
 
-        fs::write(
-            home.join("shopping.md"),
-            "# Shopping list\n\napples oranges pears\n",
-        )
-        .unwrap();
-        fs::write(
-            home.join("notes.md"),
-            "# Notes\n\nsearch registry uses BM25.\n",
-        )
-        .unwrap();
-        fs::write(home.join("binary.png"), [0u8, 1, 2, 3]).unwrap();
+            let hits = index.query("apples", 5);
+            assert!(
+                hits.iter().any(|h| h.path.ends_with("shopping.md")),
+                "expected shopping.md in results, got {hits:?}"
+            );
 
-        let index = FilesIndex::open_or_create(home).expect("open index");
-        let ready = wait_for(
-            || {
-                let hits = index.query("registry BM25", 10);
-                !hits.is_empty()
-            },
-            Duration::from_secs(15),
-        );
-        assert!(ready, "index walker didn't produce hits within 15s");
-
-        let hits = index.query("apples", 5);
-        assert!(
-            hits.iter().any(|h| h.path.ends_with("shopping.md")),
-            "expected shopping.md in results, got {hits:?}"
-        );
-
-        // Binary must NOT surface — filtered by extension.
-        let hits = index.query("binary", 5);
-        assert!(
-            !hits.iter().any(|h| h.path.ends_with("binary.png")),
-            "binary.png should be excluded, got {hits:?}"
-        );
+            // Binary must NOT surface — filtered by extension.
+            let hits = index.query("binary", 5);
+            assert!(
+                !hits.iter().any(|h| h.path.ends_with("binary.png")),
+                "binary.png should be excluded, got {hits:?}"
+            );
+        }
     }
 
     /// A cache-miss query must land under 200 ms (CI jitter budget); a
@@ -691,88 +700,92 @@ mod content_index_integration {
 
     #[test]
     #[serial]
-    fn incremental_reindex_skips_untouched_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
-        let cache_dir = tmp.path().join(".cache/tilo/files-index");
-        fs::create_dir_all(&cache_dir).ok();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_FILES_INDEX_DIR", &cache_dir);
-
-        fs::write(home.join("a.md"), "alpha content").unwrap();
-        fs::write(home.join("b.md"), "bravo content").unwrap();
-
-        // First pass — populate the index.
-        {
-            let idx = FilesIndex::open_or_create(home).unwrap();
-            let ready = wait_for(
-                || !idx.query("alpha", 10).is_empty() && !idx.query("bravo", 10).is_empty(),
-                Duration::from_secs(15),
-            );
-            assert!(ready, "first pass didn't index within 15s");
-        }
-
-        // mtime unchanged; prove docs stay queryable, since "skipped" isn't observable.
-        let idx = FilesIndex::open_or_create(home).unwrap();
-        let ready = wait_for(
-            || !idx.query("alpha", 10).is_empty(),
-            Duration::from_secs(15),
-        );
-        assert!(
-            ready,
-            "second-pass reader must see previously-committed docs"
-        );
-    }
-
-    #[test]
-    #[serial]
     #[expect(
         clippy::used_underscore_binding,
         reason = "the test observes the writer thread the index otherwise only keeps alive"
     )]
-    fn complete_incremental_scan_removes_deleted_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
-        let cache_dir = tmp.path().join(".cache/tilo/files-index");
-        fs::create_dir_all(&cache_dir).ok();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_FILES_INDEX_DIR", &cache_dir);
-
-        let deleted_path = home.join("retired.md");
-        fs::write(&deleted_path, "uniquely retired search content").unwrap();
+    fn incremental_reindex_skips_untouched_and_removes_deleted_files() {
+        // Phase `incremental_reindex_skips_untouched_files`.
         {
-            let index = FilesIndex::open_or_create(home).unwrap();
-            assert!(
-                wait_for(
-                    || !index.query("uniquely retired", 10).is_empty(),
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let cache_dir = tmp.path().join(".cache/tilo/files-index");
+            fs::create_dir_all(&cache_dir).ok();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_FILES_INDEX_DIR", &cache_dir);
+
+            fs::write(home.join("a.md"), "alpha content").unwrap();
+            fs::write(home.join("b.md"), "bravo content").unwrap();
+
+            // First pass — populate the index.
+            {
+                let idx = FilesIndex::open_or_create(home).unwrap();
+                let ready = wait_for(
+                    || !idx.query("alpha", 10).is_empty() && !idx.query("bravo", 10).is_empty(),
                     Duration::from_secs(15),
-                ),
-                "first scan did not index the fixture"
+                );
+                assert!(ready, "first pass didn't index within 15s");
+            }
+
+            // mtime unchanged; prove docs stay queryable, since "skipped" isn't observable.
+            let idx = FilesIndex::open_or_create(home).unwrap();
+            let ready = wait_for(
+                || !idx.query("alpha", 10).is_empty(),
+                Duration::from_secs(15),
             );
             assert!(
-                wait_for(
-                    || {
-                        index
-                            ._writer_handle
-                            .read()
-                            .ok()
-                            .and_then(|handle| handle.as_ref().map(thread::JoinHandle::is_finished))
-                            .unwrap_or(false)
-                    },
-                    Duration::from_secs(15),
-                ),
-                "first scan's writer did not finish"
+                ready,
+                "second-pass reader must see previously-committed docs"
             );
         }
 
-        fs::remove_file(&deleted_path).unwrap();
-        let index = FilesIndex::open_or_create(home).unwrap();
-        assert!(
-            wait_for(
-                || index.query("uniquely retired", 10).is_empty(),
-                Duration::from_secs(15),
-            ),
-            "a deleted file remained searchable after a complete reconciliation"
-        );
+        // Phase `complete_incremental_scan_removes_deleted_files`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let cache_dir = tmp.path().join(".cache/tilo/files-index");
+            fs::create_dir_all(&cache_dir).ok();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_FILES_INDEX_DIR", &cache_dir);
+
+            let deleted_path = home.join("retired.md");
+            fs::write(&deleted_path, "uniquely retired search content").unwrap();
+            {
+                let index = FilesIndex::open_or_create(home).unwrap();
+                assert!(
+                    wait_for(
+                        || !index.query("uniquely retired", 10).is_empty(),
+                        Duration::from_secs(15),
+                    ),
+                    "first scan did not index the fixture"
+                );
+                assert!(
+                    wait_for(
+                        || {
+                            index
+                                ._writer_handle
+                                .read()
+                                .ok()
+                                .and_then(|handle| {
+                                    handle.as_ref().map(thread::JoinHandle::is_finished)
+                                })
+                                .unwrap_or(false)
+                        },
+                        Duration::from_secs(15),
+                    ),
+                    "first scan's writer did not finish"
+                );
+            }
+
+            fs::remove_file(&deleted_path).unwrap();
+            let index = FilesIndex::open_or_create(home).unwrap();
+            assert!(
+                wait_for(
+                    || index.query("uniquely retired", 10).is_empty(),
+                    Duration::from_secs(15),
+                ),
+                "a deleted file remained searchable after a complete reconciliation"
+            );
+        }
     }
 }

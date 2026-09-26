@@ -941,8 +941,8 @@
     },
     {
       "app": "scratchpad",
-      "cargo_package": "qos-scratchpad",
-      "binary": "qos-scratchpad",
+      "cargo_package": "tilo-scratchpad",
+      "binary": "tilo-scratchpad",
       "native_entrypoint": "apps/scratchpad/src/main.rs",
       "status": "unqualified",
       "headless": {
@@ -1470,7 +1470,7 @@
     {
       "app": "agent",
       "cargo_package": "agent",
-      "binary": "qos-agent",
+      "binary": "tilo-agent",
       "native_entrypoint": "apps/agent/src/main.rs",
       "reason": "Headless agent CLI, not a GUI application; excluded from frame-rate qualification."
     }

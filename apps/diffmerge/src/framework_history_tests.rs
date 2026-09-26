@@ -28,7 +28,15 @@ fn verify_restored(doc: &AutoCommit) {
         Some("recorded session")
     );
 }
+/// History adapter restore: production startup preserves a saved merge, and
+/// restoring fences a stale resource request while successive admitted hunks
+/// stay usable. Fresh fixture per phase.
 #[test]
+fn history_restore_preserves_saved_merge_and_fences_stale_requests() {
+    production_startup_preserves_saved_merge();
+    successive_admitted_resource_hunks_remain_usable_then_restore_fences_stale_request();
+}
+
 fn production_startup_preserves_saved_merge() {
     use ui::widget::Widget;
     let mut doc = automerge::AutoCommit::new();
@@ -123,7 +131,6 @@ impl ui::widget::Widget for ResourceHarness {
         self.app.get_rect()
     }
 }
-#[test]
 fn successive_admitted_resource_hunks_remain_usable_then_restore_fences_stale_request() {
     let queue = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let root = ResourceHarness {

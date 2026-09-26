@@ -6,7 +6,7 @@
 
 **Architecture:** Add one resolved-text normalization boundary while preserving existing relative APIs. Repair EmptyState, rich editor, opt-in scrolling editor fill and measured actionable Toolbar overflow. App composition migrations consume existing Card/Actions/FormPage rather than inventing another layout system.
 
-**Tech Stack:** Rust, Taffy, cosmic-text, Vello and qOS Widget lifecycle.
+**Tech Stack:** Rust, Taffy, cosmic-text, Vello and Tilo Widget lifecycle.
 
 **Spec:** `docs/superpowers/specs/2026-09-15-app-ui-balance.md`
 
@@ -20,7 +20,7 @@
 - Do not globally change primitive padding or reinterpret explicit fixed sizes.
 - Preserve unrelated working changes and untracked Scratchpad ownership.
 - No pushes, merges, publishing or dependency upgrades.
-- Existing linked worktree /Users/xaver/dev/qos-macos-shell; sequential implementers and scoped reviews.
+- Existing linked worktree /Users/xaver/dev/tilo-macos-shell; sequential implementers and scoped reviews.
 - Focused RED/GREEN behavior regressions before implementation; run relevant existing UI tests once before scoped commit. CARGO_BUILD_JOBS=4, CARGO_PROFILE_DEV_DEBUG=0, CARGO_PROFILE_TEST_DEBUG=0.
 - Every task report includes exact commands/results, self-review, screenshot paths if requested, and remaining gaps. No subagents from implementers.
 
@@ -33,7 +33,7 @@ Verified current source: `TextRenderer::scaled_style` (1367) multiplies size and
 - [ ] Add `pub fn renderer_input_style(&self, resolved: &TextStyle) -> TextStyle` on TextRenderer, returning a clone with `size` and `letter_spacing` divided by sanitized `self.text_scale()`. Document that input is final logical pixels; theme typography is already resolved. Leave `measure`, `measure_style`, `draw_text`, `draw_style` semantics intact. If a concurrent explicit FontSize API exists, consume it instead of adding this method.
 - [ ] For immediate drawing use one normalized style for both calls: `let style = tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm)); let (w, h) = tr.measure_style(label, Some(width), &style); tr.draw_style(scene, label, color, transform, Some(width), &style);` Do not mutate global renderer scale around a draw.
 - [ ] Keep Text's explicit/base/fixed semantics and cache invalidation. Reuse the public normalization for fully resolved styles only; examine letter-spacing semantics before replacing the existing private size-only adjustment wholesale.
-- [ ] Tests: legacy14px at renderer2 measures as28px; resolved28px measures identically at renderer1 and2; resolved letter spacing also stays identical; theme ui1.25/text2 scales once; same resolved style produces identical measurement and shaped glyph bounds. Existing `text::tests::theme_resolved_sizes_are_independent_of_renderer_scale` is a useful regression anchor.
+- [ ] Tests: legacy14px at renderer2 measures as28px; resolved28px measures identically at renderer1 and2; resolved letter spacing also stays identical; theme ui1.25/text2 scales once; same resolved style produces identical measurement and shaped glyph bounds. Existing `text::tests::font_size_ownership_is_resolved_once_by_its_owner` (case `theme_resolved_sizes_are_independent_of_renderer_scale`) is a useful regression anchor.
 
 **Gate:** `cargo test -p ui --lib text_scale`; `cargo test -p ui --lib theme_resolved_sizes`. Add/run the new focused test filter. Do not broad-rewrite callers whose literals are intentionally base sizes.
 

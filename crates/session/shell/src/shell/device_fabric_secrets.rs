@@ -411,252 +411,269 @@ mod tests {
         }
     }
 
-    /// A credential sealed before a crypto-stack upgrade. Devices on
-    /// different builds exchange these envelopes, so Ed25519-to-X25519
-    /// conversion, X25519 agreement and XChaCha20-Poly1305 must stay
-    /// byte-compatible.
     #[test]
-    fn credential_sealed_by_an_earlier_build_still_opens() {
-        let author_key = SigningKey::from_bytes(&[1; 32]);
-        let laptop_key = SigningKey::from_bytes(&[2; 32]);
-        assert_eq!(
-            hex::encode(wifi_network_id("Home", os_actions::WifiSecurity::Wpa3)),
-            "3acb148a49b7b11b0709306da205cc903420497d6fb8e9efb16a3adac3d1e80c"
-        );
-        let credential = earlier_build_credential();
-        for key in [&author_key, &laptop_key] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn credential_bundle_versions_stay_openable_rewrap_forward_and_reject_unknown() {
+        /// A credential sealed before a crypto-stack upgrade. Devices on
+        /// different builds exchange these envelopes, so Ed25519-to-X25519
+        /// conversion, X25519 agreement and XChaCha20-Poly1305 must stay
+        /// byte-compatible.
+        fn credential_sealed_by_an_earlier_build_still_opens() {
+            let author_key = SigningKey::from_bytes(&[1; 32]);
+            let laptop_key = SigningKey::from_bytes(&[2; 32]);
             assert_eq!(
-                open_wifi_credential(&credential, key).unwrap(),
-                "kat wifi passphrase"
+                hex::encode(wifi_network_id("Home", os_actions::WifiSecurity::Wpa3)),
+                "3acb148a49b7b11b0709306da205cc903420497d6fb8e9efb16a3adac3d1e80c"
+            );
+            let credential = earlier_build_credential();
+            for key in [&author_key, &laptop_key] {
+                assert_eq!(
+                    open_wifi_credential(&credential, key).unwrap(),
+                    "kat wifi passphrase"
+                );
+            }
+            assert_eq!(
+                open_wifi_credential(&credential, &SigningKey::from_bytes(&[3; 32])),
+                Err(WifiSecretError::NotARecipient)
+            );
+            assert_eq!(
+                wifi_envelope_recipients(&credential).unwrap(),
+                BTreeSet::from([device(&author_key), device(&laptop_key)])
             );
         }
-        assert_eq!(
-            open_wifi_credential(&credential, &SigningKey::from_bytes(&[3; 32])),
-            Err(WifiSecretError::NotARecipient)
-        );
-        assert_eq!(
-            wifi_envelope_recipients(&credential).unwrap(),
-            BTreeSet::from([device(&author_key), device(&laptop_key)])
-        );
-    }
 
-    #[test]
-    fn each_certified_recipient_can_open_but_an_outsider_cannot() {
-        let author_key = SigningKey::from_bytes(&[1; 32]);
-        let laptop_key = SigningKey::from_bytes(&[2; 32]);
-        let outsider_key = SigningKey::from_bytes(&[3; 32]);
-        let author = device(&author_key);
-        let credential = seal_wifi_credential(
-            "Home",
-            os_actions::WifiSecurity::Wpa3,
-            "correct horse battery staple",
-            &author,
-            [author.clone(), device(&laptop_key)],
-            FabricStamp {
-                counter: 8,
-                device: author.clone(),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(
-            open_wifi_credential(&credential, &author_key).unwrap(),
-            "correct horse battery staple"
-        );
-        assert_eq!(
-            open_wifi_credential(&credential, &laptop_key).unwrap(),
-            "correct horse battery staple"
-        );
-        assert_eq!(
-            open_wifi_credential(&credential, &outsider_key),
-            Err(WifiSecretError::NotARecipient)
-        );
-        assert!(
-            !credential
-                .sealed_secret
-                .windows("correct horse battery staple".len())
-                .any(|window| window == b"correct horse battery staple")
-        );
-    }
-
-    #[test]
-    fn public_metadata_is_authenticated_as_associated_data() {
-        let key = SigningKey::from_bytes(&[4; 32]);
-        let author = device(&key);
-        let mut credential = seal_wifi_credential(
-            "Home",
-            os_actions::WifiSecurity::Wpa2,
-            "secret",
-            &author,
-            [author.clone()],
-            FabricStamp {
-                counter: 1,
-                device: author.clone(),
-            },
-        )
-        .unwrap();
-        credential.ssid = "Lookalike".into();
-        assert_eq!(
-            open_wifi_credential(&credential, &key),
-            Err(WifiSecretError::DecryptionFailed)
-        );
-    }
-
-    #[test]
-    fn security_mode_is_authenticated_and_enterprise_cannot_be_password_only() {
-        let key = SigningKey::from_bytes(&[31; 32]);
-        let author = device(&key);
-        let stamp = FabricStamp {
-            counter: 1,
-            device: author.clone(),
-        };
-        let mut credential = seal_wifi_credential(
-            "Home",
-            os_actions::WifiSecurity::Wpa2,
-            "secret",
-            &author,
-            [author.clone()],
-            stamp.clone(),
-        )
-        .unwrap();
-        credential.security = os_actions::WifiSecurity::Wpa3;
-        assert_eq!(
-            open_wifi_credential(&credential, &key),
-            Err(WifiSecretError::DecryptionFailed)
-        );
-
-        for security in [
-            os_actions::WifiSecurity::Enterprise,
-            os_actions::WifiSecurity::Owe,
-            os_actions::WifiSecurity::Open,
-            os_actions::WifiSecurity::Unknown,
-        ] {
+        fn new_credentials_are_version_two_hpke_boxes() {
+            let author_key = SigningKey::from_bytes(&[5; 32]);
+            let author = device(&author_key);
+            let credential = seal_wifi_credential(
+                "Office",
+                os_actions::WifiSecurity::Wpa2,
+                "v2 passphrase",
+                &author,
+                [author.clone()],
+                FabricStamp {
+                    counter: 2,
+                    device: author.clone(),
+                },
+            )
+            .unwrap();
+            assert_eq!(credential.sealed_secret.first(), Some(&WIFI_ENVELOPE_V2));
             assert_eq!(
-                seal_wifi_credential(
-                    "Corp",
-                    security,
-                    "not-enough-enterprise-context",
-                    &author,
-                    [author.clone()],
-                    stamp.clone(),
-                ),
-                Err(WifiSecretError::InvalidCredential),
-                "{security:?}"
+                open_wifi_credential(&credential, &author_key).unwrap(),
+                "v2 passphrase"
             );
-        }
-    }
-
-    #[test]
-    fn new_credentials_are_version_two_hpke_boxes() {
-        let author_key = SigningKey::from_bytes(&[5; 32]);
-        let author = device(&author_key);
-        let credential = seal_wifi_credential(
-            "Office",
-            os_actions::WifiSecurity::Wpa2,
-            "v2 passphrase",
-            &author,
-            [author.clone()],
-            FabricStamp {
-                counter: 2,
-                device: author.clone(),
-            },
-        )
-        .unwrap();
-        assert_eq!(credential.sealed_secret.first(), Some(&WIFI_ENVELOPE_V2));
-        assert_eq!(
-            open_wifi_credential(&credential, &author_key).unwrap(),
-            "v2 passphrase"
-        );
-        assert_eq!(
-            wifi_envelope_recipients(&credential).unwrap(),
-            BTreeSet::from([author])
-        );
-        // The bundle nonce is authenticated too.
-        let mut moved = credential.clone();
-        moved.nonce[0] ^= 1;
-        assert_eq!(
-            open_wifi_credential(&moved, &author_key),
-            Err(WifiSecretError::DecryptionFailed)
-        );
-        // So is the author named in the stamp.
-        let mut reauthored = credential;
-        reauthored.stamp.device = device(&SigningKey::from_bytes(&[6; 32]));
-        assert_eq!(
-            open_wifi_credential(&reauthored, &author_key),
-            Err(WifiSecretError::DecryptionFailed)
-        );
-    }
-
-    #[test]
-    fn swapped_recipient_boxes_do_not_open() {
-        let a_key = SigningKey::from_bytes(&[7; 32]);
-        let b_key = SigningKey::from_bytes(&[8; 32]);
-        let author = device(&a_key);
-        let mut credential = seal_wifi_credential(
-            "Home",
-            os_actions::WifiSecurity::Wpa3,
-            "secret",
-            &author,
-            [author.clone(), device(&b_key)],
-            FabricStamp {
-                counter: 1,
-                device: author.clone(),
-            },
-        )
-        .unwrap();
-        let WifiEnvelopeBundle::V2(mut bundle) = decode_bundle(&credential.sealed_secret).unwrap()
-        else {
-            panic!("expected a version 2 bundle");
-        };
-        let first = bundle.envelopes[0].sealed.clone();
-        bundle.envelopes[0].sealed = bundle.envelopes[1].sealed.clone();
-        bundle.envelopes[1].sealed = first;
-        credential.sealed_secret = postcard::to_allocvec(&bundle).unwrap();
-        for key in [&a_key, &b_key] {
             assert_eq!(
-                open_wifi_credential(&credential, key),
+                wifi_envelope_recipients(&credential).unwrap(),
+                BTreeSet::from([author])
+            );
+            // The bundle nonce is authenticated too.
+            let mut moved = credential.clone();
+            moved.nonce[0] ^= 1;
+            assert_eq!(
+                open_wifi_credential(&moved, &author_key),
+                Err(WifiSecretError::DecryptionFailed)
+            );
+            // So is the author named in the stamp.
+            let mut reauthored = credential;
+            reauthored.stamp.device = device(&SigningKey::from_bytes(&[6; 32]));
+            assert_eq!(
+                open_wifi_credential(&reauthored, &author_key),
                 Err(WifiSecretError::DecryptionFailed)
             );
         }
-    }
 
-    #[test]
-    fn version_one_credential_rewraps_to_version_two() {
-        let author_key = SigningKey::from_bytes(&[1; 32]);
-        let laptop_key = SigningKey::from_bytes(&[2; 32]);
-        let phone_key = SigningKey::from_bytes(&[9; 32]);
-        let old = earlier_build_credential();
-        assert_eq!(old.sealed_secret.first(), Some(&WIFI_ENVELOPE_V1));
-        let password = open_wifi_credential(&old, &laptop_key).unwrap();
-        let author = device(&author_key);
-        let rewrapped = seal_wifi_credential(
-            &old.ssid,
-            old.security,
-            &password,
-            &author,
-            [author.clone(), device(&laptop_key), device(&phone_key)],
-            FabricStamp {
-                counter: 9,
-                device: author.clone(),
-            },
-        )
-        .unwrap();
-        assert_eq!(rewrapped.sealed_secret.first(), Some(&WIFI_ENVELOPE_V2));
-        for key in [&author_key, &laptop_key, &phone_key] {
+        fn version_one_credential_rewraps_to_version_two() {
+            let author_key = SigningKey::from_bytes(&[1; 32]);
+            let laptop_key = SigningKey::from_bytes(&[2; 32]);
+            let phone_key = SigningKey::from_bytes(&[9; 32]);
+            let old = earlier_build_credential();
+            assert_eq!(old.sealed_secret.first(), Some(&WIFI_ENVELOPE_V1));
+            let password = open_wifi_credential(&old, &laptop_key).unwrap();
+            let author = device(&author_key);
+            let rewrapped = seal_wifi_credential(
+                &old.ssid,
+                old.security,
+                &password,
+                &author,
+                [author.clone(), device(&laptop_key), device(&phone_key)],
+                FabricStamp {
+                    counter: 9,
+                    device: author.clone(),
+                },
+            )
+            .unwrap();
+            assert_eq!(rewrapped.sealed_secret.first(), Some(&WIFI_ENVELOPE_V2));
+            for key in [&author_key, &laptop_key, &phone_key] {
+                assert_eq!(
+                    open_wifi_credential(&rewrapped, key).unwrap(),
+                    "kat wifi passphrase"
+                );
+            }
+        }
+
+        fn unknown_bundle_versions_are_rejected() {
+            let mut credential = earlier_build_credential();
+            credential.sealed_secret[0] = 3;
             assert_eq!(
-                open_wifi_credential(&rewrapped, key).unwrap(),
-                "kat wifi passphrase"
+                validate_wifi_envelopes(&credential.sealed_secret),
+                Err(WifiSecretError::InvalidCredential)
             );
         }
+
+        credential_sealed_by_an_earlier_build_still_opens();
+        new_credentials_are_version_two_hpke_boxes();
+        version_one_credential_rewraps_to_version_two();
+        unknown_bundle_versions_are_rejected();
     }
 
     #[test]
-    fn unknown_bundle_versions_are_rejected() {
-        let mut credential = earlier_build_credential();
-        credential.sealed_secret[0] = 3;
-        assert_eq!(
-            validate_wifi_envelopes(&credential.sealed_secret),
-            Err(WifiSecretError::InvalidCredential)
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn sealed_credentials_open_only_for_certified_recipients_with_authenticated_metadata() {
+        fn each_certified_recipient_can_open_but_an_outsider_cannot() {
+            let author_key = SigningKey::from_bytes(&[1; 32]);
+            let laptop_key = SigningKey::from_bytes(&[2; 32]);
+            let outsider_key = SigningKey::from_bytes(&[3; 32]);
+            let author = device(&author_key);
+            let credential = seal_wifi_credential(
+                "Home",
+                os_actions::WifiSecurity::Wpa3,
+                "correct horse battery staple",
+                &author,
+                [author.clone(), device(&laptop_key)],
+                FabricStamp {
+                    counter: 8,
+                    device: author.clone(),
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                open_wifi_credential(&credential, &author_key).unwrap(),
+                "correct horse battery staple"
+            );
+            assert_eq!(
+                open_wifi_credential(&credential, &laptop_key).unwrap(),
+                "correct horse battery staple"
+            );
+            assert_eq!(
+                open_wifi_credential(&credential, &outsider_key),
+                Err(WifiSecretError::NotARecipient)
+            );
+            assert!(
+                !credential
+                    .sealed_secret
+                    .windows("correct horse battery staple".len())
+                    .any(|window| window == b"correct horse battery staple")
+            );
+        }
+
+        fn public_metadata_is_authenticated_as_associated_data() {
+            let key = SigningKey::from_bytes(&[4; 32]);
+            let author = device(&key);
+            let mut credential = seal_wifi_credential(
+                "Home",
+                os_actions::WifiSecurity::Wpa2,
+                "secret",
+                &author,
+                [author.clone()],
+                FabricStamp {
+                    counter: 1,
+                    device: author.clone(),
+                },
+            )
+            .unwrap();
+            credential.ssid = "Lookalike".into();
+            assert_eq!(
+                open_wifi_credential(&credential, &key),
+                Err(WifiSecretError::DecryptionFailed)
+            );
+        }
+
+        fn security_mode_is_authenticated_and_enterprise_cannot_be_password_only() {
+            let key = SigningKey::from_bytes(&[31; 32]);
+            let author = device(&key);
+            let stamp = FabricStamp {
+                counter: 1,
+                device: author.clone(),
+            };
+            let mut credential = seal_wifi_credential(
+                "Home",
+                os_actions::WifiSecurity::Wpa2,
+                "secret",
+                &author,
+                [author.clone()],
+                stamp.clone(),
+            )
+            .unwrap();
+            credential.security = os_actions::WifiSecurity::Wpa3;
+            assert_eq!(
+                open_wifi_credential(&credential, &key),
+                Err(WifiSecretError::DecryptionFailed)
+            );
+
+            for security in [
+                os_actions::WifiSecurity::Enterprise,
+                os_actions::WifiSecurity::Owe,
+                os_actions::WifiSecurity::Open,
+                os_actions::WifiSecurity::Unknown,
+            ] {
+                assert_eq!(
+                    seal_wifi_credential(
+                        "Corp",
+                        security,
+                        "not-enough-enterprise-context",
+                        &author,
+                        [author.clone()],
+                        stamp.clone(),
+                    ),
+                    Err(WifiSecretError::InvalidCredential),
+                    "{security:?}"
+                );
+            }
+        }
+
+        fn swapped_recipient_boxes_do_not_open() {
+            let a_key = SigningKey::from_bytes(&[7; 32]);
+            let b_key = SigningKey::from_bytes(&[8; 32]);
+            let author = device(&a_key);
+            let mut credential = seal_wifi_credential(
+                "Home",
+                os_actions::WifiSecurity::Wpa3,
+                "secret",
+                &author,
+                [author.clone(), device(&b_key)],
+                FabricStamp {
+                    counter: 1,
+                    device: author.clone(),
+                },
+            )
+            .unwrap();
+            let WifiEnvelopeBundle::V2(mut bundle) =
+                decode_bundle(&credential.sealed_secret).unwrap()
+            else {
+                panic!("expected a version 2 bundle");
+            };
+            let first = bundle.envelopes[0].sealed.clone();
+            bundle.envelopes[0].sealed = bundle.envelopes[1].sealed.clone();
+            bundle.envelopes[1].sealed = first;
+            credential.sealed_secret = postcard::to_allocvec(&bundle).unwrap();
+            for key in [&a_key, &b_key] {
+                assert_eq!(
+                    open_wifi_credential(&credential, key),
+                    Err(WifiSecretError::DecryptionFailed)
+                );
+            }
+        }
+
+        each_certified_recipient_can_open_but_an_outsider_cannot();
+        public_metadata_is_authenticated_as_associated_data();
+        security_mode_is_authenticated_and_enterprise_cannot_be_password_only();
+        swapped_recipient_boxes_do_not_open();
     }
 }

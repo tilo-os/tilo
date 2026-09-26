@@ -1,6 +1,6 @@
 # Shared runtime macOS proof
 
-**Goal:** Run the real Photos and Word Processor executables concurrently on macOS, using the same production collaboration and identity brokers as qOS, and record a typed cross-app content handoff.
+**Goal:** Run the real Photos and Word Processor executables concurrently on macOS, using the same production collaboration and identity brokers as Tilo, and record a typed cross-app content handoff.
 
 **Design:** Add a compositor-free service host around `spawn_native` and the existing identity broker. Keep policy, certification, resource discovery, action dispatch and results unchanged. Isolate Unix descriptor inheritance in an adapter. The initial host links the shell library because the existing broker depends on its workspace model; this is deliberate reuse, not a second broker implementation or a claim that crate extraction is complete. No app-specific runtime integration is added.
 

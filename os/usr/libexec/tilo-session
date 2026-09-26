@@ -37,7 +37,9 @@ export TILO_SESSION_LOGOUT_REQUEST="$logout_request_path"
 
 # greetd supplies these only to the compositor process.  D-Bus activation and
 # the already-running systemd user manager need their own copy or
-# xdg-desktop-portal cannot select Tilo's backend.
+# xdg-desktop-portal cannot select Tilo's backend.  The compositor adds
+# WAYLAND_DISPLAY itself once its socket is up; stop_target clears all of them
+# (and any stale DISPLAY/XAUTHORITY) on logout.
 XDG_CURRENT_DESKTOP=tilo
 XDG_SESSION_DESKTOP=tilo
 XDG_SESSION_TYPE=wayland
@@ -50,7 +52,8 @@ stop_target() {
   fi
   if [ "$environment_imported" = 1 ]; then
     "$DBUS_UPDATE" --systemd \
-      XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE= >/dev/null 2>&1 || true
+      WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= \
+      XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= >/dev/null 2>&1 || true
     "$SYSTEMCTL" --user unset-environment \
       DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
       XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE \

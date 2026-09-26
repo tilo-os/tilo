@@ -20,6 +20,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use std::cell::Cell;
 use std::rc::Rc;
+use ui::charts::{Chart, ChartLabels, ChartStyle, Series, TrendRange, TrendStyle};
 use ui::chrome::{
     PANEL_BORDER_ALPHA, SelectionState, chrome_hairline, panel_border, panel_ground, selection_tier,
 };
@@ -44,7 +45,6 @@ use crate::model::{
     ConnId, ConnKind, ConnStatus, Connection, LocalProfileDetails, Vault, human_ago, sample_vault,
 };
 use crate::net::{self, Transfer};
-use crate::throughput;
 
 /// One byte-counter reading of a connected tunnel, timestamped so a rate can
 /// be derived from consecutive samples. Ephemeral live telemetry; it is not
@@ -54,6 +54,10 @@ struct RateSample {
     at: Instant,
     xfer: Transfer,
 }
+
+/// Maximum number of measured rate points plotted across the throughput
+/// chart.
+const THROUGHPUT_SAMPLES: usize = 56;
 
 /// Rolling window of transfer readings for one tunnel.
 #[derive(Default)]
@@ -74,7 +78,7 @@ impl TransferHistory {
         }
         self.samples.push(RateSample { at: now, xfer });
         // Keep enough points to fill the chart, plus one for the leading edge.
-        let cap = throughput::SAMPLES + 1;
+        let cap = THROUGHPUT_SAMPLES + 1;
         if self.samples.len() > cap {
             let drop = self.samples.len() - cap;
             self.samples.drain(0..drop);
@@ -2387,7 +2391,7 @@ impl VpnApp {
         let columns = if compact { 2.0 } else { 4.0 };
         let tw = (content.width() - gap * (columns - 1.0)) / columns;
         let rate_or_dash = |v: Option<f64>| match v {
-            Some(bps) if has_rate => throughput::rate_label(bps),
+            Some(bps) if has_rate => ui::format::rate(bps),
             _ => "—".to_string(),
         };
         let tile_vals = [
@@ -2467,7 +2471,7 @@ impl VpnApp {
         // is no live data yet the plot stays empty with an honest note; the
         // app never draws a synthesized waveform. `chart` comes from
         // `status_geometry`, the rhythm the hit layout reads too.
-        throughput::draw_chart(scene, t, chart, theme, down_series, up_series, has_rate);
+        Self::draw_throughput_plot(scene, tr, t, theme, chart, down_series, up_series, has_rate);
         text_w(
             tr,
             scene,
@@ -2521,6 +2525,70 @@ impl VpnApp {
                 TextWeight::Regular,
             );
         }
+    }
+
+    /// The throughput plot on its raised card: download (info) and upload
+    /// (success) share one scale with headroom, each leading with a dot at the
+    /// newest reading. Only ever plots the measured series it is handed —
+    /// without a live rate the card shows its grid and nothing else.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the plot is scene + renderer + transform + theme + bounds + both rate series + whether they are live"
+    )]
+    fn draw_throughput_plot(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        chart: Rect,
+        down: &[f64],
+        up: &[f64],
+        live: bool,
+    ) {
+        let raised = theme.tokens.colors.surfaces.raised;
+        // The plot is a raised card like the stat tiles above it, with the
+        // edge derived from its own fill (HIG §9.5).
+        ui::surface::card(scene, t, chart, f64::from(theme.tokens.radii.lg), raised);
+        let plot = chart.inset(-12.0);
+        if plot.width() <= 1.0 || plot.height() <= 1.0 {
+            return;
+        }
+        let peak = down
+            .iter()
+            .chain(up)
+            .copied()
+            .fold(0.0_f64, f64::max)
+            .max(1.0);
+        let semantic = &theme.tokens.colors.semantic;
+        let series = if live {
+            let as_f32 = |rates: &[f64]| rates.iter().map(|&r| r as f32).collect();
+            vec![
+                Series::new(as_f32(down), semantic.info),
+                Series::new(as_f32(up), semantic.success),
+            ]
+        } else {
+            Vec::new()
+        };
+        let style = ChartStyle::default()
+            .without_header()
+            .with_grid(3, Some(ui::surface::edge_on(raised).multiply_alpha(0.6)))
+            .with_trend(
+                TrendStyle::CHART
+                    .with_line_width(2.0)
+                    .with_fill(ui::charts::TrendFill::Alpha(41))
+                    .with_leading_dot(3.0),
+            );
+        Chart::draw_styled(
+            scene,
+            t,
+            tr,
+            plot,
+            theme,
+            &series,
+            TrendRange::up_to(peak * 1.15),
+            ChartLabels::default(),
+            &style,
+        );
     }
 
     /// The secret-free provisioning explanation plus the per-tunnel Tor
@@ -4196,140 +4264,232 @@ mod tests {
         (app, doc)
     }
 
-    /// At 1024×640 the docked detail pane is 536px wide, so its header
-    /// stacks (the 150px action cannot share the title row) and the Status
-    /// table's Tor row lands below the pane. The pane scrolls — docked as
-    /// well as compact — by the extent the painter, the Tor hit rect and
-    /// `status_content_height` share, so the row is reachable with the wheel.
     #[test]
-    fn docked_detail_scrolls_the_tor_row_into_view_at_1024x640() {
-        let (mut app, _doc) = demo_with_doc();
-        if app.vault.selected.is_none() {
-            let first = app.vault.connections[0].id;
-            app.select(first);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn vpn_layout_scales_scrolls_and_keeps_controls_in_band() {
+        // Case `docked_detail_scrolls_the_tor_row_into_view_at_1024x640`:
+        // At 1024×640 the docked detail pane is 536px wide, so its header
+        // stacks (the 150px action cannot share the title row) and the Status
+        // table's Tor row lands below the pane. The pane scrolls — docked as
+        // well as compact — by the extent the painter, the Tor hit rect and
+        // `status_content_height` share, so the row is reachable with the wheel.
+        {
+            let (mut app, _doc) = demo_with_doc();
+            if app.vault.selected.is_none() {
+                let first = app.vault.connections[0].id;
+                app.select(first);
+            }
+            app.detail_tab = DetailTab::Status;
+            app.rect = Rect::new(0.0, 0.0, 1024.0, 640.0);
+            let lay = app.layout();
+            assert!(!lay.compact);
+            assert!(
+                lay.tor_row.y1 > lay.content.y1,
+                "without scrolling the Tor row starts below the pane"
+            );
+            let extent = lay.content.y0 + status_content_height(lay.content);
+            assert!(
+                lay.tor_row.y1 <= extent + 1e-6,
+                "the Tor row lies inside the Status extent"
+            );
+
+            app.last_mouse = lay.content.center();
+            let mut handled = false;
+            app.handle_detail_scroll(&MouseScrollDelta::LineDelta(0.0, -40.0), &mut handled);
+            assert!(handled, "the docked pane takes the wheel");
+            let max = app.detail_scroll_max(&lay);
+            assert!(
+                max > 0.0 && (app.detail_scroll - max).abs() < 1e-6,
+                "clamped to the content extent"
+            );
+            assert!(
+                lay.tor_row.y1 - app.detail_scroll <= lay.content.y1 + 1e-6,
+                "the Tor row is inside the pane after scrolling"
+            );
+
+            // A tall window shows the whole table: nothing to scroll.
+            app.rect = Rect::new(0.0, 0.0, 1024.0, 900.0);
+            let tall = app.layout();
+            assert!(tall.tor_row.y1 <= tall.content.y1);
+            assert!(app.detail_scroll_max(&tall).abs() < 1e-6);
         }
-        app.detail_tab = DetailTab::Status;
-        app.rect = Rect::new(0.0, 0.0, 1024.0, 640.0);
-        let lay = app.layout();
-        assert!(!lay.compact);
-        assert!(
-            lay.tor_row.y1 > lay.content.y1,
-            "without scrolling the Tor row starts below the pane"
-        );
-        let extent = lay.content.y0 + status_content_height(lay.content);
-        assert!(
-            lay.tor_row.y1 <= extent + 1e-6,
-            "the Tor row lies inside the Status extent"
-        );
+        // Case `connection_rows_follow_the_text_scale`:
+        // Connection rows keep their 74px band at 1× and grow with the measured
+        // name + endpoint lines at 2×; the rows the layout builds (and hit-tests)
+        // never overlap and the second line always clears the first.
+        {
+            let (mut app, _doc) = demo_with_doc();
+            app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut tr = TextRenderer::new();
+            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+            assert!((app.row_h - ROW_H).abs() < 1e-6, "1× keeps the 74px row");
+            assert!((app.row_line2_top - ROW_LINE2_TOP).abs() < 1e-6);
+            let rows = app.layout().rows;
+            assert!(rows.len() > 1);
+            assert!(
+                rows.iter()
+                    .all(|(_, r, _)| (r.height() - ROW_H).abs() < 1e-6)
+            );
 
-        app.last_mouse = lay.content.center();
-        let mut handled = false;
-        app.handle_detail_scroll(&MouseScrollDelta::LineDelta(0.0, -40.0), &mut handled);
-        assert!(handled, "the docked pane takes the wheel");
-        let max = app.detail_scroll_max(&lay);
-        assert!(
-            max > 0.0 && (app.detail_scroll - max).abs() < 1e-6,
-            "clamped to the content extent"
-        );
-        assert!(
-            lay.tor_row.y1 - app.detail_scroll <= lay.content.y1 + 1e-6,
-            "the Tor row is inside the pane after scrolling"
-        );
+            tr.set_text_scale(2.0);
+            assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
+            let (_, name_h) = tr.measure_weighted("Hg", 15.0, None, TextWeight::Semibold);
+            let (_, line2_h) = tr.measure("Hg", 12.0, None);
+            assert!(
+                app.row_line2_top >= 14.0 + f64::from(name_h),
+                "the endpoint line starts under the doubled name line"
+            );
+            assert!(app.row_h >= app.row_line2_top + f64::from(line2_h));
+            let rows = app.layout().rows;
+            assert!(
+                rows.iter()
+                    .all(|(_, r, _)| (r.height() - app.row_h).abs() < 1e-6)
+            );
+            for pair in rows.windows(2) {
+                assert!(pair[1].1.y0 >= pair[0].1.y1, "2× rows never overlap");
+            }
+            // The toggle stays centred in the taller row.
+            let (_, row, toggle) = rows[0];
+            assert!((toggle.center().y - row.center().y).abs() < 1e-6);
+        }
+        // Case `narrow_header_ends_after_controls_and_keeps_notice_actions_in_band`.
+        {
+            let (mut app, mut doc) = demo_with_doc();
+            app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
+            let clean = app.layout();
+            assert!(clean.header.y1 - clean.add_btn.y1 <= 16.0);
+            assert!(clean.rows[0].1.y0 >= clean.header.y1);
+            app.shot_loading = true;
+            let busy = app.layout();
+            let notice = busy.notice.unwrap();
+            assert!(notice.y0 >= busy.add_btn.y1);
+            for target in [busy.notice_retry.unwrap(), busy.notice_dismiss.unwrap()] {
+                assert!(notice.contains(target.origin()) && target.y1 <= notice.y1);
+            }
+            assert!(busy.rows[0].1.y0 >= notice.y1);
+            app.shot_loading = false;
+            let p = app.layout().tor_pill.center();
+            let before = app.vault.tor_global;
+            dispatch(&mut app, &mut doc, &cursor_at(p));
+            dispatch(&mut app, &mut doc, &press());
+            assert!(matches!(app.pending, Some(Pending::TorGlobal(next, _)) if next != before));
+            dispatch(&mut app, &mut doc, &esc_key());
+            assert!(app.pending.is_none());
+            assert_eq!(app.vault.tor_global, before);
+        }
+        // Case `header_control_band_grows_with_the_text_scale`:
+        // The header control band follows the measured Import label: at 2× it is
+        // taller than the 1× constant and the layout's control rects grow with
+        // it, so the tally and pill labels stay centred inside their band.
+        {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut tr = TextRenderer::new();
+            let (mut app, _doc) = demo_with_doc();
+            app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
+            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+            let base = app.layout();
+            assert!((base.add_btn.height() - HEADER_CONTROL_H).abs() < 1e-6);
 
-        // A tall window shows the whole table: nothing to scroll.
-        app.rect = Rect::new(0.0, 0.0, 1024.0, 900.0);
-        let tall = app.layout();
-        assert!(tall.tor_row.y1 <= tall.content.y1);
-        assert!(app.detail_scroll_max(&tall).abs() < 1e-6);
+            tr.set_text_scale(2.0);
+            assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
+            let large = app.layout();
+            assert!(large.add_btn.height() > HEADER_CONTROL_H + 8.0);
+            assert!(large.header.height() > base.header.height());
+            assert!(
+                large.list.y0 >= large.header.y1,
+                "body starts below the grown header"
+            );
+
+            // The wide header must also contain the grown band, at 2× and at the
+            // renderer's 4× clamp; before, only the compact form grew.
+            app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+            for scale in [2.0, 4.0] {
+                tr.set_text_scale(scale);
+                app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+                let wide = app.layout();
+                assert!(!wide.compact);
+                assert!(
+                    wide.add_btn.y1 + 18.0 <= wide.header.y1 + 1e-6,
+                    "controls end inside the wide header at {scale}x"
+                );
+                assert!(wide.tor_pill.y1 <= wide.header.y1);
+            }
+        }
+        // Case `narrow_empty_state_has_no_dead_back_accessibility_action`.
+        {
+            fn has_back(node: &ui::a11y::AccessNode) -> bool {
+                node.action_target.as_deref() == Some("vpn:back")
+                    || node.children.iter().any(has_back)
+            }
+            let mut app = VpnApp::new();
+            app.seed_shot_state("empty");
+            app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+            let root = Widget::accessibility(&app).expect("VPN exports accessibility");
+            assert!(
+                !has_back(&root),
+                "empty state has nowhere to navigate back to"
+            );
+        }
     }
 
-    /// Connection rows keep their 74px band at 1× and grow with the measured
-    /// name + endpoint lines at 2×; the rows the layout builds (and hit-tests)
-    /// never overlap and the second line always clears the first.
     #[test]
-    fn connection_rows_follow_the_text_scale() {
-        let (mut app, _doc) = demo_with_doc();
-        app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut tr = TextRenderer::new();
-        app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
-        assert!((app.row_h - ROW_H).abs() < 1e-6, "1× keeps the 74px row");
-        assert!((app.row_line2_top - ROW_LINE2_TOP).abs() < 1e-6);
-        let rows = app.layout().rows;
-        assert!(rows.len() > 1);
-        assert!(
-            rows.iter()
-                .all(|(_, r, _)| (r.height() - ROW_H).abs() < 1e-6)
-        );
-
-        tr.set_text_scale(2.0);
-        assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
-        let (_, name_h) = tr.measure_weighted("Hg", 15.0, None, TextWeight::Semibold);
-        let (_, line2_h) = tr.measure("Hg", 12.0, None);
-        assert!(
-            app.row_line2_top >= 14.0 + f64::from(name_h),
-            "the endpoint line starts under the doubled name line"
-        );
-        assert!(app.row_h >= app.row_line2_top + f64::from(line2_h));
-        let rows = app.layout().rows;
-        assert!(
-            rows.iter()
-                .all(|(_, r, _)| (r.height() - app.row_h).abs() < 1e-6)
-        );
-        for pair in rows.windows(2) {
-            assert!(pair[1].1.y0 >= pair[0].1.y1, "2× rows never overlap");
+    fn vpn_starts_empty_live_and_seeds_only_the_demo() {
+        // Case `live_new_starts_empty_and_writes_nothing`.
+        {
+            // The honesty guard: the live constructor fabricates no tunnels, and
+            // `refresh` on an empty document must not seed a fleet.
+            let mut app = VpnApp::new();
+            let mut doc = AutoCommit::new();
+            app.refresh(&mut doc);
+            assert!(app.vault.connections.is_empty(), "live app starts empty");
+            assert!(
+                VpnDoc::read_vault(&doc).connections.is_empty(),
+                "an empty live app must not seed the shared document"
+            );
         }
-        // The toggle stays centred in the taller row.
-        let (_, row, toggle) = rows[0];
-        assert!((toggle.center().y - row.center().y).abs() < 1e-6);
-    }
-
-    #[test]
-    fn narrow_header_ends_after_controls_and_keeps_notice_actions_in_band() {
-        let (mut app, mut doc) = demo_with_doc();
-        app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
-        let clean = app.layout();
-        assert!(clean.header.y1 - clean.add_btn.y1 <= 16.0);
-        assert!(clean.rows[0].1.y0 >= clean.header.y1);
-        app.shot_loading = true;
-        let busy = app.layout();
-        let notice = busy.notice.unwrap();
-        assert!(notice.y0 >= busy.add_btn.y1);
-        for target in [busy.notice_retry.unwrap(), busy.notice_dismiss.unwrap()] {
-            assert!(notice.contains(target.origin()) && target.y1 <= notice.y1);
+        // Case `demo_seeds_fleet_for_shots`.
+        {
+            // `--shots` still needs a populated frame.
+            let (app, _doc) = demo_with_doc();
+            assert_eq!(app.vault.connections.len(), 4);
+            assert!(app.vault.selected.is_some());
         }
-        assert!(busy.rows[0].1.y0 >= notice.y1);
-        app.shot_loading = false;
-        let p = app.layout().tor_pill.center();
-        let before = app.vault.tor_global;
-        dispatch(&mut app, &mut doc, &cursor_at(p));
-        dispatch(&mut app, &mut doc, &press());
-        assert!(matches!(app.pending, Some(Pending::TorGlobal(next, _)) if next != before));
-        dispatch(&mut app, &mut doc, &esc_key());
-        assert!(app.pending.is_none());
-        assert_eq!(app.vault.tor_global, before);
-    }
-
-    #[test]
-    fn typed_profile_context_selects_profile_and_config_tab_after_load() {
-        let mut app = VpnApp::new_demo();
-        app.pending_tool_intent = Some(os_actions::ToolIntent::Vpn {
-            route: os_actions::VpnRoute::Profile,
-            profile: Some("Work".into()),
-        });
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            app.vault.selected,
-            app.vault
-                .connections
-                .iter()
-                .find(|c| c.name == "Work")
-                .map(|c| c.id)
-        );
-        assert_eq!(app.detail_tab, DetailTab::Config);
-        assert!(app.pending_tool_intent.is_none());
+        // Case `typed_profile_context_selects_profile_and_config_tab_after_load`.
+        {
+            let mut app = VpnApp::new_demo();
+            app.pending_tool_intent = Some(os_actions::ToolIntent::Vpn {
+                route: os_actions::VpnRoute::Profile,
+                profile: Some("Work".into()),
+            });
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(
+                app.vault.selected,
+                app.vault
+                    .connections
+                    .iter()
+                    .find(|c| c.name == "Work")
+                    .map(|c| c.id)
+            );
+            assert_eq!(app.detail_tab, DetailTab::Config);
+            assert!(app.pending_tool_intent.is_none());
+        }
+        // Case `select_offset_wraps`.
+        {
+            let (mut app, _doc) = demo_with_doc();
+            let first = app.vault.selected.unwrap();
+            app.select_offset(-1);
+            let last = app.vault.selected.unwrap();
+            assert_ne!(first, last);
+            app.select_offset(1);
+            assert_eq!(app.vault.selected.unwrap(), first);
+        }
     }
 
     fn cursor_at(p: Point) -> WindowEvent {
@@ -4390,441 +4550,351 @@ mod tests {
         );
     }
 
-    /// The action confirm routes through the shared `ModalDialog`: Escape
-    /// dismisses it, and a click on its primary button runs the real
-    /// `confirm_pending` — both driven through the production `handle_event`.
     #[test]
     #[serial_test::serial(vpn_env)]
-    fn confirm_dialog_routes_through_modaldialog() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove("TILO_VPN_ALLOW_EXEC");
-        let (mut app, mut doc) = demo_with_doc();
-        app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
-        let work = app
-            .vault
-            .connections
-            .iter()
-            .find(|c| c.name == "Work")
-            .unwrap()
-            .id;
-        app.select(work);
-
-        // Arm a confirm, then Escape it — the dialog owns dismissal.
-        app.request_toggle(work);
-        assert_eq!(app.modal, Modal::Confirm);
-        dispatch(&mut app, &mut doc, &esc_key());
-        assert_eq!(app.modal, Modal::None, "Escape closed the confirm dialog");
-        assert!(app.pending.is_none(), "Escape cleared the pending action");
-        assert!(app.confirm_dialog.is_none());
-
-        // Re-arm, then click the dialog's primary → confirm_pending runs.
-        app.request_toggle(work);
-        assert_eq!(app.modal, Modal::Confirm);
-        dispatch(&mut app, &mut doc, &cursor_at(Point::new(10.0, 10.0)));
-        let primary = app.confirm_dialog.as_ref().unwrap().dialog.primary_rect();
-        dispatch(&mut app, &mut doc, &cursor_at(primary.center()));
-        dispatch(&mut app, &mut doc, &press());
-        assert_eq!(
-            app.modal,
-            Modal::None,
-            "the primary click resolved the confirm"
-        );
-        assert!(
-            app.pending.is_none(),
-            "confirming consumed the pending action"
-        );
-        assert!(app.confirm_dialog.is_none());
-    }
-
-    #[test]
-    fn live_new_starts_empty_and_writes_nothing() {
-        // The honesty guard: the live constructor fabricates no tunnels, and
-        // `refresh` on an empty document must not seed a fleet.
-        let mut app = VpnApp::new();
-        let mut doc = AutoCommit::new();
-        app.refresh(&mut doc);
-        assert!(app.vault.connections.is_empty(), "live app starts empty");
-        assert!(
-            VpnDoc::read_vault(&doc).connections.is_empty(),
-            "an empty live app must not seed the shared document"
-        );
-    }
-
-    #[test]
-    fn demo_seeds_fleet_for_shots() {
-        // `--shots` still needs a populated frame.
-        let (app, _doc) = demo_with_doc();
-        assert_eq!(app.vault.connections.len(), 4);
-        assert!(app.vault.selected.is_some());
-    }
-
-    #[test]
-    fn narrow_empty_state_has_no_dead_back_accessibility_action() {
-        fn has_back(node: &ui::a11y::AccessNode) -> bool {
-            node.action_target.as_deref() == Some("vpn:back") || node.children.iter().any(has_back)
-        }
-        let mut app = VpnApp::new();
-        app.seed_shot_state("empty");
-        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-        let root = Widget::accessibility(&app).expect("VPN exports accessibility");
-        assert!(
-            !has_back(&root),
-            "empty state has nowhere to navigate back to"
-        );
-    }
-
-    #[test]
-    fn select_offset_wraps() {
-        let (mut app, _doc) = demo_with_doc();
-        let first = app.vault.selected.unwrap();
-        app.select_offset(-1);
-        let last = app.vault.selected.unwrap();
-        assert_ne!(first, last);
-        app.select_offset(1);
-        assert_eq!(app.vault.selected.unwrap(), first);
-    }
-
-    #[test]
-    fn connecting_profile_rejects_a_duplicate_transition() {
-        let (mut app, _doc) = demo_with_doc();
-        let id = app.vault.selected.expect("demo has a selected profile");
-        app.vault
-            .get_mut(id)
-            .expect("selected profile exists")
-            .status = ConnStatus::Connecting;
-
-        app.request_toggle(id);
-
-        assert_eq!(app.modal, Modal::None, "no second confirmation is opened");
-        assert!(
-            app.activity
-                .last()
-                .is_some_and(|line| line.contains("already changing state")),
-            "the rejected request is visible in the local activity history"
-        );
-    }
-
-    #[test]
-    fn error_notice_can_be_dismissed_with_escape() {
-        let (mut app, mut doc) = demo_with_doc();
-        app.operation_error = Some("The profile is incomplete".into());
-        app.retry_import_kind = Some(ConnKind::WireGuard);
-
-        dispatch(&mut app, &mut doc, &esc_key());
-
-        assert!(app.operation_error.is_none());
-        assert!(app.retry_import_kind.is_none());
-    }
-
-    #[test]
-    #[serial_test::serial(vpn_env)]
-    fn confirm_connect_without_exec_stays_disconnected() {
-        // Honesty: with execution disabled (the default) confirming a connect
-        // must NOT claim the tunnel is connected — the real command never ran.
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove("TILO_VPN_ALLOW_EXEC");
-        let (mut app, mut doc) = demo_with_doc();
-        let work = app
-            .vault
-            .connections
-            .iter()
-            .find(|c| c.name == "Work")
-            .unwrap()
-            .id;
-        assert!(!app.vault.get(work).unwrap().is_connected());
-        app.select(work);
-        app.request_toggle(work);
-        assert_eq!(app.modal, Modal::Confirm);
-        app.confirm_pending(&mut doc);
-        let back = VpnDoc::read_vault(&doc);
-        assert!(
-            !back
+    fn vpn_connection_transitions_are_honest_and_dismissable() {
+        // Case `confirm_dialog_routes_through_modaldialog`:
+        // The action confirm routes through the shared `ModalDialog`: Escape
+        // dismisses it, and a click on its primary button runs the real
+        // `confirm_pending` — both driven through the production `handle_event`.
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove("TILO_VPN_ALLOW_EXEC");
+            let (mut app, mut doc) = demo_with_doc();
+            app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
+            let work = app
+                .vault
                 .connections
                 .iter()
-                .find(|c| c.id == work)
+                .find(|c| c.name == "Work")
                 .unwrap()
-                .is_connected(),
-            "a refused command must never show as Connected"
-        );
+                .id;
+            app.select(work);
+
+            // Arm a confirm, then Escape it — the dialog owns dismissal.
+            app.request_toggle(work);
+            assert_eq!(app.modal, Modal::Confirm);
+            dispatch(&mut app, &mut doc, &esc_key());
+            assert_eq!(app.modal, Modal::None, "Escape closed the confirm dialog");
+            assert!(app.pending.is_none(), "Escape cleared the pending action");
+            assert!(app.confirm_dialog.is_none());
+
+            // Re-arm, then click the dialog's primary → confirm_pending runs.
+            app.request_toggle(work);
+            assert_eq!(app.modal, Modal::Confirm);
+            dispatch(&mut app, &mut doc, &cursor_at(Point::new(10.0, 10.0)));
+            let primary = app.confirm_dialog.as_ref().unwrap().dialog.primary_rect();
+            dispatch(&mut app, &mut doc, &cursor_at(primary.center()));
+            dispatch(&mut app, &mut doc, &press());
+            assert_eq!(
+                app.modal,
+                Modal::None,
+                "the primary click resolved the confirm"
+            );
+            assert!(
+                app.pending.is_none(),
+                "confirming consumed the pending action"
+            );
+            assert!(app.confirm_dialog.is_none());
+        }
+        // Case `connecting_profile_rejects_a_duplicate_transition`.
+        {
+            let (mut app, _doc) = demo_with_doc();
+            let id = app.vault.selected.expect("demo has a selected profile");
+            app.vault
+                .get_mut(id)
+                .expect("selected profile exists")
+                .status = ConnStatus::Connecting;
+
+            app.request_toggle(id);
+
+            assert_eq!(app.modal, Modal::None, "no second confirmation is opened");
+            assert!(
+                app.activity
+                    .last()
+                    .is_some_and(|line| line.contains("already changing state")),
+                "the rejected request is visible in the local activity history"
+            );
+        }
+        // Case `error_notice_can_be_dismissed_with_escape`.
+        {
+            let (mut app, mut doc) = demo_with_doc();
+            app.operation_error = Some("The profile is incomplete".into());
+            app.retry_import_kind = Some(ConnKind::WireGuard);
+
+            dispatch(&mut app, &mut doc, &esc_key());
+
+            assert!(app.operation_error.is_none());
+            assert!(app.retry_import_kind.is_none());
+        }
+        // Case `confirm_connect_without_exec_stays_disconnected`.
+        {
+            // Honesty: with execution disabled (the default) confirming a connect
+            // must NOT claim the tunnel is connected — the real command never ran.
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove("TILO_VPN_ALLOW_EXEC");
+            let (mut app, mut doc) = demo_with_doc();
+            let work = app
+                .vault
+                .connections
+                .iter()
+                .find(|c| c.name == "Work")
+                .unwrap()
+                .id;
+            assert!(!app.vault.get(work).unwrap().is_connected());
+            app.select(work);
+            app.request_toggle(work);
+            assert_eq!(app.modal, Modal::Confirm);
+            app.confirm_pending(&mut doc);
+            let back = VpnDoc::read_vault(&doc);
+            assert!(
+                !back
+                    .connections
+                    .iter()
+                    .find(|c| c.id == work)
+                    .unwrap()
+                    .is_connected(),
+                "a refused command must never show as Connected"
+            );
+        }
+        // Case `exported_tunnel_toggle_is_a_cancellable_background_job`.
+        {
+            let (mut app, doc) = demo_with_doc();
+            let connection = app.vault.connections[0].id;
+            let invocation = tilo_actions::InvocationId::new();
+            let started = app
+                .start_resource_operation(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    "vpn.toggle-tunnel",
+                    &serde_json::to_vec(&connection.to_string()).unwrap(),
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .unwrap();
+            assert_eq!(started, Some(ui::widget::ResourceOperationStart::Accepted));
+            assert!(matches!(
+                app.poll_resource_operation(invocation, true, &doc, &automerge::ROOT),
+                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+            ));
+
+            let action = Widget::resources(&app, &doc)
+                .into_iter()
+                .flat_map(|root| root.children)
+                .flat_map(|connection| connection.actions)
+                .find(|action| action.id == "connect" || action.id == "disconnect")
+                .unwrap();
+            assert!(matches!(
+                action.contract.execution,
+                tilo_actions::ExecutionMode::Background { cancellable: true }
+            ));
+            assert_eq!(action.contract.result, tilo_actions::ResultSpec::Job);
+        }
     }
 
     #[test]
     #[serial_test::serial(vpn_env)]
-    fn import_parses_metadata_without_duplicating_the_secret_file() {
-        // NetworkManager owns the imported profile and secrets. In a test
-        // process host import is disabled, but the editor artifact is parsed
-        // without retaining a second raw config/private-key file.
-        let (mut app, mut doc) = demo_with_doc();
-        let before = app.vault.connections.len();
-        let raw = "[Interface]\nPrivateKey = c2VjcmV0\nAddress = 10.9.0.2/32\nDNS = 9.9.9.9\n\n[Peer]\nPublicKey = abc=\nEndpoint = imported.example:51820\nAllowedIPs = 0.0.0.0/0\n";
-        let path = std::env::temp_dir().join(format!("home-{}.conf", uuid::Uuid::new_v4()));
-        std::fs::write(&path, raw).unwrap();
+    fn vpn_import_and_setup_keep_secrets_out_of_the_document() {
+        // Case `import_parses_metadata_without_duplicating_the_secret_file`.
+        {
+            // NetworkManager owns the imported profile and secrets. In a test
+            // process host import is disabled, but the editor artifact is parsed
+            // without retaining a second raw config/private-key file.
+            let (mut app, mut doc) = demo_with_doc();
+            let before = app.vault.connections.len();
+            let raw = "[Interface]\nPrivateKey = c2VjcmV0\nAddress = 10.9.0.2/32\nDNS = 9.9.9.9\n\n[Peer]\nPublicKey = abc=\nEndpoint = imported.example:51820\nAllowedIPs = 0.0.0.0/0\n";
+            let path = std::env::temp_dir().join(format!("home-{}.conf", uuid::Uuid::new_v4()));
+            std::fs::write(&path, raw).unwrap();
 
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
-        ui::host::scoped(&services, || app.request_import(ConnKind::WireGuard));
-        assert_eq!(
-            recorder.pick_requests()[0].title(),
-            "Import WireGuard tunnel"
-        );
-        assert!(app.drain_import(&mut doc), "a delivered import applies");
-        assert!(app.import_rx.is_none(), "draining clears the request");
-        assert_eq!(app.vault.connections.len(), before + 1);
-
-        let imported = app
-            .vault
-            .connections
-            .iter()
-            .find(|c| c.name.starts_with("home-"))
-            .expect("imported secret-free profile identity is present")
-            .clone();
-        assert_eq!(imported.kind, ConnKind::WireGuard);
-        assert!(
-            !format!("{imported:?}").contains("c2VjcmV0"),
-            "the private key never enters the collaborative model"
-        );
-
-        // The live plan uses the shared NetworkManager backend.
-        let plan = config::connect_plan(&imported, config::default_backend(imported.kind));
-        assert_eq!(plan.program, "nmcli");
-        assert_eq!(plan.args, vec!["connection", "up", imported.name.as_str()]);
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn exact_local_setup_keeps_the_shared_connection_id_and_document_secret_free() {
-        let (mut app, mut doc) = demo_with_doc();
-        let id = app.vault.selected.expect("demo selection");
-        let before = app.vault.connections.len();
-        let raw = "[Interface]\nPrivateKey = setup-secret\nAddress = 10.9.0.2/32\n\n[Peer]\nPublicKey = peer=\nEndpoint = setup.example:51820\nAllowedIPs = 0.0.0.0/0\n";
-        let path = std::env::temp_dir().join(format!("setup-{}.conf", uuid::Uuid::new_v4()));
-        std::fs::write(&path, raw).unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
-        ui::host::scoped(&services, || app.request_local_provision(id));
-        assert!(app.drain_import(&mut doc));
-        assert_eq!(
-            app.vault.connections.len(),
-            before,
-            "setup does not add a second shared profile"
-        );
-        assert!(
-            app.vault.get(id).is_some(),
-            "the original stable id remains"
-        );
-        assert!(
-            app.last_dispatched().is_none(),
-            "setup emits no AddConnection action"
-        );
-        assert!(!String::from_utf8_lossy(&doc.save()).contains("setup-secret"));
-        assert!(!String::from_utf8_lossy(&doc.save()).contains("setup.example"));
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn cancelled_setup_cannot_capture_a_later_generic_import() {
-        let (mut app, _doc) = demo_with_doc();
-        let id = app.vault.selected.expect("demo selection");
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(PortalOutcome::Cancelled);
-        ui::host::scoped(&services, || app.request_local_provision(id));
-        let mut doc = AutoCommit::new();
-        assert!(!app.drain_import(&mut doc));
-        assert_eq!(app.provision_target, None);
-        app.queue_import(ConnKind::OpenVpn);
-        assert_eq!(
-            app.provision_target, None,
-            "generic import cannot inherit cancelled setup"
-        );
-    }
-
-    #[test]
-    fn unprovisioned_profile_resources_are_searchable_but_machine_actions_are_honest() {
-        let (mut app, doc) = demo_with_doc();
-        app.seed_shot_state("unprovisioned");
-        let id = app.vault.selected.expect("selected remote profile");
-        let resources = Widget::resources(&app, &doc);
-        let profile = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == format!("vpn.connection:{id}"))
-            .expect("stable remote profile remains searchable");
-        assert!(
-            profile
-                .actions
-                .iter()
-                .any(|action| action.id == "provision-local")
-        );
-        for action_id in [
-            if app.vault.get(id).is_some_and(Connection::is_connected) {
-                "disconnect"
-            } else {
-                "connect"
-            },
-            "delete",
-        ] {
-            let action = profile
-                .actions
-                .iter()
-                .find(|action| action.id == action_id)
-                .unwrap();
-            assert!(
-                matches!(action.contract.availability, tilo_actions::Availability::Unavailable { ref code, .. } if code == "local_credentials_required")
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+            ui::host::scoped(&services, || app.request_import(ConnKind::WireGuard));
+            assert_eq!(
+                recorder.pick_requests()[0].title(),
+                "Import WireGuard tunnel"
             );
+            assert!(app.drain_import(&mut doc), "a delivered import applies");
+            assert!(app.import_rx.is_none(), "draining clears the request");
+            assert_eq!(app.vault.connections.len(), before + 1);
+
+            let imported = app
+                .vault
+                .connections
+                .iter()
+                .find(|c| c.name.starts_with("home-"))
+                .expect("imported secret-free profile identity is present")
+                .clone();
+            assert_eq!(imported.kind, ConnKind::WireGuard);
+            assert!(
+                !format!("{imported:?}").contains("c2VjcmV0"),
+                "the private key never enters the collaborative model"
+            );
+
+            // The live plan uses the shared NetworkManager backend.
+            let plan = config::connect_plan(&imported, config::default_backend(imported.kind));
+            assert_eq!(plan.program, "nmcli");
+            assert_eq!(plan.args, vec!["connection", "up", imported.name.as_str()]);
+
+            let _ = std::fs::remove_file(&path);
         }
-    }
-
-    #[test]
-    fn add_modal_never_commits_an_unprovisioned_connection() {
-        let (mut app, _doc) = demo_with_doc();
-        let before = app.vault.connections.len();
-        app.open_add(ConnKind::OpenVpn);
-        app.commit_add();
-        assert_eq!(app.vault.connections.len(), before);
-        assert!(app.pending_control_invocation.is_some());
-    }
-
-    /// The protocol segments are painted and hit-tested from one geometry:
-    /// pressing inside the second painted segment selects `OpenVPN`, the strip
-    /// is contiguous (so the shared segmented control can draw it) and stays
-    /// inside the sheet at the narrowest supported width.
-    #[test]
-    fn add_modal_kind_segments_hit_where_they_are_painted() {
-        for width in [1200.0, 480.0] {
+        // Case `exact_local_setup_keeps_the_shared_connection_id_and_document_secret_free`.
+        {
+            let (mut app, mut doc) = demo_with_doc();
+            let id = app.vault.selected.expect("demo selection");
+            let before = app.vault.connections.len();
+            let raw = "[Interface]\nPrivateKey = setup-secret\nAddress = 10.9.0.2/32\n\n[Peer]\nPublicKey = peer=\nEndpoint = setup.example:51820\nAllowedIPs = 0.0.0.0/0\n";
+            let path = std::env::temp_dir().join(format!("setup-{}.conf", uuid::Uuid::new_v4()));
+            std::fs::write(&path, raw).unwrap();
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+            ui::host::scoped(&services, || app.request_local_provision(id));
+            assert!(app.drain_import(&mut doc));
+            assert_eq!(
+                app.vault.connections.len(),
+                before,
+                "setup does not add a second shared profile"
+            );
+            assert!(
+                app.vault.get(id).is_some(),
+                "the original stable id remains"
+            );
+            assert!(
+                app.last_dispatched().is_none(),
+                "setup emits no AddConnection action"
+            );
+            assert!(!String::from_utf8_lossy(&doc.save()).contains("setup-secret"));
+            assert!(!String::from_utf8_lossy(&doc.save()).contains("setup.example"));
+            let _ = std::fs::remove_file(path);
+        }
+        // Case `cancelled_setup_cannot_capture_a_later_generic_import`.
+        {
             let (mut app, _doc) = demo_with_doc();
-            app.rect = Rect::new(0.0, 0.0, width, 800.0);
+            let id = app.vault.selected.expect("demo selection");
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(PortalOutcome::Cancelled);
+            ui::host::scoped(&services, || app.request_local_provision(id));
+            let mut doc = AutoCommit::new();
+            assert!(!app.drain_import(&mut doc));
+            assert_eq!(app.provision_target, None);
+            app.queue_import(ConnKind::OpenVpn);
+            assert_eq!(
+                app.provision_target, None,
+                "generic import cannot inherit cancelled setup"
+            );
+        }
+        // Case `unprovisioned_profile_resources_are_searchable_but_machine_actions_are_honest`.
+        {
+            let (mut app, doc) = demo_with_doc();
+            app.seed_shot_state("unprovisioned");
+            let id = app.vault.selected.expect("selected remote profile");
+            let resources = Widget::resources(&app, &doc);
+            let profile = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == format!("vpn.connection:{id}"))
+                .expect("stable remote profile remains searchable");
+            assert!(
+                profile
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "provision-local")
+            );
+            for action_id in [
+                if app.vault.get(id).is_some_and(Connection::is_connected) {
+                    "disconnect"
+                } else {
+                    "connect"
+                },
+                "delete",
+            ] {
+                let action = profile
+                    .actions
+                    .iter()
+                    .find(|action| action.id == action_id)
+                    .unwrap();
+                assert!(
+                    matches!(action.contract.availability, tilo_actions::Availability::Unavailable { ref code, .. } if code == "local_credentials_required")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn add_modal_hit_tests_painted_controls_and_never_commits_unprovisioned() {
+        // Case `add_modal_never_commits_an_unprovisioned_connection`.
+        {
+            let (mut app, _doc) = demo_with_doc();
+            let before = app.vault.connections.len();
+            app.open_add(ConnKind::OpenVpn);
+            app.commit_add();
+            assert_eq!(app.vault.connections.len(), before);
+            assert!(app.pending_control_invocation.is_some());
+        }
+        // Case `add_modal_kind_segments_hit_where_they_are_painted`:
+        // The protocol segments are painted and hit-tested from one geometry:
+        // pressing inside the second painted segment selects `OpenVPN`, the strip
+        // is contiguous (so the shared segmented control can draw it) and stays
+        // inside the sheet at the narrowest supported width.
+        {
+            for width in [1200.0, 480.0] {
+                let (mut app, _doc) = demo_with_doc();
+                app.rect = Rect::new(0.0, 0.0, width, 800.0);
+                app.open_add(ConnKind::WireGuard);
+                let lay = app.layout();
+                let rects = add_modal_kind_rects(lay.modal_card);
+                assert!(
+                    (rects[0].x1 - rects[1].x0).abs() < 1e-6,
+                    "segments are contiguous"
+                );
+                assert!(
+                    rects[1].x1 <= lay.modal_card.x1 - 28.0 + 1e-6,
+                    "strip stays in the card"
+                );
+                app.add_modal_hit(rects[1].center(), &lay);
+                assert_eq!(app.add_kind, ConnKind::OpenVpn);
+                app.add_modal_hit(rects[0].center(), &lay);
+                assert_eq!(app.add_kind, ConnKind::WireGuard);
+            }
+        }
+        // Case `add_modal_shared_button_rects_drive_save_and_cancel`.
+        {
+            let (mut app, mut doc) = demo_with_doc();
+            app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
+            let before = app.vault.connections.len();
             app.open_add(ConnKind::WireGuard);
-            let lay = app.layout();
-            let rects = add_modal_kind_rects(lay.modal_card);
-            assert!(
-                (rects[0].x1 - rects[1].x0).abs() < 1e-6,
-                "segments are contiguous"
-            );
-            assert!(
-                rects[1].x1 <= lay.modal_card.x1 - 28.0 + 1e-6,
-                "strip stays in the card"
-            );
-            app.add_modal_hit(rects[1].center(), &lay);
-            assert_eq!(app.add_kind, ConnKind::OpenVpn);
-            app.add_modal_hit(rects[0].center(), &lay);
-            assert_eq!(app.add_kind, ConnKind::WireGuard);
+            let card = app.layout().modal_card;
+            let (cancel, save) = add_modal_button_rects(card);
+            assert!(cancel.x1 <= save.x0, "button rects do not overlap");
+
+            dispatch(&mut app, &mut doc, &cursor_at(save.center()));
+            dispatch(&mut app, &mut doc, &press());
+            assert_eq!(app.vault.connections.len(), before);
+            assert!(app.pending_control_invocation.is_some());
+            assert_eq!(app.modal, Modal::None);
+
+            app.open_add(ConnKind::OpenVpn);
+            let card = app.layout().modal_card;
+            let (cancel, _) = add_modal_button_rects(card);
+            dispatch(&mut app, &mut doc, &cursor_at(cancel.center()));
+            dispatch(&mut app, &mut doc, &press());
+            assert_eq!(app.vault.connections.len(), before);
+            assert_eq!(app.modal, Modal::None, "Cancel dismisses without saving");
         }
-    }
+        // Case `add_modal_does_not_capture_credentials_and_enter_queues_import`.
+        {
+            let (mut app, mut doc) = demo_with_doc();
+            let before = app.vault.connections.len();
+            app.open_add(ConnKind::WireGuard);
 
-    /// The header control band follows the measured Import label: at 2× it is
-    /// taller than the 1× constant and the layout's control rects grow with
-    /// it, so the tally and pill labels stay centred inside their band.
-    #[test]
-    fn header_control_band_grows_with_the_text_scale() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut tr = TextRenderer::new();
-        let (mut app, _doc) = demo_with_doc();
-        app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
-        app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
-        let base = app.layout();
-        assert!((base.add_btn.height() - HEADER_CONTROL_H).abs() < 1e-6);
-
-        tr.set_text_scale(2.0);
-        assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
-        let large = app.layout();
-        assert!(large.add_btn.height() > HEADER_CONTROL_H + 8.0);
-        assert!(large.header.height() > base.header.height());
-        assert!(
-            large.list.y0 >= large.header.y1,
-            "body starts below the grown header"
-        );
-
-        // The wide header must also contain the grown band, at 2× and at the
-        // renderer's 4× clamp; before, only the compact form grew.
-        app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        for scale in [2.0, 4.0] {
-            tr.set_text_scale(scale);
-            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
-            let wide = app.layout();
-            assert!(!wide.compact);
-            assert!(
-                wide.add_btn.y1 + 18.0 <= wide.header.y1 + 1e-6,
-                "controls end inside the wide header at {scale}x"
+            dispatch(
+                &mut app,
+                &mut doc,
+                &WindowEvent::Ime(winit::event::Ime::Commit("secret".into())),
             );
-            assert!(wide.tor_pill.y1 <= wide.header.y1);
+            dispatch(&mut app, &mut doc, &key(Key::Named(NamedKey::Enter), None));
+            assert_eq!(app.modal, Modal::None);
+            assert_eq!(app.vault.connections.len(), before);
+            assert!(app.pending_control_invocation.is_some());
         }
-    }
-
-    #[test]
-    fn add_modal_shared_button_rects_drive_save_and_cancel() {
-        let (mut app, mut doc) = demo_with_doc();
-        app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
-        let before = app.vault.connections.len();
-        app.open_add(ConnKind::WireGuard);
-        let card = app.layout().modal_card;
-        let (cancel, save) = add_modal_button_rects(card);
-        assert!(cancel.x1 <= save.x0, "button rects do not overlap");
-
-        dispatch(&mut app, &mut doc, &cursor_at(save.center()));
-        dispatch(&mut app, &mut doc, &press());
-        assert_eq!(app.vault.connections.len(), before);
-        assert!(app.pending_control_invocation.is_some());
-        assert_eq!(app.modal, Modal::None);
-
-        app.open_add(ConnKind::OpenVpn);
-        let card = app.layout().modal_card;
-        let (cancel, _) = add_modal_button_rects(card);
-        dispatch(&mut app, &mut doc, &cursor_at(cancel.center()));
-        dispatch(&mut app, &mut doc, &press());
-        assert_eq!(app.vault.connections.len(), before);
-        assert_eq!(app.modal, Modal::None, "Cancel dismisses without saving");
-    }
-
-    #[test]
-    fn add_modal_does_not_capture_credentials_and_enter_queues_import() {
-        let (mut app, mut doc) = demo_with_doc();
-        let before = app.vault.connections.len();
-        app.open_add(ConnKind::WireGuard);
-
-        dispatch(
-            &mut app,
-            &mut doc,
-            &WindowEvent::Ime(winit::event::Ime::Commit("secret".into())),
-        );
-        dispatch(&mut app, &mut doc, &key(Key::Named(NamedKey::Enter), None));
-        assert_eq!(app.modal, Modal::None);
-        assert_eq!(app.vault.connections.len(), before);
-        assert!(app.pending_control_invocation.is_some());
-    }
-
-    #[test]
-    fn exported_tunnel_toggle_is_a_cancellable_background_job() {
-        let (mut app, doc) = demo_with_doc();
-        let connection = app.vault.connections[0].id;
-        let invocation = tilo_actions::InvocationId::new();
-        let started = app
-            .start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                "vpn.toggle-tunnel",
-                &serde_json::to_vec(&connection.to_string()).unwrap(),
-                &doc,
-                &automerge::ROOT,
-            )
-            .unwrap();
-        assert_eq!(started, Some(ui::widget::ResourceOperationStart::Accepted));
-        assert!(matches!(
-            app.poll_resource_operation(invocation, true, &doc, &automerge::ROOT),
-            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-        ));
-
-        let action = Widget::resources(&app, &doc)
-            .into_iter()
-            .flat_map(|root| root.children)
-            .flat_map(|connection| connection.actions)
-            .find(|action| action.id == "connect" || action.id == "disconnect")
-            .unwrap();
-        assert!(matches!(
-            action.contract.execution,
-            tilo_actions::ExecutionMode::Background { cancellable: true }
-        ));
-        assert_eq!(action.contract.result, tilo_actions::ResultSpec::Job);
     }
 }

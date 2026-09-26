@@ -82,7 +82,9 @@ const SDK_DOCUMENT_EVENT_BYTES: usize =
 const SDK_DOCUMENT_EVENT_RETRY: Duration = Duration::from_millis(250);
 const WIFI_CONTINUITY_TIMEOUT: Duration = Duration::from_secs(3);
 
-static WIFI_CONTINUITY_BRIDGE: std::sync::OnceLock<
+/// The connected transport's outbound queue, used by the Settings-only
+/// commands ([`wifi_continuity_command`], [`speaker_command`]).
+static SETTINGS_COMMAND_BRIDGE: std::sync::OnceLock<
     std::sync::Mutex<Option<tokio_mpsc::WeakSender<QueuedSdkCommand>>>,
 > = std::sync::OnceLock::new();
 
@@ -97,7 +99,7 @@ static WIFI_CONTINUITY_BRIDGE: std::sync::OnceLock<
 pub fn wifi_continuity_command(
     command: runtime_collab::WifiContinuityCommand,
 ) -> Result<runtime_collab::WifiContinuityReply, String> {
-    let sender = WIFI_CONTINUITY_BRIDGE
+    let sender = SETTINGS_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .map_err(|_| "Wi-Fi continuity bridge is unavailable".to_string())?
@@ -122,6 +124,44 @@ pub fn wifi_continuity_command(
     reply_rx
         .recv_timeout(WIFI_CONTINUITY_TIMEOUT)
         .map_err(|_| "Wi-Fi continuity service did not respond".to_string())?
+}
+
+const SPEAKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Ask the shell's speaker-group authority over the launcher-authenticated
+/// Settings route. Run it off the frame thread; a lost broker times out into
+/// an ordinary unavailable result.
+///
+/// # Errors
+///
+/// Returns an unavailable message when the collaboration bridge is absent,
+/// its bounded queue rejects the command, or the broker does not reply in time.
+pub fn speaker_command(
+    command: runtime_collab::SpeakerCommand,
+) -> Result<runtime_collab::SpeakerReply, String> {
+    let sender = SETTINGS_COMMAND_BRIDGE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .map_err(|_| "speaker service is unavailable".to_string())?
+        .as_ref()
+        .and_then(tokio_mpsc::WeakSender::upgrade)
+        .ok_or_else(|| "speakers need the certified collaboration service".to_string())?;
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    let state = BridgeState::new();
+    if !enqueue_sdk_command(
+        &sender,
+        SdkCommand::Speakers {
+            app_id: "so.tilo.settings".into(),
+            command,
+            reply: reply_tx,
+        },
+        &state,
+    ) {
+        return Err("speaker command queue is unavailable".into());
+    }
+    reply_rx
+        .recv_timeout(SPEAKER_COMMAND_TIMEOUT)
+        .map_err(|_| "the speaker service did not respond".to_string())?
 }
 
 impl RouteSpec {
@@ -170,7 +210,7 @@ impl BrokerTransport {
 
     /// Route [`wifi_continuity_command`] through this transport.
     fn register_wifi_bridge(&mut self) {
-        if let Ok(mut bridge) = WIFI_CONTINUITY_BRIDGE
+        if let Ok(mut bridge) = SETTINGS_COMMAND_BRIDGE
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
         {
@@ -303,6 +343,11 @@ enum SdkCommand {
         app_id: String,
         command: runtime_collab::WifiContinuityCommand,
         reply: mpsc::SyncSender<Result<runtime_collab::WifiContinuityReply, String>>,
+    },
+    Speakers {
+        app_id: String,
+        command: runtime_collab::SpeakerCommand,
+        reply: mpsc::SyncSender<Result<runtime_collab::SpeakerReply, String>>,
     },
 }
 
@@ -570,18 +615,31 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
         SdkCommand::PrimaryReady(_) | SdkCommand::PublicationBarrier(_) => {
             Some(std::mem::size_of::<SdkCommand>())
         }
-        // `ChannelGroup` intentionally hides its OpenMLS allocation graph,
-        // so it cannot offer an exact capacity probe without widening the
-        // crypto API. Installation is synchronous and requires `&mut self`,
-        // which permits at most one group transfer at a time. Reserving the
-        // entire command budget encodes that single-owner exception: no other
-        // bridge payload may queue alongside it, while the group itself was
-        // already allocated by the caller before entering this bridge.
-        SdkCommand::InstallEncryption { .. } => Some(SDK_COMMAND_QUEUE_BYTES),
+        // The group was allocated by the caller before entering the bridge,
+        // and installation is synchronous under `&mut self`, so at most one
+        // is ever queued. Only the command itself is counted: reserving the
+        // whole budget would fail closed whenever any other command was still
+        // queued, or its reservation not yet released after the reply.
+        SdkCommand::InstallEncryption { spec, .. } => {
+            let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
+            meter.string_capacity(&spec.app_id);
+            if let Some(record) = &spec.record {
+                meter.string_capacity(record);
+            }
+            meter.finish()
+        }
         SdkCommand::PublishActionDirectory { app_id, .. } => {
             std::mem::size_of::<SdkCommand>().checked_add(app_id.capacity())
         }
         SdkCommand::WifiContinuity {
+            app_id, command, ..
+        } => {
+            let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
+            meter.string_capacity(app_id);
+            serialized_bytes(command, &mut meter);
+            meter.finish()
+        }
+        SdkCommand::Speakers {
             app_id, command, ..
         } => {
             let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
@@ -724,7 +782,8 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
                 meter.string_capacity(peer_id);
             }
         }
-        CollabEvent::DocumentSnapshotRequested { route } => {
+        CollabEvent::DocumentSnapshotRequested { route }
+        | CollabEvent::ChannelAccess { route, .. } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
                 meter.string_capacity(record);
@@ -1378,6 +1437,13 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
     )
 )]
 trait SdkCertifiedIdentity: Send {
+    fn channel_keys(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        known_generation: u64,
+    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>;
     fn device_certificate(&self) -> Option<&[u8]>;
     fn signing_public_key(&self) -> [u8; 32];
     fn sign_collaboration_join(
@@ -1394,6 +1460,21 @@ trait SdkCertifiedIdentity: Send {
 }
 
 impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
+    fn channel_keys(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        known_generation: u64,
+    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
+        runtime_identity::BrokerSigningIdentity::channel_keys(
+            self,
+            workspace_id,
+            app_id,
+            record_id,
+            known_generation,
+        )
+    }
     fn device_certificate(&self) -> Option<&[u8]> {
         runtime_identity::BrokerSigningIdentity::device_certificate(self)
     }
@@ -1425,6 +1506,21 @@ impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
 
 #[cfg(unix)]
 impl SdkCertifiedIdentity for runtime_identity::SigningIdentity {
+    fn channel_keys(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        known_generation: u64,
+    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
+        runtime_identity::SigningIdentity::channel_keys(
+            self,
+            workspace_id,
+            app_id,
+            record_id,
+            known_generation,
+        )
+    }
     fn device_certificate(&self) -> Option<&[u8]> {
         runtime_identity::SigningIdentity::device_certificate(self)
     }
@@ -2310,6 +2406,11 @@ fn run_shovel(
     state.notify_events();
 }
 
+/// How often an endpoint asks the identity service whether its routes'
+/// channel keys changed. Also bounds how long an edit waits after a new
+/// device is admitted.
+const CHANNEL_KEY_REFRESH: Duration = Duration::from_secs(1);
+
 /// SDK-side event loop: dispatches outbound requests to SDK calls, and
 /// spawns one subscription task per stream on the first `join_channel`.
 // Not `Send`: `client` wraps a capnp-rpc handle (`Rc`-based, `!Send`), and
@@ -2330,6 +2431,15 @@ async fn drive_shovel(
         participant_kind,
         mut signer,
     } = identity;
+    // Every route of a certified endpoint is an encrypted channel whose keys
+    // come from the identity service; only a harness with no such service
+    // stays plaintext.
+    let asks_channel_keys = !matches!(
+        signer,
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_))
+    );
+    let mut key_refresh = tokio::time::interval(CHANNEL_KEY_REFRESH);
+    key_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
     let mut participant_handle: Option<String> = None;
@@ -2338,14 +2448,25 @@ async fn drive_shovel(
     // did not reach the broker, reported to (and cleared by) that barrier.
     let mut unpublished: Option<String> = None;
 
-    while let Some(QueuedSdkCommand {
-        command,
-        _reservation,
-    }) = outbound_rx.recv().await
-    {
+    loop {
+        let queued = tokio::select! {
+            queued = outbound_rx.recv() => queued,
+            _ = key_refresh.tick(), if asks_channel_keys => {
+                refresh_all_route_keys(&routes, &mut signer, &inbound_tx).await;
+                continue;
+            }
+        };
+        let Some(QueuedSdkCommand {
+            command,
+            _reservation,
+        }) = queued
+        else {
+            break;
+        };
         if !inbound_tx.state.is_healthy() {
             break;
         }
+        let routes_before = routes.len();
         let document = command.document_len().is_some();
         let mut published = true;
         match command {
@@ -2372,6 +2493,7 @@ async fn drive_shovel(
                         &inbound_tx,
                         &mut routes,
                         &spec,
+                        asks_channel_keys,
                     ),
                 )
                 .await
@@ -2402,6 +2524,7 @@ async fn drive_shovel(
                     &inbound_tx,
                     &mut routes,
                     &spec,
+                    asks_channel_keys,
                 )
                 .await;
             }
@@ -2415,6 +2538,7 @@ async fn drive_shovel(
                     &inbound_tx,
                     &mut routes,
                     &spec,
+                    asks_channel_keys,
                 )
                 .await;
                 if joined.is_ok()
@@ -2443,6 +2567,7 @@ async fn drive_shovel(
             SdkCommand::InstallEncryption { spec, group, reply } => {
                 let result = install_sdk_encryption(
                     SdkJoinContext {
+                        asks_channel_keys,
                         client: &client,
                         presentation: &presentation,
                         participant_handle: participant_handle.as_deref(),
@@ -2494,9 +2619,32 @@ async fn drive_shovel(
                 };
                 let _ = reply.send(result);
             }
+            SdkCommand::Speakers {
+                app_id,
+                command,
+                reply,
+            } => {
+                let result = if let Some(key) = primary.as_ref()
+                    && let Some(route) = routes.get_mut(key)
+                {
+                    route
+                        .channel
+                        .speaker_command(&app_id, &command)
+                        .await
+                        .map_err(|error| error.to_string())
+                } else {
+                    Err("primary collaboration route is unavailable".into())
+                };
+                let _ = reply.send(result);
+            }
         }
         if document && !published && unpublished.is_none() {
             unpublished = Some("a document mutation did not reach the broker".into());
+        }
+        if asks_channel_keys && routes.len() > routes_before {
+            // A route joined just now learns its keys (or that it waits)
+            // before its first edit rather than at the next tick.
+            refresh_all_route_keys(&routes, &mut signer, &inbound_tx).await;
         }
     }
 }
@@ -2520,20 +2668,22 @@ async fn install_sdk_encryption(
         context.inbound_tx,
         routes,
         &spec,
+        context.asks_channel_keys,
     )
     .await?;
     let route = routes
         .get_mut(&key)
         .ok_or_else(|| "joined MLS route disappeared".to_string())?;
-    *route
+    route
         .encryption
         .lock()
-        .map_err(|_| "MLS endpoint state is unavailable after a poisoned lock".to_string())? =
-        Some(group);
+        .map_err(|_| "MLS endpoint state is unavailable after a poisoned lock".to_string())?
+        .install_group(group);
     Ok(())
 }
 
 struct SdkJoinContext<'a> {
+    asks_channel_keys: bool,
     client: &'a runtime_collab::CollabClient,
     presentation: &'a [u8],
     participant_handle: Option<&'a str>,
@@ -2546,7 +2696,7 @@ struct SdkRoute {
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
-    encryption: std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
+    encryption: SharedRouteKeys,
 }
 
 // Not `Send`: `client`/`channel` wrap capnp-rpc handles, which are
@@ -2565,6 +2715,7 @@ async fn ensure_sdk_route(
     inbound_tx: &InboundBridge,
     routes: &mut std::collections::HashMap<String, SdkRoute>,
     spec: &RouteSpec,
+    asks_channel_keys: bool,
 ) -> Result<(), String> {
     let channel_id = spec.channel_id();
     if routes.contains_key(&channel_id) {
@@ -2588,7 +2739,11 @@ async fn ensure_sdk_route(
         }
     };
 
-    let encryption = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let encryption = std::sync::Arc::new(std::sync::Mutex::new(if asks_channel_keys {
+        super::route_keys::RouteKeys::requested()
+    } else {
+        super::route_keys::RouteKeys::plain()
+    }));
     spawn_op_stream(&channel, inbound_tx, std::sync::Arc::clone(&encryption)).await;
     spawn_context_stream(&channel, spec.clone(), inbound_tx).await;
     spawn_action_stream(&channel, inbound_tx).await;
@@ -2628,7 +2783,7 @@ async fn ensure_sdk_route(
 async fn spawn_op_stream(
     channel: &runtime_collab::ChannelHandle,
     inbound_tx: &InboundBridge,
-    encryption: std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
+    encryption: SharedRouteKeys,
 ) {
     if let Ok(stream) = channel.subscribe().await {
         let tx = inbound_tx.clone();
@@ -2638,6 +2793,7 @@ async fn spawn_op_stream(
                     Ok(envelope) => {
                         match signed_document_event(envelope, event.from_user_id, &encryption) {
                             Ok(event) => event,
+                            Err(UndeliveredDocument::Held) => continue,
                             Err(error) => {
                                 tracing::warn!(
                                     %error,
@@ -2950,8 +3106,12 @@ async fn send_document_mutation(
     true
 }
 
-/// Encrypt (on MLS routes), sign and send one typed document frame.
-/// Returns whether the broker accepted it.
+/// Encrypt, sign and send one typed document frame, or hold it on the
+/// device while the route waits for its channel keys. Returns whether the
+/// frame was sent or held. A frame the broker refuses is sent once more
+/// after a key refresh that found newer keys: a membership change moves the
+/// channel to a new epoch, and the broker refuses content sealed under an
+/// older one.
 #[allow(
     clippy::future_not_send,
     reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet"
@@ -2962,14 +3122,39 @@ async fn send_document_frame(
     cleartext: Vec<u8>,
     bridge_state: &BridgeState,
 ) -> bool {
+    match try_send_frame(route, signer, cleartext.clone(), bridge_state).await {
+        FrameSend::Sent | FrameSend::Held => true,
+        FrameSend::Failed => false,
+        FrameSend::Refused => {
+            refresh_route_keys(route, signer).await
+                && matches!(
+                    try_send_frame(route, signer, cleartext, bridge_state).await,
+                    FrameSend::Sent | FrameSend::Held
+                )
+        }
+    }
+}
+
+#[allow(
+    clippy::future_not_send,
+    clippy::too_many_lines,
+    reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet; sealing, signing and sending one frame stay one auditable path"
+)]
+async fn try_send_frame(
+    route: &SdkRoute,
+    signer: &mut LocalSdkDocumentSigner,
+    cleartext: Vec<u8>,
+    bridge_state: &BridgeState,
+) -> FrameSend {
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
     let artifact = collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, record_id);
-    let Some((payload, encryption_metadata)) =
-        prepare_document_payload(&route.encryption, artifact, cleartext)
-    else {
-        return false;
-    };
+    let (payload, encryption_metadata) =
+        match prepare_document_payload(&route.encryption, artifact, cleartext) {
+            PreparedFrame::Ready(payload, metadata) => (payload, metadata),
+            PreparedFrame::Held => return FrameSend::Held,
+            PreparedFrame::Failed => return FrameSend::Failed,
+        };
     let now = crate::time::wall();
     let author = match signer {
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
@@ -3009,7 +3194,7 @@ async fn send_document_frame(
         Ok(bytes) => bytes,
         Err(error) => {
             tracing::warn!(%error, "collab: unsigned document envelope would not encode; dropping");
-            return false;
+            return FrameSend::Failed;
         }
     };
     let signature = match signer {
@@ -3022,7 +3207,7 @@ async fn send_document_frame(
                     ?error,
                     "collab: identity service denied document operation; dropping"
                 );
-                return false;
+                return FrameSend::Failed;
             }
         },
         LocalSdkDocumentSigner::Host(identity) => match identity
@@ -3038,7 +3223,7 @@ async fn send_document_frame(
                     ?error,
                     "collab: host identity service denied document operation; dropping"
                 );
-                return false;
+                return FrameSend::Failed;
             }
         },
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key)) => {
@@ -3047,7 +3232,7 @@ async fn send_document_frame(
                 Ok(bytes) => bytes,
                 Err(error) => {
                     tracing::warn!(%error, "collab: document op would not canonicalize; dropping");
-                    return false;
+                    return FrameSend::Failed;
                 }
             };
             key.sign(&signing_bytes).to_bytes()
@@ -3056,15 +3241,15 @@ async fn send_document_frame(
     op.signature = collab_types::Signature::from_bytes(signature);
     match postcard::to_stdvec(&op) {
         Ok(bytes) => match route.channel.send(&bytes).await {
-            Ok(()) => true,
+            Ok(()) => FrameSend::Sent,
             Err(error) => {
                 tracing::warn!(%error, "collab: broker refused document operation");
-                false
+                FrameSend::Refused
             }
         },
         Err(error) => {
             tracing::warn!(%error, "collab: signed document envelope would not encode; dropping");
-            false
+            FrameSend::Failed
         }
     }
 }
@@ -3087,24 +3272,145 @@ fn document_frame_retention(cleartext: &[u8]) -> collab_types::ContentRetention 
 }
 
 /// Seal one frame under the route's current channel content key, so every
-/// member — including one added later — can read it from history.
+/// member — including one added later — can read it from history. A route
+/// still waiting for its keys keeps the frame on the device instead.
 fn prepare_document_payload(
-    encryption: &std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
+    encryption: &SharedRouteKeys,
     artifact: collab_types::ArtifactId,
     cleartext: Vec<u8>,
-) -> Option<(Vec<u8>, Option<collab_types::EncryptionMetadata>)> {
-    let Ok(guard) = encryption.lock() else {
-        tracing::warn!("collab: MLS endpoint lock poisoned; dropping mutation");
-        return None;
+) -> PreparedFrame {
+    let Ok(mut keys) = encryption.lock() else {
+        tracing::warn!("collab: route key state lock poisoned; dropping mutation");
+        return PreparedFrame::Failed;
     };
-    let Some(group) = guard.as_ref() else {
-        return Some((cleartext, None));
+    let retention = document_frame_retention(&cleartext);
+    match keys.seal(artifact, retention, cleartext.clone()) {
+        super::route_keys::Sealed::Ready(payload, metadata) => {
+            PreparedFrame::Ready(payload, metadata)
+        }
+        super::route_keys::Sealed::Hold => {
+            if keys.hold_outbound(cleartext) {
+                PreparedFrame::Held
+            } else {
+                tracing::warn!("collab: too many edits waiting for channel access; dropping");
+                PreparedFrame::Failed
+            }
+        }
+        super::route_keys::Sealed::Refused(reason) => {
+            tracing::warn!(%reason, "collab: dropping mutation");
+            PreparedFrame::Failed
+        }
+    }
+}
+
+enum PreparedFrame {
+    Ready(Vec<u8>, Option<collab_types::EncryptionMetadata>),
+    Held,
+    Failed,
+}
+
+/// How one frame's send ended.
+enum FrameSend {
+    Sent,
+    Held,
+    /// Not sealed or not signed; retrying cannot help.
+    Failed,
+    /// The broker refused it, possibly because its keys were stale.
+    Refused,
+}
+
+/// Ask the identity service for `route`'s current keys. Returns whether
+/// the route's state or keys changed.
+#[allow(
+    clippy::future_not_send,
+    reason = "the host identity transport is retained only on the shovel LocalSet"
+)]
+async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigner) -> bool {
+    let Ok(known) = route.encryption.lock().map(|keys| {
+        keys.asks_identity_service()
+            .then(|| (keys.generation(), keys.state()))
+    }) else {
+        return false;
     };
-    match group.seal_content(artifact, document_frame_retention(&cleartext), &cleartext) {
-        Ok((metadata, ciphertext)) => Some((ciphertext, Some(metadata))),
+    let Some((generation, state)) = known else {
+        return false;
+    };
+    let workspace_id = route.spec.cluster_id.to_string();
+    let record_id = route.spec.record.as_deref().unwrap_or("");
+    let reply = match signer {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
+            identity.channel_keys(&workspace_id, &route.spec.app_id, record_id, generation)
+        }
+        LocalSdkDocumentSigner::Host(identity) => {
+            identity
+                .channel_keys(&workspace_id, &route.spec.app_id, record_id, generation)
+                .await
+        }
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_)) => return false,
+    };
+    let reply = match reply {
+        Ok(reply) => reply,
         Err(error) => {
-            tracing::warn!(%error, "collab: content encryption failed; dropping mutation");
-            None
+            tracing::debug!(?error, "collab: identity service refused channel keys");
+            runtime_identity::wire::ChannelKeysReply {
+                access: runtime_identity::wire::ChannelAccess::Unavailable,
+                generation,
+                keys: None,
+            }
+        }
+    };
+    let Ok(mut keys) = route.encryption.lock() else {
+        return false;
+    };
+    keys.update(reply.access, reply.generation, reply.keys.as_deref());
+    keys.generation() != generation || keys.state() != state
+}
+
+/// Bring every route's keys up to date, report access changes to the app,
+/// then send the edits and deliver the ciphertext that waited on them.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+)]
+async fn refresh_all_route_keys(
+    routes: &std::collections::HashMap<String, SdkRoute>,
+    signer: &mut LocalSdkDocumentSigner,
+    inbound_tx: &InboundBridge,
+) {
+    for route in routes.values() {
+        refresh_route_keys(route, signer).await;
+        let (state, outbound, inbound) = {
+            let Ok(mut keys) = route.encryption.lock() else {
+                continue;
+            };
+            (
+                keys.take_state_change(),
+                keys.take_held_outbound(),
+                keys.take_held_inbound(),
+            )
+        };
+        if let Some(state) = state
+            && !inbound_tx.send_durable(CollabEvent::ChannelAccess {
+                route: route.spec.clone(),
+                state,
+            })
+        {
+            return;
+        }
+        for frame in outbound {
+            if !send_document_frame(route, signer, frame, &inbound_tx.state).await {
+                tracing::warn!("collab: an edit that waited for channel access was not sent");
+            }
+        }
+        for (envelope, from_user_id) in inbound {
+            let Ok(event) = signed_document_event(envelope, from_user_id, &route.encryption) else {
+                continue;
+            };
+            if let Some(complete) = complete_document_event(event, &inbound_tx.reassembly.live)
+                && !inbound_tx.send_document(complete).await
+            {
+                return;
+            }
         }
     }
 }
@@ -3410,7 +3716,7 @@ async fn dispatch_sdk_request(
                     let oldest_seq = decoded.iter().map(|op| op.seq).min();
                     let ops = decoded
                         .into_iter()
-                        .filter_map(|op| match decrypt_document_payload(&op, &route.encryption) {
+                        .filter_map(|op| match decrypt_document_payload(&op, &route.encryption, false) {
                             // History pages arrive newest first, so a
                             // transfer split across pages completes when its
                             // oldest segment arrives.
@@ -3423,7 +3729,11 @@ async fn dispatch_sdk_request(
                                 payloads.push(payload);
                                 Box::new(op)
                             }),
-                            Err(error) => {
+                            Err(DecryptFailure::Later) => {
+                                // Paged again once this device holds the key.
+                                None
+                            }
+                            Err(DecryptFailure::Refused(error)) => {
                                 tracing::warn!(%error, "collab: dropping undecryptable scrollback envelope");
                                 None
                             }
@@ -3717,62 +4027,92 @@ fn complete_document_event(
     })
 }
 
+/// Shared per-route key state: the op stream opens with it, sends seal
+/// with it, and key refreshes update it.
+type SharedRouteKeys = std::sync::Arc<std::sync::Mutex<super::route_keys::RouteKeys>>;
+
+/// Why an inbound document envelope was not delivered.
+#[derive(Debug)]
+enum UndeliveredDocument {
+    /// No key for it yet; it was held for when keys arrive.
+    Held,
+    /// Refused: downgrade, wrong channel, tampering, or a malformed frame.
+    Refused(collab_types::DocumentMutationError),
+}
+
+impl std::fmt::Display for UndeliveredDocument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Held => f.write_str("held until this device has the channel's keys"),
+            Self::Refused(error) => error.fmt(f),
+        }
+    }
+}
+
+/// Open a live envelope into a document event, or hold it on the route
+/// while this device waits for the channel's keys.
 fn signed_document_event(
     envelope: SignedOp,
     from_user_id: String,
-    encryption: &std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
-) -> Result<CollabEvent, collab_types::DocumentMutationError> {
-    let decrypted_payload = decrypt_document_payload(&envelope, encryption)?;
-    Ok(CollabEvent::Document {
-        envelope: Box::new(envelope),
-        from_user_id,
-        decrypted_payload,
-    })
+    encryption: &SharedRouteKeys,
+) -> Result<CollabEvent, UndeliveredDocument> {
+    match decrypt_document_payload(&envelope, encryption, true) {
+        Ok(decrypted_payload) => Ok(CollabEvent::Document {
+            envelope: Box::new(envelope),
+            from_user_id,
+            decrypted_payload,
+        }),
+        Err(DecryptFailure::Later) => {
+            if let Ok(mut keys) = encryption.lock() {
+                keys.hold_inbound(envelope, from_user_id);
+            }
+            Err(UndeliveredDocument::Held)
+        }
+        Err(DecryptFailure::Refused(error)) => Err(UndeliveredDocument::Refused(error)),
+    }
 }
 
+enum DecryptFailure {
+    Later,
+    Refused(collab_types::DocumentMutationError),
+}
+
+/// Open an envelope's typed payload. `live` envelopes on an encrypted
+/// route must be ciphertext; history pages may still carry plaintext the
+/// broker admitted before the channel was encrypted.
 fn decrypt_document_payload(
     envelope: &SignedOp,
-    encryption: &std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
-) -> Result<Option<Vec<u8>>, collab_types::DocumentMutationError> {
-    if let Some(metadata) = envelope.encryption {
-        let mut guard = encryption
-            .lock()
-            .map_err(|_| collab_types::DocumentMutationError::RouteMismatch)?;
-        let group = guard
-            .as_mut()
-            .ok_or(collab_types::DocumentMutationError::RouteMismatch)?;
-        if group.channel_id() != metadata.channel {
-            return Err(collab_types::DocumentMutationError::RouteMismatch);
+    encryption: &SharedRouteKeys,
+    live: bool,
+) -> Result<Option<Vec<u8>>, DecryptFailure> {
+    let refused = |error| DecryptFailure::Refused(error);
+    let opened = encryption
+        .lock()
+        .map_err(|_| refused(collab_types::DocumentMutationError::RouteMismatch))?
+        .open(envelope, live);
+    match opened {
+        Ok(Some(plaintext)) => {
+            let plaintext = plaintext.to_vec();
+            collab_types::DocumentFrame::decode(&plaintext).map_err(refused)?;
+            // The clear storage class hosts retained the op under must
+            // describe what it actually contains.
+            if envelope
+                .encryption
+                .and_then(|metadata| metadata.retention())
+                .is_some_and(|retention| retention != document_frame_retention(&plaintext))
+            {
+                return Err(refused(collab_types::DocumentMutationError::RouteMismatch));
+            }
+            Ok(Some(plaintext))
         }
-        // Content-key ops open from any epoch this member holds a key for
-        // (history included); v1 MLS messages only at the current epoch.
-        let plaintext = group
-            .open_content(envelope.artifact, &metadata, &envelope.payload)
-            .map_err(|_| collab_types::DocumentMutationError::RouteMismatch)?
-            .to_vec();
-        drop(guard);
-        let _frame = collab_types::DocumentFrame::decode(&plaintext)?;
-        // The clear storage class hosts retained the op under must describe
-        // what it actually contains.
-        if metadata
-            .retention()
-            .is_some_and(|retention| retention != document_frame_retention(&plaintext))
-        {
-            return Err(collab_types::DocumentMutationError::RouteMismatch);
+        Ok(None) => {
+            collab_types::DocumentFrame::decode(&envelope.payload).map_err(refused)?;
+            Ok(None)
         }
-        Ok(Some(plaintext))
-    } else {
-        if encryption
-            .lock()
-            .map_err(|_| collab_types::DocumentMutationError::RouteMismatch)?
-            .is_some()
-        {
-            // Once provisioned, accepting a plaintext envelope would be an
-            // active downgrade. There is no opportunistic fallback.
-            return Err(collab_types::DocumentMutationError::RouteMismatch);
+        Err(super::route_keys::Unopened::Later) => Err(DecryptFailure::Later),
+        Err(super::route_keys::Unopened::Never) => {
+            Err(refused(collab_types::DocumentMutationError::RouteMismatch))
         }
-        let _frame = collab_types::DocumentFrame::decode(&envelope.payload)?;
-        Ok(None)
     }
 }
 
@@ -3871,6 +4211,18 @@ mod tests {
 
     use super::*;
     use crate::collaboration::{CollaborationState, SignedSendError, SigningIdentity};
+
+    fn plain_route_keys() -> SharedRouteKeys {
+        std::sync::Arc::new(std::sync::Mutex::new(
+            super::super::route_keys::RouteKeys::plain(),
+        ))
+    }
+
+    fn group_route_keys(group: channel_crypto::ChannelGroup) -> SharedRouteKeys {
+        let keys = plain_route_keys();
+        keys.lock().unwrap().install_group(group);
+        keys
+    }
 
     use crate::time::Duration;
     use std::cell::RefCell;
@@ -4417,6 +4769,17 @@ mod tests {
         certificate: Option<Vec<u8>>,
         replies: Vec<runtime_identity::wire::Response>,
     ) -> (tokio::io::DuplexStream, Arc<std::sync::Mutex<Vec<u8>>>) {
+        host_identity_fixture_with_keys(certificate, replies, None)
+    }
+
+    /// A scripted identity service. `ChannelKeys` requests arrive on the
+    /// endpoint's own refresh cadence, so they are answered from `keys`
+    /// (or as unavailable) without consuming the scripted `replies`.
+    fn host_identity_fixture_with_keys(
+        certificate: Option<Vec<u8>>,
+        replies: Vec<runtime_identity::wire::Response>,
+        keys: Option<(u64, Vec<u8>)>,
+    ) -> (tokio::io::DuplexStream, Arc<std::sync::Mutex<Vec<u8>>>) {
         use runtime_identity::wire::Response;
         let mut responses = vec![Response::Metadata {
             display_name: "Host fixture".into(),
@@ -4434,7 +4797,8 @@ mod tests {
         let (client, mut server) = tokio::io::duplex(64 * 1024);
         tokio::task::spawn_local(async move {
             let framing = runtime_identity::wire::FRAMING;
-            for response in responses {
+            let mut responses = responses.into_iter();
+            loop {
                 let Ok(Some(body)) = framing.read_async(&mut server).await else {
                     return;
                 };
@@ -4442,6 +4806,29 @@ mod tests {
                     .lock()
                     .unwrap()
                     .extend_from_slice(&framing.encode(&body).unwrap());
+                let asks_keys = matches!(
+                    postcard::from_bytes::<runtime_identity::wire::Request>(&body),
+                    Ok(runtime_identity::wire::Request::ChannelKeys { .. })
+                );
+                let response = if asks_keys {
+                    match &keys {
+                        Some((generation, keys)) => Response::ChannelKeys {
+                            access: runtime_identity::wire::ChannelAccess::Ready,
+                            generation: *generation,
+                            keys: keys.clone(),
+                        },
+                        None => Response::ChannelKeys {
+                            access: runtime_identity::wire::ChannelAccess::Unavailable,
+                            generation: 0,
+                            keys: Vec::new(),
+                        },
+                    }
+                } else {
+                    let Some(response) = responses.next() else {
+                        return;
+                    };
+                    response
+                };
                 if framing
                     .write_value_async(&mut server, &response)
                     .await
@@ -4472,46 +4859,268 @@ mod tests {
     }
 
     #[test]
-    fn host_connector_failure_is_consumed_once_without_inherited_fallback() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let seen = calls.clone();
-        let cluster_id = Uuid::new_v4();
-        let expected = RouteSpec {
-            app_id: "so.tilo.notes".into(),
-            cluster_id,
-            record: Some("note".into()),
-        };
-        let connector = HostSessionConnector::new(move |route| async move {
-            seen.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(route, expected);
-            assert_eq!(thread::current().name(), Some("ui-collab-shovel"));
-            assert!(tokio::runtime::Handle::try_current().is_ok());
-            // A !Send value across await proves this future stays on LocalSet.
-            let local = Rc::new(());
-            tokio::task::yield_now().await;
-            drop(local);
-            Err::<(tokio::io::DuplexStream, tokio::io::DuplexStream), _>(
-                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "fixture host refused its grant",
-                )),
-            )
-        });
-        let result = CollaborationManager::for_route_host_blocking(
-            connector,
-            "so.tilo.notes",
-            cluster_id,
-            Some("note".into()),
-            None,
-        );
-        match result {
-            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
-                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-                assert_eq!(error.to_string(), "fixture host refused its grant");
+    fn host_connector_handoff_fails_closed_without_fallback() {
+        // Case `host_connector_failure_is_consumed_once_without_inherited_fallback`.
+        {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let seen = calls.clone();
+            let cluster_id = Uuid::new_v4();
+            let expected = RouteSpec {
+                app_id: "so.tilo.notes".into(),
+                cluster_id,
+                record: Some("note".into()),
+            };
+            let connector = HostSessionConnector::new(move |route| async move {
+                seen.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(route, expected);
+                assert_eq!(thread::current().name(), Some("ui-collab-shovel"));
+                assert!(tokio::runtime::Handle::try_current().is_ok());
+                // A !Send value across await proves this future stays on LocalSet.
+                let local = Rc::new(());
+                tokio::task::yield_now().await;
+                drop(local);
+                Err::<(tokio::io::DuplexStream, tokio::io::DuplexStream), _>(
+                    runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "fixture host refused its grant",
+                    )),
+                )
+            });
+            let result = CollaborationManager::for_route_host_blocking(
+                connector,
+                "so.tilo.notes",
+                cluster_id,
+                Some("note".into()),
+                None,
+            );
+            match result {
+                Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
+                    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                    assert_eq!(error.to_string(), "fixture host refused its grant");
+                }
+                _ => panic!("host refusal must reach caller"),
             }
-            _ => panic!("host refusal must reach caller"),
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
         }
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Case `host_connector_without_certificate_cannot_use_harness_identity`.
+        {
+            let connector = HostSessionConnector::new(move |_| async move {
+                let (identity, _) = host_identity_fixture(None, vec![]);
+                let (stream, _peer) = tokio::io::duplex(4096);
+                Ok((stream, identity))
+            });
+            let result = CollaborationManager::for_route_host_blocking(
+                connector,
+                "so.tilo.notes",
+                Uuid::new_v4(),
+                None,
+                None,
+            );
+            match result {
+                Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
+                    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                    assert_eq!(
+                        error.to_string(),
+                        "workspace identity has no certified device"
+                    );
+                }
+                _ => panic!("missing certificate must refuse before joining"),
+            }
+        }
+
+        // Case `host_connector_join_proof_refusal_reaches_caller`.
+        {
+            let connector = HostSessionConnector::new(move |_| async move {
+                let (identity, _) = host_identity_fixture(
+                    Some(b"fixture".to_vec()),
+                    vec![runtime_identity::wire::Response::Denied(
+                        "fixture device revoked".into(),
+                    )],
+                );
+                let (stream, _peer) = tokio::io::duplex(4096);
+                Ok((stream, identity))
+            });
+            let result = CollaborationManager::for_route_host_blocking(
+                connector,
+                "so.tilo.notes",
+                Uuid::new_v4(),
+                None,
+                None,
+            );
+            match result {
+                Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
+                    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                    assert_eq!(error.to_string(), "fixture device revoked");
+                }
+                _ => panic!("proof refusal must not become an unsigned join"),
+            }
+        }
+
+        // Case `host_connector_uses_certified_presentation_and_broker_document_policy`.
+        {
+            let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
+            let broker_captures = captures.clone();
+            let (requests_tx, requests_rx) = mpsc::sync_channel(1);
+            let cluster_id = Uuid::new_v4();
+            let channel =
+                collab_types::document_channel_id("so.tilo.notes", &cluster_id.to_string(), "note");
+            let keys = channel_crypto::ChannelGroup::create(
+                channel,
+                channel_crypto::MemberKey::generate("device").unwrap(),
+            )
+            .unwrap()
+            .content_keys()
+            .unwrap()
+            .to_bytes()
+            .unwrap()
+            .to_vec();
+            let connector = HostSessionConnector::new(move |_| async move {
+                let (identity, requests) = host_identity_fixture_with_keys(
+                    Some(b"fixture certificate".to_vec()),
+                    vec![
+                        runtime_identity::wire::Response::Signature(vec![7; 64]),
+                        runtime_identity::wire::Response::Denied("fixture role revoked".into()),
+                    ],
+                    Some((1, keys)),
+                );
+                requests_tx.send(requests).unwrap();
+                let broker = FakeBroker {
+                    captures: broker_captures,
+                    op_backlog: vec![],
+                    presence_backlog: vec![],
+                    context_backlog: vec![],
+                    scrollback_response: None,
+                };
+                let (client, server) = tokio::io::duplex(64 * 1024);
+                let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
+                let (r, w) = tokio::io::split(server);
+                let network = Box::new(twoparty::VatNetwork::new(
+                    r.compat(),
+                    w.compat_write(),
+                    rpc_twoparty_capnp::Side::Server,
+                    capnp::message::ReaderOptions::default(),
+                ));
+                let rpc = RpcSystem::new(network, Some(broker_client.client));
+                tokio::task::spawn_local(async move {
+                    let _ = rpc.await;
+                });
+                Ok((client, identity))
+            });
+            let mut manager = CollaborationManager::for_route_host_blocking(
+                connector,
+                "so.tilo.notes",
+                cluster_id,
+                Some("note".into()),
+                None,
+            )
+            .unwrap();
+            // Returning a manager must include the existing Hello/primary barrier.
+            assert!(manager.is_connected());
+            assert!(manager.primary_route.current(true).is_some());
+            let joined = captures.lock().unwrap().joined.clone();
+            assert_eq!(joined.len(), 1);
+            assert_eq!(
+                joined[0].0,
+                channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
+            );
+            let presentation = runtime_collab::CertifiedJoinIdentity::decode(&joined[0].1)
+                .unwrap()
+                .unwrap();
+            assert_eq!(presentation.workspace_id, cluster_id.to_string());
+            assert_eq!(presentation.device_certificate, b"fixture certificate");
+            assert_eq!(presentation.proof, vec![7; 64]);
+            let requests = requests_rx.recv_timeout(HANG_GUARD).unwrap();
+            manager.send(CollabRequest::document_incremental(
+                b"fixture document change".to_vec(),
+            ));
+            let is_op = |request: &runtime_identity::wire::Request| {
+                matches!(
+                    request,
+                    runtime_identity::wire::Request::CollaborationOp { .. }
+                )
+            };
+            assert!(wait_until(
+                || host_identity_requests(&requests.lock().unwrap())
+                    .iter()
+                    .any(is_op),
+                HANG_GUARD
+            ));
+            let requests = host_identity_requests(&requests.lock().unwrap());
+            assert!(
+                matches!(&requests[1], runtime_identity::wire::Request::CollaborationJoin { workspace_id } if workspace_id == &cluster_id.to_string())
+            );
+            assert!(
+                matches!(&requests[2], runtime_identity::wire::Request::ChannelKeys { app_id, record_id, .. } if app_id == "so.tilo.notes" && record_id == "note"),
+                "a joined route asks for its channel keys before its first edit"
+            );
+            let op = requests.iter().find(|request| is_op(request)).unwrap();
+            match op {
+                runtime_identity::wire::Request::CollaborationOp {
+                    workspace_id,
+                    app_id,
+                    record_id,
+                    unsigned_op,
+                } => {
+                    assert_eq!(workspace_id, &cluster_id.to_string());
+                    assert_eq!(app_id, "so.tilo.notes");
+                    assert_eq!(record_id, "note");
+                    let op: SignedOp = postcard::from_bytes(unsigned_op).unwrap();
+                    assert_eq!(
+                        op.author,
+                        collab_types::Ed25519PublicKey::from_bytes([5; 32])
+                    );
+                    assert_ne!(op.payload, b"fixture document change".to_vec());
+                    assert_eq!(
+                        op.encryption.map(|metadata| metadata.channel),
+                        Some(channel),
+                        "a certified endpoint seals under the route's channel"
+                    );
+                }
+                _ => panic!("document must use the broker policy path"),
+            }
+            // Synchronize behind the mutation: a denied signature cannot be sent
+            // through the harness or unsigned path after this readiness barrier.
+            manager.await_primary_route().unwrap();
+            assert!(captures.lock().unwrap().signed_ops.is_empty());
+        }
+
+        // Case `host_connector_refused_primary_join_is_not_connected_success`.
+        {
+            let (attempt_tx, attempt_rx) = mpsc::channel();
+            let (stop_tx, stop_rx) = mpsc::channel();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let (connector, release) =
+                host_join_gate_connector(false, calls.clone(), attempt_tx, stop_tx);
+            let cluster_id = Uuid::new_v4();
+            let result = CollaborationManager::for_route_host_blocking(
+                connector,
+                "so.tilo.notes",
+                cluster_id,
+                Some("note".into()),
+                None,
+            );
+            drop(release);
+            match result {
+                Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
+                    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+                    assert!(error.to_string().contains("fixture primary join refused"));
+                }
+                _ => panic!("stream and identity bootstrap must not bypass refused Hello"),
+            }
+            assert_eq!(
+                attempt_rx.recv_timeout(HANG_GUARD).unwrap(),
+                channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(
+                attempt_rx.try_recv().is_err(),
+                "must not retry another route"
+            );
+            stop_rx
+                .recv_timeout(HANG_GUARD)
+                .expect("fixture broker stops after failed manager");
+        }
     }
 
     #[test]
@@ -4564,153 +5173,67 @@ mod tests {
     }
 
     #[test]
-    fn host_connector_without_certificate_cannot_use_harness_identity() {
-        let connector = HostSessionConnector::new(move |_| async move {
-            let (identity, _) = host_identity_fixture(None, vec![]);
-            let (stream, _peer) = tokio::io::duplex(4096);
-            Ok((stream, identity))
-        });
-        let result = CollaborationManager::for_route_host_blocking(
-            connector,
-            "so.tilo.notes",
-            Uuid::new_v4(),
-            None,
-            None,
-        );
-        match result {
-            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
-                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-                assert_eq!(
-                    error.to_string(),
-                    "workspace identity has no certified device"
-                );
-            }
-            _ => panic!("missing certificate must refuse before joining"),
-        }
-    }
-
-    #[test]
-    fn host_connector_join_proof_refusal_reaches_caller() {
-        let connector = HostSessionConnector::new(move |_| async move {
-            let (identity, _) = host_identity_fixture(
-                Some(b"fixture".to_vec()),
-                vec![runtime_identity::wire::Response::Denied(
-                    "fixture device revoked".into(),
-                )],
-            );
-            let (stream, _peer) = tokio::io::duplex(4096);
-            Ok((stream, identity))
-        });
-        let result = CollaborationManager::for_route_host_blocking(
-            connector,
-            "so.tilo.notes",
-            Uuid::new_v4(),
-            None,
-            None,
-        );
-        match result {
-            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
-                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-                assert_eq!(error.to_string(), "fixture device revoked");
-            }
-            _ => panic!("proof refusal must not become an unsigned join"),
-        }
-    }
-
-    #[test]
-    fn host_connector_uses_certified_presentation_and_broker_document_policy() {
-        let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
-        let broker_captures = captures.clone();
-        let (requests_tx, requests_rx) = mpsc::sync_channel(1);
+    fn host_connector_unacknowledged_primary_join_obeys_timeout_without_fallback() {
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (connector, release) =
+            host_join_gate_connector(true, calls.clone(), attempt_tx, stop_tx);
         let cluster_id = Uuid::new_v4();
-        let connector = HostSessionConnector::new(move |_| async move {
-            let (identity, requests) = host_identity_fixture(
-                Some(b"fixture certificate".to_vec()),
-                vec![
-                    runtime_identity::wire::Response::Signature(vec![7; 64]),
-                    runtime_identity::wire::Response::Denied("fixture role revoked".into()),
-                ],
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let started = crate::time::now();
+        let caller = thread::spawn(move || {
+            let result = CollaborationManager::for_route_host_blocking(
+                connector,
+                "so.tilo.notes",
+                cluster_id,
+                Some("note".into()),
+                None,
             );
-            requests_tx.send(requests).unwrap();
-            let broker = FakeBroker {
-                captures: broker_captures,
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
-            let (client, server) = tokio::io::duplex(64 * 1024);
-            let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
-            let (r, w) = tokio::io::split(server);
-            let network = Box::new(twoparty::VatNetwork::new(
-                r.compat(),
-                w.compat_write(),
-                rpc_twoparty_capnp::Side::Server,
-                capnp::message::ReaderOptions::default(),
-            ));
-            let rpc = RpcSystem::new(network, Some(broker_client.client));
-            tokio::task::spawn_local(async move {
-                let _ = rpc.await;
+            // Drop any erroneously successful manager on its own caller thread.
+            let result = result.map(|manager| {
+                drop(manager);
             });
-            Ok((client, identity))
+            let _ = result_tx.send(result);
         });
-        let mut manager = CollaborationManager::for_route_host_blocking(
-            connector,
-            "so.tilo.notes",
-            cluster_id,
-            Some("note".into()),
-            None,
-        )
-        .unwrap();
-        // Returning a manager must include the existing Hello/primary barrier.
-        assert!(manager.is_connected());
-        assert!(manager.primary_route.current(true).is_some());
-        let joined = captures.lock().unwrap().joined.clone();
-        assert_eq!(joined.len(), 1);
+        let result = result_rx.recv_timeout(SHOVEL_INIT_TIMEOUT * 2 + Duration::from_secs(1));
+        let elapsed = started.elapsed();
+        if result.is_err() {
+            // A broken worker-side deadline must not leave this test's broker
+            // wedged while reporting the regression.
+            drop(release);
+            // Do not turn an observed timeout regression into an unbounded
+            // join. Give the released fixture a bounded chance to shut down.
+            if result_rx.recv_timeout(Duration::from_secs(2)).is_ok() || caller.is_finished() {
+                caller.join().expect("fixture caller after gate release");
+            }
+            panic!("manager failed to return within the bounded startup window");
+        }
+        caller.join().expect("bounded fixture caller");
+        match result.expect("manager must return within the bounded startup window") {
+            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+                assert_eq!(error.to_string(), "collaboration primary route timed out");
+            }
+            _ => panic!("unacknowledged Hello must never return a connected manager"),
+        }
+        assert!(
+            elapsed >= SDK_PRIMARY_ROUTE_TIMEOUT,
+            "must wait for the worker-side route deadline"
+        );
         assert_eq!(
-            joined[0].0,
+            attempt_rx.recv_timeout(HANG_GUARD).unwrap(),
             channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
         );
-        let presentation = runtime_collab::CertifiedJoinIdentity::decode(&joined[0].1)
-            .unwrap()
-            .unwrap();
-        assert_eq!(presentation.workspace_id, cluster_id.to_string());
-        assert_eq!(presentation.device_certificate, b"fixture certificate");
-        assert_eq!(presentation.proof, vec![7; 64]);
-        let requests = requests_rx.recv_timeout(HANG_GUARD).unwrap();
-        manager.send(CollabRequest::document_incremental(
-            b"fixture document change".to_vec(),
-        ));
-        assert!(wait_until(
-            || host_identity_requests(&requests.lock().unwrap()).len() == 3,
-            HANG_GUARD
-        ));
-        let requests = host_identity_requests(&requests.lock().unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(
-            matches!(&requests[1], runtime_identity::wire::Request::CollaborationJoin { workspace_id } if workspace_id == &cluster_id.to_string())
+            attempt_rx.try_recv().is_err(),
+            "must not retry another route"
         );
-        match &requests[2] {
-            runtime_identity::wire::Request::CollaborationOp {
-                workspace_id,
-                app_id,
-                record_id,
-                unsigned_op,
-            } => {
-                assert_eq!(workspace_id, &cluster_id.to_string());
-                assert_eq!(app_id, "so.tilo.notes");
-                assert_eq!(record_id, "note");
-                let op: SignedOp = postcard::from_bytes(unsigned_op).unwrap();
-                assert_eq!(
-                    op.author,
-                    collab_types::Ed25519PublicKey::from_bytes([5; 32])
-                );
-            }
-            _ => panic!("document must use the broker policy path"),
-        }
-        // Synchronize behind the mutation: a denied signature cannot be sent
-        // through the harness or unsigned path after this readiness barrier.
-        manager.await_primary_route().unwrap();
-        assert!(captures.lock().unwrap().signed_ops.is_empty());
+        stop_rx
+            .recv_timeout(HANG_GUARD)
+            .expect("timed-out primary join must cancel and close the fixture broker");
+        drop(release);
     }
 
     // Wrap the existing successful broker, changing only its join response.
@@ -4808,107 +5331,6 @@ mod tests {
             Ok((client, identity))
         });
         (connector, HostJoinRelease(Some(release)))
-    }
-
-    #[test]
-    fn host_connector_refused_primary_join_is_not_connected_success() {
-        let (attempt_tx, attempt_rx) = mpsc::channel();
-        let (stop_tx, stop_rx) = mpsc::channel();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let (connector, release) =
-            host_join_gate_connector(false, calls.clone(), attempt_tx, stop_tx);
-        let cluster_id = Uuid::new_v4();
-        let result = CollaborationManager::for_route_host_blocking(
-            connector,
-            "so.tilo.notes",
-            cluster_id,
-            Some("note".into()),
-            None,
-        );
-        drop(release);
-        match result {
-            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
-                assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
-                assert!(error.to_string().contains("fixture primary join refused"));
-            }
-            _ => panic!("stream and identity bootstrap must not bypass refused Hello"),
-        }
-        assert_eq!(
-            attempt_rx.recv_timeout(HANG_GUARD).unwrap(),
-            channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
-        );
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(
-            attempt_rx.try_recv().is_err(),
-            "must not retry another route"
-        );
-        stop_rx
-            .recv_timeout(HANG_GUARD)
-            .expect("fixture broker stops after failed manager");
-    }
-
-    #[test]
-    fn host_connector_unacknowledged_primary_join_obeys_timeout_without_fallback() {
-        let (attempt_tx, attempt_rx) = mpsc::channel();
-        let (stop_tx, stop_rx) = mpsc::channel();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let (connector, release) =
-            host_join_gate_connector(true, calls.clone(), attempt_tx, stop_tx);
-        let cluster_id = Uuid::new_v4();
-        let (result_tx, result_rx) = mpsc::sync_channel(1);
-        let started = crate::time::now();
-        let caller = thread::spawn(move || {
-            let result = CollaborationManager::for_route_host_blocking(
-                connector,
-                "so.tilo.notes",
-                cluster_id,
-                Some("note".into()),
-                None,
-            );
-            // Drop any erroneously successful manager on its own caller thread.
-            let result = result.map(|manager| {
-                drop(manager);
-            });
-            let _ = result_tx.send(result);
-        });
-        let result = result_rx.recv_timeout(SHOVEL_INIT_TIMEOUT * 2 + Duration::from_secs(1));
-        let elapsed = started.elapsed();
-        if result.is_err() {
-            // A broken worker-side deadline must not leave this test's broker
-            // wedged while reporting the regression.
-            drop(release);
-            // Do not turn an observed timeout regression into an unbounded
-            // join. Give the released fixture a bounded chance to shut down.
-            if result_rx.recv_timeout(Duration::from_secs(2)).is_ok() || caller.is_finished() {
-                caller.join().expect("fixture caller after gate release");
-            }
-            panic!("manager failed to return within the bounded startup window");
-        }
-        caller.join().expect("bounded fixture caller");
-        match result.expect("manager must return within the bounded startup window") {
-            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
-                assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
-                assert_eq!(error.to_string(), "collaboration primary route timed out");
-            }
-            _ => panic!("unacknowledged Hello must never return a connected manager"),
-        }
-        assert!(
-            elapsed >= SDK_PRIMARY_ROUTE_TIMEOUT,
-            "must wait for the worker-side route deadline"
-        );
-        assert_eq!(
-            attempt_rx.recv_timeout(HANG_GUARD).unwrap(),
-            channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
-        );
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(
-            attempt_rx.try_recv().is_err(),
-            "must not retry another route"
-        );
-        stop_rx
-            .recv_timeout(HANG_GUARD)
-            .expect("timed-out primary join must cancel and close the fixture broker");
-        drop(release);
     }
 
     /// Stand up a fake `CollabService` on one end of a Unix socket pair;
@@ -5052,327 +5474,515 @@ mod tests {
     }
 
     #[test]
-    fn saturated_outbound_bridge_sheds_only_presence_then_fails_closed() {
-        let (tx, mut rx) = tokio_mpsc::channel(1);
-        let state = BridgeState::new();
-        let document =
-            || SdkCommand::Primary(CollabRequest::document_incremental(b"durable".to_vec()));
-        let presence = || {
-            SdkCommand::Primary(CollabRequest::Presence {
-                key: PresenceKey::Tab {
-                    id: "saturated".to_owned(),
-                },
-                payload: PresencePayload::Pointer { x: 1.0, y: 2.0 },
-            })
-        };
+    fn bridge_backpressure_sheds_presence_and_fails_closed_for_results() {
+        // Case `saturated_outbound_bridge_sheds_only_presence_then_fails_closed`.
+        {
+            let (tx, mut rx) = tokio_mpsc::channel(1);
+            let state = BridgeState::new();
+            let document =
+                || SdkCommand::Primary(CollabRequest::document_incremental(b"durable".to_vec()));
+            let presence = || {
+                SdkCommand::Primary(CollabRequest::Presence {
+                    key: PresenceKey::Tab {
+                        id: "saturated".to_owned(),
+                    },
+                    payload: PresencePayload::Pointer { x: 1.0, y: 2.0 },
+                })
+            };
 
-        assert!(enqueue_sdk_command(&tx, document(), &state));
-        for _ in 0..10_000 {
+            assert!(enqueue_sdk_command(&tx, document(), &state));
+            for _ in 0..10_000 {
+                assert!(
+                    !enqueue_sdk_command(&tx, presence(), &state),
+                    "a full bounded queue may shed only this transient update"
+                );
+            }
+            assert!(state.is_healthy());
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(QueuedSdkCommand {
+                    command: SdkCommand::Primary(CollabRequest::Document {
+                        mutation: DocumentMutation::Incremental(data),
+                    }),
+                    ..
+                })
+                    if data == b"durable"
+            ));
+
+            assert!(enqueue_sdk_command(&tx, document(), &state));
+            assert_eq!(
+                try_enqueue_sdk_command(&tx, document(), &state),
+                Err(TransportError::Busy),
+                "a full queue defers a document change so its sender retries it"
+            );
             assert!(
-                !enqueue_sdk_command(&tx, presence(), &state),
-                "a full bounded queue may shed only this transient update"
+                state.is_healthy(),
+                "deferring a document change never disconnects"
+            );
+            assert!(
+                !enqueue_sdk_command(
+                    &tx,
+                    SdkCommand::Primary(CollabRequest::RequestDocumentSnapshot),
+                    &state
+                ),
+                "a durable control overflow must be observable as a disconnected bridge"
+            );
+            assert!(!state.is_healthy());
+            assert!(
+                rx.try_recv().is_ok() && rx.try_recv().is_err(),
+                "the bounded queue retains only its admitted durable command"
             );
         }
-        assert!(state.is_healthy());
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(QueuedSdkCommand {
-                command: SdkCommand::Primary(CollabRequest::Document {
-                    mutation: DocumentMutation::Incremental(data),
-                }),
-                ..
-            })
-                if data == b"durable"
-        ));
 
-        assert!(enqueue_sdk_command(&tx, document(), &state));
-        assert_eq!(
-            try_enqueue_sdk_command(&tx, document(), &state),
-            Err(TransportError::Busy),
-            "a full queue defers a document change so its sender retries it"
-        );
-        assert!(
-            state.is_healthy(),
-            "deferring a document change never disconnects"
-        );
-        assert!(
-            !enqueue_sdk_command(
-                &tx,
-                SdkCommand::Primary(CollabRequest::RequestDocumentSnapshot),
-                &state
-            ),
-            "a durable control overflow must be observable as a disconnected bridge"
-        );
-        assert!(!state.is_healthy());
-        assert!(
-            rx.try_recv().is_ok() && rx.try_recv().is_err(),
-            "the bounded queue retains only its admitted durable command"
-        );
-    }
-
-    #[test]
-    fn inbound_events_wake_the_owner_once_per_queued_burst() {
-        let mut scope = crate::wake::WakeScope::new();
-        let wakes = Arc::new(AtomicUsize::new(0));
-        let count = wakes.clone();
-        scope
-            .bind(move |_| {
-                count.fetch_add(1, Ordering::SeqCst);
-            })
-            .unwrap();
-        let _entry = scope.enter();
-        let (tx, mut rx) = tokio_mpsc::channel(4);
-        let inbound = InboundBridge::new(tx, BridgeState::new());
-        assert!(inbound.send_durable(CollabEvent::RemoteAction {
-            message: tilo_actions::remote::RemoteActionMessage::Update {
-                invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
-                state: None,
-            },
-        }));
-        assert_eq!(
-            wakes.load(Ordering::SeqCst),
-            1,
-            "admitted work must wake the owner instead of waiting for its 60Hz poll"
-        );
-        assert!(inbound.send_presence(CollabEvent::RemoteCursorMoved {
-            user_id: "peer".into(),
-            x: 1.0,
-            y: 2.0,
-        }));
-        assert_eq!(
-            wakes.load(Ordering::SeqCst),
-            1,
-            "a queued burst needs only one wake"
-        );
-        assert!(rx.try_recv().is_ok());
-        assert!(rx.try_recv().is_ok());
-        inbound.state.begin_poll();
-        assert!(inbound.send_durable(CollabEvent::RemoteAction {
-            message: tilo_actions::remote::RemoteActionMessage::Update {
-                invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
-                state: None,
-            },
-        }));
-        assert_eq!(
-            wakes.load(Ordering::SeqCst),
-            2,
-            "an arrival after poll starts must schedule another wake, even during draining"
-        );
-        assert!(rx.try_recv().is_ok());
-        scope.close();
-        inbound.state.begin_poll();
-        assert!(inbound.send_durable(CollabEvent::RemoteAction {
-            message: tilo_actions::remote::RemoteActionMessage::Update {
-                invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
-                state: None,
-            },
-        }));
-        assert_eq!(
-            wakes.load(Ordering::SeqCst),
-            2,
-            "a closed owner cannot be woken"
-        );
-    }
-
-    #[test]
-    fn saturated_inbound_bridge_preserves_presence_policy_and_fails_for_results() {
-        let (tx, mut rx) = tokio_mpsc::channel(1);
-        let state = BridgeState::new();
-        let inbound = InboundBridge::new(tx, state.clone());
-
-        for _ in 0..10_000 {
+        // Case `inbound_events_wake_the_owner_once_per_queued_burst`.
+        {
+            let mut scope = crate::wake::WakeScope::new();
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let count = wakes.clone();
+            scope
+                .bind(move |_| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                })
+                .unwrap();
+            let _entry = scope.enter();
+            let (tx, mut rx) = tokio_mpsc::channel(4);
+            let inbound = InboundBridge::new(tx, BridgeState::new());
+            assert!(inbound.send_durable(CollabEvent::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::Update {
+                    invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
+                    state: None,
+                },
+            }));
+            assert_eq!(
+                wakes.load(Ordering::SeqCst),
+                1,
+                "admitted work must wake the owner instead of waiting for its 60Hz poll"
+            );
             assert!(inbound.send_presence(CollabEvent::RemoteCursorMoved {
-                user_id: "peer".to_owned(),
+                user_id: "peer".into(),
                 x: 1.0,
                 y: 2.0,
             }));
-        }
-        assert!(state.is_healthy());
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(QueuedCollabEvent {
-                event: CollabEvent::RemoteCursorMoved { .. },
-                ..
-            })
-        ));
-
-        assert!(inbound.send_durable(CollabEvent::RemoteAction {
-            message: tilo_actions::remote::RemoteActionMessage::Update {
-                invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
-                state: None,
-            },
-        }));
-        assert!(
-            !inbound.send_durable(CollabEvent::RemoteAction {
-                message: tilo_actions::remote::RemoteActionMessage::Receipt(
-                    tilo_actions::remote::InvocationReceipt {
-                        invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
-                        status: tilo_actions::remote::ReceiptStatus::Accepted,
-                    }
-                ),
-            }),
-            "an invocation lifecycle result is never silently discarded"
-        );
-        assert!(!state.is_healthy());
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(QueuedCollabEvent {
-                event: CollabEvent::RemoteAction {
-                    message: tilo_actions::remote::RemoteActionMessage::Update { .. }
+            assert_eq!(
+                wakes.load(Ordering::SeqCst),
+                1,
+                "a queued burst needs only one wake"
+            );
+            assert!(rx.try_recv().is_ok());
+            assert!(rx.try_recv().is_ok());
+            inbound.state.begin_poll();
+            assert!(inbound.send_durable(CollabEvent::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::Update {
+                    invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
+                    state: None,
                 },
-                ..
-            })
-        ));
-        assert!(rx.try_recv().is_err());
-    }
+            }));
+            assert_eq!(
+                wakes.load(Ordering::SeqCst),
+                2,
+                "an arrival after poll starts must schedule another wake, even during draining"
+            );
+            assert!(rx.try_recv().is_ok());
+            scope.close();
+            inbound.state.begin_poll();
+            assert!(inbound.send_durable(CollabEvent::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::Update {
+                    invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
+                    state: None,
+                },
+            }));
+            assert_eq!(
+                wakes.load(Ordering::SeqCst),
+                2,
+                "a closed owner cannot be woken"
+            );
+        }
 
-    #[test]
-    fn over_limit_document_is_refused_explicitly_without_disconnecting() {
-        let (tx, mut rx) = tokio_mpsc::channel(1);
-        let state = BridgeState::new();
-        let limit = collab_types::MAX_DOCUMENT_TRANSFER_BYTES;
-        let oversized =
-            SdkCommand::Primary(CollabRequest::document_incremental(vec![0; limit + 1]));
+        // Case `saturated_inbound_bridge_preserves_presence_policy_and_fails_for_results`.
+        {
+            let (tx, mut rx) = tokio_mpsc::channel(1);
+            let state = BridgeState::new();
+            let inbound = InboundBridge::new(tx, state.clone());
 
-        assert_eq!(
-            try_enqueue_sdk_command(&tx, oversized, &state),
-            Err(TransportError::TooLarge {
-                actual: limit + 1,
-                max: limit,
-            })
-        );
-        assert!(state.is_healthy(), "one oversized change keeps the bridge");
-        assert!(rx.try_recv().is_err(), "nothing of it was queued");
-        assert!(enqueue_sdk_command(
-            &tx,
-            SdkCommand::Primary(CollabRequest::document_incremental(vec![1; 8])),
-            &state
-        ));
-    }
-
-    #[test]
-    fn document_budget_is_charged_for_bytes_sent_not_spare_capacity() {
-        let (tx, mut rx) = tokio_mpsc::channel(1);
-        let state = BridgeState::new();
-        let mut data = Vec::with_capacity(SDK_DOCUMENT_COMMAND_BYTES * 2);
-        data.push(0);
-        let command = SdkCommand::Primary(CollabRequest::Document {
-            mutation: collab_types::DocumentMutation::Snapshot(data),
-        });
-
-        assert!(enqueue_sdk_command(&tx, command, &state));
-        assert!(
-            state.document_command_bytes.0.load(Ordering::Acquire) < 1024 * 1024,
-            "a mostly-empty allocation is shrunk before it is parked on the bridge"
-        );
-        assert!(rx.try_recv().is_ok());
-    }
-
-    #[test]
-    fn document_budget_defers_aggregate_documents_without_disconnecting() {
-        let (tx, rx) = tokio_mpsc::channel(SDK_COMMAND_QUEUE);
-        let state = BridgeState::new();
-        let mut admitted = 0;
-        let refusal = loop {
-            let command =
-                SdkCommand::Primary(CollabRequest::document_incremental(vec![0; 1024 * 1024]));
-            match try_enqueue_sdk_command(&tx, command, &state) {
-                Ok(()) => admitted += 1,
-                Err(error) => break error,
+            for _ in 0..10_000 {
+                assert!(inbound.send_presence(CollabEvent::RemoteCursorMoved {
+                    user_id: "peer".to_owned(),
+                    x: 1.0,
+                    y: 2.0,
+                }));
             }
-        };
+            assert!(state.is_healthy());
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(QueuedCollabEvent {
+                    event: CollabEvent::RemoteCursorMoved { .. },
+                    ..
+                })
+            ));
 
-        assert_eq!(refusal, TransportError::Busy);
-        assert!(admitted < SDK_COMMAND_QUEUE, "bytes, not count, bound it");
-        assert!(state.is_healthy());
-        assert_eq!(rx.len(), admitted);
-        assert!(
-            enqueue_sdk_command(
+            assert!(inbound.send_durable(CollabEvent::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::Update {
+                    invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
+                    state: None,
+                },
+            }));
+            assert!(
+                !inbound.send_durable(CollabEvent::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Receipt(
+                        tilo_actions::remote::InvocationReceipt {
+                            invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
+                            status: tilo_actions::remote::ReceiptStatus::Accepted,
+                        }
+                    ),
+                }),
+                "an invocation lifecycle result is never silently discarded"
+            );
+            assert!(!state.is_healthy());
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(QueuedCollabEvent {
+                    event: CollabEvent::RemoteAction {
+                        message: tilo_actions::remote::RemoteActionMessage::Update { .. }
+                    },
+                    ..
+                })
+            ));
+            assert!(rx.try_recv().is_err());
+        }
+
+        // Case `byte_reservation_releases_when_the_ui_consumes_a_command`.
+        {
+            let (tx, mut rx) = tokio_mpsc::channel(2);
+            let state = BridgeState::new();
+            let document = || {
+                SdkCommand::Primary(CollabRequest::document_incremental(vec![
+                    0;
+                    3 * 1024 * 1024
+                ]))
+            };
+
+            // Consuming its queued wrapper drops its reservation before the next
+            // admission, rather than leaking the aggregate budget.
+            assert!(enqueue_sdk_command(&tx, document(), &state));
+            drop(rx.try_recv().expect("queued document"));
+            assert!(enqueue_sdk_command(&tx, document(), &state));
+            assert!(state.is_healthy());
+        }
+
+        // Case `oversized_inbound_action_fails_before_queueing`.
+        {
+            let (tx, mut rx) = tokio_mpsc::channel(1);
+            let state = BridgeState::new();
+            let inbound = InboundBridge::new(tx, state.clone());
+            let mut payload = Vec::with_capacity(5 * 1024 * 1024);
+            payload.push(1);
+
+            assert!(!inbound.send_durable(CollabEvent::ActionArrived {
+                type_id: "test.action".to_owned(),
+                payload,
+                from_user_id: "peer".to_owned(),
+            }));
+            assert!(!state.is_healthy());
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn document_budget_defers_or_refuses_without_disconnecting() {
+        // Case `over_limit_document_is_refused_explicitly_without_disconnecting`.
+        {
+            let (tx, mut rx) = tokio_mpsc::channel(1);
+            let state = BridgeState::new();
+            let limit = collab_types::MAX_DOCUMENT_TRANSFER_BYTES;
+            let oversized =
+                SdkCommand::Primary(CollabRequest::document_incremental(vec![0; limit + 1]));
+
+            assert_eq!(
+                try_enqueue_sdk_command(&tx, oversized, &state),
+                Err(TransportError::TooLarge {
+                    actual: limit + 1,
+                    max: limit,
+                })
+            );
+            assert!(state.is_healthy(), "one oversized change keeps the bridge");
+            assert!(rx.try_recv().is_err(), "nothing of it was queued");
+            assert!(enqueue_sdk_command(
                 &tx,
-                SdkCommand::Primary(CollabRequest::RequestDocumentSnapshot),
+                SdkCommand::Primary(CollabRequest::document_incremental(vec![1; 8])),
                 &state
-            ),
-            "queued document bytes never starve control traffic"
-        );
+            ));
+        }
+
+        // Case `document_budget_is_charged_for_bytes_sent_not_spare_capacity`.
+        {
+            let (tx, mut rx) = tokio_mpsc::channel(1);
+            let state = BridgeState::new();
+            let mut data = Vec::with_capacity(SDK_DOCUMENT_COMMAND_BYTES * 2);
+            data.push(0);
+            let command = SdkCommand::Primary(CollabRequest::Document {
+                mutation: collab_types::DocumentMutation::Snapshot(data),
+            });
+
+            assert!(enqueue_sdk_command(&tx, command, &state));
+            assert!(
+                state.document_command_bytes.0.load(Ordering::Acquire) < 1024 * 1024,
+                "a mostly-empty allocation is shrunk before it is parked on the bridge"
+            );
+            assert!(rx.try_recv().is_ok());
+        }
+
+        // Case `document_budget_defers_aggregate_documents_without_disconnecting`.
+        {
+            let (tx, rx) = tokio_mpsc::channel(SDK_COMMAND_QUEUE);
+            let state = BridgeState::new();
+            let mut admitted = 0;
+            let refusal = loop {
+                let command =
+                    SdkCommand::Primary(CollabRequest::document_incremental(vec![0; 1024 * 1024]));
+                match try_enqueue_sdk_command(&tx, command, &state) {
+                    Ok(()) => admitted += 1,
+                    Err(error) => break error,
+                }
+            };
+
+            assert_eq!(refusal, TransportError::Busy);
+            assert!(admitted < SDK_COMMAND_QUEUE, "bytes, not count, bound it");
+            assert!(state.is_healthy());
+            assert_eq!(rx.len(), admitted);
+            assert!(
+                enqueue_sdk_command(
+                    &tx,
+                    SdkCommand::Primary(CollabRequest::RequestDocumentSnapshot),
+                    &state
+                ),
+                "queued document bytes never starve control traffic"
+            );
+        }
+
+        // Case `a_lone_document_larger_than_the_budget_still_makes_progress`.
+        {
+            let budget = ByteBudget::new();
+            let big = budget
+                .reserve_sole(SDK_DOCUMENT_EVENT_BYTES + 1, SDK_DOCUMENT_EVENT_BYTES)
+                .expect("an empty budget admits one oversized item");
+            assert!(
+                budget.reserve_sole(1, SDK_DOCUMENT_EVENT_BYTES).is_none(),
+                "nothing queues beside it"
+            );
+            drop(big);
+            assert!(budget.reserve_sole(1, SDK_DOCUMENT_EVENT_BYTES).is_some());
+        }
     }
 
-    #[test]
-    fn a_lone_document_larger_than_the_budget_still_makes_progress() {
-        let budget = ByteBudget::new();
-        let big = budget
-            .reserve_sole(SDK_DOCUMENT_EVENT_BYTES + 1, SDK_DOCUMENT_EVENT_BYTES)
-            .expect("an empty budget admits one oversized item");
-        assert!(
-            budget.reserve_sole(1, SDK_DOCUMENT_EVENT_BYTES).is_none(),
-            "nothing queues beside it"
-        );
-        drop(big);
-        assert!(budget.reserve_sole(1, SDK_DOCUMENT_EVENT_BYTES).is_some());
-    }
-
-    #[test]
-    fn byte_reservation_releases_when_the_ui_consumes_a_command() {
-        let (tx, mut rx) = tokio_mpsc::channel(2);
-        let state = BridgeState::new();
-        let document = || {
-            SdkCommand::Primary(CollabRequest::document_incremental(vec![
-                0;
-                3 * 1024 * 1024
-            ]))
-        };
-
-        // Consuming its queued wrapper drops its reservation before the next
-        // admission, rather than leaking the aggregate budget.
-        assert!(enqueue_sdk_command(&tx, document(), &state));
-        drop(rx.try_recv().expect("queued document"));
-        assert!(enqueue_sdk_command(&tx, document(), &state));
-        assert!(state.is_healthy());
-    }
-
-    #[test]
-    fn oversized_inbound_action_fails_before_queueing() {
-        let (tx, mut rx) = tokio_mpsc::channel(1);
-        let state = BridgeState::new();
-        let inbound = InboundBridge::new(tx, state.clone());
-        let mut payload = Vec::with_capacity(5 * 1024 * 1024);
-        payload.push(1);
-
-        assert!(!inbound.send_durable(CollabEvent::ActionArrived {
-            type_id: "test.action".to_owned(),
-            payload,
-            from_user_id: "peer".to_owned(),
-        }));
-        assert!(!state.is_healthy());
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
     #[cfg(unix)]
-    fn a_broker_that_is_not_there_does_not_hold_the_app_up() {
-        // A connected socket whose far end is gone — a broker that died
-        // between the launcher's connect and the app's first call. `new()`
-        // runs before the first frame, so this must return and keep working.
-        let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("socketpair");
-        drop(theirs);
-        let fd = ours.into_raw_fd();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_SVC_COLLAB_FD", fd.to_string());
+    #[test]
+    fn manager_connects_in_the_background_without_holding_the_app() {
+        // Case `a_broker_that_is_not_there_does_not_hold_the_app_up`.
+        {
+            // A connected socket whose far end is gone — a broker that died
+            // between the launcher's connect and the app's first call. `new()`
+            // runs before the first frame, so this must return and keep working.
+            let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+            drop(theirs);
+            let fd = ours.into_raw_fd();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_SVC_COLLAB_FD", fd.to_string());
 
-        let started = crate::time::now();
-        let mut mgr = CollaborationManager::new();
-        let took = started.elapsed();
-        drop(env);
+            let started = crate::time::now();
+            let mut mgr = CollaborationManager::new();
+            let took = started.elapsed();
+            drop(env);
 
-        assert!(
-            took < SHOVEL_INIT_TIMEOUT * 2,
-            "constructing the manager must not stall the first frame (took {took:?})"
-        );
-        // Whichever backend it settled on, the app goes on calling these
-        // every frame. Neither may panic.
-        mgr.send(CollabRequest::document_snapshot(
-            b"after the broker died".to_vec(),
-        ));
-        let _ = mgr.poll();
+            assert!(
+                took < SHOVEL_INIT_TIMEOUT * 2,
+                "constructing the manager must not stall the first frame (took {took:?})"
+            );
+            // Whichever backend it settled on, the app goes on calling these
+            // every frame. Neither may panic.
+            mgr.send(CollabRequest::document_snapshot(
+                b"after the broker died".to_vec(),
+            ));
+            let _ = mgr.poll();
+        }
+
+        // Case `construction_returns_at_once_while_the_broker_is_silent`.
+        {
+            // A broker that accepted the connection but never answers: the
+            // primary join cannot complete until the peer goes away. The old
+            // constructor waited here before the app's first frame.
+            let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+            let (scope, wakes) = wake_channel();
+            let entry = scope.enter();
+            let route = RouteSpec {
+                app_id: "silent-broker-test".into(),
+                cluster_id: Uuid::new_v4(),
+                record: None,
+            };
+
+            let started = crate::time::now();
+            let mut mgr = background_manager(ours.into_raw_fd(), route.clone());
+            let took = started.elapsed();
+            drop(entry);
+
+            assert!(
+                took < SDK_PRIMARY_ROUTE_TIMEOUT,
+                "construction must not wait for the broker (took {took:?})"
+            );
+            assert_eq!(mgr.state(), CollaborationState::Connecting);
+            assert!(!mgr.is_connected());
+            assert!(mgr.primary_route().is_none());
+            assert_eq!(mgr.requested_primary_route(), Some(&route));
+            let channel =
+                collab_types::document_channel_id(&route.app_id, &route.cluster_id.to_string(), "");
+            let group = channel_crypto::ChannelGroup::create(
+                channel,
+                channel_crypto::MemberKey::generate("owner").unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                mgr.install_document_encryption(route.clone(), group),
+                Err("collaboration is still connecting".into()),
+                "no call may wait on a worker that is still connecting"
+            );
+            // The frame loop keeps calling these while connecting. With no
+            // acknowledged route nothing is queued behind the connection.
+            assert!(!mgr.send(CollabRequest::Presence {
+                key: PresenceKey::local_surface_pointer(),
+                payload: PresencePayload::Arrived,
+            }));
+            assert!(mgr.poll().is_empty());
+            assert_eq!(mgr.take_state_change(), None, "still connecting");
+
+            // The broker goes away: the join fails and the manager goes offline,
+            // telling its owner through a wake rather than a timer.
+            drop(theirs);
+            let settled = settle(&mut mgr, &wakes);
+            assert!(
+                matches!(settled, CollaborationState::Offline(_)),
+                "{settled:?}"
+            );
+            assert!(!mgr.is_connected());
+            assert_eq!(mgr.take_state_change(), Some(settled));
+            assert_eq!(mgr.take_state_change(), None);
+            // Offline managers stay usable no-ops.
+            mgr.send(CollabRequest::document_snapshot(b"after".to_vec()));
+            assert!(mgr.poll().is_empty());
+        }
+
+        // Case `a_background_connection_becomes_ready_and_wakes_the_owner`.
+        {
+            let broker = FakeBroker {
+                captures: Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![],
+                presence_backlog: vec![],
+                context_backlog: vec![],
+                scrollback_response: None,
+            };
+            let (fd, captures, _thread) = stand_up_fake_broker(broker);
+            let (scope, wakes) = wake_channel();
+            let entry = scope.enter();
+            let route = RouteSpec {
+                app_id: "background-connect-test".into(),
+                cluster_id: Uuid::new_v4(),
+                record: None,
+            };
+            let mut mgr = background_manager(fd, route.clone());
+            drop(entry);
+            assert_eq!(mgr.state(), CollaborationState::Connecting);
+
+            let settled = settle(&mut mgr, &wakes);
+
+            assert_eq!(settled, CollaborationState::Ready);
+            assert!(mgr.is_connected());
+            assert_eq!(
+                mgr.primary_route().map(|witness| &witness.route),
+                Some(&route)
+            );
+            assert_eq!(mgr.take_state_change(), Some(CollaborationState::Ready));
+            let joined: Vec<String> = captures
+                .lock()
+                .unwrap()
+                .joined
+                .iter()
+                .map(|(channel, _)| channel.clone())
+                .collect();
+            assert_eq!(
+                joined,
+                vec![route.channel_id()],
+                "the queued Hello joined the primary route once connected"
+            );
+        }
+
+        // Case `explicit_test_join_forwards_its_identity_presentation`.
+        {
+            let broker = FakeBroker {
+                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![],
+                presence_backlog: vec![],
+                context_backlog: vec![],
+                scrollback_response: None,
+            };
+            let (fd, captures, _th) = stand_up_fake_broker(broker);
+            let cluster = Uuid::new_v4();
+            let presentation = b"certified-test-presentation".to_vec();
+            let _mgr = CollaborationManager::from_sdk_fd_for_test_with_identity(
+                fd,
+                "alice",
+                cluster,
+                presentation.clone(),
+            );
+
+            assert!(
+                wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD,),
+                "join_channel must be observed"
+            );
+            let joined = captures.lock().unwrap().joined.clone();
+            assert_eq!(joined.len(), 1);
+            assert_eq!(joined[0].1, presentation);
+        }
+
+        // Case `first_frame_publishes_actions_without_input`.
+        {
+            let broker = FakeBroker {
+                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![],
+                presence_backlog: vec![],
+                context_backlog: vec![],
+                scrollback_response: None,
+            };
+            let (fd, captures, _thread) = stand_up_fake_broker(broker);
+            let app_id = crate::collaboration::local_app_id();
+            let manager = CollaborationManager::from_sdk_fd_for_test(fd, &app_id, Uuid::new_v4());
+            let mut app = crate::App::with_collaboration_manager(
+                crate::State::new(),
+                Box::new(crate::widget::Button::new(
+                    "complete",
+                    "Complete",
+                    Some("completed"),
+                )),
+                manager,
+            );
+            assert!(captures.lock().unwrap().action_publications.is_empty());
+            // This calls the production layout/draw passes. No input, palette,
+            // explicit publication, or app-owned action invocation primes the app.
+            crate::app::draw_prepared_component_test_frame(&mut app);
+            assert!(
+                wait_until(
+                    || {
+                        let seen = captures.lock().unwrap();
+                        seen.action_directories.iter().any(|id| id == &app_id)
+                            && seen.action_publications.iter().any(|(id, actions)| {
+                                id == &app_id
+                                    && actions.iter().any(|(label, action)| {
+                                        label == "Complete" && action == "activate"
+                                    })
+                            })
+                    },
+                    Duration::from_secs(2)
+                ),
+                "the first rendered frame must publish its semantic actions to the broker without input"
+            );
+        }
     }
 
     #[test]
@@ -5434,1084 +6044,907 @@ mod tests {
         )
     }
 
-    #[test]
-    #[cfg(unix)]
-    fn construction_returns_at_once_while_the_broker_is_silent() {
-        // A broker that accepted the connection but never answers: the
-        // primary join cannot complete until the peer goes away. The old
-        // constructor waited here before the app's first frame.
-        let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("socketpair");
-        let (scope, wakes) = wake_channel();
-        let entry = scope.enter();
-        let route = RouteSpec {
-            app_id: "silent-broker-test".into(),
-            cluster_id: Uuid::new_v4(),
-            record: None,
-        };
-
-        let started = crate::time::now();
-        let mut mgr = background_manager(ours.into_raw_fd(), route.clone());
-        let took = started.elapsed();
-        drop(entry);
-
-        assert!(
-            took < SDK_PRIMARY_ROUTE_TIMEOUT,
-            "construction must not wait for the broker (took {took:?})"
-        );
-        assert_eq!(mgr.state(), CollaborationState::Connecting);
-        assert!(!mgr.is_connected());
-        assert!(mgr.primary_route().is_none());
-        assert_eq!(mgr.requested_primary_route(), Some(&route));
-        let channel =
-            collab_types::document_channel_id(&route.app_id, &route.cluster_id.to_string(), "");
-        let group = channel_crypto::ChannelGroup::create(
-            channel,
-            channel_crypto::MemberKey::generate("owner").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            mgr.install_document_encryption(route.clone(), group),
-            Err("collaboration is still connecting".into()),
-            "no call may wait on a worker that is still connecting"
-        );
-        // The frame loop keeps calling these while connecting. With no
-        // acknowledged route nothing is queued behind the connection.
-        assert!(!mgr.send(CollabRequest::Presence {
-            key: PresenceKey::local_surface_pointer(),
-            payload: PresencePayload::Arrived,
-        }));
-        assert!(mgr.poll().is_empty());
-        assert_eq!(mgr.take_state_change(), None, "still connecting");
-
-        // The broker goes away: the join fails and the manager goes offline,
-        // telling its owner through a wake rather than a timer.
-        drop(theirs);
-        let settled = settle(&mut mgr, &wakes);
-        assert!(
-            matches!(settled, CollaborationState::Offline(_)),
-            "{settled:?}"
-        );
-        assert!(!mgr.is_connected());
-        assert_eq!(mgr.take_state_change(), Some(settled));
-        assert_eq!(mgr.take_state_change(), None);
-        // Offline managers stay usable no-ops.
-        mgr.send(CollabRequest::document_snapshot(b"after".to_vec()));
-        assert!(mgr.poll().is_empty());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn a_background_connection_becomes_ready_and_wakes_the_owner() {
-        let broker = FakeBroker {
-            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
-        let (fd, captures, _thread) = stand_up_fake_broker(broker);
-        let (scope, wakes) = wake_channel();
-        let entry = scope.enter();
-        let route = RouteSpec {
-            app_id: "background-connect-test".into(),
-            cluster_id: Uuid::new_v4(),
-            record: None,
-        };
-        let mut mgr = background_manager(fd, route.clone());
-        drop(entry);
-        assert_eq!(mgr.state(), CollaborationState::Connecting);
-
-        let settled = settle(&mut mgr, &wakes);
-
-        assert_eq!(settled, CollaborationState::Ready);
-        assert!(mgr.is_connected());
-        assert_eq!(
-            mgr.primary_route().map(|witness| &witness.route),
-            Some(&route)
-        );
-        assert_eq!(mgr.take_state_change(), Some(CollaborationState::Ready));
-        let joined: Vec<String> = captures
-            .lock()
-            .unwrap()
-            .joined
-            .iter()
-            .map(|(channel, _)| channel.clone())
-            .collect();
-        assert_eq!(
-            joined,
-            vec![route.channel_id()],
-            "the queued Hello joined the primary route once connected"
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn explicit_test_join_forwards_its_identity_presentation() {
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
-        let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let cluster = Uuid::new_v4();
-        let presentation = b"certified-test-presentation".to_vec();
-        let _mgr = CollaborationManager::from_sdk_fd_for_test_with_identity(
-            fd,
-            "alice",
-            cluster,
-            presentation.clone(),
-        );
-
-        assert!(
-            wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD,),
-            "join_channel must be observed"
-        );
-        let joined = captures.lock().unwrap().joined.clone();
-        assert_eq!(joined.len(), 1);
-        assert_eq!(joined[0].1, presentation);
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn first_frame_publishes_actions_without_input() {
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
-        let (fd, captures, _thread) = stand_up_fake_broker(broker);
-        let app_id = crate::collaboration::local_app_id();
-        let manager = CollaborationManager::from_sdk_fd_for_test(fd, &app_id, Uuid::new_v4());
-        let mut app = crate::App::with_collaboration_manager(
-            crate::State::new(),
-            Box::new(crate::widget::Button::new(
-                "complete",
-                "Complete",
-                Some("completed"),
-            )),
-            manager,
-        );
-        assert!(captures.lock().unwrap().action_publications.is_empty());
-        // This calls the production layout/draw passes. No input, palette,
-        // explicit publication, or app-owned action invocation primes the app.
-        crate::app::draw_prepared_component_test_frame(&mut app);
-        assert!(
-            wait_until(
-                || {
-                    let seen = captures.lock().unwrap();
-                    seen.action_directories.iter().any(|id| id == &app_id)
-                        && seen.action_publications.iter().any(|(id, actions)| {
-                            id == &app_id
-                                && actions.iter().any(|(label, action)| {
-                                    label == "Complete" && action == "activate"
-                                })
-                        })
-                },
-                Duration::from_secs(2)
-            ),
-            "the first rendered frame must publish its semantic actions to the broker without input"
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn hello_joins_channel_and_send_forwards_signed_op() {
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
-        let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let cluster = Uuid::new_v4();
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", cluster);
-
-        assert!(
-            wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
-            "join_channel must be observed"
-        );
-        let joined = captures.lock().unwrap().joined.clone();
-        assert_eq!(joined.len(), 1);
-        // The channel id carries the whole address, app id included.
-        assert_eq!(
-            joined[0].0,
-            channel_key::format("alice", &cluster.to_string(), ""),
-        );
-
-        let mut op = SignedOp::new_unsigned(
-            b"payload".to_vec(),
-            collab_types::ArtifactId::new(),
-            collab_types::Ed25519PublicKey::from_bytes([1u8; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
-            crate::time::SystemTime::UNIX_EPOCH,
-            1,
-        );
-        op.signature = collab_types::Signature::from_bytes([0u8; 64]);
-        let expected_bytes = postcard::to_stdvec(&op).unwrap();
-        mgr.send(CollabRequest::SignedOperation {
-            envelope: Box::new(op),
-        });
-
-        assert!(
-            wait_until(
-                || !captures.lock().unwrap().signed_ops.is_empty(),
-                HANG_GUARD,
-            ),
-            "send() must reach the SDK",
-        );
-        let seen = captures.lock().unwrap().signed_ops.clone();
-        assert_eq!(seen, vec![expected_bytes]);
-    }
-
     #[cfg(unix)]
     #[test]
-    fn owned_route_raw_documents_use_typed_signed_sdk_transport() {
-        use automerge::transaction::Transactable;
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
-        let (fd, captures, _thread) = stand_up_fake_broker(broker);
-        let workspace = Uuid::new_v4();
-        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "shell", workspace);
-        let route = RouteSpec::record("actual-owner", workspace, "tab:qualified");
-        let mut document = automerge::AutoCommit::new();
-        document.put(automerge::ROOT, "body", "before").unwrap();
-        document.commit();
-        let heads = document.base_heads();
-        let snapshot = document.save();
-        document.put(automerge::ROOT, "body", "after").unwrap();
-        document.commit();
-        let delta = document.save_after(&heads);
-        manager.send_to_route(
-            route.clone(),
-            CollabRequest::document_snapshot(snapshot.clone()),
-        );
-        manager.send_to_route(
-            route.clone(),
-            CollabRequest::document_incremental(delta.clone()),
-        );
-        assert!(
-            wait_until(
-                || captures.lock().unwrap().signed_ops.len() == 2,
-                HANG_GUARD
-            ),
-            "both raw requests reach SDK signed RPC"
-        );
-        let captured = captures.lock().unwrap();
-        assert!(captured.joined.iter().any(|(channel, _)| channel
-            == &channel_key::format("actual-owner", &workspace.to_string(), "tab:qualified")));
-        for (index, bytes) in captured.signed_ops.iter().enumerate() {
-            let envelope: SignedOp = postcard::from_bytes(bytes).unwrap();
-            collab_types::validate_document_payload_route(
-                "actual-owner",
-                &workspace.to_string(),
-                "tab:qualified",
-                &envelope,
-            )
-            .unwrap();
+    fn sdk_transport_forwards_signed_documents_and_presence() {
+        // Case `hello_joins_channel_and_send_forwards_signed_op`.
+        {
+            let broker = FakeBroker {
+                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![],
+                presence_backlog: vec![],
+                context_backlog: vec![],
+                scrollback_response: None,
+            };
+            let (fd, captures, _th) = stand_up_fake_broker(broker);
+            let cluster = Uuid::new_v4();
+            let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", cluster);
+
             assert!(
-                envelope.encryption.is_none(),
-                "harness route is explicitly unencrypted"
+                wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
+                "join_channel must be observed"
             );
-            let expected = if index == 0 {
-                collab_types::DocumentMutation::Snapshot(snapshot.clone())
-            } else {
-                collab_types::DocumentMutation::Incremental(delta.clone())
+            let joined = captures.lock().unwrap().joined.clone();
+            assert_eq!(joined.len(), 1);
+            // The channel id carries the whole address, app id included.
+            assert_eq!(
+                joined[0].0,
+                channel_key::format("alice", &cluster.to_string(), ""),
+            );
+
+            let mut op = SignedOp::new_unsigned(
+                b"payload".to_vec(),
+                collab_types::ArtifactId::new(),
+                collab_types::Ed25519PublicKey::from_bytes([1u8; 32]),
+                collab_types::AttestationId::new(),
+                collab_types::OpClass::Splice,
+                crate::time::SystemTime::UNIX_EPOCH,
+                1,
+            );
+            op.signature = collab_types::Signature::from_bytes([0u8; 64]);
+            let expected_bytes = postcard::to_stdvec(&op).unwrap();
+            mgr.send(CollabRequest::SignedOperation {
+                envelope: Box::new(op),
+            });
+
+            assert!(
+                wait_until(
+                    || !captures.lock().unwrap().signed_ops.is_empty(),
+                    HANG_GUARD,
+                ),
+                "send() must reach the SDK",
+            );
+            let seen = captures.lock().unwrap().signed_ops.clone();
+            assert_eq!(seen, vec![expected_bytes]);
+        }
+
+        // Case `owned_route_raw_documents_use_typed_signed_sdk_transport`.
+        {
+            use automerge::transaction::Transactable;
+            let broker = FakeBroker {
+                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![],
+                presence_backlog: vec![],
+                context_backlog: vec![],
+                scrollback_response: None,
+            };
+            let (fd, captures, _thread) = stand_up_fake_broker(broker);
+            let workspace = Uuid::new_v4();
+            let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "shell", workspace);
+            let route = RouteSpec::record("actual-owner", workspace, "tab:qualified");
+            let mut document = automerge::AutoCommit::new();
+            document.put(automerge::ROOT, "body", "before").unwrap();
+            document.commit();
+            let heads = document.base_heads();
+            let snapshot = document.save();
+            document.put(automerge::ROOT, "body", "after").unwrap();
+            document.commit();
+            let delta = document.save_after(&heads);
+            manager.send_to_route(
+                route.clone(),
+                CollabRequest::document_snapshot(snapshot.clone()),
+            );
+            manager.send_to_route(
+                route.clone(),
+                CollabRequest::document_incremental(delta.clone()),
+            );
+            assert!(
+                wait_until(
+                    || captures.lock().unwrap().signed_ops.len() == 2,
+                    HANG_GUARD
+                ),
+                "both raw requests reach SDK signed RPC"
+            );
+            let captured = captures.lock().unwrap();
+            assert!(captured.joined.iter().any(|(channel, _)| channel
+                == &channel_key::format("actual-owner", &workspace.to_string(), "tab:qualified")));
+            for (index, bytes) in captured.signed_ops.iter().enumerate() {
+                let envelope: SignedOp = postcard::from_bytes(bytes).unwrap();
+                collab_types::validate_document_payload_route(
+                    "actual-owner",
+                    &workspace.to_string(),
+                    "tab:qualified",
+                    &envelope,
+                )
+                .unwrap();
+                assert!(
+                    envelope.encryption.is_none(),
+                    "harness route is explicitly unencrypted"
+                );
+                let expected = if index == 0 {
+                    collab_types::DocumentMutation::Snapshot(snapshot.clone())
+                } else {
+                    collab_types::DocumentMutation::Incremental(delta.clone())
+                };
+                assert_eq!(
+                    collab_types::DocumentMutation::decode(&envelope.payload).unwrap(),
+                    expected
+                );
+                assert_ne!(
+                    envelope.signature,
+                    collab_types::Signature::from_bytes([0; 64])
+                );
+            }
+        }
+
+        // Case `publication_barrier_resolves_after_every_earlier_document_is_published`:
+        // `send` only queues. A publication barrier resolves once every
+        // document mutation queued before it has reached the broker, which is
+        // what lets an owner end its session without discarding a change still
+        // in transit.
+        {
+            let broker = FakeBroker {
+                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![],
+                presence_backlog: vec![],
+                context_backlog: vec![],
+                scrollback_response: None,
+            };
+            let (fd, captures, _thread) = stand_up_fake_broker(broker);
+            let mut manager =
+                CollaborationManager::from_sdk_fd_for_test(fd, "shell", Uuid::new_v4());
+            for n in 0..8_u8 {
+                assert!(manager.send(CollabRequest::document_incremental(vec![n; 16])));
+            }
+            manager
+                .begin_document_publication_barrier()
+                .expect("the broker transport supports publication barriers")
+                .wait(Some(crate::time::now() + HANG_GUARD))
+                .expect("every queued document was published");
+            assert_eq!(
+                captures.lock().unwrap().signed_ops.len(),
+                8,
+                "the barrier resolved before the documents ahead of it reached the broker"
+            );
+        }
+
+        // Case `presence_variants_map_to_correct_sdk_publishes`:
+        // Every presence variant reaches the SDK method that keeps its key —
+        // a pointer publishes keyed, like a caret, rather than through
+        // `publish_cursor(x, y)`, which has nowhere to put one.
+        {
+            let broker = FakeBroker {
+                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![],
+                presence_backlog: vec![],
+                context_backlog: vec![],
+                scrollback_response: None,
+            };
+            let (fd, captures, _th) = stand_up_fake_broker(broker);
+            let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+            assert!(
+                wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
+                "join_channel must be observed",
+            );
+
+            let key = PresenceKey::Tab {
+                id: "note-1".to_owned(),
+            };
+            let expected_key_bytes = postcard::to_stdvec(&key).unwrap();
+
+            mgr.send(CollabRequest::Presence {
+                key: key.clone(),
+                payload: PresencePayload::Pointer { x: 1.5, y: 2.5 },
+            });
+            mgr.send(CollabRequest::Presence {
+                key: key.clone(),
+                payload: PresencePayload::Caret { pos: 12 },
+            });
+            mgr.send(CollabRequest::Presence {
+                key: key.clone(),
+                payload: PresencePayload::Selection { start: 3, end: 9 },
+            });
+            mgr.send(CollabRequest::Presence {
+                key: key.clone(),
+                payload: PresencePayload::Typing { start: 4, end: 10 },
+            });
+            mgr.send(CollabRequest::Presence {
+                key: key.clone(),
+                payload: PresencePayload::Arrived,
+            });
+            mgr.send(CollabRequest::Presence {
+                key,
+                payload: PresencePayload::Left,
+            });
+
+            assert!(
+                wait_until(
+                    || {
+                        let c = captures.lock().unwrap();
+                        c.pointer_publishes.len() == 1
+                            && c.caret_publishes.len() == 1
+                            && c.selection_publishes.len() == 1
+                            && c.typing_publishes.len() == 1
+                            && c.arrived.len() == 1
+                            && c.left.len() == 1
+                    },
+                    HANG_GUARD,
+                ),
+                "every presence variant must reach the corresponding SDK method",
+            );
+            let (
+                pointer_publishes,
+                cursor_publishes,
+                caret_publishes,
+                selection_publishes,
+                typing_publishes,
+                arrived,
+                left,
+            ) = {
+                let c = captures.lock().unwrap();
+                (
+                    c.pointer_publishes.clone(),
+                    c.cursor_publishes.clone(),
+                    c.caret_publishes.clone(),
+                    c.selection_publishes.clone(),
+                    c.typing_publishes.clone(),
+                    c.arrived.clone(),
+                    c.left.clone(),
+                )
             };
             assert_eq!(
-                collab_types::DocumentMutation::decode(&envelope.payload).unwrap(),
-                expected
-            );
-            assert_ne!(
-                envelope.signature,
-                collab_types::Signature::from_bytes([0; 64])
-            );
-        }
-    }
-
-    /// `send` only queues. A publication barrier resolves once every
-    /// document mutation queued before it has reached the broker, which is
-    /// what lets an owner end its session without discarding a change still
-    /// in transit.
-    #[cfg(unix)]
-    #[test]
-    fn publication_barrier_resolves_after_every_earlier_document_is_published() {
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
-        let (fd, captures, _thread) = stand_up_fake_broker(broker);
-        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "shell", Uuid::new_v4());
-        for n in 0..8_u8 {
-            assert!(manager.send(CollabRequest::document_incremental(vec![n; 16])));
-        }
-        manager
-            .begin_document_publication_barrier()
-            .expect("the broker transport supports publication barriers")
-            .wait(Some(crate::time::now() + HANG_GUARD))
-            .expect("every queued document was published");
-        assert_eq!(
-            captures.lock().unwrap().signed_ops.len(),
-            8,
-            "the barrier resolved before the documents ahead of it reached the broker"
-        );
-    }
-
-    /// Every presence variant reaches the SDK method that keeps its key —
-    /// a pointer publishes keyed, like a caret, rather than through
-    /// `publish_cursor(x, y)`, which has nowhere to put one.
-    #[test]
-    #[cfg(unix)]
-    fn presence_variants_map_to_correct_sdk_publishes() {
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
-        let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        assert!(
-            wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
-            "join_channel must be observed",
-        );
-
-        let key = PresenceKey::Tab {
-            id: "note-1".to_owned(),
-        };
-        let expected_key_bytes = postcard::to_stdvec(&key).unwrap();
-
-        mgr.send(CollabRequest::Presence {
-            key: key.clone(),
-            payload: PresencePayload::Pointer { x: 1.5, y: 2.5 },
-        });
-        mgr.send(CollabRequest::Presence {
-            key: key.clone(),
-            payload: PresencePayload::Caret { pos: 12 },
-        });
-        mgr.send(CollabRequest::Presence {
-            key: key.clone(),
-            payload: PresencePayload::Selection { start: 3, end: 9 },
-        });
-        mgr.send(CollabRequest::Presence {
-            key: key.clone(),
-            payload: PresencePayload::Typing { start: 4, end: 10 },
-        });
-        mgr.send(CollabRequest::Presence {
-            key: key.clone(),
-            payload: PresencePayload::Arrived,
-        });
-        mgr.send(CollabRequest::Presence {
-            key,
-            payload: PresencePayload::Left,
-        });
-
-        assert!(
-            wait_until(
-                || {
-                    let c = captures.lock().unwrap();
-                    c.pointer_publishes.len() == 1
-                        && c.caret_publishes.len() == 1
-                        && c.selection_publishes.len() == 1
-                        && c.typing_publishes.len() == 1
-                        && c.arrived.len() == 1
-                        && c.left.len() == 1
-                },
-                HANG_GUARD,
-            ),
-            "every presence variant must reach the corresponding SDK method",
-        );
-        let (
-            pointer_publishes,
-            cursor_publishes,
-            caret_publishes,
-            selection_publishes,
-            typing_publishes,
-            arrived,
-            left,
-        ) = {
-            let c = captures.lock().unwrap();
-            (
-                c.pointer_publishes.clone(),
-                c.cursor_publishes.clone(),
-                c.caret_publishes.clone(),
-                c.selection_publishes.clone(),
-                c.typing_publishes.clone(),
-                c.arrived.clone(),
-                c.left.clone(),
-            )
-        };
-        assert_eq!(
-            pointer_publishes,
-            vec![(expected_key_bytes.clone(), 1.5, 2.5)],
-            "a pointer carries the key its publisher chose, like every other \
+                pointer_publishes,
+                vec![(expected_key_bytes.clone(), 1.5, 2.5)],
+                "a pointer carries the key its publisher chose, like every other \
              keyed variant here",
-        );
-        assert!(
-            cursor_publishes.is_empty(),
-            "and does not go out through the keyless call, which would drop \
+            );
+            assert!(
+                cursor_publishes.is_empty(),
+                "and does not go out through the keyless call, which would drop \
              the space on the way",
-        );
-        assert_eq!(caret_publishes, vec![(expected_key_bytes.clone(), 12)]);
-        assert_eq!(
-            selection_publishes,
-            vec![(expected_key_bytes.clone(), 3, 9)]
-        );
-        assert_eq!(typing_publishes, vec![(expected_key_bytes.clone(), 4, 10)]);
-        assert_eq!(arrived, vec![expected_key_bytes.clone()]);
-        assert_eq!(left, vec![expected_key_bytes]);
+            );
+            assert_eq!(caret_publishes, vec![(expected_key_bytes.clone(), 12)]);
+            assert_eq!(
+                selection_publishes,
+                vec![(expected_key_bytes.clone(), 3, 9)]
+            );
+            assert_eq!(typing_publishes, vec![(expected_key_bytes.clone(), 4, 10)]);
+            assert_eq!(arrived, vec![expected_key_bytes.clone()]);
+            assert_eq!(left, vec![expected_key_bytes]);
+        }
     }
 
     #[test]
-    fn signing_identity_refuses_sequence_reuse_at_u64_boundary() {
-        let secret_key = ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32]);
-        let mut identity = SigningIdentity::new(secret_key, collab_types::AttestationId::new());
-        identity.seq = u64::MAX - 1;
-        let artifact = collab_types::ArtifactId::new();
+    fn signed_documents_seal_snapshots_and_decrypt_history() {
+        // Case `signing_identity_refuses_sequence_reuse_at_u64_boundary`.
+        {
+            let secret_key = ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32]);
+            let mut identity = SigningIdentity::new(secret_key, collab_types::AttestationId::new());
+            identity.seq = u64::MAX - 1;
+            let artifact = collab_types::ArtifactId::new();
 
-        let final_op = identity
-            .sign_op(
-                b"last unique operation".to_vec(),
+            let final_op = identity
+                .sign_op(
+                    b"last unique operation".to_vec(),
+                    artifact,
+                    collab_types::OpClass::Splice,
+                )
+                .expect("the final unique sequence remains valid");
+            assert_eq!(final_op.seq, u64::MAX);
+            assert_eq!(identity.seq, u64::MAX);
+
+            let exhausted = identity.sign_op(
+                b"must not reuse zero".to_vec(),
                 artifact,
                 collab_types::OpClass::Splice,
+            );
+            assert!(matches!(exhausted, Err(SignedSendError::SequenceExhausted)));
+            assert_eq!(identity.seq, u64::MAX, "failure is non-mutating");
+        }
+
+        // Case `signed_document_event_preserves_snapshot_kind`.
+        {
+            let op = SignedOp::new_unsigned(
+                collab_types::DocumentMutation::Snapshot(b"whole document".to_vec())
+                    .encode()
+                    .unwrap(),
+                collab_types::ArtifactId::new(),
+                collab_types::Ed25519PublicKey::from_bytes([3_u8; 32]),
+                collab_types::AttestationId::new(),
+                collab_types::OpClass::Splice,
+                crate::time::SystemTime::UNIX_EPOCH,
+                43,
+            );
+            let event =
+                signed_document_event(op, "peer-alice".into(), &plain_route_keys()).unwrap();
+            assert!(matches!(
+                &event,
+                CollabEvent::Document { from_user_id, .. } if from_user_id == "peer-alice"
+            ));
+            assert!(matches!(
+                event.document_mutation(),
+                Some(Ok(DocumentMutation::Snapshot(data))) if data == b"whole document"
+            ));
+        }
+
+        // Case `signed_document_event_decrypts_content_keys_for_history_and_late_joiners`.
+        {
+            let channel = collab_types::ChannelId::new();
+            let artifact = collab_types::ArtifactId::new();
+            let alice_key = channel_crypto::MemberKey::generate("alice").unwrap();
+            let bob_key = channel_crypto::MemberKey::generate("bob").unwrap();
+            let mut alice = channel_crypto::ChannelGroup::create(channel, alice_key).unwrap();
+            let addition = alice.admit(bob_key.fresh_key_package().unwrap()).unwrap();
+            let bob = channel_crypto::ChannelGroup::process_welcome_with_history(
+                channel,
+                &addition.welcome,
+                &addition.key_history,
+                bob_key,
             )
-            .expect("the final unique sequence remains valid");
-        assert_eq!(final_op.seq, u64::MAX);
-        assert_eq!(identity.seq, u64::MAX);
-
-        let exhausted = identity.sign_op(
-            b"must not reuse zero".to_vec(),
-            artifact,
-            collab_types::OpClass::Splice,
-        );
-        assert!(matches!(exhausted, Err(SignedSendError::SequenceExhausted)));
-        assert_eq!(identity.seq, u64::MAX, "failure is non-mutating");
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn signed_op_stream_translates_to_signed_crdt_incremental() {
-        let mut op = SignedOp::new_unsigned(
-            collab_types::DocumentMutation::Incremental(b"remote-payload".to_vec())
-                .encode()
-                .unwrap(),
-            collab_types::ArtifactId::new(),
-            collab_types::Ed25519PublicKey::from_bytes([2u8; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
-            crate::time::SystemTime::UNIX_EPOCH,
-            42,
-        );
-        op.signature = collab_types::Signature::from_bytes([0u8; 64]);
-        let op_bytes = postcard::to_stdvec(&op).unwrap();
-
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![(op_bytes, "peer-bob".to_owned())],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
-        let (fd, _captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        let events = poll_until(&mut mgr, |events| {
-            events
-                .iter()
-                .any(|e| matches!(e, CollabEvent::Document { .. }))
-        });
-
-        let signed: Vec<_> = events
-            .into_iter()
-            .filter_map(|e| match e {
-                CollabEvent::Document {
-                    envelope,
-                    from_user_id,
-                    ..
-                } => Some((envelope, from_user_id)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(signed.len(), 1, "one document event expected");
-        assert_eq!(signed[0].1, "peer-bob");
-        assert_eq!(
-            collab_types::DocumentMutation::decode(&signed[0].0.payload).unwrap(),
-            collab_types::DocumentMutation::Incremental(b"remote-payload".to_vec())
-        );
-        assert_eq!(signed[0].0.seq, 42);
-    }
-
-    #[test]
-    fn signed_document_event_preserves_snapshot_kind() {
-        let op = SignedOp::new_unsigned(
-            collab_types::DocumentMutation::Snapshot(b"whole document".to_vec())
-                .encode()
-                .unwrap(),
-            collab_types::ArtifactId::new(),
-            collab_types::Ed25519PublicKey::from_bytes([3_u8; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
-            crate::time::SystemTime::UNIX_EPOCH,
-            43,
-        );
-        let event = signed_document_event(
-            op,
-            "peer-alice".into(),
-            &std::sync::Arc::new(std::sync::Mutex::new(None)),
-        )
-        .unwrap();
-        assert!(matches!(
-            &event,
-            CollabEvent::Document { from_user_id, .. } if from_user_id == "peer-alice"
-        ));
-        assert!(matches!(
-            event.document_mutation(),
-            Some(Ok(DocumentMutation::Snapshot(data))) if data == b"whole document"
-        ));
-    }
-
-    #[test]
-    fn signed_document_event_decrypts_content_keys_for_history_and_late_joiners() {
-        let channel = collab_types::ChannelId::new();
-        let artifact = collab_types::ArtifactId::new();
-        let alice_key = channel_crypto::MemberKey::generate("alice").unwrap();
-        let bob_key = channel_crypto::MemberKey::generate("bob").unwrap();
-        let mut alice = channel_crypto::ChannelGroup::create(channel, alice_key).unwrap();
-        let addition = alice.admit(bob_key.fresh_key_package().unwrap()).unwrap();
-        let bob = channel_crypto::ChannelGroup::process_welcome_with_history(
-            channel,
-            &addition.welcome,
-            &addition.key_history,
-            bob_key,
-        )
-        .unwrap();
-        let plaintext = DocumentMutation::Incremental(b"secret change".to_vec())
-            .encode()
             .unwrap();
-        let alice_endpoint = std::sync::Arc::new(std::sync::Mutex::new(Some(alice)));
-        let (ciphertext, metadata) =
-            prepare_document_payload(&alice_endpoint, artifact, plaintext.clone()).unwrap();
-        let metadata = metadata.expect("a provisioned endpoint never sends plaintext");
-        assert_eq!(metadata.channel, channel);
-        assert_eq!(
-            metadata.retention(),
-            Some(collab_types::ContentRetention::Delta)
-        );
-        let build = |payload: Vec<u8>, artifact, metadata| {
-            SignedOp::new_unsigned_with_encryption(
-                payload,
+            let plaintext = DocumentMutation::Incremental(b"secret change".to_vec())
+                .encode()
+                .unwrap();
+            let alice_endpoint = group_route_keys(alice);
+            let PreparedFrame::Ready(ciphertext, metadata) =
+                prepare_document_payload(&alice_endpoint, artifact, plaintext.clone())
+            else {
+                panic!("a provisioned endpoint seals at once");
+            };
+            let metadata = metadata.expect("a provisioned endpoint never sends plaintext");
+            assert_eq!(metadata.channel, channel);
+            assert_eq!(
+                metadata.retention(),
+                Some(collab_types::ContentRetention::Delta)
+            );
+            let build = |payload: Vec<u8>, artifact, metadata| {
+                SignedOp::new_unsigned_with_encryption(
+                    payload,
+                    artifact,
+                    collab_types::Ed25519PublicKey::from_bytes([9; 32]),
+                    collab_types::AttestationId::new(),
+                    collab_types::OpClass::Splice,
+                    crate::time::SystemTime::UNIX_EPOCH,
+                    1,
+                    metadata,
+                )
+            };
+            let op = build(ciphertext.clone(), artifact, metadata);
+            let endpoint = group_route_keys(bob);
+            for _ in 0..2 {
+                // Live delivery and a later scrollback read of the same op.
+                let event = signed_document_event(op.clone(), "alice".into(), &endpoint).unwrap();
+                assert!(matches!(
+                    event.document_mutation(),
+                    Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"
+                ));
+            }
+            let plaintext_downgrade = SignedOp::new_unsigned(
+                plaintext,
                 artifact,
                 collab_types::Ed25519PublicKey::from_bytes([9; 32]),
                 collab_types::AttestationId::new(),
                 collab_types::OpClass::Splice,
                 crate::time::SystemTime::UNIX_EPOCH,
-                1,
-                metadata,
+                2,
+            );
+            assert!(
+                signed_document_event(plaintext_downgrade, "alice".into(), &endpoint).is_err(),
+                "a provisioned MLS route must reject plaintext downgrade"
+            );
+            assert!(
+                signed_document_event(
+                    build(
+                        ciphertext.clone(),
+                        collab_types::ArtifactId::new(),
+                        metadata
+                    ),
+                    "alice".into(),
+                    &endpoint
+                )
+                .is_err(),
+                "content is bound to its artifact"
+            );
+            let mislabeled = collab_types::EncryptionMetadata::content_key(
+                metadata.epoch,
+                channel,
+                collab_types::ContentRetention::Checkpoint,
+            );
+            assert!(
+                signed_document_event(
+                    build(ciphertext, artifact, mislabeled),
+                    "alice".into(),
+                    &endpoint
+                )
+                .is_err(),
+                "the clear storage class must match the content"
+            );
+
+            // A member added afterwards reads the op from history.
+            let carol_key = channel_crypto::MemberKey::generate("carol").unwrap();
+            let addition = {
+                let mut keys = alice_endpoint.lock().unwrap();
+                let super::super::route_keys::Keys::Group(group) = &mut keys.keys else {
+                    panic!("alice's endpoint holds her group");
+                };
+                group.admit(carol_key.fresh_key_package().unwrap()).unwrap()
+            };
+            let carol = channel_crypto::ChannelGroup::process_welcome_with_history(
+                channel,
+                &addition.welcome,
+                &addition.key_history,
+                carol_key,
             )
-        };
-        let op = build(ciphertext.clone(), artifact, metadata);
-        let endpoint = std::sync::Arc::new(std::sync::Mutex::new(Some(bob)));
-        for _ in 0..2 {
-            // Live delivery and a later scrollback read of the same op.
-            let event = signed_document_event(op.clone(), "alice".into(), &endpoint).unwrap();
+            .unwrap();
+            let carol_endpoint = group_route_keys(carol);
+            let event = signed_document_event(op, "alice".into(), &carol_endpoint).unwrap();
             assert!(matches!(
                 event.document_mutation(),
                 Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"
             ));
         }
-        let plaintext_downgrade = SignedOp::new_unsigned(
-            plaintext,
-            artifact,
-            collab_types::Ed25519PublicKey::from_bytes([9; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
-            crate::time::SystemTime::UNIX_EPOCH,
-            2,
-        );
-        assert!(
-            signed_document_event(plaintext_downgrade, "alice".into(), &endpoint).is_err(),
-            "a provisioned MLS route must reject plaintext downgrade"
-        );
-        assert!(
-            signed_document_event(
-                build(
-                    ciphertext.clone(),
-                    collab_types::ArtifactId::new(),
-                    metadata
-                ),
-                "alice".into(),
-                &endpoint
-            )
-            .is_err(),
-            "content is bound to its artifact"
-        );
-        let mislabeled = collab_types::EncryptionMetadata::content_key(
-            metadata.epoch,
-            channel,
-            collab_types::ContentRetention::Checkpoint,
-        );
-        assert!(
-            signed_document_event(
-                build(ciphertext, artifact, mislabeled),
-                "alice".into(),
-                &endpoint
-            )
-            .is_err(),
-            "the clear storage class must match the content"
-        );
 
-        // A member added afterwards reads the op from history.
-        let carol_key = channel_crypto::MemberKey::generate("carol").unwrap();
-        let addition = alice_endpoint
-            .lock()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .admit(carol_key.fresh_key_package().unwrap())
-            .unwrap();
-        let carol = channel_crypto::ChannelGroup::process_welcome_with_history(
-            channel,
-            &addition.welcome,
-            &addition.key_history,
-            carol_key,
-        )
-        .unwrap();
-        let carol_endpoint = std::sync::Arc::new(std::sync::Mutex::new(Some(carol)));
-        let event = signed_document_event(op, "alice".into(), &carol_endpoint).unwrap();
-        assert!(matches!(
-            event.document_mutation(),
-            Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"
-        ));
-    }
-
-    #[test]
-    fn snapshots_are_sealed_as_retained_checkpoints() {
-        let snapshot = DocumentMutation::Snapshot(b"whole".to_vec())
-            .encode()
-            .unwrap();
-        assert_eq!(
-            document_frame_retention(&snapshot),
-            collab_types::ContentRetention::Checkpoint
-        );
-        let big = DocumentMutation::Snapshot(
-            vec![1; 3 * collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES],
-        )
-        .encode_frames()
-        .unwrap();
-        let classes: Vec<_> = big
-            .iter()
-            .map(|frame| document_frame_retention(frame))
-            .collect();
-        assert_eq!(
-            classes.first(),
-            Some(&collab_types::ContentRetention::Checkpoint)
-        );
-        assert!(
-            classes
-                .iter()
-                .skip(1)
-                .all(|class| *class == collab_types::ContentRetention::Delta)
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn context_stream_translates_to_context_event() {
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![SeedContext {
-                collaborators: vec![
-                    ("alice".to_owned(), "Alice".to_owned(), 0x00FF_8000),
-                    ("bob".to_owned(), "Bob".to_owned(), 0x0000_80FF),
-                ],
-                permissions: vec!["edit".to_owned(), "share".to_owned()],
-            }],
-            scrollback_response: None,
-        };
-        let (fd, _captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        let events = poll_until(&mut mgr, |events| {
-            events
-                .iter()
-                .any(|e| matches!(e, CollabEvent::Context { .. }))
-        });
-
-        let ctx = events
-            .iter()
-            .find_map(|e| match e {
-                CollabEvent::Context {
-                    collaborators,
-                    permissions,
-                } => Some((collaborators.clone(), permissions.clone())),
-                _ => None,
-            })
-            .expect("must receive a Context event");
-        let (collabs, perms) = ctx;
-        assert_eq!(collabs.len(), 2);
-        assert_eq!(collabs[0].id, "alice");
-        assert_eq!(collabs[0].name, "Alice");
-        // 0x00FF8000 → R=255, G=128, B=0.
-        assert!((collabs[0].color[0] - 1.0).abs() < 1e-3);
-        assert!((collabs[0].color[1] - 128.0 / 255.0).abs() < 1e-3);
-        assert!(collabs[0].color[2].abs() < 1e-3);
-        assert_eq!(perms, vec!["edit".to_owned(), "share".to_owned()]);
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn presence_stream_translates_cursor_and_all_other_variants() {
-        let key = PresenceKey::Tab {
-            id: "note-1".to_owned(),
-        };
-        let key_bytes = postcard::to_stdvec(&key).unwrap();
-        let presence_backlog = vec![
-            SeedPresence {
-                user_id: "peer-bob".to_owned(),
-                key_bytes: key_bytes.clone(),
-                payload: SeedPayload::Cursor { x: 4.0, y: 5.0 },
-            },
-            SeedPresence {
-                user_id: "peer-bob".to_owned(),
-                key_bytes: key_bytes.clone(),
-                payload: SeedPayload::Pointer { x: 6.0, y: 9.0 },
-            },
-            SeedPresence {
-                user_id: "peer-bob".to_owned(),
-                key_bytes: key_bytes.clone(),
-                payload: SeedPayload::Caret { pos: 7 },
-            },
-            SeedPresence {
-                user_id: "peer-bob".to_owned(),
-                key_bytes: key_bytes.clone(),
-                payload: SeedPayload::Selection { start: 1, end: 3 },
-            },
-            SeedPresence {
-                user_id: "peer-bob".to_owned(),
-                key_bytes: key_bytes.clone(),
-                payload: SeedPayload::Typing { start: 2, end: 5 },
-            },
-            SeedPresence {
-                user_id: "peer-bob".to_owned(),
-                key_bytes: key_bytes.clone(),
-                payload: SeedPayload::Arrived,
-            },
-            SeedPresence {
-                user_id: "peer-bob".to_owned(),
-                key_bytes,
-                payload: SeedPayload::Left,
-            },
-        ];
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog,
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
-        let (fd, _captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        // Other events (connection state, context) can arrive in between, so
-        // wait for the seven presence events themselves, not for any seven.
-        let events = poll_until(&mut mgr, |events| {
-            events
-                .iter()
-                .filter(|e| {
-                    matches!(
-                        e,
-                        CollabEvent::RemoteCursorMoved { .. }
-                            | CollabEvent::RemotePresenceUpdate { .. }
-                    )
-                })
-                .count()
-                >= 7
-        });
-
-        let mut cursor_moves = Vec::new();
-        let mut updates = Vec::new();
-        for e in events {
-            match e {
-                CollabEvent::RemoteCursorMoved { x, y, .. } => cursor_moves.push((x, y)),
-                CollabEvent::RemotePresenceUpdate { key, payload, .. } => {
-                    updates.push((key, payload));
-                }
-                _ => {}
-            }
-        }
-        assert!(
-            cursor_moves.contains(&(4.0, 5.0)),
-            "cursor payload must land on RemoteCursorMoved"
-        );
-        assert!(
-            updates.contains(&(key.clone(), PresencePayload::Pointer { x: 6.0, y: 9.0 })),
-            "keyed pointer retains its coordinate-space key"
-        );
-        assert!(
-            updates.contains(&(key.clone(), PresencePayload::Caret { pos: 7 })),
-            "caret variant translated"
-        );
-        assert!(
-            updates.contains(&(key.clone(), PresencePayload::Selection { start: 1, end: 3 })),
-            "selection variant translated"
-        );
-        assert!(
-            updates.contains(&(key.clone(), PresencePayload::Typing { start: 2, end: 5 })),
-            "typing remains distinct from selection"
-        );
-        assert!(
-            updates.contains(&(key.clone(), PresencePayload::Arrived)),
-            "arrived variant translated"
-        );
-        assert!(
-            updates.contains(&(key, PresencePayload::Left)),
-            "left variant translated"
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn fetch_scrollback_returns_batch_event() {
-        let payload = collab_types::DocumentMutation::Incremental(b"old-payload".to_vec())
-            .encode()
-            .unwrap();
-        let mut op = SignedOp::new_unsigned(
-            payload,
-            collab_types::ArtifactId::new(),
-            collab_types::Ed25519PublicKey::from_bytes([3u8; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
-            crate::time::SystemTime::UNIX_EPOCH,
-            5,
-        );
-        op.signature = collab_types::Signature::from_bytes([0u8; 64]);
-        let op_bytes = postcard::to_stdvec(&op).unwrap();
-        let seed = SeedScrollback {
-            ops: vec![op_bytes],
-            earliest_seq: 5,
-            latest_seq: 5,
-            done: true,
-        };
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: Some(seed),
-        };
-        let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        assert!(
-            wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
-            "join_channel must precede scrollback fetch",
-        );
-
-        let artifact = collab_types::ArtifactId::new();
-        mgr.send(CollabRequest::FetchScrollback {
-            artifact,
-            before_seq: 10,
-            max: 50,
-        });
-        let events = poll_until(&mut mgr, |events| {
-            events
-                .iter()
-                .any(|e| matches!(e, CollabEvent::ScrollbackBatch { .. }))
-        });
-        let batch = events
-            .into_iter()
-            .find_map(|e| match e {
-                CollabEvent::ScrollbackBatch { ops, exhausted, .. } => Some((ops, exhausted)),
-                _ => None,
-            })
-            .expect("must receive a ScrollbackBatch event");
-        assert_eq!(batch.0.len(), 1);
-        assert_eq!(
-            collab_types::DocumentMutation::decode(&batch.0[0].payload).unwrap(),
-            collab_types::DocumentMutation::Incremental(b"old-payload".to_vec())
-        );
-        assert!(batch.1, "seeded broker reports exhausted");
-        assert_eq!(
-            captures.lock().unwrap().scrollback_requests,
-            vec![(artifact.0.as_bytes().to_vec(), 10, 50)],
-            "artifact / before_seq / max round-tripped verbatim",
-        );
-    }
-
-    /// A member added after the history was written fetches it through the
-    /// real SDK transport and decrypts every page with the key history it
-    /// received on joining — no other member is running.
-    #[test]
-    fn joiner_decrypts_fetched_history_with_no_other_member_online() {
-        let app_id = "so.tilo.history-test";
-        let cluster = Uuid::from_u128(7);
-        let workspace = cluster.to_string();
-        let channel = collab_types::document_channel_id(app_id, &workspace, "");
-        let artifact = collab_types::document_artifact_id(app_id, &workspace, "");
-        let mut alice = channel_crypto::ChannelGroup::create(
-            channel,
-            channel_crypto::MemberKey::generate("alice").unwrap(),
-        )
-        .unwrap();
-        let history: Vec<Vec<u8>> = (1..=20_u64)
-            .map(|seq| {
-                let frame = collab_types::DocumentMutation::Incremental(
-                    format!("change {seq}").into_bytes(),
-                )
+        // Case `snapshots_are_sealed_as_retained_checkpoints`.
+        {
+            let snapshot = DocumentMutation::Snapshot(b"whole".to_vec())
                 .encode()
                 .unwrap();
-                let (metadata, ciphertext) = alice
-                    .seal_content(artifact, document_frame_retention(&frame), &frame)
-                    .unwrap();
-                let op = SignedOp::new_unsigned_with_encryption(
-                    ciphertext,
-                    artifact,
-                    collab_types::Ed25519PublicKey::from_bytes([3; 32]),
-                    collab_types::AttestationId::new(),
-                    collab_types::OpClass::Splice,
-                    crate::time::SystemTime::UNIX_EPOCH,
-                    seq,
-                    metadata,
-                );
-                postcard::to_stdvec(&op).unwrap()
-            })
-            .collect();
-        let carol_key = channel_crypto::MemberKey::generate("carol").unwrap();
-        let addition = alice.admit(carol_key.fresh_key_package().unwrap()).unwrap();
-        let carol = channel_crypto::ChannelGroup::process_welcome_with_history(
-            channel,
-            &addition.welcome,
-            &addition.key_history,
-            carol_key,
-        )
-        .unwrap();
-        drop(alice);
-
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: Some(SeedScrollback {
-                ops: history,
-                earliest_seq: 1,
-                latest_seq: 20,
-                done: true,
-            }),
-        };
-        let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, app_id, cluster);
-        assert!(wait_until(
-            || !captures.lock().unwrap().joined.is_empty(),
-            HANG_GUARD
-        ));
-        mgr.install_document_encryption(
-            RouteSpec {
-                app_id: app_id.to_owned(),
-                cluster_id: cluster,
-                record: None,
-            },
-            carol,
-        )
-        .unwrap();
-        mgr.send(CollabRequest::FetchScrollback {
-            artifact,
-            before_seq: 21,
-            max: 50,
-        });
-        let events = poll_until(&mut mgr, |events| {
-            events
-                .iter()
-                .any(|e| matches!(e, CollabEvent::ScrollbackBatch { .. }))
-        });
-        let (ops, payloads, oldest_seq) = events
-            .into_iter()
-            .find_map(|e| match e {
-                CollabEvent::ScrollbackBatch {
-                    ops,
-                    decrypted_payloads,
-                    oldest_seq,
-                    ..
-                } => Some((ops, decrypted_payloads, oldest_seq)),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(ops.len(), 20);
-        assert_eq!(oldest_seq, Some(1));
-        for (index, payload) in payloads.iter().enumerate() {
             assert_eq!(
-                collab_types::DocumentMutation::decode(payload.as_deref().unwrap()).unwrap(),
-                collab_types::DocumentMutation::Incremental(
-                    format!("change {}", index + 1).into_bytes()
-                )
+                document_frame_retention(&snapshot),
+                collab_types::ContentRetention::Checkpoint
+            );
+            let big = DocumentMutation::Snapshot(
+                vec![1; 3 * collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES],
+            )
+            .encode_frames()
+            .unwrap();
+            let classes: Vec<_> = big
+                .iter()
+                .map(|frame| document_frame_retention(frame))
+                .collect();
+            assert_eq!(
+                classes.first(),
+                Some(&collab_types::ContentRetention::Checkpoint)
+            );
+            assert!(
+                classes
+                    .iter()
+                    .skip(1)
+                    .all(|class| *class == collab_types::ContentRetention::Delta)
+            );
+        }
+
+        // Case `joiner_decrypts_fetched_history_with_no_other_member_online`:
+        // A member added after the history was written fetches it through the
+        // real SDK transport and decrypts every page with the key history it
+        // received on joining — no other member is running.
+        {
+            let app_id = "so.tilo.history-test";
+            let cluster = Uuid::from_u128(7);
+            let workspace = cluster.to_string();
+            let channel = collab_types::document_channel_id(app_id, &workspace, "");
+            let artifact = collab_types::document_artifact_id(app_id, &workspace, "");
+            let mut alice = channel_crypto::ChannelGroup::create(
+                channel,
+                channel_crypto::MemberKey::generate("alice").unwrap(),
+            )
+            .unwrap();
+            let history: Vec<Vec<u8>> = (1..=20_u64)
+                .map(|seq| {
+                    let frame = collab_types::DocumentMutation::Incremental(
+                        format!("change {seq}").into_bytes(),
+                    )
+                    .encode()
+                    .unwrap();
+                    let (metadata, ciphertext) = alice
+                        .seal_content(artifact, document_frame_retention(&frame), &frame)
+                        .unwrap();
+                    let op = SignedOp::new_unsigned_with_encryption(
+                        ciphertext,
+                        artifact,
+                        collab_types::Ed25519PublicKey::from_bytes([3; 32]),
+                        collab_types::AttestationId::new(),
+                        collab_types::OpClass::Splice,
+                        crate::time::SystemTime::UNIX_EPOCH,
+                        seq,
+                        metadata,
+                    );
+                    postcard::to_stdvec(&op).unwrap()
+                })
+                .collect();
+            let carol_key = channel_crypto::MemberKey::generate("carol").unwrap();
+            let addition = alice.admit(carol_key.fresh_key_package().unwrap()).unwrap();
+            let carol = channel_crypto::ChannelGroup::process_welcome_with_history(
+                channel,
+                &addition.welcome,
+                &addition.key_history,
+                carol_key,
+            )
+            .unwrap();
+            drop(alice);
+
+            let broker = FakeBroker {
+                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![],
+                presence_backlog: vec![],
+                context_backlog: vec![],
+                scrollback_response: Some(SeedScrollback {
+                    ops: history,
+                    earliest_seq: 1,
+                    latest_seq: 20,
+                    done: true,
+                }),
+            };
+            let (fd, captures, _th) = stand_up_fake_broker(broker);
+            let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, app_id, cluster);
+            assert!(wait_until(
+                || !captures.lock().unwrap().joined.is_empty(),
+                HANG_GUARD
+            ));
+            mgr.install_document_encryption(
+                RouteSpec {
+                    app_id: app_id.to_owned(),
+                    cluster_id: cluster,
+                    record: None,
+                },
+                carol,
+            )
+            .unwrap();
+            mgr.send(CollabRequest::FetchScrollback {
+                artifact,
+                before_seq: 21,
+                max: 50,
+            });
+            let events = poll_until(&mut mgr, |events| {
+                events
+                    .iter()
+                    .any(|e| matches!(e, CollabEvent::ScrollbackBatch { .. }))
+            });
+            let (ops, payloads, oldest_seq) = events
+                .into_iter()
+                .find_map(|e| match e {
+                    CollabEvent::ScrollbackBatch {
+                        ops,
+                        decrypted_payloads,
+                        oldest_seq,
+                        ..
+                    } => Some((ops, decrypted_payloads, oldest_seq)),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(ops.len(), 20);
+            assert_eq!(oldest_seq, Some(1));
+            for (index, payload) in payloads.iter().enumerate() {
+                assert_eq!(
+                    collab_types::DocumentMutation::decode(payload.as_deref().unwrap()).unwrap(),
+                    collab_types::DocumentMutation::Incremental(
+                        format!("change {}", index + 1).into_bytes()
+                    )
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sdk_streams_translate_to_ui_events() {
+        // Case `signed_op_stream_translates_to_signed_crdt_incremental`.
+        {
+            let mut op = SignedOp::new_unsigned(
+                collab_types::DocumentMutation::Incremental(b"remote-payload".to_vec())
+                    .encode()
+                    .unwrap(),
+                collab_types::ArtifactId::new(),
+                collab_types::Ed25519PublicKey::from_bytes([2u8; 32]),
+                collab_types::AttestationId::new(),
+                collab_types::OpClass::Splice,
+                crate::time::SystemTime::UNIX_EPOCH,
+                42,
+            );
+            op.signature = collab_types::Signature::from_bytes([0u8; 64]);
+            let op_bytes = postcard::to_stdvec(&op).unwrap();
+
+            let broker = FakeBroker {
+                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![(op_bytes, "peer-bob".to_owned())],
+                presence_backlog: vec![],
+                context_backlog: vec![],
+                scrollback_response: None,
+            };
+            let (fd, _captures, _th) = stand_up_fake_broker(broker);
+            let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+            let events = poll_until(&mut mgr, |events| {
+                events
+                    .iter()
+                    .any(|e| matches!(e, CollabEvent::Document { .. }))
+            });
+
+            let signed: Vec<_> = events
+                .into_iter()
+                .filter_map(|e| match e {
+                    CollabEvent::Document {
+                        envelope,
+                        from_user_id,
+                        ..
+                    } => Some((envelope, from_user_id)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(signed.len(), 1, "one document event expected");
+            assert_eq!(signed[0].1, "peer-bob");
+            assert_eq!(
+                collab_types::DocumentMutation::decode(&signed[0].0.payload).unwrap(),
+                collab_types::DocumentMutation::Incremental(b"remote-payload".to_vec())
+            );
+            assert_eq!(signed[0].0.seq, 42);
+        }
+
+        // Case `context_stream_translates_to_context_event`.
+        {
+            let broker = FakeBroker {
+                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![],
+                presence_backlog: vec![],
+                context_backlog: vec![SeedContext {
+                    collaborators: vec![
+                        ("alice".to_owned(), "Alice".to_owned(), 0x00FF_8000),
+                        ("bob".to_owned(), "Bob".to_owned(), 0x0000_80FF),
+                    ],
+                    permissions: vec!["edit".to_owned(), "share".to_owned()],
+                }],
+                scrollback_response: None,
+            };
+            let (fd, _captures, _th) = stand_up_fake_broker(broker);
+            let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+            let events = poll_until(&mut mgr, |events| {
+                events
+                    .iter()
+                    .any(|e| matches!(e, CollabEvent::Context { .. }))
+            });
+
+            let ctx = events
+                .iter()
+                .find_map(|e| match e {
+                    CollabEvent::Context {
+                        collaborators,
+                        permissions,
+                    } => Some((collaborators.clone(), permissions.clone())),
+                    _ => None,
+                })
+                .expect("must receive a Context event");
+            let (collabs, perms) = ctx;
+            assert_eq!(collabs.len(), 2);
+            assert_eq!(collabs[0].id, "alice");
+            assert_eq!(collabs[0].name, "Alice");
+            // 0x00FF8000 → R=255, G=128, B=0.
+            assert!((collabs[0].color[0] - 1.0).abs() < 1e-3);
+            assert!((collabs[0].color[1] - 128.0 / 255.0).abs() < 1e-3);
+            assert!(collabs[0].color[2].abs() < 1e-3);
+            assert_eq!(perms, vec!["edit".to_owned(), "share".to_owned()]);
+        }
+
+        // Case `presence_stream_translates_cursor_and_all_other_variants`.
+        {
+            let key = PresenceKey::Tab {
+                id: "note-1".to_owned(),
+            };
+            let key_bytes = postcard::to_stdvec(&key).unwrap();
+            let presence_backlog = vec![
+                SeedPresence {
+                    user_id: "peer-bob".to_owned(),
+                    key_bytes: key_bytes.clone(),
+                    payload: SeedPayload::Cursor { x: 4.0, y: 5.0 },
+                },
+                SeedPresence {
+                    user_id: "peer-bob".to_owned(),
+                    key_bytes: key_bytes.clone(),
+                    payload: SeedPayload::Pointer { x: 6.0, y: 9.0 },
+                },
+                SeedPresence {
+                    user_id: "peer-bob".to_owned(),
+                    key_bytes: key_bytes.clone(),
+                    payload: SeedPayload::Caret { pos: 7 },
+                },
+                SeedPresence {
+                    user_id: "peer-bob".to_owned(),
+                    key_bytes: key_bytes.clone(),
+                    payload: SeedPayload::Selection { start: 1, end: 3 },
+                },
+                SeedPresence {
+                    user_id: "peer-bob".to_owned(),
+                    key_bytes: key_bytes.clone(),
+                    payload: SeedPayload::Typing { start: 2, end: 5 },
+                },
+                SeedPresence {
+                    user_id: "peer-bob".to_owned(),
+                    key_bytes: key_bytes.clone(),
+                    payload: SeedPayload::Arrived,
+                },
+                SeedPresence {
+                    user_id: "peer-bob".to_owned(),
+                    key_bytes,
+                    payload: SeedPayload::Left,
+                },
+            ];
+            let broker = FakeBroker {
+                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![],
+                presence_backlog,
+                context_backlog: vec![],
+                scrollback_response: None,
+            };
+            let (fd, _captures, _th) = stand_up_fake_broker(broker);
+            let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+            // Other events (connection state, context) can arrive in between, so
+            // wait for the seven presence events themselves, not for any seven.
+            let events = poll_until(&mut mgr, |events| {
+                events
+                    .iter()
+                    .filter(|e| {
+                        matches!(
+                            e,
+                            CollabEvent::RemoteCursorMoved { .. }
+                                | CollabEvent::RemotePresenceUpdate { .. }
+                        )
+                    })
+                    .count()
+                    >= 7
+            });
+
+            let mut cursor_moves = Vec::new();
+            let mut updates = Vec::new();
+            for e in events {
+                match e {
+                    CollabEvent::RemoteCursorMoved { x, y, .. } => cursor_moves.push((x, y)),
+                    CollabEvent::RemotePresenceUpdate { key, payload, .. } => {
+                        updates.push((key, payload));
+                    }
+                    _ => {}
+                }
+            }
+            assert!(
+                cursor_moves.contains(&(4.0, 5.0)),
+                "cursor payload must land on RemoteCursorMoved"
+            );
+            assert!(
+                updates.contains(&(key.clone(), PresencePayload::Pointer { x: 6.0, y: 9.0 })),
+                "keyed pointer retains its coordinate-space key"
+            );
+            assert!(
+                updates.contains(&(key.clone(), PresencePayload::Caret { pos: 7 })),
+                "caret variant translated"
+            );
+            assert!(
+                updates.contains(&(key.clone(), PresencePayload::Selection { start: 1, end: 3 })),
+                "selection variant translated"
+            );
+            assert!(
+                updates.contains(&(key.clone(), PresencePayload::Typing { start: 2, end: 5 })),
+                "typing remains distinct from selection"
+            );
+            assert!(
+                updates.contains(&(key.clone(), PresencePayload::Arrived)),
+                "arrived variant translated"
+            );
+            assert!(
+                updates.contains(&(key, PresencePayload::Left)),
+                "left variant translated"
+            );
+        }
+
+        // Case `fetch_scrollback_returns_batch_event`.
+        {
+            let payload = collab_types::DocumentMutation::Incremental(b"old-payload".to_vec())
+                .encode()
+                .unwrap();
+            let mut op = SignedOp::new_unsigned(
+                payload,
+                collab_types::ArtifactId::new(),
+                collab_types::Ed25519PublicKey::from_bytes([3u8; 32]),
+                collab_types::AttestationId::new(),
+                collab_types::OpClass::Splice,
+                crate::time::SystemTime::UNIX_EPOCH,
+                5,
+            );
+            op.signature = collab_types::Signature::from_bytes([0u8; 64]);
+            let op_bytes = postcard::to_stdvec(&op).unwrap();
+            let seed = SeedScrollback {
+                ops: vec![op_bytes],
+                earliest_seq: 5,
+                latest_seq: 5,
+                done: true,
+            };
+            let broker = FakeBroker {
+                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![],
+                presence_backlog: vec![],
+                context_backlog: vec![],
+                scrollback_response: Some(seed),
+            };
+            let (fd, captures, _th) = stand_up_fake_broker(broker);
+            let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+            assert!(
+                wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
+                "join_channel must precede scrollback fetch",
+            );
+
+            let artifact = collab_types::ArtifactId::new();
+            mgr.send(CollabRequest::FetchScrollback {
+                artifact,
+                before_seq: 10,
+                max: 50,
+            });
+            let events = poll_until(&mut mgr, |events| {
+                events
+                    .iter()
+                    .any(|e| matches!(e, CollabEvent::ScrollbackBatch { .. }))
+            });
+            let batch = events
+                .into_iter()
+                .find_map(|e| match e {
+                    CollabEvent::ScrollbackBatch { ops, exhausted, .. } => Some((ops, exhausted)),
+                    _ => None,
+                })
+                .expect("must receive a ScrollbackBatch event");
+            assert_eq!(batch.0.len(), 1);
+            assert_eq!(
+                collab_types::DocumentMutation::decode(&batch.0[0].payload).unwrap(),
+                collab_types::DocumentMutation::Incremental(b"old-payload".to_vec())
+            );
+            assert!(batch.1, "seeded broker reports exhausted");
+            assert_eq!(
+                captures.lock().unwrap().scrollback_requests,
+                vec![(artifact.0.as_bytes().to_vec(), 10, 50)],
+                "artifact / before_seq / max round-tripped verbatim",
             );
         }
     }
 
     #[test]
-    fn translate_presence_event_is_symmetric_over_all_payload_variants() {
-        // Straight unit test of `translate_presence_event` — no broker or
-        // threading needed. Malformed scopes are deliberately not projected.
-        let key = PresenceKey::Widget {
-            path: vec![crate::presence::PathSegment::Field("body".into())],
-        };
-        let key_bytes = postcard::to_stdvec(&key).unwrap();
-
-        let e = translate_presence_event(runtime_collab::PresenceEvent {
-            user_id: "peer".into(),
-            key_bytes: key_bytes.clone(),
-            payload: SdkPayload::Cursor { x: 7.0, y: 8.0 },
-        })
-        .expect("cursor event");
-        matches!(e, CollabEvent::RemoteCursorMoved { .. });
-
-        let e = translate_presence_event(runtime_collab::PresenceEvent {
-            user_id: "peer".into(),
-            key_bytes,
-            payload: SdkPayload::Caret { pos: 3 },
-        })
-        .expect("caret event");
-        if let CollabEvent::RemotePresenceUpdate {
-            key: k, payload, ..
-        } = e
+    fn wire_translation_is_symmetric_and_fail_closed() {
+        // Case `translate_presence_event_is_symmetric_over_all_payload_variants`.
         {
-            assert_eq!(k, key);
-            assert_eq!(payload, PresencePayload::Caret { pos: 3 });
-        } else {
-            panic!("expected RemotePresenceUpdate");
+            // Straight unit test of `translate_presence_event` — no broker or
+            // threading needed. Malformed scopes are deliberately not projected.
+            let key = PresenceKey::Widget {
+                path: vec![crate::presence::PathSegment::Field("body".into())],
+            };
+            let key_bytes = postcard::to_stdvec(&key).unwrap();
+
+            let e = translate_presence_event(runtime_collab::PresenceEvent {
+                user_id: "peer".into(),
+                key_bytes: key_bytes.clone(),
+                payload: SdkPayload::Cursor { x: 7.0, y: 8.0 },
+            })
+            .expect("cursor event");
+            matches!(e, CollabEvent::RemoteCursorMoved { .. });
+
+            let e = translate_presence_event(runtime_collab::PresenceEvent {
+                user_id: "peer".into(),
+                key_bytes,
+                payload: SdkPayload::Caret { pos: 3 },
+            })
+            .expect("caret event");
+            if let CollabEvent::RemotePresenceUpdate {
+                key: k, payload, ..
+            } = e
+            {
+                assert_eq!(k, key);
+                assert_eq!(payload, PresencePayload::Caret { pos: 3 });
+            } else {
+                panic!("expected RemotePresenceUpdate");
+            }
+
+            let e = translate_presence_event(runtime_collab::PresenceEvent {
+                user_id: "peer".into(),
+                key_bytes: vec![0xFF, 0xFF, 0xFF],
+                payload: SdkPayload::Arrived,
+            });
+            assert!(
+                e.is_none(),
+                "an undecodable target is not semantic presence"
+            );
         }
 
-        let e = translate_presence_event(runtime_collab::PresenceEvent {
-            user_id: "peer".into(),
-            key_bytes: vec![0xFF, 0xFF, 0xFF],
-            payload: SdkPayload::Arrived,
-        });
-        assert!(
-            e.is_none(),
-            "an undecodable target is not semantic presence"
-        );
-    }
-
-    #[test]
-    fn invocation_context_json_is_optional_and_fail_closed() {
-        let context = tilo_actions::ActionContext::default()
-            .with_purpose("Review the proposal")
-            .with_group("task:review", "Review", "task");
-        let json = serde_json::to_string(&context).unwrap();
-        assert_eq!(parse_invocation_context(7, &json), Some(context));
-        assert_eq!(parse_invocation_context(8, "  "), None);
-        assert_eq!(parse_invocation_context(9, "{not-json"), None);
+        // Case `invocation_context_json_is_optional_and_fail_closed`.
+        {
+            let context = tilo_actions::ActionContext::default()
+                .with_purpose("Review the proposal")
+                .with_group("task:review", "Review", "task");
+            let json = serde_json::to_string(&context).unwrap();
+            assert_eq!(parse_invocation_context(7, &json), Some(context));
+            assert_eq!(parse_invocation_context(8, "  "), None);
+            assert_eq!(parse_invocation_context(9, "{not-json"), None);
+        }
     }
 }

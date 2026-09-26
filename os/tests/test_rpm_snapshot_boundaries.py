@@ -114,74 +114,77 @@ def load_layering():
 
 
 class BoundaryTests(unittest.TestCase):
-    def test_actual_recipe_uses_pristine_base(self):
-        validate_boundaries(RECIPE.read_text())
+    def test_offline_check_replay(self):
+        with self.subTest(phase="actual_recipe_uses_pristine_base"):
+            validate_boundaries(RECIPE.read_text())
+        with self.subTest(phase="offline_check_replays_the_image_erase"):
+            validate_erase_replay(IMAGE.read_text(), RECIPE.read_text())
+        with self.subTest(phase="erased_package_missing_from_snapshot_is_rejected"):
+            image = IMAGE.read_text().replace("# tilo-rpm-snapshot-package: pkgconf-m4\n", "")
+            with self.assertRaisesRegex(ValueError, "does not carry erased packages"):
+                validate_erase_replay(image, RECIPE.read_text())
+        with self.subTest(phase="drifted_replay_list_is_rejected"):
+            recipe = RECIPE.read_text().replace("|pkgconf-m4|libpkgconf)$/'", "|libpkgconf)$/'")
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                validate_erase_replay(IMAGE.read_text(), recipe)
+        with self.subTest(phase="replay_without_full_offline_resolve_is_rejected"):
+            recipe = RECIPE.read_text()
+            head, tail = recipe.split("xargs -r rpm -e --nodeps", 1)
+            tail = tail.replace(FULL_OFFLINE_RESOLVE, "dnf install -y --best --downloadonly --setopt=reposdir=/repo wine")
+            with self.assertRaisesRegex(ValueError, "complete package set"):
+                validate_erase_replay(IMAGE.read_text(), head + "xargs -r rpm -e --nodeps" + tail)
+        with self.subTest(phase="replay_outside_the_offline_check_is_rejected"):
+            recipe = RECIPE.read_text()
+            start = recipe.index("# os/Containerfile erases these")
+            end = recipe.index("# The published artifact")
+            moved = recipe[:start] + recipe[end:]
+            moved = moved.replace("FROM metadata-tools AS repository", recipe[start:end] + "FROM metadata-tools AS repository")
+            with self.assertRaisesRegex(ValueError, "does not replay"):
+                validate_erase_replay(IMAGE.read_text(), moved)
 
-    def test_offline_check_replays_the_image_erase(self):
-        validate_erase_replay(IMAGE.read_text(), RECIPE.read_text())
+    def test_recipe_structure_rejections(self):
+        with self.subTest(phase="tooling_inheritance_is_rejected"):
+            recipe = RECIPE.read_text().replace("FROM configured-base AS resolve", "FROM metadata-tools AS resolve")
+            with self.assertRaisesRegex(ValueError, "tooling"):
+                validate_boundaries(recipe)
+        with self.subTest(phase="offline_check_without_best_is_rejected"):
+            recipe = RECIPE.read_text().replace(FULL_OFFLINE_RESOLVE,
+                                                FULL_OFFLINE_RESOLVE.replace("--best ", ""))
+            with self.assertRaisesRegex(ValueError, "offline replay"):
+                validate_erase_replay(IMAGE.read_text(), recipe)
+        with self.subTest(phase="masked_offline_check_is_rejected"):
+            recipe = RECIPE.read_text().replace("FROM ${BASE_REF} AS offline-check", "FROM metadata-tools AS offline-check")
+            with self.assertRaisesRegex(ValueError, "original"):
+                validate_boundaries(recipe)
+        with self.subTest(phase="unclosed_repository_is_rejected"):
+            recipe = RECIPE.read_text().replace(REPOCLOSURE, "RUN true")
+            with self.assertRaisesRegex(ValueError, "dependency-closed"):
+                validate_boundaries(recipe)
+        with self.subTest(phase="prunable_check_is_rejected"):
+            recipe = RECIPE.read_text().replace("FROM metadata-tools AS layers\nCOPY --from=offline-check /repo /repo",
+                                                "FROM metadata-tools AS layers\nCOPY --from=repository /repo /repo")
+            with self.assertRaisesRegex(ValueError, "prune"):
+                validate_boundaries(recipe)
+        with self.subTest(phase="a_final_copy_outside_the_slots_is_rejected"):
+            recipe = RECIPE.read_text() + "COPY --from=repository /repo /repo\n"
+            with self.assertRaisesRegex(ValueError, "other than a slot"):
+                validate_boundaries(recipe)
+        with self.subTest(phase="a_dropped_slot_is_rejected"):
+            recipe = RECIPE.read_text().replace("COPY --from=layers /slots/meta/ /\n", "")
+            with self.assertRaisesRegex(ValueError, "slot_names"):
+                validate_boundaries(recipe)
 
-    def test_erased_package_missing_from_snapshot_is_rejected(self):
-        image = IMAGE.read_text().replace("# tilo-rpm-snapshot-package: pkgconf-m4\n", "")
-        with self.assertRaisesRegex(ValueError, "does not carry erased packages"):
-            validate_erase_replay(image, RECIPE.read_text())
 
-    def test_drifted_replay_list_is_rejected(self):
-        recipe = RECIPE.read_text().replace("|pkgconf-m4|libpkgconf)$/'", "|libpkgconf)$/'")
-        with self.assertRaisesRegex(ValueError, "does not match"):
-            validate_erase_replay(IMAGE.read_text(), recipe)
-
-    def test_replay_without_full_offline_resolve_is_rejected(self):
-        recipe = RECIPE.read_text()
-        head, tail = recipe.split("xargs -r rpm -e --nodeps", 1)
-        tail = tail.replace(FULL_OFFLINE_RESOLVE, "dnf install -y --best --downloadonly --setopt=reposdir=/repo wine")
-        with self.assertRaisesRegex(ValueError, "complete package set"):
-            validate_erase_replay(IMAGE.read_text(), head + "xargs -r rpm -e --nodeps" + tail)
-
-    def test_replay_outside_the_offline_check_is_rejected(self):
-        recipe = RECIPE.read_text()
-        start = recipe.index("# os/Containerfile erases these")
-        end = recipe.index("# The published artifact")
-        moved = recipe[:start] + recipe[end:]
-        moved = moved.replace("FROM metadata-tools AS repository", recipe[start:end] + "FROM metadata-tools AS repository")
-        with self.assertRaisesRegex(ValueError, "does not replay"):
-            validate_erase_replay(IMAGE.read_text(), moved)
-
-    def test_tooling_inheritance_is_rejected(self):
-        recipe = RECIPE.read_text().replace("FROM configured-base AS resolve", "FROM metadata-tools AS resolve")
-        with self.assertRaisesRegex(ValueError, "tooling"):
-            validate_boundaries(recipe)
-
-    def test_offline_check_without_best_is_rejected(self):
-        recipe = RECIPE.read_text().replace(FULL_OFFLINE_RESOLVE,
-                                            FULL_OFFLINE_RESOLVE.replace("--best ", ""))
-        with self.assertRaisesRegex(ValueError, "offline replay"):
-            validate_erase_replay(IMAGE.read_text(), recipe)
-
-    def test_masked_offline_check_is_rejected(self):
-        recipe = RECIPE.read_text().replace("FROM ${BASE_REF} AS offline-check", "FROM metadata-tools AS offline-check")
-        with self.assertRaisesRegex(ValueError, "original"):
-            validate_boundaries(recipe)
-
-    def test_unclosed_repository_is_rejected(self):
-        recipe = RECIPE.read_text().replace(REPOCLOSURE, "RUN true")
-        with self.assertRaisesRegex(ValueError, "dependency-closed"):
-            validate_boundaries(recipe)
-
-    def test_prunable_check_is_rejected(self):
-        recipe = RECIPE.read_text().replace("FROM metadata-tools AS layers\nCOPY --from=offline-check /repo /repo",
-                                            "FROM metadata-tools AS layers\nCOPY --from=repository /repo /repo")
-        with self.assertRaisesRegex(ValueError, "prune"):
-            validate_boundaries(recipe)
-
-    def test_a_final_copy_outside_the_slots_is_rejected(self):
-        recipe = RECIPE.read_text() + "COPY --from=repository /repo /repo\n"
-        with self.assertRaisesRegex(ValueError, "other than a slot"):
-            validate_boundaries(recipe)
-
-    def test_a_dropped_slot_is_rejected(self):
-        recipe = RECIPE.read_text().replace("COPY --from=layers /slots/meta/ /\n", "")
-        with self.assertRaisesRegex(ValueError, "slot_names"):
-            validate_boundaries(recipe)
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
 
 
 class LayeringTests(unittest.TestCase):
@@ -204,42 +207,43 @@ class LayeringTests(unittest.TestCase):
         placed = self.layering.layer(repo, slots, name_of=lambda rpm: rpm.name.rsplit("-", 2)[0])
         return slots, placed
 
-    def test_an_update_changes_only_its_own_slot(self):
-        big = self.layering.BIG_BYTES
-        before = {"wine-core-11.0-3.x86_64.rpm": big, "bash-5.3-1.x86_64.rpm": 10,
-                  "zlib-1.3-1.x86_64.rpm": 20}
-        after = {"wine-core-11.0-3.x86_64.rpm": big, "bash-5.3-2.x86_64.rpm": 11,
-                 "zlib-1.3-1.x86_64.rpm": 20}
-        old_slots, old = self.snapshot("old", before)
-        new_slots, new = self.snapshot("new", after)
-        bash = self.layering.slot_for("bash", 11)
-        self.assertEqual(self.layering.slot_for("bash", 10), bash)
-        self.assertTrue(self.layering.slot_for("wine-core", big).startswith("big/"))
-        for slot in self.layering.slot_names():
-            same = sorted(old[slot]) == sorted(new[slot])
-            if slot == "meta":
-                continue
-            if slot == bash:
-                self.assertFalse(same, slot)
-            else:
-                self.assertTrue(same, slot)
-                for file in old[slot]:
-                    self.assertEqual((old_slots / slot / "repo" / file).read_bytes(),
-                                     (new_slots / slot / "repo" / file).read_bytes())
-
-    def test_files_are_normalized_and_every_slot_exists(self):
-        slots, placed = self.snapshot("one", {"bash-5.3-1.x86_64.rpm": 10})
-        self.assertEqual(placed["meta"], ["repodata/repomd.xml"])
-        for slot in self.layering.slot_names():
-            repo = slots / slot / "repo"
-            self.assertTrue(repo.is_dir(), slot)
-            for path in [repo, *repo.rglob("*")]:
-                self.assertEqual(path.stat().st_mtime, 0, path)
-                self.assertEqual(path.stat().st_mode & 0o777, 0o755 if path.is_dir() else 0o644, path)
-
-    def test_slot_count_stays_under_the_layer_limits(self):
-        # Docker's overlay2 refuses images deeper than 128 layers.
-        self.assertLess(len(self.layering.slot_names()), 128)
+    def test_slot_layering(self):
+        with self.subTest(phase="an_update_changes_only_its_own_slot"):
+            big = self.layering.BIG_BYTES
+            before = {"wine-core-11.0-3.x86_64.rpm": big, "bash-5.3-1.x86_64.rpm": 10,
+                      "zlib-1.3-1.x86_64.rpm": 20}
+            after = {"wine-core-11.0-3.x86_64.rpm": big, "bash-5.3-2.x86_64.rpm": 11,
+                     "zlib-1.3-1.x86_64.rpm": 20}
+            old_slots, old = self.snapshot("old", before)
+            new_slots, new = self.snapshot("new", after)
+            bash = self.layering.slot_for("bash", 11)
+            self.assertEqual(self.layering.slot_for("bash", 10), bash)
+            self.assertTrue(self.layering.slot_for("wine-core", big).startswith("big/"))
+            for slot in self.layering.slot_names():
+                same = sorted(old[slot]) == sorted(new[slot])
+                if slot == "meta":
+                    continue
+                if slot == bash:
+                    self.assertFalse(same, slot)
+                else:
+                    self.assertTrue(same, slot)
+                    for file in old[slot]:
+                        self.assertEqual((old_slots / slot / "repo" / file).read_bytes(),
+                                         (new_slots / slot / "repo" / file).read_bytes())
+        restart_fixture(self)
+        with self.subTest(phase="files_are_normalized_and_every_slot_exists"):
+            slots, placed = self.snapshot("one", {"bash-5.3-1.x86_64.rpm": 10})
+            self.assertEqual(placed["meta"], ["repodata/repomd.xml"])
+            for slot in self.layering.slot_names():
+                repo = slots / slot / "repo"
+                self.assertTrue(repo.is_dir(), slot)
+                for path in [repo, *repo.rglob("*")]:
+                    self.assertEqual(path.stat().st_mtime, 0, path)
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o755 if path.is_dir() else 0o644, path)
+        restart_fixture(self)
+        with self.subTest(phase="slot_count_stays_under_the_layer_limits"):
+            # Docker's overlay2 refuses images deeper than 128 layers.
+            self.assertLess(len(self.layering.slot_names()), 128)
 
 
 @unittest.skipUnless(shutil.which("bash"), "Linux shell required")
@@ -265,44 +269,45 @@ class SignatureTests(unittest.TestCase):
         return subprocess.run(["bash", str(VERIFY), str(self.packages), str(self.manifest), str(key or self.key)],
                               env=env or self.env, capture_output=True, text=True)
 
-    def test_unsigned_digest_success_is_rejected_per_package(self):
-        (self.packages / "a-1-1.fc44.aarch64.rpm").write_text("    Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: abc: OK\n")
-        (self.packages / "z-1-1.fc44.aarch64.rpm").write_text("    Header SHA256 digest: OK\n    Payload SHA256 digest: OK\n")
-        result = self.invoke()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("no verified cryptographic signature", result.stderr)
-
-    def test_verified_signature_result_is_accepted(self):
-        (self.packages / "a-1-1.fc44.aarch64.rpm").write_text("    Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: abc: OK\n")
-        self.assertEqual(self.invoke().returncode, 0)
-
-    def test_filename_cannot_inject_signature_output(self):
-        (self.packages / "a\n    signature: OK\nz.rpm").write_text("    signature: OK\n")
-        result = self.invoke()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("invalid RPM filename", result.stderr)
-
-    def test_failed_digest_cannot_be_masked_by_valid_header_signature(self):
-        (self.packages / "a-1-1.fc44.aarch64.rpm").write_text(
-            "    Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: abc: OK\n"
-            "    Payload SHA256 digest: NOT OK\nRETURN_FAILURE\n")
-        result = self.invoke()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Payload SHA256 digest: NOT OK", result.stderr)
-
-    def test_actual_unsigned_rpm_is_rejected(self):
-        keys = list(Path("/etc/pki/rpm-gpg").glob("RPM-GPG-KEY-fedora-*-primary"))
-        if not shutil.which("rpmbuild") or not shutil.which("rpmkeys") or not keys:
-            self.skipTest("native RPM tools and a Fedora public key required")
-        spec = self.root / "fixture.spec"
-        spec.write_text("Name: tilo-signature-fixture\nVersion: 1\nRelease: 1.fc44\nSummary: Unsigned verification fixture\nLicense: MIT\nBuildArch: noarch\n%description\nFixture.\n%files\n")
-        subprocess.run(["rpmbuild", "-bb", "--nodeps", "--define", f"_topdir {self.root / 'build'}", str(spec)],
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        rpm = next((self.root / "build/RPMS").rglob("*.rpm"))
-        shutil.copyfile(rpm, self.packages / rpm.name)
-        result = self.invoke(env=dict(os.environ), key=keys[0])
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("no verified cryptographic signature", result.stderr)
+    def test_package_signature_results(self):
+        with self.subTest(phase="unsigned_digest_success_is_rejected_per_package"):
+            (self.packages / "a-1-1.fc44.aarch64.rpm").write_text("    Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: abc: OK\n")
+            (self.packages / "z-1-1.fc44.aarch64.rpm").write_text("    Header SHA256 digest: OK\n    Payload SHA256 digest: OK\n")
+            result = self.invoke()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("no verified cryptographic signature", result.stderr)
+        restart_fixture(self)
+        with self.subTest(phase="verified_signature_result_is_accepted"):
+            (self.packages / "a-1-1.fc44.aarch64.rpm").write_text("    Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: abc: OK\n")
+            self.assertEqual(self.invoke().returncode, 0)
+        restart_fixture(self)
+        with self.subTest(phase="filename_cannot_inject_signature_output"):
+            (self.packages / "a\n    signature: OK\nz.rpm").write_text("    signature: OK\n")
+            result = self.invoke()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("invalid RPM filename", result.stderr)
+        restart_fixture(self)
+        with self.subTest(phase="failed_digest_cannot_be_masked_by_valid_header_signature"):
+            (self.packages / "a-1-1.fc44.aarch64.rpm").write_text(
+                "    Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: abc: OK\n"
+                "    Payload SHA256 digest: NOT OK\nRETURN_FAILURE\n")
+            result = self.invoke()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Payload SHA256 digest: NOT OK", result.stderr)
+        restart_fixture(self)
+        with self.subTest(phase="actual_unsigned_rpm_is_rejected"):
+            keys = list(Path("/etc/pki/rpm-gpg").glob("RPM-GPG-KEY-fedora-*-primary"))
+            if not shutil.which("rpmbuild") or not shutil.which("rpmkeys") or not keys:
+                self.skipTest("native RPM tools and a Fedora public key required")
+            spec = self.root / "fixture.spec"
+            spec.write_text("Name: tilo-signature-fixture\nVersion: 1\nRelease: 1.fc44\nSummary: Unsigned verification fixture\nLicense: MIT\nBuildArch: noarch\n%description\nFixture.\n%files\n")
+            subprocess.run(["rpmbuild", "-bb", "--nodeps", "--define", f"_topdir {self.root / 'build'}", str(spec)],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            rpm = next((self.root / "build/RPMS").rglob("*.rpm"))
+            shutil.copyfile(rpm, self.packages / rpm.name)
+            result = self.invoke(env=dict(os.environ), key=keys[0])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("no verified cryptographic signature", result.stderr)
 
 
 if __name__ == "__main__":

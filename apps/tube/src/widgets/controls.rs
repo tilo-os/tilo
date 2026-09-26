@@ -250,44 +250,46 @@ mod tests {
     }
 
     #[test]
-    fn switch_preserves_id_and_exposes_switch_state() {
-        let mut switch = switch();
-        switch.set_focus(true);
+    fn switch_exposes_state_activates_via_bus_and_hit_tests_its_rect() {
+        // Case `switch_preserves_id_and_exposes_switch_state`.
+        {
+            let mut switch = switch();
+            switch.set_focus(true);
 
-        assert_eq!(switch.test_id(), Some("switch_autoplay"));
-        let node = switch.accessibility().expect("switch accessibility");
-        assert_eq!(node.role, ui::a11y::Role::Switch);
-        assert_eq!(node.name.as_deref(), Some("Autoplay"));
-        assert_eq!(node.state.checked, Some(false));
-        assert!(node.state.focusable);
-        assert!(node.state.focused);
-    }
+            assert_eq!(switch.test_id(), Some("switch_autoplay"));
+            let node = switch.accessibility().expect("switch accessibility");
+            assert_eq!(node.role, ui::a11y::Role::Switch);
+            assert_eq!(node.name.as_deref(), Some("Autoplay"));
+            assert_eq!(node.state.checked, Some(false));
+            assert!(node.state.focusable);
+            assert!(node.state.focused);
+        }
+        // Case `accessibility_activation_uses_tube_action_bus`.
+        {
+            let bus = action::new_bus();
+            let mut switch =
+                Switch::new(true, &bus, Action::ToggleSetting(SettingFlag::ShowComments));
+            let mut state = AutoCommit::new();
 
-    #[test]
-    fn accessibility_activation_uses_tube_action_bus() {
-        let bus = action::new_bus();
-        let mut switch = Switch::new(true, &bus, Action::ToggleSetting(SettingFlag::ShowComments));
-        let mut state = AutoCommit::new();
-
-        assert!(switch.perform_action(
-            &ui::a11y::Action::ToggleCheck,
-            &mut state,
-            &automerge::ROOT,
-        ));
-        assert_eq!(
-            action::drain(&bus),
-            vec![Action::ToggleSetting(SettingFlag::ShowComments)]
-        );
-    }
-
-    #[test]
-    fn pointer_hit_testing_stays_inside_switch_rect() {
-        let mut switch = switch();
-        switch.rect = Rect::new(10.0, 20.0, 56.0, 46.0);
-        assert_eq!(
-            switch.cursor_shape(Point::new(11.0, 21.0)),
-            Some(winit::window::CursorIcon::Pointer)
-        );
-        assert_eq!(switch.cursor_shape(Point::new(9.0, 21.0)), None);
+            assert!(switch.perform_action(
+                &ui::a11y::Action::ToggleCheck,
+                &mut state,
+                &automerge::ROOT,
+            ));
+            assert_eq!(
+                action::drain(&bus),
+                vec![Action::ToggleSetting(SettingFlag::ShowComments)]
+            );
+        }
+        // Case `pointer_hit_testing_stays_inside_switch_rect`.
+        {
+            let mut switch = switch();
+            switch.rect = Rect::new(10.0, 20.0, 56.0, 46.0);
+            assert_eq!(
+                switch.cursor_shape(Point::new(11.0, 21.0)),
+                Some(winit::window::CursorIcon::Pointer)
+            );
+            assert_eq!(switch.cursor_shape(Point::new(9.0, 21.0)), None);
+        }
     }
 }

@@ -224,70 +224,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn protocol_cannot_name_an_executable_or_package() {
-        let json = serde_json::to_value(ToolIntent::Vpn {
-            route: VpnRoute::Profile,
-            profile: Some("Work VPN".into()),
-        })
-        .unwrap();
-        assert_eq!(json["tool"], "vpn");
-        assert!(json.get("program").is_none());
-        assert!(json.get("package_id").is_none());
-        assert!(json.get("argv").is_none());
-    }
-
-    #[test]
-    fn profile_route_requires_a_safe_name() {
-        assert!(
-            ToolIntent::Vpn {
+    fn tool_intents_name_only_typed_routes_never_executables() {
+        // Phase `protocol_cannot_name_an_executable_or_package`.
+        {
+            let json = serde_json::to_value(ToolIntent::Vpn {
                 route: VpnRoute::Profile,
-                profile: None
-            }
-            .validate()
-            .is_err()
-        );
-        assert!(
-            ToolIntent::Vpn {
-                route: VpnRoute::Profile,
-                profile: Some("bad\nname".into())
-            }
-            .validate()
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn firewall_intent_selects_only_a_typed_route() {
-        let intent = ToolIntent::Firewall {
-            route: FirewallRoute::Rules,
-        };
-        assert_eq!(intent.package_id(), Some("so.tilo.firewall"));
-        let json = serde_json::to_value(intent).unwrap();
-        assert_eq!(json["tool"], "firewall");
-        assert_eq!(json["route"], "rules");
-        assert!(json.get("program").is_none());
-    }
-
-    #[test]
-    fn workspace_settings_is_a_shell_route_not_an_executable() {
-        let intent = ToolIntent::WorkspaceSettings {
-            route: WorkspaceSettingsRoute::PrivacySecurity,
-        };
-        assert_eq!(intent.package_id(), None);
-        let json = serde_json::to_value(intent).unwrap();
-        assert_eq!(json["tool"], "workspace_settings");
-        assert_eq!(json["route"], "privacy_security");
-        assert!(json.get("program").is_none());
-        assert!(json.get("package_id").is_none());
-    }
-
-    #[test]
-    fn identity_backup_is_a_shell_owned_typed_intent() {
-        let intent = ToolIntent::IdentityBackup;
-        assert_eq!(intent.package_id(), None);
-        assert!(intent.validate().is_ok());
-        let json = serde_json::to_value(intent).unwrap();
-        assert_eq!(json["tool"], "identity_backup");
-        assert!(json.get("program").is_none());
+                profile: Some("Work VPN".into()),
+            })
+            .unwrap();
+            assert_eq!(json["tool"], "vpn");
+            assert!(json.get("program").is_none());
+            assert!(json.get("package_id").is_none());
+            assert!(json.get("argv").is_none());
+        }
+        // Phase `profile_route_requires_a_safe_name`.
+        {
+            assert!(
+                ToolIntent::Vpn {
+                    route: VpnRoute::Profile,
+                    profile: None
+                }
+                .validate()
+                .is_err()
+            );
+            assert!(
+                ToolIntent::Vpn {
+                    route: VpnRoute::Profile,
+                    profile: Some("bad\nname".into())
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        // Phase `firewall_intent_selects_only_a_typed_route`.
+        {
+            let intent = ToolIntent::Firewall {
+                route: FirewallRoute::Rules,
+            };
+            assert_eq!(intent.package_id(), Some("so.tilo.firewall"));
+            let json = serde_json::to_value(intent).unwrap();
+            assert_eq!(json["tool"], "firewall");
+            assert_eq!(json["route"], "rules");
+            assert!(json.get("program").is_none());
+        }
+        // Phase `workspace_settings_is_a_shell_route_not_an_executable`.
+        {
+            let intent = ToolIntent::WorkspaceSettings {
+                route: WorkspaceSettingsRoute::PrivacySecurity,
+            };
+            assert_eq!(intent.package_id(), None);
+            let json = serde_json::to_value(intent).unwrap();
+            assert_eq!(json["tool"], "workspace_settings");
+            assert_eq!(json["route"], "privacy_security");
+            assert!(json.get("program").is_none());
+            assert!(json.get("package_id").is_none());
+        }
+        // Phase `identity_backup_is_a_shell_owned_typed_intent`.
+        {
+            let intent = ToolIntent::IdentityBackup;
+            assert_eq!(intent.package_id(), None);
+            assert!(intent.validate().is_ok());
+            let json = serde_json::to_value(intent).unwrap();
+            assert_eq!(json["tool"], "identity_backup");
+            assert!(json.get("program").is_none());
+        }
     }
 }

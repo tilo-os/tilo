@@ -88,8 +88,6 @@ static REFRESHING: AtomicBool = AtomicBool::new(false);
 /// The small search-metadata cache is read once per shell process. App
 /// payloads remain uncached until the user opens one.
 static DISK_CACHE_LOADED: AtomicBool = AtomicBool::new(false);
-/// Per package, so the frame thread can retire it when the app starts.
-static PENDING_NOTICES: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 
 /// Lock [`CATALOGUE`], recovering from poisoning instead of panicking:
 /// a panic while holding this lock doesn't corrupt the cached listing
@@ -101,11 +99,15 @@ fn lock_catalogue() -> std::sync::MutexGuard<'static, Option<(Vec<CatalogueApp>,
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// [`lock_catalogue`], for [`PENDING_NOTICES`].
-fn lock_pending_notices() -> std::sync::MutexGuard<'static, Vec<(String, u64)>> {
-    PENDING_NOTICES
+/// Run `f` on the session's pending "Opening…" notices, recovering from
+/// poisoning as [`lock_catalogue`] does.
+fn with_pending_notices<T>(f: impl FnOnce(&mut Vec<(String, u64)>) -> T) -> T {
+    let session = launcher::LaunchSession::current();
+    let mut pending = session
+        .opening_notices
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(&mut pending)
 }
 
 /// The same search the launcher does for `tilo-launcher`, including its
@@ -316,15 +318,16 @@ fn schedule_refresh() {
 // ---------------------------------------------------------------------
 
 pub fn note_pending_notice(package_id: &str, notification_id: u64) {
-    let mut pending = lock_pending_notices();
-    pending.retain(|(id, _)| id != package_id);
-    pending.push((package_id.to_string(), notification_id));
+    with_pending_notices(|pending| {
+        pending.retain(|(id, _)| id != package_id);
+        pending.push((package_id.to_string(), notification_id));
+    });
 }
 
 /// A peek, not a take — the frame thread walks this every frame.
 /// Retirement goes through [`take_pending_notice`].
 pub fn pending_notices() -> Vec<(String, u64)> {
-    lock_pending_notices().clone()
+    with_pending_notices(|pending| pending.clone())
 }
 
 /// Return the active opening notice for `package_id`, if any. Launching the
@@ -332,17 +335,20 @@ pub fn pending_notices() -> Vec<(String, u64)> {
 /// not create a stack of indistinguishable "Opening…" cards or overwrite the
 /// only id that can retire the old cards.
 pub fn pending_notice(package_id: &str) -> Option<u64> {
-    lock_pending_notices()
-        .iter()
-        .find(|(id, _)| id == package_id)
-        .map(|(_, notification_id)| *notification_id)
+    with_pending_notices(|pending| {
+        pending
+            .iter()
+            .find(|(id, _)| id == package_id)
+            .map(|(_, notification_id)| *notification_id)
+    })
 }
 
 /// So the "opening" toast is retired by the app appearing, not a timer.
 pub fn take_pending_notice(package_id: &str) -> Option<u64> {
-    let mut pending = lock_pending_notices();
-    let idx = pending.iter().position(|(id, _)| id == package_id)?;
-    Some(pending.remove(idx).1)
+    with_pending_notices(|pending| {
+        let idx = pending.iter().position(|(id, _)| id == package_id)?;
+        Some(pending.remove(idx).1)
+    })
 }
 
 /// `capabilities` is the activating workspace's grant list, captured
@@ -365,7 +371,7 @@ pub fn install_and_launch(
     };
     let builder = std::thread::Builder::new().name("app-install".to_string());
     let identity = (package_id.clone(), display_name.clone());
-    let spawn_result = builder.spawn(move || {
+    let spawn_result = launcher::spawn_reporting(builder, move || {
         let mut command = std::process::Command::new(&bin);
         command.args(["install", &package_id]);
         let out =
@@ -428,123 +434,135 @@ fn push_failure(package_id: &str, display_name: &str, detail: String) {
 mod tests {
     use super::*;
 
-    /// Pinned against the exact JSON `app` prints;
-    /// `app-cli`'s own test pins the other half.
     #[test]
-    fn the_listing_envelope_parses_the_binarys_field_names() {
-        let json = r#"{"apps":[{"package_id":"so.tilo.sheets","display_name":"Sheets",
-            "description":"a spreadsheet","category":"Office","version":"2.0.0",
-            "registry":"main","download_url":"https://x/y.tapp","trust":"verified"}],
-            "unreachable":[{"name":"mirror","detail":"connection refused"}]}"#;
-        let listing = parse_listing(json).expect("the envelope must parse");
-        assert_eq!(listing.apps.len(), 1);
-        let app = &listing.apps[0];
-        assert_eq!(app.package_id, "so.tilo.sheets");
-        assert_eq!(app.display_name, "Sheets");
-        assert_eq!(app.category.as_deref(), Some("Office"));
-        assert_eq!(app.version, "2.0.0");
-        assert_eq!(app.registry, "main");
-        assert_eq!(app.trust, "verified");
-        assert_eq!(listing.unreachable.len(), 1);
-        assert_eq!(listing.unreachable[0].name, "mirror");
-    }
+    fn catalogue_listing_parses_strictly_and_seeds_the_palette() {
+        /// Pinned against the exact JSON `app` prints;
+        /// `app-cli`'s own test pins the other half.
+        fn the_listing_envelope_parses_the_binarys_field_names() {
+            let json = r#"{"apps":[{"package_id":"so.tilo.sheets","display_name":"Sheets",
+                "description":"a spreadsheet","category":"Office","version":"2.0.0",
+                "registry":"main","download_url":"https://x/y.tapp","trust":"verified"}],
+                "unreachable":[{"name":"mirror","detail":"connection refused"}]}"#;
+            let listing = parse_listing(json).expect("the envelope must parse");
+            assert_eq!(listing.apps.len(), 1);
+            let app = &listing.apps[0];
+            assert_eq!(app.package_id, "so.tilo.sheets");
+            assert_eq!(app.display_name, "Sheets");
+            assert_eq!(app.category.as_deref(), Some("Office"));
+            assert_eq!(app.version, "2.0.0");
+            assert_eq!(app.registry, "main");
+            assert_eq!(app.trust, "verified");
+            assert_eq!(listing.unreachable.len(), 1);
+            assert_eq!(listing.unreachable[0].name, "mirror");
+        }
 
-    /// Nothing available is an empty listing, not a parse error.
-    #[test]
-    fn an_empty_catalogue_is_a_valid_answer() {
-        let listing = parse_listing(r#"{"apps":[],"unreachable":[]}"#).expect("parses");
-        assert!(listing.apps.is_empty());
-        let bare = parse_listing("{}").expect("a bare object parses too");
-        assert!(bare.apps.is_empty());
-    }
+        /// Nothing available is an empty listing, not a parse error.
+        fn an_empty_catalogue_is_a_valid_answer() {
+            let listing = parse_listing(r#"{"apps":[],"unreachable":[]}"#).expect("parses");
+            assert!(listing.apps.is_empty());
+            let bare = parse_listing("{}").expect("a bare object parses too");
+            assert!(bare.apps.is_empty());
+        }
 
-    #[test]
-    fn garbage_on_stdout_is_an_error_not_an_empty_list() {
-        assert!(
-            parse_listing("not json at all").is_err(),
-            "an unparseable listing must be reported, not silently read as \
-             'nothing is available'"
-        );
-    }
+        fn garbage_on_stdout_is_an_error_not_an_empty_list() {
+            assert!(
+                parse_listing("not json at all").is_err(),
+                "an unparseable listing must be reported, not silently read as \
+                 'nothing is available'"
+            );
+        }
 
-    #[test]
-    fn persisted_metadata_can_seed_a_cold_palette() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("catalogue.json");
-        std::fs::write(
-            &path,
-            r#"{"apps":[{"package_id":"so.tilo.remote","display_name":"Remote",
-                "version":"1.0.0","registry":"team","trust":"verified"}]}"#,
-        )
-        .unwrap();
-        let listing = read_cached_listing(&path).expect("cached listing should parse");
-        assert_eq!(listing.apps[0].package_id, "so.tilo.remote");
-    }
+        fn persisted_metadata_can_seed_a_cold_palette() {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("catalogue.json");
+            std::fs::write(
+                &path,
+                r#"{"apps":[{"package_id":"so.tilo.remote","display_name":"Remote",
+                    "version":"1.0.0","registry":"team","trust":"verified"}]}"#,
+            )
+            .unwrap();
+            let listing = read_cached_listing(&path).expect("cached listing should parse");
+            assert_eq!(listing.apps[0].package_id, "so.tilo.remote");
+        }
 
-    /// A pending notice belongs to exactly one open, and taking it
-    /// consumes it — a second launch of the same app must not dismiss
-    /// a notification that no longer exists.
-    #[test]
-    fn a_pending_notice_is_taken_once() {
-        note_pending_notice("so.tilo.noticefixture", 42);
-        assert_eq!(take_pending_notice("so.tilo.noticefixture"), Some(42));
-        assert_eq!(take_pending_notice("so.tilo.noticefixture"), None);
+        the_listing_envelope_parses_the_binarys_field_names();
+        an_empty_catalogue_is_a_valid_answer();
+        garbage_on_stdout_is_an_error_not_an_empty_list();
+        persisted_metadata_can_seed_a_cold_palette();
     }
 
     #[test]
-    fn a_newer_open_replaces_the_notice_for_the_same_package() {
-        note_pending_notice("so.tilo.replacefixture", 1);
-        assert_eq!(pending_notice("so.tilo.replacefixture"), Some(1));
-        note_pending_notice("so.tilo.replacefixture", 2);
-        assert_eq!(pending_notice("so.tilo.replacefixture"), Some(2));
-        assert_eq!(
-            take_pending_notice("so.tilo.replacefixture"),
-            Some(2),
-            "the live open's notification is the one to retire"
-        );
-        assert_eq!(take_pending_notice("so.tilo.replacefixture"), None);
-    }
+    fn catalogue_open_notices_are_taken_once_and_replaced_by_newer_opens() {
+        /// A pending notice belongs to exactly one open, and taking it
+        /// consumes it — a second launch of the same app must not dismiss
+        /// a notification that no longer exists.
+        fn a_pending_notice_is_taken_once() {
+            note_pending_notice("so.tilo.noticefixture", 42);
+            assert_eq!(take_pending_notice("so.tilo.noticefixture"), Some(42));
+            assert_eq!(take_pending_notice("so.tilo.noticefixture"), None);
+        }
 
-    /// How a test, or the headless harness, points at a specific build.
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn an_explicit_binary_override_is_searched_first() {
-        let tmp = tempfile::tempdir().unwrap();
-        let fake = tmp.path().join("app");
-        std::fs::write(&fake, b"#!/bin/true\n").unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_APP_BIN", &fake);
-        let resolved = resolve_catalogue_bin();
-        env.remove("TILO_APP_BIN");
-        assert_eq!(resolved.as_deref(), Some(fake.as_path()));
-    }
+        fn a_newer_open_replaces_the_notice_for_the_same_package() {
+            note_pending_notice("so.tilo.replacefixture", 1);
+            assert_eq!(pending_notice("so.tilo.replacefixture"), Some(1));
+            note_pending_notice("so.tilo.replacefixture", 2);
+            assert_eq!(pending_notice("so.tilo.replacefixture"), Some(2));
+            assert_eq!(
+                take_pending_notice("so.tilo.replacefixture"),
+                Some(2),
+                "the live open's notification is the one to retire"
+            );
+            assert_eq!(take_pending_notice("so.tilo.replacefixture"), None);
+        }
 
-    #[test]
-    fn a_release_build_ignores_the_catalogue_binary_override() {
-        let exe = std::path::Path::new("/usr/bin/shell");
-        let shipped = catalogue_bin_candidates_from(false, Some("/tmp/evil-app".into()), Some(exe));
-        assert!(
-            !shipped.contains(&PathBuf::from("/tmp/evil-app")),
-            "a release compositor must not run a catalogue binary named by the environment: {shipped:?}",
-        );
-        assert_eq!(shipped.first(), Some(&PathBuf::from("/usr/bin/app")));
-        let developer = catalogue_bin_candidates_from(true, Some("/dev/app".into()), Some(exe));
-        assert_eq!(developer.first(), Some(&PathBuf::from("/dev/app")));
+        a_pending_notice_is_taken_once();
+        a_newer_open_replaces_the_notice_for_the_same_package();
     }
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn a_missing_override_falls_through_rather_than_resolving_to_it() {
-        let tmp = tempfile::tempdir().unwrap();
-        let absent = tmp.path().join("not-here");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_APP_BIN", &absent);
-        let resolved = resolve_catalogue_bin();
-        env.remove("TILO_APP_BIN");
-        assert_ne!(
-            resolved.as_deref(),
-            Some(absent.as_path()),
-            "a path that does not exist must not be handed to Command::new"
-        );
+    fn catalogue_binary_override_is_dev_only_and_falls_through_when_missing() {
+        /// How a test, or the headless harness, points at a specific build.
+        fn an_explicit_binary_override_is_searched_first() {
+            let tmp = tempfile::tempdir().unwrap();
+            let fake = tmp.path().join("app");
+            std::fs::write(&fake, b"#!/bin/true\n").unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_APP_BIN", &fake);
+            let resolved = resolve_catalogue_bin();
+            env.remove("TILO_APP_BIN");
+            assert_eq!(resolved.as_deref(), Some(fake.as_path()));
+        }
+
+        fn a_release_build_ignores_the_catalogue_binary_override() {
+            let exe = std::path::Path::new("/usr/bin/shell");
+            let shipped =
+                catalogue_bin_candidates_from(false, Some("/tmp/evil-app".into()), Some(exe));
+            assert!(
+                !shipped.contains(&PathBuf::from("/tmp/evil-app")),
+                "a release compositor must not run a catalogue binary named by the environment: {shipped:?}",
+            );
+            assert_eq!(shipped.first(), Some(&PathBuf::from("/usr/bin/app")));
+            let developer = catalogue_bin_candidates_from(true, Some("/dev/app".into()), Some(exe));
+            assert_eq!(developer.first(), Some(&PathBuf::from("/dev/app")));
+        }
+
+        fn a_missing_override_falls_through_rather_than_resolving_to_it() {
+            let tmp = tempfile::tempdir().unwrap();
+            let absent = tmp.path().join("not-here");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_APP_BIN", &absent);
+            let resolved = resolve_catalogue_bin();
+            env.remove("TILO_APP_BIN");
+            assert_ne!(
+                resolved.as_deref(),
+                Some(absent.as_path()),
+                "a path that does not exist must not be handed to Command::new"
+            );
+        }
+
+        an_explicit_binary_override_is_searched_first();
+        a_release_build_ignores_the_catalogue_binary_override();
+        a_missing_override_falls_through_rather_than_resolving_to_it();
     }
 }

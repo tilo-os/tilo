@@ -1652,7 +1652,10 @@ fn join_with_token(
                 };
                 let ack = make_ack(&response_bytes, token.nonce, &device)?;
                 socket.set_read_timeout(Some(Duration::from_millis(300)))?;
-                let completion_deadline = deadline_after(Duration::from_secs(10))?;
+                // The approver commits (durable writes) before it sends
+                // Finalized, so its storage latency, not a fixed allowance,
+                // bounds this wait; the enrollment window is the budget.
+                let completion_deadline = deadline_after(socket_timeout(timeout))?;
                 while std::time::Instant::now() < completion_deadline {
                     validate_requester(requester_lease)?;
                     socket.send_to(&ack, sender)?;
@@ -2247,14 +2250,19 @@ fn prepare_approval(
     Ok(PreparedApproval { signed, encrypted })
 }
 
+/// Wait for the device to acknowledge its signed configuration. The device
+/// durably stages the whole enrollment before it acknowledges, so the wait
+/// is bounded by the enrollment window rather than a fixed allowance that a
+/// slow disk on the device side can exceed.
 fn await_approval_ack(
     socket: &UdpSocket,
     packet: &mut [u8],
     pending: &PendingApproval,
     prepared: &PreparedApproval,
+    window: Duration,
 ) -> anyhow::Result<()> {
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-    let deadline = deadline_after(Duration::from_secs(10))?;
+    let deadline = deadline_after(window)?;
     while std::time::Instant::now() < deadline {
         socket.send_to(&prepared.encrypted, pending.sender)?;
         match socket.recv_from(packet) {
@@ -2340,9 +2348,24 @@ fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
     }
     let mut packet = vec![0_u8; MAX_PACKET];
     let pending = receive_approval_request(&socket, &mut packet, options, &identity)?;
+    // The listener shares the well-known port with every other nearby-pairing
+    // surface, and the kernel delivers a unicast datagram to only one socket
+    // of a reuse-port group. The device acknowledges to the address the
+    // signed configuration came from, so the rest of the exchange runs on a
+    // socket of this approver's own: another listener on the port can never
+    // receive the acknowledgement in its place.
+    drop(socket);
+    let session = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
+    session.set_read_timeout(Some(Duration::from_secs(1)))?;
     let prepared = prepare_approval(options, &identity, &pending)?;
-    await_approval_ack(&socket, &mut packet, &pending, &prepared)?;
-    commit_approval(&socket, options, &identity, &pending, &prepared)
+    await_approval_ack(
+        &session,
+        &mut packet,
+        &pending,
+        &prepared,
+        socket_timeout(options.timeout),
+    )?;
+    commit_approval(&session, options, &identity, &pending, &prepared)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -2505,497 +2528,503 @@ mod tests {
     }
 
     #[test]
-    fn expired_device_certificate_is_not_projected_into_personal_state() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[74; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Expired laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: Some(2),
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        let identity = tempfile::tempdir().unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn enrollment_responses_are_signed_encrypted_and_certificate_bound() {
+        // Phase `expired_device_certificate_is_not_projected_into_personal_state`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[74; 32]);
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "Expired laptop".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: Some(2),
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, &root).unwrap();
+            let identity = tempfile::tempdir().unwrap();
 
-        let error = project_personal_device(identity.path(), &cert).unwrap_err();
+            let error = project_personal_device(identity.path(), &cert).unwrap_err();
 
-        assert!(error.to_string().contains("certificate validity"));
-        assert!(!fleet_path(identity.path(), cert.user_public_key).exists());
-    }
+            assert!(error.to_string().contains("certificate validity"));
+            assert!(!fleet_path(identity.path(), cert.user_public_key).exists());
+        }
+        // Phase `revoked_device_cannot_use_approval_capability`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[75; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[76; 32]);
+            let user = root.verifying_key().to_bytes();
+            let device_public_key = device.verifying_key().to_bytes();
+            let mut revocation = RevocationEntry {
+                user_public_key: user,
+                revoked_device_public_key: device_public_key,
+                revoked_at_ns: 10,
+                reason: RevocationReason::Compromised,
+                signature: [0; 64],
+            };
+            sign_revocation_entry(&mut revocation, &root).unwrap();
+            let identity = tempfile::tempdir().unwrap();
+            atomic_file::write_creating_parent(
+                &fleet_path(identity.path(), user),
+                &serde_json::to_vec(&FleetProjection {
+                    schema_version: 1,
+                    identity_id: hex::encode(user),
+                    certificates: Vec::new(),
+                    revocations: vec![revocation],
+                })
+                .unwrap(),
+            )
+            .unwrap();
 
-    #[test]
-    fn revoked_device_cannot_use_approval_capability() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[75; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[76; 32]);
-        let user = root.verifying_key().to_bytes();
-        let device_public_key = device.verifying_key().to_bytes();
-        let mut revocation = RevocationEntry {
-            user_public_key: user,
-            revoked_device_public_key: device_public_key,
-            revoked_at_ns: 10,
-            reason: RevocationReason::Compromised,
-            signature: [0; 64],
-        };
-        sign_revocation_entry(&mut revocation, &root).unwrap();
-        let identity = tempfile::tempdir().unwrap();
-        atomic_file::write_creating_parent(
-            &fleet_path(identity.path(), user),
-            &serde_json::to_vec(&FleetProjection {
-                schema_version: 1,
-                identity_id: hex::encode(user),
-                certificates: Vec::new(),
-                revocations: vec![revocation],
-            })
-            .unwrap(),
-        )
-        .unwrap();
+            assert!(fleet_revokes_device(identity.path(), user, device_public_key).unwrap());
+        }
+        // Phase `signed_response_rejects_bundle_tampering`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let mut response = sign_response(payload(&root), &root).unwrap();
+            verify_response(&response, root.verifying_key().to_bytes()).unwrap();
+            response
+                .payload
+                .home_peer_toml
+                .as_mut()
+                .unwrap()
+                .push_str("\n# changed");
+            assert!(verify_response(&response, root.verifying_key().to_bytes()).is_err());
+        }
+        // Phase `approval_target_requires_a_complete_pair_of_bounded_ids`.
+        {
+            let mut options = ApprovalOptions {
+                identity_root: std::path::Path::new(""),
+                identity_dir: None,
+                timeout: 1,
+                workspace_cache: std::path::Path::new(""),
+                acl: std::path::Path::new(""),
+                relay_workspace_ids: &[],
+                expected_device: None,
+                expected_service: None,
+                kind: EnrollmentKind::HomePeer,
+                ready: None,
+            };
+            assert_eq!(expected_pair(&options).unwrap(), None);
 
-        assert!(fleet_revokes_device(identity.path(), user, device_public_key).unwrap());
-    }
+            options.expected_device = Some("00");
+            assert!(expected_pair(&options).is_err());
 
-    #[test]
-    fn signed_response_rejects_bundle_tampering() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let mut response = sign_response(payload(&root), &root).unwrap();
-        verify_response(&response, root.verifying_key().to_bytes()).unwrap();
-        response
-            .payload
-            .home_peer_toml
-            .as_mut()
-            .unwrap()
-            .push_str("\n# changed");
-        assert!(verify_response(&response, root.verifying_key().to_bytes()).is_err());
-    }
-
-    #[test]
-    fn approval_target_requires_a_complete_pair_of_bounded_ids() {
-        let mut options = ApprovalOptions {
-            identity_root: std::path::Path::new(""),
-            identity_dir: None,
-            timeout: 1,
-            workspace_cache: std::path::Path::new(""),
-            acl: std::path::Path::new(""),
-            relay_workspace_ids: &[],
-            expected_device: None,
-            expected_service: None,
-            kind: EnrollmentKind::HomePeer,
-            ready: None,
-        };
-        assert_eq!(expected_pair(&options).unwrap(), None);
-
-        options.expected_device = Some("00");
-        assert!(expected_pair(&options).is_err());
-
-        let device = hex::encode([7; 32]);
-        let service = hex::encode([8; 32]);
-        options.expected_device = Some(&device);
-        options.expected_service = Some(&service);
-        assert_eq!(expected_pair(&options).unwrap(), Some(([7; 32], [8; 32])));
-    }
-
-    #[test]
-    fn provisioning_bundle_is_encrypted_for_the_recipient_device() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let mut request_seed = [0_u8; 32];
-        request_seed[0] = 11;
-        let request_ephemeral = tilo_seal::SecretKey::from_bytes(request_seed);
-        let request_public = request_ephemeral.public_key().unwrap().to_bytes();
-        let mut payload = payload(&root);
-        payload.home_peer_toml = Some("ticket = 'secret-ticket-material'".into());
-        let signed = sign_response(payload, &root).unwrap();
-        let encrypted = encrypt_response(
-            &signed,
-            [3; 16],
-            device.verifying_key().to_bytes(),
-            ResponseRoute::V2 {
-                response_public_key: request_public,
-            },
-        )
-        .unwrap();
-        assert!(v2_body(&encrypted).is_some());
-        assert!(
-            !encrypted
-                .windows(b"secret-ticket-material".len())
-                .any(|window| window == b"secret-ticket-material")
-        );
-        let decrypted = decrypt_response(
-            &encrypted,
-            [3; 16],
-            device.verifying_key().to_bytes(),
-            &request_ephemeral,
-        )
-        .unwrap();
-        verify_response(&decrypted, root.verifying_key().to_bytes()).unwrap();
-        let wrong = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
-        assert!(
-            decrypt_response(
+            let device = hex::encode([7; 32]);
+            let service = hex::encode([8; 32]);
+            options.expected_device = Some(&device);
+            options.expected_service = Some(&service);
+            assert_eq!(expected_pair(&options).unwrap(), Some(([7; 32], [8; 32])));
+        }
+        // Phase `provisioning_bundle_is_encrypted_for_the_recipient_device`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let mut request_seed = [0_u8; 32];
+            request_seed[0] = 11;
+            let request_ephemeral = tilo_seal::SecretKey::from_bytes(request_seed);
+            let request_public = request_ephemeral.public_key().unwrap().to_bytes();
+            let mut payload = payload(&root);
+            payload.home_peer_toml = Some("ticket = 'secret-ticket-material'".into());
+            let signed = sign_response(payload, &root).unwrap();
+            let encrypted = encrypt_response(
+                &signed,
+                [3; 16],
+                device.verifying_key().to_bytes(),
+                ResponseRoute::V2 {
+                    response_public_key: request_public,
+                },
+            )
+            .unwrap();
+            assert!(v2_body(&encrypted).is_some());
+            assert!(
+                !encrypted
+                    .windows(b"secret-ticket-material".len())
+                    .any(|window| window == b"secret-ticket-material")
+            );
+            let decrypted = decrypt_response(
                 &encrypted,
                 [3; 16],
-                wrong.verifying_key().to_bytes(),
+                device.verifying_key().to_bytes(),
                 &request_ephemeral,
             )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn bearer_token_is_encrypted_for_the_issuing_device() {
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let request = Request {
-            token: "reusable-secret-token".into(),
-            device_public_key: [7; 32],
-            relay_service_node_id: [8; 32],
-            label: "NAS".into(),
-            kind: EnrollmentKind::HomePeer,
-        };
-        let (encrypted, _) = encrypt_request(&request, issuer.verifying_key().to_bytes()).unwrap();
-        assert!(
-            !encrypted
-                .windows(b"reusable-secret-token".len())
-                .any(|window| window == b"reusable-secret-token")
-        );
-        let (decrypted, _) = decrypt_request(&encrypted, &issuer).unwrap();
-        assert_eq!(decrypted.token, request.token);
-        let wrong = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
-        assert!(decrypt_request(&encrypted, &wrong).is_err());
-    }
-
-    #[test]
-    fn personal_projection_loads_without_root_signing_material() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
-        let user = root.verifying_key().to_bytes();
-        let device = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: user,
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "New laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        let fleet = FleetProjection {
-            schema_version: 1,
-            identity_id: hex::encode(user),
-            certificates: vec![cert.clone()],
-            revocations: Vec::new(),
-        };
-        let payload = ResponsePayload {
-            nonce: [1; 16],
-            recipient_device_public_key: cert.device_public_key,
-            relay_service_node_id: [8; 32],
-            cert,
-            home_peer_toml: None,
-            public_identity_json: Some(public_identity_record(user, "My Tilo identity").unwrap()),
-            fleet_json: Some(serde_json::to_vec_pretty(&fleet).unwrap()),
-            home_peers_json: Some(b"[]".to_vec()),
-        };
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_dir = tempfile::tempdir().unwrap();
-        let record =
-            install_personal_projection(identity_root.path(), identity_dir.path(), &payload)
-                .unwrap();
-        let loaded = runtime_identity::load_from_path(record).unwrap();
-        assert_eq!(loaded.group_public_key(), user);
-        assert!(!loaded.is_single_device());
-        assert!(loaded.sign(b"root-only operation").is_err());
-        assert_eq!(
-            std::fs::read(identity_root.path().join("home-peers.json")).unwrap(),
-            b"[]"
-        );
-        let registry: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(identity_dir.path().join("registry.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(registry["default_identity"], hex::encode(user));
-        #[cfg(unix)]
+            .unwrap();
+            verify_response(&decrypted, root.verifying_key().to_bytes()).unwrap();
+            let wrong = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+            assert!(
+                decrypt_response(
+                    &encrypted,
+                    [3; 16],
+                    wrong.verifying_key().to_bytes(),
+                    &request_ephemeral,
+                )
+                .is_err()
+            );
+        }
+        // Phase `bearer_token_is_encrypted_for_the_issuing_device`.
         {
-            use std::os::unix::fs::MetadataExt as _;
-            let uid = unsafe { libc::geteuid() };
-            assert_eq!(
-                std::fs::metadata(identity_dir.path().join("registry.json"))
-                    .unwrap()
-                    .uid(),
-                uid
+            let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+            let request = Request {
+                token: "reusable-secret-token".into(),
+                device_public_key: [7; 32],
+                relay_service_node_id: [8; 32],
+                label: "NAS".into(),
+                kind: EnrollmentKind::HomePeer,
+            };
+            let (encrypted, _) =
+                encrypt_request(&request, issuer.verifying_key().to_bytes()).unwrap();
+            assert!(
+                !encrypted
+                    .windows(b"reusable-secret-token".len())
+                    .any(|window| window == b"reusable-secret-token")
             );
-            assert_eq!(
-                std::fs::metadata(fleet_path(identity_dir.path(), user))
-                    .unwrap()
-                    .uid(),
-                uid
-            );
+            let (decrypted, _) = decrypt_request(&encrypted, &issuer).unwrap();
+            assert_eq!(decrypted.token, request.token);
+            let wrong = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+            assert!(decrypt_request(&encrypted, &wrong).is_err());
         }
     }
 
     #[test]
-    fn personal_enrollment_staging_keeps_an_existing_device_unchanged() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
-        let member = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
-        let old_root = ed25519_dalek::SigningKey::from_bytes(&[53; 32]);
-        let old_device = ed25519_dalek::SigningKey::from_bytes(&[54; 32]);
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_dir = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(identity_root.path());
-        paths.ensure_directories().unwrap();
-        tilo_user_identity::persist::write_public_key(
-            &paths.user_pubkey,
-            &old_root.verifying_key().to_bytes(),
-        )
-        .unwrap();
-        let mut old_cert = DeviceCert {
-            user_public_key: old_root.verifying_key().to_bytes(),
-            device_public_key: old_device.verifying_key().to_bytes(),
-            device_label: "Existing device".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut old_cert, &old_root).unwrap();
-        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &old_cert).unwrap();
-        let before_key = std::fs::read(&paths.user_pubkey).unwrap();
-        let before_cert = std::fs::read(&paths.device_cert).unwrap();
-
-        let mut requester = std::process::Command::new("/bin/sh")
-            .args(["-c", "while :; do sleep 1; done"])
-            .spawn()
-            .unwrap();
-        let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
-        let payload = personal_payload(&root, &member, [9; 16]);
-        let (marker_path, marker) = stage_personal_enrollment(
-            identity_root.path(),
-            identity_dir.path(),
-            &paths,
-            &payload,
-            Some(lease),
-        )
-        .unwrap();
-        // This models an approval timeout: the recipient has a durable,
-        // retryable staging marker but no active identity mutation.
-        assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
-        assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
-        assert!(marker_path.exists());
-        // A timeout/restart must not turn a merely prepared response into an
-        // active enrollment.
-        recover_personal_enrollments(
-            identity_root.path(),
-            identity_dir.path(),
-            &paths,
-            |_| Ok(()),
-        )
-        .unwrap();
-        assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
-        assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
-
-        let marker = authorize_personal_commit(&marker_path, &marker, Some(lease)).unwrap();
-        assert!(
-            commit_staged_personal_enrollment(
-                identity_root.path(),
-                &paths,
-                &marker_path,
-                &marker,
-                |checkpoint| {
-                    lease.validate()?;
-                    if checkpoint == PersonalCommitCheckpoint::DefaultCert {
-                        bail!("simulated crash before default certificate")
-                    }
-                    Ok(())
-                },
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn personal_projection_publishes_only_live_valid_identity_state() {
+        // Phase `personal_enrollment_staging_keeps_an_existing_device_unchanged`.
+        fn personal_enrollment_staging_keeps_an_existing_device_unchanged() {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+            let member = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+            let old_root = ed25519_dalek::SigningKey::from_bytes(&[53; 32]);
+            let old_device = ed25519_dalek::SigningKey::from_bytes(&[54; 32]);
+            let identity_root = tempfile::tempdir().unwrap();
+            let identity_dir = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(identity_root.path());
+            paths.ensure_directories().unwrap();
+            tilo_user_identity::persist::write_public_key(
+                &paths.user_pubkey,
+                &old_root.verifying_key().to_bytes(),
             )
-            .is_err()
-        );
-        assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
-        requester.kill().unwrap();
-        requester.wait().unwrap();
-        assert!(lease.validate().is_err());
-        // `commit_ready` is the durable boundary: Finalized and the original
-        // live lease were authenticated before it was written. A subsequent
-        // explicit retry may complete that exact transaction under its own
-        // live lease rather than leaving mixed durable state.
-        let retry_lease = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
-        recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths, |_| {
-            retry_lease.validate().map_err(Into::into)
-        })
-        .unwrap();
-        assert_eq!(
-            std::fs::read(&paths.user_pubkey).unwrap(),
-            root.verifying_key().to_bytes()
-        );
-        assert_eq!(
-            tilo_user_identity::persist::read_device_cert(&paths.device_cert)
-                .unwrap()
-                .device_public_key,
-            member.verifying_key().to_bytes()
-        );
-    }
-
-    #[test]
-    fn expired_requester_lease_blocks_personal_identity_publication() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
-        let member = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_parent = tempfile::tempdir().unwrap();
-        let identity_dir = identity_parent.path().join("identities");
-        let paths = IdentityPaths::under(identity_root.path());
-        paths.ensure_directories().unwrap();
-        let mut requester = std::process::Command::new("/bin/sh")
-            .args(["-c", "while :; do sleep 1; done"])
-            .spawn()
             .unwrap();
-        let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
-        let payload = personal_payload(&root, &member, [12; 16]);
-        let (marker_path, marker) = stage_personal_enrollment(
-            identity_root.path(),
-            &identity_dir,
-            &paths,
-            &payload,
-            Some(lease),
-        )
-        .unwrap();
-        let unrelated = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
-        assert!(
-            authorize_personal_commit(&marker_path, &marker, Some(unrelated)).is_err(),
-            "another live requester cannot adopt a prepared enrollment"
-        );
-        requester.kill().unwrap();
-        requester.wait().unwrap();
+            let mut old_cert = DeviceCert {
+                user_public_key: old_root.verifying_key().to_bytes(),
+                device_public_key: old_device.verifying_key().to_bytes(),
+                device_label: "Existing device".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut old_cert, &old_root).unwrap();
+            tilo_user_identity::persist::write_device_cert(&paths.device_cert, &old_cert).unwrap();
+            let before_key = std::fs::read(&paths.user_pubkey).unwrap();
+            let before_cert = std::fs::read(&paths.device_cert).unwrap();
 
-        assert!(
-            authorize_personal_commit(&marker_path, &marker, Some(lease)).is_err(),
-            "a dead compositor cannot cross the durable commit point"
-        );
-        let mut simulated_ready = marker;
-        simulated_ready.commit_ready = true;
-        assert!(
-            commit_staged_personal_enrollment(
+            let mut requester = std::process::Command::new("/bin/sh")
+                .args(["-c", "while :; do sleep 1; done"])
+                .spawn()
+                .unwrap();
+            let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
+            let payload = personal_payload(&root, &member, [9; 16]);
+            let (marker_path, marker) = stage_personal_enrollment(
                 identity_root.path(),
+                identity_dir.path(),
                 &paths,
-                &marker_path,
-                &simulated_ready,
-                |_| lease.validate().map_err(Into::into),
-            )
-            .is_err()
-        );
-        assert!(!identity_dir.exists());
-        assert!(!paths.user_pubkey.exists());
-        assert!(!paths.device_cert.exists());
-        assert!(marker_path.exists(), "staging remains retryable");
-    }
-
-    #[test]
-    fn pair_device_rejects_an_expired_requester_before_creating_identity_state() {
-        let mut requester = std::process::Command::new("/bin/sh")
-            .args(["-c", "while :; do sleep 1; done"])
-            .spawn()
-            .unwrap();
-        let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
-        requester.kill().unwrap();
-        requester.wait().unwrap();
-
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_dir = tempfile::tempdir().unwrap();
-        assert!(
-            pair(
-                identity_root.path(),
-                "New laptop",
-                1,
-                EnrollmentKind::PersonalDevice,
-                None,
-                Some(identity_dir.path()),
-                None,
+                &payload,
                 Some(lease),
             )
-            .is_err()
-        );
-        let paths = IdentityPaths::under(identity_root.path());
-        assert!(!paths.device_privkey.exists());
-        assert!(!paths.user_pubkey.exists());
-        assert!(!paths.device_cert.exists());
-    }
+            .unwrap();
+            // This models an approval timeout: the recipient has a durable,
+            // retryable staging marker but no active identity mutation.
+            assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
+            assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
+            assert!(marker_path.exists());
+            // A timeout/restart must not turn a merely prepared response into an
+            // active enrollment.
+            recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths, |_| {
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
+            assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
 
-    #[test]
-    fn personal_projection_merges_and_preserves_unrelated_home_peers() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
-        let member = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
-        let other_root = ed25519_dalek::SigningKey::from_bytes(&[63; 32]);
-        let other_device = ed25519_dalek::SigningKey::from_bytes(&[64; 32]);
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_dir = tempfile::tempdir().unwrap();
-        let mut other_cert = DeviceCert {
-            user_public_key: other_root.verifying_key().to_bytes(),
-            device_public_key: other_device.verifying_key().to_bytes(),
-            device_label: "Other identity home".into(),
-            capabilities: DeviceCapabilities::host(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut other_cert, &other_root).unwrap();
-        let other = HomePeerRegistration {
-            schema_version: HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: hex::encode(other_cert.device_public_key),
-            relay_service_node_id: hex::encode([65; 32]),
-            relay_endpoint: None,
-            label: other_cert.device_label.clone(),
-            user_public_key: hex::encode(other_cert.user_public_key),
-            device_cert: Some(other_cert),
-            relay_workspace_ids: vec![7],
-        };
-        atomic_file::write(
-            &identity_root.path().join("home-peers.json"),
-            &serde_json::to_vec_pretty(&vec![other.clone()]).unwrap(),
-        )
-        .unwrap();
-        install_personal_projection(
-            identity_root.path(),
-            identity_dir.path(),
-            &personal_payload(&root, &member, [10; 16]),
-        )
-        .unwrap();
-        let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
-            &std::fs::read(identity_root.path().join("home-peers.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(peers, vec![other]);
-    }
+            let marker = authorize_personal_commit(&marker_path, &marker, Some(lease)).unwrap();
+            assert!(
+                commit_staged_personal_enrollment(
+                    identity_root.path(),
+                    &paths,
+                    &marker_path,
+                    &marker,
+                    |checkpoint| {
+                        lease.validate()?;
+                        if checkpoint == PersonalCommitCheckpoint::DefaultCert {
+                            bail!("simulated crash before default certificate")
+                        }
+                        Ok(())
+                    },
+                )
+                .is_err()
+            );
+            assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
+            requester.kill().unwrap();
+            requester.wait().unwrap();
+            assert!(lease.validate().is_err());
+            // `commit_ready` is the durable boundary: Finalized and the original
+            // live lease were authenticated before it was written. A subsequent
+            // explicit retry may complete that exact transaction under its own
+            // live lease rather than leaving mixed durable state.
+            let retry_lease = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
+            recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths, |_| {
+                retry_lease.validate().map_err(Into::into)
+            })
+            .unwrap();
+            assert_eq!(
+                std::fs::read(&paths.user_pubkey).unwrap(),
+                root.verifying_key().to_bytes()
+            );
+            assert_eq!(
+                tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+                    .unwrap()
+                    .device_public_key,
+                member.verifying_key().to_bytes()
+            );
+        }
+        // Phase `personal_projection_loads_without_root_signing_material`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
+            let user = root.verifying_key().to_bytes();
+            let device = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
+            let mut cert = DeviceCert {
+                user_public_key: user,
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "New laptop".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, &root).unwrap();
+            let fleet = FleetProjection {
+                schema_version: 1,
+                identity_id: hex::encode(user),
+                certificates: vec![cert.clone()],
+                revocations: Vec::new(),
+            };
+            let payload = ResponsePayload {
+                nonce: [1; 16],
+                recipient_device_public_key: cert.device_public_key,
+                relay_service_node_id: [8; 32],
+                cert,
+                home_peer_toml: None,
+                public_identity_json: Some(
+                    public_identity_record(user, "My Tilo identity").unwrap(),
+                ),
+                fleet_json: Some(serde_json::to_vec_pretty(&fleet).unwrap()),
+                home_peers_json: Some(b"[]".to_vec()),
+            };
+            let identity_root = tempfile::tempdir().unwrap();
+            let identity_dir = tempfile::tempdir().unwrap();
+            let record =
+                install_personal_projection(identity_root.path(), identity_dir.path(), &payload)
+                    .unwrap();
+            let loaded = runtime_identity::load_from_path(record).unwrap();
+            assert_eq!(loaded.group_public_key(), user);
+            assert!(!loaded.is_single_device());
+            assert!(loaded.sign(b"root-only operation").is_err());
+            assert_eq!(
+                std::fs::read(identity_root.path().join("home-peers.json")).unwrap(),
+                b"[]"
+            );
+            let registry: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(identity_dir.path().join("registry.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(registry["default_identity"], hex::encode(user));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                let uid = unsafe { libc::geteuid() };
+                assert_eq!(
+                    std::fs::metadata(identity_dir.path().join("registry.json"))
+                        .unwrap()
+                        .uid(),
+                    uid
+                );
+                assert_eq!(
+                    std::fs::metadata(fleet_path(identity_dir.path(), user))
+                        .unwrap()
+                        .uid(),
+                    uid
+                );
+            }
+        }
+        // Phase `personal_projection_merges_and_preserves_unrelated_home_peers`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+            let member = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
+            let other_root = ed25519_dalek::SigningKey::from_bytes(&[63; 32]);
+            let other_device = ed25519_dalek::SigningKey::from_bytes(&[64; 32]);
+            let identity_root = tempfile::tempdir().unwrap();
+            let identity_dir = tempfile::tempdir().unwrap();
+            let mut other_cert = DeviceCert {
+                user_public_key: other_root.verifying_key().to_bytes(),
+                device_public_key: other_device.verifying_key().to_bytes(),
+                device_label: "Other identity home".into(),
+                capabilities: DeviceCapabilities::host(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut other_cert, &other_root).unwrap();
+            let other = HomePeerRegistration {
+                schema_version: HomePeerRegistration::CURRENT_SCHEMA,
+                device_node_id: hex::encode(other_cert.device_public_key),
+                relay_service_node_id: hex::encode([65; 32]),
+                relay_endpoint: None,
+                label: other_cert.device_label.clone(),
+                user_public_key: hex::encode(other_cert.user_public_key),
+                device_cert: Some(other_cert),
+                relay_workspace_ids: vec![7],
+            };
+            atomic_file::write(
+                &identity_root.path().join("home-peers.json"),
+                &serde_json::to_vec_pretty(&vec![other.clone()]).unwrap(),
+            )
+            .unwrap();
+            install_personal_projection(
+                identity_root.path(),
+                identity_dir.path(),
+                &personal_payload(&root, &member, [10; 16]),
+            )
+            .unwrap();
+            let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
+                &std::fs::read(identity_root.path().join("home-peers.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(peers, vec![other]);
+        }
+        // Phase `home_peer_projection_rejects_future_schemas_and_forged_device_ids`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "Verified home peer".into(),
+                capabilities: DeviceCapabilities::host(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, &root).unwrap();
+            let mut registration = HomePeerRegistration {
+                schema_version: HomePeerRegistration::CURRENT_SCHEMA,
+                device_node_id: hex::encode(cert.device_public_key),
+                relay_service_node_id: hex::encode([83; 32]),
+                relay_endpoint: None,
+                label: cert.device_label.clone(),
+                user_public_key: hex::encode(cert.user_public_key),
+                device_cert: Some(cert),
+                relay_workspace_ids: vec![7],
+            };
+            assert!(valid_home_peer_registration(&registration));
 
-    #[test]
-    fn home_peer_projection_rejects_future_schemas_and_forged_device_ids() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Verified home peer".into(),
-            capabilities: DeviceCapabilities::host(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        let mut registration = HomePeerRegistration {
-            schema_version: HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: hex::encode(cert.device_public_key),
-            relay_service_node_id: hex::encode([83; 32]),
-            relay_endpoint: None,
-            label: cert.device_label.clone(),
-            user_public_key: hex::encode(cert.user_public_key),
-            device_cert: Some(cert),
-            relay_workspace_ids: vec![7],
-        };
-        assert!(valid_home_peer_registration(&registration));
+            registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA.saturating_add(1);
+            assert!(!valid_home_peer_registration(&registration));
 
-        registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA.saturating_add(1);
-        assert!(!valid_home_peer_registration(&registration));
+            registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA;
+            registration.device_node_id = hex::encode([84; 32]);
+            assert!(!valid_home_peer_registration(&registration));
+        }
+        // Phase `personal_enrollment_staging_keeps_an_existing_device_unchanged` (defined above).
+        personal_enrollment_staging_keeps_an_existing_device_unchanged();
+        // Phase `expired_requester_lease_blocks_personal_identity_publication`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
+            let member = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
+            let identity_root = tempfile::tempdir().unwrap();
+            let identity_parent = tempfile::tempdir().unwrap();
+            let identity_dir = identity_parent.path().join("identities");
+            let paths = IdentityPaths::under(identity_root.path());
+            paths.ensure_directories().unwrap();
+            let mut requester = std::process::Command::new("/bin/sh")
+                .args(["-c", "while :; do sleep 1; done"])
+                .spawn()
+                .unwrap();
+            let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
+            let payload = personal_payload(&root, &member, [12; 16]);
+            let (marker_path, marker) = stage_personal_enrollment(
+                identity_root.path(),
+                &identity_dir,
+                &paths,
+                &payload,
+                Some(lease),
+            )
+            .unwrap();
+            let unrelated = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
+            assert!(
+                authorize_personal_commit(&marker_path, &marker, Some(unrelated)).is_err(),
+                "another live requester cannot adopt a prepared enrollment"
+            );
+            requester.kill().unwrap();
+            requester.wait().unwrap();
 
-        registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA;
-        registration.device_node_id = hex::encode([84; 32]);
-        assert!(!valid_home_peer_registration(&registration));
+            assert!(
+                authorize_personal_commit(&marker_path, &marker, Some(lease)).is_err(),
+                "a dead compositor cannot cross the durable commit point"
+            );
+            let mut simulated_ready = marker;
+            simulated_ready.commit_ready = true;
+            assert!(
+                commit_staged_personal_enrollment(
+                    identity_root.path(),
+                    &paths,
+                    &marker_path,
+                    &simulated_ready,
+                    |_| lease.validate().map_err(Into::into),
+                )
+                .is_err()
+            );
+            assert!(!identity_dir.exists());
+            assert!(!paths.user_pubkey.exists());
+            assert!(!paths.device_cert.exists());
+            assert!(marker_path.exists(), "staging remains retryable");
+        }
+        // Phase `pair_device_rejects_an_expired_requester_before_creating_identity_state`.
+        {
+            let mut requester = std::process::Command::new("/bin/sh")
+                .args(["-c", "while :; do sleep 1; done"])
+                .spawn()
+                .unwrap();
+            let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
+            requester.kill().unwrap();
+            requester.wait().unwrap();
+
+            let identity_root = tempfile::tempdir().unwrap();
+            let identity_dir = tempfile::tempdir().unwrap();
+            assert!(
+                pair(
+                    identity_root.path(),
+                    "New laptop",
+                    1,
+                    EnrollmentKind::PersonalDevice,
+                    None,
+                    Some(identity_dir.path()),
+                    None,
+                    Some(lease),
+                )
+                .is_err()
+            );
+            let paths = IdentityPaths::under(identity_root.path());
+            assert!(!paths.device_privkey.exists());
+            assert!(!paths.user_pubkey.exists());
+            assert!(!paths.device_cert.exists());
+        }
     }
 
     #[test]
@@ -3065,6 +3094,19 @@ mod tests {
         )
         .unwrap();
 
+        // Seed the new device's key so the approval pins exactly this device:
+        // every nearby pairing on the host shares one broadcast port, and an
+        // unpinned approver answers whichever device solicits first.
+        let new_root = tempfile::tempdir().unwrap();
+        let new_identities = tempfile::tempdir().unwrap();
+        let new_device = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
+        let new_paths = IdentityPaths::under(new_root.path());
+        new_paths.ensure_directories().unwrap();
+        tilo_user_identity::persist::write_device_key(&new_paths.device_privkey, &new_device)
+            .unwrap();
+        let expected_device = hex::encode(new_device.verifying_key().to_bytes());
+        let expected_service = hex::encode(tilo_relay::daemon::relay_service_node_id(&new_device));
+
         let server_root = approver_root.path().to_path_buf();
         let server_identities = approver_identities.path().to_path_buf();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -3072,12 +3114,12 @@ mod tests {
             approve(&ApprovalOptions {
                 identity_root: &server_root,
                 identity_dir: Some(&server_identities),
-                timeout: 15,
+                timeout: 60,
                 workspace_cache: std::path::Path::new(""),
                 acl: std::path::Path::new(""),
                 relay_workspace_ids: &[],
-                expected_device: None,
-                expected_service: None,
+                expected_device: Some(&expected_device),
+                expected_service: Some(&expected_service),
                 kind: EnrollmentKind::PersonalDevice,
                 ready: Some(&ready_tx),
             })
@@ -3085,13 +3127,17 @@ mod tests {
         ready_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("approval listener became ready");
-        let new_root = tempfile::tempdir().unwrap();
-        let new_identities = tempfile::tempdir().unwrap();
+        // Other nearby-pairing surfaces on this host (an open discovery
+        // view, another approval sheet) share the well-known port. Which of
+        // them the kernel hands a unicast datagram must not decide whether
+        // the enrollment completes.
+        let _other_surfaces: Vec<UdpSocket> =
+            (0..3).map(|_| bind_pair_listener().unwrap()).collect();
         let requester = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
         pair(
             new_root.path(),
             "New laptop",
-            15,
+            60,
             EnrollmentKind::PersonalDevice,
             None,
             Some(new_identities.path()),
@@ -3126,134 +3172,138 @@ mod tests {
     }
 
     #[test]
-    fn automatic_pair_offer_is_private_to_the_soliciting_server() {
-        let server = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let token = "signed-host-enrollment-token";
-        let encrypted =
-            encrypt_pair_offer(token, server.verifying_key().to_bytes(), WireVersion::V2).unwrap();
-        assert!(v2_body(&encrypted).is_some());
-        assert!(
-            !encrypted
-                .windows(token.len())
-                .any(|window| window == token.as_bytes())
-        );
-        assert_eq!(decrypt_pair_offer(&encrypted, &server).unwrap(), token);
-        let other = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
-        assert!(decrypt_pair_offer(&encrypted, &other).is_err());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn pairing_exchange_is_private_single_use_and_resumable() {
+        // Phase `automatic_pair_offer_is_private_to_the_soliciting_server`.
+        {
+            let server = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let token = "signed-host-enrollment-token";
+            let encrypted =
+                encrypt_pair_offer(token, server.verifying_key().to_bytes(), WireVersion::V2)
+                    .unwrap();
+            assert!(v2_body(&encrypted).is_some());
+            assert!(
+                !encrypted
+                    .windows(token.len())
+                    .any(|window| window == token.as_bytes())
+            );
+            assert_eq!(decrypt_pair_offer(&encrypted, &server).unwrap(), token);
+            let other = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+            assert!(decrypt_pair_offer(&encrypted, &other).is_err());
+        }
+        // Phase `nearby_pairing_code_is_stable_and_six_digits`.
+        {
+            let code = pairing_code([7; 32], [8; 32]);
+            assert_eq!(code, pairing_code([7; 32], [8; 32]));
+            assert_eq!(code.len(), 6);
+            assert!(code.bytes().all(|byte| byte.is_ascii_digit()));
+            assert_ne!(code, pairing_code([7; 32], [9; 32]));
+        }
+        // Phase `unrelated_lan_datagram_is_not_a_pairing_message`.
+        {
+            let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+            assert!(decrypt_request(b"ambient discovery traffic", &issuer).is_err());
+            let mut request_seed = [0_u8; 32];
+            request_seed[0] = 11;
+            let request_ephemeral = tilo_seal::SecretKey::from_bytes(request_seed);
+            assert!(
+                decrypt_response(
+                    b"not an enrollment response",
+                    [3; 16],
+                    [7; 32],
+                    &request_ephemeral,
+                )
+                .is_err()
+            );
+        }
+        // Phase `enrollment_nonce_is_consumed_once`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            consume_nonce(dir.path(), &[4; 16], [7; 32]).unwrap();
+            consume_nonce(dir.path(), &[4; 16], [7; 32]).unwrap();
+            assert!(consume_nonce(dir.path(), &[4; 16], [8; 32]).is_err());
+        }
+        // Phase `approved_home_peer_registration_exposes_distinct_stable_node_ids`.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
 
-    #[test]
-    fn nearby_pairing_code_is_stable_and_six_digits() {
-        let code = pairing_code([7; 32], [8; 32]);
-        assert_eq!(code, pairing_code([7; 32], [8; 32]));
-        assert_eq!(code.len(), 6);
-        assert!(code.bytes().all(|byte| byte.is_ascii_digit()));
-        assert_ne!(code, pairing_code([7; 32], [9; 32]));
-    }
+            let dir = tempfile::tempdir().unwrap();
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let cert = payload(&root).cert;
+            register_home_peer(dir.path(), &cert, [8; 32], &[2, 9]).unwrap();
+            let json: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(dir.path().join("home-peers.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                json[0]["device_node_id"],
+                hex::encode(cert.device_public_key)
+            );
+            assert_eq!(json[0]["relay_service_node_id"], hex::encode([8; 32]));
+            assert_eq!(json[0]["relay_workspace_ids"], serde_json::json!([2, 9]));
+            assert_eq!(
+                std::fs::metadata(dir.path().join("home-peers.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o644
+            );
+        }
+        // Phase `invalid_existing_home_peer_registry_is_never_overwritten`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("home-peers.json");
+            atomic_file::write(&path, b"not json").unwrap();
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            assert!(register_home_peer(dir.path(), &payload(&root).cert, [8; 32], &[2]).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"not json");
+        }
+        // Phase `dropped_response_can_be_retried_with_the_same_authenticated_ack`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let response =
+                postcard::to_stdvec(&sign_response(payload(&root), &root).unwrap()).unwrap();
+            // The first datagram is modeled as dropped. Retransmission uses the
+            // exact same signed bytes, and the recipient ACK binds their key,
+            // nonce, and that response digest.
+            let retransmitted = response.clone();
+            assert_eq!(response, retransmitted);
+            let ack = make_ack(&retransmitted, [3; 16], &device).unwrap();
+            verify_ack(&ack, &response, [3; 16], device.verifying_key().to_bytes()).unwrap();
+        }
+        // Phase `dropped_all_acks_can_resume_after_process_restart`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let response =
+                postcard::to_stdvec(&sign_response(payload(&root), &root).unwrap()).unwrap();
 
-    #[test]
-    fn unrelated_lan_datagram_is_not_a_pairing_message() {
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        assert!(decrypt_request(b"ambient discovery traffic", &issuer).is_err());
-        let mut request_seed = [0_u8; 32];
-        request_seed[0] = 11;
-        let request_ephemeral = tilo_seal::SecretKey::from_bytes(request_seed);
-        assert!(
-            decrypt_response(
-                b"not an enrollment response",
+            // No ACK reached the first approver, so it did not consume the
+            // admission nonce. A restarted join/approve exchange may authenticate
+            // the same device and finish registration idempotently.
+            assert!(!dir.path().join("enrollment-nonces").exists());
+            let ack = make_ack(&response, [3; 16], &device).unwrap();
+            verify_ack(&ack, &response, [3; 16], device.verifying_key().to_bytes()).unwrap();
+            consume_nonce(dir.path(), &[3; 16], device.verifying_key().to_bytes()).unwrap();
+            let finalized =
+                make_finalized(&response, [3; 16], device.verifying_key().to_bytes(), &root)
+                    .unwrap();
+            verify_finalized(
+                &finalized,
+                &response,
                 [3; 16],
-                [7; 32],
-                &request_ephemeral,
+                device.verifying_key().to_bytes(),
+                root.verifying_key().to_bytes(),
             )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn enrollment_nonce_is_consumed_once() {
-        let dir = tempfile::tempdir().unwrap();
-        consume_nonce(dir.path(), &[4; 16], [7; 32]).unwrap();
-        consume_nonce(dir.path(), &[4; 16], [7; 32]).unwrap();
-        assert!(consume_nonce(dir.path(), &[4; 16], [8; 32]).is_err());
-    }
-
-    #[test]
-    fn approved_home_peer_registration_exposes_distinct_stable_node_ids() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let dir = tempfile::tempdir().unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let cert = payload(&root).cert;
-        register_home_peer(dir.path(), &cert, [8; 32], &[2, 9]).unwrap();
-        let json: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(dir.path().join("home-peers.json")).unwrap())
-                .unwrap();
-        assert_eq!(
-            json[0]["device_node_id"],
-            hex::encode(cert.device_public_key)
-        );
-        assert_eq!(json[0]["relay_service_node_id"], hex::encode([8; 32]));
-        assert_eq!(json[0]["relay_workspace_ids"], serde_json::json!([2, 9]));
-        assert_eq!(
-            std::fs::metadata(dir.path().join("home-peers.json"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o644
-        );
-    }
-
-    #[test]
-    fn invalid_existing_home_peer_registry_is_never_overwritten() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("home-peers.json");
-        atomic_file::write(&path, b"not json").unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        assert!(register_home_peer(dir.path(), &payload(&root).cert, [8; 32], &[2]).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"not json");
-    }
-
-    #[test]
-    fn dropped_response_can_be_retried_with_the_same_authenticated_ack() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let response = postcard::to_stdvec(&sign_response(payload(&root), &root).unwrap()).unwrap();
-        // The first datagram is modeled as dropped. Retransmission uses the
-        // exact same signed bytes, and the recipient ACK binds their key,
-        // nonce, and that response digest.
-        let retransmitted = response.clone();
-        assert_eq!(response, retransmitted);
-        let ack = make_ack(&retransmitted, [3; 16], &device).unwrap();
-        verify_ack(&ack, &response, [3; 16], device.verifying_key().to_bytes()).unwrap();
-    }
-
-    #[test]
-    fn dropped_all_acks_can_resume_after_process_restart() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let response = postcard::to_stdvec(&sign_response(payload(&root), &root).unwrap()).unwrap();
-
-        // No ACK reached the first approver, so it did not consume the
-        // admission nonce. A restarted join/approve exchange may authenticate
-        // the same device and finish registration idempotently.
-        assert!(!dir.path().join("enrollment-nonces").exists());
-        let ack = make_ack(&response, [3; 16], &device).unwrap();
-        verify_ack(&ack, &response, [3; 16], device.verifying_key().to_bytes()).unwrap();
-        consume_nonce(dir.path(), &[3; 16], device.verifying_key().to_bytes()).unwrap();
-        let finalized =
-            make_finalized(&response, [3; 16], device.verifying_key().to_bytes(), &root).unwrap();
-        verify_finalized(
-            &finalized,
-            &response,
-            [3; 16],
-            device.verifying_key().to_bytes(),
-            root.verifying_key().to_bytes(),
-        )
-        .unwrap();
-        consume_nonce(dir.path(), &[3; 16], device.verifying_key().to_bytes()).unwrap();
-        assert!(consume_nonce(dir.path(), &[3; 16], [6; 32]).is_err());
+            .unwrap();
+            consume_nonce(dir.path(), &[3; 16], device.verifying_key().to_bytes()).unwrap();
+            assert!(consume_nonce(dir.path(), &[3; 16], [6; 32]).is_err());
+        }
     }
 
     // Byte fixtures produced by the enrollment code before a crypto-stack
@@ -3290,100 +3340,99 @@ mod tests {
         423888209b7aab3703f999ab61869f950d";
 
     #[test]
-    fn known_answer_x25519_agreement_and_ed25519_conversion() {
-        let a = tilo_seal::SecretKey::from_bytes([0x11; 32]);
-        let b = tilo_seal::SecretKey::from_bytes([0x22; 32]);
-        assert_eq!(
-            hex::encode(a.public_key().unwrap().to_bytes()),
-            "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13"
-        );
-        // The legacy KDF is BLAKE3(domain || shared || context); with an
-        // empty domain and context it is BLAKE3 of the raw agreement, which
-        // pins the X25519 output an earlier build computed.
-        let shared =
-            hex::decode("9e004098efc091d4ec2663b4e9f5cfd4d7064571690b4bea97ab146ab9f35056")
-                .unwrap();
-        assert_eq!(
-            tilo_seal::legacy::blake3_x25519_key(&a, &b.public_key().unwrap(), b"", &[])
-                .unwrap()
-                .expose_secret(),
-            blake3::hash(&shared).as_bytes()
-        );
-        let recipient = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
-        assert_eq!(
-            hex::encode(recipient.to_scalar_bytes()),
-            "c25a999cf27ed91865db781f67e404f9d541d12e3e761786c409131fe595096d"
-        );
-        assert_eq!(
-            hex::encode(recipient.verifying_key().to_montgomery().to_bytes()),
-            "931aad030ad93d3ff8042699324fdb230585be4daf500266eaa4b8f747543f50"
-        );
-    }
-
-    #[test]
-    fn known_answer_pair_offer_opens() {
-        let recipient = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
-        let offer = hex::decode(KAT_PAIR_OFFER).unwrap();
-        assert_eq!(
-            decrypt_pair_offer(&offer, &recipient).unwrap(),
-            "kat-pairing-token"
-        );
-        let wrong = ed25519_dalek::SigningKey::from_bytes(&[0x22; 32]);
-        assert!(decrypt_pair_offer(&offer, &wrong).is_err());
-    }
-
-    #[test]
-    fn known_answer_request_opens() {
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let bytes = hex::decode(KAT_REQUEST).unwrap();
-        let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
-        assert_eq!(request.token, "kat-bearer-token");
-        assert_eq!(request.device_public_key, [7; 32]);
-        assert_eq!(request.relay_service_node_id, [8; 32]);
-        assert_eq!(request.label, "NAS");
-        assert!(matches!(request.kind, EnrollmentKind::HomePeer));
-        assert_eq!(
-            route,
-            ResponseRoute::V1 {
-                requester_ephemeral_public_key: bytes[..32].try_into().unwrap()
-            }
-        );
-    }
-
-    #[test]
-    fn known_answer_response_opens_and_verifies() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let signed = sign_response(payload(&root), &root).unwrap();
-        assert_eq!(hex::encode(&signed.signature), KAT_RESPONSE_SIGNATURE);
-        let request_ephemeral = tilo_seal::SecretKey::from_bytes([0x5a; 32]);
-        let decrypted = decrypt_response(
-            &hex::decode(KAT_RESPONSE).unwrap(),
-            [3; 16],
-            device.verifying_key().to_bytes(),
-            &request_ephemeral,
-        )
-        .unwrap();
-        assert_eq!(hex::encode(&decrypted.signature), KAT_RESPONSE_SIGNATURE);
-        assert_eq!(
-            postcard::to_stdvec(&decrypted.payload).unwrap(),
-            postcard::to_stdvec(&signed.payload).unwrap()
-        );
-        verify_response(&decrypted, root.verifying_key().to_bytes()).unwrap();
-    }
-
-    #[test]
-    fn known_answer_ack_signature() {
-        let device = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
-        let ack = make_ack(b"kat-response", [4; 16], &device).unwrap();
-        assert_eq!(hex::encode(&ack), KAT_ACK);
-        verify_ack(
-            &ack,
-            b"kat-response",
-            [4; 16],
-            device.verifying_key().to_bytes(),
-        )
-        .unwrap();
+    fn pairing_crypto_matches_known_answers() {
+        // Phase `known_answer_x25519_agreement_and_ed25519_conversion`.
+        {
+            let a = tilo_seal::SecretKey::from_bytes([0x11; 32]);
+            let b = tilo_seal::SecretKey::from_bytes([0x22; 32]);
+            assert_eq!(
+                hex::encode(a.public_key().unwrap().to_bytes()),
+                "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13"
+            );
+            // The legacy KDF is BLAKE3(domain || shared || context); with an
+            // empty domain and context it is BLAKE3 of the raw agreement, which
+            // pins the X25519 output an earlier build computed.
+            let shared =
+                hex::decode("9e004098efc091d4ec2663b4e9f5cfd4d7064571690b4bea97ab146ab9f35056")
+                    .unwrap();
+            assert_eq!(
+                tilo_seal::legacy::blake3_x25519_key(&a, &b.public_key().unwrap(), b"", &[])
+                    .unwrap()
+                    .expose_secret(),
+                blake3::hash(&shared).as_bytes()
+            );
+            let recipient = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
+            assert_eq!(
+                hex::encode(recipient.to_scalar_bytes()),
+                "c25a999cf27ed91865db781f67e404f9d541d12e3e761786c409131fe595096d"
+            );
+            assert_eq!(
+                hex::encode(recipient.verifying_key().to_montgomery().to_bytes()),
+                "931aad030ad93d3ff8042699324fdb230585be4daf500266eaa4b8f747543f50"
+            );
+        }
+        // Phase `known_answer_pair_offer_opens`.
+        {
+            let recipient = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
+            let offer = hex::decode(KAT_PAIR_OFFER).unwrap();
+            assert_eq!(
+                decrypt_pair_offer(&offer, &recipient).unwrap(),
+                "kat-pairing-token"
+            );
+            let wrong = ed25519_dalek::SigningKey::from_bytes(&[0x22; 32]);
+            assert!(decrypt_pair_offer(&offer, &wrong).is_err());
+        }
+        // Phase `known_answer_request_opens`.
+        {
+            let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+            let bytes = hex::decode(KAT_REQUEST).unwrap();
+            let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
+            assert_eq!(request.token, "kat-bearer-token");
+            assert_eq!(request.device_public_key, [7; 32]);
+            assert_eq!(request.relay_service_node_id, [8; 32]);
+            assert_eq!(request.label, "NAS");
+            assert!(matches!(request.kind, EnrollmentKind::HomePeer));
+            assert_eq!(
+                route,
+                ResponseRoute::V1 {
+                    requester_ephemeral_public_key: bytes[..32].try_into().unwrap()
+                }
+            );
+        }
+        // Phase `known_answer_response_opens_and_verifies`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let signed = sign_response(payload(&root), &root).unwrap();
+            assert_eq!(hex::encode(&signed.signature), KAT_RESPONSE_SIGNATURE);
+            let request_ephemeral = tilo_seal::SecretKey::from_bytes([0x5a; 32]);
+            let decrypted = decrypt_response(
+                &hex::decode(KAT_RESPONSE).unwrap(),
+                [3; 16],
+                device.verifying_key().to_bytes(),
+                &request_ephemeral,
+            )
+            .unwrap();
+            assert_eq!(hex::encode(&decrypted.signature), KAT_RESPONSE_SIGNATURE);
+            assert_eq!(
+                postcard::to_stdvec(&decrypted.payload).unwrap(),
+                postcard::to_stdvec(&signed.payload).unwrap()
+            );
+            verify_response(&decrypted, root.verifying_key().to_bytes()).unwrap();
+        }
+        // Phase `known_answer_ack_signature`.
+        {
+            let device = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
+            let ack = make_ack(b"kat-response", [4; 16], &device).unwrap();
+            assert_eq!(hex::encode(&ack), KAT_ACK);
+            verify_ack(
+                &ack,
+                b"kat-response",
+                [4; 16],
+                device.verifying_key().to_bytes(),
+            )
+            .unwrap();
+        }
     }
 
     /// A request in the v1 wire format, as a device running an earlier
@@ -3430,145 +3479,151 @@ mod tests {
     }
 
     #[test]
-    fn v2_request_gets_a_v2_response_only_the_requester_opens() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let (bytes, response_secret) =
-            encrypt_request(&sample_request(), issuer.verifying_key().to_bytes()).unwrap();
-        assert_eq!(&bytes[..8], b"TLOENRL\x02");
-        let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
-        assert_eq!(request.token, "bearer");
-        assert!(matches!(route, ResponseRoute::V2 { .. }));
-        let signed = sign_response(payload(&root), &root).unwrap();
-        let response =
-            encrypt_response(&signed, [3; 16], device.verifying_key().to_bytes(), route).unwrap();
-        assert!(v2_body(&response).is_some());
-        let opened = decrypt_response(
-            &response,
-            [3; 16],
-            device.verifying_key().to_bytes(),
-            &response_secret,
-        )
-        .unwrap();
-        verify_response(&opened, root.verifying_key().to_bytes()).unwrap();
-        // Another key, another token nonce or another recipient device fail.
-        let other = tilo_seal::SecretKey::generate().unwrap();
-        assert!(
-            decrypt_response(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn pairing_envelope_versions_are_negotiated_and_step_bound() {
+        // Phase `v2_request_gets_a_v2_response_only_the_requester_opens`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let (bytes, response_secret) =
+                encrypt_request(&sample_request(), issuer.verifying_key().to_bytes()).unwrap();
+            assert_eq!(&bytes[..8], b"TLOENRL\x02");
+            let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
+            assert_eq!(request.token, "bearer");
+            assert!(matches!(route, ResponseRoute::V2 { .. }));
+            let signed = sign_response(payload(&root), &root).unwrap();
+            let response =
+                encrypt_response(&signed, [3; 16], device.verifying_key().to_bytes(), route)
+                    .unwrap();
+            assert!(v2_body(&response).is_some());
+            let opened = decrypt_response(
                 &response,
                 [3; 16],
                 device.verifying_key().to_bytes(),
-                &other
+                &response_secret,
             )
-            .is_err()
-        );
-        assert!(
-            decrypt_response(
-                &response,
-                [4; 16],
-                device.verifying_key().to_bytes(),
-                &response_secret
-            )
-            .is_err()
-        );
-        assert!(decrypt_response(&response, [3; 16], [1; 32], &response_secret).is_err());
-    }
-
-    #[test]
-    fn v1_request_is_still_accepted_and_answered_in_v1() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let (bytes, requester_ephemeral) =
-            legacy_v1_request(&sample_request(), issuer.verifying_key().to_bytes());
-        assert!(v2_body(&bytes).is_none());
-        let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
-        assert_eq!(request.token, "bearer");
-        assert_eq!(
-            route,
-            ResponseRoute::V1 {
-                requester_ephemeral_public_key: requester_ephemeral
-                    .public_key()
-                    .unwrap()
-                    .to_bytes()
-            }
-        );
-        let signed = sign_response(payload(&root), &root).unwrap();
-        let response =
-            encrypt_response(&signed, [3; 16], device.verifying_key().to_bytes(), route).unwrap();
-        // An earlier build parses exactly the v1 framing.
-        assert!(v2_body(&response).is_none());
-        let envelope: LegacyEnvelope = postcard::from_bytes(&response).unwrap();
-        assert_eq!(postcard::to_stdvec(&envelope).unwrap(), response);
-        let opened = decrypt_response(
-            &response,
-            [3; 16],
-            device.verifying_key().to_bytes(),
-            &requester_ephemeral,
-        )
-        .unwrap();
-        verify_response(&opened, root.verifying_key().to_bytes()).unwrap();
-    }
-
-    #[test]
-    fn pair_offers_mirror_the_solicitation_version() {
-        let server = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let mut solicitation = PairSolicitation {
-            magic: PAIR_MAGIC_V1,
-            device_public_key: server.verifying_key().to_bytes(),
-            relay_service_node_id: [8; 32],
-            label: "NAS".into(),
-            kind: EnrollmentKind::HomePeer,
-        };
-        assert_eq!(solicitation_version(&solicitation), Some(WireVersion::V1));
-        let v1 =
-            encrypt_pair_offer("token", solicitation.device_public_key, WireVersion::V1).unwrap();
-        assert!(v2_body(&v1).is_none());
-        assert!(postcard::from_bytes::<LegacyEnvelope>(&v1).is_ok());
-        assert_eq!(decrypt_pair_offer(&v1, &server).unwrap(), "token");
-
-        solicitation.magic = PAIR_MAGIC_V2;
-        assert_eq!(solicitation_version(&solicitation), Some(WireVersion::V2));
-        let v2 =
-            encrypt_pair_offer("token", solicitation.device_public_key, WireVersion::V2).unwrap();
-        assert!(v2_body(&v2).is_some());
-        assert_eq!(decrypt_pair_offer(&v2, &server).unwrap(), "token");
-
-        solicitation.magic = *b"TLOPAIR9";
-        assert!(!valid_solicitation(&solicitation));
-    }
-
-    #[test]
-    fn version_prefix_decides_the_parser_and_tampering_fails() {
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let (bytes, _) =
-            encrypt_request(&sample_request(), issuer.verifying_key().to_bytes()).unwrap();
-        // Every byte of a v2 envelope is covered: flipping the version or any
-        // sealed byte fails, and a stripped prefix is not read as v1.
-        for index in 0..bytes.len() {
-            let mut tampered = bytes.clone();
-            tampered[index] ^= 1;
-            assert!(decrypt_request(&tampered, &issuer).is_err(), "byte {index}");
-        }
-        assert!(decrypt_request(&bytes[8..], &issuer).is_err());
-        let wrong = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
-        assert!(decrypt_request(&bytes, &wrong).is_err());
-        // A v1 envelope never begins with the v2 prefix.
-        for _ in 0..32 {
-            let (legacy, _) =
-                legacy_v1_request(&sample_request(), issuer.verifying_key().to_bytes());
-            assert!(v2_body(&legacy).is_none());
-        }
-    }
-
-    #[test]
-    fn v2_envelopes_do_not_open_as_another_step() {
-        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let offer = encrypt_pair_offer("token", device.verifying_key().to_bytes(), WireVersion::V2)
             .unwrap();
-        // Same recipient key, different step label: the request reader
-        // must refuse the pairing offer.
-        assert!(decrypt_request(&offer, &device).is_err());
+            verify_response(&opened, root.verifying_key().to_bytes()).unwrap();
+            // Another key, another token nonce or another recipient device fail.
+            let other = tilo_seal::SecretKey::generate().unwrap();
+            assert!(
+                decrypt_response(
+                    &response,
+                    [3; 16],
+                    device.verifying_key().to_bytes(),
+                    &other
+                )
+                .is_err()
+            );
+            assert!(
+                decrypt_response(
+                    &response,
+                    [4; 16],
+                    device.verifying_key().to_bytes(),
+                    &response_secret
+                )
+                .is_err()
+            );
+            assert!(decrypt_response(&response, [3; 16], [1; 32], &response_secret).is_err());
+        }
+        // Phase `v1_request_is_still_accepted_and_answered_in_v1`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let (bytes, requester_ephemeral) =
+                legacy_v1_request(&sample_request(), issuer.verifying_key().to_bytes());
+            assert!(v2_body(&bytes).is_none());
+            let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
+            assert_eq!(request.token, "bearer");
+            assert_eq!(
+                route,
+                ResponseRoute::V1 {
+                    requester_ephemeral_public_key: requester_ephemeral
+                        .public_key()
+                        .unwrap()
+                        .to_bytes()
+                }
+            );
+            let signed = sign_response(payload(&root), &root).unwrap();
+            let response =
+                encrypt_response(&signed, [3; 16], device.verifying_key().to_bytes(), route)
+                    .unwrap();
+            // An earlier build parses exactly the v1 framing.
+            assert!(v2_body(&response).is_none());
+            let envelope: LegacyEnvelope = postcard::from_bytes(&response).unwrap();
+            assert_eq!(postcard::to_stdvec(&envelope).unwrap(), response);
+            let opened = decrypt_response(
+                &response,
+                [3; 16],
+                device.verifying_key().to_bytes(),
+                &requester_ephemeral,
+            )
+            .unwrap();
+            verify_response(&opened, root.verifying_key().to_bytes()).unwrap();
+        }
+        // Phase `pair_offers_mirror_the_solicitation_version`.
+        {
+            let server = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let mut solicitation = PairSolicitation {
+                magic: PAIR_MAGIC_V1,
+                device_public_key: server.verifying_key().to_bytes(),
+                relay_service_node_id: [8; 32],
+                label: "NAS".into(),
+                kind: EnrollmentKind::HomePeer,
+            };
+            assert_eq!(solicitation_version(&solicitation), Some(WireVersion::V1));
+            let v1 = encrypt_pair_offer("token", solicitation.device_public_key, WireVersion::V1)
+                .unwrap();
+            assert!(v2_body(&v1).is_none());
+            assert!(postcard::from_bytes::<LegacyEnvelope>(&v1).is_ok());
+            assert_eq!(decrypt_pair_offer(&v1, &server).unwrap(), "token");
+
+            solicitation.magic = PAIR_MAGIC_V2;
+            assert_eq!(solicitation_version(&solicitation), Some(WireVersion::V2));
+            let v2 = encrypt_pair_offer("token", solicitation.device_public_key, WireVersion::V2)
+                .unwrap();
+            assert!(v2_body(&v2).is_some());
+            assert_eq!(decrypt_pair_offer(&v2, &server).unwrap(), "token");
+
+            solicitation.magic = *b"TLOPAIR9";
+            assert!(!valid_solicitation(&solicitation));
+        }
+        // Phase `version_prefix_decides_the_parser_and_tampering_fails`.
+        {
+            let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+            let (bytes, _) =
+                encrypt_request(&sample_request(), issuer.verifying_key().to_bytes()).unwrap();
+            // Every byte of a v2 envelope is covered: flipping the version or any
+            // sealed byte fails, and a stripped prefix is not read as v1.
+            for index in 0..bytes.len() {
+                let mut tampered = bytes.clone();
+                tampered[index] ^= 1;
+                assert!(decrypt_request(&tampered, &issuer).is_err(), "byte {index}");
+            }
+            assert!(decrypt_request(&bytes[8..], &issuer).is_err());
+            let wrong = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+            assert!(decrypt_request(&bytes, &wrong).is_err());
+            // A v1 envelope never begins with the v2 prefix.
+            for _ in 0..32 {
+                let (legacy, _) =
+                    legacy_v1_request(&sample_request(), issuer.verifying_key().to_bytes());
+                assert!(v2_body(&legacy).is_none());
+            }
+        }
+        // Phase `v2_envelopes_do_not_open_as_another_step`.
+        {
+            let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let offer =
+                encrypt_pair_offer("token", device.verifying_key().to_bytes(), WireVersion::V2)
+                    .unwrap();
+            // Same recipient key, different step label: the request reader
+            // must refuse the pairing offer.
+            assert!(decrypt_request(&offer, &device).is_err());
+        }
     }
 }

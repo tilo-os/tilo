@@ -106,18 +106,19 @@ mod tests {
     const ADA: &str = "u_1f4c3a9b2d7e5061";
     const BOB: &str = "u_9a0b1c2d3e4f5061";
 
+    /// One unordered pair names exactly one room, under an id that is stable,
+    /// parseable and distinct from every other pair's.
     #[test]
-    fn a_pair_names_one_room_whichever_way_round_it_is_given() {
+    fn each_unordered_pair_has_one_stable_room_id() {
+        // Phase: a pair names one room whichever way round it is given.
         let from_ada = DirectRoom::between(ADA, BOB).expect("a pair names a room");
         let from_bob = DirectRoom::between(BOB, ADA).expect("a pair names a room");
         assert_eq!(from_ada, from_bob);
         assert_eq!(from_ada.room_id(), from_bob.room_id());
-    }
 
-    /// Asserted against a literal so a change to the derivation is one somebody
-    /// has to make on purpose.
-    #[test]
-    fn the_room_id_is_stable_and_carries_no_local_state() {
+        // Phase: the room id is stable and carries no local state. Asserted
+        // against a literal so a change to the derivation is one somebody has
+        // to make on purpose.
         let room = DirectRoom::between(ADA, BOB).unwrap();
         let id = room.room_id();
         assert_eq!(id, DirectRoom::between(ADA, BOB).unwrap().room_id());
@@ -129,10 +130,8 @@ mod tests {
             uuid::Uuid::parse_str(&id).is_ok(),
             "a room id that does not parse addresses nobody"
         );
-    }
 
-    #[test]
-    fn different_pairs_are_different_rooms() {
+        // Phase: different pairs are different rooms.
         let carol = "u_cccccccccccccccc";
         let ada_bob = DirectRoom::between(ADA, BOB).unwrap().room_id();
         let ada_carol = DirectRoom::between(ADA, carol).unwrap().room_id();
@@ -140,12 +139,10 @@ mod tests {
         assert_ne!(ada_bob, ada_carol);
         assert_ne!(ada_bob, bob_carol);
         assert_ne!(ada_carol, bob_carol);
-    }
 
-    /// Short, unrealistic ids deliberately: the collision has to be exact, and
-    /// the property under test is the digest's, not the id format's.
-    #[test]
-    fn ids_that_differ_only_in_where_they_split_are_different_rooms() {
+        // Phase: ids that differ only in where they split are different rooms.
+        // Short, unrealistic ids deliberately: the collision has to be exact,
+        // and the property under test is the digest's, not the id format's.
         // "a" + "bc"  and  "ab" + "c"  are both "abc" run together.
         let a = DirectRoom::between("a", "bc").unwrap();
         let b = DirectRoom::between("ab", "c").unwrap();
@@ -161,19 +158,18 @@ mod tests {
         );
     }
 
+    /// A room needs two distinct, non-empty members; it knows them, and tells
+    /// a non-member nothing.
     #[test]
-    fn a_person_has_no_direct_room_with_themselves() {
+    fn a_room_has_two_distinct_members_and_answers_only_about_them() {
+        // Case: a person has no direct room with themselves.
         assert_eq!(DirectRoom::between(ADA, ADA), None);
-    }
 
-    #[test]
-    fn an_empty_id_names_no_room() {
+        // Case: an empty id names no room.
         assert_eq!(DirectRoom::between("", BOB), None);
         assert_eq!(DirectRoom::between(ADA, ""), None);
-    }
 
-    #[test]
-    fn a_room_knows_its_two_members_and_who_the_other_one_is() {
+        // Case: a room knows its two members and who the other one is.
         let room = DirectRoom::between(BOB, ADA).unwrap();
         assert_eq!(
             room.members(),
@@ -183,10 +179,8 @@ mod tests {
         assert!(room.contains(ADA) && room.contains(BOB));
         assert_eq!(room.other_than(ADA), Some(BOB));
         assert_eq!(room.other_than(BOB), Some(ADA));
-    }
 
-    #[test]
-    fn a_non_member_is_told_nothing_about_who_is_in_the_room() {
+        // Case: a non-member is told nothing about who is in the room.
         let room = DirectRoom::between(ADA, BOB).unwrap();
         assert_eq!(room.other_than("u_cccccccccccccccc"), None);
         assert!(!room.contains("u_cccccccccccccccc"));

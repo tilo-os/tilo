@@ -165,42 +165,161 @@ receiver through `ChannelContentKeys` (release build, one x86-64 core):
 A signed op carrying a 64-byte edit grows from 201 to 276 bytes (75 bytes,
 including the encryption metadata).
 
-## Production integration status
+## Production
 
-The production collaboration transport accepts encrypted document envelopes.
-The identity service and both the local and network broker paths validate
-the outer signature, the current workspace role and capability, the exact
-artifact and attestation, and the deterministic route-derived MLS channel.
-They then store and fan out the payload byte for byte without decoding it.
-Content-key ciphertext is also appended to the broker's durable history
-(`$XDG_STATE_HOME/tilo/collaboration/history`), which serves scrollback pages
-past the in-memory window. The relay retains encrypted snapshots and the
-changes after them using the signed retention class.
+End-to-end encryption is on for every collaboration channel, with no
+exceptions: there is no plaintext mode to opt into and no server-side
+plaintext path.
 
-The UI collaboration endpoint can be given a provisioned `ChannelGroup`. Once
-it is installed on a route, sends seal before signing, and receives (live and
-scrollback) open only after broker validation. Missing or wrong group state,
-or a missing content key, drops the message rather than treating ciphertext
-as plaintext.
+### How a channel is provisioned
 
-That is transport integration, not automatic key provisioning. The shell's
-broker-internal workspace-authority transaction admits and removes members
-through the governance journal, recording the joiner's key history with the
-Welcome. The authenticated peer control transport still needs to drain and
-acknowledge the journal's targeted outbox. Applications must not claim E2E
-encryption based only on wire and endpoint support.
+- **Creation.** The device that governs a route's room stewards the
+  route's channel (`shell/channel_encryption.rs`). It creates the MLS group
+  and its `Genesis` frame the first time an allowed endpoint opens the
+  route. `Genesis` closes the plaintext gate for good.
+- **Migration.** A channel that carried plaintext before migrates the same
+  way on its next open. New content is encrypted from then on. Old
+  plaintext stays in the replicas of the members that hold it, and the local
+  broker's history pages still serve it to current members, because the
+  broker admitted it before the gate closed. Live plaintext on an encrypted
+  route is refused as a downgrade.
+- **Access policy** (`shell/channel_policy.rs`). A channel is readable by:
+  - every person on the room's roster whose role can read, through each of
+    their certified devices (root-signed, unexpired, not revoked, admitted
+    by the room's governor);
+  - the governing identity's own fleet;
+  - live service members (below).
+
+  Always-on host certificates are never a person's reading device. The
+  steward reconciles the group with this set about once a second and on
+  every new request. Invites, removals, role changes that end reading, and
+  device enrolment or revocation all become commits.
+- **Governance transport.** Frames, access requests and acknowledgements
+  travel on the room's topic (`NeighbourMsg::MlsGovernance`,
+  `MlsAccessRequest`, `MlsGovernanceAck`). Workspace hosts retain them, so a
+  device that is offline still gets its Welcome. The steward redelivers each
+  device's unacknowledged frames with exponential backoff (1 s up to 60 s)
+  until that device's cumulative acknowledgement covers them. Redelivery is
+  idempotent and ordered on the receiving side, so transport failures delay
+  delivery and never lose or reorder it.
+- **Endpoints.** An app asks the workspace identity service for its route's
+  keys (`Request::ChannelKeys`) and gets `ChannelContentKeys`: content
+  keys, and no MLS secret. It refreshes every second. While the device waits
+  for access, the SDK holds edits and incoming ciphertext on the device and
+  reports `ChannelAccessState::WaitingForAccess` through
+  `CollabEvent::ChannelAccess` and `App::channel_access()`. Once keys arrive
+  it seals, sends and opens them in order. A send refused after a membership
+  change is re-sealed under the new epoch and retried.
+- **Brokers and relays** hold gates, never keys. Every ingress path checks
+  the channel's gate (`ChannelGate`): plaintext is closed off, and content
+  sealed before the latest membership change is refused. Relays store and
+  forward ciphertext and MLS control material without decoding either.
+
+### Service members
+
+A cloud agent run, server-side search or a preview renderer reads a room's
+content only as a **service member** (`shell/service_members.rs`):
+
+- It has its own device key, which is also its MLS leaf.
+- A room administrator admits it with a purpose, a scope (the verb it may
+  exercise) and an optional deadline. The grant is a room-membership
+  capability on the agent principal `service:<device key hex>`.
+- It is listed in the Agents pane as a service row, with its purpose and
+  when access ends.
+- When the deadline passes, or `revoke_service_member` ends the job, the
+  steward removes it. The removal is a commit, so content keys rotate: the
+  service keeps what it read and cannot open anything written afterwards.
+
+### What the Cloud host must adopt
+
+The Cloud stack (`tilo-cloud-host` and its agent workers) currently holds
+documents as a plaintext, full CRDT peer, enrolled as one more device of the
+owner. `tilo-peer-state` parks encrypted payloads as
+`RetryLater(PersistedMls)`, so on encrypted channels it stalls. With
+encryption on everywhere, it has to become a service member:
+
+1. **Device identity.** Keep the host's own device key and root-signed
+   `DeviceCert` from cloud enrolment. That key is its MLS credential
+   (`MemberKey::for_device`). A host certificate grants no reading by
+   itself.
+2. **Grant.** The owner's shell grants the host (or one agent run's
+   device) a service membership per room, with a purpose and a deadline:
+   the job's `GrantOffer.expires_at`, or the end of the agent run
+   (`grant_service_member` / `revoke_service_member`). The run's
+   `GrantAction`s stay as they are; they authorise actions, not key access.
+3. **Channel service.** Run `ChannelEncryption` on the host with a
+   `ChannelDirectory` that names the room's governor as steward, a
+   persistent state root, and a `VaultKey` from the host's secret custody.
+   Pump it with the room transport (`NeighbourMsg::Mls*` over the workspace
+   host session). It asks for access, applies Welcomes and commits, and
+   acknowledges.
+4. **Documents.** Decrypt with the route's `ChannelContentKeys` where
+   `tilo-peer-state` admits a document (`Encrypted { .. }`), instead of
+   parking it, and seal outbound changes the same way
+   (`local_outbox`, media governance). Workers that run through
+   `CollaborationManager` get this from the SDK once they are launched with
+   an identity service that answers `Request::ChannelKeys`. For
+   `HostDocuments`, answer it from the host's channel service.
+5. **Expiry.** When the grant ends, the host is removed from the group.
+   It must drop plaintext it derived for the ended job (previews, indexes)
+   under the job's retention rules, since keys it held for earlier epochs
+   stay valid for content it already had.
+
+The relay and the action broker need no change: they route and retain
+ciphertext and MLS control material without decoding either.
+
+### Security properties as shipped
+
+- **Confidentiality from infrastructure.** Relays, workspace hosts and
+  brokers see signed envelope metadata (author, artifact, op class, retention
+  class, channel, epoch, seq, timestamp) and ciphertext. They never see
+  content and never hold a content key. An end-to-end test asserts that no
+  byte the relay stores contains the plaintext.
+- **Membership follows the room ACL and the certified device set.** No
+  separate channel membership list can drift from permissions.
+- **Joiners read all history** through the key history in their Welcome.
+- **Removal protects future content.** Removing a person, a device or a
+  service is an MLS commit; the next epoch's keys are unknown to the removed
+  party, and every gate refuses content sealed under older epochs.
+- **Apps never hold MLS secrets.** They receive content keys for routes of
+  their own launch only, gated on the device being trusted and the person
+  holding a reading role.
+- **One issuer per channel.** Only the steward signs frames, and members
+  refuse frames from anyone else, so governance cannot fork.
+- **Forward secrecy applies to membership, not to history**, as described
+  above.
+- **Known limits.** Stewardship follows room governance: if the governing
+  machine is lost, the room's channels keep working for their current
+  members, but membership cannot change until governance is re-established,
+  exactly like the room itself. Only Welcome-based joins exist; there are no
+  external commits.
+
+### Key loss and identity backups
+
+A `tilo-seal` identity backup (`runtime-identity::backup`) holds the root
+identity record. It does not hold device keys, device certificates, the
+fleet, the Secret Service master key or any MLS state. Restoring it on a
+replacement machine brings back the person's root identity, and onboarding
+certifies a **new** device key for that machine. Channel access comes back
+through the normal paths:
+
+1. The new device announces its root-signed certificate. Once the room's
+   governor has admitted it, the policy allows it.
+2. The steward admits it, and its key history opens every earlier content
+   key, so the whole channel history reads again
+   (`a_restored_identity_regains_the_whole_channel_on_its_new_device`).
+3. Revoking the lost device (fleet revocation) makes the next reconcile
+   remove it, so it cannot read anything written afterwards.
+
+If the lost machine was the room's governor, see the known limit above.
 
 ## Remaining work
 
-- **Production membership provisioning UX** and the journal outbox drain
-  described above.
-- **Plaintext-history migration.** Installing an MLS group makes that
-  endpoint reject plaintext live and scrollback envelopes for the route.
-  Existing plaintext history therefore needs an explicit, authority-approved
-  encrypted snapshot migration before MLS is enabled.
-- **External commit / external join.** Only Welcome-based joins are supported.
-- **Vault recovery ceremony.** Production custody uses the session's
-  freedesktop Secret Service and never creates a key beside its ciphertext.
+- **External commit / external join.** Only Welcome-based joins are
+  supported.
+- **Route-scoped service members.** A service member reads every channel of
+  its room. Narrowing a grant to single documents needs the steward to know
+  which route a channel belongs to.
 - **Multiple ciphersuites / negotiation.** There is one fixed suite.
 
 ## Cipher suite

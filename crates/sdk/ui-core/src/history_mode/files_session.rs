@@ -44,6 +44,22 @@ enum Reply {
 }
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
+#[derive(PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a snapshot of the controller's independent presentation flags"
+)]
+struct Presented {
+    versions: Vec<FileVersionV1>,
+    scope: Option<Scope>,
+    current_revision: Option<collab_types::ContentRevisionV1>,
+    message: String,
+    live_updates: bool,
+    preview_changed: bool,
+    presentation_invalidated: bool,
+    review_changed: bool,
+}
+
 struct Completion {
     key: Key,
     reply: Reply,
@@ -77,6 +93,9 @@ pub(super) struct FileController {
     pub live_updates: bool,
     active: bool,
     refreshing: bool,
+    /// `message` reports a restore outcome. The activity summary must not
+    /// replace it until the user acts or the presentation is reactivated.
+    reporting: bool,
     next_poll: crate::time::Instant,
 }
 impl FileController {
@@ -114,6 +133,7 @@ impl FileController {
             live_updates: false,
             active: true,
             refreshing: false,
+            reporting: false,
             next_poll: now,
         }
     }
@@ -157,6 +177,7 @@ impl FileController {
         self.confirmation = uuid::Uuid::new_v4();
         self.review_changed = true;
         self.refreshing = false;
+        self.reporting = false;
     }
     pub fn suspend(&mut self) {
         self.active = false;
@@ -181,6 +202,7 @@ impl FileController {
         self.preview_changed = true;
         self.active = true;
         self.refreshing = false;
+        self.message = "Loading file history".into();
         self.next_poll = self.background.now();
         self.load();
     }
@@ -230,6 +252,7 @@ impl FileController {
         };
         self.confirmation = uuid::Uuid::new_v4();
         self.review_changed = true;
+        self.reporting = false;
         let Ok(request) = self.restore.prepare(review, operation) else {
             self.message = "An earlier restore is still pending; check its exact result".into();
             return;
@@ -306,7 +329,7 @@ impl FileController {
                 self.scope = Some(scope);
                 self.versions = versions;
                 self.current_revision = current_revision;
-                if self.after.is_none() {
+                if self.after.is_none() && !self.reporting {
                     self.message = format!("{} immutable versions", self.versions.len());
                 }
             }
@@ -326,7 +349,10 @@ impl FileController {
     pub fn drain(&mut self) -> bool {
         self.has_results();
         let values = self.inbox.get_mut().drain(..).collect::<Vec<_>>();
-        let changed = !values.is_empty();
+        // Only what the presentation shows counts as a change: an idle poll
+        // that finds the same activity must not rebuild the chrome under a
+        // pointer that is mid-click.
+        let mut changed = false;
         for completion in values {
             // Exact admitted outcomes survive a closed presentation generation,
             // but can only settle this controller's original request and target.
@@ -336,8 +362,16 @@ impl FileController {
                 {
                     continue;
                 }
+                if self.restore.has_settled(&request) {
+                    // The submit and a result lookup for one exact intent run
+                    // concurrently; whichever settled it first already
+                    // reported. The slower one must not replace that report.
+                    continue;
+                }
+                changed = true;
                 if self.restore.receive(request, outcome.clone()) {
                     self.message = outcome_message(&outcome);
+                    self.reporting = true;
                     if matches!(outcome, Outcome::NotVisible) {
                         self.hide();
                     }
@@ -353,6 +387,12 @@ impl FileController {
             if completion.key != self.key {
                 continue;
             }
+            let before = if matches!(completion.reply, Reply::Activity(_)) {
+                Some(self.presented())
+            } else {
+                changed = true;
+                None
+            };
             match completion.reply {
                 Reply::Unavailable => {
                     self.refreshing = false;
@@ -420,11 +460,27 @@ impl FileController {
                 }
                 Reply::Outcome(..) => {}
             }
+            if let Some(before) = before {
+                changed |= before != self.presented();
+            }
         }
         if self.active && !self.refreshing && self.background.now() >= self.next_poll {
             self.load();
         }
         changed
+    }
+    /// Everything an activity reply can change that the host presents.
+    fn presented(&self) -> Presented {
+        Presented {
+            versions: self.versions.clone(),
+            scope: self.scope,
+            current_revision: self.current_revision,
+            message: self.message.clone(),
+            live_updates: self.live_updates,
+            preview_changed: self.preview_changed,
+            presentation_invalidated: self.presentation_invalidated,
+            review_changed: self.review_changed,
+        }
     }
     /// Refresh the activity list again after the poll interval.
     fn schedule_poll(&mut self) {
@@ -659,38 +715,105 @@ mod tests {
         })
     }
     #[test]
-    fn activity_refresh_follows_the_background_clock() {
-        let pumped = crate::background::Pumped::new();
-        let mut controller = {
-            let _background = pumped.background().enter();
-            controller()
-        };
-        controller.load();
-        assert!(!controller.has_results());
-        assert_eq!(pumped.run_pending(), 1);
-        assert!(controller.drain());
-        assert_eq!(controller.message, read_message(Error::Unavailable));
-        let refresh = pumped.next_deadline().expect("the next refresh is armed");
-        assert!(!controller.has_results());
-        pumped.advance(POLL_INTERVAL);
-        assert_eq!(pumped.now(), refresh);
-        assert!(controller.has_results());
-        controller.drain();
-        assert!(!pumped.is_idle(), "the due refresh queued the next load");
-    }
-    #[test]
-    fn a_host_without_background_work_reports_history_unavailable() {
-        let mut controller = {
-            let _background = Background::new(crate::background::NoBackground).enter();
-            controller()
-        };
-        controller.load();
-        assert!(controller.drain());
-        assert_eq!(
-            controller.message,
-            "File history is unavailable on this host"
-        );
-        assert!(!controller.has_results(), "no immediate retry loop");
+    fn files_activity_follows_the_clock_and_rejects_incoherent_pages() {
+        // phase: activity_refresh_follows_the_background_clock
+        {
+            let pumped = crate::background::Pumped::new();
+            let mut controller = {
+                let _background = pumped.background().enter();
+                controller()
+            };
+            controller.load();
+            assert!(!controller.has_results());
+            assert_eq!(pumped.run_pending(), 1);
+            assert!(controller.drain());
+            assert_eq!(controller.message, read_message(Error::Unavailable));
+            let refresh = pumped.next_deadline().expect("the next refresh is armed");
+            assert!(!controller.has_results());
+            pumped.advance(POLL_INTERVAL);
+            assert_eq!(pumped.now(), refresh);
+            assert!(controller.has_results());
+            controller.drain();
+            assert!(!pumped.is_idle(), "the due refresh queued the next load");
+        }
+        // phase: a_host_without_background_work_reports_history_unavailable
+        {
+            let mut controller = {
+                let _background = Background::new(crate::background::NoBackground).enter();
+                controller()
+            };
+            controller.load();
+            assert!(controller.drain());
+            assert_eq!(
+                controller.message,
+                "File history is unavailable on this host"
+            );
+            assert!(!controller.has_results(), "no immediate retry loop");
+        }
+        // phase: files_activity_rejects_incoherent_page_metadata_and_order
+        {
+            struct Pages(std::sync::Mutex<std::collections::VecDeque<Value>>);
+            impl FileHistoryTransport for Pages {
+                fn read(&self, _: Query) -> Result<Value, Error> {
+                    self.0.lock().unwrap().pop_front().ok_or(Error::Unavailable)
+                }
+                fn preview(&self, _: Scope, _: FileVersionId) -> Result<Vec<u8>, Error> {
+                    Err(Error::Unavailable)
+                }
+                fn review(&self) -> Result<Review, Outcome> {
+                    Err(Outcome::Unavailable)
+                }
+                fn submit(&self, _: Request) -> Outcome {
+                    Outcome::Unavailable
+                }
+                fn result(&self, _: uuid::Uuid) -> Outcome {
+                    Outcome::Unavailable
+                }
+            }
+            let version = |id| FileVersionV1 {
+                id: FileVersionId(uuid::Uuid::from_u128(id)),
+                record_id: scope().record_id,
+                parents: vec![],
+                actor: collab_types::FileActor {
+                    person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+                    device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
+                },
+                timestamp_ms: id as u64,
+                content_hash: None,
+                metadata_hash: collab_types::ContentHash([0; 32]),
+                provenance: collab_types::FileProvenance::Create,
+            };
+            let page = |versions: Vec<FileVersionV1>, total, next| {
+                Value::Page(collab_types::files::FileHistoryPageV1 {
+                    scope: scope(),
+                    versions,
+                    total_versions: total,
+                    heads: vec![],
+                    current_revision: None,
+                    next_after: next,
+                })
+            };
+            let transport = Pages(std::sync::Mutex::new(
+                [page(vec![version(2), version(1)], 2, None)].into(),
+            ));
+            assert_eq!(
+                load_all(&transport),
+                Err(Error::InvalidRequest),
+                "within-page order must be deterministic"
+            );
+            let transport = Pages(std::sync::Mutex::new(
+                [
+                    page(vec![version(1)], 3, Some(version(1).id)),
+                    page(vec![version(2)], 2, None),
+                ]
+                .into(),
+            ));
+            assert_eq!(
+                load_all(&transport),
+                Err(Error::InvalidRequest),
+                "a pinned frontier cannot change its total across pages"
+            );
+        }
     }
     fn scope() -> Scope {
         Scope {
@@ -701,26 +824,97 @@ mod tests {
         }
     }
     #[test]
-    fn round1_denial_fences_delayed_preview_and_review_but_keeps_exact_settlement() {
-        for changed_binding in [false, true] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn files_reviews_are_fenced_against_denial_cancellation_and_delay() {
+        // phase: round1_denial_fences_delayed_preview_and_review_but_keeps_exact_settlement
+        {
+            for changed_binding in [false, true] {
+                let mut controller = controller();
+                controller.active = false;
+                let version = FileVersionV1 {
+                    id: FileVersionId(uuid::Uuid::from_u128(8)),
+                    record_id: scope().record_id,
+                    parents: vec![],
+                    actor: collab_types::FileActor {
+                        person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+                        device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
+                    },
+                    timestamp_ms: 1,
+                    content_hash: Some(collab_types::ContentHash([3; 32])),
+                    metadata_hash: collab_types::ContentHash([4; 32]),
+                    provenance: collab_types::FileProvenance::Create,
+                };
+                controller.key.selection = Some(version.id);
+                let key = controller.key;
+                let nonce = controller.confirmation_token();
+                let review = Review {
+                    schema_version: 1,
+                    workspace_id: scope().workspace_id,
+                    mount_lifetime: scope().mount_lifetime,
+                    record_id: scope().record_id,
+                    frontier: scope().frontier,
+                };
+                let operation = Operation::Restore {
+                    version_id: version.id,
+                };
+                let request = controller.restore.prepare(review, operation).unwrap();
+                let denial = if changed_binding {
+                    let mut foreign = scope();
+                    foreign.mount_lifetime = uuid::Uuid::new_v4();
+                    controller.scope = Some(scope());
+                    Reply::Activity(Ok((foreign, vec![], None)))
+                } else {
+                    Reply::Activity(Err(Error::NotVisible))
+                };
+                // The reads succeeded before revocation, but their completions arrive
+                // after the newer access denial. The channel order is deterministic.
+                for reply in [
+                    denial,
+                    Reply::Selection(Ok((
+                        FileHistorySnapshot {
+                            scope: scope(),
+                            version,
+                            content: FileHistoricalContent::Bytes(Arc::from(&b"protected"[..])),
+                        },
+                        None,
+                    ))),
+                    Reply::Review(operation, Ok(review)),
+                    Reply::Outcome(
+                        request,
+                        Outcome::RecoveryPending {
+                            intent_id: request.intent_id,
+                        },
+                    ),
+                ] {
+                    controller.tx.send(Completion { key, reply }).unwrap();
+                }
+                controller.drain();
+                assert!(
+                    controller.after.is_none(),
+                    "denial must fence already-returned but delayed protected bytes"
+                );
+                assert!(
+                    controller.review.is_none(),
+                    "denial must fence delayed authorized review"
+                );
+                assert_ne!(controller.confirmation_token(), nonce);
+                assert_eq!(controller.selected(), None);
+                assert_eq!(controller.restore.request, Some(request));
+                assert_eq!(
+                    controller.restore.outcome,
+                    Some(Outcome::RecoveryPending {
+                        intent_id: request.intent_id
+                    })
+                );
+            }
+        }
+        // phase: files_confirmation_from_cancelled_review_cannot_confirm_new_review
+        {
             let mut controller = controller();
             controller.active = false;
-            let version = FileVersionV1 {
-                id: FileVersionId(uuid::Uuid::from_u128(8)),
-                record_id: scope().record_id,
-                parents: vec![],
-                actor: collab_types::FileActor {
-                    person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-                    device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
-                },
-                timestamp_ms: 1,
-                content_hash: Some(collab_types::ContentHash([3; 32])),
-                metadata_hash: collab_types::ContentHash([4; 32]),
-                provenance: collab_types::FileProvenance::Create,
-            };
-            controller.key.selection = Some(version.id);
-            let key = controller.key;
-            let nonce = controller.confirmation_token();
             let review = Review {
                 schema_version: 1,
                 workspace_id: scope().workspace_id,
@@ -729,50 +923,141 @@ mod tests {
                 frontier: scope().frontier,
             };
             let operation = Operation::Restore {
-                version_id: version.id,
+                version_id: FileVersionId(uuid::Uuid::from_u128(8)),
             };
-            let request = controller.restore.prepare(review, operation).unwrap();
-            let denial = if changed_binding {
-                let mut foreign = scope();
-                foreign.mount_lifetime = uuid::Uuid::new_v4();
-                controller.scope = Some(scope());
-                Reply::Activity(Ok((foreign, vec![], None)))
-            } else {
-                Reply::Activity(Err(Error::NotVisible))
+            controller.review = Some((review, operation));
+            let old = controller.confirmation_token();
+            controller.cancel_review();
+            controller.review = Some((review, operation));
+            controller.confirm(old);
+            assert!(
+                controller.restore.request.is_none(),
+                "retained old dialog confirmation cannot authorize a later review"
+            );
+            let current = controller.confirmation_token();
+            controller.confirm(current);
+            let admitted = controller.restore.request;
+            assert!(admitted.is_some());
+            controller.confirm(current);
+            assert_eq!(
+                controller.restore.request, admitted,
+                "a valid confirmation admits exactly one intent"
+            );
+        }
+        // phase: files_cancel_and_new_review_reject_delayed_old_review
+        {
+            let mut controller = controller();
+            let old = controller.key;
+            controller.cancel_review();
+            controller.request_review(Operation::Undo {
+                restore_intent: uuid::Uuid::from_u128(20),
+            });
+            let review = Review {
+                schema_version: 1,
+                workspace_id: scope().workspace_id,
+                mount_lifetime: scope().mount_lifetime,
+                record_id: scope().record_id,
+                frontier: [5; 32],
             };
-            // The reads succeeded before revocation, but their completions arrive
-            // after the newer access denial. The channel order is deterministic.
-            for reply in [
-                denial,
-                Reply::Selection(Ok((
-                    FileHistorySnapshot {
-                        scope: scope(),
-                        version,
-                        content: FileHistoricalContent::Bytes(Arc::from(&b"protected"[..])),
-                    },
-                    None,
-                ))),
-                Reply::Review(operation, Ok(review)),
-                Reply::Outcome(
-                    request,
-                    Outcome::RecoveryPending {
-                        intent_id: request.intent_id,
-                    },
-                ),
-            ] {
-                controller.tx.send(Completion { key, reply }).unwrap();
-            }
+            controller
+                .tx
+                .send(Completion {
+                    key: old,
+                    reply: Reply::Review(
+                        Operation::Undo {
+                            restore_intent: uuid::Uuid::from_u128(19),
+                        },
+                        Ok(review),
+                    ),
+                })
+                .unwrap();
+            controller.next_poll = crate::time::now() + Duration::from_secs(60);
             controller.drain();
             assert!(
-                controller.after.is_none(),
-                "denial must fence already-returned but delayed protected bytes"
-            );
-            assert!(
                 controller.review.is_none(),
-                "denial must fence delayed authorized review"
+                "a cancelled request cannot populate a later compensation dialog"
             );
-            assert_ne!(controller.confirmation_token(), nonce);
-            assert_eq!(controller.selected(), None);
+        }
+    }
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn files_generations_keep_their_intent_and_access_checks() {
+        // phase: files_closed_generation_cannot_install_old_review_or_foreign_preview
+        {
+            let mut controller = controller();
+            let old = controller.key;
+            controller.suspend();
+            let review = Review {
+                schema_version: 1,
+                workspace_id: scope().workspace_id,
+                mount_lifetime: scope().mount_lifetime,
+                record_id: scope().record_id,
+                frontier: [5; 32],
+            };
+            controller
+                .tx
+                .send(Completion {
+                    key: old,
+                    reply: Reply::Review(
+                        Operation::Restore {
+                            version_id: FileVersionId(uuid::Uuid::from_u128(8)),
+                        },
+                        Ok(review),
+                    ),
+                })
+                .unwrap();
+            controller.drain();
+            assert!(controller.review.is_none());
+            let mut foreign = scope();
+            foreign.record_id = collab_types::FileRecordId(uuid::Uuid::from_u128(7));
+            controller
+                .tx
+                .send(Completion {
+                    key: controller.key,
+                    reply: Reply::Activity(Ok((foreign, vec![], None))),
+                })
+                .unwrap();
+            controller.drain();
+            assert!(controller.scope.is_none());
+            assert!(controller.message.contains("binding changed"));
+        }
+        // phase: files_closed_generation_retains_original_intent_result_without_retargeting
+        {
+            let mut controller = controller();
+            let review = Review {
+                schema_version: 1,
+                workspace_id: scope().workspace_id,
+                mount_lifetime: scope().mount_lifetime,
+                record_id: scope().record_id,
+                frontier: [5; 32],
+            };
+            let request = controller
+                .restore
+                .prepare(
+                    review,
+                    Operation::Restore {
+                        version_id: FileVersionId(uuid::Uuid::from_u128(8)),
+                    },
+                )
+                .unwrap();
+            let old = controller.key;
+            controller.suspend();
+            controller
+                .tx
+                .send(Completion {
+                    key: old,
+                    reply: Reply::Outcome(
+                        request,
+                        Outcome::RecoveryPending {
+                            intent_id: request.intent_id,
+                        },
+                    ),
+                })
+                .unwrap();
+            controller.drain();
             assert_eq!(controller.restore.request, Some(request));
             assert_eq!(
                 controller.restore.outcome,
@@ -780,337 +1065,130 @@ mod tests {
                     intent_id: request.intent_id
                 })
             );
+            assert!(controller.review.is_none());
+            assert!(controller.after.is_none());
         }
-    }
-    #[test]
-    fn files_confirmation_from_cancelled_review_cannot_confirm_new_review() {
-        let mut controller = controller();
-        controller.active = false;
-        let review = Review {
-            schema_version: 1,
-            workspace_id: scope().workspace_id,
-            mount_lifetime: scope().mount_lifetime,
-            record_id: scope().record_id,
-            frontier: scope().frontier,
-        };
-        let operation = Operation::Restore {
-            version_id: FileVersionId(uuid::Uuid::from_u128(8)),
-        };
-        controller.review = Some((review, operation));
-        let old = controller.confirmation_token();
-        controller.cancel_review();
-        controller.review = Some((review, operation));
-        controller.confirm(old);
-        assert!(
-            controller.restore.request.is_none(),
-            "retained old dialog confirmation cannot authorize a later review"
-        );
-        let current = controller.confirmation_token();
-        controller.confirm(current);
-        let admitted = controller.restore.request;
-        assert!(admitted.is_some());
-        controller.confirm(current);
-        assert_eq!(
-            controller.restore.request, admitted,
-            "a valid confirmation admits exactly one intent"
-        );
-    }
-    #[test]
-    fn files_activity_rejects_incoherent_page_metadata_and_order() {
-        struct Pages(std::sync::Mutex<std::collections::VecDeque<Value>>);
-        impl FileHistoryTransport for Pages {
-            fn read(&self, _: Query) -> Result<Value, Error> {
-                self.0.lock().unwrap().pop_front().ok_or(Error::Unavailable)
-            }
-            fn preview(&self, _: Scope, _: FileVersionId) -> Result<Vec<u8>, Error> {
-                Err(Error::Unavailable)
-            }
-            fn review(&self) -> Result<Review, Outcome> {
-                Err(Outcome::Unavailable)
-            }
-            fn submit(&self, _: Request) -> Outcome {
-                Outcome::Unavailable
-            }
-            fn result(&self, _: uuid::Uuid) -> Outcome {
-                Outcome::Unavailable
-            }
-        }
-        let version = |id| FileVersionV1 {
-            id: FileVersionId(uuid::Uuid::from_u128(id)),
-            record_id: scope().record_id,
-            parents: vec![],
-            actor: collab_types::FileActor {
-                person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-                device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
-            },
-            timestamp_ms: id as u64,
-            content_hash: None,
-            metadata_hash: collab_types::ContentHash([0; 32]),
-            provenance: collab_types::FileProvenance::Create,
-        };
-        let page = |versions: Vec<FileVersionV1>, total, next| {
-            Value::Page(collab_types::files::FileHistoryPageV1 {
-                scope: scope(),
-                versions,
-                total_versions: total,
-                heads: vec![],
-                current_revision: None,
-                next_after: next,
-            })
-        };
-        let transport = Pages(std::sync::Mutex::new(
-            [page(vec![version(2), version(1)], 2, None)].into(),
-        ));
-        assert_eq!(
-            load_all(&transport),
-            Err(Error::InvalidRequest),
-            "within-page order must be deterministic"
-        );
-        let transport = Pages(std::sync::Mutex::new(
-            [
-                page(vec![version(1)], 3, Some(version(1).id)),
-                page(vec![version(2)], 2, None),
-            ]
-            .into(),
-        ));
-        assert_eq!(
-            load_all(&transport),
-            Err(Error::InvalidRequest),
-            "a pinned frontier cannot change its total across pages"
-        );
-    }
-    #[test]
-    fn files_closed_generation_cannot_install_old_review_or_foreign_preview() {
-        let mut controller = controller();
-        let old = controller.key;
-        controller.suspend();
-        let review = Review {
-            schema_version: 1,
-            workspace_id: scope().workspace_id,
-            mount_lifetime: scope().mount_lifetime,
-            record_id: scope().record_id,
-            frontier: [5; 32],
-        };
-        controller
-            .tx
-            .send(Completion {
-                key: old,
-                reply: Reply::Review(
-                    Operation::Restore {
-                        version_id: FileVersionId(uuid::Uuid::from_u128(8)),
-                    },
-                    Ok(review),
-                ),
-            })
-            .unwrap();
-        controller.drain();
-        assert!(controller.review.is_none());
-        let mut foreign = scope();
-        foreign.record_id = collab_types::FileRecordId(uuid::Uuid::from_u128(7));
-        controller
-            .tx
-            .send(Completion {
-                key: controller.key,
-                reply: Reply::Activity(Ok((foreign, vec![], None))),
-            })
-            .unwrap();
-        controller.drain();
-        assert!(controller.scope.is_none());
-        assert!(controller.message.contains("binding changed"));
-    }
-    #[test]
-    fn files_selection_during_activity_load_resumes_real_transport_access_checks() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        struct Delayed {
-            calls: AtomicUsize,
-            revoked: AtomicBool,
-            started: mpsc::Sender<()>,
-            release: std::sync::Barrier,
-            version: FileVersionV1,
-        }
-        impl FileHistoryTransport for Delayed {
-            fn read(&self, query: Query) -> Result<Value, Error> {
-                if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                    self.started.send(()).unwrap();
-                    self.release.wait();
+        // phase: files_selection_during_activity_load_resumes_real_transport_access_checks
+        {
+            fn phase_files_selection_during_activity_load_resumes_real_transport_access_checks() {
+                use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+                struct Delayed {
+                    calls: AtomicUsize,
+                    revoked: AtomicBool,
+                    started: mpsc::Sender<()>,
+                    release: std::sync::Barrier,
+                    version: FileVersionV1,
                 }
-                if self.revoked.load(Ordering::SeqCst) {
-                    return Err(Error::NotVisible);
+                impl FileHistoryTransport for Delayed {
+                    fn read(&self, query: Query) -> Result<Value, Error> {
+                        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                            self.started.send(()).unwrap();
+                            self.release.wait();
+                        }
+                        if self.revoked.load(Ordering::SeqCst) {
+                            return Err(Error::NotVisible);
+                        }
+                        match query {
+                            Query::Page { .. } => {
+                                Ok(Value::Page(collab_types::files::FileHistoryPageV1 {
+                                    scope: scope(),
+                                    versions: vec![self.version.clone()],
+                                    total_versions: 1,
+                                    heads: vec![self.version.id],
+                                    current_revision: None,
+                                    next_after: None,
+                                }))
+                            }
+                            Query::Version { .. } => Ok(Value::Version {
+                                scope: scope(),
+                                version: self.version.clone(),
+                            }),
+                            _ => Err(Error::InvalidRequest),
+                        }
+                    }
+                    fn preview(&self, _: Scope, _: FileVersionId) -> Result<Vec<u8>, Error> {
+                        Ok(b"protected historical content".to_vec())
+                    }
+                    fn review(&self) -> Result<Review, Outcome> {
+                        Err(Outcome::Unavailable)
+                    }
+                    fn submit(&self, _: Request) -> Outcome {
+                        Outcome::Unavailable
+                    }
+                    fn result(&self, _: uuid::Uuid) -> Outcome {
+                        Outcome::Unavailable
+                    }
                 }
-                match query {
-                    Query::Page { .. } => Ok(Value::Page(collab_types::files::FileHistoryPageV1 {
-                        scope: scope(),
-                        versions: vec![self.version.clone()],
-                        total_versions: 1,
-                        heads: vec![self.version.id],
-                        current_revision: None,
-                        next_after: None,
-                    })),
-                    Query::Version { .. } => Ok(Value::Version {
-                        scope: scope(),
-                        version: self.version.clone(),
-                    }),
-                    _ => Err(Error::InvalidRequest),
+                let (started, rx) = mpsc::channel();
+                let version = FileVersionV1 {
+                    id: FileVersionId(uuid::Uuid::from_u128(8)),
+                    record_id: scope().record_id,
+                    parents: vec![],
+                    actor: collab_types::FileActor {
+                        person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+                        device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
+                    },
+                    timestamp_ms: 1,
+                    content_hash: Some(collab_types::ContentHash([3; 32])),
+                    metadata_hash: collab_types::ContentHash([4; 32]),
+                    provenance: collab_types::FileProvenance::Create,
+                };
+                let transport = Arc::new(Delayed {
+                    calls: AtomicUsize::new(0),
+                    revoked: AtomicBool::new(false),
+                    started,
+                    release: std::sync::Barrier::new(2),
+                    version: version.clone(),
+                });
+                let mut controller = controller();
+                controller.target.transport = transport.clone();
+                controller.next_poll = crate::time::now() + Duration::from_secs(60);
+                controller.load();
+                rx.recv_timeout(HANG_GUARD).unwrap();
+                controller.select(version.id, None);
+                let deadline = crate::time::now() + HANG_GUARD;
+                while controller.after.is_none() && crate::time::now() < deadline {
+                    controller.drain();
+                    std::thread::sleep(Duration::from_millis(1));
                 }
+                assert!(
+                    controller.after.is_some(),
+                    "selected immutable preview must be installed while older activity is delayed"
+                );
+                transport.release.wait();
+                // Wait for the delayed activity reply itself, so the assertion below
+                // sees it applied rather than racing its arrival.
+                let deadline = crate::time::now() + HANG_GUARD;
+                while !controller.has_results() && crate::time::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                assert!(
+                    controller.has_results(),
+                    "the delayed activity reply arrives"
+                );
+                controller.drain();
+                assert!(
+                    controller.after.is_some(),
+                    "stale activity must leave the selected preview pinned"
+                );
+                let calls = transport.calls.load(Ordering::SeqCst);
+                transport.revoked.store(true, Ordering::SeqCst);
+                controller.next_poll = crate::time::now();
+                let deadline = crate::time::now() + HANG_GUARD;
+                while controller.after.is_some() && crate::time::now() < deadline {
+                    controller.drain();
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                assert!(
+                    transport.calls.load(Ordering::SeqCst) > calls,
+                    "actual post-selection transport access refresh must run"
+                );
+                assert!(controller.after.is_none());
+                assert!(controller.before.is_none());
+                assert!(controller.versions.is_empty());
+                assert_eq!(controller.message, "This file is no longer visible");
             }
-            fn preview(&self, _: Scope, _: FileVersionId) -> Result<Vec<u8>, Error> {
-                Ok(b"protected historical content".to_vec())
-            }
-            fn review(&self) -> Result<Review, Outcome> {
-                Err(Outcome::Unavailable)
-            }
-            fn submit(&self, _: Request) -> Outcome {
-                Outcome::Unavailable
-            }
-            fn result(&self, _: uuid::Uuid) -> Outcome {
-                Outcome::Unavailable
-            }
+            phase_files_selection_during_activity_load_resumes_real_transport_access_checks();
         }
-        let (started, rx) = mpsc::channel();
-        let version = FileVersionV1 {
-            id: FileVersionId(uuid::Uuid::from_u128(8)),
-            record_id: scope().record_id,
-            parents: vec![],
-            actor: collab_types::FileActor {
-                person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-                device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
-            },
-            timestamp_ms: 1,
-            content_hash: Some(collab_types::ContentHash([3; 32])),
-            metadata_hash: collab_types::ContentHash([4; 32]),
-            provenance: collab_types::FileProvenance::Create,
-        };
-        let transport = Arc::new(Delayed {
-            calls: AtomicUsize::new(0),
-            revoked: AtomicBool::new(false),
-            started,
-            release: std::sync::Barrier::new(2),
-            version: version.clone(),
-        });
-        let mut controller = controller();
-        controller.target.transport = transport.clone();
-        controller.next_poll = crate::time::now() + Duration::from_secs(60);
-        controller.load();
-        rx.recv_timeout(HANG_GUARD).unwrap();
-        controller.select(version.id, None);
-        let deadline = crate::time::now() + HANG_GUARD;
-        while controller.after.is_none() && crate::time::now() < deadline {
-            controller.drain();
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(
-            controller.after.is_some(),
-            "selected immutable preview must be installed while older activity is delayed"
-        );
-        transport.release.wait();
-        // Wait for the delayed activity reply itself, so the assertion below
-        // sees it applied rather than racing its arrival.
-        let deadline = crate::time::now() + HANG_GUARD;
-        while !controller.has_results() && crate::time::now() < deadline {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(
-            controller.has_results(),
-            "the delayed activity reply arrives"
-        );
-        controller.drain();
-        assert!(
-            controller.after.is_some(),
-            "stale activity must leave the selected preview pinned"
-        );
-        let calls = transport.calls.load(Ordering::SeqCst);
-        transport.revoked.store(true, Ordering::SeqCst);
-        controller.next_poll = crate::time::now();
-        let deadline = crate::time::now() + HANG_GUARD;
-        while controller.after.is_some() && crate::time::now() < deadline {
-            controller.drain();
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(
-            transport.calls.load(Ordering::SeqCst) > calls,
-            "actual post-selection transport access refresh must run"
-        );
-        assert!(controller.after.is_none());
-        assert!(controller.before.is_none());
-        assert!(controller.versions.is_empty());
-        assert_eq!(controller.message, "This file is no longer visible");
-    }
-    #[test]
-    fn files_cancel_and_new_review_reject_delayed_old_review() {
-        let mut controller = controller();
-        let old = controller.key;
-        controller.cancel_review();
-        controller.request_review(Operation::Undo {
-            restore_intent: uuid::Uuid::from_u128(20),
-        });
-        let review = Review {
-            schema_version: 1,
-            workspace_id: scope().workspace_id,
-            mount_lifetime: scope().mount_lifetime,
-            record_id: scope().record_id,
-            frontier: [5; 32],
-        };
-        controller
-            .tx
-            .send(Completion {
-                key: old,
-                reply: Reply::Review(
-                    Operation::Undo {
-                        restore_intent: uuid::Uuid::from_u128(19),
-                    },
-                    Ok(review),
-                ),
-            })
-            .unwrap();
-        controller.next_poll = crate::time::now() + Duration::from_secs(60);
-        controller.drain();
-        assert!(
-            controller.review.is_none(),
-            "a cancelled request cannot populate a later compensation dialog"
-        );
-    }
-    #[test]
-    fn files_closed_generation_retains_original_intent_result_without_retargeting() {
-        let mut controller = controller();
-        let review = Review {
-            schema_version: 1,
-            workspace_id: scope().workspace_id,
-            mount_lifetime: scope().mount_lifetime,
-            record_id: scope().record_id,
-            frontier: [5; 32],
-        };
-        let request = controller
-            .restore
-            .prepare(
-                review,
-                Operation::Restore {
-                    version_id: FileVersionId(uuid::Uuid::from_u128(8)),
-                },
-            )
-            .unwrap();
-        let old = controller.key;
-        controller.suspend();
-        controller
-            .tx
-            .send(Completion {
-                key: old,
-                reply: Reply::Outcome(
-                    request,
-                    Outcome::RecoveryPending {
-                        intent_id: request.intent_id,
-                    },
-                ),
-            })
-            .unwrap();
-        controller.drain();
-        assert_eq!(controller.restore.request, Some(request));
-        assert_eq!(
-            controller.restore.outcome,
-            Some(Outcome::RecoveryPending {
-                intent_id: request.intent_id
-            })
-        );
-        assert!(controller.review.is_none());
-        assert!(controller.after.is_none());
     }
 }

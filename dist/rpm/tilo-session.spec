@@ -43,7 +43,7 @@ Version:        %{tilo_version}
 Release:        1%{?dist}
 Summary:        %{tilo_summary}
 License:        AGPL-3.0-only
-URL:            https://code.podesta.ai/qos/qos
+URL:            https://code.tilo.so/tilo/tilo
 Source0:        %{name}-%{version}.tar.gz
 
 # Tilo was renamed to Tilo at 0.1.9.  Keep this as an ordinary RPM rename so a
@@ -205,6 +205,9 @@ install -Dpm 0644 portal/tilo-portals.conf \
                   %{buildroot}%{_datadir}/xdg-desktop-portal/tilo-portals.conf
 install -Dpm 0644 systemd-user/tilo-graphical-session.target \
                   %{buildroot}%{_userunitdir}/tilo-graphical-session.target
+# Settings offers "Reduce echo in calls" only where `pipewire -c` finds this.
+install -Dpm 0644 pipewire/tilo-echo-cancel.conf \
+                  %{buildroot}%{_datadir}/pipewire/tilo-echo-cancel.conf
 install -Dpm 0644 license/LICENSE \
                   %{buildroot}%{_datadir}/licenses/%{name}/LICENSE
 
@@ -267,6 +270,7 @@ grep -q -- '--host-desktop-session' %{buildroot}%{_libexecdir}/tilo-session-runn
 grep -q '^UseIn=tilo$' %{buildroot}%{_datadir}/xdg-desktop-portal/portals/tilo.portal
 grep -q '^default=tilo$' %{buildroot}%{_datadir}/xdg-desktop-portal/tilo-portals.conf
 grep -q '^DesktopNames=tilo$' %{buildroot}%{_datadir}/wayland-sessions/tilo.desktop
+grep -q 'libpipewire-module-echo-cancel' %{buildroot}%{_datadir}/pipewire/tilo-echo-cancel.conf
 grep -q '^Requires=graphical-session-pre.target graphical-session.target$' \
     %{buildroot}%{_userunitdir}/tilo-graphical-session.target
 grep -q '^Wants=tilo-ush.service$' \
@@ -307,6 +311,7 @@ done
 %{_datadir}/wayland-sessions/tilo.desktop
 %{_datadir}/xdg-desktop-portal/portals/tilo.portal
 %{_datadir}/xdg-desktop-portal/tilo-portals.conf
+%{_datadir}/pipewire/tilo-echo-cancel.conf
 %{_userunitdir}/tilo-graphical-session.target
 %license %{_datadir}/licenses/%{name}/LICENSE
 
@@ -340,25 +345,25 @@ done
 %{_datadir}/wayland-sessions/tilo-app.desktop
 
 %changelog
-* Tue Sep 08 2026 Tilo <tilo@code.podesta.ai> - 0.1.9-1
+* Tue Sep 08 2026 Tilo <tilo@code.tilo.so> - 0.1.9-1
 - Preserve requested placement across provisional Xwayland identities.
 - Persist workspace creation at its mutation boundary.
 - Refine compact onboarding, help, settings, and lock-screen layouts.
 
-* Mon Sep 07 2026 Tilo <tilo@code.podesta.ai> - 0.1.8-1
+* Mon Sep 07 2026 Tilo <tilo@code.tilo.so> - 0.1.8-1
 - Rebase the host-session fixes onto current main for laptop retesting.
 
-* Mon Sep 07 2026 Tilo <tilo@code.podesta.ai> - 0.1.7-1
+* Mon Sep 07 2026 Tilo <tilo@code.tilo.so> - 0.1.7-1
 - Expand production-rendered onboarding and lock-screen acceptance coverage.
 - Harden German AltGr, Quick Settings, and real lock lifecycle regressions.
 
-* Mon Sep 07 2026 Tilo <tilo@code.podesta.ai> - 0.1.6-1
+* Mon Sep 07 2026 Tilo <tilo@code.tilo.so> - 0.1.6-1
 - Restore host-session Xwayland, ordered logout, and desktop UX.
 
-* Sat Sep 05 2026 Tilo <tilo@code.podesta.ai> - 0.1.5-1
+* Sat Sep 05 2026 Tilo <tilo@code.tilo.so> - 0.1.5-1
 - Keep ARM64 packaging available behind a native-runner capability switch.
 
-* Fri Sep 04 2026 Tilo <tilo@code.podesta.ai> - 0.1.4-1
+* Fri Sep 04 2026 Tilo <tilo@code.tilo.so> - 0.1.4-1
 - Require Bubblewrap for sandboxed application launches.
 - Require the portal frontend and filtered D-Bus proxy for sandboxed apps.
 - Build only the compositor binary from the shell package.
@@ -366,15 +371,15 @@ done
 - Keep X11-only host applications usable through rootless Xwayland.
 - Select the Tilo portal backend with a desktop-specific preference file.
 
-* Thu Sep 03 2026 Tilo <tilo@code.podesta.ai> - 0.1.3-1
+* Thu Sep 03 2026 Tilo <tilo@code.tilo.so> - 0.1.3-1
 - Publish release assets with a dedicated repository-scoped credential
 
-* Thu Sep 03 2026 Tilo <tilo@code.podesta.ai> - 0.1.2-1
+* Thu Sep 03 2026 Tilo <tilo@code.tilo.so> - 0.1.2-1
 - Use a fully qualified Forgejo release action URL
 
-* Thu Sep 03 2026 Tilo <tilo@code.podesta.ai> - 0.1.1-1
+* Thu Sep 03 2026 Tilo <tilo@code.tilo.so> - 0.1.1-1
 - Fix the Forgejo release action source for package publication.
 
-* Sat Aug 15 2026 Tilo <tilo@code.podesta.ai> - 0.1.0-1
+* Sat Aug 15 2026 Tilo <tilo@code.tilo.so> - 0.1.0-1
 - First host session package: compositor, launcher, unlock helper, PAM stack
   portal and session entry, plus an optional developer session entry.

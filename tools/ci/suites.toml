@@ -144,6 +144,7 @@ suites = [
   "os/tests/test_windows_dualboot_preflight.py",
   "os/tests/test_windows_direct_provenance.py",
   "os/tests/test_wpe_stage_artifact.py",
+  "os/tests/vm_firmware_selection.sh",
   "os/tests/vm_release_gate_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
   "os/tests/windows_owner_backend.sh",
@@ -163,6 +164,16 @@ suites = [
   "os/tests/wpe_runtime_check.sh",
   "os/tests/test_raw_layer_epoch.py",
 ]
+
+[[group]]
+name = "pipewire-echo-cancel"
+# The echo-cancelled microphone's PipeWire config, the node names and config
+# name the session uses for it, and the image COPY that installs it.
+inputs = [
+  "os/usr/share/pipewire/", "os/Containerfile",
+  "crates/media/core/src/audio.rs", "crates/media/core/src/audio_runtime.rs",
+]
+suites = ["os/tests/test_pipewire_echo_cancel.py"]
 
 [[group]]
 name = "containerfile-sources"
@@ -257,8 +268,8 @@ suites = ["apps/imager/packaging/test_build_desktop_catalog.py"]
 
 [[group]]
 name = "ntfs-helper"
-inputs = ["crates/session/qos-ntfs-helper/"]
-suites = ["crates/session/qos-ntfs-helper/tests/test_build_native.py"]
+inputs = ["crates/session/tilo-ntfs-helper/"]
+suites = ["crates/session/tilo-ntfs-helper/tests/test_build_native.py"]
 
 [[group]]
 name = "dist"
@@ -328,6 +339,9 @@ suites = [
 ]
 
 # Cargo packages whose code reads repository files outside their directory.
+# A change to an input tests the whole package, unless every changed input is
+# listed in the entry's optional `scope`: then only the scope's `filter`
+# (a nextest filterset) within its `test` target runs for that package.
 
 [[cargo]]
 package = "tilo-ui"
@@ -343,6 +357,14 @@ readers = [
   "crates/sdk/ui-core/tests/design_token_audit.rs",
   "crates/sdk/ui-core/tests/spacing_token_audit.rs",
 ]
+# App, shell and framework sources are read only by the two audits in the
+# `it` target. A change confined to them runs those audits, not the whole
+# toolkit suite; the vendored quit request is compiled into the library, so a
+# change there still runs everything.
+scope = { inputs = [
+  "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/shell/src/*.rs",
+  "crates/sdk/tilo-app/src/framework/app.rs",
+], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/)" }
 
 [[cargo]]
 package = "tilo-app-package"
@@ -485,9 +507,10 @@ readers = ["apps/ebook/src/app/interaction_tests.rs"]
 
 [[cargo]]
 package = "shell"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
+inputs = ["crates/sdk/ui-core/assets/fonts/", "docs/shell-navigation-keyboard-map.md"]
 readers = [
   "crates/session/shell/examples/support/populated_shell_fixture.rs",
+  "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/fixture_inputs.rs",
   "crates/session/shell/src/shell/notes_app.rs",
   "crates/session/shell/src/shell/test_support.rs",
@@ -634,8 +657,8 @@ reason = "needs the built registry-server image"
 workflow = "registry-server-image.yml"
 
 [[unrequired]]
-suite = "crates/session/qos-ntfs-helper/tests/test_stage_install.py"
-reason = "needs a built staging binary (QOS_NTFS_STAGING_BINARY)"
+suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"
+reason = "needs a built staging binary (TILO_NTFS_STAGING_BINARY)"
 
 [[unrequired]]
 suite = "dist/arch/test-package.sh"

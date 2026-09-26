@@ -13,7 +13,7 @@ use tilo_actions::remote::{
 use tilo_automerge::ApplyIncoming;
 use ui::collaboration::{CollabRequest, CollaborationManager};
 
-const CALLER: &str = "dev.qos.edited-handoff-proof";
+const CALLER: &str = "dev.tilo.edited-handoff-proof";
 const READER: &str = "edited-proof-reader";
 
 // The helper inherits exactly the same SDK descriptors as a launched app.

@@ -2,7 +2,7 @@
 //!
 //! The cache refuses filesystems without Linux ext4/XFS/Btrfs semantics, so
 //! its fixtures cannot use a tmpfs `/tmp`. They are created below
-//! `QOS_IMAGER_TEST_CACHE_ROOT` when set (CI points it at a prepared
+//! `TILO_IMAGER_TEST_CACHE_ROOT` when set (CI points it at a prepared
 //! location), else below the build's own `target/test-fs/imager`, which lives
 //! in the checkout and so on the developer's filesystem — never in the cache
 //! directory of the account running the tests.
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// Environment variable naming a directory on a qualified local filesystem.
-const ROOT_VAR: &str = "QOS_IMAGER_TEST_CACHE_ROOT";
+const ROOT_VAR: &str = "TILO_IMAGER_TEST_CACHE_ROOT";
 
 fn qualified_root() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();

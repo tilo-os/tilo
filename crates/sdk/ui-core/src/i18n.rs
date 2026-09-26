@@ -228,47 +228,8 @@ fn parse_locale_or_default(locale: &str) -> LanguageIdentifier {
 }
 
 fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
-    let first = locale.split(':').next().unwrap_or(locale).trim();
-    if first.is_empty() || first.eq_ignore_ascii_case("C") || first.eq_ignore_ascii_case("POSIX") {
-        return Err(I18nError::InvalidLocale(locale.to_owned()));
-    }
-    let core = first.split(['.', '@']).next().unwrap_or(first);
-    core.replace('_', "-")
-        .parse()
-        .map_err(|_| I18nError::InvalidLocale(locale.to_owned()))
-}
-
-/// Whether a POSIX locale value names the `C`/`POSIX` locale (`C`,
-/// `C.UTF-8`, `POSIX`), which means untranslated source copy.
-#[cfg(any(feature = "native", test))]
-fn is_c_locale(value: &str) -> bool {
-    let first = value.split(':').next().unwrap_or(value).trim();
-    let core = first.split(['.', '@']).next().unwrap_or(first);
-    core.eq_ignore_ascii_case("C") || core.eq_ignore_ascii_case("POSIX")
-}
-
-/// The user's message locale from the variables `var` reads: `LC_ALL`,
-/// `LC_MESSAGES`, `LANGUAGE`, then `LANG`. The first variable with a usable
-/// value decides: an explicit `C`/`POSIX` there means source copy (`None`),
-/// not "ignore this and consult the next variable". Unset, empty and
-/// malformed values are skipped.
-#[cfg(any(feature = "native", test))]
-pub(crate) fn locale_from_vars(var: impl Fn(&str) -> Option<String>) -> Option<String> {
-    for name in ["LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"] {
-        let Some(value) = var(name) else {
-            continue;
-        };
-        if value.trim().is_empty() {
-            continue;
-        }
-        if is_c_locale(&value) {
-            return None;
-        }
-        if parse_locale(&value).is_ok() {
-            return Some(value);
-        }
-    }
-    None
+    crate::host::parse_posix_locale(locale)
+        .ok_or_else(|| I18nError::InvalidLocale(locale.to_owned()))
 }
 
 /// The host's preferred locale; see [`crate::host::HostEnvironment::locale`].
@@ -916,9 +877,16 @@ mod tests {
     const EN: &str = "greeting = Hello\nonly-source = Source fallback";
     const DE: &str = "greeting = Guten Tag";
 
+    /// Installs `catalogs` with pseudo-localisation off.
+    fn install_plain(source: &str, locale: &str, catalogs: &[(&str, &str)]) {
+        I18nManager::install(source, locale, catalogs).unwrap();
+        I18nManager::set_pseudo_locale(PseudoLocale::Off);
+    }
+
     #[test]
-    fn shared_toolkit_history_is_readable_without_app_catalogs() {
+    fn lookup_falls_back_through_language_catalogues_then_source() {
         let _restore = RestoreLookupState::capture();
+        // The shared toolkit history is readable without app catalogs.
         I18nManager::set_pseudo_locale(PseudoLocale::Off);
         TOOLKIT_SOURCE.with(|source| assert!(source.is_ok(), "bundled toolkit catalog must parse"));
         assert_eq!(
@@ -929,68 +897,93 @@ mod tests {
             I18nManager::lookup_plain("standalone-history-close"),
             "Close history"
         );
+
+        type Catalogs = &'static [(&'static str, &'static str)];
+        let cases: &[(&str, &str, Catalogs, Catalogs)] = &[
+            (
+                "app locale and source override the shared toolkit fallback",
+                "de-DE",
+                &[
+                    (
+                        "en-US",
+                        "standalone-history-title = App history\nstandalone-history-close = App close",
+                    ),
+                    ("de", "standalone-history-title = Verlauf"),
+                ],
+                &[
+                    ("standalone-history-title", "Verlauf"),
+                    ("standalone-history-close", "App close"),
+                    ("standalone-history-selected-details", "Selected changes"),
+                ],
+            ),
+            (
+                "language match, then source fallback, then the key itself",
+                "de-DE",
+                &[("en-US", EN), ("de", DE)],
+                &[
+                    ("greeting", "Guten Tag"),
+                    ("only-source", "Source fallback"),
+                    ("missing", "missing"),
+                ],
+            ),
+            (
+                "the generic language wins over another region",
+                "de-AT",
+                &[("en-US", EN), ("de-CH", "greeting = Grüezi"), ("de", DE)],
+                &[("greeting", "Guten Tag")],
+            ),
+            (
+                "without a generic language, registration order decides",
+                "de-AT",
+                &[("en-US", EN), ("de-CH", "greeting = Grüezi"), ("de-DE", DE)],
+                &[("greeting", "Grüezi")],
+            ),
+            (
+                "every catalogue of the active language is consulted before source",
+                "de-DE",
+                &[
+                    ("en-US", "greeting = Hello\ntool = Tool\napp = App"),
+                    ("de-DE", "tool = Werkzeug"),
+                    ("de", "app = Anwendung"),
+                ],
+                &[
+                    ("tool", "Werkzeug"),
+                    ("app", "Anwendung"),
+                    ("greeting", "Hello"),
+                ],
+            ),
+        ];
+        for (case, locale, catalogs, expected) in cases {
+            install_plain("en-US", locale, catalogs);
+            assert_eq!(I18nManager::current_locale(), *locale, "case {case}");
+            for (key, want) in *expected {
+                assert_eq!(
+                    I18nManager::lookup_plain(key),
+                    *want,
+                    "case {case}: key {key}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn app_locale_and_source_override_shared_toolkit_fallback() {
+    fn locale_selection_parses_posix_values_and_revises_only_on_change() {
         let _restore = RestoreLookupState::capture();
-        I18nManager::install(
-            "en-US",
-            "de-DE",
-            &[
-                (
-                    "en-US",
-                    "standalone-history-title = App history\nstandalone-history-close = App close",
-                ),
-                ("de", "standalone-history-title = Verlauf"),
-            ],
-        )
-        .unwrap();
-        I18nManager::set_pseudo_locale(PseudoLocale::Off);
-        assert_eq!(
-            I18nManager::lookup_plain("standalone-history-title"),
-            "Verlauf"
-        );
-        assert_eq!(
-            I18nManager::lookup_plain("standalone-history-close"),
-            "App close"
-        );
-        assert_eq!(
-            I18nManager::lookup_plain("standalone-history-selected-details"),
-            "Selected changes"
-        );
-    }
+        // POSIX values parse like the environment; a `LANGUAGE` list's first
+        // entry wins.
+        let parsed = |raw: &str| parse_locale(raw).ok().map(|locale| locale.to_string());
+        for (raw, want) in [
+            ("C", None),
+            ("POSIX", None),
+            ("", None),
+            ("de_DE.UTF-8", Some("de-DE")),
+            ("en_US", Some("en-US")),
+            ("de:en_US", Some("de")),
+        ] {
+            assert_eq!(parsed(raw).as_deref(), want, "parse {raw:?}");
+        }
 
-    #[test]
-    fn installed_catalog_uses_language_match_then_source_fallback() {
-        I18nManager::install("en-US", "de-DE", &[("en-US", EN), ("de", DE)]).unwrap();
-        assert_eq!(I18nManager::current_locale(), "de-DE");
-        assert_eq!(I18nManager::lookup("greeting", None), "Guten Tag");
-        assert_eq!(I18nManager::lookup("only-source", None), "Source fallback");
-        assert_eq!(I18nManager::lookup("missing", None), "missing");
-    }
-
-    #[test]
-    fn language_fallback_prefers_generic_then_registration_order() {
-        I18nManager::install(
-            "en-US",
-            "de-AT",
-            &[("en-US", EN), ("de-CH", "greeting = Grüezi"), ("de", DE)],
-        )
-        .unwrap();
-        assert_eq!(I18nManager::lookup("greeting", None), "Guten Tag");
-
-        I18nManager::install(
-            "en-US",
-            "de-AT",
-            &[("en-US", EN), ("de-CH", "greeting = Grüezi"), ("de-DE", DE)],
-        )
-        .unwrap();
-        assert_eq!(I18nManager::lookup("greeting", None), "Grüezi");
-    }
-
-    #[test]
-    fn locale_revision_changes_only_for_effective_changes() {
+        // The revision changes only for an effective locale change.
         I18nManager::install("en-US", "en-US", &[("en-US", EN), ("de", DE)]).unwrap();
         let initial = I18nManager::revision();
         I18nManager::set_locale("en_US.UTF-8");
@@ -998,10 +991,31 @@ mod tests {
         I18nManager::set_locale("de_DE.UTF-8");
         assert_ne!(I18nManager::revision(), initial);
         assert_eq!(I18nManager::lookup("greeting", None), "Guten Tag");
+
+        // `set_locale_or_source` treats C and garbage as the source locale.
+        I18nManager::install("en-US", "de", &[("en-US", EN), ("de", DE)]).unwrap();
+        for (raw, want) in [
+            ("C", "en-US"),
+            ("de_DE.UTF-8", "de-DE"),
+            ("not a locale!", "en-US"),
+        ] {
+            I18nManager::set_locale_or_source(raw);
+            assert_eq!(
+                I18nManager::current_locale(),
+                want,
+                "set_locale_or_source({raw:?})"
+            );
+        }
+        // `set_locale` itself keeps the selection on a value it cannot parse.
+        I18nManager::set_locale("de");
+        I18nManager::set_locale("C");
+        assert_eq!(I18nManager::current_locale(), "de");
     }
 
     #[test]
-    fn invalid_install_does_not_replace_the_live_catalog() {
+    fn broken_resources_and_messages_degrade_to_one_that_works() {
+        let _restore = RestoreLookupState::capture();
+        // An invalid install does not replace the live catalog.
         I18nManager::install("en-US", "en-US", &[("en-US", EN)]).unwrap();
         let revision = I18nManager::revision();
         let error = I18nManager::install("en-US", "de", &[("en-US", "broken = {"), ("de", DE)])
@@ -1009,92 +1023,27 @@ mod tests {
         assert!(matches!(error, I18nError::InvalidResource { .. }));
         assert_eq!(I18nManager::revision(), revision);
         assert_eq!(I18nManager::lookup("greeting", None), "Hello");
-    }
 
-    #[test]
-    fn expanded_pseudo_locale_lengthens_text_and_invalidates_retained_widgets() {
-        I18nManager::install("en-US", "en-US", &[("en-US", EN)]).unwrap();
-        I18nManager::set_pseudo_locale(PseudoLocale::Off);
-        let initial = I18nManager::revision();
-
-        I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
-        let expanded = I18nManager::lookup("greeting", None);
-        assert!(expanded.starts_with('⟦') && expanded.ends_with('⟧'));
-        assert!(expanded.chars().count() > "Hello".chars().count());
-        assert_ne!(I18nManager::revision(), initial);
-
-        I18nManager::set_pseudo_locale(PseudoLocale::Off);
-        assert_eq!(I18nManager::lookup("greeting", None), "Hello");
-    }
-
-    #[test]
-    fn posix_locale_values_parse_like_the_environment() {
-        let parsed = |raw: &str| parse_locale(raw).ok().map(|locale| locale.to_string());
-        assert_eq!(parsed("C"), None);
-        assert_eq!(parsed("POSIX"), None);
-        assert_eq!(parsed(""), None);
-        assert_eq!(parsed("de_DE.UTF-8").as_deref(), Some("de-DE"));
-        assert_eq!(parsed("en_US").as_deref(), Some("en-US"));
-        // A `LANGUAGE` list: the first entry wins.
-        assert_eq!(parsed("de:en_US").as_deref(), Some("de"));
-    }
-
-    #[test]
-    fn an_explicit_c_locale_ends_the_environment_search() {
-        let env = |vars: &'static [(&'static str, &'static str)]| {
-            move |name: &str| {
-                vars.iter()
-                    .find(|(key, _)| *key == name)
-                    .map(|(_, value)| (*value).to_owned())
-            }
-        };
-        let found = |vars| {
-            locale_from_vars(env(vars))
-                .and_then(|value| parse_locale(&value).ok())
-                .map(|l| l.to_string())
-        };
-        assert_eq!(
-            found(&[("LC_ALL", "C.UTF-8"), ("LANG", "de_DE.UTF-8")]),
-            None
-        );
-        assert_eq!(
-            found(&[("LC_ALL", ""), ("LANG", "de_DE.UTF-8")]).as_deref(),
-            Some("de-DE")
-        );
-        assert_eq!(
-            found(&[("LC_MESSAGES", "not a locale!"), ("LANG", "fr_FR")]).as_deref(),
-            Some("fr-FR"),
-            "a malformed value is skipped"
-        );
-        assert_eq!(found(&[]), None);
-    }
-
-    #[test]
-    fn every_catalogue_of_the_active_language_is_consulted_before_source() {
-        let _restore = RestoreLookupState::capture();
-        I18nManager::install(
+        // A translation that fails to format falls back to one that does.
+        install_plain(
             "en-US",
-            "de-DE",
+            "de",
             &[
-                ("en-US", "greeting = Hello\ntool = Tool\napp = App"),
-                ("de-DE", "tool = Werkzeug"),
-                ("de", "app = Anwendung"),
+                ("en-US", "share = Shared with { $person }"),
+                ("de", "share = Geteilt mit { $persn }"),
             ],
-        )
-        .unwrap();
-        I18nManager::set_pseudo_locale(PseudoLocale::Off);
-        assert_eq!(I18nManager::lookup_plain("tool"), "Werkzeug");
-        assert_eq!(I18nManager::lookup_plain("app"), "Anwendung");
-        assert_eq!(I18nManager::lookup_plain("greeting"), "Hello");
-    }
+        );
+        assert_eq!(
+            I18nManager::format("share", &[("person", ArgValue::from("Zoë"))]),
+            "Shared with Zoë"
+        );
+        // With no clean rendering anywhere, the best effort still shows.
+        assert_eq!(I18nManager::format("share", &[]), "Geteilt mit {$persn}");
 
-    #[test]
-    fn source_fallback_follows_the_active_locales_plural_rules() {
-        let _restore = RestoreLookupState::capture();
+        // The source fallback follows the active locale's plural rules.
         const SOURCE: &str =
             "items = { $count ->\n    [one] { $count } item\n   *[other] { $count } items\n}";
-        I18nManager::install("en-US", "en-US", &[("en-US", SOURCE)]).unwrap();
-        I18nManager::set_pseudo_locale(PseudoLocale::Off);
+        install_plain("en-US", "en-US", &[("en-US", SOURCE)]);
         let items = || I18nManager::format("items", &[("count", ArgValue::from(21))]);
         assert_eq!(items(), "21 items");
         // Russian puts 21 in the `one` category; the English copy follows.
@@ -1106,36 +1055,26 @@ mod tests {
     }
 
     #[test]
-    fn a_translation_that_fails_to_format_falls_back_to_one_that_does() {
+    fn pseudo_locales_expand_copy_but_not_data_and_invalidate_widgets() {
         let _restore = RestoreLookupState::capture();
-        I18nManager::install(
-            "en-US",
-            "de",
-            &[
-                ("en-US", "share = Shared with { $person }"),
-                ("de", "share = Geteilt mit { $persn }"),
-            ],
-        )
-        .unwrap();
+        // Expanded pseudo-localisation lengthens text and bumps the revision
+        // so retained widgets re-resolve.
+        install_plain("en-US", "en-US", &[("en-US", EN)]);
+        let initial = I18nManager::revision();
+        I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
+        let expanded = I18nManager::lookup("greeting", None);
+        assert!(expanded.starts_with('⟦') && expanded.ends_with('⟧'));
+        assert!(expanded.chars().count() > "Hello".chars().count());
+        assert_ne!(I18nManager::revision(), initial);
         I18nManager::set_pseudo_locale(PseudoLocale::Off);
-        assert_eq!(
-            I18nManager::format("share", &[("person", ArgValue::from("Zoë"))]),
-            "Shared with Zoë"
-        );
-        // With no clean rendering anywhere, the best effort still shows.
-        assert_eq!(I18nManager::format("share", &[]), "Geteilt mit {$persn}");
-    }
+        assert_eq!(I18nManager::lookup("greeting", None), "Hello");
 
-    #[test]
-    fn pseudo_locale_selection_expands_copy_but_not_interpolated_data() {
-        let _restore = RestoreLookupState::capture();
-        I18nManager::install(
+        // Selecting the pseudo locale expands copy but not interpolated data.
+        install_plain(
             "en-US",
             "en-US",
             &[("en-US", "share = Shared with { $person }")],
-        )
-        .unwrap();
-        I18nManager::set_pseudo_locale(PseudoLocale::Off);
+        );
         let initial = I18nManager::revision();
         I18nManager::set_locale("qps-ploc");
         assert_ne!(I18nManager::revision(), initial);
@@ -1148,22 +1087,6 @@ mod tests {
         assert!(!rendered.contains("Shared"), "{rendered}");
     }
 
-    #[test]
-    fn set_locale_or_source_treats_c_and_garbage_as_source() {
-        let _restore = RestoreLookupState::capture();
-        I18nManager::install("en-US", "de", &[("en-US", EN), ("de", DE)]).unwrap();
-        I18nManager::set_locale_or_source("C");
-        assert_eq!(I18nManager::current_locale(), "en-US");
-        I18nManager::set_locale_or_source("de_DE.UTF-8");
-        assert_eq!(I18nManager::current_locale(), "de-DE");
-        I18nManager::set_locale_or_source("not a locale!");
-        assert_eq!(I18nManager::current_locale(), "en-US");
-        // `set_locale` itself keeps the selection on a value it cannot parse.
-        I18nManager::set_locale("de");
-        I18nManager::set_locale("C");
-        assert_eq!(I18nManager::current_locale(), "de");
-    }
-
     static EMBEDDED: EmbeddedCatalog = EmbeddedCatalog::new(
         "en-US",
         &[(
@@ -1174,35 +1097,7 @@ mod tests {
     );
 
     #[test]
-    fn embedded_catalog_installs_a_manager_on_a_bare_thread() {
-        let _restore = RestoreLookupState::capture();
-        assert_eq!(manager_id(), None);
-        assert_eq!(EMBEDDED.t("embedded-probe"), "Probe");
-        assert_eq!(EMBEDDED.current_locale(), "en-US");
-        assert_eq!(
-            EMBEDDED.t_args("embedded-greeting", &[("name", ArgValue::from("Ada"))]),
-            "Hello Ada"
-        );
-    }
-
-    #[test]
-    fn embedded_catalog_joins_a_host_manager_without_replacing_its_locale() {
-        let _restore = RestoreLookupState::capture();
-        I18nManager::install("en-US", "de", &[("en-US", EN), ("de", DE)]).unwrap();
-        let host = manager_id();
-        assert_eq!(EMBEDDED.t("embedded-probe"), "Probe");
-        assert_eq!(manager_id(), host);
-        assert_eq!(I18nManager::current_locale(), "de");
-        assert_eq!(I18nManager::lookup_plain("greeting"), "Guten Tag");
-
-        // A manager installed later starts without the catalogue; the next
-        // lookup loads it again rather than trusting a stale flag.
-        I18nManager::install("en-US", "en-US", &[("en-US", EN)]).unwrap();
-        assert_eq!(EMBEDDED.t("embedded-probe"), "Probe");
-    }
-
-    #[test]
-    fn pinned_embedded_catalog_overrides_the_host_locale() {
+    fn embedded_catalogs_install_join_or_pin_their_manager() {
         static PINNED: EmbeddedCatalog = EmbeddedCatalog::new(
             "en-US",
             &[
@@ -1212,9 +1107,41 @@ mod tests {
             "pinned-probe",
         )
         .with_pinned_locale("en-US");
-        let _restore = RestoreLookupState::capture();
-        I18nManager::install("en-US", "de", &[("en-US", EN), ("de", DE)]).unwrap();
-        assert_eq!(PINNED.t("pinned-probe"), "Pinned");
-        assert_eq!(I18nManager::current_locale(), "en-US");
+
+        // On a bare thread the embedded catalog installs its own manager.
+        {
+            let _restore = RestoreLookupState::capture();
+            assert_eq!(manager_id(), None);
+            assert_eq!(EMBEDDED.t("embedded-probe"), "Probe");
+            assert_eq!(EMBEDDED.current_locale(), "en-US");
+            assert_eq!(
+                EMBEDDED.t_args("embedded-greeting", &[("name", ArgValue::from("Ada"))]),
+                "Hello Ada"
+            );
+        }
+
+        // It joins a host manager without replacing its locale.
+        {
+            let _restore = RestoreLookupState::capture();
+            I18nManager::install("en-US", "de", &[("en-US", EN), ("de", DE)]).unwrap();
+            let host = manager_id();
+            assert_eq!(EMBEDDED.t("embedded-probe"), "Probe");
+            assert_eq!(manager_id(), host);
+            assert_eq!(I18nManager::current_locale(), "de");
+            assert_eq!(I18nManager::lookup_plain("greeting"), "Guten Tag");
+
+            // A manager installed later starts without the catalogue; the next
+            // lookup loads it again rather than trusting a stale flag.
+            I18nManager::install("en-US", "en-US", &[("en-US", EN)]).unwrap();
+            assert_eq!(EMBEDDED.t("embedded-probe"), "Probe");
+        }
+
+        // A pinned catalog overrides the host locale.
+        {
+            let _restore = RestoreLookupState::capture();
+            I18nManager::install("en-US", "de", &[("en-US", EN), ("de", DE)]).unwrap();
+            assert_eq!(PINNED.t("pinned-probe"), "Pinned");
+            assert_eq!(I18nManager::current_locale(), "en-US");
+        }
     }
 }

@@ -133,64 +133,62 @@ DesktopNames=tilo
 ";
 
     #[test]
-    fn parses_default_tilo_session() {
-        let s = parse_desktop_entry(TILO).expect("should parse");
-        assert_eq!(s.name, "Tilo");
-        assert_eq!(s.argv, vec!["/usr/bin/shell", "--backend", "drm"]);
-    }
+    fn session_desktop_files_are_discovered_and_parsed() {
+        // Phase `parses_default_tilo_session`.
+        {
+            let s = parse_desktop_entry(TILO).expect("should parse");
+            assert_eq!(s.name, "Tilo");
+            assert_eq!(s.argv, vec!["/usr/bin/shell", "--backend", "drm"]);
+        }
+        // Phase `parses_peer_sync_session`.
+        {
+            let s = parse_desktop_entry(TILO_PEER_SYNC).expect("should parse");
+            assert_eq!(s.name, "Tilo with peer sync");
+            assert_eq!(
+                s.argv,
+                vec!["/usr/bin/shell", "--backend", "drm", "--enable-peer-sync"]
+            );
+        }
+        // Phase `comments_and_localized_names_are_ignored`.
+        {
+            let entry = "\
+    [Desktop Entry]
+    # a comment
+    Name=Real Name
+    Name[de]=Echter Name
+    Exec=/usr/bin/foo --bar
+    ";
+            let s = parse_desktop_entry(entry).expect("should parse");
+            assert_eq!(s.name, "Real Name");
+            assert_eq!(s.argv, vec!["/usr/bin/foo", "--bar"]);
+        }
+        // Phase `missing_exec_yields_none`.
+        {
+            let entry = "[Desktop Entry]\nName=No Exec\nType=Application\n";
+            assert!(parse_desktop_entry(entry).is_none());
+        }
+        // Phase `read_sessions_reads_a_directory`.
+        {
+            let dir =
+                std::env::temp_dir().join(format!("tilo-greeter-sessions-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("a.desktop"), TILO).unwrap();
+            std::fs::write(dir.join("b.desktop"), TILO_PEER_SYNC).unwrap();
+            // A non-.desktop file must be skipped.
+            std::fs::write(dir.join("README.txt"), "ignore me").unwrap();
 
-    #[test]
-    fn parses_peer_sync_session() {
-        let s = parse_desktop_entry(TILO_PEER_SYNC).expect("should parse");
-        assert_eq!(s.name, "Tilo with peer sync");
-        assert_eq!(
-            s.argv,
-            vec!["/usr/bin/shell", "--backend", "drm", "--enable-peer-sync"]
-        );
-    }
+            let sessions = read_sessions(&dir);
+            let _ = std::fs::remove_dir_all(&dir);
 
-    #[test]
-    fn comments_and_localized_names_are_ignored() {
-        let entry = "\
-[Desktop Entry]
-# a comment
-Name=Real Name
-Name[de]=Echter Name
-Exec=/usr/bin/foo --bar
-";
-        let s = parse_desktop_entry(entry).expect("should parse");
-        assert_eq!(s.name, "Real Name");
-        assert_eq!(s.argv, vec!["/usr/bin/foo", "--bar"]);
-    }
-
-    #[test]
-    fn missing_exec_yields_none() {
-        let entry = "[Desktop Entry]\nName=No Exec\nType=Application\n";
-        assert!(parse_desktop_entry(entry).is_none());
-    }
-
-    #[test]
-    fn read_sessions_reads_a_directory() {
-        let dir =
-            std::env::temp_dir().join(format!("tilo-greeter-sessions-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("a.desktop"), TILO).unwrap();
-        std::fs::write(dir.join("b.desktop"), TILO_PEER_SYNC).unwrap();
-        // A non-.desktop file must be skipped.
-        std::fs::write(dir.join("README.txt"), "ignore me").unwrap();
-
-        let sessions = read_sessions(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
-
-        assert_eq!(sessions.len(), 2);
-        // Sorted by name: "Tilo" before "Tilo with peer sync".
-        assert_eq!(sessions[0].name, "Tilo");
-        assert_eq!(sessions[1].name, "Tilo with peer sync");
-    }
-
-    #[test]
-    fn missing_directory_is_empty() {
-        let sessions = read_sessions(Path::new("/nonexistent/tilo/sessions/dir"));
-        assert!(sessions.is_empty());
+            assert_eq!(sessions.len(), 2);
+            // Sorted by name: "Tilo" before "Tilo with peer sync".
+            assert_eq!(sessions[0].name, "Tilo");
+            assert_eq!(sessions[1].name, "Tilo with peer sync");
+        }
+        // Phase `missing_directory_is_empty`.
+        {
+            let sessions = read_sessions(Path::new("/nonexistent/tilo/sessions/dir"));
+            assert!(sessions.is_empty());
+        }
     }
 }

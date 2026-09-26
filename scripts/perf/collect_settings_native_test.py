@@ -10,19 +10,20 @@ import native_app_capture
 from fixture_host_tools import fixture_path
 
 class SettingsCollectorTests(unittest.TestCase):
-    def test_normal_launch_isolated_roots_no_fixture_or_screenshot_flags(self):
-        with tempfile.TemporaryDirectory() as directory:
+    def test_collector_launches_settings_only_through_normal_typing_route(self):
+        with self.subTest(case='normal launch, isolated roots, no fixture or screenshot flags'), \
+             tempfile.TemporaryDirectory() as directory:
             root=Path(directory);app=root/'app'
             app.write_text('''#!/usr/bin/env python3
 import os,sys,json
 from pathlib import Path
 assert len(sys.argv)==1
-assert os.environ['QUICK_APP_ID']=='dev.qos.settings'
-run=Path(os.environ['QOS_NATIVE_SCENARIO']).parent
+assert os.environ['QUICK_APP_ID']=='dev.tilo.settings'
+run=Path(os.environ['TILO_NATIVE_SCENARIO']).parent
 for key,name in [('XDG_DATA_HOME','xdg'),('XDG_CONFIG_HOME','config'),('XDG_CACHE_HOME','cache')]:
     assert Path(os.environ[key])==run/name
 assert not Path(os.environ['XDG_CONFIG_HOME']).exists()
-scenario=json.loads(Path(os.environ['QOS_NATIVE_SCENARIO']).read_text())
+scenario=json.loads(Path(os.environ['TILO_NATIVE_SCENARIO']).read_text())
 assert len(scenario['steps'])-scenario['warmup_steps']>=1000
 assert all(s in [{'kind':'character','value':'z'},{'kind':'key','key':'backspace'}] for s in scenario['steps'][scenario['warmup_steps']:])
 print('normal Settings route',flush=True)
@@ -40,9 +41,8 @@ raise SystemExit(7)
             meta=json.loads((run/'metadata.json').read_text())
             self.assertEqual(meta['hashes_before'],meta['hashes_after'])
             self.assertEqual(list(meta['hashes_before']),[str(app.resolve())])
-
-    def test_unsupported_scroll_mode_does_not_launch_settings(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with self.subTest(case='unsupported scroll mode does not launch settings'), \
+             tempfile.TemporaryDirectory() as directory:
             root=Path(directory);app=root/'app';marker=root/'launched'
             app.write_text('#!/usr/bin/env python3\nfrom pathlib import Path\nPath('+repr(str(marker))+').touch()\n')
             app.chmod(0o755)

@@ -14,9 +14,10 @@ use crate::shell::search::{
 };
 use crate::shell::state::{AppKind, GroupId, StripId, TabId, TileContent, WorkspaceId};
 use crate::shell::tab_documents::tab_body;
+use ui::search::{FieldWeight, RankField};
 
-/// Top of the shared score scale — a title prefix. See [`match_score`].
-pub const MAX_SCORE: i32 = 110;
+/// Top of the shared score scale — an exact title. See [`match_score`].
+pub const MAX_SCORE: i32 = crate::shell::search::MAX_PROVIDER_SCORE;
 
 /// Retained projection for the two CRDT-backed tab providers.  It is rebuilt
 /// only after `ChromeState` advances, never for an ordinary query edit.
@@ -39,9 +40,7 @@ struct TextEntry {
     group: GroupId,
     tab: TabId,
     title: String,
-    title_lower: String,
     body: String,
-    body_lower: String,
 }
 
 struct TextSnapshot {
@@ -133,7 +132,6 @@ pub fn query_text_app(
     if !ctx.wanted.contains(kind) {
         return Vec::new();
     }
-    let needle_lower = ctx.needle.to_lowercase();
     let mut out = Vec::new();
     let tree = ctx.chrome.tree();
     for w in &tree.desktop.workspaces {
@@ -143,12 +141,8 @@ pub fn query_text_app(
                     if !tile_hosts_app(&t.tile, app) {
                         continue;
                     }
-                    let title_lower = t.title.to_lowercase();
                     let body = tab_body(ctx.chrome.records(), t.id, body_key).unwrap_or_default();
-                    let body_lower = body.to_lowercase();
-                    let Some((score, snippet)) =
-                        match_score(&needle_lower, &title_lower, &body_lower, &body)
-                    else {
+                    let Some((score, snippet)) = match_score(ctx.needle, &t.title, &body) else {
                         continue;
                     };
                     let (workspace_id, strip_id, group_id, tab_id) = (w.id, s.id, g.id, t.id);
@@ -225,19 +219,13 @@ pub fn query_text_app_page(
     let page = snapshot
         .index
         .matching_page(ctx.needle, after, budget.max_work, budget.max_results);
-    let needle_lower = ctx.needle.to_lowercase();
     let mut used = 0usize;
     let mut results = Vec::new();
     for id in page.ids {
         let Some(entry) = snapshot.entries.get(id) else {
             continue;
         };
-        let Some((score, snippet)) = match_score(
-            &needle_lower,
-            &entry.title_lower,
-            &entry.body_lower,
-            &entry.body,
-        ) else {
+        let Some((score, snippet)) = match_score(ctx.needle, &entry.title, &entry.body) else {
             continue;
         };
         let bytes = entry
@@ -295,9 +283,7 @@ fn build_snapshot(
                         strip: strip.id,
                         group: group.id,
                         tab: tab.id,
-                        title_lower: tab.title.to_lowercase(),
                         title: tab.title.clone(),
-                        body_lower: body.to_lowercase(),
                         body,
                     });
                 }
@@ -308,7 +294,7 @@ fn build_snapshot(
     let index = ui::search::SearchTextIndex::new(
         entries
             .iter()
-            .map(|entry| format!("{}\u{1f}{}", entry.title_lower, entry.body_lower)),
+            .map(|entry| format!("{}\u{1f}{}", entry.title, entry.body)),
     );
     TextSnapshot {
         revision,
@@ -317,60 +303,48 @@ fn build_snapshot(
     }
 }
 
-/// Title first, then body; a body hit carries a snippet showing why it matched.
-pub fn match_score(
-    needle_lower: &str,
-    title_lower: &str,
-    body_lower: &str,
-    body_raw: &str,
-) -> Option<(i32, Option<String>)> {
-    if needle_lower.is_empty() {
+/// The shared ranker over the title and the body; a body containing the
+/// query carries a snippet showing why it matched.
+pub fn match_score(needle: &str, title: &str, body: &str) -> Option<(i32, Option<String>)> {
+    if needle.trim().is_empty() {
         return Some((0, None));
     }
-    if title_lower.starts_with(needle_lower) {
-        return Some((
-            MAX_SCORE,
-            snippet_around(body_raw, body_lower, needle_lower),
-        ));
-    }
-    if title_lower.contains(needle_lower) {
-        return Some((60, snippet_around(body_raw, body_lower, needle_lower)));
-    }
-    if body_lower.contains(needle_lower) {
-        return Some((40, snippet_around(body_raw, body_lower, needle_lower)));
-    }
-    None
+    let title_rank =
+        crate::shell::search::rank_fields(needle, &[RankField::new(title, FieldWeight::TITLE)]);
+    let body_hit = ui::search::rank::locate(needle, body);
+    let body_rank = body_hit
+        .as_ref()
+        .map(|(tier, _)| crate::shell::search::provider_score(tier.rank_in(FieldWeight::BODY)));
+    let score = title_rank.max(body_rank)?;
+    Some((
+        score,
+        body_hit.and_then(|(_, hit)| snippet_around(body, hit)),
+    ))
 }
 
-/// Extract ~60 chars of context around the first `needle` match, `…`-marked
+/// Extract ~60 chars of context around the `hit` byte range, `…`-marked
 /// when windowed. Line structure is flattened to single spaces — a
 /// paragraph break otherwise left a visible gap mid-sentence in the row.
-fn snippet_around(body_raw: &str, body_lower: &str, needle: &str) -> Option<String> {
-    if body_raw.is_empty() {
+fn snippet_around(body: &str, hit: std::ops::Range<usize>) -> Option<String> {
+    if body.is_empty() {
         return None;
     }
-    let hit = body_lower.find(needle)?;
     let radius = 30usize;
-    let start = ceil_char_boundary(body_raw, hit.saturating_sub(radius));
-    let end = ceil_char_boundary(
-        body_raw,
-        hit.saturating_add(needle.len())
-            .saturating_add(radius)
-            .min(body_raw.len()),
-    );
+    let start = ceil_char_boundary(body, hit.start.saturating_sub(radius));
+    let end = ceil_char_boundary(body, hit.end.saturating_add(radius).min(body.len()));
     let mut s = String::new();
     if start > 0 {
         s.push('…');
     }
     s.push_str(
-        &body_raw
+        &body
             .get(start..end)
             .unwrap_or_default()
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" "),
     );
-    if end < body_raw.len() {
+    if end < body.len() {
         s.push('…');
     }
     Some(s)

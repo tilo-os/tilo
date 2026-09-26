@@ -10,6 +10,18 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class ThinAppSelectionTests(unittest.TestCase):
     def setUp(self):
         for tool in ("cargo", "rustc", "bash"):
@@ -73,32 +85,33 @@ shared = {{ path = "../../shared"{extra} }}
         env.update(REPO=str(self.root), INCLUDE_PACKAGES="calculator other", **overrides)
         return subprocess.run(args, cwd=self.root, env=env, text=True, capture_output=True, timeout=120)
 
-    def test_selected_binary_retains_full_runtime_features_and_hash(self):
-        selected = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_PACKAGES="calculator")
-        self.assertEqual(selected.returncode, 0, selected.stdout + selected.stderr)
-        target = self.root / "target/thin-app"
-        self.assertTrue((target / "calculator").is_file())
-        self.assertFalse((target / "other").exists())
-        self.assertNotIn("Compiling other", selected.stderr)
-        runtime = target / "libruntime_dylib.so"
-        before = hashlib.sha256(runtime.read_bytes()).hexdigest()
-        # Resolve the same graph and build the entire fleet. The selected build
-        # must already have the full feature union, not a different runtime ABI.
-        complete = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_PACKAGES="")
-        self.assertEqual(complete.returncode, 0, complete.stdout + complete.stderr)
-        self.assertTrue((target / "other").is_file())
-        self.assertEqual(before, hashlib.sha256(runtime.read_bytes()).hexdigest())
-        self.assertNotIn("Compiling runtime-dylib", complete.stderr)
-        rustlib = self.run_command("rustc", "--print", "target-libdir").stdout.strip()
-        started = self.run_command(str(target / "calculator"), LD_LIBRARY_PATH=f"{target}:{rustlib}")
-        self.assertEqual(started.returncode, 0, started.stderr)
-        self.assertIn("unified-runtime-ok", started.stdout)
-
-    def test_unknown_selected_package_fails_before_cargo(self):
-        result = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_PACKAGES="calculator missing")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("outside the runtime graph: missing", result.stderr)
-        self.assertFalse((self.root / "target").exists())
+    def test_package_selection(self):
+        with self.subTest(phase="selected_binary_retains_full_runtime_features_and_hash"):
+            selected = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_PACKAGES="calculator")
+            self.assertEqual(selected.returncode, 0, selected.stdout + selected.stderr)
+            target = self.root / "target/thin-app"
+            self.assertTrue((target / "calculator").is_file())
+            self.assertFalse((target / "other").exists())
+            self.assertNotIn("Compiling other", selected.stderr)
+            runtime = target / "libruntime_dylib.so"
+            before = hashlib.sha256(runtime.read_bytes()).hexdigest()
+            # Resolve the same graph and build the entire fleet. The selected build
+            # must already have the full feature union, not a different runtime ABI.
+            complete = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_PACKAGES="")
+            self.assertEqual(complete.returncode, 0, complete.stdout + complete.stderr)
+            self.assertTrue((target / "other").is_file())
+            self.assertEqual(before, hashlib.sha256(runtime.read_bytes()).hexdigest())
+            self.assertNotIn("Compiling runtime-dylib", complete.stderr)
+            rustlib = self.run_command("rustc", "--print", "target-libdir").stdout.strip()
+            started = self.run_command(str(target / "calculator"), LD_LIBRARY_PATH=f"{target}:{rustlib}")
+            self.assertEqual(started.returncode, 0, started.stderr)
+            self.assertIn("unified-runtime-ok", started.stdout)
+        restart_fixture(self)
+        with self.subTest(phase="unknown_selected_package_fails_before_cargo"):
+            result = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_PACKAGES="calculator missing")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("outside the runtime graph: missing", result.stderr)
+            self.assertFalse((self.root / "target").exists())
 
 
 if __name__ == "__main__":

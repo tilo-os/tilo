@@ -254,48 +254,52 @@ mod tests {
   </body>
 </opml>"#;
 
+    /// OPML parses nested and flat outlines, imports with folders and dedup, round-trips export and handles escaped ampersands.
     #[test]
-    fn parses_nested_and_flat() {
-        let feeds = parse(SAMPLE);
-        assert_eq!(feeds.len(), 3);
-        assert_eq!(feeds[0].title, "Lobsters");
-        assert_eq!(feeds[0].xml_url, "https://lobste.rs/rss");
-        assert_eq!(feeds[0].folder.as_deref(), Some("Tech"));
-        assert_eq!(feeds[1].folder.as_deref(), Some("Tech"));
-        assert_eq!(feeds[2].folder, None);
-    }
+    fn opml_parses_imports_and_round_trips() {
+        // --- phase: parses_nested_and_flat ---
+        {
+            let feeds = parse(SAMPLE);
+            assert_eq!(feeds.len(), 3);
+            assert_eq!(feeds[0].title, "Lobsters");
+            assert_eq!(feeds[0].xml_url, "https://lobste.rs/rss");
+            assert_eq!(feeds[0].folder.as_deref(), Some("Tech"));
+            assert_eq!(feeds[1].folder.as_deref(), Some("Tech"));
+            assert_eq!(feeds[2].folder, None);
+        }
 
-    #[test]
-    fn import_creates_folders_and_dedups() {
-        let mut store = Store::new();
-        let feeds = parse(SAMPLE);
-        let n = import_into(&mut store, &feeds);
-        assert_eq!(n, 3);
-        assert_eq!(store.folders.len(), 1);
-        assert_eq!(store.feeds.len(), 3);
-        // Re-import: nothing new.
-        let n2 = import_into(&mut store, &feeds);
-        assert_eq!(n2, 0);
-    }
+        // --- phase: import_creates_folders_and_dedups ---
+        {
+            let mut store = Store::new();
+            let feeds = parse(SAMPLE);
+            let n = import_into(&mut store, &feeds);
+            assert_eq!(n, 3);
+            assert_eq!(store.folders.len(), 1);
+            assert_eq!(store.feeds.len(), 3);
+            // Re-import: nothing new.
+            let n2 = import_into(&mut store, &feeds);
+            assert_eq!(n2, 0);
+        }
 
-    #[test]
-    fn export_round_trips_through_parse() {
-        let mut store = Store::new();
-        import_into(&mut store, &parse(SAMPLE));
-        let xml = export(&store);
-        let reparsed = parse(&xml);
-        assert_eq!(reparsed.len(), 3);
-        let titles: Vec<_> = reparsed.iter().map(|f| f.title.clone()).collect();
-        assert!(titles.contains(&"Lobsters".to_string()));
-        assert!(titles.contains(&"Top Level".to_string()));
-    }
+        // --- phase: export_round_trips_through_parse ---
+        {
+            let mut store = Store::new();
+            import_into(&mut store, &parse(SAMPLE));
+            let xml = export(&store);
+            let reparsed = parse(&xml);
+            assert_eq!(reparsed.len(), 3);
+            let titles: Vec<_> = reparsed.iter().map(|f| f.title.clone()).collect();
+            assert!(titles.contains(&"Lobsters".to_string()));
+            assert!(titles.contains(&"Top Level".to_string()));
+        }
 
-    #[test]
-    fn handles_escaped_ampersand() {
-        let xml = r#"<outline text="A &amp; B" xmlUrl="https://x.com/feed?a=1&amp;b=2"/>"#;
-        let feeds = parse(xml);
-        assert_eq!(feeds.len(), 1);
-        assert_eq!(feeds[0].title, "A & B");
-        assert_eq!(feeds[0].xml_url, "https://x.com/feed?a=1&b=2");
+        // --- phase: handles_escaped_ampersand ---
+        {
+            let xml = r#"<outline text="A &amp; B" xmlUrl="https://x.com/feed?a=1&amp;b=2"/>"#;
+            let feeds = parse(xml);
+            assert_eq!(feeds.len(), 1);
+            assert_eq!(feeds[0].title, "A & B");
+            assert_eq!(feeds[0].xml_url, "https://x.com/feed?a=1&b=2");
+        }
     }
 }

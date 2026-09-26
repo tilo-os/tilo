@@ -50,7 +50,7 @@
 use std::os::unix::process::CommandExt as _;
 use std::process::{Command, ExitStatus};
 
-use desktop_entry::launch::{HostLaunch, HostLaunchError, LaunchEnv, plan_by_id};
+use desktop_entry::launch::{HostLaunch, HostLaunchError, LaunchEnv, plan_by_id, plan_file};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
@@ -96,6 +96,15 @@ pub fn run_host(desktop_id: &str, env: &LaunchEnv) -> Result<ExitStatus, HostErr
 /// installed `.desktop` entry.
 pub fn plan_host(desktop_id: &str, env: &LaunchEnv) -> Result<HostLaunch, HostError> {
     Ok(plan_by_id(desktop_id, env)?)
+}
+
+/// [`plan_host`] for a desktop file named by path, such as an XDG autostart entry.
+///
+/// # Errors
+///
+/// Returns [`HostError::Plan`] if the file is unreadable or not a runnable entry.
+pub fn plan_host_file(path: &std::path::Path, env: &LaunchEnv) -> Result<HostLaunch, HostError> {
+    Ok(plan_file(path, env)?)
 }
 
 /// Run an already-planned launch. Split out so a caller that built the
@@ -173,56 +182,60 @@ mod tests {
         .expect("the fixture manifest parses")
     }
 
-    /// The guard that keeps a host application out of the sandbox
-    /// builder. Drives the real `run_with`, not a copy of its check.
     #[test]
-    fn run_with_refuses_a_host_launch_before_it_builds_anything() {
-        let manifest = example_manifest();
-        let opts = RunOptions {
-            mode: LaunchMode::Host {
-                desktop_id: "com.spotify.Client".into(),
-            },
-            ..Default::default()
-        };
-        let err = crate::run::run_with(&manifest, std::path::Path::new("/nonexistent"), &opts)
-            .expect_err("a host application is not a package");
-        match err {
-            RunError::HostAppNotAPackage { desktop_id } => {
-                assert_eq!(desktop_id, "com.spotify.Client");
+    fn host_launch_is_refused_before_anything_is_built() {
+        // Phase `run_with_refuses_a_host_launch_before_it_builds_anything`.
+        // The guard that keeps a host application out of the sandbox
+        // builder. Drives the real `run_with`, not a copy of its check.
+        {
+            let manifest = example_manifest();
+            let opts = RunOptions {
+                mode: LaunchMode::Host {
+                    desktop_id: "com.spotify.Client".into(),
+                },
+                ..Default::default()
+            };
+            let err = crate::run::run_with(&manifest, std::path::Path::new("/nonexistent"), &opts)
+                .expect_err("a host application is not a package");
+            match err {
+                RunError::HostAppNotAPackage { desktop_id } => {
+                    assert_eq!(desktop_id, "com.spotify.Client");
+                }
+                other => panic!("expected HostAppNotAPackage, got {other:?}"),
             }
-            other => panic!("expected HostAppNotAPackage, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn run_with_captured_refuses_it_too() {
-        let manifest = example_manifest();
-        let opts = RunOptions {
-            mode: LaunchMode::Host {
-                desktop_id: "org.gnome.TextEditor".into(),
-            },
-            ..Default::default()
-        };
-        let err =
-            crate::run::run_with_captured(&manifest, std::path::Path::new("/nonexistent"), &opts)
-                .expect_err("the second door into the sandbox builder is closed too");
-        assert!(matches!(err, RunError::HostAppNotAPackage { .. }));
-    }
-
-    /// A launch of something that is not installed fails with a name,
-    /// not a silent no-op.
-    #[test]
-    fn an_unknown_desktop_id_is_reported() {
-        let err = run_host(
-            "so.tilo.definitely-not-installed-anywhere",
-            &LaunchEnv::default(),
-        )
-        .expect_err("nothing has that id");
-        assert!(
-            err.to_string()
-                .contains("so.tilo.definitely-not-installed-anywhere"),
-            "the error must name what could not be found: {err}"
-        );
+        // Phase `run_with_captured_refuses_it_too`.
+        {
+            let manifest = example_manifest();
+            let opts = RunOptions {
+                mode: LaunchMode::Host {
+                    desktop_id: "org.gnome.TextEditor".into(),
+                },
+                ..Default::default()
+            };
+            let err = crate::run::run_with_captured(
+                &manifest,
+                std::path::Path::new("/nonexistent"),
+                &opts,
+            )
+            .expect_err("the second door into the sandbox builder is closed too");
+            assert!(matches!(err, RunError::HostAppNotAPackage { .. }));
+        }
+        // Phase `an_unknown_desktop_id_is_reported`.
+        // A launch of something that is not installed fails with a name,
+        // not a silent no-op.
+        {
+            let err = run_host(
+                "so.tilo.definitely-not-installed-anywhere",
+                &LaunchEnv::default(),
+            )
+            .expect_err("nothing has that id");
+            assert!(
+                err.to_string()
+                    .contains("so.tilo.definitely-not-installed-anywhere"),
+                "the error must name what could not be found: {err}"
+            );
+        }
     }
 
     #[test]

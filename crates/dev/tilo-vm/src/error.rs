@@ -9,14 +9,12 @@ use crate::host::Missing;
 /// The script that builds a dev disk locally, relative to the worktree.
 pub const LOCAL_BUILD_SCRIPT: &str = "os/dev/build-dev-image.sh";
 
-// Two separate credentials, never interchangeable, although both take a
-// forge token with package read access as the secret.
+// Images are public on registry.tilo.so: pulls need no login. Only dev disk
+// downloads, from the forge's package registry, need a credential.
 
 /// What the forge token (`FORGEJO_TOKEN`, or an fgj or tea login) is for.
 pub const FORGE_TOKEN_USE: &str =
     "read only for dev disk downloads (vm create without --image, doctor's published-disk check)";
-/// What a podman registry login for code.podesta.ai is for.
-pub const REGISTRY_LOGIN_USE: &str = "used only for image pulls: swap --from ci:/sha: layers (pulled in the VM when it has podman, else on this host) and vm upgrade (in the VM, with the VM's own login)";
 
 /// How the docs build tilo-vm; what to run when it is older than the VM.
 pub const REBUILD: &str =
@@ -40,7 +38,7 @@ pub fn no_disk_help(local_build: Option<&str>) -> String {
         ),
     };
     format!(
-        "each architecture's lane of a main \"Release / OS\" run (.forgejo/workflows/build-image.yml) publishes its disk as soon as it passes: wait for the running one, or ask a human to dispatch it   |   for an image that already exists, ask a human to dispatch the \"Release / Dev VM disk\" workflow (.forgejo/workflows/dev-disk.yml)   |   or, if you may dispatch CI yourself: fgj workflow run dev-disk.yml -R qos/qos, then fgj run watch   |   or ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}"
+        "each architecture's lane of a main \"Release / OS\" run (.forgejo/workflows/build-image.yml) publishes its disk as soon as it passes: wait for the running one, or ask a human to dispatch it   |   for an image that already exists, ask a human to dispatch the \"Release / Dev VM disk\" workflow (.forgejo/workflows/dev-disk.yml)   |   or, if you may dispatch CI yourself: fgj workflow run dev-disk.yml -R tilo/tilo, then fgj run watch   |   or ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}"
     )
 }
 
@@ -124,8 +122,6 @@ pub enum CliError {
         free: String,
         floor: String,
     },
-    #[error("{place} is not logged in to {registry}")]
-    RegistryLogin { place: String, registry: String },
     #[error("vm ssh refuses `{command}`: it {change}")]
     RawWrite { command: String, change: String },
     #[error("unknown source '{0}'")]
@@ -197,6 +193,10 @@ pub enum CliError {
     Busy { what: String },
     #[error("{0}")]
     InvalidInput(String),
+    #[error("no app set named '{set}'")]
+    UnknownAppSet { set: String, known: Vec<String> },
+    #[error("installing the {set} apps into VM '{vm}' failed")]
+    PackagesFailed { set: String, vm: String },
     #[error("the kernel build failed")]
     KernelBuild { log: String },
     #[error("VM '{vm}' runs kernel {running}, not the {expected} just installed ({detail})")]
@@ -283,7 +283,7 @@ impl CliError {
                 "this hypervisor has no credential channel, so root's key is installed once after the first boot, with the dev account's password from os/account.env (quickuser, tilo): {install}"
             ),
             Self::DaemonMissing { vm, bootc: Some(true) } => format!(
-                "move the VM onto a dev image: tilo-vm vm upgrade {vm} --image code.podesta.ai/qos/tilo-vm:<tag>   |   or one built here: tilo-vm vm upgrade {vm} --from local"
+                "move the VM onto a dev image: tilo-vm vm upgrade {vm} --image registry.tilo.so/tilo/tilo-vm:<tag>   |   or one built here: tilo-vm vm upgrade {vm} --from local"
             ),
             Self::DaemonMissing { bootc: Some(false), .. } | Self::NotBootc { .. } => {
                 NOT_BOOTC_FIX.into()
@@ -335,12 +335,6 @@ impl CliError {
                 "use a VM of the host's architecture, or opt into slow emulation with --emulated".into()
             }
             Self::LowDisk { .. } => "tilo-vm gc --dry-run   then   tilo-vm gc".into(),
-            Self::RegistryLogin { place, registry } if place == "this host" => format!(
-                "podman login {registry}   (user: your forge login, password: a forge token with package read access). podman keeps its own login: FORGEJO_TOKEN and fgj/tea logins do not count for image pulls"
-            ),
-            Self::RegistryLogin { registry, .. } => format!(
-                "tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json {registry}   (password: a forge token with package read access). The VM keeps its own login for image pulls; this host's logins do not reach it"
-            ),
             Self::RawWrite { .. } => {
                 "change the VM through tilo-vm instead, so it can be rolled back and other agents see it: a component: tilo-vm swap <component>   |   the image (/etc, units, packages): tilo-vm vm upgrade --from local   |   to run it by hand anyway, --raw is the escape hatch: tilo-vm vm ssh --raw -- <command>"
                     .into()
@@ -371,7 +365,7 @@ impl CliError {
             Self::NoDiskForHost {
                 arch, local_build, ..
             } => format!(
-                "each architecture publishes on its own, so {arch}'s lane may still be running or may have failed: fgj run list -R qos/qos   |   pick a tag that has one: tilo-vm vm create <name> --tag <tag>   |   {}",
+                "each architecture publishes on its own, so {arch}'s lane may still be running or may have failed: fgj run list -R tilo/tilo   |   pick a tag that has one: tilo-vm vm create <name> --tag <tag>   |   {}",
                 no_disk_help(local_build.as_deref())
             ),
             Self::NoHypervisor(missing) => missing.fix.clone(),
@@ -394,7 +388,7 @@ impl CliError {
                 "free space on that filesystem and rerun; an interrupted download resumes".into()
             }
             Self::ForgeAuth { token: None, .. } => {
-                "export FORGEJO_TOKEN=<forge token with package read access>, or log in with fgj or tea, then rerun. Disk downloads read only these, never podman's registry login".into()
+                "export FORGEJO_TOKEN=<forge token with package read access>, or log in with fgj or tea, then rerun. Disk downloads read only these".into()
             }
             Self::ForgeAuth { token: Some(source), .. } => format!(
                 "the token from {source} lacks package read access or has expired; export FORGEJO_TOKEN=<token with package read access> and rerun"
@@ -418,8 +412,15 @@ impl CliError {
             Self::Busy { .. } => {
                 "wait for the other command to finish and retry, or pass --force to go ahead anyway".into()
             }
+            Self::UnknownAppSet { known, .. } => format!(
+                "pick one of: {}   (tilo-vm slot apps list shows what each installs)",
+                known.join(", ")
+            ),
+            Self::PackagesFailed { .. } => {
+                "the package manager's output above names the cause; the VM needs network access to the distribution's mirrors (tilo-vm vm ssh -- dnf repolist checks it), then rerun the install".into()
+            }
             Self::InvalidInput(_) => {
-                "e.g. tilo-vm input key ctrl+alt+t   |   input type 'hello'   |   input move 400 300   |   input click left --at 400 300   (text beyond a US layout: tilo-vm control type '<text>')".into()
+                "e.g. tilo-vm input key ctrl+alt+t   |   input type 'hello'   |   input click left --at 400 300   |   input touch tap 400 300   |   input gamepad press a   (each device: tilo-vm input <key|touch|pen|gamepad> --help; text beyond a US layout: tilo-vm control type '<text>')".into()
             }
             Self::KernelBuild { log } => format!(
                 "the build output above names the cause (full log: {log}); fix os/kernel/config-fragments/ or os/kernel/patches/ and rerun tilo-vm swap kernel   (os/kernel/dev-build.sh runs the same build by hand)"
@@ -479,7 +480,9 @@ impl CliError {
             | Self::MissingInImage { .. } => "swapping",
             Self::LowDisk { .. } | Self::NoSpace { .. } => "storage",
             Self::ImageRefused { .. } | Self::BaseOlder { .. } | Self::NotBootc { .. } => "images",
-            Self::InvalidInput(_) => "driving",
+            Self::InvalidInput(_) | Self::UnknownAppSet { .. } | Self::PackagesFailed { .. } => {
+                "driving"
+            }
             Self::KernelBuild { .. } | Self::KernelNotRunning { .. } => "kernel",
             Self::ScenarioMedium { .. } | Self::Scenario { .. } | Self::NeedsWorktree { .. } => {
                 "scenarios"
@@ -488,7 +491,6 @@ impl CliError {
             | Self::DaemonMissing { .. }
             | Self::ProtocolMismatch { .. }
             | Self::ToolMissing { .. }
-            | Self::RegistryLogin { .. }
             | Self::ForgeAuth { .. }
             | Self::CommandFailed { .. }
             | Self::Unsupported { .. }
@@ -678,14 +680,6 @@ mod tests {
                 free: "1 GB".into(),
                 floor: "5 GB".into(),
             },
-            CliError::RegistryLogin {
-                place: "this host".into(),
-                registry: "code.podesta.ai".into(),
-            },
-            CliError::RegistryLogin {
-                place: "VM dev".into(),
-                registry: "code.podesta.ai".into(),
-            },
             CliError::RawWrite {
                 command: "cp shell /usr/bin/shell".into(),
                 change: "writes /usr/bin/shell".into(),
@@ -780,6 +774,14 @@ mod tests {
                 what: "the VM".into(),
             },
             CliError::InvalidInput("bad".into()),
+            CliError::UnknownAppSet {
+                set: "x".into(),
+                known: vec!["verification".into()],
+            },
+            CliError::PackagesFailed {
+                set: "verification".into(),
+                vm: "dev".into(),
+            },
             CliError::ImageRefused {
                 image: "localhost/tilo:latest".into(),
                 problem: "is not a dev image".into(),
@@ -839,6 +841,8 @@ mod tests {
                 | CliError::MissingInImage { .. }
                 | CliError::Busy { .. }
                 | CliError::InvalidInput(_)
+                | CliError::UnknownAppSet { .. }
+                | CliError::PackagesFailed { .. }
                 | CliError::ImageRefused { .. }
                 | CliError::BaseOlder { .. }
                 | CliError::UnknownVm { .. }
@@ -860,7 +864,6 @@ mod tests {
                 | CliError::ScopeMismatch { .. }
                 | CliError::ArchMismatch { .. }
                 | CliError::LowDisk { .. }
-                | CliError::RegistryLogin { .. }
                 | CliError::RawWrite { .. }
                 | CliError::InvalidSource(_)
                 | CliError::Io { .. } => {}
@@ -869,175 +872,202 @@ mod tests {
         all
     }
 
+    /// Every error variant has a hint; first-contact hints cover both ways to a VM; no published disk
+    /// says plainly what to do; credential hints name the one login each operation reads; a missing
+    /// hypervisor names the adapter and fix; protocol mismatch hints pick the older side; a VM without bootc
+    /// is named plainly with the fix; a VM that cannot build gets vm upgrade only with bootc; remote errors
+    /// keep the daemon hint.
     #[test]
-    fn every_error_variant_has_a_hint() {
-        for error in samples() {
-            assert!(!error.hint().trim().is_empty(), "{error:?} has no hint");
-            let json = error.to_json();
-            assert!(json["error"].as_str().is_some_and(|e| !e.is_empty()));
-            assert!(json["hint"].as_str().is_some_and(|h| !h.is_empty()));
-            assert!(error.render().contains("\nhint: "));
-            if !matches!(error, CliError::Remote(_)) {
-                let see = error.see().unwrap_or_default();
-                let topic = see.strip_prefix("tilo-vm guide ");
-                assert!(
-                    topic.is_some_and(|t| crate::guide::topic(t).is_some()),
-                    "{error:?} has no see: pointer to an existing guide topic ({see})"
-                );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn every_error_carries_a_hint_that_names_the_fix() {
+        // Phase: every_error_variant_has_a_hint.
+        {
+            for error in samples() {
+                assert!(!error.hint().trim().is_empty(), "{error:?} has no hint");
+                let json = error.to_json();
+                assert!(json["error"].as_str().is_some_and(|e| !e.is_empty()));
+                assert!(json["hint"].as_str().is_some_and(|h| !h.is_empty()));
+                assert!(error.render().contains("\nhint: "));
+                if !matches!(error, CliError::Remote(_)) {
+                    let see = error.see().unwrap_or_default();
+                    let topic = see.strip_prefix("tilo-vm guide ");
+                    assert!(
+                        topic.is_some_and(|t| crate::guide::topic(t).is_some()),
+                        "{error:?} has no see: pointer to an existing guide topic ({see})"
+                    );
+                }
             }
         }
-    }
 
-    #[test]
-    fn first_contact_hints_cover_both_ways_to_a_vm() {
-        let hint = CliError::NoVm {
-            registry: "/cfg/vms.toml".into(),
+        // Phase: first_contact_hints_cover_both_ways_to_a_vm.
+        {
+            let hint = CliError::NoVm {
+                registry: "/cfg/vms.toml".into(),
+            }
+            .hint();
+            assert!(hint.contains("tilo-vm vm create <name>"), "{hint}");
+            assert!(hint.contains("ask a human"), "{hint}");
+            assert!(hint.contains("tilo-vm vm use"), "{hint}");
+            assert!(hint.contains("/cfg/vms.toml"), "{hint}");
+            let host = CliError::HostBuildUnsupported { os: "macos".into() }.hint();
+            assert!(host.contains("--builder vm"), "{host}");
         }
-        .hint();
-        assert!(hint.contains("tilo-vm vm create <name>"), "{hint}");
-        assert!(hint.contains("ask a human"), "{hint}");
-        assert!(hint.contains("tilo-vm vm use"), "{hint}");
-        assert!(hint.contains("/cfg/vms.toml"), "{hint}");
-        let host = CliError::HostBuildUnsupported { os: "macos".into() }.hint();
-        assert!(host.contains("--builder vm"), "{host}");
-    }
 
-    #[test]
-    fn no_published_disk_says_plainly_what_to_do() {
-        let without = CliError::NoDiskPublished {
-            tag: "(any)".into(),
-            url: "u".into(),
-            local_build: None,
+        // Phase: no_published_disk_says_plainly_what_to_do.
+        {
+            let without = CliError::NoDiskPublished {
+                tag: "(any)".into(),
+                url: "u".into(),
+                local_build: None,
+            }
+            .hint();
+            assert!(without.contains("Release / Dev VM disk"), "{without}");
+            assert!(
+                without.contains(".forgejo/workflows/build-image.yml"),
+                "{without}"
+            );
+            assert!(
+                without.contains(".forgejo/workflows/dev-disk.yml"),
+                "{without}"
+            );
+            assert!(
+                without.contains("fgj workflow run dev-disk.yml"),
+                "{without}"
+            );
+            assert!(without.contains("tilo-vm vm use <name>"), "{without}");
+            assert!(
+                without.contains("no local dev-image build is available in this checkout"),
+                "{without}"
+            );
+            let with = CliError::NoDiskPublished {
+                tag: "(any)".into(),
+                url: "u".into(),
+                local_build: Some("/w/os/dev/build-dev-image.sh".into()),
+            }
+            .hint();
+            assert!(
+                with.contains("build a disk locally: /w/os/dev/build-dev-image.sh"),
+                "{with}"
+            );
         }
-        .hint();
-        assert!(without.contains("Release / Dev VM disk"), "{without}");
-        assert!(
-            without.contains(".forgejo/workflows/build-image.yml"),
-            "{without}"
-        );
-        assert!(
-            without.contains(".forgejo/workflows/dev-disk.yml"),
-            "{without}"
-        );
-        assert!(
-            without.contains("fgj workflow run dev-disk.yml"),
-            "{without}"
-        );
-        assert!(without.contains("tilo-vm vm use <name>"), "{without}");
-        assert!(
-            without.contains("no local dev-image build is available in this checkout"),
-            "{without}"
-        );
-        let with = CliError::NoDiskPublished {
-            tag: "(any)".into(),
-            url: "u".into(),
-            local_build: Some("/w/os/dev/build-dev-image.sh".into()),
-        }
-        .hint();
-        assert!(
-            with.contains("build a disk locally: /w/os/dev/build-dev-image.sh"),
-            "{with}"
-        );
-    }
 
-    #[test]
-    fn credential_hints_name_the_one_login_each_operation_reads() {
-        let host = CliError::RegistryLogin {
-            place: "this host".into(),
-            registry: "code.podesta.ai".into(),
+        // Phase: disk_downloads_name_the_forge_token.
+        {
+            let forge = CliError::ForgeAuth {
+                url: "u".into(),
+                status: 401,
+                token: None,
+            }
+            .hint();
+            assert!(forge.contains("FORGEJO_TOKEN"), "{forge}");
+            assert!(FORGE_TOKEN_USE.contains("dev disk downloads"));
         }
-        .hint();
-        assert!(host.contains("podman login code.podesta.ai"), "{host}");
-        assert!(
-            host.contains("FORGEJO_TOKEN and fgj/tea logins do not count"),
-            "{host}"
-        );
-        let forge = CliError::ForgeAuth {
-            url: "u".into(),
-            status: 401,
-            token: None,
-        }
-        .hint();
-        assert!(forge.contains("FORGEJO_TOKEN"), "{forge}");
-        assert!(forge.contains("never podman's registry login"), "{forge}");
-        assert!(FORGE_TOKEN_USE.contains("dev disk downloads"));
-        assert!(REGISTRY_LOGIN_USE.contains("swap --from ci:/sha:"));
-        assert!(REGISTRY_LOGIN_USE.contains("vm upgrade"));
-    }
 
-    #[test]
-    fn a_missing_hypervisor_names_the_adapter_and_the_fix() {
-        let error = CliError::NoHypervisor(Missing {
-            adapter: "libvirt".into(),
-            detail: "virsh not on PATH".into(),
-            fix: "sudo dnf install libvirt".into(),
-        });
-        assert_eq!(
-            error.to_string(),
-            "the libvirt adapter cannot run here: virsh not on PATH"
-        );
-        assert_eq!(error.hint(), "sudo dnf install libvirt");
-    }
+        // Phase: a_missing_hypervisor_names_the_adapter_and_the_fix.
+        {
+            let error = CliError::NoHypervisor(Missing {
+                adapter: "libvirt".into(),
+                detail: "virsh not on PATH".into(),
+                fix: "sudo dnf install libvirt".into(),
+            });
+            assert_eq!(
+                error.to_string(),
+                "the libvirt adapter cannot run here: virsh not on PATH"
+            );
+            assert_eq!(error.hint(), "sudo dnf install libvirt");
+        }
 
-    #[test]
-    fn protocol_mismatch_hints_pick_the_side_that_is_older() {
-        let mismatch = |client, daemon, bootc| CliError::ProtocolMismatch {
-            vm: "dev".into(),
-            client,
-            daemon,
-            bootc,
-        };
-        let upgrade = mismatch(2, 1, Some(true)).hint();
-        assert!(upgrade.contains("tilo-vm vm upgrade dev"), "{upgrade}");
-        let no_bootc = mismatch(2, 1, Some(false)).hint();
-        assert!(!no_bootc.contains("vm upgrade dev"), "{no_bootc}");
-        assert!(
-            no_bootc.contains("not running a bootc dev image"),
-            "{no_bootc}"
-        );
-        assert!(no_bootc.contains("tilo-vm vm create <name>"), "{no_bootc}");
-        assert!(
-            no_bootc.contains("ask whoever set this VM up"),
-            "{no_bootc}"
-        );
-        let unknown = mismatch(2, 1, None).hint();
-        assert!(!unknown.contains("tilo-vm vm upgrade"), "{unknown}");
-        assert!(unknown.contains("tilo-vm vm status dev"), "{unknown}");
-        for bootc in [Some(true), Some(false), None] {
-            let rebuild = mismatch(1, 2, bootc).hint();
-            assert!(rebuild.contains("cargo build -p tilo-vm"), "{rebuild}");
-            assert!(!rebuild.contains("vm upgrade"), "{rebuild}");
+        // Phase: protocol_mismatch_hints_pick_the_side_that_is_older.
+        {
+            let mismatch = |client, daemon, bootc| CliError::ProtocolMismatch {
+                vm: "dev".into(),
+                client,
+                daemon,
+                bootc,
+            };
+            let upgrade = mismatch(2, 1, Some(true)).hint();
+            assert!(upgrade.contains("tilo-vm vm upgrade dev"), "{upgrade}");
+            let no_bootc = mismatch(2, 1, Some(false)).hint();
+            assert!(!no_bootc.contains("vm upgrade dev"), "{no_bootc}");
+            assert!(
+                no_bootc.contains("not running a bootc dev image"),
+                "{no_bootc}"
+            );
+            assert!(no_bootc.contains("tilo-vm vm create <name>"), "{no_bootc}");
+            assert!(
+                no_bootc.contains("ask whoever set this VM up"),
+                "{no_bootc}"
+            );
+            let unknown = mismatch(2, 1, None).hint();
+            assert!(!unknown.contains("tilo-vm vm upgrade"), "{unknown}");
+            assert!(unknown.contains("tilo-vm vm status dev"), "{unknown}");
+            for bootc in [Some(true), Some(false), None] {
+                let rebuild = mismatch(1, 2, bootc).hint();
+                assert!(rebuild.contains("cargo build -p tilo-vm"), "{rebuild}");
+                assert!(!rebuild.contains("vm upgrade"), "{rebuild}");
+            }
         }
-    }
 
-    #[test]
-    fn a_vm_without_bootc_is_named_plainly_with_the_fix() {
-        let error = CliError::NotBootc {
-            vm: "dev".into(),
-            command: "vm upgrade".into(),
-        };
-        assert_eq!(
-            error.to_string(),
-            "VM 'dev' is not running a bootc dev image; vm upgrade needs one"
-        );
-        assert!(error.hint().contains("tilo-vm vm create <name>"));
-        assert!(error.hint().contains("ask whoever set this VM up"));
-        assert!(!error.hint().contains("rerun it by hand"));
-        let missing = CliError::DaemonMissing {
-            vm: "dev".into(),
-            bootc: Some(false),
+        // Phase: a_vm_without_bootc_is_named_plainly_with_the_fix.
+        {
+            let error = CliError::NotBootc {
+                vm: "dev".into(),
+                command: "vm upgrade".into(),
+            };
+            assert_eq!(
+                error.to_string(),
+                "VM 'dev' is not running a bootc dev image; vm upgrade needs one"
+            );
+            assert!(error.hint().contains("tilo-vm vm create <name>"));
+            assert!(error.hint().contains("ask whoever set this VM up"));
+            assert!(!error.hint().contains("rerun it by hand"));
+            let missing = CliError::DaemonMissing {
+                vm: "dev".into(),
+                bootc: Some(false),
+            }
+            .hint();
+            assert!(!missing.contains("vm upgrade"), "{missing}");
+            let upgradable = CliError::DaemonMissing {
+                vm: "dev".into(),
+                bootc: Some(true),
+            }
+            .hint();
+            assert!(
+                upgradable.contains("tilo-vm vm upgrade dev"),
+                "{upgradable}"
+            );
         }
-        .hint();
-        assert!(!missing.contains("vm upgrade"), "{missing}");
-        let upgradable = CliError::DaemonMissing {
-            vm: "dev".into(),
-            bootc: Some(true),
+
+        // Phase: a_vm_that_cannot_build_gets_vm_upgrade_only_with_bootc.
+        {
+            let hint = |bootc| {
+                CliError::VmCannotBuild {
+                    missing: vec!["cargo".into()],
+                    bootc,
+                }
+                .hint()
+            };
+            assert!(hint(Some(true)).contains("tilo-vm vm upgrade"));
+            for bootc in [Some(false), None] {
+                assert!(!hint(bootc).contains("vm upgrade"), "{}", hint(bootc));
+                assert!(hint(bootc).contains("tilo-vm vm create <name>"));
+            }
         }
-        .hint();
-        assert!(
-            upgradable.contains("tilo-vm vm upgrade dev"),
-            "{upgradable}"
-        );
+
+        // Phase: remote_errors_keep_the_daemon_hint.
+        {
+            let error = CliError::Remote(RpcError {
+                code: 5,
+                message: "scope".into(),
+                hint: "tilo-vm swap --slot vm fs".into(),
+                see: Some("tilo-vm guide swapping".into()),
+            });
+            assert_eq!(error.hint(), "tilo-vm swap --slot vm fs");
+            assert_eq!(error.see().as_deref(), Some("tilo-vm guide swapping"));
+        }
     }
 
     #[test]
@@ -1052,33 +1082,5 @@ mod tests {
         let silent = failed("").hint();
         assert!(silent.contains("rerun it by hand"), "{silent}");
         assert!(silent.contains("rsync a b"), "{silent}");
-    }
-
-    #[test]
-    fn a_vm_that_cannot_build_gets_vm_upgrade_only_with_bootc() {
-        let hint = |bootc| {
-            CliError::VmCannotBuild {
-                missing: vec!["cargo".into()],
-                bootc,
-            }
-            .hint()
-        };
-        assert!(hint(Some(true)).contains("tilo-vm vm upgrade"));
-        for bootc in [Some(false), None] {
-            assert!(!hint(bootc).contains("vm upgrade"), "{}", hint(bootc));
-            assert!(hint(bootc).contains("tilo-vm vm create <name>"));
-        }
-    }
-
-    #[test]
-    fn remote_errors_keep_the_daemon_hint() {
-        let error = CliError::Remote(RpcError {
-            code: 5,
-            message: "scope".into(),
-            hint: "tilo-vm swap --slot vm fs".into(),
-            see: Some("tilo-vm guide swapping".into()),
-        });
-        assert_eq!(error.hint(), "tilo-vm swap --slot vm fs");
-        assert_eq!(error.see().as_deref(), Some("tilo-vm guide swapping"));
     }
 }

@@ -42,9 +42,12 @@ pub mod audio;
 pub mod battery;
 pub mod bluetooth;
 pub mod bluez;
+pub mod brightness;
 pub mod codec_pack;
+pub mod ddc;
 pub mod display;
 pub mod firmware;
+pub mod keyboard_backlight;
 #[cfg(target_os = "linux")]
 pub mod linux_physical_gamepad;
 #[cfg(not(target_os = "linux"))]
@@ -53,6 +56,7 @@ pub mod linux_physical_gamepad;
 pub mod linux_virtual_gamepad;
 pub mod modem;
 pub mod network;
+pub mod orientation;
 pub mod peripheral_forwarding;
 pub mod power;
 pub mod printing;
@@ -76,6 +80,7 @@ pub use bluetooth::{
     BluetoothHandoffTarget, BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth,
     inspect_bluetooth_handoff_target, list_bt_devices, pair_bluetooth_handoff, set_bluetooth,
 };
+pub use brightness::{BrightnessService, BrightnessTarget, MonitorBrightness, MonitorLevel};
 pub use display::{
     AmbientBrightnessController, ambient_lux, get_brightness, has_ambient_light_sensor,
     set_brightness,
@@ -84,9 +89,12 @@ pub use firmware::{
     FirmwareEvent, FirmwareHistoryEntry, FirmwareInstallOutcome, FirmwareUpdate,
     get_firmware_history, get_firmware_updates, refresh_firmware_metadata, start_firmware_install,
 };
+pub use keyboard_backlight::{
+    KeyboardBacklight, get_keyboard_backlight, has_keyboard_backlight, set_keyboard_backlight,
+};
 pub use linux_physical_gamepad::{
     LinuxPhysicalGamepadCatalog, LinuxPhysicalGamepadSource, PhysicalGamepadDrain,
-    PhysicalGamepadId, PhysicalGamepadInfo,
+    PhysicalGamepadHotplug, PhysicalGamepadId, PhysicalGamepadInfo,
 };
 pub use linux_virtual_gamepad::{
     LinuxGamepadDevice, LinuxGamepadDeviceProvider, LinuxVirtualGamepadFactory,
@@ -108,6 +116,9 @@ pub use network::{
     portable_wifi_profile_secret, set_airplane_mode, set_hotspot, set_mobile_broadband,
     set_network_autoconnect, set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wired,
 };
+pub use orientation::{
+    AccelSample, DeviceOrientation, OrientationTracker, RotationControl, has_accelerometer,
+};
 pub use peripheral_forwarding::{
     AUTHORIZATION_TTL, ForwardedGamepadEvent, ForwardedPeripheralBroker,
     ForwardedPeripheralIdentity, GamepadAxis, GamepadButton, PeripheralAuditEvent,
@@ -120,7 +131,10 @@ pub use privacy::{
     ActiveMediaUse, KillState, MediaKind, PrivacyStatus, active_media_uses, get_privacy_status,
     monitor_media_usage, revoke_media_client,
 };
-pub use session::{SessionAction, perform_session_action, request_logout, take_logout_request};
+pub use session::{
+    SessionAction, perform_session_action, request_logout, take_logout_request,
+    user_switching_supported,
+};
 pub use time::{
     TimeSyncStatus, get_ntp, get_time_sync_status, list_timezones, now_clock, now_date, set_ntp,
     set_timezone, valid_timezone,
@@ -162,6 +176,20 @@ pub trait Dispatcher {
     /// Returns an error message if the backlight control is unavailable or the underlying
     /// call fails.
     fn set_brightness(&self, pct: f32) -> Result<(), String>;
+    /// Set one monitor, named by its DRM connector (`eDP-1`, `DP-2`), to
+    /// `pct` percent (0–100): the panel's backlight or an external monitor
+    /// over DDC/CI. Applied in the background; returns once queued.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if that monitor's brightness cannot be set.
+    fn set_display_brightness(&self, connector: &str, pct: f32) -> Result<(), String> {
+        if brightness::BrightnessService::global().set(connector, pct) {
+            Ok(())
+        } else {
+            Err(format!("{connector} has no brightness control"))
+        }
+    }
     /// Set the default audio sink volume to `pct` percent (0–100).
     ///
     /// # Errors
@@ -278,6 +306,31 @@ pub trait Dispatcher {
     /// Returns an error message if the audio mixer is unavailable or the underlying call fails.
     fn set_mute(&self, muted: bool) -> Result<(), String> {
         audio::set_mute(muted)
+    }
+    /// Read the display backlight as a `0.0..=1.0` fraction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message when the machine has no backlight the session can read.
+    fn brightness(&self) -> Result<f32, String> {
+        display::get_brightness()
+    }
+    /// Read the keyboard backlight.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message when the machine has no keyboard backlight.
+    fn keyboard_backlight(&self) -> Result<KeyboardBacklight, String> {
+        keyboard_backlight::get_keyboard_backlight()
+    }
+    /// Set the keyboard backlight to a raw hardware level.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message when the machine has no keyboard backlight or the write is
+    /// refused.
+    fn set_keyboard_backlight(&self, level: u32) -> Result<(), String> {
+        keyboard_backlight::set_keyboard_backlight(level)
     }
 }
 

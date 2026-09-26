@@ -10,20 +10,20 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('tools', Path(__file__).parents[1] / 'dev/build-compile-tools.py')
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
-BASE = 'code.podesta.ai/qos/tilo-builder@sha256:' + 'a' * 64
+BASE = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
 
 class CacheTests(unittest.TestCase):
-    def test_all_effective_inputs_change_key(self):
-        values = [b'recipe', BASE, b'cosign', 'linux/arm64']
-        expected = m.fingerprint(*values)
-        for index, value in enumerate([b'new recipe', BASE[:-1] + 'b', b'new cosign', 'linux/amd64']):
-            changed = values.copy(); changed[index] = value
-            self.assertNotEqual(expected, m.fingerprint(*changed))
-
-    def test_optional_timeout_and_failure_are_misses(self):
-        for error in [subprocess.TimeoutExpired('docker', 1), subprocess.CalledProcessError(1, 'docker'), OSError('missing')]:
-            with patch.object(m.subprocess, 'run', side_effect=error):
-                self.assertIsNone(m.optional(['docker', 'pull', 'fixture']))
+    def test_cache_key_and_lookup(self):
+        with self.subTest(phase="all_effective_inputs_change_key"):
+            values = [b'recipe', BASE, b'cosign', 'linux/arm64']
+            expected = m.fingerprint(*values)
+            for index, value in enumerate([b'new recipe', BASE[:-1] + 'b', b'new cosign', 'linux/amd64']):
+                changed = values.copy(); changed[index] = value
+                self.assertNotEqual(expected, m.fingerprint(*changed))
+        with self.subTest(phase="optional_timeout_and_failure_are_misses"):
+            for error in [subprocess.TimeoutExpired('docker', 1), subprocess.CalledProcessError(1, 'docker'), OSError('missing')]:
+                with patch.object(m.subprocess, 'run', side_effect=error):
+                    self.assertIsNone(m.optional(['docker', 'pull', 'fixture']))
 
     def execute(self, cached=False, failure=False):
         with tempfile.TemporaryDirectory() as path:
@@ -48,8 +48,11 @@ class CacheTests(unittest.TestCase):
                 if cached:self.assertIn(m.REPOSITORY + '@sha256:' + 'f'*64, args)
                 self.assertIn('BUILDKIT_INLINE_CACHE=1', args)
 
-    def test_cache_miss_still_builds(self): self.execute()
-    def test_cache_hit_uses_digest_but_still_builds(self): self.execute(cached=True)
-    def test_authoritative_build_failure_propagates(self): self.execute(failure=True)
-
+    def test_authoritative_build_always_runs(self):
+        with self.subTest(phase="cache_miss_still_builds"):
+            self.execute()
+        with self.subTest(phase="cache_hit_uses_digest_but_still_builds"):
+            self.execute(cached=True)
+        with self.subTest(phase="authoritative_build_failure_propagates"):
+            self.execute(failure=True)
 if __name__ == '__main__': unittest.main()

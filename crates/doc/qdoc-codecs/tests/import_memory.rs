@@ -44,45 +44,47 @@ fn assert_holds_like_loaded(what: &str, imported: isize, saved: &[u8]) {
 }
 
 #[test]
-fn an_owned_import_holds_what_a_loaded_document_does() {
-    let md = synth::markdown(150_000);
-    let (mut doc, imported) = held(|| {
-        let mut doc = Document::new();
-        MarkdownCodec
-            .import(
-                &md,
-                &mut doc.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        with_one_more_block(&mut doc);
-        doc
-    });
-    let saved = doc.save();
-    drop(doc);
-    assert_holds_like_loaded("owned", imported, &saved);
-}
-
-#[test]
-fn an_import_into_a_new_host_document_holds_what_a_loaded_document_does() {
-    let md = synth::markdown(150_000);
-    let (mut am, imported) = held(|| {
-        let mut am = AutoCommit::new();
-        let c = qdoc::model::init(&mut am, &ROOT);
-        let mut ids = IdGen::new(am.get_actor().to_hex_string());
-        let mut dm = DocMut {
-            doc: &mut am,
-            c: &c,
-            ids: &mut ids,
-        };
-        MarkdownCodec
-            .import(&md, &mut dm, &mut tilo_content::ContentInputs::new())
-            .unwrap();
-        dm.insert_block(None, "paragraph");
-        am.commit();
-        am
-    });
-    let saved = am.save();
-    drop(am);
-    assert_holds_like_loaded("host", imported, &saved);
+fn imports_hold_what_a_loaded_document_does() {
+    // Phase `an_owned_import_holds_what_a_loaded_document_does`.
+    {
+        let md = synth::markdown(150_000);
+        let (mut doc, imported) = held(|| {
+            let mut doc = Document::new();
+            MarkdownCodec
+                .import(
+                    &md,
+                    &mut doc.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            with_one_more_block(&mut doc);
+            doc
+        });
+        let saved = doc.save();
+        drop(doc);
+        assert_holds_like_loaded("owned", imported, &saved);
+    }
+    // Phase `an_import_into_a_new_host_document_holds_what_a_loaded_document_does`.
+    {
+        let md = synth::markdown(150_000);
+        let (mut am, imported) = held(|| {
+            let mut am = AutoCommit::new();
+            let c = qdoc::model::init(&mut am, &ROOT);
+            let mut ids = IdGen::new(am.get_actor().to_hex_string());
+            let mut dm = DocMut {
+                doc: &mut am,
+                c: &c,
+                ids: &mut ids,
+            };
+            MarkdownCodec
+                .import(&md, &mut dm, &mut tilo_content::ContentInputs::new())
+                .unwrap();
+            dm.insert_block(None, "paragraph");
+            am.commit();
+            am
+        });
+        let saved = am.save();
+        drop(am);
+        assert_holds_like_loaded("host", imported, &saved);
+    }
 }

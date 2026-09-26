@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <CommonCrypto/CommonDigest.h>
 
-namespace qos {
+namespace tilo {
 namespace {
 std::string IdentityHash(std::string_view value) {
   if(value.size()>8192)return {};
@@ -136,11 +136,11 @@ class MacStore final : public CredentialStore {
 std::string CredentialServiceForProfile(std::string_view canonical_profile) {
   if(canonical_profile.empty())return {};
   auto hash=IdentityHash(canonical_profile);
-  return hash.empty()?std::string():"dev.qos.browser.credentials.v1."+hash;
+  return hash.empty()?std::string():"dev.tilo.browser.credentials.v1."+hash;
 }
 std::string CredentialAccountId(std::string_view username) {return IdentityHash(username);}
 std::unique_ptr<CredentialStore> MakeMacCredentialStore(std::string service,KeychainFunctions api) {
-  constexpr std::string_view prefix="dev.qos.browser.credentials.v1.";
+  constexpr std::string_view prefix="dev.tilo.browser.credentials.v1.";
   if(!service.starts_with(prefix) || service.size()<=prefix.size() || service.size()>256 ||
      !std::all_of(service.begin(),service.end(),[](unsigned char c){return (c>='a'&&c<='z') ||
          (c>='A'&&c<='Z') || (c>='0'&&c<='9') || c=='.' || c=='-';}) ||

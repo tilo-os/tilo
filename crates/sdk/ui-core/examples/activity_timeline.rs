@@ -4,10 +4,10 @@
 //! ```bash
 //! cargo run -p ui --example ui-lab -- activity_timeline                  # interactive
 //! cargo run -p ui --example ui-lab -- activity_timeline --shots o.png    # headless frame
-//! QOS_SHOTS_THEME=light cargo run -p ui --example ui-lab -- activity_timeline --shots o.png
+//! TILO_SHOTS_THEME=light cargo run -p ui --example ui-lab -- activity_timeline --shots o.png
 //! ```
 //!
-//! `--shots` honours `QOS_SHOTS_THEME` (`dark` by default) and composites the
+//! `--shots` honours `TILO_SHOTS_THEME` (`dark` by default) and composites the
 //! frame on the theme's own base surface, so the PNG is what the pane looks
 //! like inside an app rather than over a hard-coded backdrop.
 //!
@@ -195,7 +195,7 @@ pub fn run(args: &[String]) {
 fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     let (w, h) = viewport;
     let mut state = State::new();
-    let theme = std::env::var("QOS_SHOTS_THEME")
+    let theme = std::env::var("TILO_SHOTS_THEME")
         .ok()
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark);

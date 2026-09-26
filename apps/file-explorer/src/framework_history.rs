@@ -352,82 +352,87 @@ mod tests {
             frontier: [4; 32],
         }
     }
+    /// Checked xattr success reads exact intent without claiming applied, and scoped preview names fit macOS with a descriptor that does not follow path replacement.
     #[test]
-    fn checked_xattr_success_reads_exact_intent_and_does_not_claim_applied() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("record");
-        std::fs::write(&path, b"current").unwrap();
-        let scope = scope();
-        let request = CheckedHistoryRequestV1 {
-            schema_version: 1,
-            intent_id: uuid::Uuid::from_u128(5),
-            review: FileRestoreReviewV1 {
+    fn checked_history_writes_read_exact_intent_through_a_stable_descriptor() {
+        // --- phase: checked_xattr_success_reads_exact_intent_and_does_not_claim_applied ---
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("record");
+            std::fs::write(&path, b"current").unwrap();
+            let scope = scope();
+            let request = CheckedHistoryRequestV1 {
                 schema_version: 1,
-                workspace_id: scope.workspace_id,
-                mount_lifetime: scope.mount_lifetime,
-                record_id: scope.record_id,
-                frontier: scope.frontier,
-            },
-            operation: CheckedHistoryOperationV1::Restore {
-                version_id: collab_types::FileVersionId(uuid::Uuid::from_u128(6)),
-            },
-        };
-        let response = CheckedHistoryResponseV1 {
-            schema_version: 1,
-            outcome: CheckedHistoryOutcomeV1::RecoveryPending {
-                intent_id: request.intent_id,
-            },
-        };
-        xattr::set(
-            &path,
-            format!("{CHECKED_HISTORY_RESULT_XATTR_PREFIX}{}", request.intent_id),
-            &serde_json::to_vec(&response).unwrap(),
-        )
-        .unwrap();
-        let transport = MountedFileHistory::open(&path).unwrap();
-        assert_eq!(transport.submit(request), response.outcome);
-        assert_eq!(transport.submit(request), response.outcome);
-        let actual: CheckedHistoryRequestV1 = serde_json::from_slice(
-            &xattr::get(&path, CHECKED_HISTORY_RESTORE_XATTR)
-                .unwrap()
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            actual, request,
-            "exact retry keeps the original ID, frontier, record and selected version"
-        );
-        assert_eq!(
-            transport.result(uuid::Uuid::from_u128(7)),
-            CheckedHistoryOutcomeV1::Unavailable
-        );
-        assert!(
-            xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)
-                .unwrap()
-                .is_none()
-        );
-    }
-    #[test]
-    fn scoped_preview_name_fits_macos_and_descriptor_does_not_follow_path_replacement() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("record");
-        std::fs::write(&path, b"current bytes").unwrap();
-        let version = collab_types::FileVersionId(uuid::Uuid::from_u128(9));
-        let name = FileHistoryReadQueryV1::Preview {
-            frontier: scope().frontier,
-            version_id: version,
+                intent_id: uuid::Uuid::from_u128(5),
+                review: FileRestoreReviewV1 {
+                    schema_version: 1,
+                    workspace_id: scope.workspace_id,
+                    mount_lifetime: scope.mount_lifetime,
+                    record_id: scope.record_id,
+                    frontier: scope.frontier,
+                },
+                operation: CheckedHistoryOperationV1::Restore {
+                    version_id: collab_types::FileVersionId(uuid::Uuid::from_u128(6)),
+                },
+            };
+            let response = CheckedHistoryResponseV1 {
+                schema_version: 1,
+                outcome: CheckedHistoryOutcomeV1::RecoveryPending {
+                    intent_id: request.intent_id,
+                },
+            };
+            xattr::set(
+                &path,
+                format!("{CHECKED_HISTORY_RESULT_XATTR_PREFIX}{}", request.intent_id),
+                &serde_json::to_vec(&response).unwrap(),
+            )
+            .unwrap();
+            let transport = MountedFileHistory::open(&path).unwrap();
+            assert_eq!(transport.submit(request), response.outcome);
+            assert_eq!(transport.submit(request), response.outcome);
+            let actual: CheckedHistoryRequestV1 = serde_json::from_slice(
+                &xattr::get(&path, CHECKED_HISTORY_RESTORE_XATTR)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                actual, request,
+                "exact retry keeps the original ID, frontier, record and selected version"
+            );
+            assert_eq!(
+                transport.result(uuid::Uuid::from_u128(7)),
+                CheckedHistoryOutcomeV1::Unavailable
+            );
+            assert!(
+                xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)
+                    .unwrap()
+                    .is_none()
+            );
         }
-        .xattr_name();
-        assert!(name.len() <= 127);
-        xattr::set(&path, &name, b"old immutable bytes").unwrap();
-        let transport = MountedFileHistory::open(&path).unwrap();
-        std::fs::rename(&path, directory.path().join("old-record")).unwrap();
-        std::fs::write(&path, b"replacement current bytes").unwrap();
-        xattr::set(&path, &name, b"wrong replacement history").unwrap();
-        assert_eq!(
-            transport.preview(scope(), version).unwrap(),
-            b"old immutable bytes"
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), b"replacement current bytes");
+
+        // --- phase: scoped_preview_name_fits_macos_and_descriptor_does_not_follow_path_replacement ---
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("record");
+            std::fs::write(&path, b"current bytes").unwrap();
+            let version = collab_types::FileVersionId(uuid::Uuid::from_u128(9));
+            let name = FileHistoryReadQueryV1::Preview {
+                frontier: scope().frontier,
+                version_id: version,
+            }
+            .xattr_name();
+            assert!(name.len() <= 127);
+            xattr::set(&path, &name, b"old immutable bytes").unwrap();
+            let transport = MountedFileHistory::open(&path).unwrap();
+            std::fs::rename(&path, directory.path().join("old-record")).unwrap();
+            std::fs::write(&path, b"replacement current bytes").unwrap();
+            xattr::set(&path, &name, b"wrong replacement history").unwrap();
+            assert_eq!(
+                transport.preview(scope(), version).unwrap(),
+                b"old immutable bytes"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), b"replacement current bytes");
+        }
     }
 }

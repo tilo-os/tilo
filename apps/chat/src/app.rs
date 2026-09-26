@@ -35,7 +35,7 @@ use ui::theme::Theme;
 use ui::widget::tooltip::TooltipHost;
 use ui::widget::{
     Collaborative, ContextMenu as SharedContextMenu, Continuable, FloatingSurfaceProvider,
-    MenuItem, TextInput, VideoPlayer,
+    MenuItem, SearchField, TextInput, VideoPlayer,
 };
 
 use crate::actions::{self, ChatAction};
@@ -321,6 +321,10 @@ pub(crate) enum Hit {
     /// Focus/place the caret in the inline message editor.
     FocusEdit,
     EmojiChoice(String),
+    /// Show one Unicode emoji group (index into the catalogue) in the picker.
+    EmojiGroup(usize),
+    /// Focus/place the caret in the emoji picker's search field.
+    FocusEmojiSearch,
     FocusMain,
     FocusThread,
     Send,
@@ -388,6 +392,8 @@ impl Hit {
             Self::Reaction { msg, emoji } => format!("chat.reaction:{msg}:{emoji}"),
             Self::AddReaction { msg, .. } => format!("chat.add-reaction:{msg}"),
             Self::EmojiChoice(emoji) => format!("chat.emoji-choice:{emoji}"),
+            Self::EmojiGroup(group) => format!("chat.emoji-group:{group}"),
+            Self::FocusEmojiSearch => "chat.emoji-search".into(),
             Self::EditHistory { msg, .. } => format!("chat.edit-history:{msg}"),
             Self::EditSave => "chat.edit-save".into(),
             Self::EditCancel => "chat.edit-cancel".into(),
@@ -487,21 +493,23 @@ mod call_chrome_motion_tests {
     use super::CallChromeMotion;
 
     #[test]
-    fn reduced_motion_snaps_the_same_geometry_driver_to_its_target() {
-        let mut motion = CallChromeMotion::default();
-        motion.reconcile(true, &ui::theme::Theme::dark());
-        motion.reconcile(false, &ui::theme::Theme::dark().with_reduce_motion(true));
-        assert_eq!(motion.sampled, 0.0);
-        assert!(!motion.animating);
-    }
-
-    #[test]
-    fn visual_review_can_pin_a_true_mid_morph_geometry() {
-        let mut motion = CallChromeMotion::default();
-        motion.pin_for_visual_review(0.5);
-        motion.reconcile(false, &ui::theme::Theme::dark());
-        assert_eq!(motion.sampled, 0.5);
-        assert!(!motion.animating);
+    fn call_chrome_motion_lands_without_animating_when_reduced_or_pinned() {
+        // Phase: reduced_motion_snaps_the_same_geometry_driver_to_its_target.
+        {
+            let mut motion = CallChromeMotion::default();
+            motion.reconcile(true, &ui::theme::Theme::dark());
+            motion.reconcile(false, &ui::theme::Theme::dark().with_reduce_motion(true));
+            assert_eq!(motion.sampled, 0.0);
+            assert!(!motion.animating);
+        }
+        // Phase: visual_review_can_pin_a_true_mid_morph_geometry.
+        {
+            let mut motion = CallChromeMotion::default();
+            motion.pin_for_visual_review(0.5);
+            motion.reconcile(false, &ui::theme::Theme::dark());
+            assert_eq!(motion.sampled, 0.5);
+            assert!(!motion.animating);
+        }
     }
 }
 
@@ -575,6 +583,14 @@ pub struct ChatApp {
     pub(crate) emoji_open: bool,
     pub(crate) emoji_target: Option<Id>,
     pub(crate) emoji_anchor: Point,
+    /// The picker's query; empty shows the selected group.
+    pub(crate) emoji_search: SearchField,
+    pub(crate) emoji_group: usize,
+    /// How far the picker grid is scrolled, and the rect it scrolls in.
+    pub(crate) emoji_scroll: f64,
+    pub(crate) emoji_grid: Rect,
+    /// This user's recently picked emoji, most recent first.
+    pub(crate) emoji_recents: emoji::Recents,
     pub(crate) history_open: Option<Id>,
     pub(crate) history_anchor: Point,
     /// Your own message currently being edited. The shared multiline input
@@ -868,6 +884,11 @@ impl ChatApp {
             emoji_open: false,
             emoji_target: None,
             emoji_anchor: Point::ZERO,
+            emoji_search: SearchField::new().with_placeholder(&crate::i18n::t("chat-emoji-search")),
+            emoji_group: 0,
+            emoji_scroll: 0.0,
+            emoji_grid: Rect::ZERO,
+            emoji_recents: emoji::Recents::default(),
             history_open: None,
             history_anchor: Point::ZERO,
             editing: None,
@@ -2925,7 +2946,26 @@ impl ChatApp {
                         )
                     }
                     Hit::AddReaction { .. } => ("Add reaction".into(), Role::Button, false),
-                    Hit::EmojiChoice(emoji) => (format!("Choose {emoji}"), Role::Button, false),
+                    Hit::EmojiChoice(emoji) => (
+                        format!(
+                            "Choose {}",
+                            emoji::Catalogue::english()
+                                .get(emoji)
+                                .map_or(emoji.as_str(), |found| found.name())
+                        ),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::EmojiGroup(group) => (
+                        emoji::Catalogue::english()
+                            .groups()
+                            .get(*group)
+                            .map_or("Emoji group", emoji::Group::label)
+                            .into(),
+                        Role::Tab,
+                        *group == self.emoji_group,
+                    ),
+                    Hit::FocusEmojiSearch => ("Search emoji".into(), Role::TextInput, false),
                     Hit::EditHistory { .. } => ("Show edit history".into(), Role::Button, false),
                     Hit::EditSave => ("Save message edit".into(), Role::Button, false),
                     Hit::EditCancel => ("Cancel message edit".into(), Role::Button, false),
@@ -3621,7 +3661,7 @@ impl Widget for ChatApp {
             self.menu = Some(menu);
         }
         if self.emoji_open {
-            self.draw_emoji_picker(scene, tf, tr, theme, &mut hits);
+            self.draw_emoji_picker(scene, tf, tr, theme, presence, &mut hits);
         }
         if self.history_open.is_some() {
             self.draw_history_popover(scene, tf, tr, theme, &mut hits);
@@ -4215,26 +4255,81 @@ mod screenshare_reuse_tests {
     use tilo_callstream::VideoStreamSender;
 
     #[test]
-    fn a_member_without_announced_capabilities_pins_h264() {
-        use tilo_callstream::{CodecCapabilities, StreamCodec};
-        let local = CodecCapabilities {
-            hardware_encode: [StreamCodec::Av1, StreamCodec::H264].into(),
-            ..CodecCapabilities::default()
-        };
-        let av1_peer = crate::model::VideoCaps {
-            hardware_decode: vec!["av1".into(), "h264".into()],
-            software_decode: vec![],
-        };
-        assert_eq!(
-            super::call_video_codec(&local, &[Some(av1_peer.clone())]),
-            Some(StreamCodec::Av1),
-            "every member decodes AV1 in hardware"
-        );
-        assert_eq!(
-            super::call_video_codec(&local, &[Some(av1_peer), None]),
-            Some(StreamCodec::H264),
-            "an older member that never announced anything decodes H.264"
-        );
+    fn remote_screen_share_negotiates_a_codec_and_reaches_the_featured_tile() {
+        // Phase: a_member_without_announced_capabilities_pins_h264.
+        {
+            use tilo_callstream::{CodecCapabilities, StreamCodec};
+            let local = CodecCapabilities {
+                hardware_encode: [StreamCodec::Av1, StreamCodec::H264].into(),
+                ..CodecCapabilities::default()
+            };
+            let av1_peer = crate::model::VideoCaps {
+                hardware_decode: vec!["av1".into(), "h264".into()],
+                software_decode: vec![],
+            };
+            assert_eq!(
+                super::call_video_codec(&local, &[Some(av1_peer.clone())]),
+                Some(StreamCodec::Av1),
+                "every member decodes AV1 in hardware"
+            );
+            assert_eq!(
+                super::call_video_codec(&local, &[Some(av1_peer), None]),
+                Some(StreamCodec::H264),
+                "an older member that never announced anything decodes H.264"
+            );
+        }
+        // Phase: remote_screen_share_frame_reaches_the_featured_tile.
+        // A remote screen-share frame encoded on the shared `VideoStreamSender`
+        // (throttle + H.264 + `SurfaceFrame` framing), delivered as a
+        // `TrackKind::Screen` `MediaObject`, must decode through the app's real
+        // `pump_media` receive path and land in `remote_screens` — the featured
+        // stage tile. This asserts on the production receive path (the same
+        // `VideoStreamReceiver` + decoder the app runs), proving a decoded frame
+        // reaches the tile with no second in-app codec.
+        {
+            const W: u32 = 96;
+            const H: u32 = 64;
+
+            let mut app = ChatApp::new_ephemeral();
+            // Deterministic in-process loopback transport; no network/devices.
+            app.media = MediaEngine::simulated();
+            app.call.active = true;
+            app.call.audio_only = true; // no camera capture in the pump
+            app.call.muted = true; // no mic capture in the pump
+
+            // A remote peer encodes a screen frame through the SHARED stack.
+            let mut sender = VideoStreamSender::new(tilo_callstream::StreamCodec::Vp9, W, H, 30)
+                .expect("shared-stack sender");
+            let wire = sender
+                .offer_frame(&gradient(W, H), Instant::now())
+                .expect("shared sender accepts the frame")
+                .expect("throttle admits the first frame + encoder emits a NALU");
+            app.media.transport_mut().send(MediaObject {
+                sender: "u_remote".into(),
+                kind: TrackKind::Screen,
+                seq: 0,
+                pts: Duration::from_millis(0),
+                payload: wire,
+            });
+
+            // Honest gating: nothing in the tile until a real frame is pumped.
+            assert!(
+                app.remote_screens.is_empty(),
+                "no fabricated featured-tile frame before the pump"
+            );
+
+            app.pump_media();
+
+            let img = app
+                .remote_screens
+                .get("u_remote")
+                .expect("the decoded screen frame reached the featured tile");
+            assert_eq!(
+                (img.width, img.height),
+                (W, H),
+                "featured-tile image carries the decoded frame's dimensions"
+            );
+        }
     }
 
     fn gradient(width: u32, height: u32) -> Vec<u8> {
@@ -4252,103 +4347,52 @@ mod screenshare_reuse_tests {
         out
     }
 
-    /// A remote screen-share frame encoded on the shared `VideoStreamSender`
-    /// (throttle + H.264 + `SurfaceFrame` framing), delivered as a
-    /// `TrackKind::Screen` `MediaObject`, must decode through the app's real
-    /// `pump_media` receive path and land in `remote_screens` — the featured
-    /// stage tile. This asserts on the production receive path (the same
-    /// `VideoStreamReceiver` + decoder the app runs), proving a decoded frame
-    /// reaches the tile with no second in-app codec.
     #[test]
-    fn remote_screen_share_frame_reaches_the_featured_tile() {
-        const W: u32 = 96;
-        const H: u32 = 64;
+    fn screen_share_failures_stop_the_track_and_say_why() {
+        // Phase: screen_stream_error_is_visible_and_unpublishes_the_track.
+        {
+            let mut app = ChatApp::new_ephemeral();
+            app.call.sharing = true;
+            app.screen_session =
+                VideoStreamSender::new(tilo_callstream::StreamCodec::Vp9, 96, 64, 30).ok();
+            app.media.transport_mut().publish(TrackKind::Screen);
 
-        let mut app = ChatApp::new_ephemeral();
-        // Deterministic in-process loopback transport; no network/devices.
-        app.media = MediaEngine::simulated();
-        app.call.active = true;
-        app.call.audio_only = true; // no camera capture in the pump
-        app.call.muted = true; // no mic capture in the pump
+            app.stop_screen_for_error(&tilo_callstream::FrameError::SequenceExhausted);
 
-        // A remote peer encodes a screen frame through the SHARED stack.
-        let mut sender = VideoStreamSender::new(tilo_callstream::StreamCodec::Vp9, W, H, 30)
-            .expect("shared-stack sender");
-        let wire = sender
-            .offer_frame(&gradient(W, H), Instant::now())
-            .expect("shared sender accepts the frame")
-            .expect("throttle admits the first frame + encoder emits a NALU");
-        app.media.transport_mut().send(MediaObject {
-            sender: "u_remote".into(),
-            kind: TrackKind::Screen,
-            seq: 0,
-            pts: Duration::from_millis(0),
-            payload: wire,
-        });
+            assert!(!app.call.sharing);
+            assert!(app.screen_session.is_none());
+            assert!(
+                app.media_error
+                    .as_deref()
+                    .is_some_and(|message| message.contains("sequence space exhausted"))
+            );
+        }
+        // Phase: oversized_screen_object_stops_the_track_instead_of_silent_transport_drop.
+        {
+            use crate::media::{MAX_MEDIA_PAYLOAD, TrackKind};
+            use std::time::Duration;
 
-        // Honest gating: nothing in the tile until a real frame is pumped.
-        assert!(
-            app.remote_screens.is_empty(),
-            "no fabricated featured-tile frame before the pump"
-        );
+            let mut app = ChatApp::new_ephemeral();
+            app.call.sharing = true;
+            app.screen_session =
+                VideoStreamSender::new(tilo_callstream::StreamCodec::Vp9, 96, 64, 30).ok();
+            app.media.transport_mut().publish(TrackKind::Screen);
 
-        app.pump_media();
-
-        let img = app
-            .remote_screens
-            .get("u_remote")
-            .expect("the decoded screen frame reached the featured tile");
-        assert_eq!(
-            (img.width, img.height),
-            (W, H),
-            "featured-tile image carries the decoded frame's dimensions"
-        );
-    }
-
-    #[test]
-    fn screen_stream_error_is_visible_and_unpublishes_the_track() {
-        let mut app = ChatApp::new_ephemeral();
-        app.call.sharing = true;
-        app.screen_session =
-            VideoStreamSender::new(tilo_callstream::StreamCodec::Vp9, 96, 64, 30).ok();
-        app.media.transport_mut().publish(TrackKind::Screen);
-
-        app.stop_screen_for_error(&tilo_callstream::FrameError::SequenceExhausted);
-
-        assert!(!app.call.sharing);
-        assert!(app.screen_session.is_none());
-        assert!(
-            app.media_error
-                .as_deref()
-                .is_some_and(|message| message.contains("sequence space exhausted"))
-        );
-    }
-
-    #[test]
-    fn oversized_screen_object_stops_the_track_instead_of_silent_transport_drop() {
-        use crate::media::{MAX_MEDIA_PAYLOAD, TrackKind};
-        use std::time::Duration;
-
-        let mut app = ChatApp::new_ephemeral();
-        app.call.sharing = true;
-        app.screen_session =
-            VideoStreamSender::new(tilo_callstream::StreamCodec::Vp9, 96, 64, 30).ok();
-        app.media.transport_mut().publish(TrackKind::Screen);
-
-        assert!(!app.send_media_frame(
-            "u_me",
-            TrackKind::Screen,
-            Duration::ZERO,
-            vec![0; MAX_MEDIA_PAYLOAD + 1],
-        ));
-        assert!(!app.call.sharing);
-        assert!(app.screen_session.is_none());
-        assert!(app.screen_share_needs_sync);
-        assert!(
-            app.media_error
-                .as_deref()
-                .is_some_and(|message| message.contains("media limit"))
-        );
+            assert!(!app.send_media_frame(
+                "u_me",
+                TrackKind::Screen,
+                Duration::ZERO,
+                vec![0; MAX_MEDIA_PAYLOAD + 1],
+            ));
+            assert!(!app.call.sharing);
+            assert!(app.screen_session.is_none());
+            assert!(app.screen_share_needs_sync);
+            assert!(
+                app.media_error
+                    .as_deref()
+                    .is_some_and(|message| message.contains("media limit"))
+            );
+        }
     }
 }
 
@@ -4368,75 +4412,75 @@ mod identity_on_screen {
     }
 
     #[test]
-    fn roster_vocabulary_never_calls_an_agent_a_person() {
-        let mut app = ChatApp::new_ephemeral();
-        app.users = vec![user("u_me", false), user("u_scribe", true)];
-        assert!(
-            app.has_other_collaborator(),
-            "the agent is another collaborator"
-        );
-        assert_eq!(app.roster_label(), "Collaborators");
+    fn people_on_screen_are_named_honestly_and_you_are_you() {
+        // Phase: roster_vocabulary_never_calls_an_agent_a_person.
+        {
+            let mut app = ChatApp::new_ephemeral();
+            app.users = vec![user("u_me", false), user("u_scribe", true)];
+            assert!(
+                app.has_other_collaborator(),
+                "the agent is another collaborator"
+            );
+            assert_eq!(app.roster_label(), "Collaborators");
 
-        app.users = vec![user("u_me", false), user("u_aria", false)];
-        assert_eq!(app.roster_label(), "People");
-    }
-
-    /// Nobody is ever shown the token the system uses to route to them.
-    ///
-    /// A participant id is `peer@9007495404254172154` — a hash of a public
-    /// key. It appeared beside messages and in the roster whenever the room
-    /// had not named somebody yet, which is most of the time a peer has just
-    /// arrived. It is not a name; it is the thing a name resolves from.
-    #[test]
-    fn an_unnamed_participant_is_not_shown_their_routing_token() {
-        let app = ChatApp::new_ephemeral();
-        let stranger = "peer@9007495404254172154";
-        let shown = app.user_name(stranger);
-        assert!(
-            !shown.contains("9007495404254172154"),
-            "the id leaked onto the screen as `{shown}`"
-        );
-        assert!(
-            shown.starts_with("Someone"),
-            "an unnamed peer should read as somebody unnamed, got `{shown}`"
-        );
-        assert!(
-            shown.contains("2154"),
-            "two unnamed peers have to be distinguishable, got `{shown}`"
-        );
-    }
-
-    /// You have a name, and this process knows it.
-    ///
-    /// `LocalIdentity::resolve` derives one at startup and puts it on
-    /// `me`. `display_name` consulted the room document and the roster
-    /// and neither knows you until you have spoken, so the one name that
-    /// was certain was the one it fell through on — and a person saw
-    /// their own routing hash in the roster and in the `@` picker.
-    ///
-    /// This is what "referred to as You" rests on: second-person is a
-    /// rendering choice, not a substitute for having a name.
-    #[test]
-    fn your_own_name_is_known_before_the_room_has_heard_of_you() {
-        let mut app = ChatApp::new_ephemeral();
-        app.me.name = "Quinten".to_string();
-        app.users.clear();
-        app.room_names.clear();
-        assert_eq!(
-            app.display_name(&app.me.id.clone()),
-            "Quinten",
-            "the name this process worked out for itself must be reachable",
-        );
-    }
-
-    /// And you are "You".
-    ///
-    /// Reading your own id — or your own name — back at you is how a chat
-    /// tells you it does not know who you are.
-    #[test]
-    fn the_person_reading_the_screen_is_you() {
-        let app = ChatApp::new_ephemeral();
-        let me = app.me.id.clone();
-        assert_eq!(app.user_name(&me), "You");
+            app.users = vec![user("u_me", false), user("u_aria", false)];
+            assert_eq!(app.roster_label(), "People");
+        }
+        // Phase: an_unnamed_participant_is_not_shown_their_routing_token.
+        // Nobody is ever shown the token the system uses to route to them.
+        //
+        // A participant id is `peer@9007495404254172154` — a hash of a public
+        // key. It appeared beside messages and in the roster whenever the room
+        // had not named somebody yet, which is most of the time a peer has just
+        // arrived. It is not a name; it is the thing a name resolves from.
+        {
+            let app = ChatApp::new_ephemeral();
+            let stranger = "peer@9007495404254172154";
+            let shown = app.user_name(stranger);
+            assert!(
+                !shown.contains("9007495404254172154"),
+                "the id leaked onto the screen as `{shown}`"
+            );
+            assert!(
+                shown.starts_with("Someone"),
+                "an unnamed peer should read as somebody unnamed, got `{shown}`"
+            );
+            assert!(
+                shown.contains("2154"),
+                "two unnamed peers have to be distinguishable, got `{shown}`"
+            );
+        }
+        // Phase: your_own_name_is_known_before_the_room_has_heard_of_you.
+        // You have a name, and this process knows it.
+        //
+        // `LocalIdentity::resolve` derives one at startup and puts it on
+        // `me`. `display_name` consulted the room document and the roster
+        // and neither knows you until you have spoken, so the one name that
+        // was certain was the one it fell through on — and a person saw
+        // their own routing hash in the roster and in the `@` picker.
+        //
+        // This is what "referred to as You" rests on: second-person is a
+        // rendering choice, not a substitute for having a name.
+        {
+            let mut app = ChatApp::new_ephemeral();
+            app.me.name = "Quinten".to_string();
+            app.users.clear();
+            app.room_names.clear();
+            assert_eq!(
+                app.display_name(&app.me.id.clone()),
+                "Quinten",
+                "the name this process worked out for itself must be reachable",
+            );
+        }
+        // Phase: the_person_reading_the_screen_is_you.
+        // And you are "You".
+        //
+        // Reading your own id — or your own name — back at you is how a chat
+        // tells you it does not know who you are.
+        {
+            let app = ChatApp::new_ephemeral();
+            let me = app.me.id.clone();
+            assert_eq!(app.user_name(&me), "You");
+        }
     }
 }

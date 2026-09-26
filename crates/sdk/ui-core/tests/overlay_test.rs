@@ -29,25 +29,28 @@ use vello::peniko::Color;
 use winit::event::{Modifiers, WindowEvent};
 
 #[test]
-fn overlay_stack_push_pop_order() {
-    let mut s = OverlayStack::new();
-    let a = s.push_modal(Modal::new("a")).expect("initial ID");
-    let b = s
-        .push_popover(Popover::new("b", Point::new(100.0, 100.0)))
-        .expect("second ID");
-    assert_eq!(s.len(), 2);
-    assert_eq!(s.top_id(), Some(b));
-    s.dismiss(a);
-    assert_eq!(s.len(), 1);
-    assert_eq!(s.top_id(), Some(b));
-}
+fn overlay_stack_orders_layers_and_traps_focus() {
+    // Case `overlay_stack_push_pop_order`.
+    {
+        let mut s = OverlayStack::new();
+        let a = s.push_modal(Modal::new("a")).expect("initial ID");
+        let b = s
+            .push_popover(Popover::new("b", Point::new(100.0, 100.0)))
+            .expect("second ID");
+        assert_eq!(s.len(), 2);
+        assert_eq!(s.top_id(), Some(b));
+        s.dismiss(a);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.top_id(), Some(b));
+    }
 
-#[test]
-fn focus_trap_cycles_only_within_members() {
-    let trap = FocusTrap::new(vec![1, 2, 3]);
-    assert_eq!(trap.next_from(1), Some(2));
-    assert_eq!(trap.next_from(3), Some(1));
-    assert_eq!(trap.prev_from(1), Some(3));
+    // Case `focus_trap_cycles_only_within_members`.
+    {
+        let trap = FocusTrap::new(vec![1, 2, 3]);
+        assert_eq!(trap.next_from(1), Some(2));
+        assert_eq!(trap.next_from(3), Some(1));
+        assert_eq!(trap.prev_from(1), Some(3));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -217,76 +220,79 @@ fn lay_out(widget: &mut dyn Widget, theme: &Theme) {
 }
 
 #[test]
-fn modal_dialog_panel_edge_registers_in_both_themes() {
-    let viewport = Rect::new(0.0, 0.0, f64::from(CANVAS_W), f64::from(CANVAS_H));
-    for (name, theme) in themes() {
-        let mut dialog = ModalDialog::new(
-            "Discard changes?",
-            Text::new("Your edits to the shared page will be lost."),
-        )
-        .open(true)
-        .with_viewport(viewport);
-        let mut tr = TextRenderer::new();
-        dialog.layout_in(viewport, &theme, &mut tr);
-        let panel = dialog.get_rect();
-        assert!(panel.width() > 100.0, "{name}: dialog laid out ({panel:?})");
-
-        let mut renderer = OffscreenRenderer::new(CANVAS_W, CANVAS_H);
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        dialog.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let rgba = renderer.render(&scene, theme.bg_app);
-        dump(&format!("modal_dialog_{name}"), &rgba);
-        assert_edge_registers(&rgba, panel, name, "modal-dialog");
-    }
-}
-
-#[test]
-fn popover_widget_panel_edge_registers_in_both_themes() {
-    let viewport = Rect::new(0.0, 0.0, f64::from(CANVAS_W), f64::from(CANVAS_H));
-    let anchor = Rect::new(240.0, 60.0, 400.0, 92.0);
-    for (name, theme) in themes() {
-        let content = FixedContent::new(200.0, 40.0, "Shared with 3 collaborators");
-        let mut popover = PopoverWidget::new(anchor, content, PopoverSide::Below)
+fn overlay_panels_register_their_edge_in_both_themes() {
+    // Case `modal_dialog_panel_edge_registers_in_both_themes`.
+    {
+        let viewport = Rect::new(0.0, 0.0, f64::from(CANVAS_W), f64::from(CANVAS_H));
+        for (name, theme) in themes() {
+            let mut dialog = ModalDialog::new(
+                "Discard changes?",
+                Text::new("Your edits to the shared page will be lost."),
+            )
             .open(true)
             .with_viewport(viewport);
-        lay_out(&mut popover, &theme);
-        let mut tr = TextRenderer::new();
-        let mut renderer = OffscreenRenderer::new(CANVAS_W, CANVAS_H);
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        popover.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let panel = popover.get_rect();
-        assert!(panel.width() > 40.0, "{name}: popover laid out ({panel:?})");
-        let rgba = renderer.render(&scene, theme.bg_app);
-        dump(&format!("popover_widget_{name}"), &rgba);
-        assert_edge_registers(&rgba, panel, name, "popover-widget");
-    }
-}
+            let mut tr = TextRenderer::new();
+            dialog.layout_in(viewport, &theme, &mut tr);
+            let panel = dialog.get_rect();
+            assert!(panel.width() > 100.0, "{name}: dialog laid out ({panel:?})");
 
-/// The permission prompt is a Panel too (HIG §9.5): its edge derives against
-/// the ground and has to register against the prompt's `surfaces.overlay`
-/// fill in both themes. `QUICK_UI_SCREENSHOT_DIR` dumps
-/// `permission_prompt_{dark,light}.png`.
-#[test]
-fn permission_prompt_panel_edge_registers_in_both_themes() {
-    // Wide enough for the label and both consent buttons; the height is the
-    // prompt's own fixed band so the probe lands on its centre line.
-    let panel = Rect::new(20.0, 40.0, 620.0, 40.0 + PROMPT_HEIGHT);
-    for (name, theme) in themes() {
-        let mut prompt = PermissionPrompt::new(
-            "org.qos.Photos".to_string(),
-            "read your Pictures folder".to_string(),
-            true,
-        );
-        prompt.set_rect(panel);
-        let mut tr = TextRenderer::new();
-        let mut renderer = OffscreenRenderer::new(CANVAS_W, CANVAS_H);
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        prompt.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let rgba = renderer.render(&scene, theme.bg_app);
-        dump(&format!("permission_prompt_{name}"), &rgba);
-        assert_edge_registers(&rgba, prompt.get_rect(), name, "permission-prompt");
+            let mut renderer = OffscreenRenderer::new(CANVAS_W, CANVAS_H);
+            let mut scene = Scene::new();
+            let presence = PresenceCtx::default();
+            dialog.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let rgba = renderer.render(&scene, theme.bg_app);
+            dump(&format!("modal_dialog_{name}"), &rgba);
+            assert_edge_registers(&rgba, panel, name, "modal-dialog");
+        }
+    }
+
+    // Case `popover_widget_panel_edge_registers_in_both_themes`.
+    {
+        let viewport = Rect::new(0.0, 0.0, f64::from(CANVAS_W), f64::from(CANVAS_H));
+        let anchor = Rect::new(240.0, 60.0, 400.0, 92.0);
+        for (name, theme) in themes() {
+            let content = FixedContent::new(200.0, 40.0, "Shared with 3 collaborators");
+            let mut popover = PopoverWidget::new(anchor, content, PopoverSide::Below)
+                .open(true)
+                .with_viewport(viewport);
+            lay_out(&mut popover, &theme);
+            let mut tr = TextRenderer::new();
+            let mut renderer = OffscreenRenderer::new(CANVAS_W, CANVAS_H);
+            let mut scene = Scene::new();
+            let presence = PresenceCtx::default();
+            popover.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let panel = popover.get_rect();
+            assert!(panel.width() > 40.0, "{name}: popover laid out ({panel:?})");
+            let rgba = renderer.render(&scene, theme.bg_app);
+            dump(&format!("popover_widget_{name}"), &rgba);
+            assert_edge_registers(&rgba, panel, name, "popover-widget");
+        }
+    }
+
+    // Case `permission_prompt_panel_edge_registers_in_both_themes`.
+    // The permission prompt is a Panel too (HIG §9.5): its edge derives against
+    // the ground and has to register against the prompt's `surfaces.overlay`
+    // fill in both themes. `QUICK_UI_SCREENSHOT_DIR` dumps
+    // `permission_prompt_{dark,light}.png`.
+    {
+        // Wide enough for the label and both consent buttons; the height is the
+        // prompt's own fixed band so the probe lands on its centre line.
+        let panel = Rect::new(20.0, 40.0, 620.0, 40.0 + PROMPT_HEIGHT);
+        for (name, theme) in themes() {
+            let mut prompt = PermissionPrompt::new(
+                "org.tilo.Photos".to_string(),
+                "read your Pictures folder".to_string(),
+                true,
+            );
+            prompt.set_rect(panel);
+            let mut tr = TextRenderer::new();
+            let mut renderer = OffscreenRenderer::new(CANVAS_W, CANVAS_H);
+            let mut scene = Scene::new();
+            let presence = PresenceCtx::default();
+            prompt.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let rgba = renderer.render(&scene, theme.bg_app);
+            dump(&format!("permission_prompt_{name}"), &rgba);
+            assert_edge_registers(&rgba, prompt.get_rect(), name, "permission-prompt");
+        }
     }
 }

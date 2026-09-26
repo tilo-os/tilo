@@ -6,7 +6,16 @@ use collab_types::{
     generate_keypair,
 };
 
+/// An add is targeted, durable, replay-safe and restartable; the encryption gate requires a
+/// durable snapshot ack and survives restart; a failed durable handoff rolls the pending add back.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn an_add_is_durable_before_encryption_and_rolls_back_on_failure() {
+    add_is_targeted_durable_replay_safe_and_restartable();
+    encryption_gate_requires_durable_snapshot_ack_and_survives_restart();
+    failed_durable_handoff_rolls_back_pending_add();
+}
+
 fn add_is_targeted_durable_replay_safe_and_restartable() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("governance.log");
@@ -71,7 +80,6 @@ fn add_is_targeted_durable_replay_safe_and_restartable() {
     assert!(GovernanceJournal::open(&path).is_err());
 }
 
-#[test]
 fn encryption_gate_requires_durable_snapshot_ack_and_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("gate.log");
@@ -124,7 +132,6 @@ fn encryption_gate_requires_durable_snapshot_ack_and_survives_restart() {
     ));
 }
 
-#[test]
 fn failed_durable_handoff_rolls_back_pending_add() {
     let channel = ChannelId::new();
     let mut alice = ChannelGroup::create(channel, MemberKey::generate("alice").unwrap()).unwrap();
@@ -147,7 +154,15 @@ fn failed_durable_handoff_rolls_back_pending_add() {
     assert_eq!(alice.epoch(), epoch + 1);
 }
 
+/// Governance rejects wrong route, epoch, outsider and inconsistent removal; admission with key
+/// history targets the joiner and stale content is refused.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn governance_admits_only_consistent_targeted_changes() {
+    governance_rejects_wrong_route_epoch_outsider_and_inconsistent_removal();
+    admission_with_key_history_targets_the_joiner_and_stale_content_is_refused();
+}
+
 fn governance_rejects_wrong_route_epoch_outsider_and_inconsistent_removal() {
     let channel = ChannelId::new();
     let (alice_sk, alice) = generate_keypair();
@@ -216,7 +231,6 @@ fn governance_rejects_wrong_route_epoch_outsider_and_inconsistent_removal() {
     );
 }
 
-#[test]
 fn admission_with_key_history_targets_the_joiner_and_stale_content_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("history.log");

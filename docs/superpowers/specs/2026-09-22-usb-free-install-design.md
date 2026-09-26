@@ -102,7 +102,7 @@ exceeds `Get-PartitionSupportedSize` headroom.
 
 ## 3. Internal bundle (schema 2)
 
-Schema 1 is retired: its command-line allow-list predates the qos→tilo rename and
+Schema 1 is retired: its command-line allow-list predates the tilo→tilo rename and
 could never validate a real image. Schema 2 changes the following. The Rust
 validator (`apps/imager/src/setup/internal_bundle.rs`) and the Python exporter
 (`os/dev/internal-bundle.py`) must stay byte-for-byte in agreement.
@@ -111,7 +111,7 @@ validator (`apps/imager/src/setup/internal_bundle.rs`) and the Python exporter
   matches it.
 - Command-line tokens use the live image's real names: `tilo.install`,
   `tilo.mode=normal`, `tilo.generation=N`, `root=tilo-auto`,
-  `rd.luks.options=tpm2-device=auto,fido2-device=auto`. The legacy `qos.*`
+  `rd.luks.options=tpm2-device=auto,fido2-device=auto`. The legacy `tilo.*`
   tokens, device-bound roots (`root=UUID=…`) and the retired `tilo.root=`,
   `tilo.luks=` and `tilo.unlock=` slots are rejected.
 - The staging ESP carries the live UKI exactly as built and signed. The

@@ -443,114 +443,115 @@ mod tests {
     }
 
     #[test]
-    fn enter_and_space_select_a_focused_disk() {
-        assert_key_selects(NamedKey::Enter);
-        assert_key_selects(NamedKey::Space);
+    fn disk_row_selection_is_one_flag_for_keys_and_assistive_activation() {
+        // Phase `enter_and_space_select_a_focused_disk`.
+        {
+            assert_key_selects(NamedKey::Enter);
+            assert_key_selects(NamedKey::Space);
+        }
+        // Phase `disk_without_a_live_identity_is_not_selectable`.
+        {
+            let mut target = disk();
+            target.major_minor.clear();
+            let row = DiskRow::new(target, "select", false);
+            assert!(!row.is_focusable());
+        }
+        // Phase `assistive_activation_uses_the_same_selection_flag`.
+        {
+            let mut row = DiskRow::new(disk(), "select", false);
+            let mut doc = AutoCommit::new();
+
+            assert!(row.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
+            assert_eq!(
+                doc.get(&ROOT, "select")
+                    .unwrap()
+                    .and_then(|(value, _)| value.as_bool()),
+                Some(true)
+            );
+        }
     }
 
     #[test]
-    fn disk_without_a_live_identity_is_not_selectable() {
-        let mut target = disk();
-        target.major_minor.clear();
-        let row = DiskRow::new(target, "select", false);
-        assert!(!row.is_focusable());
-    }
+    fn disk_row_accessibility_names_the_disk_and_every_barrier() {
+        // Phase `accessibility_names_the_human_disk_without_hardware_identifiers`.
+        {
+            let mut target = disk();
+            target.model = "QEMU Fast Storage".into();
+            target.wwn = "secret-wwn".into();
+            let mut row = DiskRow::new(target, "select", true);
+            row.set_focus(true);
 
-    #[test]
-    fn accessibility_names_the_human_disk_without_hardware_identifiers() {
-        let mut target = disk();
-        target.model = "QEMU Fast Storage".into();
-        target.wwn = "secret-wwn".into();
-        let mut row = DiskRow::new(target, "select", true);
-        row.set_focus(true);
+            let node = row.accessibility().expect("disk selection semantics");
+            assert_eq!(node.role, ui::a11y::Role::RadioButton);
+            assert_eq!(
+                node.name.as_deref(),
+                Some("QEMU Fast Storage, 40.0 GiB, device /dev/vdb")
+            );
+            assert_eq!(node.description.as_deref(), Some("Empty disk."));
+            assert_eq!(node.state.checked, Some(true));
+            assert!(node.state.focusable);
+            assert!(node.state.focused);
+            assert!(!node.state.disabled);
+            assert!(
+                !node
+                    .name
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("secret-wwn")
+            );
+        }
+        // Phase `accessibility_uses_a_clear_fallback_when_model_is_missing`.
+        {
+            let node = DiskRow::new(disk(), "select", false)
+                .accessibility()
+                .expect("disk selection semantics");
+            assert_eq!(
+                node.name.as_deref(),
+                Some("40.0 GiB storage device, device /dev/vdb")
+            );
+            assert_eq!(node.state.checked, Some(false));
+        }
+        // Phase `disabled_semantics_explain_every_safety_barrier`.
+        {
+            let mut target = disk();
+            target.is_system = true;
+            target.read_only = true;
+            target.major_minor.clear();
+            let mut row = DiskRow::new(target, "select", false);
 
-        let node = row.accessibility().expect("disk selection semantics");
-        assert_eq!(node.role, ui::a11y::Role::RadioButton);
-        assert_eq!(
-            node.name.as_deref(),
-            Some("QEMU Fast Storage, 40.0 GiB, device /dev/vdb")
-        );
-        assert_eq!(node.description.as_deref(), Some("Empty disk."));
-        assert_eq!(node.state.checked, Some(true));
-        assert!(node.state.focusable);
-        assert!(node.state.focused);
-        assert!(!node.state.disabled);
-        assert!(
-            !node
-                .name
-                .as_deref()
-                .unwrap_or_default()
-                .contains("secret-wwn")
-        );
-    }
+            let node = row.accessibility().expect("disabled disk semantics");
+            let description = node.description.as_deref().expect("disabled reason");
+            assert!(node.state.disabled);
+            assert!(!node.state.focusable);
+            assert!(description.contains("live system is running from"));
+            assert!(description.contains("disk is read-only"));
+            assert!(description.contains("could not verify which physical disk"));
 
-    #[test]
-    fn accessibility_uses_a_clear_fallback_when_model_is_missing() {
-        let node = DiskRow::new(disk(), "select", false)
-            .accessibility()
-            .expect("disk selection semantics");
-        assert_eq!(
-            node.name.as_deref(),
-            Some("40.0 GiB storage device, device /dev/vdb")
-        );
-        assert_eq!(node.state.checked, Some(false));
-    }
-
-    #[test]
-    fn disabled_semantics_explain_every_safety_barrier() {
-        let mut target = disk();
-        target.is_system = true;
-        target.read_only = true;
-        target.major_minor.clear();
-        let mut row = DiskRow::new(target, "select", false);
-
-        let node = row.accessibility().expect("disabled disk semantics");
-        let description = node.description.as_deref().expect("disabled reason");
-        assert!(node.state.disabled);
-        assert!(!node.state.focusable);
-        assert!(description.contains("live system is running from"));
-        assert!(description.contains("disk is read-only"));
-        assert!(description.contains("could not verify which physical disk"));
-
-        let mut doc = AutoCommit::new();
-        assert!(!row.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
-        assert!(doc.get(&ROOT, "select").unwrap().is_none());
-    }
-
-    #[test]
-    fn staged_installer_disk_is_selectable_and_says_what_it_holds() {
-        let mut target = disk();
-        target.is_system = true;
-        target.internal_plan = Some(crate::disks::GuidedAlongsidePlan {
-            free_start_bytes: 1 << 30,
-            free_size_bytes: 35 << 30,
-            efi_start_bytes: 1 << 30,
-            efi_size_bytes: 2 << 30,
-            boot_start_bytes: 3 << 30,
-            boot_size_bytes: 1 << 30,
-            root_start_bytes: 4 << 30,
-            root_size_bytes: 32 << 30,
-        });
-        let row = DiskRow::new(target, "select", false);
-        let node = row.accessibility().expect("staged disk semantics");
-        assert!(!node.state.disabled);
-        assert!(node.state.focusable);
-        let description = node.description.as_deref().expect("staged description");
-        assert!(description.contains("also holds the running installer"));
-        assert!(!description.contains("Unavailable"));
-    }
-
-    #[test]
-    fn assistive_activation_uses_the_same_selection_flag() {
-        let mut row = DiskRow::new(disk(), "select", false);
-        let mut doc = AutoCommit::new();
-
-        assert!(row.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
-        assert_eq!(
-            doc.get(&ROOT, "select")
-                .unwrap()
-                .and_then(|(value, _)| value.as_bool()),
-            Some(true)
-        );
+            let mut doc = AutoCommit::new();
+            assert!(!row.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
+            assert!(doc.get(&ROOT, "select").unwrap().is_none());
+        }
+        // Phase `staged_installer_disk_is_selectable_and_says_what_it_holds`.
+        {
+            let mut target = disk();
+            target.is_system = true;
+            target.internal_plan = Some(crate::disks::GuidedAlongsidePlan {
+                free_start_bytes: 1 << 30,
+                free_size_bytes: 35 << 30,
+                efi_start_bytes: 1 << 30,
+                efi_size_bytes: 2 << 30,
+                boot_start_bytes: 3 << 30,
+                boot_size_bytes: 1 << 30,
+                root_start_bytes: 4 << 30,
+                root_size_bytes: 32 << 30,
+            });
+            let row = DiskRow::new(target, "select", false);
+            let node = row.accessibility().expect("staged disk semantics");
+            assert!(!node.state.disabled);
+            assert!(node.state.focusable);
+            let description = node.description.as_deref().expect("staged description");
+            assert!(description.contains("also holds the running installer"));
+            assert!(!description.contains("Unavailable"));
+        }
     }
 }

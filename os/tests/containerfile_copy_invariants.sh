@@ -41,13 +41,17 @@ containerfile="$repo/os/Containerfile"
 # payload, as is the room store volume: its helper, the unit that prepares it
 # before fs.service and the loop unit of image-backed stores. The signature
 # attachment lookups for the code.tilo.so OS repository and the
-# registry.tilo.so owner namespace are staged with the other trust inputs. Sorting
+# registry.tilo.so owner namespace are staged with the other trust inputs; the
+# former code-host lookup is gone. The PipeWire client config behind the
+# echo-cancelled microphone for calls is part of the payload. The DDC/CI udev
+# rule and its i2c-dev modules-load snippet, which let the session set external
+# monitors' brightness, are deliberate additions. Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=512204ff985e3431f51110ceb720334a9ffe6df4339136060a2d68b5e2a7a061
+expected_contract=dc40d398d5bc06c22d8b7929f3db57e99e5fa196cff342bc3f4642ab8dc3d610
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -79,9 +83,11 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # Synced-worktree git defaults add two: the snippet and the /etc/gitconfig
 # that includes it.
 # The opt-in codec-pack overlay adds one COPY of its scratch stage.
-# Keep the current 142-instruction bound exact and reviewed.
-[ "$instructions" -le 142 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 142)" >&2
+# The echo-cancel PipeWire config adds one COPY; folding the three
+# /usr/lib/systemd/user units into one COPY removes two.
+# Keep the current 141-instruction bound exact and reviewed.
+[ "$instructions" -le 141 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 141)" >&2
   exit 1
 }
 

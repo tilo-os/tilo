@@ -1522,221 +1522,303 @@ mod tests {
         );
     }
 
-    /// Drag the hue strip vertically. The starting colour is a red-ish
-    /// fill — after clicking near the strip's vertical centre the colour
-    /// must change *and* the value channel of HSV must stay roughly
-    /// where it was (the hue strip changes hue, not brightness).
     #[test]
-    fn color_picker_dragging_hue_strip_changes_hue_only() {
-        let initial = Color::from_rgba8(180, 50, 50, 255);
-        let _ = Theme::dark();
-        let mut p = picker_at(initial, Point::ZERO);
+    fn picker_surfaces_edit_hue_saturation_value_and_rgb() {
+        /// Drag the hue strip vertically. The starting colour is a red-ish
+        /// fill — after clicking near the strip's vertical centre the colour
+        /// must change *and* the value channel of HSV must stay roughly
+        /// where it was (the hue strip changes hue, not brightness).
+        fn color_picker_dragging_hue_strip_changes_hue_only() {
+            let initial = Color::from_rgba8(180, 50, 50, 255);
+            let _ = Theme::dark();
+            let mut p = picker_at(initial, Point::ZERO);
 
-        let (_, _, v_before) = ColorPicker::rgb_to_hsv(initial.r(), initial.g(), initial.b());
+            let (_, _, v_before) = ColorPicker::rgb_to_hsv(initial.r(), initial.g(), initial.b());
 
-        let click_x = f64::midpoint(p.hue_strip_rect.x0, p.hue_strip_rect.x1);
-        let click_y = p.hue_strip_rect.y0 + 0.66 * p.hue_strip_rect.height();
-        dispatch(&mut p, &cursor_moved(click_x, click_y));
-        dispatch(&mut p, &mouse_press());
-        dispatch(&mut p, &mouse_release());
+            let click_x = f64::midpoint(p.hue_strip_rect.x0, p.hue_strip_rect.x1);
+            let click_y = p.hue_strip_rect.y0 + 0.66 * p.hue_strip_rect.height();
+            dispatch(&mut p, &cursor_moved(click_x, click_y));
+            dispatch(&mut p, &mouse_press());
+            dispatch(&mut p, &mouse_release());
 
-        let after = p.color();
-        assert!(
-            after.r() != initial.r() || after.g() != initial.g() || after.b() != initial.b(),
-            "hue click must change RGB — got same colour {:?}",
-            (after.r(), after.g(), after.b())
-        );
+            let after = p.color();
+            assert!(
+                after.r() != initial.r() || after.g() != initial.g() || after.b() != initial.b(),
+                "hue click must change RGB — got same colour {:?}",
+                (after.r(), after.g(), after.b())
+            );
 
-        let (_, _, v_after) = ColorPicker::rgb_to_hsv(after.r(), after.g(), after.b());
-        assert!(
-            (v_after - v_before).abs() < 0.1 + 0.001,
-            "hue strip must preserve V within ±0.1 — before={v_before}, after={v_after}",
-        );
-    }
+            let (_, _, v_after) = ColorPicker::rgb_to_hsv(after.r(), after.g(), after.b());
+            assert!(
+                (v_after - v_before).abs() < 0.1 + 0.001,
+                "hue strip must preserve V within ±0.1 — before={v_before}, after={v_after}",
+            );
+        }
 
-    /// Clicking the SV square's top-right should yield high saturation
-    /// and high value; clicking the bottom-left should drop one of them.
-    #[test]
-    fn color_picker_clicking_sv_square_changes_saturation_and_value() {
-        let mut p = picker_at(Color::from_rgba8(120, 60, 200, 255), Point::ZERO);
+        /// Clicking the SV square's top-right should yield high saturation
+        /// and high value; clicking the bottom-left should drop one of them.
+        fn color_picker_clicking_sv_square_changes_saturation_and_value() {
+            let mut p = picker_at(Color::from_rgba8(120, 60, 200, 255), Point::ZERO);
 
-        let tr_x = p.sv_rect.x1 - 1.0;
-        let tr_y = p.sv_rect.y0 + 1.0;
-        dispatch(&mut p, &cursor_moved(tr_x, tr_y));
-        dispatch(&mut p, &mouse_press());
-        dispatch(&mut p, &mouse_release());
+            let tr_x = p.sv_rect.x1 - 1.0;
+            let tr_y = p.sv_rect.y0 + 1.0;
+            dispatch(&mut p, &cursor_moved(tr_x, tr_y));
+            dispatch(&mut p, &mouse_press());
+            dispatch(&mut p, &mouse_release());
 
-        let after_tr = p.color();
-        let (_, s_tr, v_tr) = ColorPicker::rgb_to_hsv(after_tr.r(), after_tr.g(), after_tr.b());
-        assert!(
-            s_tr > 0.8,
-            "top-right SV click must yield high saturation — got s={s_tr}",
-        );
-        assert!(
-            v_tr > 0.8,
-            "top-right SV click must yield high value — got v={v_tr}",
-        );
+            let after_tr = p.color();
+            let (_, s_tr, v_tr) = ColorPicker::rgb_to_hsv(after_tr.r(), after_tr.g(), after_tr.b());
+            assert!(
+                s_tr > 0.8,
+                "top-right SV click must yield high saturation — got s={s_tr}",
+            );
+            assert!(
+                v_tr > 0.8,
+                "top-right SV click must yield high value — got v={v_tr}",
+            );
 
-        // Either channel dropping below the post-TR reading proves the click landed.
-        let bl_x = p.sv_rect.x0 + 1.0;
-        let bl_y = p.sv_rect.y1 - 1.0;
-        dispatch(&mut p, &cursor_moved(bl_x, bl_y));
-        dispatch(&mut p, &mouse_press());
-        dispatch(&mut p, &mouse_release());
+            // Either channel dropping below the post-TR reading proves the click landed.
+            let bl_x = p.sv_rect.x0 + 1.0;
+            let bl_y = p.sv_rect.y1 - 1.0;
+            dispatch(&mut p, &cursor_moved(bl_x, bl_y));
+            dispatch(&mut p, &mouse_press());
+            dispatch(&mut p, &mouse_release());
 
-        let after_bl = p.color();
-        let (_, s_bl, v_bl) = ColorPicker::rgb_to_hsv(after_bl.r(), after_bl.g(), after_bl.b());
-        assert!(
-            s_bl < s_tr || v_bl < v_tr,
-            "bottom-left SV click must lower saturation or value — \
+            let after_bl = p.color();
+            let (_, s_bl, v_bl) = ColorPicker::rgb_to_hsv(after_bl.r(), after_bl.g(), after_bl.b());
+            assert!(
+                s_bl < s_tr || v_bl < v_tr,
+                "bottom-left SV click must lower saturation or value — \
              s_tr={s_tr}, s_bl={s_bl}, v_tr={v_tr}, v_bl={v_bl}",
-        );
-    }
+            );
+        }
 
-    /// Slamming the R slider to full-right and G/B to full-left should
-    /// produce pure red within rounding tolerance.
-    #[test]
-    fn color_picker_rgb_slider_to_red_yields_pure_red() {
-        let mut p = picker_at(Color::from_rgba8(80, 80, 80, 255), Point::ZERO);
+        /// Slamming the R slider to full-right and G/B to full-left should
+        /// produce pure red within rounding tolerance.
+        fn color_picker_rgb_slider_to_red_yields_pure_red() {
+            let mut p = picker_at(Color::from_rgba8(80, 80, 80, 255), Point::ZERO);
 
-        let r_x = p.r_slider_rect.x1 - 1.0;
-        let r_y = f64::midpoint(p.r_slider_rect.y0, p.r_slider_rect.y1);
-        dispatch(&mut p, &cursor_moved(r_x, r_y));
-        dispatch(&mut p, &mouse_press());
-        dispatch(&mut p, &mouse_release());
+            let r_x = p.r_slider_rect.x1 - 1.0;
+            let r_y = f64::midpoint(p.r_slider_rect.y0, p.r_slider_rect.y1);
+            dispatch(&mut p, &cursor_moved(r_x, r_y));
+            dispatch(&mut p, &mouse_press());
+            dispatch(&mut p, &mouse_release());
 
-        let g_x = p.g_slider_rect.x0 + 1.0;
-        let g_y = f64::midpoint(p.g_slider_rect.y0, p.g_slider_rect.y1);
-        dispatch(&mut p, &cursor_moved(g_x, g_y));
-        dispatch(&mut p, &mouse_press());
-        dispatch(&mut p, &mouse_release());
+            let g_x = p.g_slider_rect.x0 + 1.0;
+            let g_y = f64::midpoint(p.g_slider_rect.y0, p.g_slider_rect.y1);
+            dispatch(&mut p, &cursor_moved(g_x, g_y));
+            dispatch(&mut p, &mouse_press());
+            dispatch(&mut p, &mouse_release());
 
-        let b_x = p.b_slider_rect.x0 + 1.0;
-        let b_y = f64::midpoint(p.b_slider_rect.y0, p.b_slider_rect.y1);
-        dispatch(&mut p, &cursor_moved(b_x, b_y));
-        dispatch(&mut p, &mouse_press());
-        dispatch(&mut p, &mouse_release());
+            let b_x = p.b_slider_rect.x0 + 1.0;
+            let b_y = f64::midpoint(p.b_slider_rect.y0, p.b_slider_rect.y1);
+            dispatch(&mut p, &cursor_moved(b_x, b_y));
+            dispatch(&mut p, &mouse_press());
+            dispatch(&mut p, &mouse_release());
 
-        let c = p.color();
-        assert!(
-            (i32::from(c.r()) - 255).abs() <= 5,
-            "expected r ≈ 255, got {}",
-            c.r(),
-        );
-        assert!(c.g() <= 5, "expected g ≈ 0, got {}", c.g());
-        assert!(c.b() <= 5, "expected b ≈ 0, got {}", c.b());
-    }
+            let c = p.color();
+            assert!(
+                (i32::from(c.r()) - 255).abs() <= 5,
+                "expected r ≈ 255, got {}",
+                c.r(),
+            );
+            assert!(c.g() <= 5, "expected g ≈ 0, got {}", c.g());
+            assert!(c.b() <= 5, "expected b ≈ 0, got {}", c.b());
+        }
 
-    /// `hex_string` must always produce `#RRGGBB` in upper-case with
-    /// zero-padded bytes. Tested across two colors that exercise
-    /// both single-digit (< 16) and two-digit channels.
-    #[test]
-    fn hex_string_formats_six_uppercase_digits() {
-        let p = ColorPicker::new(Color::from_rgba8(0x12, 0x34, 0x56, 0xff));
-        assert_eq!(p.hex_string(), "#123456");
-        let p = ColorPicker::new(Color::from_rgba8(0x0a, 0x00, 0xff, 0xff));
-        assert_eq!(p.hex_string(), "#0A00FF");
-    }
+        fn hue_strip_paints_the_hue_it_picks() {
+            // The strip's stops are the HSV hue circle, so the colour a press
+            // yields at a height matches the colour painted there.
+            let top = ColorPicker::hsv_to_rgb(0.0, 1.0, 1.0);
+            let third = ColorPicker::hsv_to_rgb(1.0 / 3.0, 1.0, 1.0);
+            assert_eq!(top, (255, 0, 0));
+            assert_eq!(third, (0, 255, 0));
+        }
 
-    #[test]
-    fn rgb_string_formats_decimal_triple() {
-        let p = ColorPicker::new(Color::from_rgba8(99, 102, 241, 255));
-        assert_eq!(p.rgb_string(), "rgb(99, 102, 241)");
+        color_picker_dragging_hue_strip_changes_hue_only();
+        color_picker_clicking_sv_square_changes_saturation_and_value();
+        color_picker_rgb_slider_to_red_yields_pure_red();
+        hue_strip_paints_the_hue_it_picks();
     }
 
     #[test]
-    fn accessibility_reports_combobox_role_and_hex_value() {
-        use crate::a11y::Role;
-        let p = ColorPicker::new(Color::from_rgba8(0x12, 0x34, 0x56, 0xff));
-        let node = Widget::accessibility(&p).expect("color picker is a selector");
-        assert_eq!(node.role, Role::ComboBox);
-        assert_eq!(node.value.as_deref(), Some("#123456"));
-        assert!(node.state.focusable);
-        assert!(!node.state.focused);
-        assert_eq!(node.state.expanded, None, "the picker renders inline");
+    fn colour_strings_format_and_parse_strictly() {
+        /// `hex_string` must always produce `#RRGGBB` in upper-case with
+        /// zero-padded bytes. Tested across two colors that exercise
+        /// both single-digit (< 16) and two-digit channels.
+        fn hex_string_formats_six_uppercase_digits() {
+            let p = ColorPicker::new(Color::from_rgba8(0x12, 0x34, 0x56, 0xff));
+            assert_eq!(p.hex_string(), "#123456");
+            let p = ColorPicker::new(Color::from_rgba8(0x0a, 0x00, 0xff, 0xff));
+            assert_eq!(p.hex_string(), "#0A00FF");
+        }
+
+        fn rgb_string_formats_decimal_triple() {
+            let p = ColorPicker::new(Color::from_rgba8(99, 102, 241, 255));
+            assert_eq!(p.rgb_string(), "rgb(99, 102, 241)");
+        }
+
+        fn parse_hex_rejects_non_ascii_six_byte_input() {
+            // 6 bytes via UTF-8 multi-byte chars, not 6 chars.
+            assert!(parse_hex("ä♥X").is_none());
+            assert!(parse_hex("##abc12").is_none()); // not 6 hex digits
+            assert!(parse_hex("#ABCDEF").is_some()); // sanity
+            assert!(parse_hex("#abcdef").is_some()); // lowercase
+        }
+
+        hex_string_formats_six_uppercase_digits();
+        rgb_string_formats_decimal_triple();
+        parse_hex_rejects_non_ascii_six_byte_input();
     }
 
     #[test]
-    fn accessibility_value_tracks_color_change() {
-        let mut p = ColorPicker::new(Color::from_rgba8(0, 0, 0, 0xff));
-        p.set_rgb(0x0a, 0x00, 0xff);
-        let node = Widget::accessibility(&p).unwrap();
-        assert_eq!(node.value.as_deref(), Some("#0A00FF"));
-    }
+    fn change_reporting_embeds_callbacks_and_shared_state_agree() {
+        fn accessibility_reports_combobox_role_and_hex_value() {
+            use crate::a11y::Role;
+            let p = ColorPicker::new(Color::from_rgba8(0x12, 0x34, 0x56, 0xff));
+            let node = Widget::accessibility(&p).expect("color picker is a selector");
+            assert_eq!(node.role, Role::ComboBox);
+            assert_eq!(node.value.as_deref(), Some("#123456"));
+            assert!(node.state.focusable);
+            assert!(!node.state.focused);
+            assert_eq!(node.state.expanded, None, "the picker renders inline");
+        }
 
-    /// Retained-mode embed round-trip: an app drops the picker into its
-    /// widget tree, the user drags a channel, and the app reads the new
-    /// colour back by polling `take_changed()` (no callback wired). The
-    /// record drains after one read, and a *programmatic* `set_color`
-    /// updates the swatch/hex without reporting a spurious user change.
-    #[test]
-    fn embed_round_trip_take_changed_and_set_color() {
-        let mut p = picker_at(Color::from_rgba8(80, 80, 80, 255), Point::ZERO);
-        assert_eq!(p.take_changed(), None, "no edit → take_changed is None");
+        fn accessibility_value_tracks_color_change() {
+            let mut p = ColorPicker::new(Color::from_rgba8(0, 0, 0, 0xff));
+            p.set_rgb(0x0a, 0x00, 0xff);
+            let node = Widget::accessibility(&p).unwrap();
+            assert_eq!(node.value.as_deref(), Some("#0A00FF"));
+        }
 
-        // A real drag through the production handle_event path.
-        let r_x = p.r_slider_rect.x1 - 1.0;
-        let r_y = f64::midpoint(p.r_slider_rect.y0, p.r_slider_rect.y1);
-        dispatch(&mut p, &cursor_moved(r_x, r_y));
-        dispatch(&mut p, &mouse_press());
-        dispatch(&mut p, &mouse_release());
+        /// Retained-mode embed round-trip: an app drops the picker into its
+        /// widget tree, the user drags a channel, and the app reads the new
+        /// colour back by polling `take_changed()` (no callback wired). The
+        /// record drains after one read, and a *programmatic* `set_color`
+        /// updates the swatch/hex without reporting a spurious user change.
+        fn embed_round_trip_take_changed_and_set_color() {
+            let mut p = picker_at(Color::from_rgba8(80, 80, 80, 255), Point::ZERO);
+            assert_eq!(p.take_changed(), None, "no edit → take_changed is None");
 
-        let reported = p.take_changed().expect("a drag reports a colour change");
-        assert_eq!(
-            reported,
-            p.color(),
-            "reported colour matches the live colour"
-        );
-        assert!(
-            (i32::from(reported.r()) - 255).abs() <= 5,
-            "R went to ~255, got {}",
-            reported.r()
-        );
-        assert_eq!(p.take_changed(), None, "take_changed drains after one read");
+            // A real drag through the production handle_event path.
+            let r_x = p.r_slider_rect.x1 - 1.0;
+            let r_y = f64::midpoint(p.r_slider_rect.y0, p.r_slider_rect.y1);
+            dispatch(&mut p, &cursor_moved(r_x, r_y));
+            dispatch(&mut p, &mouse_press());
+            dispatch(&mut p, &mouse_release());
 
-        p.set_color(Color::from_rgba8(0x0a, 0x00, 0xff, 0xff));
-        assert_eq!(
-            p.hex_string(),
-            "#0A00FF",
-            "set_color updates the hex readout"
-        );
-        assert_eq!(p.color().r(), 0x0a);
-        assert_eq!(
-            p.take_changed(),
-            None,
-            "programmatic set_color must not surface as a user change",
-        );
-    }
+            let reported = p.take_changed().expect("a drag reports a colour change");
+            assert_eq!(
+                reported,
+                p.color(),
+                "reported colour matches the live colour"
+            );
+            assert!(
+                (i32::from(reported.r()) - 255).abs() <= 5,
+                "R went to ~255, got {}",
+                reported.r()
+            );
+            assert_eq!(p.take_changed(), None, "take_changed drains after one read");
 
-    /// The `on_change` callback and the `take_changed` poll seam observe
-    /// the SAME choke point, so both fire for one user edit — an app can
-    /// pick whichever integration style fits.
-    #[test]
-    fn on_change_callback_and_take_changed_agree() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        let seen: Rc<RefCell<Option<Color>>> = Rc::new(RefCell::new(None));
-        let seen2 = seen.clone();
-        let mut p = ColorPicker::new(Color::from_rgba8(0, 0, 0, 255))
-            .on_change(move |c| *seen2.borrow_mut() = Some(c));
-        // Re-run layout arithmetic (on_change consumed `self`, so build fresh
-        // rects the same way picker_at does).
-        let base = picker_at(Color::from_rgba8(0, 0, 0, 255), Point::ZERO);
-        p.rect = base.rect;
-        p.r_slider_rect = base.r_slider_rect;
-        p.g_slider_rect = base.g_slider_rect;
-        p.b_slider_rect = base.b_slider_rect;
-        p.sv_rect = base.sv_rect;
-        p.hue_strip_rect = base.hue_strip_rect;
+            p.set_color(Color::from_rgba8(0x0a, 0x00, 0xff, 0xff));
+            assert_eq!(
+                p.hex_string(),
+                "#0A00FF",
+                "set_color updates the hex readout"
+            );
+            assert_eq!(p.color().r(), 0x0a);
+            assert_eq!(
+                p.take_changed(),
+                None,
+                "programmatic set_color must not surface as a user change",
+            );
+        }
 
-        let r_x = p.r_slider_rect.x1 - 1.0;
-        let r_y = f64::midpoint(p.r_slider_rect.y0, p.r_slider_rect.y1);
-        dispatch(&mut p, &cursor_moved(r_x, r_y));
-        dispatch(&mut p, &mouse_press());
+        /// The `on_change` callback and the `take_changed` poll seam observe
+        /// the SAME choke point, so both fire for one user edit — an app can
+        /// pick whichever integration style fits.
+        fn on_change_callback_and_take_changed_agree() {
+            use std::cell::RefCell;
+            use std::rc::Rc;
+            let seen: Rc<RefCell<Option<Color>>> = Rc::new(RefCell::new(None));
+            let seen2 = seen.clone();
+            let mut p = ColorPicker::new(Color::from_rgba8(0, 0, 0, 255))
+                .on_change(move |c| *seen2.borrow_mut() = Some(c));
+            // Re-run layout arithmetic (on_change consumed `self`, so build fresh
+            // rects the same way picker_at does).
+            let base = picker_at(Color::from_rgba8(0, 0, 0, 255), Point::ZERO);
+            p.rect = base.rect;
+            p.r_slider_rect = base.r_slider_rect;
+            p.g_slider_rect = base.g_slider_rect;
+            p.b_slider_rect = base.b_slider_rect;
+            p.sv_rect = base.sv_rect;
+            p.hue_strip_rect = base.hue_strip_rect;
 
-        let poll = p.take_changed().expect("poll seam saw the change");
-        let cb = seen.borrow().expect("callback saw the change");
-        assert_eq!(poll, cb, "both seams observe the identical colour");
+            let r_x = p.r_slider_rect.x1 - 1.0;
+            let r_y = f64::midpoint(p.r_slider_rect.y0, p.r_slider_rect.y1);
+            dispatch(&mut p, &cursor_moved(r_x, r_y));
+            dispatch(&mut p, &mouse_press());
+
+            let poll = p.take_changed().expect("poll seam saw the change");
+            let cb = seen.borrow().expect("callback saw the change");
+            assert_eq!(poll, cb, "both seams observe the identical colour");
+        }
+
+        fn local_state_keeps_color_pickers_in_sync() {
+            let initial = Color::from_rgba8(0x12, 0x34, 0x56, 0xff);
+            let expected = Color::from_rgba8(0xab, 0xcd, 0xef, 0xff);
+            let state = crate::LocalState::new(initial);
+            let mut left = ColorPicker::from_state(&state);
+            let mut right = ColorPicker::from_state(&state);
+            let mut doc = AutoCommit::new();
+
+            left.set_color(expected);
+            assert!(state.with(|color| ColorPicker::colors_equal(color, &expected)));
+            assert!(left.take_changed().is_none());
+            Widget::sync(&mut right, &mut doc, &automerge::ROOT);
+            assert_eq!(right.hex_string(), "#ABCDEF");
+            assert!(right.take_changed().is_none());
+        }
+
+        fn semantic_color_change_updates_state_callback_and_changed_record() {
+            use std::cell::RefCell;
+            use std::rc::Rc;
+
+            let state = crate::LocalState::new(Color::BLACK);
+            let captured = Rc::new(RefCell::new(None));
+            let callback = Rc::clone(&captured);
+            let mut picker = ColorPicker::from_state(&state)
+                .on_change(move |color| *callback.borrow_mut() = Some(color));
+            let mut doc = AutoCommit::new();
+
+            assert!(Widget::perform_action(
+                &mut picker,
+                &crate::a11y::Action::SetValue("#36A2EB".into()),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(picker.hex_string(), "#36A2EB");
+            assert!(
+                state.with(|color| color.r() == 0x36 && color.g() == 0xa2 && color.b() == 0xeb)
+            );
+            assert_eq!(captured.borrow().as_ref().map(Color::r), Some(0x36));
+            assert_eq!(picker.take_changed().map(|color| color.b()), Some(0xeb));
+
+            assert!(!Widget::perform_action(
+                &mut picker,
+                &crate::a11y::Action::SetValue("blue".into()),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(picker.hex_string(), "#36A2EB");
+        }
+
+        accessibility_reports_combobox_role_and_hex_value();
+        accessibility_value_tracks_color_change();
+        embed_round_trip_take_changed_and_set_color();
+        on_change_callback_and_take_changed_agree();
+        local_state_keeps_color_pickers_in_sync();
+        semantic_color_change_updates_state_callback_and_changed_record();
     }
 
     fn swatches() -> Vec<ColorSwatch> {
@@ -1784,255 +1866,196 @@ mod tests {
     }
 
     #[test]
-    fn plain_picker_keeps_its_size_and_rows() {
-        let p = ColorPicker::new(Color::from_rgb8(1, 2, 3));
-        assert_eq!(p.preferred_size(), (PICKER_WIDTH, PICKER_HEIGHT));
-        let p = laid_out(p);
-        assert!(p.swatch_rects.is_empty());
-        assert_eq!(p.done_rect, Rect::ZERO);
-    }
-
-    #[test]
-    fn swatches_lay_out_below_the_sliders_and_inside_the_picker() {
-        let p = laid_out(ColorPicker::new(Color::from_rgb8(1, 2, 3)).with_swatches(swatches()));
-        assert_eq!(p.swatch_rects.len(), 3);
-        for rect in &p.swatch_rects {
-            assert!(rect.y0 >= p.b_slider_rect.y1 + SECTION_GAP - 0.01);
-            assert!(rect.y1 <= p.rect.y1 + 0.01);
-            assert!(p.rect.contains(Point::new(rect.x1 - 0.5, rect.y1 - 0.5)));
+    fn swatches_lay_out_select_and_expose_radio_actions() {
+        fn plain_picker_keeps_its_size_and_rows() {
+            let p = ColorPicker::new(Color::from_rgb8(1, 2, 3));
+            assert_eq!(p.preferred_size(), (PICKER_WIDTH, PICKER_HEIGHT));
+            let p = laid_out(p);
+            assert!(p.swatch_rects.is_empty());
+            assert_eq!(p.done_rect, Rect::ZERO);
         }
+
+        fn swatches_lay_out_below_the_sliders_and_inside_the_picker() {
+            let p = laid_out(ColorPicker::new(Color::from_rgb8(1, 2, 3)).with_swatches(swatches()));
+            assert_eq!(p.swatch_rects.len(), 3);
+            for rect in &p.swatch_rects {
+                assert!(rect.y0 >= p.b_slider_rect.y1 + SECTION_GAP - 0.01);
+                assert!(rect.y1 <= p.rect.y1 + 0.01);
+                assert!(p.rect.contains(Point::new(rect.x1 - 0.5, rect.y1 - 0.5)));
+            }
+        }
+
+        fn clicking_a_swatch_sets_the_colour_and_reports_the_change() {
+            let mut p =
+                laid_out(ColorPicker::new(Color::from_rgb8(1, 2, 3)).with_swatches(swatches()));
+            let target = p.swatch_rects[1].center();
+            click(&mut p, target);
+            assert_eq!(p.hex_string(), "#3B82F6");
+            assert_eq!(p.take_changed().map(|c| c.b()), Some(0xF6));
+        }
+
+        fn every_swatch_is_a_radio_with_its_own_action() {
+            use crate::a11y::{Action, Role};
+            let mut p = laid_out(
+                ColorPicker::new(Color::from_rgb8(0xEF, 0x44, 0x44)).with_swatches(swatches()),
+            );
+            let node = Widget::accessibility(&p).expect("picker semantics");
+            assert_eq!(node.role, Role::Group);
+            let radios: Vec<_> = node
+                .children
+                .iter()
+                .filter(|child| child.role == Role::RadioButton)
+                .collect();
+            assert_eq!(radios.len(), 3);
+            assert_eq!(radios[0].name.as_deref(), Some("Red"));
+            assert_eq!(
+                radios[0].state.checked,
+                Some(true),
+                "the current colour is checked"
+            );
+            assert_eq!(radios[1].name.as_deref(), Some("#3B82F6"));
+            assert_eq!(radios[1].state.checked, Some(false));
+
+            let mut doc = AutoCommit::new();
+            let target = format!("{TARGET_SWATCH}2");
+            assert!(Widget::perform_semantic_action(
+                &mut p,
+                &target,
+                &Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(p.hex_string(), "#10B981");
+            assert!(!Widget::perform_semantic_action(
+                &mut p,
+                &format!("{TARGET_SWATCH}9"),
+                &Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+        }
+
+        plain_picker_keeps_its_size_and_rows();
+        swatches_lay_out_below_the_sliders_and_inside_the_picker();
+        clicking_a_swatch_sets_the_colour_and_reports_the_change();
+        every_swatch_is_a_radio_with_its_own_action();
     }
 
     #[test]
-    fn clicking_a_swatch_sets_the_colour_and_reports_the_change() {
-        let mut p = laid_out(ColorPicker::new(Color::from_rgb8(1, 2, 3)).with_swatches(swatches()));
-        let target = p.swatch_rects[1].center();
-        click(&mut p, target);
-        assert_eq!(p.hex_string(), "#3B82F6");
-        assert_eq!(p.take_changed().map(|c| c.b()), Some(0xF6));
-    }
+    fn confirm_mode_holds_edits_until_done_or_cancel() {
+        fn confirm_mode_keeps_edits_pending_until_done() {
+            let opening = Color::from_rgb8(0x1A, 0x22, 0x33);
+            let mut p = laid_out(
+                ColorPicker::new(opening)
+                    .with_swatches(swatches())
+                    .confirming("Page colour"),
+            );
+            assert!(p.title_rect.height() > 0.0);
+            assert!(
+                p.done_rect.y0 > p.swatch_rects[0].y1,
+                "buttons sit below the swatches"
+            );
+            assert!(p.cancel_rect.x1 < p.done_rect.x0, "Cancel precedes Done");
 
-    #[test]
-    fn every_swatch_is_a_radio_with_its_own_action() {
-        use crate::a11y::{Action, Role};
-        let mut p = laid_out(
-            ColorPicker::new(Color::from_rgb8(0xEF, 0x44, 0x44)).with_swatches(swatches()),
-        );
-        let node = Widget::accessibility(&p).expect("picker semantics");
-        assert_eq!(node.role, Role::Group);
-        let radios: Vec<_> = node
-            .children
-            .iter()
-            .filter(|child| child.role == Role::RadioButton)
-            .collect();
-        assert_eq!(radios.len(), 3);
-        assert_eq!(radios[0].name.as_deref(), Some("Red"));
-        assert_eq!(
-            radios[0].state.checked,
-            Some(true),
-            "the current colour is checked"
-        );
-        assert_eq!(radios[1].name.as_deref(), Some("#3B82F6"));
-        assert_eq!(radios[1].state.checked, Some(false));
+            let swatch = p.swatch_rects[0].center();
+            click(&mut p, swatch);
+            assert_eq!(
+                p.hex_string(),
+                "#EF4444",
+                "the pending colour follows the edit"
+            );
+            assert_eq!(p.committed_color().r(), 0x1A, "nothing is committed yet");
+            assert_eq!(p.take_outcome(), None);
 
-        let mut doc = AutoCommit::new();
-        let target = format!("{TARGET_SWATCH}2");
-        assert!(Widget::perform_semantic_action(
-            &mut p,
-            &target,
-            &Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(p.hex_string(), "#10B981");
-        assert!(!Widget::perform_semantic_action(
-            &mut p,
-            &format!("{TARGET_SWATCH}9"),
-            &Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-    }
+            let done = p.done_rect.center();
+            click(&mut p, done);
+            assert_eq!(
+                p.take_outcome(),
+                Some(ColorPickerOutcome::Confirmed(Color::from_rgb8(
+                    0xEF, 0x44, 0x44
+                )))
+            );
+            assert_eq!(p.committed_color().r(), 0xEF);
+        }
 
-    #[test]
-    fn confirm_mode_keeps_edits_pending_until_done() {
-        let opening = Color::from_rgb8(0x1A, 0x22, 0x33);
-        let mut p = laid_out(
-            ColorPicker::new(opening)
-                .with_swatches(swatches())
-                .confirming("Page colour"),
-        );
-        assert!(p.title_rect.height() > 0.0);
-        assert!(
-            p.done_rect.y0 > p.swatch_rects[0].y1,
-            "buttons sit below the swatches"
-        );
-        assert!(p.cancel_rect.x1 < p.done_rect.x0, "Cancel precedes Done");
+        fn cancel_restores_the_opening_colour_and_reports_the_revert() {
+            let opening = Color::from_rgb8(0x1A, 0x22, 0x33);
+            let mut p = laid_out(
+                ColorPicker::new(opening)
+                    .with_swatches(swatches())
+                    .confirming("Text colour"),
+            );
+            let swatch = p.swatch_rects[1].center();
+            click(&mut p, swatch);
+            let _ = p.take_changed();
+            let cancel = p.cancel_rect.center();
+            click(&mut p, cancel);
+            assert_eq!(p.take_outcome(), Some(ColorPickerOutcome::Cancelled));
+            assert_eq!(p.hex_string(), "#1A2233");
+            assert_eq!(
+                p.take_changed().map(|c| c.r()),
+                Some(0x1A),
+                "a live preview is told to revert"
+            );
+        }
 
-        let swatch = p.swatch_rects[0].center();
-        click(&mut p, swatch);
-        assert_eq!(
-            p.hex_string(),
-            "#EF4444",
-            "the pending colour follows the edit"
-        );
-        assert_eq!(p.committed_color().r(), 0x1A, "nothing is committed yet");
-        assert_eq!(p.take_outcome(), None);
+        fn enter_confirms_and_escape_cancels_while_focused() {
+            let mut p = laid_out(ColorPicker::new(Color::from_rgb8(9, 9, 9)).confirming("Accent"));
+            key(&mut p, NamedKey::Enter);
+            assert_eq!(p.take_outcome(), None, "keys only act on a focused picker");
+            p.set_focus(true);
+            p.set_rgb(0x20, 0x40, 0x60);
+            key(&mut p, NamedKey::Escape);
+            assert_eq!(p.take_outcome(), Some(ColorPickerOutcome::Cancelled));
+            assert_eq!(p.hex_string(), "#090909");
+            p.set_rgb(0x20, 0x40, 0x60);
+            key(&mut p, NamedKey::Enter);
+            assert_eq!(
+                p.take_outcome(),
+                Some(ColorPickerOutcome::Confirmed(Color::from_rgb8(
+                    0x20, 0x40, 0x60
+                )))
+            );
+        }
 
-        let done = p.done_rect.center();
-        click(&mut p, done);
-        assert_eq!(
-            p.take_outcome(),
-            Some(ColorPickerOutcome::Confirmed(Color::from_rgb8(
-                0xEF, 0x44, 0x44
-            )))
-        );
-        assert_eq!(p.committed_color().r(), 0xEF);
-    }
+        fn confirm_mode_exposes_titled_group_with_cancel_and_done_actions() {
+            use crate::a11y::{Action, Role};
+            let mut p = laid_out(ColorPicker::new(Color::from_rgb8(9, 9, 9)).confirming("Accent"));
+            let node = Widget::accessibility(&p).expect("picker semantics");
+            assert_eq!(node.role, Role::Group);
+            assert_eq!(node.name.as_deref(), Some("Accent"));
+            let buttons: Vec<_> = node
+                .children
+                .iter()
+                .filter(|child| child.role == Role::Button)
+                .filter_map(|child| child.name.clone())
+                .collect();
+            assert_eq!(buttons, ["Cancel", "Done"]);
+            let mut doc = AutoCommit::new();
+            assert!(Widget::perform_semantic_action(
+                &mut p,
+                TARGET_DONE,
+                &Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert!(matches!(
+                p.take_outcome(),
+                Some(ColorPickerOutcome::Confirmed(_))
+            ));
+            assert!(Widget::perform_semantic_action(
+                &mut p,
+                TARGET_VALUE,
+                &Action::SetValue("#ABCDEF".into()),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(p.hex_string(), "#ABCDEF");
+        }
 
-    #[test]
-    fn cancel_restores_the_opening_colour_and_reports_the_revert() {
-        let opening = Color::from_rgb8(0x1A, 0x22, 0x33);
-        let mut p = laid_out(
-            ColorPicker::new(opening)
-                .with_swatches(swatches())
-                .confirming("Text colour"),
-        );
-        let swatch = p.swatch_rects[1].center();
-        click(&mut p, swatch);
-        let _ = p.take_changed();
-        let cancel = p.cancel_rect.center();
-        click(&mut p, cancel);
-        assert_eq!(p.take_outcome(), Some(ColorPickerOutcome::Cancelled));
-        assert_eq!(p.hex_string(), "#1A2233");
-        assert_eq!(
-            p.take_changed().map(|c| c.r()),
-            Some(0x1A),
-            "a live preview is told to revert"
-        );
-    }
-
-    #[test]
-    fn enter_confirms_and_escape_cancels_while_focused() {
-        let mut p = laid_out(ColorPicker::new(Color::from_rgb8(9, 9, 9)).confirming("Accent"));
-        key(&mut p, NamedKey::Enter);
-        assert_eq!(p.take_outcome(), None, "keys only act on a focused picker");
-        p.set_focus(true);
-        p.set_rgb(0x20, 0x40, 0x60);
-        key(&mut p, NamedKey::Escape);
-        assert_eq!(p.take_outcome(), Some(ColorPickerOutcome::Cancelled));
-        assert_eq!(p.hex_string(), "#090909");
-        p.set_rgb(0x20, 0x40, 0x60);
-        key(&mut p, NamedKey::Enter);
-        assert_eq!(
-            p.take_outcome(),
-            Some(ColorPickerOutcome::Confirmed(Color::from_rgb8(
-                0x20, 0x40, 0x60
-            )))
-        );
-    }
-
-    #[test]
-    fn confirm_mode_exposes_titled_group_with_cancel_and_done_actions() {
-        use crate::a11y::{Action, Role};
-        let mut p = laid_out(ColorPicker::new(Color::from_rgb8(9, 9, 9)).confirming("Accent"));
-        let node = Widget::accessibility(&p).expect("picker semantics");
-        assert_eq!(node.role, Role::Group);
-        assert_eq!(node.name.as_deref(), Some("Accent"));
-        let buttons: Vec<_> = node
-            .children
-            .iter()
-            .filter(|child| child.role == Role::Button)
-            .filter_map(|child| child.name.clone())
-            .collect();
-        assert_eq!(buttons, ["Cancel", "Done"]);
-        let mut doc = AutoCommit::new();
-        assert!(Widget::perform_semantic_action(
-            &mut p,
-            TARGET_DONE,
-            &Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(matches!(
-            p.take_outcome(),
-            Some(ColorPickerOutcome::Confirmed(_))
-        ));
-        assert!(Widget::perform_semantic_action(
-            &mut p,
-            TARGET_VALUE,
-            &Action::SetValue("#ABCDEF".into()),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(p.hex_string(), "#ABCDEF");
-    }
-
-    #[test]
-    fn hue_strip_paints_the_hue_it_picks() {
-        // The strip's stops are the HSV hue circle, so the colour a press
-        // yields at a height matches the colour painted there.
-        let top = ColorPicker::hsv_to_rgb(0.0, 1.0, 1.0);
-        let third = ColorPicker::hsv_to_rgb(1.0 / 3.0, 1.0, 1.0);
-        assert_eq!(top, (255, 0, 0));
-        assert_eq!(third, (0, 255, 0));
-    }
-
-    #[test]
-    fn parse_hex_rejects_non_ascii_six_byte_input() {
-        // 6 bytes via UTF-8 multi-byte chars, not 6 chars.
-        assert!(parse_hex("ä♥X").is_none());
-        assert!(parse_hex("##abc12").is_none()); // not 6 hex digits
-        assert!(parse_hex("#ABCDEF").is_some()); // sanity
-        assert!(parse_hex("#abcdef").is_some()); // lowercase
-    }
-
-    #[test]
-    fn local_state_keeps_color_pickers_in_sync() {
-        let initial = Color::from_rgba8(0x12, 0x34, 0x56, 0xff);
-        let expected = Color::from_rgba8(0xab, 0xcd, 0xef, 0xff);
-        let state = crate::LocalState::new(initial);
-        let mut left = ColorPicker::from_state(&state);
-        let mut right = ColorPicker::from_state(&state);
-        let mut doc = AutoCommit::new();
-
-        left.set_color(expected);
-        assert!(state.with(|color| ColorPicker::colors_equal(color, &expected)));
-        assert!(left.take_changed().is_none());
-        Widget::sync(&mut right, &mut doc, &automerge::ROOT);
-        assert_eq!(right.hex_string(), "#ABCDEF");
-        assert!(right.take_changed().is_none());
-    }
-
-    #[test]
-    fn semantic_color_change_updates_state_callback_and_changed_record() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
-        let state = crate::LocalState::new(Color::BLACK);
-        let captured = Rc::new(RefCell::new(None));
-        let callback = Rc::clone(&captured);
-        let mut picker = ColorPicker::from_state(&state)
-            .on_change(move |color| *callback.borrow_mut() = Some(color));
-        let mut doc = AutoCommit::new();
-
-        assert!(Widget::perform_action(
-            &mut picker,
-            &crate::a11y::Action::SetValue("#36A2EB".into()),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(picker.hex_string(), "#36A2EB");
-        assert!(state.with(|color| color.r() == 0x36 && color.g() == 0xa2 && color.b() == 0xeb));
-        assert_eq!(captured.borrow().as_ref().map(Color::r), Some(0x36));
-        assert_eq!(picker.take_changed().map(|color| color.b()), Some(0xeb));
-
-        assert!(!Widget::perform_action(
-            &mut picker,
-            &crate::a11y::Action::SetValue("blue".into()),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(picker.hex_string(), "#36A2EB");
+        confirm_mode_keeps_edits_pending_until_done();
+        cancel_restores_the_opening_colour_and_reports_the_revert();
+        enter_confirms_and_escape_cancels_while_focused();
+        confirm_mode_exposes_titled_group_with_cancel_and_done_actions();
     }
 }

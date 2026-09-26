@@ -83,6 +83,11 @@ pub struct BrokerChannels {
     /// Registered per-route MLS journals. Their persisted gate is consulted
     /// on every local and peer document ingress; the broker holds no MLS key.
     pub governance: HashMap<ChannelId, channel_crypto::GovernanceJournal>,
+    /// Ingress gates of the channels this device's channel encryption
+    /// service stewards or takes part in. Registered before the first op of
+    /// a channel is accepted and refreshed on every membership change; the
+    /// broker holds the gate, never a key.
+    pub gates: HashMap<ChannelId, channel_crypto::ChannelGate>,
     /// Production Secret Service provider installed by shell startup. Kept
     /// behind the broker boundary; applications see only opaque receipts.
     pub mls_vault: Option<Arc<super::collab_mls_authority::SecretServiceMlsVault>>,
@@ -117,9 +122,16 @@ impl BrokerChannels {
         self.governance.insert(channel, journal);
     }
 
-    /// A route without a registered journal remains in explicit migration /
-    /// legacy mode. Once its durable journal flips `encryption_required`, no
-    /// plaintext envelope can pass either ingress path, including after restart.
+    /// Install or refresh a channel's ingress gate.
+    pub fn register_channel_gate(&mut self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
+        self.gates.insert(channel, gate);
+    }
+
+    /// A route with neither a registered journal nor a gate has not been
+    /// opened encrypted on this device yet. Once either closes its plaintext
+    /// gate, no plaintext envelope (and no content sealed before the latest
+    /// membership change) can pass either ingress path, including after a
+    /// restart.
     pub fn document_encryption_allowed(
         &self,
         channel: ChannelId,
@@ -128,6 +140,10 @@ impl BrokerChannels {
         self.governance
             .get(&channel)
             .is_none_or(|journal| journal.accepts_document_encryption(encryption, channel))
+            && self
+                .gates
+                .get(&channel)
+                .is_none_or(|gate| gate.accepts(encryption, channel))
     }
 
     /// Append a validated op to durable history when it belongs there.
@@ -312,46 +328,50 @@ mod tests {
     }
 
     #[test]
-    fn audit_is_bounded_per_artifact_and_keeps_the_newest_entries() {
-        let artifact = ArtifactId::new();
-        let other = ArtifactId::new();
-        let mut audit = AuditLog::default();
+    fn collab_audit_and_channel_state_are_keyed_by_artifact() {
+        fn audit_is_bounded_per_artifact_and_keeps_the_newest_entries() {
+            let artifact = ArtifactId::new();
+            let other = ArtifactId::new();
+            let mut audit = AuditLog::default();
 
-        for seq in 0..(AUDIT_LOG_RING_CAPACITY as u64 + 3) {
+            for seq in 0..(AUDIT_LOG_RING_CAPACITY as u64 + 3) {
+                audit.record(
+                    artifact,
+                    AuditEntry {
+                        envelope: Box::new(envelope(artifact, seq)),
+                        rejection: None,
+                        at: SystemTime::UNIX_EPOCH,
+                    },
+                );
+            }
             audit.record(
-                artifact,
+                other,
                 AuditEntry {
-                    envelope: Box::new(envelope(artifact, seq)),
+                    envelope: Box::new(envelope(other, 99)),
                     rejection: None,
                     at: SystemTime::UNIX_EPOCH,
                 },
             );
+
+            let entries = audit.for_artifact(artifact);
+            assert_eq!(entries.len(), AUDIT_LOG_RING_CAPACITY);
+            assert_eq!(entries.first().unwrap().envelope.seq, 3);
+            assert_eq!(entries.last().unwrap().envelope.seq, 258);
+            assert_eq!(audit.for_artifact(other)[0].envelope.seq, 99);
         }
-        audit.record(
-            other,
-            AuditEntry {
-                envelope: Box::new(envelope(other, 99)),
-                rejection: None,
-                at: SystemTime::UNIX_EPOCH,
-            },
-        );
 
-        let entries = audit.for_artifact(artifact);
-        assert_eq!(entries.len(), AUDIT_LOG_RING_CAPACITY);
-        assert_eq!(entries.first().unwrap().envelope.seq, 3);
-        assert_eq!(entries.last().unwrap().envelope.seq, 258);
-        assert_eq!(audit.for_artifact(other)[0].envelope.seq, 99);
-    }
+        fn channel_state_is_shared_by_artifact_not_transport() {
+            let artifact = ArtifactId::new();
+            let mut channels = BrokerChannels::default();
 
-    #[test]
-    fn channel_state_is_shared_by_artifact_not_transport() {
-        let artifact = ArtifactId::new();
-        let mut channels = BrokerChannels::default();
+            let first = std::ptr::from_mut(channels.state_for(artifact));
+            let second = std::ptr::from_mut(channels.state_for(artifact));
 
-        let first = std::ptr::from_mut(channels.state_for(artifact));
-        let second = std::ptr::from_mut(channels.state_for(artifact));
+            assert_eq!(first, second);
+            assert_eq!(channels.states.len(), 1);
+        }
 
-        assert_eq!(first, second);
-        assert_eq!(channels.states.len(), 1);
+        audit_is_bounded_per_artifact_and_keeps_the_newest_entries();
+        channel_state_is_shared_by_artifact_not_transport();
     }
 }
