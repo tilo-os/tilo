@@ -1901,6 +1901,9 @@ impl ControlState for FrameBuilderControlState<'_> {
         // The hosted file manager's drag, if in flight, and whether the compositor took it over to a client.
             "files_drag": file_explorer::external_drag::unclaimed().map(|d| d.paths),
             "files_drag_handed_off": file_explorer::external_drag::is_handed_off(),
+            // The compositor-owned sheet on screen (portal review, polkit,
+            // network secrets); masked values appear only as their length.
+            "portal_dialog": self.fb.host().portal_dialog_state_json(),
             "editing_workspace_name": chrome.editing_workspace_name,
             "pending_grants_count": chrome.pending_grants.len(),
         // Mirrored from the SessionManager each tick; lets a headless test observe lock/unlock transitions.
@@ -4494,6 +4497,7 @@ fn install_session_peer_sync(
     tracing::info!("peer-sync: actor spawned, default workspace joined");
     let net = Arc::new(handle);
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
+    crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
     install_device_fabric_bridge(
         frame_builder.host_mut(),
         Arc::clone(&net),
@@ -6132,6 +6136,23 @@ pub fn run() {
                 crate::shell::portal_dialog::PortalDialogQueue::global(),
             ),
             |_| tracing::info!("polkit: authentication agent registered for this session"),
+        )
+    });
+
+    // NetworkManager secret agent: a Wi-Fi password that changed, 802.1X
+    // sign-in, VPN secrets and SIM PINs become a sheet only the compositor
+    // draws, instead of a connection that silently fails.
+    let network_secret_agent: Option<
+        crate::session_runtime::Registration<crate::network_secrets::service::AgentHandle>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "network secret agent",
+            crate::network_secrets::service::serve(
+                crate::shell::portal_dialog::PortalDialogQueue::global(),
+                crate::network_secrets::store::RoamingWifiSlot::global(),
+            ),
+            |_| tracing::info!("network: secret agent registered with NetworkManager"),
         )
     });
 
@@ -9060,6 +9081,7 @@ pub fn run() {
     drop(notif_handle);
     drop(tray_handle);
     drop(polkit_agent);
+    drop(network_secret_agent);
 }
 
 /// Publish a successful machine-level change to every shell surface that
