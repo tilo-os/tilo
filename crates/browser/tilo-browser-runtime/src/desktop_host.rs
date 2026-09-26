@@ -6465,6 +6465,7 @@ mod tests {
                 "so.tilo.chat",
                 "so.tilo.notes",
                 "so.tilo.calculator",
+                "so.tilo.ebook",
             ]
         );
         assert_eq!(data.tabs.len(), 4);

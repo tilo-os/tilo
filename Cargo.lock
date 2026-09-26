@@ -14860,6 +14860,7 @@ dependencies = [
  "calculator",
  "chat",
  "collab-types",
+ "ebook",
  "ed25519-dalek 3.0.0",
  "futures",
  "iroh",
