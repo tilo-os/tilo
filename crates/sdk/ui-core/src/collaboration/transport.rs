@@ -146,6 +146,12 @@ pub trait CollabTransport: Send {
     /// Move every event that is ready into `out`, in arrival order.
     fn drain(&mut self, out: &mut Vec<CollabEvent>);
 
+    /// The device key this transport signs document envelopes with, once
+    /// known. `None` for transports that sign nothing.
+    fn document_author(&self) -> Option<[u8; 32]> {
+        None
+    }
+
     /// The remote end's decision about the latest primary `Hello`, once.
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>>;
 

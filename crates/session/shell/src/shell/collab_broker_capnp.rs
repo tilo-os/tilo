@@ -4424,6 +4424,8 @@ impl CapnpBrokerState {
                 "current workspace capability denies this document action".into(),
             ));
         }
+        collab_types::check_document_route(&route.record_id, envelope.op_class, &envelope.author)
+            .map_err(|error| capnp::Error::failed(format!("document operation refused: {error}")))?;
         Ok(mutation)
     }
 
@@ -11068,6 +11070,103 @@ pub(crate) mod tests {
                 .authorize_certified_document(&other_record, &admitted, &op)
                 .is_err(),
             "a signed envelope cannot be replayed through another record route"
+        );
+    }
+
+    #[test]
+    fn a_commenter_may_send_only_to_the_comment_record_its_device_owns() {
+        let root = SigningKey::from_bytes(&[34; 32]);
+        let device = SigningKey::from_bytes(&[35; 32]);
+        let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
+        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let mut workspace = crate::shell::state::Workspace::new(
+            crate::shell::state::WorkspaceId(6),
+            "Feedback room",
+        );
+        let room = workspace.room.to_string();
+        workspace.grant_capability(CapOverride::membership(
+            Subject::person(&principal),
+            room.clone(),
+            collab_types::Verb::Comment,
+        ));
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let membership = tree.shared();
+        let fanout = Arc::new(FanoutState::new());
+        let publisher = PeerPublisher::new(Arc::new(RecordingSink::default())
+            as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>);
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            publisher,
+            Some(Arc::clone(&membership)),
+            None,
+        );
+        let op_for = |record: &str, class: collab_types::OpClass| {
+            let route = CrdtRoute::record("so.tilo.chat", room.clone(), record);
+            let mut op = SignedOp::new_unsigned(
+                DocumentMutation::Incremental(b"change".to_vec())
+                    .encode()
+                    .expect("typed mutation"),
+                document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+                author,
+                document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+                class,
+                SystemTime::now(),
+                1,
+            );
+            sign_op(&mut op, &device).expect("device signs");
+            (route, op)
+        };
+        let admit = |route: &CrdtRoute| {
+            admit_verified_join(
+                &membership.read(),
+                route,
+                VerifiedJoinIdentity {
+                    user_public_key: root.verifying_key().to_bytes(),
+                    device_public_key: device.verifying_key().to_bytes(),
+                },
+            )
+            .expect("commenter is admitted")
+        };
+        let parent = "uuid:0b8c2a8e-50c4-4e38-8d0e-2a7a36a1f0de";
+
+        let mine = collab_types::comment_record_id(&author, "m1", parent).expect("own comment");
+        let (route, op) = op_for(&mine, collab_types::OpClass::Comment);
+        let admitted = admit(&route);
+        assert_eq!(admitted.role, Role::Commenter);
+        state
+            .authorize_certified_document(&route, &admitted, &op)
+            .expect("a commenter writes their own comment record");
+
+        let theirs = collab_types::comment_record_id(
+            &Ed25519PublicKey::from_bytes([0x5A; 32]),
+            "m1",
+            parent,
+        )
+        .expect("foreign comment");
+        let (route, op) = op_for(&theirs, collab_types::OpClass::Comment);
+        assert!(
+            state
+                .authorize_certified_document(&route, &admit(&route), &op)
+                .is_err(),
+            "another device's comment record is refused"
+        );
+
+        let (route, op) = op_for("", collab_types::OpClass::Splice);
+        assert!(
+            state
+                .authorize_certified_document(&route, &admit(&route), &op)
+                .is_err(),
+            "the package document needs Write"
+        );
+
+        let (route, op) = op_for(parent, collab_types::OpClass::Comment);
+        assert!(
+            state
+                .authorize_certified_document(&route, &admit(&route), &op)
+                .is_err(),
+            "labelling an edit to an ordinary record as a comment is refused"
         );
     }
 

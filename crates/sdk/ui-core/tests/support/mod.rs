@@ -201,6 +201,7 @@ pub fn pump(relay: &mut MemoryRelay) {
                 }
             }
             CollabRequest::WorkspaceControlInput { .. }
+            | CollabRequest::CommentReferences { .. }
             | CollabRequest::CloseWorkspaceControl { .. }
             | CollabRequest::NearbyTransferCommand { .. }
             | CollabRequest::RealtimeCommand { .. }

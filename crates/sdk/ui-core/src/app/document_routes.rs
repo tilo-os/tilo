@@ -304,6 +304,24 @@ impl App {
         if owned.is_none() && !primary_matches {
             return;
         }
+        // Brokers enforce the class rule; the receiver holds it too, and
+        // takes no comment-class change on a document route that is not the
+        // author's own comment record.
+        let record = match owned {
+            Some(index) => self
+                .document_routes
+                .owners
+                .get(index)
+                .and_then(|entry| entry.route.record.clone()),
+            None => witness.route.record.clone(),
+        }
+        .unwrap_or_default();
+        if collab_types::check_document_route(&record, envelope.op_class, &envelope.author).is_err()
+            || (record.is_empty() && envelope.op_class == collab_types::OpClass::Comment)
+        {
+            tracing::warn!(record, class = ?envelope.op_class, "collab: refused a document change whose class does not fit its route");
+            return;
+        }
         if envelope.encryption.is_some() && decrypted_payload.is_none() {
             return;
         }

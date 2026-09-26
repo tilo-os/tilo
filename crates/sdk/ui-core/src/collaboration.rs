@@ -150,6 +150,15 @@ pub enum CollabRequest {
     Document {
         mutation: DocumentMutation,
     },
+    /// An incremental room-index change that only adds index entries for
+    /// comment records the sending device owns (see
+    /// [`collab_types::comment`]). The SDK signs it `Comment` rather than
+    /// `Splice`, so a Commenter may make their own comments discoverable;
+    /// every receiving SDK re-checks that shape before merging it
+    /// ([`crate::record::room::comment_references_only`]).
+    CommentReferences {
+        delta: Vec<u8>,
+    },
     /// Ask the broker to select one existing holder of this exact route as a
     /// snapshot responder. Safe to retry while no holder is available.
     RequestDocumentSnapshot,
@@ -927,6 +936,16 @@ impl CollaborationManager {
     /// event loop to keep ticking so the stream drains promptly.
     pub(crate) fn primary_route(&self) -> Option<&PrimaryRouteWitness> {
         self.primary_route.current(self.is_connected())
+    }
+
+    /// The device key this manager's document envelopes are signed with,
+    /// once the connection has its identity. A comment record is owned by
+    /// this key ([`crate::record::RecordId::for_comment`]).
+    pub fn document_author(&self) -> Option<[u8; 32]> {
+        match &self.backend {
+            Backend::Disabled(_) => None,
+            Backend::Transport(transport) => transport.document_author(),
+        }
     }
 
     /// Whether requests currently reach peers: [`Self::state`] is

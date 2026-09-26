@@ -225,6 +225,10 @@ impl CollabTransport for BrokerTransport {
         self.enqueue(command)
     }
 
+    fn document_author(&self) -> Option<[u8; 32]> {
+        self.state.document_author.get().copied()
+    }
+
     fn drain(&mut self, out: &mut Vec<CollabEvent>) {
         self.state.begin_poll();
         if !self.wifi_bridge_registered
@@ -312,6 +316,8 @@ impl SdkCommand {
         match self {
             Self::Primary(CollabRequest::Document { mutation })
             | Self::ToRoute(_, CollabRequest::Document { mutation }) => Some(mutation.data().len()),
+            Self::Primary(CollabRequest::CommentReferences { delta })
+            | Self::ToRoute(_, CollabRequest::CommentReferences { delta }) => Some(delta.len()),
             _ => None,
         }
     }
@@ -327,6 +333,11 @@ impl SdkCommand {
                     data.shrink_to_fit();
                 }
             }
+        }
+        if let Self::Primary(CollabRequest::CommentReferences { delta })
+        | Self::ToRoute(_, CollabRequest::CommentReferences { delta }) = self
+        {
+            delta.shrink_to_fit();
         }
     }
 
@@ -473,6 +484,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
                 meter.bytes(data);
             }
         },
+        CollabRequest::CommentReferences { delta } => meter.bytes(delta),
         CollabRequest::SignedOperation { envelope } => meter.bytes(&envelope.payload),
         CollabRequest::Presence { key, payload } => {
             serialized_bytes(key, &mut meter);
@@ -831,6 +843,9 @@ struct BridgeState {
     /// How far the shovel has got establishing the session. Written by the
     /// shovel, read by the owner through [`CollabTransport::status`].
     connect: Arc<std::sync::Mutex<ConnectPhase>>,
+    /// The device key document envelopes are signed with, once the shovel
+    /// has its identity. Owners use it to name comment records they own.
+    document_author: Arc<std::sync::OnceLock<[u8; 32]>>,
 }
 
 /// Progress of the shovel's connection setup.
@@ -926,6 +941,7 @@ impl BridgeState {
             owner_wake: crate::wake::WakeHandle::new(),
             wake_pending: Arc::new(AtomicBool::new(false)),
             connect: Arc::new(std::sync::Mutex::new(ConnectPhase::Connecting)),
+            document_author: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -2299,6 +2315,9 @@ fn run_shovel(
                 return;
             }
         };
+        let _ = state
+            .document_author
+            .set(signer_public_key(&identity.signer));
         // The transport is ready. The manager's primary Hello and its
         // `PrimaryReady` barrier are the first commands the shovel serves.
         report_init(&state, &init_tx, InitStatus::Ready);
@@ -2923,6 +2942,7 @@ async fn send_document_mutation(
     route: &SdkRoute,
     signer: &mut LocalSdkDocumentSigner,
     mutation: collab_types::DocumentMutation,
+    op_class: collab_types::OpClass,
     bridge_state: &BridgeState,
 ) -> bool {
     let frames = match mutation.encode_frames() {
@@ -2936,7 +2956,7 @@ async fn send_document_mutation(
     };
     let count = frames.len();
     for (index, frame) in frames.into_iter().enumerate() {
-        if !send_document_frame(route, signer, frame, bridge_state).await {
+        if !send_document_frame(route, signer, frame, op_class, bridge_state).await {
             if count > 1 {
                 tracing::warn!(
                     segment = index,
@@ -2950,8 +2970,8 @@ async fn send_document_mutation(
     true
 }
 
-/// Encrypt (on MLS routes), sign and send one typed document frame.
-/// Returns whether the broker accepted it.
+/// Encrypt (on MLS routes), sign as `op_class` and send one typed document
+/// frame. Returns whether the broker accepted it.
 #[allow(
     clippy::future_not_send,
     reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet"
@@ -2960,6 +2980,7 @@ async fn send_document_frame(
     route: &SdkRoute,
     signer: &mut LocalSdkDocumentSigner,
     cleartext: Vec<u8>,
+    op_class: collab_types::OpClass,
     bridge_state: &BridgeState,
 ) -> bool {
     let workspace_id = route.spec.cluster_id.to_string();
@@ -2971,16 +2992,7 @@ async fn send_document_frame(
         return false;
     };
     let now = crate::time::wall();
-    let author = match signer {
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
-            identity.signing_public_key()
-        }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key)) => {
-            key.verifying_key().to_bytes()
-        }
-        LocalSdkDocumentSigner::Host(identity) => identity.signing_public_key(),
-    };
-    let author = collab_types::Ed25519PublicKey::from_bytes(author);
+    let author = collab_types::Ed25519PublicKey::from_bytes(signer_public_key(signer));
     let attestation =
         collab_types::document_attestation_id(&route.spec.app_id, &workspace_id, record_id);
     let seq = next_certified_document_seq(now);
@@ -2990,20 +3002,12 @@ async fn send_document_frame(
             artifact,
             author,
             attestation,
-            collab_types::OpClass::Splice,
+            op_class,
             now,
             seq,
             metadata,
         ),
-        None => SignedOp::new_unsigned(
-            payload,
-            artifact,
-            author,
-            attestation,
-            collab_types::OpClass::Splice,
-            now,
-            seq,
-        ),
+        None => SignedOp::new_unsigned(payload, artifact, author, attestation, op_class, now, seq),
     };
     let unsigned_op = match postcard::to_stdvec(&op) {
         Ok(bytes) => bytes,
@@ -3066,6 +3070,19 @@ async fn send_document_frame(
             tracing::warn!(%error, "collab: signed document envelope would not encode; dropping");
             false
         }
+    }
+}
+
+/// The device key a document signer signs envelopes with.
+fn signer_public_key(signer: &LocalSdkDocumentSigner) -> [u8; 32] {
+    match signer {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
+            identity.signing_public_key()
+        }
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key)) => {
+            key.verifying_key().to_bytes()
+        }
+        LocalSdkDocumentSigner::Host(identity) => identity.signing_public_key(),
     }
 }
 
@@ -3343,7 +3360,26 @@ async fn dispatch_sdk_request(
             }
         }
         CollabRequest::Document { mutation } => {
-            return send_document_mutation(route, signer, mutation, &inbound_tx.state).await;
+            let class = collab_types::document_op_class_for_record(
+                route.spec.record.as_deref().unwrap_or(""),
+            );
+            return send_document_mutation(route, signer, mutation, class, &inbound_tx.state).await;
+        }
+        CollabRequest::CommentReferences { delta } => {
+            // Only the room index takes comment references; on any other
+            // route the class would be refused by every receiver anyway.
+            if route.spec.record.is_some() {
+                tracing::warn!("collab: comment references belong on the room route; dropping");
+                return true;
+            }
+            return send_document_mutation(
+                route,
+                signer,
+                DocumentMutation::Incremental(delta),
+                collab_types::OpClass::Comment,
+                &inbound_tx.state,
+            )
+            .await;
         }
         CollabRequest::RequestDocumentSnapshot => {
             let _ = route.channel.request_document_snapshot().await;

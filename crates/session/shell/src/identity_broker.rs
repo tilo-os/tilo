@@ -242,8 +242,9 @@ fn sign_collaboration_join(bound_room: &RoomId, workspace_id: &str) -> Response 
 /// Validate the entire unsigned document envelope before lending it the
 /// certified device signature. The app cannot turn this into a generic
 /// signing oracle: workspace/app are fixed by the launch handshake, artifact
-/// and attestation ids are route-derived, and only typed `Splice` document
-/// payloads pass.
+/// and attestation ids are route-derived, only typed document payloads pass,
+/// and the op class must fit the route (`Comment` only on the author's own
+/// comment record or the room index; see [`collab_types::comment`]).
 #[allow(
     clippy::too_many_arguments,
     reason = "each argument is an independently authenticated boundary value: live tree, bound workspace/app, requested route, and opaque envelope"
@@ -335,7 +336,9 @@ fn sign_collaboration_op(
         );
         let role_allows = role_permits(role, ArtifactKind::Note, op.op_class);
         drop(tree);
-        decision == CapDecision::Allow && role_allows
+        decision == CapDecision::Allow
+            && role_allows
+            && collab_types::check_document_route(record_id, op.op_class, &author).is_ok()
     };
     if !allowed {
         return Response::Denied("workspace role or capability denies this document action".into());
@@ -673,7 +676,28 @@ mod tests {
             .encode()
             .expect("typed comment mutation");
         op.op_class = collab_types::OpClass::Comment;
-        let comment = postcard::to_stdvec(&op).expect("comment envelope");
+        let labelled = postcard::to_stdvec(&op).expect("comment-labelled envelope");
+        assert!(
+            matches!(
+                sign_collaboration_op(
+                    &tree,
+                    &room,
+                    app_id,
+                    &workspace_id,
+                    app_id,
+                    record_id,
+                    &labelled,
+                ),
+                Response::Denied(_)
+            ),
+            "a commenter's edit to an ordinary record is not a comment by label"
+        );
+        let comment_record =
+            collab_types::comment_record_id(&author, "m1", record_id).expect("comment record id");
+        let mut own = op.clone();
+        own.artifact = document_artifact_id(app_id, &workspace_id, &comment_record);
+        own.attestation_id = document_attestation_id(app_id, &workspace_id, &comment_record);
+        let comment = postcard::to_stdvec(&own).expect("comment envelope");
         assert!(matches!(
             sign_collaboration_op(
                 &tree,
@@ -681,11 +705,35 @@ mod tests {
                 app_id,
                 &workspace_id,
                 app_id,
-                record_id,
+                &comment_record,
                 &comment,
             ),
             Response::Signature(_)
         ));
+        let foreign_record = collab_types::comment_record_id(
+            &Ed25519PublicKey::from_bytes([0x5A; 32]),
+            "m1",
+            record_id,
+        )
+        .expect("comment record id");
+        let mut foreign = op;
+        foreign.artifact = document_artifact_id(app_id, &workspace_id, &foreign_record);
+        foreign.attestation_id = document_attestation_id(app_id, &workspace_id, &foreign_record);
+        assert!(
+            matches!(
+                sign_collaboration_op(
+                    &tree,
+                    &room,
+                    app_id,
+                    &workspace_id,
+                    app_id,
+                    &foreign_record,
+                    &postcard::to_stdvec(&foreign).expect("foreign comment envelope"),
+                ),
+                Response::Denied(_)
+            ),
+            "another device's comment record is not this device's to sign"
+        );
         assert!(matches!(
             sign_collaboration_op(
                 &tree,
@@ -714,7 +762,7 @@ mod tests {
                 app_id,
                 &workspace_id,
                 app_id,
-                record_id,
+                &comment_record,
                 &comment,
             ),
             Response::Denied(reason) if reason.contains("denies this document action")

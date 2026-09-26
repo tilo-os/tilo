@@ -61,6 +61,7 @@
 pub mod canonical;
 pub mod caps;
 pub mod channel;
+pub mod comment;
 pub mod compaction;
 pub mod crypto;
 pub mod document_transfer;
@@ -94,6 +95,10 @@ pub use caps::{
 pub use channel::{
     Artifact, ArtifactId, ArtifactRef, Channel, ChannelId, ChannelRef, ChannelSettingsDelta,
     DocumentHandle, MemberRef,
+};
+pub use comment::{
+    COMMENT_RECORD_PREFIX, CommentRecord, CommentRouteError, check_document_route,
+    comment_record_id, document_op_class_for_record, is_comment_record_of, parse_comment_record,
 };
 pub use compaction::{
     CompactionCheckpoint, CompactionError, encode_compaction_payload, hash_op_prefix,

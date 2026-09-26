@@ -94,24 +94,34 @@ takes:
   declared permission requirement — `Read`, `Comment`, `Write`, `Invite` or
   `Admin` — and the caller's live capabilities.
 - **Replicated app documents are checked only as a whole.** The SDK signs every
-  document change, snapshot or incremental and whatever action produced it, as
-  `OpClass::Splice`, which requires `Write`. The identity service checks the
-  role table and live capability restrictions before signing, and every broker
-  checks them again on receipt. Owners and Editors can therefore change any
-  part of an app document; Commenters and Viewers can change none of it, so a
-  comment stored inside an app document is refused for a Commenter; and an
-  Editor is not limited to particular actions.
+  change to an app document, snapshot or incremental and whatever action
+  produced it, as `OpClass::Splice`, which requires `Write`. The identity
+  service checks the role table and live capability restrictions before
+  signing, and every broker checks them again on receipt. Owners and Editors
+  can therefore change any part of an app document; Commenters and Viewers can
+  change none of it; and an Editor is not limited to particular actions.
+- **Comments are records with one writer.** A Commenter's message, reply or
+  reaction is its own record, `comment:<device key>:<local>@<parent record>`
+  (`collab_types::comment`). Its changes are signed `OpClass::Comment`, which
+  the role table grants to Commenters, and the signer, every broker and every
+  receiving SDK accept them only from the device the id names. A `Comment` op on
+  any other record is refused, so labelling an edit as a comment gains nothing.
+  Nobody appends into someone else's comment: a reply is the replier's own
+  record whose parent is the comment.
+- **The room index takes one kind of comment change.** A comment is found
+  through the app's room index (`ui::record::room::comments_on`). The one index
+  change signed `Comment` adds entries naming comment records the signer owns.
+  Brokers hold no document, so they check only the role. The receiving SDK
+  checks the shape: it replays the change's operations against its index and
+  refuses anything else (`room::comment_references_only`).
 - **Governance, compaction and redaction operations** are signed with their own
   classes, which the role table grants to the owner only.
 
-Per-action enforcement does not exist for replicated app state, and signing the
-action's declared class would not create it: the broker holds no Automerge
-document, the payload may be MLS ciphertext, and an Automerge change does not
-name the action that made it, so a Commenter could label any edit as a comment.
-Enforcing actions such as "commenters may add comments" needs structure the
-receiver can check — for example comments kept as their own records that
-accept only `Comment`-class changes. Until then, treat the app-document role
-split as write or no write.
+Beyond comments, per-action enforcement does not exist for replicated app
+state. Signing an action's declared class would not create it: the broker holds
+no Automerge document, the payload may be MLS ciphertext, and an Automerge
+change does not name the action that made it. What makes comments enforceable
+is structure a receiver can check, the owned record id, not the label.
 
 Publishing a surface stream, granting or injecting remote control, and room
 state responses likewise require `Write`; passive presence, requests, and

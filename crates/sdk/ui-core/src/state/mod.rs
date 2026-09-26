@@ -131,6 +131,14 @@ impl DocumentReplica {
         self.outbound.advance(heads);
     }
 
+    /// Whether everything pending since the outbound frontier only adds
+    /// room-index entries for comment records `author` owns, so it may be
+    /// signed `Comment` (see [`crate::record::room::comment_references_only`]).
+    pub fn pending_outbound_is_comment_references(&mut self, author: &[u8; 32]) -> bool {
+        let since = self.outbound.heads().to_vec();
+        crate::record::room::local_changes_are_comment_references(&mut self.doc, &since, author)
+    }
+
     /// Apply incremental Automerge bytes and retain them in the outbound frontier.
     ///
     /// # Errors

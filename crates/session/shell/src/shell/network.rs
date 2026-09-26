@@ -5725,6 +5725,12 @@ impl ShellNetwork {
         let required = collab_types::caps::verb_for_opclass(envelope.op_class);
         let allowed =
             collab_types::role_permits(role, collab_types::ArtifactKind::Note, envelope.op_class)
+                && collab_types::check_document_route(
+                    record_id,
+                    envelope.op_class,
+                    &envelope.author,
+                )
+                .is_ok()
                 && workspace.allows(&actor, &resource, required);
         drop(tree);
         allowed.then_some(role)
@@ -8605,18 +8611,90 @@ mod tests {
         ));
         drop(tree);
         drop(replica);
-        let mut comment = envelope.clone();
-        comment.op_class = collab_types::OpClass::Comment;
-        collab_types::sign_op(&mut comment, &signing).expect("signed comment");
+        let mut labelled = envelope.clone();
+        labelled.op_class = collab_types::OpClass::Comment;
+        collab_types::sign_op(&mut labelled, &signing).expect("signed comment label");
         assert_eq!(
             net.peer_document_role(
                 &origin,
                 &route.cluster_id,
                 &route.app_id,
                 &route.record_id,
+                &labelled,
+            ),
+            None,
+            "a commenter must not label an edit to an ordinary record as a comment",
+        );
+        let own_record = collab_types::comment_record_id(
+            &collab_types::Ed25519PublicKey::from_bytes(signing.verifying_key().to_bytes()),
+            "m1",
+            "uuid:6c0a1a52-9f55-4d4c-9a0e-2f4a7d2f0c11",
+        )
+        .expect("comment record id");
+        let comment_route = crate::shell::collab_broker::CrdtRoute::record(
+            "so.tilo.notes",
+            room.to_string(),
+            own_record,
+        );
+        let mut comment = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Incremental(b"comment".to_vec())
+                .encode()
+                .expect("typed mutation"),
+            collab_types::document_artifact_id(
+                &comment_route.app_id,
+                &comment_route.cluster_id,
+                &comment_route.record_id,
+            ),
+            collab_types::Ed25519PublicKey::from_bytes(signing.verifying_key().to_bytes()),
+            collab_types::document_attestation_id(
+                &comment_route.app_id,
+                &comment_route.cluster_id,
+                &comment_route.record_id,
+            ),
+            collab_types::OpClass::Comment,
+            std::time::SystemTime::now(),
+            2,
+        );
+        collab_types::sign_op(&mut comment, &signing).expect("signed comment");
+        assert_eq!(
+            net.peer_document_role(
+                &origin,
+                &comment_route.cluster_id,
+                &comment_route.app_id,
+                &comment_route.record_id,
                 &comment,
             ),
             Some(collab_types::Role::Commenter),
+            "a commenter writes the comment record their own device owns",
+        );
+        let others = collab_types::comment_record_id(
+            &collab_types::Ed25519PublicKey::from_bytes([0x5A; 32]),
+            "m1",
+            "uuid:6c0a1a52-9f55-4d4c-9a0e-2f4a7d2f0c11",
+        )
+        .expect("comment record id");
+        let mut foreign = comment.clone();
+        foreign.artifact = collab_types::document_artifact_id(
+            &comment_route.app_id,
+            &comment_route.cluster_id,
+            &others,
+        );
+        foreign.attestation_id = collab_types::document_attestation_id(
+            &comment_route.app_id,
+            &comment_route.cluster_id,
+            &others,
+        );
+        collab_types::sign_op(&mut foreign, &signing).expect("signed foreign comment");
+        assert_eq!(
+            net.peer_document_role(
+                &origin,
+                &comment_route.cluster_id,
+                &comment_route.app_id,
+                &others,
+                &foreign,
+            ),
+            None,
+            "a commenter must not write another device's comment record",
         );
         assert_eq!(
             net.peer_document_role(
@@ -8659,9 +8737,9 @@ mod tests {
         assert_eq!(
             net.peer_document_role(
                 &origin,
-                &route.cluster_id,
-                &route.app_id,
-                &route.record_id,
+                &comment_route.cluster_id,
+                &comment_route.app_id,
+                &comment_route.record_id,
                 &comment,
             ),
             None,

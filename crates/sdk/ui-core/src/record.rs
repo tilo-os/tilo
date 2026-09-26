@@ -45,6 +45,10 @@ const FORMERLY: &str = "formerly";
 /// to allocate one local document per entry.
 pub const MAX_DISCOVERED_ROOM_RECORDS: usize = 64;
 const MAX_ROOM_INDEX_KEYS_SCANNED: usize = MAX_DISCOVERED_ROOM_RECORDS * 4;
+/// Upper bound for the comment names one listing returns. Names are cheap —
+/// nothing is opened — but a public room's index is written by everyone.
+pub const MAX_LISTED_COMMENTS: usize = 4096;
+const MAX_COMMENT_INDEX_KEYS_SCANNED: usize = MAX_LISTED_COMMENTS * 4;
 const MAX_RECORD_ID_BYTES: usize = 1024;
 const MAX_RECORD_KIND_BYTES: usize = 64;
 const MAX_RECORD_RELATION_BYTES: usize = 64;
@@ -59,8 +63,10 @@ const MAX_FORMER_IDS: usize = 8;
 /// file known only by where it is: a not-yet-written Save As target, or a
 /// filesystem that can't hold the durable id), `uuid:<uuid>` (minted, for a
 /// record with no natural name), `tab:<tab id>` (a window's scratch document
-/// until a file names it, see [`RecordId::for_tab`]) and
-/// `derived:<role>@<id>` (see [`RecordId::derived`]).
+/// until a file names it, see [`RecordId::for_tab`]),
+/// `derived:<role>@<id>` (see [`RecordId::derived`]) and
+/// `comment:<device>:<local>@<id>` (a record with one writer, see
+/// [`RecordId::for_comment`]).
 ///
 /// ## Files
 ///
@@ -155,6 +161,32 @@ impl RecordId {
         Self(format!("derived:{role}@{}", of.0))
     }
 
+    /// The comment record `author_device` owns on `parent` — a message,
+    /// reply or reaction. Only that device may write it, and its changes
+    /// are signed `Comment`, so a Commenter can create it (see
+    /// [`collab_types::comment`]). `local` tells one author's comments on
+    /// the same parent apart: 1–64 of `[A-Za-z0-9_-]`. Others respond with
+    /// their own comment records whose parent is this one.
+    pub fn for_comment(author_device: [u8; 32], local: &str, parent: &RecordId) -> Option<Self> {
+        collab_types::comment_record_id(
+            &collab_types::Ed25519PublicKey::from_bytes(author_device),
+            local,
+            parent.as_str(),
+        )
+        .and_then(|id| Self::parse(&id))
+    }
+
+    /// The device that owns this comment record, if it is one.
+    pub fn comment_author(&self) -> Option<[u8; 32]> {
+        collab_types::parse_comment_record(&self.0).map(|comment| *comment.author.as_bytes())
+    }
+
+    /// The record this comment record is about, if it is one.
+    pub fn comment_parent(&self) -> Option<RecordId> {
+        collab_types::parse_comment_record(&self.0)
+            .and_then(|comment| RecordId::parse(comment.parent))
+    }
+
     /// Adopt an id read back from a document, a room index, or the wire.
     /// Invalid, oversized, or non-canonical names fail closed: IDs name
     /// collaboration routes and storage directories, so accepting arbitrary
@@ -219,6 +251,13 @@ fn valid_record_id(s: &str, depth: usize) -> bool {
     }
     if let Some(tab) = s.strip_prefix("tab:") {
         return tab.len() == 16 && tab.bytes().all(|c| c.is_ascii_hexdigit());
+    }
+    if s.starts_with(collab_types::COMMENT_RECORD_PREFIX) {
+        return collab_types::parse_comment_record(s).is_some_and(|comment| {
+            depth
+                .checked_add(1)
+                .is_some_and(|next| valid_record_id(comment.parent, next))
+        });
     }
     let Some(derived) = s.strip_prefix("derived:") else {
         return false;
@@ -873,8 +912,9 @@ pub fn blob_references(doc: &AutoCommit) -> Vec<BlobRef> {
 /// flowing; it cannot un-share bytes a peer already synced.
 pub mod room {
     use super::{
-        AutoCommit, INDEX, ObjId, ObjType, ROOT, ReadDoc, RecordCheckout, RecordId, RecordKind,
-        RecordSet, Transactable, Value, str_at,
+        AutoCommit, INDEX, MAX_COMMENT_INDEX_KEYS_SCANNED, MAX_LISTED_COMMENTS, ObjId, ObjType,
+        ROOT, ReadDoc, RecordCheckout, RecordId, RecordKind, RecordSet, Transactable, Value,
+        str_at,
     };
 
     /// `None` only if `put_object` on the document root itself fails, which
@@ -1014,6 +1054,137 @@ pub mod room {
                 })
             })
             .collect()
+    }
+
+    /// Comment records on `parent` this room references, oldest id first.
+    /// Reads names only; opening one is the caller's explicit checkout. Scans
+    /// at most [`MAX_COMMENT_INDEX_KEYS_SCANNED`] index keys and returns at
+    /// most [`MAX_LISTED_COMMENTS`].
+    pub fn comments_on(doc: &AutoCommit, parent: &RecordId) -> Vec<RecordCheckout> {
+        let Some(idx) = index_ro(doc) else {
+            return Vec::new();
+        };
+        let mut out: Vec<RecordCheckout> = doc
+            .keys(&idx)
+            .take(MAX_COMMENT_INDEX_KEYS_SCANNED)
+            .filter(|key| key.starts_with(collab_types::COMMENT_RECORD_PREFIX))
+            .filter_map(|key| {
+                let id = RecordId::parse(&key)?;
+                if id.comment_parent().as_ref() != Some(parent) {
+                    return None;
+                }
+                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&idx, key.as_str())
+                else {
+                    return None;
+                };
+                let kind = RecordKind::new(str_at(doc, &entry, "kind")?);
+                let checkout = RecordCheckout::new(id, kind);
+                checkout.is_valid().then_some(checkout)
+            })
+            .collect();
+        out.sort();
+        out.truncate(MAX_LISTED_COMMENTS);
+        out
+    }
+
+    /// Whether the incremental change `delta`, applied to `index`, does
+    /// nothing but add index entries for comment records `author` owns —
+    /// the only room-index change a `Comment`-class envelope may carry.
+    ///
+    /// The check reads the change's operations, not the resulting state, so
+    /// an operation hidden by a concurrent conflict cannot slip through. An
+    /// allowed change makes an entry map under the existing index keyed by
+    /// the author's comment record, and puts a string `kind` in a map that
+    /// the same change made. Anything else — another key, another object, a
+    /// delete, a change whose dependencies are missing — is refused. `index`
+    /// is left untouched.
+    pub fn comment_references_only(index: &AutoCommit, delta: &[u8], author: &[u8; 32]) -> bool {
+        let Some(index_obj) = index_ro(index) else {
+            // Commenters never create the index: two concurrent creations
+            // would conflict and one would hide the other's entries.
+            return false;
+        };
+        let mut after = index.clone();
+        let before_heads = after.get_heads();
+        let missing_before = after.get_missing_deps(&[]).len();
+        if tilo_automerge::ApplyIncoming::load_incoming(&mut after, delta).is_err()
+            || after.get_missing_deps(&[]).len() != missing_before
+        {
+            return false;
+        }
+        changes_are_comment_references(&index_obj, &after.get_changes(&before_heads), author)
+    }
+
+    /// Whether this document's changes after `since` do nothing but add index
+    /// entries for comment records `author` owns — how an SDK decides to sign
+    /// its own pending room-index delta `Comment` rather than `Splice`.
+    pub fn local_changes_are_comment_references(
+        index: &mut AutoCommit,
+        since: &[automerge::ChangeHash],
+        author: &[u8; 32],
+    ) -> bool {
+        let Some(index_obj) = index_ro(index) else {
+            return false;
+        };
+        let changes = index.get_changes(since);
+        changes_are_comment_references(&index_obj, &changes, author)
+    }
+
+    fn changes_are_comment_references(
+        index_obj: &ObjId,
+        changes: &[automerge::Change],
+        author: &[u8; 32],
+    ) -> bool {
+        use automerge::legacy::{Key, ObjectId, OpType};
+
+        let ObjId::Id(index_counter, index_actor, _) = index_obj else {
+            return false;
+        };
+        let author = collab_types::Ed25519PublicKey::from_bytes(*author);
+        if changes.is_empty() {
+            return false;
+        }
+        for change in changes {
+            let change = change.decode();
+            let start = change.start_op.get();
+            let mut made_entries: Vec<u64> = Vec::new();
+            for (offset, op) in change.operations.iter().enumerate() {
+                let Some(counter) = u64::try_from(offset)
+                    .ok()
+                    .and_then(|offset| start.checked_add(offset))
+                else {
+                    return false;
+                };
+                if op.insert {
+                    return false;
+                }
+                let allowed = match (&op.obj, &op.key, &op.action) {
+                    (ObjectId::Id(obj), Key::Map(key), OpType::Make(ObjType::Map))
+                        if obj.counter() == *index_counter
+                            && obj.actor() == index_actor
+                            && collab_types::is_comment_record_of(key.as_str(), &author) =>
+                    {
+                        made_entries.push(counter);
+                        true
+                    }
+                    (
+                        ObjectId::Id(obj),
+                        Key::Map(key),
+                        OpType::Put(automerge::ScalarValue::Str(kind)),
+                    ) => {
+                        key.as_str() == "kind"
+                            && *obj.actor() == change.actor_id
+                            && made_entries.contains(&obj.counter())
+                            && RecordKind::new(kind.to_string()).is_valid()
+                    }
+                    _ => false,
+                };
+                if !allowed {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     /// Copy, the explicit verb: mints a new record id rather than reusing
@@ -2995,6 +3166,122 @@ mod tests {
 
     fn put_text(doc: &mut AutoCommit, key: &str, value: &str) {
         let _ = doc.put(&ROOT, key, value);
+    }
+
+    /// A room index an editor created, and a commenter's replica of it.
+    fn shared_index() -> (AutoCommit, AutoCommit, RecordId) {
+        let mut owner = AutoCommit::new();
+        let channel = RecordId::minted();
+        assert!(room::reference(
+            &mut owner,
+            &channel,
+            &RecordKind::new("chat.channel")
+        ));
+        let commenter = owner.fork();
+        (owner, commenter, channel)
+    }
+
+    fn delta_since(index: &mut AutoCommit, replica: &mut AutoCommit) -> Vec<u8> {
+        replica.save_after(&index.get_heads())
+    }
+
+    #[test]
+    fn a_comment_id_names_its_author_and_parent() {
+        let channel = RecordId::minted();
+        let id = RecordId::for_comment([7; 32], "m1", &channel).expect("comment id");
+        assert_eq!(RecordId::parse(id.as_str()), Some(id.clone()));
+        assert_eq!(id.comment_author(), Some([7; 32]));
+        assert_eq!(id.comment_parent(), Some(channel.clone()));
+        assert!(RecordId::for_comment([7; 32], "bad local", &channel).is_none());
+        // The parent must itself be a record id.
+        let bogus = format!("comment:{}:m1@not-a-record", "07".repeat(32));
+        assert!(RecordId::parse(&bogus).is_none());
+    }
+
+    #[test]
+    fn a_commenter_may_add_only_their_own_comment_references() {
+        let me = [3; 32];
+        let (mut index, mut replica, channel) = shared_index();
+        let mine = RecordId::for_comment(me, "m1", &channel).unwrap();
+        let kind = RecordKind::new("chat.message");
+        assert!(room::reference(&mut replica, &mine, &kind));
+        let delta = delta_since(&mut index, &mut replica);
+        assert!(room::comment_references_only(&index, &delta, &me));
+        // The same delta signed by anyone else is not theirs to send.
+        assert!(!room::comment_references_only(&index, &delta, &[4; 32]));
+        // The sender reaches the same verdict from its own document.
+        let frontier = index.get_heads();
+        assert!(room::local_changes_are_comment_references(
+            &mut replica,
+            &frontier,
+            &me
+        ));
+        tilo_automerge::ApplyIncoming::load_incoming(&mut index, &delta).unwrap();
+        assert_eq!(
+            room::comments_on(&index, &channel),
+            vec![RecordCheckout::new(mine, kind)]
+        );
+    }
+
+    #[test]
+    fn a_comment_class_index_change_may_not_touch_anything_else() {
+        let me = [3; 32];
+        let (mut index, _, channel) = shared_index();
+
+        // Referencing an ordinary record.
+        let mut replica = index.fork();
+        assert!(room::reference(
+            &mut replica,
+            &RecordId::minted(),
+            &RecordKind::new("note")
+        ));
+        let delta = delta_since(&mut index, &mut replica);
+        assert!(!room::comment_references_only(&index, &delta, &me));
+
+        // Referencing someone else's comment.
+        let mut replica = index.fork();
+        let theirs = RecordId::for_comment([4; 32], "m1", &channel).unwrap();
+        assert!(room::reference(
+            &mut replica,
+            &theirs,
+            &RecordKind::new("chat.message")
+        ));
+        let delta = delta_since(&mut index, &mut replica);
+        assert!(!room::comment_references_only(&index, &delta, &me));
+
+        // Removing an entry, even alongside an allowed addition.
+        let mut replica = index.fork();
+        let mine = RecordId::for_comment(me, "m2", &channel).unwrap();
+        assert!(room::reference(
+            &mut replica,
+            &mine,
+            &RecordKind::new("chat.message")
+        ));
+        assert!(room::unreference(&mut replica, &channel));
+        let delta = delta_since(&mut index, &mut replica);
+        assert!(!room::comment_references_only(&index, &delta, &me));
+
+        // Writing anywhere else in the document.
+        let mut replica = index.fork();
+        put_text(&mut replica, "title", "mine now");
+        let delta = delta_since(&mut index, &mut replica);
+        assert!(!room::comment_references_only(&index, &delta, &me));
+    }
+
+    #[test]
+    fn a_commenter_cannot_create_the_room_index() {
+        let me = [3; 32];
+        let mut empty = AutoCommit::new();
+        let mut replica = empty.fork();
+        let parent = RecordId::minted();
+        let mine = RecordId::for_comment(me, "m1", &parent).unwrap();
+        assert!(room::reference(
+            &mut replica,
+            &mine,
+            &RecordKind::new("chat.message")
+        ));
+        let delta = delta_since(&mut empty, &mut replica);
+        assert!(!room::comment_references_only(&empty, &delta, &me));
     }
 
     fn text(doc: &AutoCommit, key: &str) -> Option<String> {

@@ -229,7 +229,20 @@ impl App {
         if delta.is_empty() {
             return;
         }
-        let request = crate::collaboration::CollabRequest::document_incremental(delta);
+        // Adding only this device's own comment references is the one index
+        // change a Commenter may make; it travels `Comment`-class.
+        let author = self
+            .collaboration
+            .room_manager
+            .as_ref()
+            .unwrap_or(&self.collaboration.manager)
+            .document_author();
+        let request =
+            if author.is_some_and(|author| room.pending_outbound_is_comment_references(&author)) {
+                crate::collaboration::CollabRequest::CommentReferences { delta }
+            } else {
+                crate::collaboration::CollabRequest::document_incremental(delta)
+            };
         let result = if let Some(manager) = self.collaboration.room_manager.as_mut() {
             if !manager.is_connected() {
                 return;
@@ -384,9 +397,27 @@ impl App {
         let Some(room) = self.persistence.room_index.as_mut() else {
             return false;
         };
-        let applied = match collab_types::DocumentMutation::decode(
-            decrypted_payload.unwrap_or(&envelope.payload),
-        ) {
+        let mutation =
+            collab_types::DocumentMutation::decode(decrypted_payload.unwrap_or(&envelope.payload));
+        // A comment-class index change is admitted by brokers on class alone;
+        // its shape is checked here, where the index is held.
+        if envelope.op_class == collab_types::OpClass::Comment
+            && !matches!(
+                &mutation,
+                Ok(collab_types::DocumentMutation::Incremental(data))
+                    if crate::record::room::comment_references_only(
+                        room.document(),
+                        data,
+                        envelope.author.as_bytes(),
+                    )
+            )
+        {
+            tracing::warn!(
+                "collab: refused a comment-class room-index change that adds more than the author's own comment references"
+            );
+            return false;
+        }
+        let applied = match mutation {
             Ok(collab_types::DocumentMutation::Snapshot(data)) => {
                 room.merge_snapshot(&data).is_ok()
             }
@@ -498,6 +529,18 @@ impl App {
             self.publish_action_surface();
         }
         any
+    }
+
+    /// The device key this app signs document changes with, once connected:
+    /// the owner to name in [`crate::record::RecordId::for_comment`]. A
+    /// comment record owned by any other key is not this app's to write.
+    pub fn comment_author(&self) -> Option<[u8; 32]> {
+        self.collaboration.manager.document_author().or_else(|| {
+            self.collaboration
+                .room_manager
+                .as_ref()
+                .and_then(crate::collaboration::CollaborationManager::document_author)
+        })
     }
 
     /// Where the app's collaboration connection stands. Managers connect in
