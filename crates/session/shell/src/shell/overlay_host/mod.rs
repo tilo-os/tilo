@@ -45,6 +45,7 @@ pub use device_fabric::{
 use device_fabric::{
     DeviceFabricPaneRow, bluetooth_handoff_failure_label, device_fabric_pane_rows,
     display_mirror_failure_label, media_handoff_failure_label, remote_capture_kind_label,
+    sentence_case, speaker_group_summary,
 };
 #[cfg(test)]
 use history::notification_severity_label;
@@ -315,6 +316,7 @@ mod device_fabric_ui_tests {
                 }],
                 transfers: Vec::new(),
                 remote_audio: crate::shell::remote_audio::RemoteAudioView::default(),
+                speaker_groups: crate::shell::speaker_group_runtime::SpeakerGroupsView::default(),
                 device_health: Vec::new(),
                 calibration_proposals: Vec::new(),
                 revertible_calibrations: Vec::new(),
@@ -9660,6 +9662,7 @@ impl ShellOverlayHost {
                     rows.get(self.qs_device_fabric_start),
                     Some(
                         DeviceFabricPaneRow::RemoteAudioConsent(_)
+                            | DeviceFabricPaneRow::SpeakerConsent(_)
                             | DeviceFabricPaneRow::RemoteCaptureConsent(_)
                             | DeviceFabricPaneRow::DisplayMirrorConsent(_)
                             | DeviceFabricPaneRow::RealtimeConsent(_)
@@ -13555,6 +13558,59 @@ impl ShellOverlayHost {
                 }
                 return;
             }
+            DeviceFabricPaneRow::SpeakerConsent(consent) => {
+                let (allow, decline) =
+                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+                let approved = if allow.contains(point) {
+                    true
+                } else if decline.contains(point) {
+                    false
+                } else {
+                    return;
+                };
+                Some((
+                    DeviceFabricUiAction::ResolveSpeakerGroupConsent {
+                        group: consent.group,
+                        approved,
+                    },
+                    if approved {
+                        format!("Joined {} as the {}", consent.name, consent.role.describe())
+                    } else {
+                        format!("Declined to join {}", consent.name)
+                    },
+                ))
+            }
+            DeviceFabricPaneRow::SpeakerSession(session) => Some((
+                DeviceFabricUiAction::StopSpeakerGroupSession {
+                    session_id: session.session_id,
+                },
+                format!("Stopped playing on {}", session.name),
+            )),
+            DeviceFabricPaneRow::SpeakerGroup(group) if self.qs_selected_remote_audio.is_some() => {
+                Some((
+                    DeviceFabricUiAction::StartSpeakerGroupAudio {
+                        source_token: self.qs_selected_remote_audio.unwrap_or_default(),
+                        group: group.id,
+                    },
+                    format!("Playing on {}", group.name),
+                ))
+            }
+            DeviceFabricPaneRow::SpeakerGroup(group) if self.qs_selected_media.is_some() => Some((
+                DeviceFabricUiAction::PlayMediaOnSpeakerGroup {
+                    session_id: self.qs_selected_media.clone().unwrap_or_default(),
+                    group: group.id,
+                },
+                format!(
+                    "Playing on {}; the media keeps playing from here",
+                    group.name
+                ),
+            )),
+            DeviceFabricPaneRow::SpeakerMembership(membership) => Some((
+                DeviceFabricUiAction::LeaveSpeakerGroup {
+                    group: membership.group,
+                },
+                format!("This device left {}", membership.name),
+            )),
             DeviceFabricPaneRow::RemoteAudioRoute(route) => Some((
                 DeviceFabricUiAction::StopRemoteAudio {
                     session_id: route.session_id,
@@ -17399,6 +17455,46 @@ impl Widget for ShellOverlayHost {
                                                     .map_or("display", |item| item.label.as_str())
                                             ),
                                             "Restore the exact placement saved before calibration"
+                                                .into(),
+                                            Vec::new(),
+                                        ),
+                                        DeviceFabricPaneRow::SpeakerConsent(consent) => (
+                                            format!(
+                                                "Join {} as the {}",
+                                                consent.name,
+                                                consent.role.describe()
+                                            ),
+                                            format!(
+                                                "{} asked; you are asked once and can leave at any time",
+                                                consent.leader_label
+                                            ),
+                                            vec![
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Join this speaker group"),
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Decline this speaker group"),
+                                            ],
+                                        ),
+                                        DeviceFabricPaneRow::SpeakerSession(session) => (
+                                            format!("Playing on {}", session.name),
+                                            "Speaker group playback; activate to stop".into(),
+                                            Vec::new(),
+                                        ),
+                                        DeviceFabricPaneRow::SpeakerGroup(group) => (
+                                            group.name.clone(),
+                                            format!(
+                                                "Speaker group, {}; select a source first, then activate to play on it",
+                                                speaker_group_summary(&group)
+                                            ),
+                                            Vec::new(),
+                                        ),
+                                        DeviceFabricPaneRow::SpeakerMembership(membership) => (
+                                            format!(
+                                                "{} in {}",
+                                                sentence_case(membership.role.describe()),
+                                                membership.name
+                                            ),
+                                            "This device plays in this speaker group; activate to leave"
                                                 .into(),
                                             Vec::new(),
                                         ),
@@ -22990,6 +23086,62 @@ impl ShellOverlayHost {
                     false,
                     true,
                 ),
+                DeviceFabricPaneRow::SpeakerConsent(consent) => (
+                    format!("Join {} as the {}?", consent.name, consent.role.describe()),
+                    format!(
+                        "{} asked{} · asked once, leave any time",
+                        consent.leader_label,
+                        consent
+                            .output_label
+                            .as_ref()
+                            .map_or_else(String::new, |label| format!(" · plays on {label}"))
+                    ),
+                    ui::icons::Icon::Volume2,
+                    false,
+                    true,
+                ),
+                DeviceFabricPaneRow::SpeakerSession(session) => (
+                    format!("Playing on {}", session.name),
+                    if session.inbound {
+                        format!(
+                            "for {} · select to stop",
+                            session.peer_label.as_deref().unwrap_or("another device")
+                        )
+                    } else if session.waiting_members > 0 {
+                        format!(
+                            "{} playing, {} connecting · select to stop",
+                            session.playing_members, session.waiting_members
+                        )
+                    } else {
+                        format!(
+                            "{} speakers playing · select to stop",
+                            session.playing_members
+                        )
+                    },
+                    ui::icons::Icon::Volume2,
+                    true,
+                    true,
+                ),
+                DeviceFabricPaneRow::SpeakerGroup(group) => (
+                    group.name.clone(),
+                    speaker_group_summary(group),
+                    ui::icons::Icon::Volume2,
+                    false,
+                    group.ready_members() > 0
+                        && (self.qs_selected_remote_audio.is_some()
+                            || self.qs_selected_media.is_some()),
+                ),
+                DeviceFabricPaneRow::SpeakerMembership(membership) => (
+                    format!(
+                        "{} in {}",
+                        sentence_case(membership.role.describe()),
+                        membership.name
+                    ),
+                    format!("set up on {} · select to leave", membership.leader_label),
+                    ui::icons::Icon::Volume2,
+                    false,
+                    true,
+                ),
                 DeviceFabricPaneRow::RemoteAudioConsent(consent) => {
                     let source_label = view
                         .devices
@@ -23443,6 +23595,7 @@ impl ShellOverlayHost {
                     DeviceFabricPaneRow::Device(_)
                         | DeviceFabricPaneRow::CalibrationProposal(_)
                         | DeviceFabricPaneRow::RemoteAudioConsent(_)
+                        | DeviceFabricPaneRow::SpeakerConsent(_)
                         | DeviceFabricPaneRow::RemoteCaptureConsent(_)
                         | DeviceFabricPaneRow::DisplayMirrorConsent(_)
                         | DeviceFabricPaneRow::RealtimeConsent(_)
@@ -23495,6 +23648,7 @@ impl ShellOverlayHost {
                     item,
                     DeviceFabricPaneRow::CalibrationProposal(_)
                         | DeviceFabricPaneRow::RemoteAudioConsent(_)
+                        | DeviceFabricPaneRow::SpeakerConsent(_)
                         | DeviceFabricPaneRow::RemoteCaptureConsent(_)
                         | DeviceFabricPaneRow::DisplayMirrorConsent(_)
                         | DeviceFabricPaneRow::RealtimeConsent(_)
@@ -23518,6 +23672,7 @@ impl ShellOverlayHost {
                             DeviceFabricPaneRow::RemoteAudioConsent(_) => {
                                 "Allow this remote audio once"
                             }
+                            DeviceFabricPaneRow::SpeakerConsent(_) => "Join this speaker group",
                             DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
                                 "Allow this remote input once"
                             }
@@ -23550,6 +23705,7 @@ impl ShellOverlayHost {
                             DeviceFabricPaneRow::RemoteAudioConsent(_) => {
                                 "Decline this remote audio"
                             }
+                            DeviceFabricPaneRow::SpeakerConsent(_) => "Decline this speaker group",
                             DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
                                 "Decline this remote input"
                             }

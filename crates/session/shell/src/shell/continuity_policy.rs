@@ -128,6 +128,12 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::RemoteAudioStop { .. }
             | PersonalFabricAction::RemoteAudioKeepalive { .. }
             | PersonalFabricAction::RemoteAudioCancel { .. }
+            | PersonalFabricAction::SpeakerGroupInvite { .. }
+            | PersonalFabricAction::SpeakerGroupDecision { .. }
+            | PersonalFabricAction::SpeakerGroupLeave { .. }
+            | PersonalFabricAction::SpeakerGroupSessionOffer { .. }
+            | PersonalFabricAction::SpeakerGroupSessionDecision { .. }
+            | PersonalFabricAction::SpeakerGroupSessionStop { .. }
             | PersonalFabricAction::RemoteCaptureSignal { .. }
             | PersonalFabricAction::RemoteCaptureChunk { .. }
             | PersonalFabricAction::BluetoothHandoffPrepare { .. }
