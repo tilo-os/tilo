@@ -260,6 +260,9 @@ pub struct DrmDispatchState {
     /// The capability snapshot last published for Settings, kept so
     /// output-management heads never force-probe connectors themselves.
     pub display_capabilities: Vec<settings_store::hardware::DisplayOutputSnapshot>,
+    /// The built-in panel's orientation from the accelerometer, overriding
+    /// its configured transform while set. `None` on machines without one.
+    pub device_rotation: Option<settings_store::hardware::OutputTransform>,
     /// Current pointer position in scene coordinates (physical pixels of
     /// the combined texture): where the cursor is drawn and what the shell
     /// hit-tests. Always derived from [`Self::logical_pointer`].
@@ -862,6 +865,7 @@ impl DrmDispatchState {
             outputs_changed: false,
             output_meta: HashMap::new(),
             display_capabilities: Vec::new(),
+            device_rotation: None,
             pointer: (0.0, 0.0),
             logical_pointer: (0.0, 0.0),
             output_size: (0, 0),
@@ -1239,6 +1243,13 @@ impl DrmDispatchState {
                 .map_or(settings_store::hardware::OutputTransform::Normal, |c| {
                     c.transform
                 });
+            // The accelerometer is in the built-in panel's lid: its reading
+            // turns that panel and never an external monitor.
+            if let Some(rotation) = self.device_rotation
+                && is_builtin_connector(&entry.connector_name)
+            {
+                entry.transform = rotation;
+            }
         }
         // Scale first: an output's logical extent — what the arrangement
         // is made of — is its mode over its scale.
@@ -3147,6 +3158,28 @@ impl DrmRuntime {
             &settings_store::hardware::DisplayConfig::load_effective(&self.dispatch.display_set),
             &live,
         )
+    }
+
+    /// Turn the built-in panel to follow the device. Touch input follows
+    /// automatically: it is mapped through each live output's transform.
+    pub fn set_device_rotation(
+        &mut self,
+        rotation: Option<settings_store::hardware::OutputTransform>,
+    ) {
+        if self.dispatch.device_rotation == rotation {
+            return;
+        }
+        self.dispatch.device_rotation = rotation;
+        self.dispatch.relayout_outputs();
+        self.dispatch.command(ScanoutCommand::Reconfigure {
+            remove: Vec::new(),
+            add: Vec::new(),
+            outputs: self.dispatch.output_table(),
+            removal_ack: None,
+        });
+        self.dispatch.outputs_changed = true;
+        self.dispatch.push(BackendEvent::OutputsChanged);
+        self.dispatch.push(BackendEvent::Redraw);
     }
 
     /// Ask the scanout owner to switch one panel off or on.

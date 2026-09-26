@@ -45,6 +45,7 @@ fn one_group_seed() -> (WorkspaceTree, StripId, GroupId) {
         tasks: Vec::new(),
         effect_receipts: Vec::new(),
         shortcuts: Vec::new(),
+        schedule_claims: Vec::new(),
         id: ws_id,
         room: crate::shell::state::RoomId::new(),
         name: "Test".into(),
