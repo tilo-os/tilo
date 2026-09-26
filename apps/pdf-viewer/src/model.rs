@@ -1384,6 +1384,10 @@ mod tests {
         let unicode = "İ test \u{212a} TEST";
         let words = "étest testé e\u{301}test test\u{301} test test_2 (test) İ";
         // (case, text, query, options, expected hits as (byte start, matched source text))
+        #[allow(
+            clippy::type_complexity,
+            reason = "one row per search case: name, text, query, options, expected hits"
+        )]
         let cases: &[(&str, &str, &str, SearchOptions, Vec<(usize, &str)>)] = &[
             // Guard against an infinite loop when a match could re-find at the
             // same spot: "aaaa" matches at 0 and 2 (non-overlapping stepping).

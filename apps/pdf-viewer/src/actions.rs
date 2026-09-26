@@ -2177,6 +2177,10 @@ mod tests {
     /// survive reordering but fail closed when changed.
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
+    #[allow(
+        clippy::similar_names,
+        reason = "merged phases keep their original state/stale binding names"
+    )]
     fn document_resources_publish_the_nested_tree_with_bounded_stable_children() {
         let (app, state) = open_with_markup();
         let resources = Widget::resources(&app, &state.doc);

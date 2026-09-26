@@ -10584,6 +10584,10 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn network_announcements_and_revocations_govern_the_files_projection() {
+        #[allow(
+            clippy::similar_names,
+            reason = "merged phases keep their original root/room binding names"
+        )]
         fn network_announcement_governs_and_republishes_files_projection() {
             let runtime = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
