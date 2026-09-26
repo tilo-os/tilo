@@ -453,8 +453,8 @@ pub struct ResourceScope {
 /// expiry)`.
 ///
 /// The whole lifetime vocabulary: the portal's "Just once" / "Until I log
-/// out" / "Always" map to [`Expiry::AfterUse`], [`EndOfSession`] and
-/// [`Never`] respectively, not a parallel enum.
+/// out" / "Always" map to [`Expiry::AfterUse`], `EndOfSession` and
+/// `Never` respectively, not a parallel enum.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Expiry {

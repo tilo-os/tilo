@@ -1,5 +1,5 @@
 //! Parse the `content.xml` `office:text` body into canonical blocks + marks against a
-//! pre-parsed [`StyleRegistry`] (named styles from `styles.xml`, automatic from
+//! pre-parsed `StyleRegistry` (named styles from `styles.xml`, automatic from
 //! `content.xml`); headings are recognised from `text:h` *and* from a heading
 //! paragraph-style. Unmodeled body elements are captured verbatim as fidelity atoms.
 

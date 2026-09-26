@@ -7,7 +7,7 @@
 //! secret signing share in panic messages, ours prints `"<redacted>"`;
 //! (2) no `Serialize` — deliberately not implemented, so it can't be
 //! JSON-logged (the explicit-export form lives in
-//! [`RecoveryShare`]/[`encrypted_blob`]); (3) zeroize on drop, via
+//! [`RecoveryShare`]/`encrypted_blob`); (3) zeroize on drop, via
 //! `frost-core`'s own `ZeroizeOnDrop` on the wrapped `KeyPackage`.
 //!
 //! [`RecoveryShare`] is the paper-share format: the secret half is the

@@ -2,7 +2,7 @@
 //! spreadsheet body into the CRDT [`Workbook`] model — sheets, positional cells,
 //! cell types, and **formulas** (`table:formula`, preserved verbatim) — and
 //! serializes a complete valid package back. Untrusted bytes enter only through
-//! the bounded/hardened [`SheetPackage`] reader (zip-bomb + XXE defence).
+//! the bounded/hardened `SheetPackage` reader (zip-bomb + XXE defence).
 
 use crate::format::{CodecError, Confidence};
 use crate::sheet_common::{

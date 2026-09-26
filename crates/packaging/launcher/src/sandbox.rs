@@ -14,7 +14,7 @@ pub fn payload_mount_for(package_id: &str) -> PathBuf {
     PathBuf::from("/var/tilo-apps").join(package_id)
 }
 
-/// In-sandbox mount root for the runtime (tilo-runtime/<version>/).
+/// In-sandbox mount root for the runtime (`tilo-runtime/<version>/`).
 pub fn runtime_mount_for(version: &str) -> PathBuf {
     PathBuf::from("/run/tilo-runtime").join(version)
 }

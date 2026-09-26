@@ -3,7 +3,7 @@
 //! an opaque style ref. Backed by automerge so a workbook syncs, versions, and merges like the
 //! rich-text [`crate::Document`] — a separate schema (`tilo.sheet`) for a separate shape. The
 //! `.xlsx`/`.ods` codecs parse untrusted packages into this model through the same
-//! bounded/hardened ZIP + XML entry as the document codecs ([`crate::codecs::safety`]).
+//! bounded/hardened ZIP + XML entry as the document codecs (`crate::codecs::safety`).
 
 pub mod a1;
 pub mod model;
