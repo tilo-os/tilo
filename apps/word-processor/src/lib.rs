@@ -277,7 +277,7 @@ pub fn open_document_with_records(
     let mut state = ui::State::new();
     let mut widget = WordProcessorWidget::new();
     widget.retain_file_history(reader);
-    widget.model_mut().set_content_store(content.clone());
+    widget.model_mut().set_content_store(content);
     if let Some(history) = history {
         history.install_into(&mut state.doc).map_err(invalid_data)?;
         widget
@@ -298,7 +298,11 @@ pub fn open_document_with_records(
                 .map_err(invalid_data)?;
         }
         // The document only names the file's images; they are kept before it is.
-        content.put_inputs(&inputs).map_err(invalid_data)?;
+        widget
+            .model()
+            .content_store()
+            .put_inputs(&inputs)
+            .map_err(invalid_data)?;
         // The opened file is where undo begins: the import is not an edit.
         start_history_here(&mut state);
         widget.set_file(path.to_path_buf(), format);
