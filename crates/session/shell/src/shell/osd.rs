@@ -1,4 +1,5 @@
-//! The transient on-screen display for volume, brightness and transport.
+//! The transient on-screen display for the hardware keys: volume,
+//! brightness, transport and the machine toggles.
 //!
 //! A hardware key that changes something invisible (volume) or unreadable
 //! (brightness, *because* it's what changed) needs an answer on screen: a
@@ -48,6 +49,16 @@ pub enum OsdKind {
     MicMute { muted: bool },
     /// Media transport: the action taken, not a level.
     Transport(Transport),
+    /// Keyboard backlight level.
+    KeyboardBacklight,
+    /// A brightness key on a machine with no backlight the session can
+    /// drive — an external monitor, a desktop, a VM. Saying so beats a key
+    /// that silently does nothing.
+    NoBacklight,
+    /// Airplane mode after the wireless key toggled it.
+    AirplaneMode { on: bool },
+    /// The touchpad after its toggle key.
+    Touchpad { enabled: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +67,7 @@ pub enum Transport {
     Pause,
     Next,
     Previous,
+    Stop,
 }
 
 impl Transport {
@@ -65,6 +77,7 @@ impl Transport {
             Transport::Pause => "Pause",
             Transport::Next => "Next track",
             Transport::Previous => "Previous track",
+            Transport::Stop => "Stop",
         }
     }
 }
@@ -82,7 +95,7 @@ fn level_to_percent(level: f32) -> u32 {
 }
 
 /// One on-screen readout in flight.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Osd {
     pub kind: OsdKind,
     /// `0.0..=1.0`. Ignored by the kinds that have no level.
@@ -125,10 +138,45 @@ impl Osd {
         }
     }
 
+    pub fn keyboard_backlight(level: f32) -> Self {
+        Self {
+            kind: OsdKind::KeyboardBacklight,
+            level: level.clamp(0.0, 1.0),
+            raised_at: Instant::now(),
+        }
+    }
+
+    pub fn no_backlight() -> Self {
+        Self {
+            kind: OsdKind::NoBacklight,
+            level: 0.0,
+            raised_at: Instant::now(),
+        }
+    }
+
+    pub fn airplane_mode(on: bool) -> Self {
+        Self {
+            kind: OsdKind::AirplaneMode { on },
+            level: 0.0,
+            raised_at: Instant::now(),
+        }
+    }
+
+    pub fn touchpad(enabled: bool) -> Self {
+        Self {
+            kind: OsdKind::Touchpad { enabled },
+            level: 0.0,
+            raised_at: Instant::now(),
+        }
+    }
+
     /// Whether this kind draws a level bar — a bar pinned at zero next to
     /// "Next track" would read as a broken meter.
     pub fn has_level(&self) -> bool {
-        matches!(self.kind, OsdKind::Volume { .. } | OsdKind::Brightness)
+        matches!(
+            self.kind,
+            OsdKind::Volume { .. } | OsdKind::Brightness | OsdKind::KeyboardBacklight
+        )
     }
 
     /// The one-line caption under the bar.
@@ -142,6 +190,15 @@ impl Osd {
             OsdKind::MicMute { muted: true } => "Microphone muted".to_string(),
             OsdKind::MicMute { muted: false } => "Microphone on".to_string(),
             OsdKind::Transport(t) => t.caption().to_string(),
+            OsdKind::KeyboardBacklight if self.level <= 0.0 => "Keyboard backlight off".to_string(),
+            OsdKind::KeyboardBacklight => {
+                format!("Keyboard backlight {}%", level_to_percent(self.level))
+            }
+            OsdKind::NoBacklight => "No adjustable display".to_string(),
+            OsdKind::AirplaneMode { on: true } => "Airplane mode on".to_string(),
+            OsdKind::AirplaneMode { on: false } => "Airplane mode off".to_string(),
+            OsdKind::Touchpad { enabled: true } => "Touchpad on".to_string(),
+            OsdKind::Touchpad { enabled: false } => "Touchpad off".to_string(),
         }
     }
 
@@ -371,8 +428,21 @@ fn draw_glyph(
                 Transport::Pause => ui::icons::Icon::Pause,
                 Transport::Next => ui::icons::Icon::SkipForward,
                 Transport::Previous => ui::icons::Icon::SkipBack,
+                Transport::Stop => ui::icons::Icon::Square,
             },
             colors.text_primary,
+        ),
+        OsdKind::KeyboardBacklight => (ui::icons::Icon::Keyboard, colors.text_primary),
+        OsdKind::NoBacklight => (ui::icons::Icon::Monitor, colors.text_dim),
+        OsdKind::AirplaneMode { on: true } => (ui::icons::Icon::WifiOff, colors.text_primary),
+        OsdKind::AirplaneMode { on: false } => (ui::icons::Icon::Wifi, colors.text_primary),
+        OsdKind::Touchpad { enabled } => (
+            ui::icons::Icon::Mouse,
+            if enabled {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            },
         ),
     };
     ui::icons::draw_icon(
@@ -492,6 +562,38 @@ mod tests {
         assert!(!Osd::mic_mute(true).has_level());
         assert_eq!(Osd::transport(Transport::Next).caption(), "Next track");
         assert_eq!(Osd::mic_mute(true).caption(), "Microphone muted");
+    }
+
+    #[test]
+    fn machine_toggles_say_what_they_left_behind() {
+        assert_eq!(Osd::airplane_mode(true).caption(), "Airplane mode on");
+        assert_eq!(Osd::airplane_mode(false).caption(), "Airplane mode off");
+        assert_eq!(Osd::touchpad(false).caption(), "Touchpad off");
+        assert_eq!(Osd::touchpad(true).caption(), "Touchpad on");
+        assert_eq!(Osd::no_backlight().caption(), "No adjustable display");
+        assert_eq!(Osd::transport(Transport::Stop).caption(), "Stop");
+        for toggle in [
+            Osd::airplane_mode(true),
+            Osd::touchpad(false),
+            Osd::no_backlight(),
+        ] {
+            assert!(
+                !toggle.has_level(),
+                "{:?} is a state, not a level",
+                toggle.kind
+            );
+        }
+    }
+
+    #[test]
+    fn keyboard_backlight_reads_as_a_level_and_off_at_zero() {
+        let lit = Osd::keyboard_backlight(0.5);
+        assert!(lit.has_level());
+        assert_eq!(lit.caption(), "Keyboard backlight 50%");
+        assert_eq!(
+            Osd::keyboard_backlight(0.0).caption(),
+            "Keyboard backlight off"
+        );
     }
 
     #[test]
@@ -694,6 +796,9 @@ mod tests {
                 ("volume", Osd::volume(0.62, false)),
                 ("mic-muted", Osd::mic_mute(true)),
                 ("transport", Osd::transport(Transport::Next)),
+                ("keyboard-backlight", Osd::keyboard_backlight(0.5)),
+                ("no-backlight", Osd::no_backlight()),
+                ("airplane", Osd::airplane_mode(true)),
             ] {
                 let mut text = TextRenderer::new();
                 text.set_text_scale(scale);
