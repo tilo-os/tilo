@@ -55,6 +55,7 @@ pub struct PendingRootActions {
     pub hotspot: Option<bool>,
     pub mobile: Option<bool>,
     pub night_light: Option<bool>,
+    pub do_not_disturb: Option<bool>,
     pub power: Option<PowerProfile>,
 }
 
@@ -369,6 +370,7 @@ impl QuickSettingsRoot {
             QuickSettingsControl::NightLight => "night_light",
             QuickSettingsControl::AirplaneMode => "airplane_mode",
             QuickSettingsControl::MobileData => "mobile_data",
+            QuickSettingsControl::DoNotDisturb => "do_not_disturb",
         }
     }
     pub fn set_layout_text_scale(&mut self, scale: f32) {
@@ -476,7 +478,7 @@ impl QuickSettingsRoot {
                 // Powered off and unavailable are distinct states. Only
                 // BlueZ's successful adapter read may expose this switch.
                 QuickSettingsControl::Bluetooth => state.bluetooth_available,
-                QuickSettingsControl::NightLight => true,
+                QuickSettingsControl::NightLight | QuickSettingsControl::DoNotDisturb => true,
                 // Airplane mode is only meaningful with a radio, except for
                 // a person who explicitly kept it in their saved layout. In
                 // that migration case retain it so it can be removed rather
@@ -506,6 +508,7 @@ impl QuickSettingsRoot {
             QuickSettingsControl::NightLight,
             QuickSettingsControl::AirplaneMode,
             QuickSettingsControl::MobileData,
+            QuickSettingsControl::DoNotDisturb,
         ] {
             if !all.contains(&c) {
                 all.push(c);
@@ -513,7 +516,9 @@ impl QuickSettingsRoot {
         }
         all.into_iter()
             .filter(|c| match c {
-                QuickSettingsControl::Wifi | QuickSettingsControl::NightLight => true,
+                QuickSettingsControl::Wifi
+                | QuickSettingsControl::NightLight
+                | QuickSettingsControl::DoNotDisturb => true,
                 QuickSettingsControl::Bluetooth => state.bluetooth_available,
                 QuickSettingsControl::Vpn => !state.vpns.is_empty(),
                 QuickSettingsControl::AirplaneMode => {
@@ -959,6 +964,7 @@ impl QuickSettingsRoot {
             QuickSettingsControl::NightLight => "Night Light",
             QuickSettingsControl::AirplaneMode => "Airplane mode",
             QuickSettingsControl::MobileData => "Mobile data",
+            QuickSettingsControl::DoNotDisturb => "Do Not Disturb",
         }
     }
     fn rendered_label(c: QuickSettingsControl, s: &QuickSettingsState) -> &'static str {
@@ -977,6 +983,7 @@ impl QuickSettingsRoot {
             QuickSettingsControl::NightLight => ui::icons::Icon::Sun,
             QuickSettingsControl::AirplaneMode => ui::icons::Icon::WifiOff,
             QuickSettingsControl::MobileData => ui::icons::Icon::Globe,
+            QuickSettingsControl::DoNotDisturb => ui::icons::Icon::Bell,
         }
     }
     fn on(c: QuickSettingsControl, s: &QuickSettingsState) -> bool {
@@ -990,6 +997,7 @@ impl QuickSettingsRoot {
             QuickSettingsControl::NightLight => s.night_light,
             QuickSettingsControl::AirplaneMode => s.radios.airplane_mode,
             QuickSettingsControl::MobileData => s.radios.wwan_enabled,
+            QuickSettingsControl::DoNotDisturb => s.do_not_disturb,
         }
     }
     fn subline(c: QuickSettingsControl, s: &QuickSettingsState) -> &str {
@@ -1043,6 +1051,13 @@ impl QuickSettingsRoot {
                     "Off"
                 }
             }
+            QuickSettingsControl::DoNotDisturb => {
+                if s.do_not_disturb {
+                    "Notifications held"
+                } else {
+                    "Off"
+                }
+            }
         }
     }
     fn toggle(
@@ -1076,6 +1091,10 @@ impl QuickSettingsRoot {
             QuickSettingsControl::MobileData => {
                 s.radios.wwan_enabled = !s.radios.wwan_enabled;
                 pending.mobile = Some(s.radios.wwan_enabled);
+            }
+            QuickSettingsControl::DoNotDisturb => {
+                s.do_not_disturb = !s.do_not_disturb;
+                pending.do_not_disturb = Some(s.do_not_disturb);
             }
         }
         None
@@ -1353,9 +1372,11 @@ impl QuickSettingsRoot {
             return true;
         }
         if self.edit_drag.is_pending() {
+            // The reorderable list is the active rows; available chips below
+            // it are not drop slots.
             return self.edit_drag.pointer_moved(
                 point,
-                &self.edit_list_metrics(panel, self.edit_controls(state).len()),
+                &self.edit_list_metrics(panel, self.active_edit_controls(state).len()),
             );
         }
         false
@@ -1368,13 +1389,24 @@ impl QuickSettingsRoot {
                 SliderCommit::Volume(state.volume * 100.)
             });
         }
-        if let Some((from, to)) = self.edit_drag.commit()
-            && from < self.config.controls.len()
-            && to < self.config.controls.len()
-        {
-            let c = self.config.controls.remove(from);
-            self.config.controls.insert(to, c);
-            self.save_config();
+        // The controller reports visible row indices. Hidden persisted
+        // controls (a VPN slot with no profiles) sit between them in the
+        // saved order, so map both ends to their saved positions, exactly as
+        // keyboard reordering does.
+        if let Some((from, to)) = self.edit_drag.commit() {
+            let active = self.active_edit_controls(state);
+            let saved = |control: QuickSettingsControl| {
+                self.config.controls.iter().position(|c| *c == control)
+            };
+            if let (Some(from), Some(to)) = (
+                active.get(from).copied().and_then(saved),
+                active.get(to).copied().and_then(saved),
+            ) && from != to
+            {
+                let c = self.config.controls.remove(from);
+                self.config.controls.insert(to, c);
+                self.save_config();
+            }
         }
         None
     }
@@ -2763,7 +2795,15 @@ mod tests {
         assert!(root.update_drag(Point::new(start.x, start.y + 80.), PANEL, &mut state));
         assert!(root.edit_drag.is_active());
         let _ = root.finish_drag(&state);
-        assert_eq!(root.config.controls[2], QuickSettingsControl::Bluetooth);
+        // Visible order moves even across the hidden VPN slot.
+        assert_eq!(
+            root.active_edit_controls(&state),
+            [
+                QuickSettingsControl::Wifi,
+                QuickSettingsControl::NightLight,
+                QuickSettingsControl::Bluetooth,
+            ]
+        );
     }
     #[test]
     fn compact_geometry_never_overlaps() {

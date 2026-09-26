@@ -903,11 +903,13 @@ pub enum QuickSettingsControl {
     NightLight,
     AirplaneMode,
     MobileData,
+    DoNotDisturb,
 }
 
 impl QuickSettingsControl {
-    /// A small, useful surface for a typical laptop.  Airplane mode is an
-    /// available extra, not an always-visible destination.
+    /// A small, useful surface for a typical laptop.  Airplane mode and Do
+    /// Not Disturb are available extras, not always-visible destinations:
+    /// the compact root must still fit a small display with a VPN present.
     pub const DEFAULT: [Self; 4] = [Self::Wifi, Self::Bluetooth, Self::Vpn, Self::NightLight];
 
     /// Wi-Fi remains reachable even after customisation: it is the recovery
