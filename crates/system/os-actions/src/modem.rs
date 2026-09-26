@@ -63,7 +63,7 @@ pub fn list_mobile_sims() -> Result<Vec<SimInfo>, String> {
 ///
 /// # Errors
 ///
-/// Returns an error message if `pin` fails [`validate_pin`], `sim` is not a `ModemManager` SIM
+/// Returns an error message if `pin` fails `validate_pin`, `sim` is not a `ModemManager` SIM
 /// object path, the D-Bus connection or proxy cannot be established, or the unlock is rejected.
 pub fn unlock_mobile_sim_on(sim: &str, pin: &str) -> Result<(), String> {
     validate_pin(pin)?;
@@ -100,7 +100,7 @@ pub fn unlock_mobile_sim_on(sim: &str, pin: &str) -> Result<(), String> {
 ///
 /// # Errors
 ///
-/// Returns an error message if `pin` fails [`validate_pin`], [`list_mobile_sims`] fails, no SIM
+/// Returns an error message if `pin` fails `validate_pin`, [`list_mobile_sims`] fails, no SIM
 /// or more than one SIM is present, or [`unlock_mobile_sim_on`] fails.
 pub fn unlock_mobile_sim(pin: &str) -> Result<(), String> {
     validate_pin(pin)?;

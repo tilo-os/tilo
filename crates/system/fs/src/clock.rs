@@ -1,6 +1,6 @@
 //! Process-wide wall clock for security decisions made by the shipped daemon.
 //!
-//! Production uses [`SystemTime`] unconditionally unless the daemon was
+//! Production uses `SystemTime` unconditionally unless the daemon was
 //! explicitly launched with its hidden `--test-clock-file` option.  That
 //! option exists for release tests which must move an already-running daemon
 //! across deadline boundaries without sleeping.  The file is required to be

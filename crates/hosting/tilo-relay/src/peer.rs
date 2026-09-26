@@ -66,8 +66,8 @@ pub struct WorkspaceAutobind {
 /// Relay-wide state a peer session needs for its whole lifetime — the
 /// workspace registry, autobind policy, live revocation list, own
 /// user chain, and metrics. Bundled into one struct so [`run_peer`]'s
-/// argument count stays reasonable; see [`SessionCtx`] for the subset
-/// [`handle_envelope`] reads on every message.
+/// argument count stays reasonable; see `SessionCtx` for the subset
+/// `handle_envelope` reads on every message.
 pub struct PeerContext {
     /// Handle to the set of workspaces the daemon owns.
     pub workspaces: WorkspaceRegistry,

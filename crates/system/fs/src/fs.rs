@@ -3630,7 +3630,7 @@ impl QuickFS {
     /// `identity`. Every subsequent open/read/write is checked against `acl`
     /// as `identity`; without this the mount keeps Unix-veneer-only
     /// behaviour. Takes anything that becomes an [`AclHandle`]: a
-    /// [`WorkspaceAcl`] for a policy that won't change, or a handle held by
+    /// [`WorkspaceAcl`](crate::acl::WorkspaceAcl) for a policy that won't change, or a handle held by
     /// a [`crate::CapabilityFile`] for one that reloads under the live mount.
     #[must_use]
     pub fn with_acl(

@@ -2,7 +2,7 @@
 //!
 //! Three layers, each usable on its own:
 //!
-//! 1. **Generation** ([`generate`], [`pdf`], [`video`], [`epub`]) — decode and
+//! 1. **Generation** ([`mod@generate`], [`pdf`], `video`, [`epub`]) — decode and
 //!    downscale previews for images, PDF first pages, EPUB covers, and video
 //!    keyframes, or classify other files into a [`FileCategory`] for a type
 //!    badge. Rich decoders

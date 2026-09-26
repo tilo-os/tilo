@@ -2041,7 +2041,7 @@ pub struct Invocation {
     /// resulting change commits under — not an authority; the session
     /// already decided this may happen.
     pub actor: String,
-    /// Serialized broker-owned [`tilo_actions::ActionContext`] when this
+    /// Serialized broker-owned `tilo_actions::ActionContext` when this
     /// invocation originated from a leased workspace task. Empty for ordinary
     /// invocations so legacy application callers remain context-neutral.
     pub context_json: String,

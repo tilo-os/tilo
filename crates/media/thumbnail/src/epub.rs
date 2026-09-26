@@ -6,7 +6,7 @@
 //! `<meta name="cover">` pointer, then a cover-named image item) is the same
 //! [`bounded_zip::epub`] path the ebook reader uses, so the shared generator
 //! needs no app crate and stays hermetic. It returns the *raw cover bytes*;
-//! [`crate::generate`] decodes them.
+//! [`crate::generate()`] decodes them.
 
 use bounded_zip::{BoundedArchive, ZipLimits, epub};
 
