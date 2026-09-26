@@ -281,6 +281,87 @@ fn lock_animation_park_deadline(now: Instant, deadline: Option<Instant>) -> Opti
     deadline.filter(|deadline| *deadline > now)
 }
 
+/// How often a locked session re-reads its players, so the lock card follows
+/// a track change or a pause made elsewhere.
+const LOCK_MEDIA_REFRESH: Duration = Duration::from_secs(1);
+
+/// Every output the lock overlay covers, or one spanning the viewport before
+/// any output has been reported.
+fn lock_outputs(
+    outputs: &[crate::compositor::backend::Output],
+    viewport: (f64, f64),
+) -> Vec<LockOutput> {
+    let outputs: Vec<LockOutput> = outputs
+        .iter()
+        .map(|o| LockOutput {
+            origin: (f64::from(o.position.0), f64::from(o.position.1)),
+            size: (f64::from(o.size.0), f64::from(o.size.1)),
+            scale: f64::from(o.scale),
+        })
+        .collect();
+    if outputs.is_empty() {
+        vec![LockOutput {
+            origin: (0.0, 0.0),
+            size: viewport,
+            scale: 1.0,
+        }]
+    } else {
+        outputs
+    }
+}
+
+/// The player the lock screen shows: the one the now-playing card would,
+/// among players that are playing or paused. A stopped player has nothing
+/// to control from a locked screen.
+fn lock_now_playing() -> Option<crate::shell::now_playing::PlayerSnapshot> {
+    use crate::shell::now_playing::{MprisSource, NowPlayingSource, PlaybackStatus, active_index};
+    let source = MprisSource;
+    source.refresh();
+    let players: Vec<_> = source
+        .players()
+        .into_iter()
+        .filter(|player| player.status != PlaybackStatus::Stopped)
+        .collect();
+    let index = active_index(&players, None)?;
+    players.into_iter().nth(index)
+}
+
+/// Whether the lock card must repaint: anything it shows changed. The
+/// playhead is not shown on the lock screen, so its movement is not a change.
+fn lock_media_changed(
+    before: Option<&crate::shell::now_playing::PlayerSnapshot>,
+    after: Option<&crate::shell::now_playing::PlayerSnapshot>,
+) -> bool {
+    match (before, after) {
+        (None, None) => false,
+        (Some(before), Some(after)) => {
+            before.bus_name != after.bus_name
+                || before.status != after.status
+                || before.title != after.title
+                || before.artist != after.artist
+                || before.artwork != after.artwork
+                || before.can_play != after.can_play
+                || before.can_pause != after.can_pause
+                || before.can_go_next != after.can_go_next
+                || before.can_go_previous != after.can_go_previous
+        }
+        _ => true,
+    }
+}
+
+/// Send one lock-screen transport command to exactly the player the lock
+/// card shows. Transport is all a locked session may do to media.
+fn send_lock_transport(
+    player: Option<&crate::shell::now_playing::PlayerSnapshot>,
+    transport: crate::shell::quick_settings::now_playing::Transport,
+) -> bool {
+    use crate::shell::now_playing::{MprisSource, NowPlayingSource};
+    let Some(player) = player.filter(|player| transport.enabled(player)) else {
+        return false;
+    };
+    MprisSource.send(&player.bus_name, transport.command())
+}
+
 fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut Instant) -> bool {
     if !session_locked {
         *last_refresh = now;
@@ -1355,7 +1436,7 @@ impl TestControlConn {
         }
         if ready < 0 {
             let error = std::io::Error::last_os_error();
-            eprintln!("nirios compositor: test_control connection check: {error}");
+            eprintln!("tilo compositor: test_control connection check: {error}");
             return true;
         }
         descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
@@ -2863,7 +2944,7 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
         let pending = &conn.output[conn.output_offset..];
         match conn.reader.get_mut().write(pending) {
             Ok(0) => {
-                eprintln!("nirios compositor: test_control write: disconnected");
+                eprintln!("tilo compositor: test_control write: disconnected");
                 conn.closed = true;
                 return PendingConnectionProgress::Closed;
             }
@@ -2872,7 +2953,7 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
                 return PendingConnectionProgress::OutputPending;
             }
             Err(error) => {
-                eprintln!("nirios compositor: test_control write: {error}");
+                eprintln!("tilo compositor: test_control write: {error}");
                 conn.closed = true;
                 return PendingConnectionProgress::Closed;
             }
@@ -4418,6 +4499,9 @@ fn install_session_peer_sync(
         Arc::clone(&net),
         tree_handle.clone(),
     );
+    frame_builder.host_mut().set_personal_devices(Arc::new(
+        crate::shell::device_fabric_runtime::FabricDeviceDirectory::new(Arc::clone(&net)),
+    ));
     let stream_net = Arc::clone(&net);
     state.set_legacy_stream_publisher(Arc::new(move |message| {
         stream_net.publish_legacy_active(message)
@@ -6121,6 +6205,7 @@ pub fn run() {
             &outs,
             refresh_mhz_of(&*backend),
         );
+        state.set_output_heads(backend.output_heads());
     }
     // Set when the output set changed this tick, so derived state is re-derived once per batch, not per udev edge.
     let mut outputs_dirty = false;
@@ -6145,6 +6230,9 @@ pub fn run() {
     let mut last_lock_animation_frame = lock_animation_epoch;
     let mut lock_has_wallpaper = false;
     let mut last_lock_clock_refresh = Instant::now();
+    let mut lock_player: Option<crate::shell::now_playing::PlayerSnapshot> = None;
+    let mut lock_pointer: Option<vello::kurbo::Point> = None;
+    let mut last_lock_media_poll = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
     // `output_presentation_frame_changed` observes live foreign-frame
@@ -6345,9 +6433,17 @@ pub fn run() {
                     }
                     if session.is_locked() {
                         // The lock owns a deliberately tiny, non-leaking tree.
-                        // Only its password field is actionable; stale ids from
-                        // the hidden desktop are rejected here.
-                        if request.target_node == lock_screen::LOCK_PASSWORD_ID {
+                        // Only its password field and the now-playing
+                        // transport are actionable; stale ids from the hidden
+                        // desktop are rejected here.
+                        if let Some(transport) =
+                            lock_screen::transport_for_node(request.target_node)
+                        {
+                            if request.action == ui::accesskit::Action::Click {
+                                session_changed |=
+                                    send_lock_transport(lock_player.as_ref(), transport);
+                            }
+                        } else if request.target_node == lock_screen::LOCK_PASSWORD_ID {
                             match (request.action, request.data.as_ref()) {
                                 (
                                     ui::accesskit::Action::SetValue,
@@ -6487,6 +6583,35 @@ pub fn run() {
                     if route == PriorityRoute::LockScreen {
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
+                        match wev {
+                            WindowEvent::CursorMoved { position, .. } => {
+                                lock_pointer =
+                                    Some(vello::kurbo::Point::new(position.x, position.y));
+                            }
+                            WindowEvent::MouseInput {
+                                state: ElementState::Pressed,
+                                button: MouseButton::Left,
+                                ..
+                            } => {
+                                let outputs =
+                                    lock_outputs(backend.outputs(), frame_builder.viewport());
+                                let view = LockView {
+                                    now_playing: lock_player.as_ref(),
+                                    ..LockView::default()
+                                };
+                                if let Some(transport) = lock_pointer.and_then(|point| {
+                                    lock_screen::transport_at(
+                                        &outputs,
+                                        frame_builder.theme(),
+                                        &view,
+                                        point,
+                                    )
+                                }) {
+                                    send_lock_transport(lock_player.as_ref(), transport);
+                                }
+                            }
+                            _ => {}
+                        }
                         let key = winit_event_to_lock_key(wev);
                         lock.handle_key(key);
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
@@ -6912,6 +7037,11 @@ pub fn run() {
             tracing::info!("compositor: settings changed on disk; re-applying");
             state.reload_keyboard_settings();
             backend.reload_input_settings();
+            // The backend has now reconciled any staged display plan; tell
+            // the output-management clients that asked for it how it went.
+            state.output_management.resolve_transactions(
+                settings_store::hardware::DisplayTransaction::load().as_ref(),
+            );
             if let Some(xwayland) = xwayland.as_mut() {
                 xwayland.reload_keyboard_settings();
             }
@@ -6947,6 +7077,18 @@ pub fn run() {
         }
         if let Some(service) = osk_service.as_mut() {
             service.tick();
+        }
+        for (output, on) in state.output_management.take_power_requests() {
+            backend.set_output_power(output, on);
+        }
+        if state.output_management.take_staged_by_tool() {
+            frame_builder.with_chrome(|chrome| {
+                chrome.push_notification(
+                    "Keep the new display layout?",
+                    "A display tool changed your screens. Choose Keep in Settings › Displays \
+                     within 15 seconds, or the previous layout comes back.",
+                );
+            });
         }
 
         // Re-derive everything depending on the output set once, after the whole
@@ -7001,6 +7143,7 @@ pub fn run() {
                 &outs,
                 refresh_mhz_of(&*backend),
             );
+            state.set_output_heads(backend.output_heads());
             if refresh_override.is_none()
                 && let Some(interval) = backend.refresh_interval()
                 && frame_clock.set_interval(interval)
@@ -7971,6 +8114,19 @@ pub fn run() {
         let keepalive_due = false;
         let lock_clock_due =
             lock_clock_refresh_due(session.is_locked(), iter_t0, &mut last_lock_clock_refresh);
+        if session.is_locked() {
+            if iter_t0.saturating_duration_since(last_lock_media_poll) >= LOCK_MEDIA_REFRESH {
+                last_lock_media_poll = iter_t0;
+                let player = lock_now_playing();
+                if lock_media_changed(lock_player.as_ref(), player.as_ref()) {
+                    session_changed = true;
+                }
+                lock_player = player;
+            }
+        } else {
+            lock_player = None;
+            lock_pointer = None;
+        }
         let pump_done = Instant::now();
         let pump_total = pump_done
             .duration_since(iter_t0)
@@ -8181,6 +8337,7 @@ pub fn run() {
                     date: &date,
                     notification_count: frame_builder.chrome().notification_count(),
                     verifying: lock.is_verifying(),
+                    now_playing: lock_player.as_ref(),
                 };
                 native_accessibility.update_if_active(|| {
                     lock_screen::build_accessibility_tree(
@@ -8235,6 +8392,7 @@ pub fn run() {
                     date: &date,
                     notification_count: notif_count,
                     verifying: lock.is_verifying(),
+                    now_playing: lock_player.as_ref(),
                 };
                 let wallpaper = {
                     let chrome = frame_builder.chrome();
@@ -8780,6 +8938,11 @@ pub fn run() {
             .is_locked()
             .then(|| last_lock_clock_refresh.checked_add(LOCK_CLOCK_REFRESH))
             .flatten();
+        // Follow the players while the lock is visible; a blanked display
+        // shows nothing, so it does not wake for them.
+        let lock_media_deadline = (session.is_locked() && !session.is_blanked())
+            .then(|| last_lock_media_poll.checked_add(LOCK_MEDIA_REFRESH))
+            .flatten();
         let park = native_loop_park(
             park_now,
             backend_event_wake,
@@ -8797,6 +8960,7 @@ pub fn run() {
                     ),
                 ),
                 lock_clock_deadline,
+                lock_media_deadline,
                 run_deadline,
                 controller_nav.next_deadline(park_now),
                 backend.next_service_deadline(),

@@ -258,8 +258,12 @@ class CheckAggregateTests(unittest.TestCase):
         self.assertIn("if: needs.select.outputs.security_required == 'true'", security)
         self.assertIn("needs: [select]", security)
         self.assertIn("image: registry.tilo.so/tilo/ci-fast@sha256:", security)
-        self.assertIn("gcc kmod clang lld rpm-build python3-pillow systemd", security)
-        self.assertIn("fontconfig google-noto-sans-fonts", security)
+        # The native fixture tools come from the pinned ci-fast image, never
+        # from a Fedora mirror at job time.
+        recipe = (ROOT / "os/Containerfile.ci-fast").read_text()
+        self.assertIn("gcc kmod clang lld rpm-build python3-pillow systemd", recipe)
+        self.assertIn("fontconfig google-noto-sans-fonts", recipe)
+        self.assertNotIn("dnf install", security)
         self.assertIn("systemd-escape", security)
         self.assertIn("fc-match -f '%{family}' 'Noto Sans'", security)
         self.assertIn("command -v \"$tool\"", security)

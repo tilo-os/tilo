@@ -52,6 +52,9 @@ pub mod native;
 pub mod osk_service;
 #[cfg(target_os = "linux")]
 pub mod output_globals;
+pub mod output_heads;
+#[cfg(target_os = "linux")]
+pub mod output_management;
 pub mod pacing;
 #[cfg(target_os = "linux")]
 pub mod pointer_lock;
