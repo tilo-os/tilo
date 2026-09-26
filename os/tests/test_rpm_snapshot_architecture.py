@@ -49,10 +49,16 @@ esac
         }
         if manifest is not None:
             environment["TEST_SNAPSHOT_PACKAGES"] = manifest.rstrip("\n")
-        process = subprocess.run(
-            ["bash", str(self.script), "runtime", "example@sha256:fixture"],
-            env=environment, text=True, capture_output=True, timeout=10,
-        )
+        try:
+            process = subprocess.run(
+                ["bash", str(self.script), "runtime", "example@sha256:fixture"],
+                env=environment, text=True, capture_output=True, timeout=10,
+            )
+        except subprocess.TimeoutExpired as expired:
+            # Name the runtime calls that completed so a stall points at its step.
+            reached = calls.read_text().splitlines() if calls.exists() else []
+            self.fail(f"snapshot check stalled after runtime calls {reached}; "
+                      f"stderr: {expired.stderr!r}")
         return process, calls.read_text().splitlines() if calls.exists() else []
 
     def test_both_matching_architectures_reach_package_check(self):
