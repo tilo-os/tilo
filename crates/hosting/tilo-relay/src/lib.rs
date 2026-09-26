@@ -107,7 +107,7 @@ pub use compute_worker::{
     ComputeWorkerError, FileComputeContentStore, ProductionComputeWorkerConfig,
     run_production_compute_worker,
 };
-pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
+pub use config::{PeerRelayConfig, RelayConfig, RelayLimits, WorkspaceBinding};
 pub use daemon::{Relay, RelayError, RelayHandle};
 pub use home_peer::{HomePeerRegistration, valid_home_peer_label};
 pub use mesh::{

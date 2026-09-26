@@ -94,6 +94,11 @@ pub struct RelayConfig {
     #[serde(default = "default_services")]
     pub services: ServiceCapabilities,
 
+    /// Admission limits that keep one busy public room from starving the
+    /// host. Omitted from the file while every value is the default.
+    #[serde(default, skip_serializing_if = "RelayLimits::is_default")]
+    pub limits: RelayLimits,
+
     /// Workspaces the relay pins and forwards for. Populated by
     /// `tilo-relay-admin bind-workspace`; hand-editable.
     #[serde(default, rename = "workspace")]
@@ -107,6 +112,45 @@ pub struct RelayConfig {
     /// empty list keeps the relay standalone (current behaviour).
     #[serde(default, rename = "peer_relays")]
     pub peer_relays: Vec<PeerRelayConfig>,
+}
+
+/// Admission limits for one relay process.
+///
+/// The defaults are sized for a public community room of a few thousand
+/// members on one host: every limit refuses new work with an explicit reason
+/// rather than degrading the sessions that are already admitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RelayLimits {
+    /// Concurrent authenticated relay connections. A connection beyond it is
+    /// closed during accept with the reason `relay connection limit reached`.
+    pub max_connections: usize,
+    /// Live subscribers of one workspace. A further `Subscribe` is answered
+    /// with `NotAuthorised` and the reason `workspace subscriber limit
+    /// reached`; a device already subscribed may always resubscribe.
+    pub max_subscribers_per_workspace: usize,
+}
+
+impl RelayLimits {
+    /// Default concurrent connection bound.
+    pub const DEFAULT_MAX_CONNECTIONS: usize = 8192;
+    /// Default live subscribers per workspace.
+    pub const DEFAULT_MAX_SUBSCRIBERS_PER_WORKSPACE: usize = 4096;
+
+    /// Whether every limit holds its default value.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl Default for RelayLimits {
+    fn default() -> Self {
+        Self {
+            max_connections: Self::DEFAULT_MAX_CONNECTIONS,
+            max_subscribers_per_workspace: Self::DEFAULT_MAX_SUBSCRIBERS_PER_WORKSPACE,
+        }
+    }
 }
 
 /// A configured federated peer relay. Two relays that list each
@@ -245,6 +289,7 @@ impl Default for RelayConfig {
             trust_policy: TrustPolicy::default(),
             device_role: default_device_role(),
             services: default_services(),
+            limits: RelayLimits::default(),
             workspaces: Vec::new(),
             peer_relays: Vec::new(),
         }

@@ -17,9 +17,10 @@ and, if a peer is offline, its deltas are store-and-forwarded.
   peer for the same workspace.
 - A default same-owner home host auto-binds and pins rooms on first subscribe;
   shared/provider hosts require an explicit binding.
-- Enqueues deltas for offline members under
+- Enqueues non-retained deltas for offline members under
   `workspaces/<id>/pending/<hex(device_pubkey)>/<seq>.delta` and
-  drains them on next `Subscribe`.
+  drains them on next `Subscribe`. Retained document traffic (below) is
+  stored once per document and never copied into per-member queues.
 - Retains one compact full checkpoint per shell/app document plus its
   post-checkpoint incremental tail. This bootstraps a device that had not yet
   become a member when the state was published. Connected shells refresh
@@ -89,8 +90,36 @@ endpoint id and local addresses on the current network. Set
   the bearer invite itself does not grant a provider-host account.
 - Per-device pending queues are replayed on reconnect and acknowledged only
   after the replay reaches the wire. Retained bootstrap tails
-  are compacted by periodic full checkpoints; a permanently offline app that
-  never supplies a checkpoint can still accumulate a tail.
+  are compacted by periodic full checkpoints; a tail nobody checkpoints is
+  cut back at its bound (see Limits).
+
+## Limits
+
+One relay is sized to host a public room of a few thousand members, most of
+them offline at any moment. Fan-out encodes each delta once and hands the same
+bytes to every live subscriber; a retained message costs one disk write for
+the whole room, not one per offline member.
+
+| Limit | Default | Where | When exceeded |
+|---|---|---|---|
+| Concurrent connections | 8192 | `[limits] max_connections` | The new connection is closed during accept (`relay connection limit reached`). |
+| Live subscribers per workspace | 4096 | `[limits] max_subscribers_per_workspace` | `Subscribe` is answered `NotAuthorised` (`workspace subscriber limit reached`); an already-subscribed device may always resubscribe. |
+| Live backlog per connection | 1024 frames | built in | The peer is disconnected; on reconnect it replays the retained store and its pending queue. Frames are shared, so the backlog holds pointers, not copies. |
+| Pending queue per offline device | 4096 entries / 64 MiB | built in | The oldest quarter is dropped. Pending entries are non-retained deltas the pinned document also serves through anti-entropy (`SyncRequest`). |
+| Retained tail per document | 16384 entries / 256 MiB | built in | The oldest quarter is dropped. Members publish a fresh checkpoint whenever they attach, which resets the tail. |
+| Audit log | 16 MiB | built in | `log.jsonl` rotates to `log.jsonl.1`, replacing the previous rotation. |
+| Inbound frame | 64 MiB | wire protocol | The connection ends with a frame error. |
+
+```toml
+[limits]
+max_connections = 8192
+max_subscribers_per_workspace = 4096
+```
+
+A byte-identical republish of a document's current checkpoint (members
+republish on every attach) is recognised and neither fanned out nor stored
+again. Membership files are re-read only after they change, so the
+once-a-second access audit of every subscriber costs a `stat`, not a parse.
 
 See `crates/hosting/tilo-relay/src/lib.rs` for the module overview
 and `crates/hosting/tilo-relay/tests/` for end-to-end examples of

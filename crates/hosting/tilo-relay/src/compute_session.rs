@@ -225,8 +225,7 @@ fn admit_compute_peer(
     workspace: &mut crate::workspace::WorkspaceRuntime,
     device: [u8; 32],
 ) -> Result<Option<Vec<crate::store::PendingEntry>>, crate::store::StoreError> {
-    let devices = workspace.store.load_membership()?;
-    workspace.membership.set(devices);
+    workspace.refresh_membership()?;
     if !workspace.membership.contains(&device) {
         if !workspace.admit_authenticated {
             return Ok(None);

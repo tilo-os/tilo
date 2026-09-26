@@ -148,6 +148,33 @@ pub async fn spawn_relay_serving_apps(
     }
 }
 
+/// [`spawn_relay`] with non-default admission limits.
+pub async fn spawn_relay_with_limits(
+    user: &TestUser,
+    relay_dev: TestDevice,
+    workspaces: &[u64],
+    members: &[[u8; 32]],
+    limits: tilo_relay::RelayLimits,
+) -> TestRelay {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = tmp.path().to_path_buf();
+    let relay = start_relay(
+        &state_root,
+        user,
+        relay_dev,
+        workspaces,
+        members,
+        None,
+        limits,
+    )
+    .await;
+    TestRelay {
+        relay,
+        state_root,
+        tmp,
+    }
+}
+
 async fn spawn_relay_with(
     state_root: &std::path::Path,
     user: &TestUser,
@@ -156,8 +183,30 @@ async fn spawn_relay_with(
     members: &[[u8; 32]],
     plane: Option<std::sync::Arc<dyn tilo_relay::AppServingPlane>>,
 ) -> Relay {
+    start_relay(
+        state_root,
+        user,
+        relay_dev,
+        workspaces,
+        members,
+        plane,
+        tilo_relay::RelayLimits::default(),
+    )
+    .await
+}
+
+async fn start_relay(
+    state_root: &std::path::Path,
+    user: &TestUser,
+    relay_dev: TestDevice,
+    workspaces: &[u64],
+    members: &[[u8; 32]],
+    plane: Option<std::sync::Arc<dyn tilo_relay::AppServingPlane>>,
+    limits: tilo_relay::RelayLimits,
+) -> Relay {
     let mut cfg = RelayConfig {
         state_root: state_root.to_path_buf(),
+        limits,
         ..Default::default()
     };
     for id in workspaces {

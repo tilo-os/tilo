@@ -19,11 +19,17 @@ use crate::auth::AuthenticatedPeer;
 use crate::frame::FrameReader;
 use crate::store::StoreError;
 use crate::transport::Envelope;
-use crate::workspace::{SharedWorkspace, Subscriber};
+use crate::workspace::{OutboundFrame, SharedWorkspace, Subscriber, encode_frame};
 
-/// Maximum live fan-out backlog per connected peer. Durable deltas move to
-/// disk once this fills; ephemeral presence may be dropped with the session.
-const PEER_OUTBOUND_CAPACITY: usize = 32;
+/// Maximum live fan-out backlog per connected peer, in frames. Frames are
+/// shared with every other recipient (see [`OutboundFrame`]), so the backlog
+/// costs a pointer per entry rather than a payload copy: the bound exists to
+/// notice a peer that stopped reading, not to cap memory per subscriber. A
+/// full backlog disconnects the peer; on reconnect it replays the retained
+/// store and its pending queue. Sized for a busy public room, where a burst
+/// of messages and reactions from hundreds of members must not disconnect a
+/// member on an ordinary connection.
+const PEER_OUTBOUND_CAPACITY: usize = 1024;
 
 /// Reason a peer task ends.
 #[derive(Debug, thiserror::Error)]
@@ -87,6 +93,9 @@ pub struct PeerContext {
     /// Answers remote-action frames addressed to this relay. `None` unless
     /// the host supplied one and advertises `app_serving`.
     pub app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+    /// Live subscribers one workspace admits (see
+    /// [`crate::config::RelayLimits::max_subscribers_per_workspace`]).
+    pub max_subscribers_per_workspace: usize,
 }
 
 /// Read-mostly session state [`handle_envelope`] and its per-arm
@@ -96,7 +105,8 @@ pub struct PeerContext {
 struct SessionCtx<'a> {
     workspaces: &'a WorkspaceRegistry,
     autobind: Option<&'a WorkspaceAutobind>,
-    outbound: &'a mpsc::Sender<Envelope>,
+    outbound: &'a mpsc::Sender<OutboundFrame>,
+    max_subscribers_per_workspace: usize,
     own_user_public_key: &'a [u8; 32],
     metrics: &'a crate::metrics::Metrics,
     trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
@@ -137,11 +147,12 @@ where
         metrics,
         own_device_public_key,
         app_serving,
+        max_subscribers_per_workspace,
     } = ctx;
 
     // Outbound channel — every workspace runtime this peer is
     // subscribed to writes into it; we drain to the wire.
-    let (tx, mut rx) = mpsc::channel::<Envelope>(PEER_OUTBOUND_CAPACITY);
+    let (tx, mut rx) = mpsc::channel::<OutboundFrame>(PEER_OUTBOUND_CAPACITY);
     let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
     let mut reader = FrameReader::new(read);
     // Track our subscriptions so we can unregister on disconnect.
@@ -154,6 +165,7 @@ where
         workspaces: &workspaces,
         autobind: autobind.as_ref(),
         outbound: &tx,
+        max_subscribers_per_workspace,
         own_user_public_key: &own_user_public_key,
         metrics: &metrics,
         trust_policy: &trust_policy,
@@ -182,10 +194,7 @@ where
                 }
                 outbound = rx.recv() => {
                     match outbound {
-                        Some(env) => {
-                            let bytes = crate::frame::encode(&env)?;
-                            write.write_all(&bytes).await?;
-                        }
+                        Some(frame) => write.write_all(&frame).await?,
                         None => break,
                     }
                 }
@@ -248,8 +257,7 @@ async fn audit_subscriber_access(
             continue;
         };
         let mut workspace = workspace.lock().await;
-        let devices = workspace.store.load_membership()?;
-        workspace.membership.set(devices);
+        workspace.refresh_membership()?;
         let is_federated = peer.role == crate::auth::PeerRole::PeerRelay
             && peer.user_public_key == *session.own_user_public_key
             && workspace
@@ -399,6 +407,7 @@ async fn handle_subscribe(
         user: peer.user_public_key,
         federating: peer.role == crate::auth::PeerRole::PeerRelay
             && peer.user_public_key == *session.own_user_public_key,
+        max_subscribers: session.max_subscribers_per_workspace,
     };
     // Admission may persist membership and the replay scans the retained
     // and pending directories: blocking I/O, so it runs on the blocking
@@ -450,6 +459,9 @@ struct Admission {
     /// A peer relay of the relay's own user, federating rather than
     /// subscribing as a device.
     federating: bool,
+    /// Live subscribers the workspace admits; a device already subscribed
+    /// may always resubscribe.
+    max_subscribers: usize,
 }
 
 /// The replay backlog gathered for an admitted subscriber.
@@ -472,8 +484,12 @@ fn prepare_subscribe(
     admission: Admission,
     workspace_id: u64,
 ) -> Result<SubscribeOutcome, PeerError> {
-    let devices = wr.store.load_membership()?;
-    wr.membership.set(devices);
+    if !wr.has_subscriber(&admission.device) && wr.subscribers.len() >= admission.max_subscribers {
+        return Ok(SubscribeOutcome::Rejected(
+            "workspace subscriber limit reached",
+        ));
+    }
+    wr.refresh_membership()?;
     // Membership gates DEVICE subscribers. Peer-relay subscribers are
     // already gated by cross-user auth (they must chain to the same
     // user root, same handshake as any device) plus the
@@ -661,24 +677,6 @@ async fn handle_delta(
     }
     let seq = unix_now_ns();
     let raw_bytes = delta.clone();
-    let offline_devices = wr
-        .membership
-        .devices
-        .iter()
-        .filter(|device| {
-            *device != author_device_public_key && !wr.subscribers.contains_key(*device)
-        })
-        .count();
-    let offline_relays = if peer.role == crate::auth::PeerRole::Device {
-        wr.known_peer_relays
-            .iter()
-            .filter(|device| {
-                *device != author_device_public_key && !wr.subscribers.contains_key(*device)
-            })
-            .count()
-    } else {
-        0
-    };
     let author = *author_device_public_key;
     let role = peer.role;
     let delta_len = raw_bytes.len();
@@ -686,15 +684,17 @@ async fn handle_delta(
     // snapshot (each fsynced) and merges the delta into the pinned document:
     // blocking I/O and CPU work, so it runs on the blocking pool. The
     // workspace lock moves with it, keeping deltas in arrival order.
-    let delivered =
+    let fanout =
         tokio::task::spawn_blocking(move || wr.fanout_delta(&author, role, &env, &raw_bytes, seq))
             .await
             .map_err(|_| PeerError::Io(std::io::Error::other("delta fan-out panicked")))??;
     session.metrics.inc_deltas_received();
-    session.metrics.add_deltas_fanned_out(delivered as u64);
-    session.metrics.add_bytes_queued(
-        (delta_len as u64).saturating_mul(offline_devices.saturating_add(offline_relays) as u64),
-    );
+    session
+        .metrics
+        .add_deltas_fanned_out(fanout.delivered as u64);
+    session
+        .metrics
+        .add_bytes_queued((delta_len as u64).saturating_mul(fanout.queued as u64));
     Ok(None)
 }
 
@@ -789,7 +789,7 @@ async fn handle_remote_action(
         frame,
     };
     let delivered = match ws {
-        Some(ws) => ws.lock().await.route_directed(&to, stamped),
+        Some(ws) => ws.lock().await.route_directed(&to, &stamped),
         None => false,
     };
     if delivered {
@@ -826,14 +826,17 @@ fn serve_locally(
         else {
             return;
         };
-        let _ = outbound.try_send(Envelope::RemoteAction {
+        let Ok(frame) = encode_frame(&Envelope::RemoteAction {
             workspace_id,
             version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
             to_device_public_key,
             from_device_public_key,
             from_user_public_key,
             frame,
-        });
+        }) else {
+            return;
+        };
+        let _ = outbound.try_send(frame);
     });
     Ok(None)
 }

@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use iroh::endpoint::{Endpoint, RecvStream, SendStream, presets};
@@ -268,6 +268,8 @@ impl Relay {
                 }
             }),
             app_serving,
+            limits: cfg.limits,
+            live_connections: Arc::new(AtomicUsize::new(0)),
         };
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
@@ -477,14 +479,14 @@ impl Relay {
             existing.membership.set(members);
             existing
                 .store
-                .save_membership(&existing.membership.devices)?;
+                .save_membership(existing.membership.devices())?;
             drop(existing);
             return Ok(());
         }
         let mut rt =
             WorkspaceRuntime::open(&state_root, workspace_id, pinned, Membership::default())?;
         rt.membership.set(members);
-        rt.store.save_membership(&rt.membership.devices)?;
+        rt.store.save_membership(rt.membership.devices())?;
         self.workspaces
             .lock()
             .await
@@ -1158,6 +1160,31 @@ struct RelayProtocol {
     metrics: Arc<Metrics>,
     autobind: Option<WorkspaceAutobind>,
     app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+    limits: crate::config::RelayLimits,
+    /// Relay-protocol connections currently open; bounded by
+    /// [`crate::config::RelayLimits::max_connections`].
+    live_connections: Arc<AtomicUsize>,
+}
+
+/// Holds one slot of [`RelayProtocol::live_connections`] for as long as its
+/// connection task runs.
+struct ConnectionSlot(Arc<AtomicUsize>);
+
+impl ConnectionSlot {
+    /// Take a slot, or `None` when `limit` are already taken.
+    fn acquire(live: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
+        live.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            (current < limit).then_some(current.saturating_add(1))
+        })
+        .ok()?;
+        Some(Self(Arc::clone(live)))
+    }
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[derive(Clone)]
@@ -1498,12 +1525,21 @@ impl ProtocolHandler for RelayProtocol {
                 "home peer is decommissioned",
             )));
         }
+        let Some(slot) =
+            ConnectionSlot::acquire(&self.live_connections, self.limits.max_connections)
+        else {
+            connection.close(1u32.into(), b"relay connection limit reached");
+            return Err(AcceptError::from_err(std::io::Error::other(
+                "relay connection limit reached",
+            )));
+        };
         let this = self.clone();
         let (send, recv) = connection.accept_bi().await?;
         // Run the whole session in a separate task so we return
         // promptly and the iroh router can accept the next
         // connection.
         tokio::spawn(async move {
+            let _slot = slot;
             if let Err(e) = handle_conn(this, connection, send, recv).await {
                 tracing::debug!("relay conn ended: {e}");
             }
@@ -1590,6 +1626,7 @@ async fn handle_conn(
             metrics: ctx.metrics,
             own_device_public_key: ctx.own_cert.device_public_key,
             app_serving: ctx.app_serving,
+            max_subscribers_per_workspace: ctx.limits.max_subscribers_per_workspace,
         },
     )
     .await;

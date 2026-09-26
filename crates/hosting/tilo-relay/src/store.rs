@@ -18,6 +18,14 @@
 //! `pin = true` in the config; unpinned workspaces are pure fan-out
 //! + store-and-forward. Pending directories exist regardless of
 //!   pin state — a peer can be offline and still catch up when it reconnects.
+//!
+//! Every queue here is bounded so one busy room cannot fill the disk:
+//! a device's pending queue ([`MAX_PENDING_ENTRIES_PER_DEVICE`],
+//! [`MAX_PENDING_BYTES_PER_DEVICE`]), a channel's retained tail
+//! ([`MAX_RETAINED_TAIL_ENTRIES`], [`MAX_RETAINED_TAIL_BYTES`]) and the audit
+//! log ([`MAX_LOG_BYTES`]). Overflow drops the oldest entries: a pending
+//! delta is also in the pinned document that anti-entropy serves, and a
+//! retained tail is superseded by the next checkpoint a member publishes.
 
 use std::fs;
 use std::io::{self, Write};
@@ -38,6 +46,23 @@ pub const MEMBERSHIP_FILE: &str = "membership.json";
 
 /// Retained bootstrap checkpoints and the incremental tails after them.
 pub const RETAINED_DIR: &str = "retained";
+
+/// Most queued deltas one offline device may hold. Retained document
+/// traffic never enters the per-device queue (the retained store replays
+/// it), so this bounds only workspace-directory deltas and federation
+/// traffic, which the pinned document also serves through anti-entropy.
+pub const MAX_PENDING_ENTRIES_PER_DEVICE: u64 = 4096;
+/// Most queued bytes one offline device may hold.
+pub const MAX_PENDING_BYTES_PER_DEVICE: u64 = 64 * 1024 * 1024;
+/// Most incremental deltas retained after one channel's checkpoint. Members
+/// publish a fresh checkpoint whenever they (re)attach to the host, which
+/// resets the tail; the bound only matters for a channel nobody checkpoints.
+pub const MAX_RETAINED_TAIL_ENTRIES: u64 = 16_384;
+/// Most bytes retained after one channel's checkpoint.
+pub const MAX_RETAINED_TAIL_BYTES: u64 = 256 * 1024 * 1024;
+/// Size at which `log.jsonl` is rotated to `log.jsonl.1`, replacing the
+/// previous rotation. The audit trail keeps between one and two of these.
+pub const MAX_LOG_BYTES: u64 = 16 * 1024 * 1024;
 /// Durable personal-mesh compute route bindings and lifecycle state.
 pub const COMPUTE_DIR: &str = "compute";
 /// Dedicated queue for the versioned personal-compute protocol.
@@ -113,6 +138,63 @@ pub struct WorkspaceStore {
     root: PathBuf,
     workspace_id: u64,
     pinned: bool,
+    /// Entry and byte totals of the bounded directories written through this
+    /// store, keyed by directory. Filled from disk on first use and
+    /// invalidated whenever entries may be removed from outside the store
+    /// (a replay acknowledgement), so it never under-counts a queue.
+    usage: std::sync::Mutex<std::collections::HashMap<PathBuf, QueueUsage>>,
+    bounds: QueueBounds,
+}
+
+/// Bounds on the per-device pending queues and per-channel retained tails.
+/// Production uses [`QueueBounds::default`]; tests shrink them to exercise
+/// the same eviction path without writing thousands of files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QueueBounds {
+    /// See [`MAX_PENDING_ENTRIES_PER_DEVICE`].
+    pub pending_entries: u64,
+    /// See [`MAX_PENDING_BYTES_PER_DEVICE`].
+    pub pending_bytes: u64,
+    /// See [`MAX_RETAINED_TAIL_ENTRIES`].
+    pub tail_entries: u64,
+    /// See [`MAX_RETAINED_TAIL_BYTES`].
+    pub tail_bytes: u64,
+}
+
+impl Default for QueueBounds {
+    fn default() -> Self {
+        Self {
+            pending_entries: MAX_PENDING_ENTRIES_PER_DEVICE,
+            pending_bytes: MAX_PENDING_BYTES_PER_DEVICE,
+            tail_entries: MAX_RETAINED_TAIL_ENTRIES,
+            tail_bytes: MAX_RETAINED_TAIL_BYTES,
+        }
+    }
+}
+
+/// Running totals of one bounded queue directory.
+#[derive(Clone, Copy, Debug, Default)]
+struct QueueUsage {
+    entries: u64,
+    bytes: u64,
+}
+
+impl QueueUsage {
+    fn of(entries: &[(PathBuf, u64)]) -> Self {
+        Self {
+            entries: entries.len() as u64,
+            bytes: entries.iter().map(|(_, len)| *len).sum(),
+        }
+    }
+}
+
+/// Identity of the membership file as last loaded: every rewrite is an
+/// atomic rename, so a new inode (or size, or mtime) means new contents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MembershipStamp {
+    inode: u64,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
 }
 
 /// One durable queue entry loaded for delivery but not yet acknowledged.
@@ -146,7 +228,14 @@ impl WorkspaceStore {
             root,
             workspace_id,
             pinned,
+            usage: std::sync::Mutex::new(std::collections::HashMap::new()),
+            bounds: QueueBounds::default(),
         })
+    }
+
+    /// Replace the queue bounds (see [`QueueBounds`]).
+    pub fn set_bounds(&mut self, bounds: QueueBounds) {
+        self.bounds = bounds;
     }
 
     /// Root directory for this workspace's state.
@@ -221,6 +310,31 @@ impl WorkspaceStore {
                 })
             })
             .collect()
+    }
+
+    /// Identity of the membership file's current contents, `None` when it
+    /// does not exist. Lets a caller that polls membership skip re-reading
+    /// and re-parsing an unchanged file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file exists but its metadata can't be read.
+    pub fn membership_stamp(&self) -> Result<Option<MembershipStamp>, StoreError> {
+        match fs::metadata(self.root.join(MEMBERSHIP_FILE)) {
+            Ok(metadata) => {
+                #[cfg(unix)]
+                let inode = std::os::unix::fs::MetadataExt::ino(&metadata);
+                #[cfg(not(unix))]
+                let inode = 0;
+                Ok(Some(MembershipStamp {
+                    inode,
+                    len: metadata.len(),
+                    modified: metadata.modified().ok(),
+                }))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Atomically replace the durable membership set.
@@ -403,6 +517,9 @@ impl WorkspaceStore {
     /// `entry` can't be JSON-encoded, or the write fails.
     pub fn append_log(&self, entry: &LogEntry) -> Result<(), StoreError> {
         let path = self.root.join(LOG_FILE);
+        if fs::metadata(&path).is_ok_and(|metadata| metadata.len() >= MAX_LOG_BYTES) {
+            fs::rename(&path, self.root.join(format!("{LOG_FILE}.1")))?;
+        }
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -413,14 +530,18 @@ impl WorkspaceStore {
     }
 
     /// Enqueue a delta for later delivery to `device_pubkey`. Each
-    /// enqueue produces a new file `<seq>.delta` where seq is a
-    /// monotonically increasing hex nanosecond timestamp; the
-    /// filename ordering is the delivery ordering.
+    /// enqueue produces a new file `<seq>.delta`; the caller supplies a
+    /// strictly increasing `seq` per workspace, so filename order is
+    /// delivery order and no two deltas share a file.
+    ///
+    /// The queue is bounded by [`MAX_PENDING_ENTRIES_PER_DEVICE`] and
+    /// [`MAX_PENDING_BYTES_PER_DEVICE`]; beyond either the oldest entries
+    /// are dropped (see the module docs for why that is recoverable).
     ///
     /// # Errors
     ///
     /// Returns an error if the per-device pending directory can't be
-    /// created or the atomic write fails.
+    /// created, the atomic write fails, or an evicted entry can't be removed.
     pub fn enqueue_pending(
         &self,
         device_pubkey: &[u8; 32],
@@ -436,7 +557,74 @@ impl WorkspaceStore {
         // same peer's queue cannot publish each other's half-written bytes —
         // the fixed `.partial` name this used to use could.
         atomic_file::write(&path, bytes)?;
+        self.account_and_bound(
+            &pending_dir,
+            bytes.len() as u64,
+            self.bounds.pending_entries,
+            self.bounds.pending_bytes,
+        )?;
         Ok(path)
+    }
+
+    /// Add one just-written entry of `len` bytes to `dir`'s totals and, if
+    /// either bound is now exceeded, remove the oldest `.delta` entries until
+    /// the queue is back under three quarters of both bounds. Evicting a
+    /// batch keeps the directory scan off the per-delta path.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the totals stay locked through eviction so a concurrent writer cannot count against a queue being trimmed"
+    )]
+    fn account_and_bound(
+        &self,
+        dir: &Path,
+        len: u64,
+        max_entries: u64,
+        max_bytes: u64,
+    ) -> Result<(), StoreError> {
+        let mut usage = self
+            .usage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let totals = if let Some(totals) = usage.get_mut(dir) {
+            totals.entries = totals.entries.saturating_add(1);
+            totals.bytes = totals.bytes.saturating_add(len);
+            *totals
+        } else {
+            // First write since start (or since an external removal): the
+            // scan already includes the entry just written.
+            let totals = QueueUsage::of(&sorted_deltas(dir)?);
+            usage.insert(dir.to_path_buf(), totals);
+            totals
+        };
+        if totals.entries <= max_entries && totals.bytes <= max_bytes {
+            return Ok(());
+        }
+        let entries = sorted_deltas(dir)?;
+        let mut remaining = QueueUsage::of(&entries);
+        let target_entries = max_entries.saturating_sub(max_entries / 4);
+        let target_bytes = max_bytes.saturating_sub(max_bytes / 4);
+        let mut dropped = 0u64;
+        for (path, len) in entries {
+            if remaining.entries <= target_entries && remaining.bytes <= target_bytes {
+                break;
+            }
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            remaining.entries = remaining.entries.saturating_sub(1);
+            remaining.bytes = remaining.bytes.saturating_sub(len);
+            dropped = dropped.saturating_add(1);
+        }
+        tracing::warn!(
+            workspace_id = self.workspace_id,
+            queue = %dir.display(),
+            dropped,
+            "bounded relay queue overflowed; dropped its oldest entries"
+        );
+        usage.insert(dir.to_path_buf(), remaining);
+        Ok(())
     }
 
     /// Load the pending queue in delivery order without acknowledging it.
@@ -446,6 +634,12 @@ impl WorkspaceStore {
         device_pubkey: &[u8; 32],
     ) -> Result<Vec<PendingEntry>, StoreError> {
         let dir = self.pending_dir_for(device_pubkey);
+        // The caller acknowledges entries by removing their files, outside
+        // this store; recount from disk on the next enqueue.
+        self.usage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&dir);
         if !dir.exists() {
             return Ok(Vec::new());
         }
@@ -522,16 +716,22 @@ impl WorkspaceStore {
         if tail.exists() {
             fs::remove_dir_all(&tail)?;
         }
-        fs::create_dir_all(tail)?;
+        fs::create_dir_all(&tail)?;
+        self.usage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(tail, QueueUsage::default());
         Ok(())
     }
 
-    /// Append one encoded relay envelope to the retained tail for `channel`.
+    /// Append one encoded relay envelope to the retained tail for `channel`,
+    /// bounded by [`MAX_RETAINED_TAIL_ENTRIES`] and
+    /// [`MAX_RETAINED_TAIL_BYTES`] (oldest dropped first).
     ///
     /// # Errors
     ///
-    /// Returns an error if the tail directory can't be created or the
-    /// atomic write fails.
+    /// Returns an error if the tail directory can't be created, the
+    /// atomic write fails, or an evicted entry can't be removed.
     pub fn retain_delta(
         &self,
         channel: &[u8; 32],
@@ -545,6 +745,12 @@ impl WorkspaceStore {
             .join(hex::encode(channel));
         fs::create_dir_all(&tail)?;
         atomic_file::write(&tail.join(format!("{seq:016x}.delta")), bytes)?;
+        self.account_and_bound(
+            &tail,
+            bytes.len() as u64,
+            self.bounds.tail_entries,
+            self.bounds.tail_bytes,
+        )?;
         Ok(())
     }
 
@@ -589,6 +795,29 @@ impl WorkspaceStore {
     fn pending_dir_for(&self, device_pubkey: &[u8; 32]) -> PathBuf {
         self.root.join("pending").join(hex::encode(device_pubkey))
     }
+}
+
+/// The `.delta` entries of `dir`, oldest first, with their sizes. A missing
+/// directory is empty.
+fn sorted_deltas(dir: &Path) -> Result<Vec<(PathBuf, u64)>, StoreError> {
+    let read = match fs::read_dir(dir) {
+        Ok(read) => read,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut entries: Vec<(std::ffi::OsString, PathBuf, u64)> = read
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".delta"))
+        .filter_map(|entry| {
+            let len = entry.metadata().ok()?.len();
+            Some((entry.file_name(), entry.path(), len))
+        })
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(entries
+        .into_iter()
+        .map(|(_, path, len)| (path, len))
+        .collect())
 }
 
 /// Load-or-mint the relay's iroh node secret.
@@ -723,6 +952,138 @@ mod tests {
             store.load_retained().unwrap(),
             vec![b"checkpoint-2".to_vec()]
         );
+    }
+
+    fn small_bounds() -> QueueBounds {
+        QueueBounds {
+            pending_entries: 8,
+            pending_bytes: 1024,
+            tail_entries: 8,
+            tail_bytes: 1024,
+        }
+    }
+
+    #[test]
+    fn pending_queue_drops_its_oldest_entries_beyond_the_entry_bound() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = WorkspaceStore::open(tmp.path(), 9, false).unwrap();
+        store.set_bounds(small_bounds());
+        let peer = [5u8; 32];
+        for seq in 0..9u64 {
+            store
+                .enqueue_pending(&peer, seq, format!("delta-{seq}").as_bytes())
+                .unwrap();
+        }
+        // The ninth entry overflowed the bound of eight: the queue was cut
+        // back to three quarters of it, oldest first.
+        let kept = store.drain_pending(&peer).unwrap();
+        assert_eq!(
+            kept,
+            (3..9u64)
+                .map(|seq| format!("delta-{seq}").into_bytes())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn pending_queue_drops_its_oldest_entries_beyond_the_byte_bound() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = WorkspaceStore::open(tmp.path(), 9, false).unwrap();
+        store.set_bounds(small_bounds());
+        let peer = [6u8; 32];
+        for seq in 0..3u64 {
+            store
+                .enqueue_pending(&peer, seq, &[u8::try_from(seq).unwrap(); 400])
+                .unwrap();
+        }
+        let kept = store.drain_pending(&peer).unwrap();
+        assert_eq!(kept, vec![vec![2u8; 400]], "1200 bytes cut back under 768");
+    }
+
+    #[test]
+    fn pending_bound_counts_entries_already_on_disk_and_forgets_acknowledged_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peer = [7u8; 32];
+        {
+            let store = WorkspaceStore::open(tmp.path(), 10, false).unwrap();
+            for seq in 0..6u64 {
+                store.enqueue_pending(&peer, seq, b"x").unwrap();
+            }
+        }
+        // A restarted relay counts the six queued before it started.
+        let mut store = WorkspaceStore::open(tmp.path(), 10, false).unwrap();
+        store.set_bounds(small_bounds());
+        for seq in 6..9u64 {
+            store.enqueue_pending(&peer, seq, b"x").unwrap();
+        }
+        assert_eq!(store.count_pending(&peer).unwrap(), 6);
+        // A delivered replay acknowledges by removing files; the next
+        // enqueue must not evict against the stale count.
+        for entry in store.load_pending(&peer).unwrap() {
+            std::fs::remove_file(entry.path).unwrap();
+        }
+        for seq in 9..16u64 {
+            store.enqueue_pending(&peer, seq, b"x").unwrap();
+        }
+        assert_eq!(store.count_pending(&peer).unwrap(), 7);
+    }
+
+    #[test]
+    fn retained_tail_is_bounded_and_a_checkpoint_resets_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = WorkspaceStore::open(tmp.path(), 11, true).unwrap();
+        store.set_bounds(small_bounds());
+        let channel = [3u8; 32];
+        store.retain_checkpoint(&channel, b"checkpoint").unwrap();
+        for seq in 0..9u64 {
+            store
+                .retain_delta(&channel, seq, format!("tail-{seq}").as_bytes())
+                .unwrap();
+        }
+        let retained = store.load_retained().unwrap();
+        assert_eq!(
+            retained[0], b"checkpoint",
+            "the checkpoint is never evicted"
+        );
+        assert_eq!(
+            retained[1..].to_vec(),
+            (3..9u64)
+                .map(|seq| format!("tail-{seq}").into_bytes())
+                .collect::<Vec<_>>()
+        );
+        store.retain_checkpoint(&channel, b"checkpoint-2").unwrap();
+        for seq in 10..18u64 {
+            store.retain_delta(&channel, seq, b"t").unwrap();
+        }
+        assert_eq!(
+            store.load_retained().unwrap().len(),
+            9,
+            "eight tail entries fit after a fresh checkpoint"
+        );
+    }
+
+    #[test]
+    fn audit_log_rotates_instead_of_growing_without_bound() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 12, false).unwrap();
+        let log = store.root().join(LOG_FILE);
+        std::fs::write(&log, vec![b'x'; usize::try_from(MAX_LOG_BYTES).unwrap()]).unwrap();
+        store
+            .append_log(&LogEntry {
+                workspace_id: 12,
+                received_at_ns: 1,
+                author_device_hex: String::new(),
+                authored_at_ns: 1,
+                delta_len: 1,
+            })
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(store.root().join(format!("{LOG_FILE}.1")))
+                .unwrap()
+                .len(),
+            MAX_LOG_BYTES
+        );
+        assert!(std::fs::metadata(&log).unwrap().len() < 1024);
     }
 
     #[test]

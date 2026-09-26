@@ -47,7 +47,7 @@ mod sig64;
 pub mod transport;
 
 pub use auth::{AuthError, AuthenticatedPeer, PeerRole};
-pub use config::{ConfigError, PeerRelayConfig, RelayConfig, WorkspaceBinding};
+pub use config::{ConfigError, PeerRelayConfig, RelayConfig, RelayLimits, WorkspaceBinding};
 pub use home_peer::{HomePeerRegistration, valid_home_peer_label};
 pub use mesh::{
     ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, Placement, PlacementRequest,

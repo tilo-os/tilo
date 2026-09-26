@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 use tilo_relay_protocol::{
     ComputeAccelerator, DeviceMeshProfile, DeviceRole, HomePeerRegistration, MetricsSnapshot,
-    PeerRelayConfig, PowerAvailability, ProcessLease, RelayConfig, ReplicationIntent,
+    PeerRelayConfig, PowerAvailability, ProcessLease, RelayConfig, RelayLimits, ReplicationIntent,
     ReplicationResource, ServiceCapabilities, TrustPolicy, WorkspaceBinding,
     personal_continuity_workspace_id, room_workspace_id,
 };
@@ -199,6 +199,7 @@ fn relay_config_toml_encoding() {
         },
         device_role: DeviceRole::AlwaysOnServer,
         services: ServiceCapabilities::home_peer(),
+        limits: RelayLimits::default(),
         workspaces: vec![
             WorkspaceBinding {
                 id: u64::MAX,
@@ -262,6 +263,33 @@ priority = 100
 "#;
     assert_eq!(toml::to_string_pretty(&config).unwrap(), encoded);
     assert_eq!(toml::from_str::<RelayConfig>(encoded).unwrap(), config);
+}
+
+#[test]
+fn relay_limits_toml_encoding() {
+    let config = RelayConfig {
+        limits: RelayLimits {
+            max_connections: 20_000,
+            max_subscribers_per_workspace: 5_000,
+        },
+        ..RelayConfig::default()
+    };
+    let encoded = toml::to_string_pretty(&config).unwrap();
+    assert!(
+        encoded
+            .contains("[limits]\nmax_connections = 20000\nmax_subscribers_per_workspace = 5000\n"),
+        "{encoded}"
+    );
+    assert_eq!(toml::from_str::<RelayConfig>(&encoded).unwrap(), config);
+
+    // One limit given, the other keeps its default.
+    let partial: RelayConfig = toml::from_str("[limits]\nmax_connections = 16\n").unwrap();
+    assert_eq!(partial.limits.max_connections, 16);
+    assert_eq!(
+        partial.limits.max_subscribers_per_workspace,
+        RelayLimits::DEFAULT_MAX_SUBSCRIBERS_PER_WORKSPACE
+    );
+    assert!(toml::from_str::<RelayConfig>("[limits]\nmax_rooms = 1\n").is_err());
 }
 
 #[test]

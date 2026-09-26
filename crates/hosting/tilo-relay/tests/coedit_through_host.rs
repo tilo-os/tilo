@@ -8,8 +8,8 @@
 //!
 //!   1. a live edit fans out to an online peer, and
 //!   2. two peers that are **never simultaneously online** still
-//!      converge on the shared document — the edit is store-and-
-//!      forwarded on disk and survives the host process restarting.
+//!      converge on the shared document — the edit is retained on the
+//!      host's disk once for the room and survives the host restarting.
 //!
 //! Convergence is asserted on genuine Automerge documents (identical
 //! `get_heads()` + identical rendered text), on the real
@@ -152,14 +152,14 @@ async fn live_coedit_fans_out_through_host() {
 }
 
 /// A connects to `addr1`, joins the co-edit session, drains its own
-/// Ready(0), publishes `offline-note`, waits until the host has queued
+/// Ready(0), publishes `offline-note`, waits until the host has retained
 /// it on disk for the (never-yet-connected) B, then disconnects.
 async fn publish_offline_coedit(
     addr1: iroh_base::EndpointAddr,
     user: &TestUser,
     a: &crate::common::TestDevice,
     ws: u64,
-    pending_dir: &std::path::Path,
+    retained_dir: &std::path::Path,
 ) -> AutoCommit {
     let a_client = RelayClient::connect(
         client_endpoint().await,
@@ -188,7 +188,7 @@ async fn publish_offline_coedit(
 
     let mut queued = 0;
     for _ in 0..40 {
-        queued = pending_count(pending_dir);
+        queued = pending_count(retained_dir);
         if queued >= 1 {
             break;
         }
@@ -276,22 +276,25 @@ async fn never_both_online_coedit_converges_through_host() {
     let host1 = spawn_relay_on(&state_root, &user, host1_dev, &[WS], &members).await;
     let addr1 = host1.node_addr();
 
-    // B never connected, so the co-edit must be queued on disk for it.
-    let b_hex = hex::encode(b.device_pubkey());
-    let pending_dir = state_root
-        .join("workspaces")
-        .join(WS.to_string())
+    // B never connected. The co-edit is retained once for the room, never
+    // copied into a per-device queue.
+    let workspace_dir = state_root.join("workspaces").join(WS.to_string());
+    let retained_dir = workspace_dir
+        .join("retained/tails")
+        .join(hex::encode([2u8; 32]));
+    let pending_dir = workspace_dir
         .join("pending")
-        .join(&b_hex);
-    let mut doc_a = publish_offline_coedit(addr1, &user, &a, WS, &pending_dir).await;
+        .join(hex::encode(b.device_pubkey()));
+    let mut doc_a = publish_offline_coedit(addr1, &user, &a, WS, &retained_dir).await;
+    assert_eq!(pending_count(&pending_dir), 0, "no per-device copy for B");
 
     // ---- The host restarts on the same state directory. ----
     drop(host1);
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
-        pending_count(&pending_dir),
+        pending_count(&retained_dir),
         1,
-        "the queued co-edit must survive the host process dying"
+        "the retained co-edit must survive the host process dying"
     );
 
     let host2_dev = user.enrol("home-server-2", DeviceCapabilities::host());
@@ -308,9 +311,9 @@ async fn never_both_online_coedit_converges_through_host() {
         "B converges with A across a host restart, never having been online together"
     );
     assert_eq!(
-        pending_count(&pending_dir),
-        0,
-        "queue drains after delivery"
+        pending_count(&retained_dir),
+        1,
+        "retained room state stays for the next member to join"
     );
 
     drop(host2);

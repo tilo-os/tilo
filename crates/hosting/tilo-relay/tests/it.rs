@@ -47,6 +47,8 @@ mod multi_host;
 mod personal_device_process;
 #[path = "relay_daemon.rs"]
 mod relay_daemon;
+#[path = "relay_limits.rs"]
+mod relay_limits;
 #[path = "remote_action_routing.rs"]
 mod remote_action_routing;
 #[path = "store_and_forward.rs"]
