@@ -6,6 +6,8 @@
 use std::collections::BTreeSet;
 
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
+
+use crate::shell::fixed_chords::FixedChordAction;
 use winit::event::Modifiers;
 use winit::keyboard::{Key, NamedKey};
 
@@ -177,7 +179,8 @@ pub(super) fn shortcut_action_label(action: ShortcutAction) -> &'static str {
 
 /// Compact, non-editable reference shown below the configurable navigation
 /// pairs. Configurable actions use their live chord so the guide never
-/// promises a default the user has rebound.
+/// promises a default the user has rebound; fixed chords come from the
+/// shell's one fixed-chord table.
 pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(&'static str, String)> {
     let chord = |action| {
         shortcuts
@@ -185,26 +188,33 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(&'stat
             .get(&action)
             .map_or_else(|| "Unassigned".into(), shortcut_guide_chord)
     };
-    vec![
-        ("Switch windows", "Alt+Tab".into()),
-        ("Close tab", "Alt+F4  /  Super+W".into()),
-        ("Change workspace", "Super+Page Up / Down".into()),
-        ("New window", "Super+N".into()),
-        ("Add tab here", "Super+T".into()),
-        ("Duplicate tab", "Super+D".into()),
-        ("Global search", chord(ShortcutAction::Search)),
-        ("Global search", "Super+Space".into()),
-        ("Overview", chord(ShortcutAction::WorkspaceOverview)),
-        ("Quick Settings", chord(ShortcutAction::QuickSettings)),
-        ("Workspace wheel", "Super+S".into()),
-        ("Lock", chord(ShortcutAction::Lock)),
-        ("Screenshot", "Print Screen".into()),
-        ("Wireless display", "Super+P".into()),
-        ("Capture screenshot", "Super+Shift+S".into()),
-        ("Open terminal", "Super+Enter".into()),
-        ("Picture in picture", "Super+Shift+P".into()),
-        ("Save recent replay", "Super+Shift+R".into()),
+    let fixed = |action| {
+        crate::shell::fixed_chords::entry_for(action).map(|entry| (entry.label, entry.display()))
+    };
+    let editable = |label: &'static str, action| Some((label, chord(action)));
+    [
+        fixed(FixedChordAction::SwitchWindows),
+        fixed(FixedChordAction::CloseTab),
+        fixed(FixedChordAction::ChangeWorkspace),
+        fixed(FixedChordAction::NewWindow),
+        fixed(FixedChordAction::AddTab),
+        fixed(FixedChordAction::DuplicateTab),
+        editable("Global search", ShortcutAction::Search),
+        fixed(FixedChordAction::GlobalSearch),
+        editable("Overview", ShortcutAction::WorkspaceOverview),
+        editable("Quick Settings", ShortcutAction::QuickSettings),
+        fixed(FixedChordAction::WorkspaceWheel),
+        editable("Lock", ShortcutAction::Lock),
+        fixed(FixedChordAction::Screenshot),
+        fixed(FixedChordAction::WirelessDisplay),
+        fixed(FixedChordAction::CaptureScreenshot),
+        fixed(FixedChordAction::OpenTerminal),
+        fixed(FixedChordAction::PictureInPicture),
+        fixed(FixedChordAction::SaveRecentReplay),
     ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 pub(super) fn shortcut_reference_columns(_body_width: f64) -> usize {

@@ -46,6 +46,7 @@ pub mod device_fabric_secrets;
 pub mod doc_open;
 pub mod editor_app;
 mod file_picker_overlay;
+pub mod fixed_chords;
 pub mod fixture_inputs;
 pub mod floating;
 pub mod foreign;

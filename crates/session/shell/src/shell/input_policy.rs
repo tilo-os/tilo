@@ -168,6 +168,7 @@ pub enum ChordKey {
     ArrowDown,
     Escape,
     Delete,
+    Enter,
     /// `F1`..`F12`, numbered from 1.
     Function(u8),
     /// A single printable character, already lowercased.
@@ -237,23 +238,10 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
     if key == ChordKey::Modifier {
         return false;
     }
-    // Alt+Tab is the conventional, immutable window ring alias. It must be
-    // withheld before a focused client sees it even though the editable
-    // spatial bindings default to Super+Left/Right.
-    if key == ChordKey::Tab && mods.alt && !mods.logo && !mods.ctrl {
-        return true;
-    }
-    // These desktop conventions are deliberately immutable aliases. They
-    // must be withheld before a focused client can consume them: Alt+F4 is
-    // the universal close gesture, while Super+PageUp/PageDown is the GNOME
-    // workspace convention people retain when moving between sessions.
-    if (key == ChordKey::Function(4) && mods.alt && !mods.logo && !mods.ctrl && !mods.shift)
-        || (matches!(key, ChordKey::PageUp | ChordKey::PageDown)
-            && mods.logo
-            && !mods.ctrl
-            && !mods.alt
-            && !mods.shift)
-    {
+    // The fixed chords (Alt+Tab, Alt+F4, Super+Page Up/Down, F1, ...) are
+    // withheld before a focused client sees them. They live in one table
+    // shared with the shortcut guide, the portal and the keyboard map.
+    if crate::shell::fixed_chords::fixed_action(key, mods).is_some() {
         return true;
     }
     // The optional Vim navigation layer (Super+Ctrl+H/J/K/L) needs no
@@ -278,10 +266,10 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
         return true;
     }
     match key {
-        // The shell visibly advertises F1 as the hardware-neutral route to
-        // its desktop guide. Reserving it here is essential: otherwise a
-        // focused client consumes the event before the guide dispatcher can
-        // see it. Other function keys remain application-owned.
+        // Print Screen and the F1 guide are fixed chords in their bare form;
+        // under Ctrl/Alt/Shift they stay shell-owned too, so a modifier held
+        // by accident cannot hand them to a focused client. Other function
+        // keys remain application-owned.
         ChordKey::PrintScreen | ChordKey::Function(1) => true,
         ChordKey::Escape => overlay_open,
         // Alt+Space has no desktop action; reserving it here silently ate
@@ -296,6 +284,7 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
         | ChordKey::ArrowDown
         | ChordKey::Char(_)
         | ChordKey::Delete
+        | ChordKey::Enter
         | ChordKey::Function(_)
         | ChordKey::Other
         | ChordKey::Modifier => false,
@@ -319,6 +308,7 @@ pub fn chord_key_for_logical(key: &Key) -> ChordKey {
         Key::Named(NamedKey::ArrowDown) => ChordKey::ArrowDown,
         Key::Named(NamedKey::Escape) => ChordKey::Escape,
         Key::Named(NamedKey::Delete) => ChordKey::Delete,
+        Key::Named(NamedKey::Enter) => ChordKey::Enter,
         Key::Named(NamedKey::F1) => ChordKey::Function(1),
         Key::Named(NamedKey::F2) => ChordKey::Function(2),
         Key::Named(NamedKey::F3) => ChordKey::Function(3),
@@ -364,6 +354,7 @@ pub fn chord_key_for_evdev(code: u32) -> ChordKey {
         103 => ChordKey::ArrowUp,
         108 => ChordKey::ArrowDown,
         111 => ChordKey::Delete,
+        28 => ChordKey::Enter,
         _ => match char_from_evdev(code) {
             Some(c) => ChordKey::Char(c),
             None => ChordKey::Other,
@@ -2033,16 +2024,23 @@ pub fn is_lock_chord(
     modifiers: Modifiers,
     shortcuts: &settings_store::hardware::ShortcutConfig,
 ) -> bool {
-    if !matches!(event, WindowEvent::KeyboardInput { .. }) {
-        return false;
-    }
-    let Some(chord) = shortcuts
-        .bindings
-        .get(&settings_store::hardware::ShortcutAction::Lock)
-    else {
+    let WindowEvent::KeyboardInput { event: key, .. } = event else {
         return false;
     };
-    lock_chord_matches(event, modifiers, chord)
+    // Super+L is a fixed alias: it locks whatever the editable Lock
+    // binding is, exactly as the shell dispatcher behind the router does.
+    if key.state == ElementState::Pressed
+        && crate::shell::fixed_chords::fixed_action(
+            chord_key_for_logical(&key.logical_key),
+            ChordMods::from(&modifiers),
+        ) == Some(crate::shell::fixed_chords::FixedChordAction::LockSession)
+    {
+        return true;
+    }
+    shortcuts
+        .bindings
+        .get(&settings_store::hardware::ShortcutAction::Lock)
+        .is_some_and(|chord| lock_chord_matches(event, modifiers, chord))
 }
 
 /// Session-lock bindings run before client routing, so their matching must
@@ -2127,13 +2125,18 @@ mod lock_chord_tests {
         let ctrl_alt = Modifiers::from(ModifiersState::CONTROL | ModifiersState::ALT);
         assert!(is_lock_chord(&l, ctrl_alt, &rebound));
         assert!(
-            !is_lock_chord(&l, mods_with_super(true), &rebound),
-            "the old default no longer locks once the snapshot rebinds it"
+            !is_lock_chord(&l, ctrl_alt, &ShortcutConfig::default()),
+            "a custom lock chord only locks while the snapshot assigns it"
+        );
+        assert!(
+            is_lock_chord(&l, mods_with_super(true), &rebound),
+            "Super+L is a fixed lock alias alongside the editable binding"
         );
 
         let mut unbound = ShortcutConfig::default();
         unbound.bindings.remove(&ShortcutAction::Lock);
-        assert!(!is_lock_chord(&l, mods_with_super(true), &unbound));
+        assert!(is_lock_chord(&l, mods_with_super(true), &unbound));
+        assert!(!is_lock_chord(&l, ctrl_alt, &unbound));
     }
 
     /// Super+L on key press is the lock chord.

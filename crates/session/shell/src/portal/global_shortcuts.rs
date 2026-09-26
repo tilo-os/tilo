@@ -1200,22 +1200,95 @@ fn accelerator_for_code(code: &str, modifiers: Modifiers) -> Option<String> {
     Some(format!("{}+{code}", parts.join("+")))
 }
 
+/// Session conventions outside the shell's own chord tables that an app
+/// must still not be granted: the X server kill chord, in-app search and
+/// the menu key some toolkits bind to Alt+Space.
+const SESSION_RESERVED: &[&str] = &["CTRL+ALT+BACKSPACE", "CTRL+KEYK", "ALT+SPACE"];
+
 /// Tilo-owned accelerators always win.  Exposed to the trusted dialog so it
 /// can explain a rejected capture before any registry mutation occurs.
+///
+/// Derived from the shell's fixed-chord table and the editable shortcut
+/// defaults, so a chord added to either is refused here without a second
+/// list to keep in step.
 pub fn is_reserved_accelerator(accelerator: &str) -> bool {
-    matches!(
-        accelerator,
-        "ALT+SPACE"
-            | "SUPER+SPACE"
-            | "SUPER+KEYK"
-            | "SUPER+KEYH"
-            | "CTRL+KEYK"
-            | "CTRL+TAB"
-            | "SUPER+TAB"
-            | "SUPER+ARROWLEFT"
-            | "SUPER+ARROWRIGHT"
-            | "CTRL+ALT+BACKSPACE"
+    SESSION_RESERVED.contains(&accelerator)
+        || crate::shell::fixed_chords::all_chords()
+            .any(|chord| fixed_chord_accelerator(chord).as_deref() == Some(accelerator))
+        || settings_store::hardware::ShortcutConfig::default()
+            .bindings
+            .values()
+            .any(|chord| key_chord_accelerator(chord).as_deref() == Some(accelerator))
+}
+
+/// The canonical accelerator for a fixed shell chord, or `None` for a
+/// chord the portal cannot express (no modifier, or a key without a
+/// canonical physical name such as Print Screen).
+fn fixed_chord_accelerator(chord: crate::shell::fixed_chords::FixedChord) -> Option<String> {
+    use crate::shell::input_policy::ChordKey;
+    let key = match chord.key {
+        ChordKey::Char(c) if c.is_ascii_alphanumeric() => c.to_ascii_uppercase().to_string(),
+        ChordKey::Space => "SPACE".into(),
+        ChordKey::Tab => "TAB".into(),
+        ChordKey::Enter => "ENTER".into(),
+        ChordKey::Escape => "ESCAPE".into(),
+        ChordKey::Delete => "DELETE".into(),
+        ChordKey::PageUp => "PAGEUP".into(),
+        ChordKey::PageDown => "PAGEDOWN".into(),
+        ChordKey::ArrowLeft => "ARROWLEFT".into(),
+        ChordKey::ArrowRight => "ARROWRIGHT".into(),
+        ChordKey::ArrowUp => "ARROWUP".into(),
+        ChordKey::ArrowDown => "ARROWDOWN".into(),
+        ChordKey::Function(n) => format!("F{n}"),
+        ChordKey::Char(_) | ChordKey::PrintScreen | ChordKey::Modifier | ChordKey::Other => {
+            return None;
+        }
+    };
+    canonical_parts(
+        chord.mods.ctrl,
+        chord.mods.alt,
+        chord.mods.shift,
+        chord.mods.logo,
+        &key,
     )
+}
+
+/// The canonical accelerator for an editable shortcut binding.
+fn key_chord_accelerator(chord: &settings_store::hardware::KeyChord) -> Option<String> {
+    let key = match chord.key.as_str() {
+        "left" => "ARROWLEFT".to_string(),
+        "right" => "ARROWRIGHT".to_string(),
+        "up" => "ARROWUP".to_string(),
+        "down" => "ARROWDOWN".to_string(),
+        other => other.to_ascii_uppercase(),
+    };
+    canonical_parts(
+        chord.modifiers.contains("Ctrl"),
+        chord.modifiers.contains("Alt"),
+        chord.modifiers.contains("Shift"),
+        chord.modifiers.contains("Super"),
+        &key,
+    )
+}
+
+fn canonical_parts(ctrl: bool, alt: bool, shift: bool, logo: bool, key: &str) -> Option<String> {
+    let key = canonical_key_piece(key)?;
+    let mut parts = Vec::new();
+    for (held, name) in [
+        (ctrl, "CTRL"),
+        (alt, "ALT"),
+        (shift, "SHIFT"),
+        (logo, "SUPER"),
+    ] {
+        if held {
+            parts.push(name);
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    parts.sort_unstable();
+    Some(format!("{}+{key}", parts.join("+")))
 }
 
 fn reserved_shell_accelerator(accelerator: &str) -> bool {
@@ -1285,6 +1358,46 @@ mod tests {
         assert!(!reserved_shell_accelerator("CTRL+SHIFT+KEYK"));
         let modifiers = Modifiers::default();
         assert!(accelerator_for_code("KeyK", modifiers).is_none());
+    }
+
+    #[test]
+    fn every_fixed_shell_chord_and_editable_default_is_reserved() {
+        for accelerator in [
+            "SUPER+KEYL",
+            "SUPER+KEYW",
+            "SUPER+KEYQ",
+            "ALT+F4",
+            "ALT+TAB",
+            "ALT+SHIFT+TAB",
+            "SHIFT+SUPER+KEYS",
+            "SHIFT+SUPER+KEYR",
+            "SUPER+KEYH",
+            "SUPER+ENTER",
+            "SUPER+PAGEUP",
+            "SUPER+ESCAPE",
+            "SUPER+SPACE",
+            "SUPER+KEYK",
+            "CTRL+TAB",
+            "SUPER+TAB",
+            "SUPER+ARROWLEFT",
+            "CTRL+ALT+BACKSPACE",
+        ] {
+            assert!(
+                is_reserved_accelerator(accelerator),
+                "{accelerator} must not be grantable to an app"
+            );
+        }
+        for chord in crate::shell::fixed_chords::all_chords() {
+            if let Some(accelerator) = fixed_chord_accelerator(chord) {
+                assert_eq!(
+                    canonical_accelerator(&accelerator).as_deref(),
+                    Some(accelerator.as_str()),
+                    "the derived form of {} must be canonical to ever match",
+                    chord.display()
+                );
+            }
+        }
+        assert!(!is_reserved_accelerator("CTRL+SHIFT+KEYM"));
     }
 
     #[test]
