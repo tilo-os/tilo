@@ -637,7 +637,7 @@ def build_environment(wpe, generation, revision, manifest, signer, cache,
                TILO_PUBLIC_TRUST_BUNDLE=str(PRIVATE / 'public'),
                TILO_PUBLIC_TRUST_MANIFEST_SHA256=manifest,
                TILO_PCR_PREDICTION_SIGNER=signer,
-               TILO_TARGET_IMGREF='code.tilo.so/tilo/tilo-development:provisional-' + revision[:12] + '-' + architecture,
+               TILO_TARGET_IMGREF='registry.tilo.so/tilo/tilo-development:provisional-' + revision[:12] + '-' + architecture,
                TILO_GENERATION=generation, TILO_SEAL_GENERATION='1',
                TILO_WITH_BROWSER='1', TILO_WPE_BOOTSTRAP='0',
                TILO_WPE_BUILD_JOBS='2', WPE_BUILDROOT_REF=wpe,
@@ -698,7 +698,7 @@ def assembly_cache(environment, architecture, mode, native_id, adopted_receipt_s
                          'source_date_epoch': source_epoch,
                          'scope': 'OCI raw layers only; source and signing epochs unchanged'}
         environment['TILO_RAW_LAYER_EPOCH'] = str(layer_epoch)
-    repository = 'code.tilo.so/tilo/tilo-development-assembly-cache-' + architecture + '-v1'
+    repository = 'registry.tilo.so/tilo/tilo-development-assembly-cache-' + architecture + '-v1'
     flags = ['--layers=true', '--skip-unused-stages=true', '--cache-from', repository, '--cache-to', repository]
     environment['TILO_BUILD_ARGS'] += ' ' + ' '.join(flags)
     return {'schema': 1, 'purpose': 'development-raw-assembly-registry-cache',

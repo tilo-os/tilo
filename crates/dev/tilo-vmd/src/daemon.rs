@@ -12,7 +12,7 @@ use serde::Serialize;
 use tilo_vm_protocol::{
     Action, AppInstallResult, ApplyResult, BaseInfo, BootConfirmResult, ComponentInfo, GcResult,
     HelloResult, InputAction, InputResult, Issue, KeptLayer, LayerImportResult, LayerSource,
-    LayerUploadBeginResult, LayerUploadChunkResult, Lease, LogsResult, Manifest, Owner,
+    LayerUploadBeginResult, LayerUploadChunkResult, Lease, LogsResult, Manifest, OutputSpec, Owner,
     PROTOCOL_VERSION, Policy, Provenance, Request, Scope, SeatResult, ShotResult, SlotCreateResult,
     SlotFile, SlotInfo, SlotKind, SlotRmResult, SlotShowResult, StatusResult, Storage,
     UPLOAD_CHUNK_BYTES, VM_SLOT, VmTools,
@@ -84,7 +84,7 @@ pub fn reconcile_seats(slots: &SlotStore, locks: &Locks, apply: &mut dyn Apply) 
         let Ok(_guard) = locks.slot(&record.name) else {
             continue;
         };
-        if let Err(error) = apply.allocate_seat(&record.name) {
+        if let Err(error) = apply.allocate_seat(&record.name, record.connectors()) {
             issues.push(Issue {
                 slot: record.name.clone(),
                 problem: format!("its vkms seat could not be re-created: {error}"),
@@ -366,7 +366,7 @@ impl Daemon {
             Request::Status(p) => to_value(&self.status(p.slot)?),
             Request::SlotCreate(p) => {
                 let _locks = self.slot_locks(&p.name)?;
-                to_value(&self.create(&p.name, p.kind, p.owner)?)
+                to_value(&self.create(&p.name, p.kind, p.owner, &p.outputs)?)
             }
             Request::SlotList(_) => {
                 let records = self.slots.list()?;
@@ -464,7 +464,15 @@ impl Daemon {
             (None, SlotKind::Headful, None) => return Err(DaemonError::NoSession(name.to_owned())),
             _ => return Err(DaemonError::HeadlessInput(name.to_owned())),
         };
-        let events = self.apply.input(name, &seat, actions)?;
+        // On seat0 the slot sees the VM's real display, not its vkms outputs.
+        let geometry = match (&record.seat0, record.outputs.first()) {
+            (None, Some(first)) => Some(crate::input::Geometry {
+                desktop: crate::display::desktop_extent(&record.outputs),
+                touch: (first.width, first.height),
+            }),
+            _ => None,
+        };
+        let events = self.apply.input(name, &seat, geometry, actions)?;
         Ok(InputResult {
             slot: record.name,
             seat,
@@ -698,6 +706,7 @@ impl Daemon {
             } else {
                 record.seat.clone()
             },
+            outputs: record.outputs.clone(),
             parity,
         })
     }
@@ -766,10 +775,11 @@ impl Daemon {
         name: &str,
         kind: SlotKind,
         owner: Owner,
+        outputs: &[OutputSpec],
     ) -> Result<SlotCreateResult, DaemonError> {
-        let (mut record, created) = self.slots.create(name, kind, owner)?;
+        let (mut record, created) = self.slots.create(name, kind, owner, outputs)?;
         let running = self.apply.unit_state(&session_unit(name)) == "active";
-        let actions = if created || !running {
+        let mut actions = if created || !running {
             let generation = self.slots.generation(name, record.current)?;
             let layers = self.layer_paths(&generation)?;
             let actions = apply::activate(
@@ -787,6 +797,23 @@ impl Daemon {
         } else {
             Vec::new()
         };
+        // Every create applies the layout again, so a create that failed
+        // here is repaired by running it once more.
+        if !record.outputs.is_empty() && record.seat0.is_none() {
+            let user = record.user().unwrap_or_default();
+            self.apply
+                .apply_display(name, &user, &record.outputs)
+                .map_err(|error| DaemonError::DisplayLayout {
+                    slot: name.to_owned(),
+                    detail: match error {
+                        DaemonError::Apply { detail, .. } => detail,
+                        other => other.to_string(),
+                    },
+                })?;
+            actions.push(Action::SetOutputs {
+                outputs: tilo_vm_protocol::display::format_outputs(&record.outputs),
+            });
+        }
         Ok(SlotCreateResult {
             slot: self.info(&record)?,
             created,
@@ -1233,7 +1260,7 @@ mod tests {
             BaseInfo::default(),
         );
         SlotStore::new(root.path())
-            .create("a", SlotKind::Headless, Owner::default())
+            .create("a", SlotKind::Headless, Owner::default(), &[])
             .unwrap();
         let run = |daemon: &mut Daemon, slot: &str| {
             daemon
@@ -1265,7 +1292,7 @@ mod tests {
             ("b", SlotKind::Headless),
             ("c", SlotKind::Headful),
         ] {
-            let (mut record, _) = slots.create(name, kind, Owner::default()).unwrap();
+            let (mut record, _) = slots.create(name, kind, Owner::default(), &[]).unwrap();
             if kind == SlotKind::Headful {
                 record.seat = Some(format!("seat-{name}"));
                 slots.save(&record).unwrap();
@@ -1285,7 +1312,7 @@ mod tests {
         let slots = SlotStore::new(tmp.path());
         let locks = Locks::new(tmp.path());
         for (name, kind) in [("a", SlotKind::Headful), ("b", SlotKind::Headless)] {
-            let (mut record, _) = slots.create(name, kind, Owner::default()).unwrap();
+            let (mut record, _) = slots.create(name, kind, Owner::default(), &[]).unwrap();
             if kind == SlotKind::Headful {
                 record.seat = Some(format!("seat-{name}"));
                 slots.save(&record).unwrap();
@@ -1304,6 +1331,43 @@ mod tests {
             calls.contains(&format!("start {}", session_unit("b"))),
             "{calls:?}"
         );
+    }
+
+    #[test]
+    fn creating_with_outputs_applies_the_layout_every_time() {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::new(
+            root.path(),
+            Box::new(RecordingApply::default()),
+            None,
+            BaseInfo::default(),
+        );
+        daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION,
+                client_version: String::new(),
+            }))
+            .unwrap();
+        let create = || {
+            Request::SlotCreate(tilo_vm_protocol::SlotCreate {
+                name: "a".into(),
+                kind: SlotKind::Headful,
+                owner: Owner::default(),
+                outputs: tilo_vm_protocol::display::parse_outputs("2560x1600@2,1920x1080").unwrap(),
+            })
+        };
+        for _ in 0..2 {
+            let result: SlotCreateResult =
+                serde_json::from_value(daemon.handle(create()).unwrap()).unwrap();
+            assert_eq!(result.slot.outputs.len(), 2);
+            assert!(
+                result.actions.contains(&Action::SetOutputs {
+                    outputs: "2560x1600@2,1920x1080@1".into()
+                }),
+                "{:?}",
+                result.actions
+            );
+        }
     }
 
     #[test]

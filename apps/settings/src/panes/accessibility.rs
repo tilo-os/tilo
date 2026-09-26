@@ -47,6 +47,10 @@ pub const CURSOR_SIZE_KEY: &str = "a11y.cursor_size";
 // Typing.
 pub const STICKY_KEYS_KEY: &str = "a11y.sticky_keys";
 pub const SLOW_KEYS_KEY: &str = "a11y.slow_keys";
+pub const BOUNCE_KEYS_KEY: &str = "a11y.bounce_keys";
+pub const BOUNCE_DELAY_KEY: &str = "a11y.bounce_delay";
+pub const BOUNCE_ALERT_KEY: &str = "a11y.bounce_keys_alert";
+pub const MOUSE_KEYS_KEY: &str = "a11y.mouse_keys";
 pub const OSK_KEY: &str = "a11y.on_screen_keyboard";
 // Hearing + screen reader.
 pub const VISUAL_ALERTS_KEY: &str = "a11y.visual_alerts";
@@ -230,7 +234,7 @@ impl AccessibilityPane {
         )
     }
 
-    // --- Pointer: large cursor + size.
+    // --- Pointer: mouse keys, large cursor + size.
     fn build_pointer_card(&self) -> Box<dyn Widget> {
         let cursor_opts: Vec<String> = AccessibilityPrefs::CURSOR_SIZES
             .iter()
@@ -244,6 +248,14 @@ impl AccessibilityPane {
         card(
             "Pointer",
             rows(vec![
+                setting_row_described(
+                    "Mouse keys",
+                    "Move the pointer with the numeric keypad",
+                    Self::toggle("a11y.mouse_keys", MOUSE_KEYS_KEY, "mouse-keys"),
+                ),
+                caption(
+                    "Keypad 1–9 move the pointer and speed up while held; 5 clicks, + double-clicks, 0 holds the button down and . releases it. / * − choose the left, middle or right button. Shift+Alt+Num Lock turns mouse keys on or off.",
+                ),
                 setting_row_described(
                     "Large cursor",
                     "Enlarge the mouse pointer so it is easy to find",
@@ -269,6 +281,10 @@ impl AccessibilityPane {
     }
 
     // --- Typing.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one declarative row list mirroring the visible Typing card"
+    )]
     fn build_typing_card(&self) -> Box<dyn Widget> {
         let osk_row = if osk_service_available() {
             setting_row_described(
@@ -294,6 +310,39 @@ impl AccessibilityPane {
                     "Slow keys",
                     "Ignore brief, accidental key presses",
                     Self::toggle("a11y.slow_keys", SLOW_KEYS_KEY, "slow-keys"),
+                ),
+                setting_row_described(
+                    "Bounce keys",
+                    "Ignore a key pressed again right after it was released",
+                    Self::toggle("a11y.bounce_keys", BOUNCE_KEYS_KEY, "bounce-keys"),
+                ),
+                choice_row(
+                    "Bounce keys delay",
+                    Box::new(
+                        Self::choice(
+                            AccessibilityPrefs::BOUNCE_DELAYS
+                                .iter()
+                                .map(|(label, _)| (*label).to_string())
+                                .collect(),
+                            BOUNCE_DELAY_KEY,
+                            "bounce-delay",
+                        )
+                        .with_id("a11y.bounce_delay")
+                        .with_placeholder(
+                            AccessibilityPrefs::bounce_delay_label(
+                                self.access.bounce_keys_delay_ms,
+                            ),
+                        ),
+                    ),
+                ),
+                setting_row_described(
+                    "Flash when a key is ignored",
+                    "Show the visual alert each time bounce keys drops a press",
+                    Self::toggle(
+                        "a11y.bounce_keys_alert",
+                        BOUNCE_ALERT_KEY,
+                        "bounce-keys-alert",
+                    ),
                 ),
                 osk_row,
                 setting_row_described(
@@ -433,8 +482,8 @@ impl AccessibilityPane {
             rows(vec![caption(
                 "Vision comforts are the same settings the Appearance pane \
                  offers — changing them here or there updates one shared value. \
-                 Pointer sizing, sticky keys and slow keys are applied by the \
-                 compositor's input layer. Colour filters, the magnifier and \
+                 Pointer sizing, mouse keys, and the sticky, slow and bounce key \
+                 filters are applied by the compositor's input layer. Colour filters, the magnifier and \
                  pointer guides are final-scene compositor effects. Text-caret \
                  width is owned by the shared toolkit. The screen reader reloads in every \
                  Tilo app and visual alerts are rendered by shell chrome. The \
@@ -472,6 +521,9 @@ impl AccessibilityPane {
             (LARGE_CURSOR_KEY, self.access.large_cursor),
             (STICKY_KEYS_KEY, self.access.sticky_keys),
             (SLOW_KEYS_KEY, self.access.slow_keys),
+            (BOUNCE_KEYS_KEY, self.access.bounce_keys),
+            (BOUNCE_ALERT_KEY, self.access.bounce_keys_alert),
+            (MOUSE_KEYS_KEY, self.access.mouse_keys),
             (OSK_KEY, self.access.on_screen_keyboard),
             (VISUAL_ALERTS_KEY, self.access.visual_alerts),
             (SCREEN_READER_KEY, self.access.screen_reader),
@@ -499,6 +551,10 @@ impl AccessibilityPane {
                 },
             ),
             (SWITCH_KEYS_KEY, self.access.switch_key_pair.label()),
+            (
+                BOUNCE_DELAY_KEY,
+                AccessibilityPrefs::bounce_delay_label(self.access.bounce_keys_delay_ms),
+            ),
             (
                 SWITCH_SCAN_KEY,
                 match self.access.switch_scan_ms {
@@ -573,6 +629,18 @@ impl AccessibilityPane {
         adopt(
             &mut self.access.slow_keys,
             read_bool(state, root, SLOW_KEYS_KEY),
+        );
+        adopt(
+            &mut self.access.bounce_keys,
+            read_bool(state, root, BOUNCE_KEYS_KEY),
+        );
+        adopt(
+            &mut self.access.bounce_keys_alert,
+            read_bool(state, root, BOUNCE_ALERT_KEY),
+        );
+        adopt(
+            &mut self.access.mouse_keys,
+            read_bool(state, root, MOUSE_KEYS_KEY),
         );
         adopt(
             &mut self.access.on_screen_keyboard,
@@ -657,6 +725,14 @@ impl AccessibilityPane {
             && voice != self.access.screen_reader_voice
         {
             self.access.screen_reader_voice = voice;
+            changed = true;
+        }
+
+        if let Some(label) = read_str_or_text(state, root, BOUNCE_DELAY_KEY)
+            && let Some(ms) = AccessibilityPrefs::bounce_delay_ms(&label)
+            && ms != self.access.bounce_keys_delay_ms
+        {
+            self.access.bounce_keys_delay_ms = ms;
             changed = true;
         }
 
@@ -974,6 +1050,33 @@ mod tests {
             "persisted to the accessibility section"
         );
         assert!(loaded.on_screen_keyboard);
+    }
+
+    #[test]
+    fn bounce_and_mouse_keys_edits_persist_to_accessibility_section() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = AccessibilityPane::with_prefs(
+            AppearancePrefs::default(),
+            AccessibilityPrefs::default(),
+        );
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        assert_eq!(
+            read_str_or_text(&doc, &root, BOUNCE_DELAY_KEY).as_deref(),
+            Some("300 ms"),
+            "the default window is seeded"
+        );
+        for key in [BOUNCE_KEYS_KEY, BOUNCE_ALERT_KEY, MOUSE_KEYS_KEY] {
+            let _ = doc.put(&root, key, automerge::ScalarValue::Boolean(true));
+        }
+        let _ = doc.put(&root, BOUNCE_DELAY_KEY, "500 ms");
+        pane.sync(&mut doc, &root);
+        let loaded = SystemPrefs::load().accessibility;
+        assert!(loaded.bounce_keys);
+        assert!(loaded.bounce_keys_alert);
+        assert!(loaded.mouse_keys);
+        assert_eq!(loaded.bounce_keys_delay_ms, 500);
     }
 
     #[test]

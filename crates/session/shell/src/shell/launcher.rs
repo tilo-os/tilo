@@ -1491,6 +1491,16 @@ pub fn app_for_resource_with_policy(
     user_id: &str,
     workspace: Option<&desktop_policy::WorkspaceDefaults>,
 ) -> Option<InstalledApp> {
+    package_for_resource_with_policy(resource, user_id, workspace).map(|(app, _)| app)
+}
+
+/// [`app_for_resource_with_policy`], also saying why that package was chosen,
+/// so a caller can tell a person's choice from a fallback.
+pub fn package_for_resource_with_policy(
+    resource: &desktop_policy::ResourceKind,
+    user_id: &str,
+    workspace: Option<&desktop_policy::WorkspaceDefaults>,
+) -> Option<(InstalledApp, desktop_policy::defaults::SelectionSource)> {
     let apps = gui_apps();
     let candidates = default_app_candidates_from(&apps);
     let personal = desktop_policy::PersonalDefaults::load();
@@ -1498,6 +1508,18 @@ pub fn app_for_resource_with_policy(
         .resolve(resource, user_id, &personal, workspace)?;
     apps.into_iter()
         .find(|app| app.package_id == selected.package_id)
+        .map(|app| (app, selected.source))
+}
+
+/// Tilo packages and host desktop entries as policy candidates, host claims
+/// adjusted by the session's `mimeapps.list` chain: everything "Open With"
+/// may offer and a personal default may name.
+pub fn resource_candidates() -> Vec<desktop_policy::AppCandidate> {
+    let hosts = crate::shell::host_apps::host_apps();
+    let chain = desktop_policy::mimeapps::session_chain();
+    let mut candidates = default_app_candidates_from(&gui_apps());
+    candidates.extend(host_app_candidates(&hosts, &chain));
+    candidates
 }
 
 /// Re-read the installed registry and manifest immediately before launch.

@@ -4,7 +4,7 @@
 //! TTY, talk to DRM/KMS, render, or forward input — those live elsewhere.
 
 use crate::shell::input_policy::{
-    is_lock_chord, is_remote_input_kill_switch, winit_event_to_lock_key,
+    is_lock_chord, is_mouse_keys_toggle, is_remote_input_kill_switch, winit_event_to_lock_key,
 };
 pub use crate::shell::session_policy::*;
 use crate::shell::state::WorkspaceAuthority as _;
@@ -279,6 +279,87 @@ fn widget_deadline_for_presenter(
 // carry the pending frame; future animation deadlines still wake the idle loop.
 fn lock_animation_park_deadline(now: Instant, deadline: Option<Instant>) -> Option<Instant> {
     deadline.filter(|deadline| *deadline > now)
+}
+
+/// How often a locked session re-reads its players, so the lock card follows
+/// a track change or a pause made elsewhere.
+const LOCK_MEDIA_REFRESH: Duration = Duration::from_secs(1);
+
+/// Every output the lock overlay covers, or one spanning the viewport before
+/// any output has been reported.
+fn lock_outputs(
+    outputs: &[crate::compositor::backend::Output],
+    viewport: (f64, f64),
+) -> Vec<LockOutput> {
+    let outputs: Vec<LockOutput> = outputs
+        .iter()
+        .map(|o| LockOutput {
+            origin: (f64::from(o.position.0), f64::from(o.position.1)),
+            size: (f64::from(o.size.0), f64::from(o.size.1)),
+            scale: f64::from(o.scale),
+        })
+        .collect();
+    if outputs.is_empty() {
+        vec![LockOutput {
+            origin: (0.0, 0.0),
+            size: viewport,
+            scale: 1.0,
+        }]
+    } else {
+        outputs
+    }
+}
+
+/// The player the lock screen shows: the one the now-playing card would,
+/// among players that are playing or paused. A stopped player has nothing
+/// to control from a locked screen.
+fn lock_now_playing() -> Option<crate::shell::now_playing::PlayerSnapshot> {
+    use crate::shell::now_playing::{MprisSource, NowPlayingSource, PlaybackStatus, active_index};
+    let source = MprisSource;
+    source.refresh();
+    let players: Vec<_> = source
+        .players()
+        .into_iter()
+        .filter(|player| player.status != PlaybackStatus::Stopped)
+        .collect();
+    let index = active_index(&players, None)?;
+    players.into_iter().nth(index)
+}
+
+/// Whether the lock card must repaint: anything it shows changed. The
+/// playhead is not shown on the lock screen, so its movement is not a change.
+fn lock_media_changed(
+    before: Option<&crate::shell::now_playing::PlayerSnapshot>,
+    after: Option<&crate::shell::now_playing::PlayerSnapshot>,
+) -> bool {
+    match (before, after) {
+        (None, None) => false,
+        (Some(before), Some(after)) => {
+            before.bus_name != after.bus_name
+                || before.status != after.status
+                || before.title != after.title
+                || before.artist != after.artist
+                || before.artwork != after.artwork
+                || before.can_play != after.can_play
+                || before.can_pause != after.can_pause
+                || before.can_go_next != after.can_go_next
+                || before.can_go_previous != after.can_go_previous
+        }
+        _ => true,
+    }
+}
+
+/// Send one lock-screen transport command to exactly the player the lock
+/// card shows. Transport is all a locked session may do to media.
+fn send_lock_transport(
+    player: Option<&crate::shell::now_playing::PlayerSnapshot>,
+    transport: crate::shell::quick_settings::now_playing::Transport,
+) -> bool {
+    use crate::shell::now_playing::{MprisSource, NowPlayingSource};
+    let Some(player) = player.filter(|player| transport.enabled(player)) else {
+        return false;
+    };
+    MprisSource.send(&player.bus_name, transport.command())
 }
 
 fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut Instant) -> bool {
@@ -1066,7 +1147,6 @@ const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 /// locked — so it is a **developer-build** surface, gated on
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
 const TEST_CONTROL_ENV: &str = crate::shell::test_control_socket::TEST_CONTROL_ENV;
-const TEST_CONTROL_WAKE_ENV: &str = "TILO_TEST_CONTROL_WAKE_FD";
 
 /// RAII guard that unlinks a unix-socket file when dropped. [`run`] also
 /// drops these explicitly in shutdown order so endpoints disappear before
@@ -1265,6 +1345,9 @@ fn bind_osk_socket() -> Result<(ListeningSocketSource, PathBuf), String> {
 /// over a non-blocking `UnixStream`, so partial lines accumulate across ticks.
 struct TestControlConn {
     reader: BufReader<UnixStream>,
+    /// Wakes the compositor loop when request bytes arrive on this stream;
+    /// removed from the loop together with the connection.
+    wake: Option<calloop::RegistrationToken>,
     closed: bool,
     pending_invocation: Option<PendingTestControlInvocation>,
     output: Vec<u8>,
@@ -1304,11 +1387,37 @@ impl TestControlConn {
         }
         Some(Self {
             reader: BufReader::new(stream),
+            wake: None,
             closed: false,
             pending_invocation: None,
             output: Vec::new(),
             output_offset: 0,
         })
+    }
+
+    /// Register this stream with `handle` as an edge-triggered wake. A
+    /// driver's `connect` makes the listener readable and is accepted at
+    /// once; its request line arrives separately, possibly only after this
+    /// iteration has already found the stream empty. Without its own wake
+    /// an idle compositor would sleep on the unread request until some
+    /// unrelated event. Edge-triggered, because every pump drains the stream
+    /// until it would block, and a level registration would spin on a peer
+    /// that half-closed while it waits for its response.
+    fn watch(&mut self, handle: &calloop::LoopHandle<'static, State>) {
+        let clone = match self.reader.get_ref().try_clone() {
+            Ok(clone) => clone,
+            Err(error) => {
+                eprintln!("tilo compositor: test_control conn wake clone: {error}");
+                return;
+            }
+        };
+        match handle.insert_source(
+            Generic::new(clone, Interest::READ, Mode::Edge),
+            |_, _, _| Ok(PostAction::Continue),
+        ) {
+            Ok(token) => self.wake = Some(token),
+            Err(error) => eprintln!("tilo compositor: test_control conn wake source: {error}"),
+        }
     }
 
     fn peer_disconnected(&self) -> bool {
@@ -1327,7 +1436,7 @@ impl TestControlConn {
         }
         if ready < 0 {
             let error = std::io::Error::last_os_error();
-            eprintln!("nirios compositor: test_control connection check: {error}");
+            eprintln!("tilo compositor: test_control connection check: {error}");
             return true;
         }
         descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
@@ -1792,6 +1901,9 @@ impl ControlState for FrameBuilderControlState<'_> {
         // The hosted file manager's drag, if in flight, and whether the compositor took it over to a client.
             "files_drag": file_explorer::external_drag::unclaimed().map(|d| d.paths),
             "files_drag_handed_off": file_explorer::external_drag::is_handed_off(),
+            // The compositor-owned sheet on screen (portal review, polkit,
+            // network secrets); masked values appear only as their length.
+            "portal_dialog": self.fb.host().portal_dialog_state_json(),
             "editing_workspace_name": chrome.editing_workspace_name,
             "pending_grants_count": chrome.pending_grants.len(),
         // Mirrored from the SessionManager each tick; lets a headless test observe lock/unlock transitions.
@@ -2835,7 +2947,7 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
         let pending = &conn.output[conn.output_offset..];
         match conn.reader.get_mut().write(pending) {
             Ok(0) => {
-                eprintln!("nirios compositor: test_control write: disconnected");
+                eprintln!("tilo compositor: test_control write: disconnected");
                 conn.closed = true;
                 return PendingConnectionProgress::Closed;
             }
@@ -2844,7 +2956,7 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
                 return PendingConnectionProgress::OutputPending;
             }
             Err(error) => {
-                eprintln!("nirios compositor: test_control write: {error}");
+                eprintln!("tilo compositor: test_control write: {error}");
                 conn.closed = true;
                 return PendingConnectionProgress::Closed;
             }
@@ -3747,6 +3859,9 @@ enum PriorityRoute {
     VtSwitch(i32),
     RemoteInputKillSwitch,
     LockSession,
+    /// Shift+Alt+Num Lock flips mouse keys; it works whichever client has
+    /// focus, since the person who needs it may have no other pointer.
+    ToggleMouseKeys,
     /// Nothing claims the event ahead of spatial forwarding, input capture
     /// and ordinary client/chrome routing.
     Continue,
@@ -3779,6 +3894,8 @@ fn priority_route(
         PriorityRoute::RemoteInputKillSwitch
     } else if is_lock_chord(event, modifiers, shortcuts) {
         PriorityRoute::LockSession
+    } else if is_mouse_keys_toggle(event, modifiers) {
+        PriorityRoute::ToggleMouseKeys
     } else if let Some(key) = media_key {
         PriorityRoute::MediaKey(key)
     } else {
@@ -4385,11 +4502,15 @@ fn install_session_peer_sync(
     tracing::info!("peer-sync: actor spawned, default workspace joined");
     let net = Arc::new(handle);
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
+    crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
     install_device_fabric_bridge(
         frame_builder.host_mut(),
         Arc::clone(&net),
         tree_handle.clone(),
     );
+    frame_builder.host_mut().set_personal_devices(Arc::new(
+        crate::shell::device_fabric_runtime::FabricDeviceDirectory::new(Arc::clone(&net)),
+    ));
     let stream_net = Arc::clone(&net);
     state.set_legacy_stream_publisher(Arc::new(move |message| {
         stream_net.publish_legacy_active(message)
@@ -5297,6 +5418,21 @@ pub fn run() {
         std::process::exit(1);
     }
     crate::compositor::foreign::install_completion_ping(&capture_ping);
+    // Convertibles: the accelerometer turns the built-in panel. The ping
+    // only wakes the loop; the change itself is drained below.
+    let device_rotation = match calloop::ping::make_ping() {
+        Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
+            Ok(_) => crate::compositor::device_rotation::spawn(move || ping.ping()),
+            Err(error) => {
+                tracing::warn!(%error, "could not register the device rotation wake source");
+                None
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "could not create the device rotation wake source");
+            None
+        }
+    };
 
     // Accept readiness is also part of the outer loop. Accepted streams get
     // their own source below; this source prevents the first request from
@@ -5769,11 +5905,10 @@ pub fn run() {
     // of the listener as a wake token so a driver which connects to an idle
     // compositor is serviced immediately.  Accepting and executing requests
     // stays below on the compositor thread; this source only prevents the
-    // outer calloop from sleeping through the listener's readability.
-    //
-    // The inherited eventfd below remains useful for older harnesses which
-    // write to an already-connected stream, but a plain Unix-socket client
-    // must never depend on that private side channel.
+    // outer calloop from sleeping through the listener's readability.  Each
+    // accepted stream gets its own wake (see `TestControlConn::watch`), because
+    // a connection is accepted as soon as it exists, which is often before
+    // the request bytes that follow it have arrived.
     let _test_control_listener_wake = test_control_listener.as_ref().and_then(|listener| {
         let duplicate = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
         if duplicate < 0 {
@@ -5797,69 +5932,6 @@ pub fn run() {
             }
         }
     });
-    // Test drivers pass an inherited eventfd and increment it after writing a
-    // command. That gives this manually-pumped protocol a proper outer-loop
-    // wake without registering a persistent Unix stream as permanently
-    // readable. The release build ignores test-control environment overrides.
-    let _test_control_wake = if crate::compositor::dev_env::DEV_ENV_OVERRIDES {
-        std::env::var(TEST_CONTROL_WAKE_ENV)
-            .ok()
-            .and_then(|raw| raw.parse::<std::os::fd::RawFd>().ok())
-            .filter(|raw| *raw >= 0)
-            .and_then(|raw| {
-                // Duplicate rather than adopting the inherited number: the
-                // pre-existing Rust/Python process machinery may also own an
-                // object at that numeric fd. The duplicate gives calloop
-                // unambiguous lifetime ownership while preserving the same
-                // eventfd counter shared with the driver.
-                let duplicate = unsafe { libc::fcntl(raw, libc::F_DUPFD_CLOEXEC, 3) };
-                if duplicate < 0 {
-                    eprintln!(
-                        "tilo compositor: test_control duplicate wake fd {raw}: {}",
-                        std::io::Error::last_os_error()
-                    );
-                    return None;
-                }
-                // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
-                let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
-                match event_loop.handle().insert_source(
-                    Generic::new(fd, Interest::READ, Mode::Level),
-                    |_, fd, _| {
-                        let mut value = 0u64;
-                        // SAFETY: eventfd's read ABI is exactly one native
-                        // u64. Drain through EAGAIN to clear level readiness.
-                        let result = unsafe {
-                            libc::read(
-                                fd.as_raw_fd(),
-                                (&raw mut value).cast::<libc::c_void>(),
-                                std::mem::size_of::<u64>(),
-                            )
-                        };
-                        if result < 0
-                            && std::io::Error::last_os_error().kind()
-                                != std::io::ErrorKind::WouldBlock
-                        {
-                            eprintln!(
-                                "tilo compositor: test_control wake read: {}",
-                                std::io::Error::last_os_error()
-                            );
-                        }
-                        Ok(PostAction::Continue)
-                    },
-                ) {
-                    Ok(token) => {
-                        eprintln!("tilo compositor: test_control wake fd {raw} registered");
-                        Some(token)
-                    }
-                    Err(error) => {
-                        eprintln!("tilo compositor: test_control wake source: {error}");
-                        None
-                    }
-                }
-            })
-    } else {
-        None
-    };
     // Per-process input context shared by the physical-seat and optional
     // test-control paths. Keeping one focus cursor makes injected and real
     // keyboard traversal exercise the exact same widgets.
@@ -5908,6 +5980,7 @@ pub fn run() {
     // A media player's answer to a transport key, as the OSD to raise.
     let (transport_osd, transport_osds) =
         crate::session_runtime::mailbox::<crate::shell::osd::Osd>(Arc::clone(&session_wake));
+    let mut super_tap = crate::shell::input_policy::SuperTap::default();
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
@@ -6072,6 +6145,23 @@ pub fn run() {
         )
     });
 
+    // NetworkManager secret agent: a Wi-Fi password that changed, 802.1X
+    // sign-in, VPN secrets and SIM PINs become a sheet only the compositor
+    // draws, instead of a connection that silently fails.
+    let network_secret_agent: Option<
+        crate::session_runtime::Registration<crate::network_secrets::service::AgentHandle>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "network secret agent",
+            crate::network_secrets::service::serve(
+                crate::shell::portal_dialog::PortalDialogQueue::global(),
+                crate::network_secrets::store::RoamingWifiSlot::global(),
+            ),
+            |_| tracing::info!("network: secret agent registered with NetworkManager"),
+        )
+    });
+
     // Power service: async orchestrator suspending via logind, mirroring the
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the session runtime; if the system bus/logind/UPower are
@@ -6157,6 +6247,7 @@ pub fn run() {
             &outs,
             refresh_mhz_of(&*backend),
         );
+        state.set_output_heads(backend.output_heads());
     }
     // Set when the output set changed this tick, so derived state is re-derived once per batch, not per udev edge.
     let mut outputs_dirty = false;
@@ -6181,6 +6272,9 @@ pub fn run() {
     let mut last_lock_animation_frame = lock_animation_epoch;
     let mut lock_has_wallpaper = false;
     let mut last_lock_clock_refresh = Instant::now();
+    let mut lock_player: Option<crate::shell::now_playing::PlayerSnapshot> = None;
+    let mut lock_pointer: Option<vello::kurbo::Point> = None;
+    let mut last_lock_media_poll = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
     // `output_presentation_frame_changed` observes live foreign-frame
@@ -6381,9 +6475,17 @@ pub fn run() {
                     }
                     if session.is_locked() {
                         // The lock owns a deliberately tiny, non-leaking tree.
-                        // Only its password field is actionable; stale ids from
-                        // the hidden desktop are rejected here.
-                        if request.target_node == lock_screen::LOCK_PASSWORD_ID {
+                        // Only its password field and the now-playing
+                        // transport are actionable; stale ids from the hidden
+                        // desktop are rejected here.
+                        if let Some(transport) =
+                            lock_screen::transport_for_node(request.target_node)
+                        {
+                            if request.action == ui::accesskit::Action::Click {
+                                session_changed |=
+                                    send_lock_transport(lock_player.as_ref(), transport);
+                            }
+                        } else if request.target_node == lock_screen::LOCK_PASSWORD_ID {
                             match (request.action, request.data.as_ref()) {
                                 (
                                     ui::accesskit::Action::SetValue,
@@ -6495,6 +6597,14 @@ pub fn run() {
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());
+                    // A lone Super tap opens global search. Observed ahead of every
+                    // branch below, so a chord one of them handles still disarms it.
+                    if super_tap.observe(wev) && !session.is_locked() {
+                        frame_builder
+                            .host_mut()
+                            .open_global_search(&test_control_ctx.doc, &test_control_ctx.root_obj);
+                        session_changed = true;
+                    }
 
                     let locked = session.is_locked();
                     let route = priority_route(
@@ -6523,6 +6633,35 @@ pub fn run() {
                     if route == PriorityRoute::LockScreen {
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
+                        match wev {
+                            WindowEvent::CursorMoved { position, .. } => {
+                                lock_pointer =
+                                    Some(vello::kurbo::Point::new(position.x, position.y));
+                            }
+                            WindowEvent::MouseInput {
+                                state: ElementState::Pressed,
+                                button: MouseButton::Left,
+                                ..
+                            } => {
+                                let outputs =
+                                    lock_outputs(backend.outputs(), frame_builder.viewport());
+                                let view = LockView {
+                                    now_playing: lock_player.as_ref(),
+                                    ..LockView::default()
+                                };
+                                if let Some(transport) = lock_pointer.and_then(|point| {
+                                    lock_screen::transport_at(
+                                        &outputs,
+                                        frame_builder.theme(),
+                                        &view,
+                                        point,
+                                    )
+                                }) {
+                                    send_lock_transport(lock_player.as_ref(), transport);
+                                }
+                            }
+                            _ => {}
+                        }
                         let key = winit_event_to_lock_key(wev);
                         lock.handle_key(key);
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
@@ -6563,6 +6702,22 @@ pub fn run() {
                             spatial_control = None;
                         }
                         session_changed = true;
+                    } else if state.pointer_lock.is_engaged()
+                        && crate::compositor::pointer_lock::is_release_chord(
+                            wev,
+                            test_control_ctx.modifiers,
+                        )
+                    {
+                        // Ctrl+Alt+Esc: always gets the pointer back from a
+                        // game that locked or confined it — ahead of the
+                        // client router, so the game cannot swallow it.
+                        if let Some(change) = state.release_pointer_constraint() {
+                            apply_pointer_constraint_change(backend.as_mut(), change);
+                            frame_builder.with_chrome(|chrome| {
+                                chrome.show_osd(crate::shell::osd::Osd::pointer_held(false));
+                            });
+                        }
+                        session_changed = true;
                     } else if route == PriorityRoute::LockSession {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
@@ -6572,6 +6727,16 @@ pub fn run() {
                                 present_pipe.as_ref(),
                                 &mut screen_dimmer,
                             );
+                        }
+                    } else if route == PriorityRoute::ToggleMouseKeys {
+                        // The compositor applies the flipped preference on its
+                        // next settings poll; the readout confirms it now.
+                        if let Some(osd) = settings_store::settings_path()
+                            .as_deref()
+                            .and_then(crate::shell::media_keys::toggle_mouse_keys)
+                        {
+                            frame_builder.with_chrome(|st| publish_media_osd(st, osd));
+                            session_changed = true;
                         }
                     } else if let PriorityRoute::MediaKey(mk) = route {
                         // Hardware media/brightness/machine keys belong to the machine, not
@@ -6677,15 +6842,37 @@ pub fn run() {
                         }
                     }
                 }
-                BackendEvent::RelativePointerMotion { dx, dy } => {
+                BackendEvent::RelativePointerMotion {
+                    dx,
+                    dy,
+                    dx_unaccel,
+                    dy_unaccel,
+                    time_usec,
+                } => {
                     if session.is_locked() {
                         if let Some(network) = peer_sync.as_ref() {
                             end_spatial_control(network, &mut spatial_control);
                         } else {
                             spatial_control = None;
                         }
-                    } else if let Some(network) = peer_sync.as_ref() {
-                        let _ = move_spatial_pointer(&state, network, &mut spatial_control, dx, dy);
+                    } else if state.pointer_lock.is_engaged() {
+                        // A game holding the pointer reads every delta; the
+                        // pointer must not wander onto another device.
+                        state.forward_client_relative_motion(
+                            (dx, dy),
+                            (dx_unaccel, dy_unaccel),
+                            time_usec,
+                        );
+                    } else if peer_sync.as_ref().is_some_and(|network| {
+                        move_spatial_pointer(&state, network, &mut spatial_control, dx, dy)
+                    }) {
+                        // The pointer is on an adjacent device.
+                    } else {
+                        state.forward_client_relative_motion(
+                            (dx, dy),
+                            (dx_unaccel, dy_unaccel),
+                            time_usec,
+                        );
                     }
                 }
                 BackendEvent::ModifiersChanged(modifiers) => {
@@ -6788,6 +6975,10 @@ pub fn run() {
                             spatial_control = None;
                         }
                     }
+                }
+                BackendEvent::VisualAlert => {
+                    frame_builder.with_chrome(|st| st.flash_visual_alert(Instant::now()));
+                    session_changed = true;
                 }
                 BackendEvent::Redraw => {
                     // Redraw is implicit: the native loop paints every tick.
@@ -6910,6 +7101,11 @@ pub fn run() {
             tracing::info!("compositor: settings changed on disk; re-applying");
             state.reload_keyboard_settings();
             backend.reload_input_settings();
+            // The backend has now reconciled any staged display plan; tell
+            // the output-management clients that asked for it how it went.
+            state.output_management.resolve_transactions(
+                settings_store::hardware::DisplayTransaction::load().as_ref(),
+            );
             if let Some(xwayland) = xwayland.as_mut() {
                 xwayland.reload_keyboard_settings();
             }
@@ -6945,6 +7141,24 @@ pub fn run() {
         }
         if let Some(service) = osk_service.as_mut() {
             service.tick();
+        }
+        for (output, on) in state.output_management.take_power_requests() {
+            backend.set_output_power(output, on);
+        }
+        if let Some(rotation) = device_rotation
+            .as_ref()
+            .and_then(|changes| changes.try_iter().last())
+        {
+            backend.set_device_rotation(Some(rotation));
+        }
+        if state.output_management.take_staged_by_tool() {
+            frame_builder.with_chrome(|chrome| {
+                chrome.push_notification(
+                    "Keep the new display layout?",
+                    "A display tool changed your screens. Choose Keep in Settings › Displays \
+                     within 15 seconds, or the previous layout comes back.",
+                );
+            });
         }
 
         // Re-derive everything depending on the output set once, after the whole
@@ -6999,6 +7213,7 @@ pub fn run() {
                 &outs,
                 refresh_mhz_of(&*backend),
             );
+            state.set_output_heads(backend.output_heads());
             if refresh_override.is_none()
                 && let Some(interval) = backend.refresh_interval()
                 && frame_clock.set_interval(interval)
@@ -7333,6 +7548,13 @@ pub fn run() {
                 }
                 state.close_sheets_over(surface_id);
             }
+            let mut fullscreen_toggle = false;
+            frame_builder.with_chrome(|chrome| {
+                fullscreen_toggle = chrome.take_fullscreen_toggle_request();
+            });
+            if fullscreen_toggle {
+                toggle_focused_client_fullscreen(&mut state, &mut frame_builder);
+            }
 
             // Protocol callbacks and the frame builder share one tree handle, so
             // adoption/destruction is immediately visible to chrome and persistence.
@@ -7406,6 +7628,17 @@ pub fn run() {
             backend.set_pointer_image(image);
             // A software cursor is drawn into the frame, so it needs one.
             injected_redraw_pending = true;
+        }
+        if let Some(change) =
+            client_input::sync_pointer_constraint(&mut state, &frame_builder, session.is_locked())
+        {
+            if change.engaged {
+                frame_builder.with_chrome(|chrome| {
+                    chrome.show_osd(crate::shell::osd::Osd::pointer_held(true));
+                });
+                injected_redraw_pending = true;
+            }
+            apply_pointer_constraint_change(backend.as_mut(), change);
         }
 
         // Per-output HiDPI: tell each client the scale of its current display.
@@ -7958,6 +8191,19 @@ pub fn run() {
         let keepalive_due = false;
         let lock_clock_due =
             lock_clock_refresh_due(session.is_locked(), iter_t0, &mut last_lock_clock_refresh);
+        if session.is_locked() {
+            if iter_t0.saturating_duration_since(last_lock_media_poll) >= LOCK_MEDIA_REFRESH {
+                last_lock_media_poll = iter_t0;
+                let player = lock_now_playing();
+                if lock_media_changed(lock_player.as_ref(), player.as_ref()) {
+                    session_changed = true;
+                }
+                lock_player = player;
+            }
+        } else {
+            lock_player = None;
+            lock_pointer = None;
+        }
         let pump_done = Instant::now();
         let pump_total = pump_done
             .duration_since(iter_t0)
@@ -8168,6 +8414,7 @@ pub fn run() {
                     date: &date,
                     notification_count: frame_builder.chrome().notification_count(),
                     verifying: lock.is_verifying(),
+                    now_playing: lock_player.as_ref(),
                 };
                 native_accessibility.update_if_active(|| {
                     lock_screen::build_accessibility_tree(
@@ -8222,6 +8469,7 @@ pub fn run() {
                     date: &date,
                     notification_count: notif_count,
                     verifying: lock.is_verifying(),
+                    now_playing: lock_player.as_ref(),
                 };
                 let wallpaper = {
                     let chrome = frame_builder.chrome();
@@ -8349,6 +8597,27 @@ pub fn run() {
                             // shell receipt, so a second notification would
                             // obscure work and split the next action.
                             tracing::info!(path = %path.display(), "screenshot saved");
+                            frame_builder.host_mut().set_capture_send_devices(
+                                peer_sync.as_deref().map_or_else(Vec::new, |network| {
+                                    crate::shell::screenshot_send::online_devices(network)
+                                }),
+                            );
+                        }
+                        CaptureOutcome::ScreenshotSendRequested { path, target } => {
+                            let mut bridge = crate::shell::screenshot_send::FabricSendBridge {
+                                network: peer_sync.as_deref(),
+                                workspace_root: crate::shell::screenshot_send::workspace_files_root(
+                                ),
+                            };
+                            match crate::shell::screenshot_send::route(&path, &target, &mut bridge)
+                            {
+                                Ok(receipt) => frame_builder.with_chrome(|chrome| {
+                                    chrome.push_notification("Screenshot sent", receipt.message());
+                                }),
+                                Err(error) => frame_builder.with_chrome(|chrome| {
+                                    chrome.push_error_notification("Screenshot not sent", error);
+                                }),
+                            }
                         }
                         CaptureOutcome::Copied { width, height } => {
                             tracing::info!(width, height, "screenshot copied");
@@ -8644,17 +8913,15 @@ pub fn run() {
         }
 
         // Accept new test-control connections and drain them in this same
-        // iteration. Previously new connections were appended here but only
-        // pumped after the following calloop sleep. With no inherited wake fd
-        // that made a freshly connected test driver wait until an unrelated
-        // desktop event; with the wake fd it created a fragile two-phase
-        // handshake. Keeping accept+drain together makes the control protocol
-        // deterministic and leaves production builds unaffected.
+        // iteration, so a request already written is answered without
+        // another calloop sleep. One written after this drain wakes the loop
+        // through the connection's own source.
         if let Some(listener) = &test_control_listener {
             loop {
                 match listener.accept() {
                     Ok((stream, _addr)) => {
-                        if let Some(conn) = TestControlConn::new(stream) {
+                        if let Some(mut conn) = TestControlConn::new(stream) {
+                            conn.watch(&event_loop.handle());
                             test_control_conns.push(conn);
                         }
                     }
@@ -8680,7 +8947,14 @@ pub fn run() {
                 injected_redraw_pending = true;
             }
         }
-        test_control_conns.retain(|conn| !conn.closed);
+        test_control_conns.retain_mut(|conn| {
+            if conn.closed
+                && let Some(token) = conn.wake.take()
+            {
+                event_loop.handle().remove(token);
+            }
+            !conn.closed
+        });
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
 
@@ -8762,6 +9036,11 @@ pub fn run() {
             .is_locked()
             .then(|| last_lock_clock_refresh.checked_add(LOCK_CLOCK_REFRESH))
             .flatten();
+        // Follow the players while the lock is visible; a blanked display
+        // shows nothing, so it does not wake for them.
+        let lock_media_deadline = (session.is_locked() && !session.is_blanked())
+            .then(|| last_lock_media_poll.checked_add(LOCK_MEDIA_REFRESH))
+            .flatten();
         let park = native_loop_park(
             park_now,
             backend_event_wake,
@@ -8779,6 +9058,7 @@ pub fn run() {
                     ),
                 ),
                 lock_clock_deadline,
+                lock_media_deadline,
                 run_deadline,
                 controller_nav.next_deadline(park_now),
                 backend.next_service_deadline(),
@@ -8857,12 +9137,25 @@ pub fn run() {
     drop(notif_handle);
     drop(tray_handle);
     drop(polkit_agent);
+    drop(network_secret_agent);
 }
 
 /// Publish a successful machine-level change to every shell surface that
 /// mirrors it before raising the transient readout. Quick Settings may be
 /// open while a hardware key is pressed, so waiting for its next device read
 /// would leave the visible slider behind the value in the OSD.
+/// Hand a pointer lock/confinement change to the backend, placing the
+/// pointer where a released lock asked.
+fn apply_pointer_constraint_change(
+    backend: &mut dyn Backend,
+    change: crate::compositor::pointer_lock::ConstraintChange,
+) {
+    backend.set_pointer_constraint(change.region);
+    if let Some((x, y)) = change.warp_to {
+        backend.warp_pointer(x, y);
+    }
+}
+
 fn publish_media_osd(
     chrome: &mut crate::shell::chrome_state::ChromeState,
     osd: crate::shell::osd::Osd,
@@ -8889,7 +9182,9 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::Transport(_)
         | crate::shell::osd::OsdKind::KeyboardBacklight
         | crate::shell::osd::OsdKind::NoBacklight
-        | crate::shell::osd::OsdKind::Touchpad { .. } => {}
+        | crate::shell::osd::OsdKind::Touchpad { .. }
+        | crate::shell::osd::OsdKind::PointerHeld { .. }
+        | crate::shell::osd::OsdKind::MouseKeys { .. } => {}
     }
 }
 
@@ -10241,6 +10536,44 @@ mod tests {
         );
     }
 
+    /// A driver's request often lands after its connection was accepted and
+    /// found empty. The accepted stream must then wake an otherwise idle
+    /// loop itself, rather than leave the request for an unrelated event.
+    #[test]
+    fn a_request_written_after_accept_wakes_an_idle_loop() {
+        use std::io::Write as _;
+
+        let mut event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, mut client) = UnixStream::pair().expect("socket pair");
+        let mut conn = TestControlConn::new(server).expect("server connection");
+        conn.watch(&event_loop.handle());
+
+        // Nothing to read yet, so the loop sleeps out its whole timeout.
+        let idle = Instant::now();
+        event_loop
+            .dispatch(Some(Duration::from_millis(200)), &mut state)
+            .expect("idle dispatch");
+        assert!(
+            idle.elapsed() >= Duration::from_millis(150),
+            "the loop must be idle before the request, or this proves nothing"
+        );
+
+        client
+            .write_all(b"{\"op\":\"list_targets\"}\n")
+            .expect("write the request");
+        let woke = Instant::now();
+        event_loop
+            .dispatch(Some(Duration::from_secs(30)), &mut state)
+            .expect("dispatch");
+        assert!(
+            woke.elapsed() < Duration::from_secs(10),
+            "the request did not wake the loop (slept {:?})",
+            woke.elapsed()
+        );
+    }
+
     #[test]
     fn nonblocking_socket_retains_a_partial_response_until_the_frame_is_complete() {
         use std::io::Read as _;
@@ -10734,6 +11067,7 @@ mod tests {
                 app_id: "so.tilo.reader".into(),
                 resource: "book:architecture/chapter:7".into(),
                 label: "Rendering and state".into(),
+                kind: String::new(),
             });
         let state = FrameBuilderControlState {
             fb: &fb,
@@ -11302,6 +11636,37 @@ fn apply_shell_gesture(
 /// above the normal tiled scene.  The requested `wl_output` wins; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
+/// The full-screen chord: the focused Wayland client enters or leaves
+/// `xdg_toplevel` fullscreen exactly as if it had asked. A Tilo app has no
+/// protocol fullscreen, so its window group maximizes instead.
+fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder) {
+    use smithay::wayland::shell::xdg::XdgShellHandler;
+    let toplevel = state.client_input.keyboard_focus().and_then(|surface_id| {
+        state
+            .xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .find(|toplevel| {
+                crate::compositor::state::surface_id(toplevel.wl_surface()) == surface_id
+            })
+            .cloned()
+            .map(|toplevel| (surface_id, toplevel))
+    });
+    let Some((surface_id, toplevel)) = toplevel else {
+        let _ = frame.host_mut().toggle_focused_group_maximized();
+        return;
+    };
+    if state
+        .fullscreen_target
+        .as_ref()
+        .is_some_and(|target| target.surface_id == surface_id)
+    {
+        state.unfullscreen_request(toplevel);
+    } else {
+        state.fullscreen_request(toplevel, None);
+    }
+}
+
 fn reconcile_fullscreen_overlay(
     state: &mut State,
     frame: &mut FrameBuilder,
@@ -11571,6 +11936,28 @@ mod vt_chord_tests {
         assert_eq!(
             route(&character("l"), ModifiersState::SUPER, false),
             PriorityRoute::LockSession
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::NumLock, ElementState::Pressed),
+                ModifiersState::SHIFT | ModifiersState::ALT,
+                false
+            ),
+            PriorityRoute::ToggleMouseKeys
+        );
+        assert_eq!(
+            route(&key(NamedKey::NumLock, ElementState::Pressed), none, false),
+            PriorityRoute::Continue,
+            "a bare Num Lock is the client's"
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::NumLock, ElementState::Pressed),
+                ModifiersState::SHIFT | ModifiersState::ALT,
+                true
+            ),
+            PriorityRoute::LockScreen,
+            "the lock keeps the chord"
         );
         assert_eq!(route(&character("a"), none, false), PriorityRoute::Continue);
     }

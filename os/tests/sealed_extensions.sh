@@ -20,8 +20,8 @@ joined() { sed -e ':a' -e '/\\$/N; s/\\\n/ /; ta' "$1"; }
 mask="$(joined "$image" | grep -F '&& systemctl mask systemd-sysext.service systemd-confext.service systemd-sysext.socket' || true)"
 strict="${mask#*&& systemctl mask systemd-sysext.service}"
 if [ "$(printf '%s\n' "$mask" | grep -c .)" = 1 ] \
-   && ! printf '%s' "$strict" | grep -Fq '|| true' \
-   && printf '%s' "$mask" | grep -Fq 'test "$(readlink "/etc/systemd/system/$u")" = /dev/null'; then
+   && ! grep -Fq '|| true' <<<"$strict" \
+   && grep -Fq 'test "$(readlink "/etc/systemd/system/$u")" = /dev/null' <<<"$mask"; then
   ok 'the sealed image masks boot-time sysext/confext merges and fails if a unit is missing'
 else
   bad 'the sealed image can merge an unsigned or directory extension over /usr or /etc at boot'
@@ -36,7 +36,7 @@ else
 fi
 
 dev_run="$(joined "$dev" | grep -F 'systemctl enable sshd.service systemd-sysext.service' || true)"
-if printf '%s' "$dev_run" | grep -Eq 'systemctl unmask systemd-sysext\.service +&& systemctl enable sshd\.service systemd-sysext\.service' \
+if grep -Eq 'systemctl unmask systemd-sysext\.service +&& systemctl enable sshd\.service systemd-sysext\.service' <<<"$dev_run" \
    && ! joined "$dev" | grep -Fq 'unmask systemd-confext' \
    && ! joined "$dev" | grep -Fq 'unmask systemd-sysext.socket'; then
   ok 'only the unsealed dev image unmasks systemd-sysext, for its development layers'

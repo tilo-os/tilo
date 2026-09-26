@@ -258,7 +258,13 @@ impl TouchGestureArena {
         u8::try_from(self.contacts.len()).unwrap_or(u8::MAX)
     }
 
-    fn center(&self) -> Option<Point> {
+    /// Contacts currently down.
+    pub fn contact_count(&self) -> usize {
+        self.contacts.len()
+    }
+
+    /// Centroid of the contacts currently down.
+    pub fn center(&self) -> Option<Point> {
         if self.contacts.is_empty() {
             return None;
         }

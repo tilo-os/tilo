@@ -54,6 +54,7 @@ use runtime::{
     WindowRuntime,
 };
 include!("app/continuation.rs");
+include!("app/dev_session.rs");
 include!("app/actions.rs");
 include!("app/accessibility.rs");
 include!("app/collaboration.rs");
@@ -162,6 +163,10 @@ pub enum UserEvent {
     /// Synchronize and redraw after typed state was changed by a worker.
     /// Created automatically by [`crate::LocalStateWriter`].
     Wake(crate::wake::WakeEvent),
+    /// `tilo-app dev` is replacing this process. Flush the document and write
+    /// the route and caret, then leave the event loop so the next process can
+    /// read them.
+    DevSessionStop,
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
     #[cfg(feature = "native")]
     AccessKit(accesskit_winit::WindowEvent),
@@ -523,6 +528,9 @@ pub struct App {
     /// Studio. Throttled so the render loop does not stat the file per frame.
     theme_store_stamp: Option<crate::time::SystemTime>,
     last_theme_store_check: Instant,
+    /// The schedule an "Automatic" theme follows and whether it was night
+    /// when last applied: sunrise and sunset re-theme without a file change.
+    theme_schedule: Option<(settings_store::day_schedule::Scheduled, bool)>,
     input: InputRuntime,
 
     focus_history: HistoryRuntime,
@@ -1266,6 +1274,7 @@ impl App {
             appearance_reconcile: false,
             theme_store_stamp: (inputs.theme_store_stamp)(),
             last_theme_store_check: crate::time::now(),
+            theme_schedule: None,
             focus_history: HistoryRuntime::new(),
             collaboration: CollaborationRuntime::new(
                 inputs.collab_manager,
@@ -1681,6 +1690,21 @@ impl App {
 
     #[cfg(feature = "native")]
     fn reconcile_configured_theme(&mut self) -> bool {
+        let now = crate::time::now();
+        if self.watch_system_settings
+            && now.saturating_duration_since(self.last_theme_store_check)
+                >= Duration::from_millis(750)
+            && self.theme_schedule.is_some_and(|(schedule, night)| {
+                schedule.is_night(crate::theme::local_moment()) != night
+            })
+        {
+            self.last_theme_store_check = now;
+            self.apply_configured_theme();
+            self.rebuild_theme();
+            self.layout.layout_dirty = true;
+            self.layout.structure_dirty = true;
+            return true;
+        }
         self.reconcile_configured_theme_with(
             crate::time::now(),
             || {
@@ -1721,6 +1745,9 @@ impl App {
     #[cfg(feature = "native")]
     fn apply_configured_theme(&mut self) {
         self.accessibility.base_theme = Theme::configured();
+        self.theme_schedule =
+            Theme::automatic_schedule_from(settings_store::settings_path().as_deref())
+                .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
@@ -1756,6 +1783,18 @@ impl App {
             }
         }
         best.map(|(_, icon)| icon)
+    }
+
+    /// Whether a laid-out widget claims raw per-finger touch at `point`
+    /// (logical coords); see [`Widget::claims_raw_touch`].
+    #[cfg(feature = "native")]
+    fn claims_raw_touch_at(&self, point: Point) -> bool {
+        self.layout.node_map.keys().any(|&node| {
+            self.inspect_node(node, |widget| {
+                widget.get_rect().contains(point) && widget.claims_raw_touch(point)
+            })
+            .unwrap_or(false)
+        })
     }
 
     /// Mirrors [`Self::resolve_cursor`]: smallest-area widget under `point`
@@ -1931,6 +1970,13 @@ impl App {
     /// Lets headless tests stand the App up without spinning a winit loop.
     #[doc(hidden)]
     pub fn init_layout(&mut self) {
+        let dev_view = self.consume_dev_checkpoint();
+        self.init_layout_with_dev_view(dev_view);
+    }
+
+    /// Headless and dev-reload startup. `dev_view` is the presentation captured
+    /// from the previous process; shell continuation still wins when both exist.
+    pub(crate) fn init_layout_with_dev_view(&mut self, dev_view: Option<crate::view::View>) {
         let _entry = self.enter_wake_scope();
         self.refresh_control_action_availability();
         self.component_close_reports
@@ -1940,6 +1986,8 @@ impl App {
         self.build_history_presentation();
         self.update_focusable_order();
         if let Some(view) = self.continuation.pending_view.take() {
+            <Self as crate::view::FreezeThaw>::restore_view(self, &view);
+        } else if let Some(view) = dev_view {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
         }
         if self.autofocus_first

@@ -34,12 +34,10 @@ filesystem = [
     "dep:uuid",
     "dep:thiserror",
     "dep:hex",
-    "dep:blake3",
     "dep:rand",
     "dep:getrandom",
     "dep:fuser",
     "dep:fs-native",
-    "dep:redb",
 ]
 
 [[bin]]
@@ -96,6 +94,12 @@ clap = { workspace = true, optional = true }
 iroh = { workspace = true, optional = true }
 iroh-base = { workspace = true, optional = true }
 iroh-blobs.workspace = true
+# The content format (chunking, manifests) and the pieces of iroh-blobs
+# the content store builds its file-backed provider from.
+fs-content = { path = "../fs-content" }
+bao-tree = { workspace = true }
+irpc = { workspace = true }
+ref-cast = { workspace = true }
 iroh-gossip = { workspace = true, optional = true }
 automerge = { workspace = true, optional = true }
 tilo-automerge = { workspace = true, optional = true }
@@ -130,11 +134,11 @@ thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["full"] }
 tilo-rt.workspace = true
 hex = { workspace = true, optional = true }
-blake3 = { workspace = true, optional = true }
+blake3.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 futures-util.workspace = true
 rand = { workspace = true, optional = true }
-redb = { workspace = true, optional = true }
+redb.workspace = true
 
 [dev-dependencies]
 tilo-automerge = { workspace = true, features = ["heap-probe"] }

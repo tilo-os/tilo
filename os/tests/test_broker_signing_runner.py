@@ -201,13 +201,19 @@ class RemoteDeadlineTests(unittest.TestCase):
     def test_timeout_kills_child_and_descendant(self):
         with tempfile.TemporaryDirectory() as tmp:
             marker=Path(tmp)/'escaped'
-            descendant='import time,pathlib;time.sleep(.7);pathlib.Path('+repr(str(marker))+').write_text("escaped")'
+            # The descendant outlives the 0.2s deadline by seconds, so a
+            # runner that waited for it (or its inherited pipes) is caught by
+            # elapsed time without depending on interpreter start-up speed.
+            descendant='import time,pathlib;time.sleep(3);pathlib.Path('+repr(str(marker))+').write_text("escaped")'
             code='import subprocess,sys,time;subprocess.Popen([sys.executable,"-c",'+repr(descendant)+']);time.sleep(30)'
             before=time.monotonic()
-            result=subprocess.run(self.command(0,.2,code),input=b'',capture_output=True,timeout=2)
+            result=subprocess.run(self.command(0,.2,code),input=b'',capture_output=True,timeout=5)
+            elapsed=time.monotonic()-before
             self.assertNotEqual(result.returncode,0)
-            self.assertLess(time.monotonic()-before,1)
-            time.sleep(.8)
+            self.assertLess(elapsed,2.5)
+            # The descendant started before the runner returned; give it past
+            # its whole sleep from that point before proving it was killed.
+            time.sleep(3.5)
             self.assertFalse(marker.exists())
 
     def test_exited_leader_does_not_leave_descendant_pipe_open(self):

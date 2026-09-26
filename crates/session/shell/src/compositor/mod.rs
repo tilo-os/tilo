@@ -24,6 +24,8 @@ pub mod client_input;
 pub mod controller_nav;
 pub mod cursor;
 pub mod dev_env;
+#[cfg(target_os = "linux")]
+pub mod device_rotation;
 pub mod drag_feedback;
 #[cfg(target_os = "linux")]
 pub mod floating_service;
@@ -52,7 +54,12 @@ pub mod native;
 pub mod osk_service;
 #[cfg(target_os = "linux")]
 pub mod output_globals;
+pub mod output_heads;
+#[cfg(target_os = "linux")]
+pub mod output_management;
 pub mod pacing;
+#[cfg(target_os = "linux")]
+pub mod pointer_lock;
 pub mod present;
 pub mod projection_capture;
 #[cfg(target_os = "linux")]

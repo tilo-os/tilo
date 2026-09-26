@@ -696,7 +696,9 @@ fn strict_existing_admission_never_reserves_missing_memory_or_persisted_records(
     ));
     let directory = tempfile::tempdir().unwrap();
     let mut owners = crate::record::RecordOwners::new(directory.path().to_path_buf());
-    let persisted = owners.open("dev.tilo.history-fixture", "workspace").unwrap();
+    let persisted = owners
+        .open("dev.tilo.history-fixture", "workspace")
+        .unwrap();
     assert!(matches!(
         persisted.open_existing_record_checked(&checkout),
         Err(crate::record::RecordOpenError::MissingRecord)

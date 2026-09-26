@@ -20,7 +20,6 @@ jobs:
   mirror:
     runs-on: runner
     timeout-minutes: 240
-    enable-openid-connect: true
     container:
       image: quay.io/fedora/fedora:44
     steps:
@@ -44,7 +43,9 @@ jobs:
         run: grep '^BASE_SOURCE=' os/base-snapshot.env >> "$GITHUB_ENV"
 
       - name: Log in to registry.tilo.so
-        uses: ./.forgejo/actions/tilo-registry-login
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: skopeo login registry.tilo.so --username "$GITHUB_ACTOR" --password-stdin <<< "$GITHUB_TOKEN"
 
       - name: Copy the base image (multi-arch index preserved)
         run: |

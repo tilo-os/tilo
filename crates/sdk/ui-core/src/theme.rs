@@ -187,6 +187,19 @@ pub struct AppearanceIntent {
     pub ui_scale: f32,
 }
 
+/// The local wall-clock moment the day/night schedule is evaluated at, read
+/// through the toolkit clock.
+#[must_use]
+pub fn local_moment() -> settings_store::day_schedule::LocalMoment {
+    use chrono::{Datelike, Offset, Timelike};
+    let local: chrono::DateTime<chrono::Local> = crate::time::wall().into();
+    settings_store::day_schedule::LocalMoment {
+        day_of_year: u16::try_from(local.ordinal()).unwrap_or(1),
+        minute_of_day: u16::try_from(local.hour() * 60 + local.minute()).unwrap_or(0),
+        utc_offset_minutes: local.offset().fix().local_minus_utc() / 60,
+    }
+}
+
 impl Theme {
     fn from_tokens(name: &str, mut tokens: Tokens) -> Self {
         // Derived here, the single funnel every constructor passes through,
@@ -639,11 +652,30 @@ impl Theme {
         theme
     }
 
-    /// Pure parser shared by runtime loading and hermetic tests.
+    /// Parser shared by runtime loading and hermetic tests. An "Automatic"
+    /// theme resolves against the local time now.
     pub fn from_settings_json(text: &str) -> Option<Self> {
+        Self::from_settings_json_at(text, local_moment())
+    }
+
+    /// [`Self::from_settings_json`] at an explicit local moment: "Automatic"
+    /// is the light theme by day and the dark theme by night, on the schedule
+    /// night light shares (`settings_store::day_schedule`).
+    pub fn from_settings_json_at(
+        text: &str,
+        moment: settings_store::day_schedule::LocalMoment,
+    ) -> Option<Self> {
         let v: serde_json::Value = serde_json::from_str(text).ok()?;
         let appearance = v.get("appearance")?;
         let active = appearance.get("theme")?.as_str()?;
+        if settings_store::day_schedule::is_automatic(active) {
+            let schedule = settings_store::day_schedule::Scheduled::from_settings(v.as_object()?);
+            return Some(if schedule.is_night(moment) {
+                Self::dark()
+            } else {
+                Self::light()
+            });
+        }
         if let Some(id) = active.strip_prefix("custom:") {
             let spec: CustomThemeSpec =
                 serde_json::from_value(appearance.get("custom_theme")?.clone()).ok()?;
@@ -653,6 +685,18 @@ impl Theme {
             return Self::from_custom_spec(&spec);
         }
         Self::named(active)
+    }
+
+    /// The day/night schedule an "Automatic" theme in `settings` follows, or
+    /// `None` when the theme is fixed. Hosts keep it to notice sunrise and
+    /// sunset, which change the theme without changing the file.
+    pub fn automatic_schedule_from(
+        settings: Option<&std::path::Path>,
+    ) -> Option<settings_store::day_schedule::Scheduled> {
+        let document = settings_store::load_at(settings?);
+        let theme = document.get("appearance")?.get("theme")?.as_str()?;
+        settings_store::day_schedule::is_automatic(theme)
+            .then(|| settings_store::day_schedule::Scheduled::from_settings(&document))
     }
 
     /// Pure black surfaces under pure-white text (WCAG AAA, 21:1 — the
@@ -1582,6 +1626,29 @@ mod tests {
             r.full,
             Radii::default().full,
             "full stays the pill sentinel"
+        );
+    }
+
+    #[test]
+    fn the_automatic_theme_is_light_by_day_and_dark_by_night() {
+        use settings_store::day_schedule::LocalMoment;
+        let json = r#"{"appearance":{"theme":"Automatic","schedule":"custom","sunrise":"07:00","sunset":"19:00"}}"#;
+        let at = |minute_of_day| LocalMoment {
+            day_of_year: 100,
+            minute_of_day,
+            utc_offset_minutes: 0,
+        };
+        assert_eq!(
+            Theme::from_settings_json_at(json, at(12 * 60))
+                .unwrap()
+                .name,
+            Theme::light().name
+        );
+        assert_eq!(
+            Theme::from_settings_json_at(json, at(22 * 60))
+                .unwrap()
+                .name,
+            Theme::dark().name
         );
     }
 

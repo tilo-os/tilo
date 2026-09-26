@@ -18,7 +18,7 @@ sys.path.insert(0, str(DEV))
 spec=importlib.util.spec_from_file_location('wrapper',DEV/'bootc-registry-wrapper.py')
 wrapper=importlib.util.module_from_spec(spec);spec.loader.exec_module(wrapper)
 
-SOURCE='docker://code.tilo.so/tilo/tilo-development@sha256:'+'1'*64
+SOURCE='docker://registry.tilo.so/tilo/tilo-development@sha256:'+'1'*64
 DIGEST='sha256:'+'1'*64
 
 
@@ -26,7 +26,7 @@ class RegistryWarmupTests(unittest.TestCase):
     def test_bound_source_requires_exact_image_manifest_and_config(self):
         raw=b'{"schemaVersion":2}'
         digest='sha256:'+hashlib.sha256(raw).hexdigest()
-        source='docker://code.tilo.so/tilo/tilo-development@'+digest
+        source='docker://registry.tilo.so/tilo/tilo-development@'+digest
         image_id='4'*64
         canonical=source.removeprefix('docker://')
         inspect=SimpleNamespace(returncode=0,stdout=json.dumps([{

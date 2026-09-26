@@ -408,9 +408,7 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
                         .as_deref()
                         .is_some_and(|value| {
                             value
-                                .strip_prefix(
-                                    "code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:",
-                                )
+                                .strip_prefix("code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:")
                                 .is_some_and(|hex| lowercase_hex(hex, 64))
                         })
                     && selected
