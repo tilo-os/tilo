@@ -14239,6 +14239,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "atomic-file",
+ "blake3",
  "clap",
  "fluent",
  "fluent-syntax",

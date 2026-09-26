@@ -447,22 +447,38 @@ pub struct DevRequest {
     pub debounce: Duration,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct PackageRequest {
     pub output: Option<PathBuf>,
     pub identity: Option<PathBuf>,
-    pub profile: String,
+    /// Cargo profile; `thin-app` for a thin package and `release` for a fat
+    /// one when unset.
+    pub profile: Option<String>,
+    /// Rust target triple (fat packages only).
     pub target: Option<String>,
     pub features: Vec<String>,
+    /// Disable the app's default features (fat packages only).
     pub no_default_features: bool,
     pub force: bool,
+    /// Build a self-contained binary instead of one linked against the
+    /// shared runtime.
+    pub fat: bool,
+    /// Where the matching runtime bundle is written (thin packages only);
+    /// `<output dir>/runtime` when unset.
+    pub runtime_out: Option<PathBuf>,
+    /// Signing identity for the runtime bundle (thin packages only).
+    pub runtime_identity: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct PackageOutcome {
     pub output: PathBuf,
     pub entrypoints: Vec<PathBuf>,
+    /// The runtime bundle a thin package was linked against.
+    pub runtime: Option<PackagedRuntime>,
 }
+
+pub use thin::PackagedRuntime;
 
 /// One validated edit to a serialized UI object graph.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -4683,6 +4699,12 @@ struct AppPackageSpec {
 /// freshly built binaries are placed at their manifest paths. Relative output
 /// and identity paths are resolved from the discovered app root.
 ///
+/// By default the app is built thin, as releases are: through the release
+/// thin build script, linked against the shared `runtime-dylib`, with that
+/// runtime baked into a signed bundle beside the package and the packaged
+/// manifest naming it (see [`thin`]). `request.fat` builds a self-contained
+/// binary with plain Cargo instead.
+///
 /// # Errors
 ///
 /// Returns an error when preflight, compilation, staging, packing, or
@@ -4693,7 +4715,7 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     if !report.is_ready() {
         bail!("app preflight failed\n\n{}", report.summary());
     }
-    validate_profile_name(&request.profile)?;
+    let profile = package_profile(request)?;
     let spec = load_app_package_spec(app_dir)?;
     let output = request.output.as_ref().map_or_else(
         || {
@@ -4709,6 +4731,13 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
             output.display()
         );
     }
+    let source_root = if request.fat {
+        None
+    } else {
+        let root = thin::tilo_source_root(&spec.app_dir)?;
+        require_thin_feature(&spec)?;
+        Some(root)
+    };
     let output_parent = output
         .parent()
         .ok_or_else(|| anyhow::anyhow!("package output has no parent: {}", output.display()))?;
@@ -4719,7 +4748,13 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         )
     })?;
 
-    let built = build_entrypoints(&spec, request)?;
+    let (built, thin_out) = match &source_root {
+        None => (build_entrypoints(&spec, request, &profile)?, None),
+        Some(root) => {
+            let (built, out) = build_thin_entrypoints(&spec, request, &profile, root)?;
+            (built, Some(out))
+        }
+    };
     let staging = tempfile::Builder::new()
         .prefix(".tilo-app-package-")
         .tempdir_in(output_parent)
@@ -4730,10 +4765,89 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
             )
         })?;
     let payload = staging.path().join("payload");
-    std::fs::create_dir(&payload).context("creating staged payload")?;
+    stage_payload(&spec, &built, &payload)?;
+
+    let (manifest, runtime) = match (&source_root, &thin_out) {
+        (Some(root), Some(thin_out)) => {
+            let runtime_out = request.runtime_out.as_ref().map_or_else(
+                || output_parent.join("runtime"),
+                |path| absolute_from(&spec.app_dir, path),
+            );
+            let runtime_identity = request
+                .runtime_identity
+                .as_ref()
+                .map(|path| absolute_from(&spec.app_dir, path));
+            let (manifest, runtime) = stage_thin_runtime(
+                &spec,
+                root,
+                thin_out,
+                &runtime_out,
+                runtime_identity.as_deref(),
+                staging.path(),
+            )?;
+            (manifest, Some(runtime))
+        }
+        _ => (spec.manifest_path.clone(), None),
+    };
+
+    let staged_package = staging.path().join("package.tapp");
+    let identity = request
+        .identity
+        .as_ref()
+        .map(|path| absolute_from(&spec.app_dir, path));
+    run_tilo_pkg_pack(
+        &spec,
+        &manifest,
+        &payload,
+        &staged_package,
+        identity.as_deref(),
+    )?;
+    run_tilo_pkg_verify(&spec.app_dir, &staged_package)?;
+    std::fs::rename(&staged_package, &output)
+        .with_context(|| format!("publishing package to {}", output.display()))?;
+    report_package(&output, runtime.as_ref());
+    Ok(PackageOutcome {
+        output,
+        entrypoints: spec.entrypoints.into_iter().map(|(_, path)| path).collect(),
+        runtime,
+    })
+}
+
+/// The Cargo profile for `request`, once its flags agree with the kind of
+/// package it asks for.
+fn package_profile(request: &PackageRequest) -> Result<String> {
+    let profile = request.profile.clone().unwrap_or_else(|| {
+        if request.fat {
+            "release".to_owned()
+        } else {
+            thin::THIN_PROFILE.to_owned()
+        }
+    });
+    validate_profile_name(&profile)?;
+    if !request.fat {
+        if request.target.is_some() || request.no_default_features {
+            bail!(
+                "--target and --no-default-features apply to --fat packages only; a thin package \
+                 builds for the host with the same features as the runtime it links"
+            );
+        }
+    } else if request.runtime_out.is_some() || request.runtime_identity.is_some() {
+        bail!("--runtime-out and --runtime-identity apply to thin packages; drop --fat");
+    }
+    Ok(profile)
+}
+
+/// Lay out the payload: the app's `payload/` overlay, then each built
+/// binary at its manifest path.
+fn stage_payload(
+    spec: &AppPackageSpec,
+    built: &HashMap<String, PathBuf>,
+    payload: &Path,
+) -> Result<()> {
+    std::fs::create_dir(payload).context("creating staged payload")?;
     let app_payload = spec.app_dir.join("payload");
     if app_payload.is_dir() {
-        copy_payload_tree(&app_payload, &payload)?;
+        copy_payload_tree(&app_payload, payload)?;
     }
     for (cargo_bin, payload_path) in &spec.entrypoints {
         let source = built
@@ -4750,21 +4864,110 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         let permissions = std::fs::metadata(source)?.permissions();
         std::fs::set_permissions(&destination, permissions)?;
     }
+    Ok(())
+}
 
-    let staged_package = staging.path().join("package.tapp");
-    let identity = request
-        .identity
-        .as_ref()
-        .map(|path| absolute_from(&spec.app_dir, path));
-    run_tilo_pkg_pack(&spec, &payload, &staged_package, identity.as_deref())?;
-    run_tilo_pkg_verify(&spec.app_dir, &staged_package)?;
-    std::fs::rename(&staged_package, &output)
-        .with_context(|| format!("publishing package to {}", output.display()))?;
-    eprintln!("[tilo-app] packaged {}", output.display());
-    Ok(PackageOutcome {
-        output,
-        entrypoints: spec.entrypoints.into_iter().map(|(_, path)| path).collect(),
-    })
+/// Build the entrypoints thin, in the default collection's runtime graph.
+/// Returns them and the directory holding the runtime they link.
+fn build_thin_entrypoints(
+    spec: &AppPackageSpec,
+    request: &PackageRequest,
+    profile: &str,
+    root: &Path,
+) -> Result<(HashMap<String, PathBuf>, PathBuf)> {
+    let graph = thin::RuntimeGraph::default_collection(root)?;
+    let plan = thin::ThinBuildPlan::new(
+        root,
+        &spec.cargo_package,
+        &graph,
+        profile,
+        &request.features,
+        thin::target_dir_override(),
+    );
+    let binaries: Vec<String> = spec.entrypoints.iter().map(|(b, _)| b.clone()).collect();
+    Ok((thin::build(&plan, &binaries)?, plan.output_dir()))
+}
+
+fn report_package(output: &Path, runtime: Option<&PackagedRuntime>) {
+    let bytes = std::fs::metadata(output).map_or(0, |m| m.len());
+    match runtime {
+        Some(runtime) => {
+            eprintln!(
+                "[tilo-app] packaged {} ({bytes} bytes, thin against {})",
+                output.display(),
+                runtime.reference
+            );
+            eprintln!(
+                "[tilo-app] runtime bundle: {}\n[tilo-app] install both:\n  tilo-install runtime install --bundle {}\n  tilo-install install --allow-self-signed {}",
+                runtime.bundle.display(),
+                runtime.bundle.display(),
+                output.display()
+            );
+        }
+        None => eprintln!(
+            "[tilo-app] packaged {} ({bytes} bytes, fat)",
+            output.display()
+        ),
+    }
+}
+
+/// A thin app declares `thin = ["dep:runtime-dylib"]`; the build script turns
+/// it on for the selected package.
+fn require_thin_feature(spec: &AppPackageSpec) -> Result<()> {
+    let cargo_path = spec.app_dir.join("Cargo.toml");
+    let cargo: toml::Table = std::fs::read_to_string(&cargo_path)
+        .with_context(|| format!("reading {}", cargo_path.display()))?
+        .parse()
+        .with_context(|| format!("parsing {}", cargo_path.display()))?;
+    let has_thin = cargo
+        .get("features")
+        .and_then(|features| features.get("thin"))
+        .is_some();
+    if !has_thin {
+        bail!(
+            "{} has no `thin` feature, so it cannot link the shared runtime. Add\n  \
+             [features]\n  thin = [\"dep:runtime-dylib\"]\n  [dependencies]\n  \
+             runtime-dylib = {{ path = \"../../crates/runtime/runtime-dylib\", optional = true }}\n\
+             or pass --fat for a self-contained binary",
+            cargo_path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Bake the runtime a thin build linked against and write the manifest that
+/// names it into `staging`. Returns the staged manifest path and the runtime.
+fn stage_thin_runtime(
+    spec: &AppPackageSpec,
+    root: &Path,
+    thin_out: &Path,
+    runtime_out: &Path,
+    runtime_identity: Option<&Path>,
+    staging: &Path,
+) -> Result<(PathBuf, PackagedRuntime)> {
+    let dylib = thin_out.join("libruntime_dylib.so");
+    if !dylib.is_file() {
+        bail!(
+            "the thin build left no {}; it is the runtime this app links",
+            dylib.display()
+        );
+    }
+    let libstd = thin::rust_libstd()?;
+    let version = thin::local_runtime_version(&dylib, &libstd)?;
+    let source = std::fs::read_to_string(&spec.manifest_path)
+        .with_context(|| format!("reading {}", spec.manifest_path.display()))?;
+    let (retargeted, reference) = thin::retarget_runtime(&source, &version)?;
+    let manifest = staging.join("tilo-app.toml");
+    std::fs::write(&manifest, retargeted)
+        .with_context(|| format!("writing {}", manifest.display()))?;
+    let bundle = thin::bake_runtime(
+        root,
+        runtime_out,
+        &version,
+        &[&dylib, &libstd],
+        runtime_identity,
+    )?;
+    Ok((manifest, PackagedRuntime { reference, bundle }))
 }
 
 fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
@@ -4830,6 +5033,7 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
 fn build_entrypoints(
     spec: &AppPackageSpec,
     request: &PackageRequest,
+    profile: &str,
 ) -> Result<HashMap<String, PathBuf>> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = ProcessCommand::new(&cargo);
@@ -4838,7 +5042,7 @@ fn build_entrypoints(
         .arg("--manifest-path")
         .arg(spec.app_dir.join("Cargo.toml"))
         .arg("--profile")
-        .arg(&request.profile)
+        .arg(profile)
         .arg("--message-format=json-render-diagnostics")
         .current_dir(&spec.app_dir)
         .stdout(Stdio::piped());
@@ -4931,6 +5135,7 @@ fn collect_cargo_message(
 
 fn run_tilo_pkg_pack(
     spec: &AppPackageSpec,
+    manifest: &Path,
     payload: &Path,
     output: &Path,
     identity: Option<&Path>,
@@ -4941,7 +5146,7 @@ fn run_tilo_pkg_pack(
     command
         .arg("pack")
         .arg("--manifest")
-        .arg(&spec.manifest_path)
+        .arg(manifest)
         .arg("--payload")
         .arg(payload)
         .arg("--output")
@@ -7280,8 +7485,26 @@ fn cargo_toml(spec: &AppSpec) -> String {
     };
     let extras = format!("{lints}{patches}");
     let sdk_path = sdk_path_for_ui(&spec.ui_path);
+    // A workspace app is packaged thin (`tilo-app package`): its `thin`
+    // feature links the shared runtime dylib instead of a private toolkit copy.
+    let (features, runtime) = if spec.workspace_member {
+        let runtime_dylib = sdk_path
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or_else(|| Path::new("../.."))
+            .join("runtime/runtime-dylib");
+        (
+            "[features]\nthin = [\"dep:runtime-dylib\"]\n\n".to_owned(),
+            format!(
+                "runtime-dylib = {{ path = {:?}, optional = true }}\n",
+                runtime_dylib.to_string_lossy()
+            ),
+        )
+    } else {
+        (String::new(), String::new())
+    };
     format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ package = \"tilo-app\", path = {sdk_path:?} }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{lints}",
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n{features}[dependencies]\nui = {{ package = \"tilo-app\", path = {sdk_path:?} }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{runtime}{lints}",
         name = spec.package_name,
         crate_name = spec.crate_name,
         sdk_path = sdk_path.to_string_lossy(),
@@ -7641,6 +7864,8 @@ fn readme_action_example(template: Template) -> (&'static str, &'static str, &'s
         Template::Workspace => ("generated.workspace-item", "share", r#"{"id":4}"#),
     }
 }
+
+mod thin;
 
 #[cfg(test)]
 mod tests;

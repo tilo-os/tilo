@@ -60,10 +60,15 @@ thin_crates="$(IFS=:; echo "${binary_crates[*]}")"
 # Keep every package and feature in resolution, but select only requested binary
 # targets. Cargo still builds their runtime dependency and gives it the same
 # unified dependency features as a full collection build.
+#
+# The wrapper and the crates it thins travel as Cargo configuration rather than
+# environment, so a drop-in `CARGO` that runs the build elsewhere (a remote
+# builder that forwards the command line but not the caller's environment)
+# still produces thin binaries.
 cd "$REPO"
-TILO_THIN_BIN_CRATES="$thin_crates" \
-RUSTC_WORKSPACE_WRAPPER="$REPO/tools/ci/rustc-thin-app-wrapper.sh" \
-cargo build --locked --profile "$PROFILE" --features "$feature_csv" \
+"${CARGO:-cargo}" build --locked --profile "$PROFILE" --features "$feature_csv" \
+    --config "build.rustc-workspace-wrapper=\"$REPO/tools/ci/rustc-thin-app-wrapper.sh\"" \
+    --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
     -p runtime-dylib "${packages[@]}" "${build_targets[@]}"
 
 # A Rust dylib mismatch is not reliably rejected by the ELF linker: symbol

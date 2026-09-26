@@ -10,10 +10,10 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 use tilo_vm_protocol::manifest::{Component, Manifest};
 use tilo_vm_protocol::{
-    Action, AppInstall, AppInstallResult, ApplyResult, BuildJob, BuildTarget, Button, CiJob,
-    Control, Gc, Input, InputAction, JobOutput, LayerImport, LayerSource, Logs, Owner, Policy,
-    Rollback, Scope, SeatClaim, SeatRelease, Shot, SlotCreate, SlotInfo, SlotKind, SlotList,
-    SlotRestart, SlotRm, SlotShow, SlotShowResult, Status, Swap, VM_SLOT, VmTools,
+    Action, AppInstall, AppInstallResult, AppRuntime, ApplyResult, BuildJob, BuildTarget, Button,
+    CiJob, Control, Gc, Input, InputAction, JobOutput, LayerImport, LayerSource, Logs, Owner,
+    Policy, Rollback, Scope, SeatClaim, SeatRelease, Shot, SlotCreate, SlotInfo, SlotKind,
+    SlotList, SlotRestart, SlotRm, SlotShow, SlotShowResult, Status, Swap, VM_SLOT, VmTools,
 };
 
 use crate::build;
@@ -3053,7 +3053,20 @@ impl App {
         let target = build::target_dir(&self.cargo_metadata());
         let staging = build::Staging::new(worktree)?;
         let tapp = staging.tree().with_extension("tapp");
-        let [tools, package] = build::app_package(&target, dir, &tapp);
+        let runtime_out = staging.tree().with_extension("runtime");
+        // One signing key per worktree for the runtimes it bakes, so a slot's
+        // trust list gains one publisher, not one per swap.
+        let identity_dir = Path::new(&target).join("tilo-vm");
+        let identity_dir = if identity_dir.is_absolute() {
+            identity_dir
+        } else {
+            worktree.root.join(identity_dir)
+        };
+        std::fs::create_dir_all(&identity_dir)
+            .map_err(CliError::io(format!("create {}", identity_dir.display())))?;
+        let runtime_identity = identity_dir.join("runtime-publisher.json");
+        let [tools, package] =
+            build::app_package(&target, dir, &tapp, &runtime_out, &runtime_identity);
         let runner = &mut self.runner;
         let built = self.receipt.phase("build", || -> Result<(), CliError> {
             for command in [&tools, &package] {
@@ -3068,17 +3081,55 @@ impl App {
             Ok(())
         });
         built?;
-        let upload = self
-            .receipt
-            .phase("transfer", || -> Result<String, CliError> {
-                let file = std::fs::File::open(&tapp)
-                    .map_err(CliError::io(format!("open {}", tapp.display())))?;
-                remote.upload(std::io::BufReader::new(file))
-            })?;
+        // The thin app loads only against the runtime it was linked with;
+        // that runtime is named by content, so the slot needs it uploaded
+        // only when it does not have that version yet.
+        let bundle = build::baked_runtime(&runtime_out)?;
+        let version = bundle
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let present = match remote.call(AppRuntime {
+            slot: slot.to_owned(),
+            version,
+        }) {
+            Ok(result) => result.installed,
+            // A daemon from before thin app installs cannot parse the request.
+            Err(CliError::Remote(error))
+                if error.code == tilo_vm_protocol::code::INVALID_PARAMS
+                    && error.message.contains("app.runtime") =>
+            {
+                return Err(CliError::Unsupported {
+                    what: "installing a thin app's runtime with the VM's current tilo-vmd".into(),
+                    alternative: format!(
+                        "update the VM's daemon, then retry: tilo-vm swap --slot vm vmd && tilo-vm swap app:{dir}"
+                    ),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let runtime_archive = (!present).then(|| staging.tree().with_extension("runtime.tar"));
+        if let Some(archive) = &runtime_archive {
+            build::pack_bundle(&bundle, archive)?;
+        }
+        let (upload, runtime) = self.receipt.phase(
+            "transfer",
+            || -> Result<(String, Option<String>), CliError> {
+                let mut send = |path: &Path| {
+                    let file = std::fs::File::open(path)
+                        .map_err(CliError::io(format!("open {}", path.display())))?;
+                    remote.upload(std::io::BufReader::new(file))
+                };
+                let upload = send(&tapp)?;
+                let runtime = runtime_archive.as_deref().map(&mut send).transpose()?;
+                Ok((upload, runtime))
+            },
+        )?;
         self.receipt.phase("install", || {
             remote.call(AppInstall {
                 slot: slot.to_owned(),
                 source: LayerSource::Upload(upload),
+                runtime: runtime.map(LayerSource::Upload),
             })
         })
     }

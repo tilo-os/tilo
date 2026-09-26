@@ -609,22 +609,63 @@ Build an installable package from the same app root with:
 tilo-app package
 tilo-app package --identity publisher.json
 tilo-app package --output dist/reading-list.tapp --force
+tilo-app package --runtime-out dist/runtime --runtime-identity runtime-publisher.json
 ```
 
-`package` runs the structural checks, builds every entrypoint declared in
-`tilo-app.toml` with Cargo's `release` profile, places the resulting binaries at
-their declared payload paths, and asks `tilo-app-package` to sign and verify the bundle.
-The verified result is published as `dist/<cargo-package>.tapp` by default.
-An existing output is never replaced unless `--force` is present, and even
-then replacement happens only after the new package verifies successfully.
+`package` runs the structural checks, builds the app, places the resulting
+binaries at their declared payload paths, and asks `tilo-app-package` to sign
+and verify the bundle. The verified result is published as
+`dist/<cargo-package>.tapp` by default. An existing output is never replaced
+unless `--force` is present, and even then replacement happens only after the
+new package verifies successfully.
+
+Apps are packaged thin, exactly as releases are. `os/scripts/build-thin-apps.sh`
+builds the app with the `thin-app` profile and its `thin` feature, and
+`tools/ci/rustc-thin-app-wrapper.sh` links it with `-C prefer-dynamic` against
+`runtime-dylib`, the shared UI/runtime SDK, resolved together with the default
+app collection (`tools/apps/app_release.py --collection default`) as
+`dist/apps/package-apps.sh` does. Chat comes out under 3 MB instead of 46 MB,
+well inside the 5 MiB package limit. A thin app loads only against the
+`libruntime_dylib.so` it was linked with, so `package` also bakes that runtime,
+with `os/scripts/bake-runtime-bundle.sh`, into a signed bundle at
+`<runtime-out>/tilo-runtime/0.0.0-local+<hash>/` (by default `runtime/` beside
+the package). The packaged manifest's `runtime` names that version, not the
+released `tilo-runtime/<version>` in the source manifest. The hash covers the
+runtime dylib and the toolchain, so installing the bundle never shadows the
+system runtime the other apps were built against, and repackaging against an
+unchanged runtime keeps the same version. Install both:
+
+```bash
+tilo-install runtime install --bundle dist/runtime/tilo-runtime/0.0.0-local+<hash>
+tilo-install install --allow-self-signed dist/reading-list.tapp
+```
+
+When `/etc/tilo/runtime-bundle-trusted-publishers.txt` names any publishers,
+the launcher accepts only those, so add the runtime's publisher
+(`<runtime-out>/runtime-bundle-publisher.hex`) to it as root. `tilo-install`
+warns you when it is missing. Without `--runtime-identity`, the runtime is signed with
+`<runtime-out>/identity.json`, which is created on first use and reused, so
+keep that directory private. `tilo-vm swap app:<dir>` does all of this
+for a slot. It uploads the runtime only when the slot user lacks that
+version, and it adds the runtime's publisher to the VM's trust list.
+
+Thin packaging runs from a Tilo checkout, for an app at `apps/<name>` with a
+`thin = ["dep:runtime-dylib"]` feature, and uses `python3`, `bash` and
+`rustc`. Set `CARGO` to build with a Cargo drop-in such as `rcargo`: the wrapper
+travels as `--config`, not environment, so it survives a remote build. For an
+app outside the Tilo tree, `--fat` builds one self-contained binary with plain
+Cargo and the `release` profile. A fat UI app is usually over the size limit.
 
 Files under an app-local `payload/` directory are included before the built
 entrypoints are overlaid. Symbolic links are rejected so package contents do
 not depend on files outside the app. Without `--identity`, `tilo-app-package` creates an
 ephemeral self-signing key, which is useful for local testing; use one
-persistent identity for updates and publication. `--profile`, `--target`,
-`--features`, and `--no-default-features` expose the corresponding Cargo build
-choices. Set `TILO_PKG` to the executable path when `tilo-app-package` is not on `PATH`.
+persistent identity for updates and publication. `--profile` and `--features`
+pick the Cargo profile (`thin-app` by default, `release` with `--fat`) and extra
+app features. `--target` and `--no-default-features` apply to `--fat` only,
+since a thin app must match the runtime it links. Set `TILO_PKG` to the
+`tilo-app-package` executable when it is not on `PATH`, and `BUNDLE_BIN` to a
+built `tilo-runtime-bundle` to save the bake script from building one.
 
 ## The app shape
 

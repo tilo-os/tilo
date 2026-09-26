@@ -194,3 +194,81 @@ fn runtime_verify_detects_tampering() {
         "stderr: {stderr}"
     );
 }
+
+/// Bake a bundle from the fake host into its own data root and return the
+/// bundle directory, the way `tilo-app package` leaves one beside a thin app.
+fn baked_bundle(data: &Path, version: &str) -> PathBuf {
+    let host = tempfile::tempdir().unwrap();
+    fake_host(host.path());
+    let out = Command::new(install_bin())
+        .args(["runtime", "install", "--version", version, "--from"])
+        .arg(host.path())
+        .env("XDG_DATA_HOME", data)
+        .env("HOME", data)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    data.join("tilo-runtime").join(version)
+}
+
+fn install_bundle(xdg: &Path, bundle: &Path, extra: &[&str]) -> std::process::Output {
+    Command::new(install_bin())
+        .args(["runtime", "install", "--bundle"])
+        .arg(bundle)
+        .args(extra)
+        .env("XDG_DATA_HOME", xdg)
+        .env("HOME", xdg)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn runtime_install_bundle_copies_a_baked_bundle_by_its_own_version() {
+    let baked = tempfile::tempdir().unwrap();
+    let bundle = baked_bundle(baked.path(), "0.0.0-local+ab12");
+    let xdg = tempfile::tempdir().unwrap();
+
+    let mismatched = install_bundle(xdg.path(), &bundle, &["--version", "2026.07"]);
+    assert!(!mismatched.status.success());
+    let stderr = String::from_utf8_lossy(&mismatched.stderr);
+    assert!(
+        stderr.contains("not the requested tilo-runtime/2026.07"),
+        "stderr: {stderr}"
+    );
+    assert!(!xdg.path().join("tilo-runtime/2026.07").exists());
+
+    let out = install_bundle(xdg.path(), &bundle, &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "bundle install failed: {}\nstdout: {stdout}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("tilo-runtime/0.0.0-local+ab12"), "{stdout}");
+    let verify = Command::new(install_bin())
+        .args(["runtime", "verify", "0.0.0-local+ab12"])
+        .env("XDG_DATA_HOME", xdg.path())
+        .env("HOME", xdg.path())
+        .output()
+        .unwrap();
+    assert!(verify.status.success());
+
+    let again = install_bundle(xdg.path(), &bundle, &[]);
+    assert!(!again.status.success());
+    assert!(String::from_utf8_lossy(&again.stderr).contains("already installed"));
+}
+
+#[test]
+fn runtime_install_bundle_refuses_a_tampered_source() {
+    let baked = tempfile::tempdir().unwrap();
+    let bundle = baked_bundle(baked.path(), "vv");
+    let libc = bundle.join("lib/lib64/libc.so.6");
+    let mut bytes = fs::read(&libc).unwrap();
+    bytes[0] ^= 0x5a;
+    fs::write(&libc, bytes).unwrap();
+
+    let xdg = tempfile::tempdir().unwrap();
+    let out = install_bundle(xdg.path(), &bundle, &[]);
+    assert!(!out.status.success());
+    assert!(!xdg.path().join("tilo-runtime/vv").exists());
+}

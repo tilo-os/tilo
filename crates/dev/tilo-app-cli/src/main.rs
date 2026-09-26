@@ -52,6 +52,28 @@ enum Command {
     /// Create and edit validated serialized UI object graphs.
     Ui(UiArgs),
     /// Build, assemble, sign, and verify an installable Tilo package.
+    ///
+    /// Apps are built thin, as releases are: `os/scripts/build-thin-apps.sh`
+    /// compiles the app with the `thin-app` profile and its `thin` feature,
+    /// `-C prefer-dynamic` against the shared `runtime-dylib`, resolved with
+    /// the default app collection. A thin app only loads against the runtime
+    /// it was linked with, so that runtime is baked into a signed bundle at
+    /// `<runtime-out>/tilo-runtime/0.0.0-local+<hash>/`, and the packaged
+    /// manifest names that version instead of the released one; it can never
+    /// shadow the system runtime other apps use.
+    ///
+    /// Install both:
+    ///   tilo-install runtime install --bundle <runtime-out>/tilo-runtime/<version>
+    ///   tilo-install install --allow-self-signed <package>
+    ///
+    /// The launcher accepts the bundle only from a publisher in
+    /// /etc/tilo/runtime-bundle-trusted-publishers.txt (when that list is
+    /// non-empty); the publisher is in <runtime-out>/runtime-bundle-publisher.hex.
+    ///
+    /// Thin packaging runs from a Tilo checkout (apps/<name>); set CARGO to
+    /// build with a Cargo drop-in. `--fat` builds a self-contained binary with
+    /// plain Cargo instead, for apps outside the Tilo tree.
+    #[command(verbatim_doc_comment)]
     Package(PackageArgs),
 }
 
@@ -459,20 +481,37 @@ struct PackageArgs {
     #[arg(long)]
     identity: Option<PathBuf>,
 
-    /// Cargo profile used to build the declared entrypoints.
-    #[arg(long, default_value = "release")]
-    profile: String,
-
-    /// Rust target triple passed to Cargo.
+    /// Cargo profile used to build the declared entrypoints [default: thin-app, or release with --fat].
     #[arg(long)]
+    profile: Option<String>,
+
+    /// Build one self-contained binary with plain Cargo instead of a thin
+    /// one against the shared runtime. For apps outside the Tilo tree; a fat
+    /// UI app is usually over the 5 MiB package limit.
+    #[arg(long)]
+    fat: bool,
+
+    /// Directory the matching runtime bundle is written to, as
+    /// `tilo-runtime/<version>/` plus `runtime-bundle-publisher.hex`
+    /// [default: `runtime/` beside the package]. Relative to the app root unless absolute.
+    #[arg(long, conflicts_with = "fat")]
+    runtime_out: Option<PathBuf>,
+
+    /// Signing identity for the runtime bundle. Without it the bundle is signed
+    /// with `<runtime-out>/identity.json`, created on first use and reused.
+    #[arg(long, conflicts_with = "fat")]
+    runtime_identity: Option<PathBuf>,
+
+    /// Rust target triple passed to Cargo (--fat only).
+    #[arg(long, requires = "fat")]
     target: Option<String>,
 
-    /// Comma-separated Cargo features enabled for the package build.
+    /// Comma-separated Cargo features of the app enabled for the package build.
     #[arg(long, value_delimiter = ',')]
     features: Vec<String>,
 
-    /// Disable the app's default Cargo features.
-    #[arg(long)]
+    /// Disable the app's default Cargo features (--fat only).
+    #[arg(long, requires = "fat")]
     no_default_features: bool,
 
     /// Replace an existing output package after the new package verifies successfully.
@@ -944,6 +983,9 @@ fn run_package(args: PackageArgs) -> Result<()> {
             features: args.features,
             no_default_features: args.no_default_features,
             force: args.force,
+            fat: args.fat,
+            runtime_out: args.runtime_out,
+            runtime_identity: args.runtime_identity,
         },
     )?;
     Ok(())
@@ -2072,6 +2114,7 @@ mod tests {
             "publisher.json",
             "--profile",
             "distribution",
+            "--fat",
             "--target",
             "x86_64-unknown-linux-gnu",
             "--features",
@@ -2086,7 +2129,8 @@ mod tests {
         assert_eq!(package.path, Some(PathBuf::from("apps/demo/src")));
         assert_eq!(package.output, Some(PathBuf::from("dist/demo-dev.tapp")));
         assert_eq!(package.identity, Some(PathBuf::from("publisher.json")));
-        assert_eq!(package.profile, "distribution");
+        assert_eq!(package.profile.as_deref(), Some("distribution"));
+        assert!(package.fat);
         assert_eq!(package.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
         assert_eq!(package.features, ["sqlite", "telemetry"]);
         assert!(package.no_default_features);
@@ -2096,8 +2140,47 @@ mod tests {
         let Command::Package(defaults) = defaults.command else {
             panic!("expected package command");
         };
-        assert_eq!(defaults.profile, "release");
+        assert_eq!(defaults.profile, None);
+        assert!(!defaults.fat);
         assert!(!defaults.force);
+    }
+
+    #[test]
+    fn package_is_thin_unless_asked_for_a_fat_binary() {
+        let thin = Cli::try_parse_from([
+            "tilo-app",
+            "package",
+            "apps/chat",
+            "--runtime-out",
+            "/work/runtime",
+            "--runtime-identity",
+            "runtime.json",
+        ])
+        .expect("thin package CLI");
+        let Command::Package(thin) = thin.command else {
+            panic!("expected package command");
+        };
+        assert!(!thin.fat);
+        assert_eq!(thin.runtime_out, Some(PathBuf::from("/work/runtime")));
+        assert_eq!(thin.runtime_identity, Some(PathBuf::from("runtime.json")));
+
+        // Cross targets and dropped default features would link a runtime
+        // other than the one the thin build bakes, so they need --fat.
+        for fat_only in [
+            &["--target", "aarch64-unknown-linux-gnu"][..],
+            &["--no-default-features"][..],
+        ] {
+            let args = ["tilo-app", "package"].iter().chain(fat_only);
+            assert!(Cli::try_parse_from(args).is_err(), "accepted {fat_only:?}");
+        }
+        // A fat binary links no runtime to bake.
+        for thin_only in [
+            &["--runtime-out", "runtime"][..],
+            &["--runtime-identity", "key.json"][..],
+        ] {
+            let args = ["tilo-app", "package", "--fat"].iter().chain(thin_only);
+            assert!(Cli::try_parse_from(args).is_err(), "accepted {thin_only:?}");
+        }
     }
 
     #[test]

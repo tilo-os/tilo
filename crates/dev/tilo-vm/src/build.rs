@@ -62,10 +62,19 @@ pub fn install(component: &Component, target_dir: &str, dest: &Path) -> CommandL
 }
 
 /// `cargo` that builds the app packaging tools, then the `tilo-app` call
-/// that packages `apps/<dir>` as a self-signed `.tapp` at `out`.
-pub fn app_package(target_dir: &str, dir: &str, out: &Path) -> [CommandLine; 2] {
+/// that packages `apps/<dir>` as a self-signed thin `.tapp` at `out`, with
+/// the runtime it links baked under `runtime_out` and signed with
+/// `runtime_identity` (created on first use).
+pub fn app_package(
+    target_dir: &str,
+    dir: &str,
+    out: &Path,
+    runtime_out: &Path,
+    runtime_identity: &Path,
+) -> [CommandLine; 2] {
+    let cargo = cargo_program();
     let tools = CommandLine::new(
-        &cargo_program(),
+        &cargo,
         &[
             "build",
             "--locked",
@@ -74,6 +83,8 @@ pub fn app_package(target_dir: &str, dir: &str, out: &Path) -> [CommandLine; 2] 
             "tilo-app-cli",
             "-p",
             "tilo-app-package-cli",
+            "-p",
+            "runtime-bundle",
         ],
     );
     let package = CommandLine::new(&format!("{target_dir}/release/tilo-app"), &["package"])
@@ -81,8 +92,62 @@ pub fn app_package(target_dir: &str, dir: &str, out: &Path) -> [CommandLine; 2] 
         .arg("--output")
         .arg(out.display().to_string())
         .arg("--force")
-        .env("TILO_PKG", format!("{target_dir}/release/tilo-app-package"));
+        .arg("--runtime-out")
+        .arg(runtime_out.display().to_string())
+        .arg("--runtime-identity")
+        .arg(runtime_identity.display().to_string())
+        .env("CARGO", cargo)
+        .env("TILO_PKG", format!("{target_dir}/release/tilo-app-package"))
+        .env(
+            "BUNDLE_BIN",
+            format!("{target_dir}/release/tilo-runtime-bundle"),
+        );
     [tools, package]
+}
+
+/// The one bundle `tilo-app package --runtime-out <runtime_out>` baked, at
+/// `<runtime_out>/tilo-runtime/<version>`.
+///
+/// # Errors
+/// No bundle, or more than one.
+pub fn baked_runtime(runtime_out: &Path) -> Result<PathBuf, CliError> {
+    let versions = runtime_out.join("tilo-runtime");
+    let bundles: Vec<PathBuf> = std::fs::read_dir(&versions)
+        .map_err(CliError::io(format!("read {}", versions.display())))?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.join("bundle.toml").is_file())
+        .collect();
+    match <[PathBuf; 1]>::try_from(bundles) {
+        Ok([bundle]) => Ok(bundle),
+        Err(found) => Err(CliError::CommandFailed {
+            command: "tilo-app package".into(),
+            status: "unexpected runtime output".into(),
+            stderr: format!(
+                "expected one runtime bundle under {}, found {}",
+                versions.display(),
+                found.len()
+            ),
+        }),
+    }
+}
+
+/// Tar the contents of `dir` (a runtime bundle) at the archive root.
+///
+/// # Errors
+/// I/O failures.
+pub fn pack_bundle(dir: &Path, out: &Path) -> Result<(), CliError> {
+    let file =
+        std::fs::File::create(out).map_err(CliError::io(format!("create {}", out.display())))?;
+    let mut builder = tar::Builder::new(file);
+    builder.follow_symlinks(false);
+    builder
+        .append_dir_all(".", dir)
+        .map_err(CliError::io(format!("pack {}", dir.display())))?;
+    builder
+        .into_inner()
+        .map(drop)
+        .map_err(CliError::io("finish runtime archive"))
 }
 
 /// Apps this worktree offers: `apps/<dir>/tilo-app.toml`.
@@ -307,17 +372,56 @@ mod tests {
 
     #[test]
     fn apps_package_with_their_own_tools() {
-        let [tools, package] = app_package("target", "notes", Path::new("/w/notes.tapp"));
+        let [tools, package] = app_package(
+            "target",
+            "notes",
+            Path::new("/w/notes.tapp"),
+            Path::new("/w/runtime"),
+            Path::new("target/tilo-vm/runtime-publisher.json"),
+        );
         assert_eq!(
             as_cargo(&tools),
-            "cargo build --locked --release -p tilo-app-cli -p tilo-app-package-cli"
+            "cargo build --locked --release -p tilo-app-cli -p tilo-app-package-cli -p runtime-bundle"
         );
         assert_eq!(
-            package.display(),
-            "TILO_PKG=target/release/tilo-app-package target/release/tilo-app package apps/notes --output /w/notes.tapp --force"
+            format!("{} {}", package.program, package.args.join(" ")),
+            "target/release/tilo-app package apps/notes --output /w/notes.tapp --force \
+             --runtime-out /w/runtime --runtime-identity target/tilo-vm/runtime-publisher.json"
         );
+        let env: BTreeMap<_, _> = package.env.iter().cloned().collect();
+        // The thin build runs Cargo through the same program as every host build.
+        assert_eq!(env["CARGO"], tools.program);
+        assert_eq!(env["TILO_PKG"], "target/release/tilo-app-package");
+        assert_eq!(env["BUNDLE_BIN"], "target/release/tilo-runtime-bundle");
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
         assert!(apps_in(&repo).contains(&"notes".to_owned()));
+    }
+
+    #[test]
+    fn a_runtime_bundle_travels_as_its_contents() {
+        let out = tempfile::tempdir().unwrap();
+        let bundle = out.path().join("tilo-runtime/0.0.0-local+ab");
+        std::fs::create_dir_all(bundle.join("lib")).unwrap();
+        std::fs::write(bundle.join("bundle.toml"), "version = \"0.0.0-local+ab\"\n").unwrap();
+        std::fs::write(bundle.join("lib/libruntime_dylib.so"), "so").unwrap();
+        assert_eq!(baked_runtime(out.path()).unwrap(), bundle);
+
+        let archive = out.path().join("runtime.tar");
+        pack_bundle(&bundle, &archive).unwrap();
+        let unpacked = tempfile::tempdir().unwrap();
+        tar::Archive::new(std::fs::File::open(&archive).unwrap())
+            .unpack(unpacked.path())
+            .unwrap();
+        assert!(unpacked.path().join("bundle.toml").is_file());
+        assert!(unpacked.path().join("lib/libruntime_dylib.so").is_file());
+
+        std::fs::create_dir_all(out.path().join("tilo-runtime/0.0.0-local+cd")).unwrap();
+        std::fs::write(
+            out.path().join("tilo-runtime/0.0.0-local+cd/bundle.toml"),
+            "version = \"0.0.0-local+cd\"\n",
+        )
+        .unwrap();
+        assert!(baked_runtime(out.path()).is_err());
     }
 
     #[test]

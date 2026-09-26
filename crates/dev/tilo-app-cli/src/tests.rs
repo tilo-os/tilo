@@ -3131,6 +3131,30 @@ fn every_template_uses_the_toolkit_resource_action_host() {
         };
         let manifest = cargo_toml(&spec);
         assert!(!manifest.contains("tilo-actions ="), "{template:?}");
+        // A workspace app can be packaged thin against the shared runtime.
+        let cargo: toml::Table = manifest.parse().unwrap();
+        assert_eq!(
+            cargo["features"]["thin"].as_array().unwrap(),
+            &[toml::Value::from("dep:runtime-dylib")]
+        );
+        assert_eq!(
+            cargo["dependencies"]["runtime-dylib"]["path"].as_str(),
+            Some("../../crates/runtime/runtime-dylib")
+        );
+        assert_eq!(
+            cargo["dependencies"]["runtime-dylib"]["optional"].as_bool(),
+            Some(true)
+        );
+        let standalone = cargo_toml(&AppSpec {
+            package_name: "generated-app".into(),
+            crate_name: "generated_app".into(),
+            title: "Generated App".into(),
+            app_id: "so.tilo.generated.app".into(),
+            ui_path: PathBuf::from("/src/tilo/crates/sdk/ui-core"),
+            workspace_member: false,
+            template,
+        });
+        assert!(!standalone.contains("runtime-dylib"), "{template:?}");
         let source = app_lib(&spec);
         assert!(source.contains("#[derive(Model"), "{template:?}");
         assert!(source.contains("#[resource(kind = "), "{template:?}");
@@ -3742,19 +3766,8 @@ fn package_refuses_to_replace_output_before_building() {
     std::fs::write(destination.join("dist/reading-list.tapp"), "existing")
         .expect("existing package");
 
-    let error = package_app(
-        &destination.join("src/lib.rs"),
-        &PackageRequest {
-            output: None,
-            identity: None,
-            profile: "release".into(),
-            target: None,
-            features: Vec::new(),
-            no_default_features: false,
-            force: false,
-        },
-    )
-    .unwrap_err();
+    let error =
+        package_app(&destination.join("src/lib.rs"), &PackageRequest::default()).unwrap_err();
     assert!(error.to_string().contains("pass --force"));
 }
 
@@ -3976,6 +3989,229 @@ fn rebuilt_dev_binary_receives_app_arguments_and_app_working_directory() {
         std::fs::read_to_string(output).unwrap(),
         format!("{}\n--document\nA file.qdoc\n", temp.path().display())
     );
+}
+
+fn tilo_checkout() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .unwrap()
+}
+
+/// A Tilo tree holding the real thin build script and wrapper and one app.
+fn thin_fixture(root: &Path) {
+    let checkout = tilo_checkout();
+    for script in [thin::THIN_BUILD_SCRIPT, thin::THIN_WRAPPER] {
+        let destination = root.join(script);
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::copy(checkout.join(script), &destination).unwrap();
+    }
+    std::fs::create_dir_all(root.join("apps/demo")).unwrap();
+    std::fs::write(
+        root.join("apps/demo/Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[features]\nthin = [\"dep:runtime-dylib\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("apps/demo/tilo-app.toml"),
+        "[package]\nid = \"so.tilo.demo\"\nruntime  = \"tilo-runtime/2026.07\"\n\n[entrypoint]\nbin = \"bin/demo\"\n",
+    )
+    .unwrap();
+}
+
+fn graph() -> thin::RuntimeGraph {
+    thin::RuntimeGraph::from_plan(
+        r#"{"packages": ["calculator", "chat"], "features": ["chat/live-media", "music/audio"]}"#,
+    )
+    .unwrap()
+}
+
+#[test]
+fn thin_plan_builds_one_app_in_the_collection_runtime_graph() {
+    let plan = thin::ThinBuildPlan::new(
+        Path::new("/src/tilo"),
+        "chat",
+        &graph(),
+        thin::THIN_PROFILE,
+        &["screen-share".to_owned(), "music/live".to_owned()],
+        None,
+    );
+    let env: HashMap<_, _> = plan.env.iter().cloned().collect();
+    assert_eq!(env["REPO"], "/src/tilo");
+    assert_eq!(env["PROFILE"], "thin-app");
+    assert_eq!(env["BUILD_PACKAGES"], "chat");
+    assert_eq!(env["INCLUDE_PACKAGES"], "calculator chat");
+    assert_eq!(env["EXCLUDE_PACKAGES"], "");
+    // The collection's features keep the runtime ABI of a release build; the
+    // app's own features are qualified with its package.
+    assert_eq!(
+        env["APP_FEATURES"],
+        "chat/live-media,music/audio,chat/screen-share,music/live"
+    );
+    assert!(!env.contains_key("CARGO_TARGET_DIR"));
+    assert_eq!(plan.output_dir(), Path::new("/src/tilo/target/thin-app"));
+
+    let outside = thin::ThinBuildPlan::new(
+        Path::new("/src/tilo"),
+        "browser",
+        &graph(),
+        "thin-app",
+        &[],
+        Some(PathBuf::from("/cache/target")),
+    );
+    let env: HashMap<_, _> = outside.env.iter().cloned().collect();
+    assert_eq!(env["INCLUDE_PACKAGES"], "calculator chat browser");
+    assert_eq!(env["CARGO_TARGET_DIR"], "/cache/target");
+    assert_eq!(outside.output_dir(), Path::new("/cache/target/thin-app"));
+}
+
+#[test]
+fn thin_build_runs_cargo_with_the_release_profile_feature_and_wrapper() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    thin_fixture(&root);
+    let cargo = root.join("fake-cargo");
+    std::fs::write(
+        &cargo,
+        "#!/usr/bin/env bash\nset -e\nprintf '%s\\n' \"$@\" > \"$REPO/cargo-args\"\n\
+         out=\"${CARGO_TARGET_DIR:-$REPO/target}/thin-app\"\nmkdir -p \"$out\"\n\
+         printf '#!/bin/sh\\nexit 0\\n' > \"$out/demo\"\nchmod +x \"$out/demo\"\n\
+         : > \"$out/libruntime_dylib.so\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(
+        thin::tilo_source_root(&root.join("apps/demo")).unwrap(),
+        root
+    );
+    let graph =
+        thin::RuntimeGraph::from_plan(r#"{"packages": ["demo"], "features": ["demo/extra"]}"#)
+            .unwrap();
+    let plan = thin::ThinBuildPlan::new(&root, "demo", &graph, thin::THIN_PROFILE, &[], None);
+    let status = plan.command().env("CARGO", &cargo).status().unwrap();
+    assert!(status.success());
+
+    let args = std::fs::read_to_string(root.join("cargo-args")).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    let wrapper = format!(
+        "build.rustc-workspace-wrapper=\"{}\"",
+        root.join(thin::THIN_WRAPPER).display()
+    );
+    assert_eq!(
+        args,
+        [
+            "build",
+            "--locked",
+            "--profile",
+            "thin-app",
+            "--features",
+            "demo/thin,demo/extra",
+            "--config",
+            wrapper.as_str(),
+            "--config",
+            "env.TILO_THIN_BIN_CRATES=\"demo\"",
+            "-p",
+            "runtime-dylib",
+            "-p",
+            "demo",
+            "--bin",
+            "demo",
+        ]
+    );
+    let built = plan.binaries(&["demo".to_owned()]).unwrap();
+    assert_eq!(built["demo"], root.join("target/thin-app/demo"));
+    let missing = plan.binaries(&["demo-cli".to_owned()]).unwrap_err();
+    assert!(missing.to_string().contains("entrypoint.bin"));
+}
+
+#[test]
+fn thin_wrapper_links_only_the_app_and_runtime_dynamically() {
+    let wrapper = tilo_checkout().join(thin::THIN_WRAPPER);
+    let compile = |crate_name: &str| {
+        let output = ProcessCommand::new("bash")
+            .arg(&wrapper)
+            .args(["echo", "--crate-name", crate_name, "--edition=2024"])
+            .env("TILO_THIN_BIN_CRATES", "chat:notes")
+            .env_remove("TILO_THIN_LINK_MAP_DIR")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let app = compile("chat");
+    assert!(app.contains("-C prefer-dynamic"), "{app}");
+    assert!(app.contains("-C opt-level=z"), "{app}");
+    assert!(app.contains("-C codegen-units=1"), "{app}");
+    let runtime = compile("runtime_dylib");
+    assert!(runtime.contains("-C prefer-dynamic"), "{runtime}");
+    assert!(!runtime.contains("opt-level=z"), "{runtime}");
+    let dependency = compile("serde");
+    assert!(!dependency.contains("prefer-dynamic"), "{dependency}");
+}
+
+#[test]
+fn thin_packaging_needs_the_tilo_tree_and_says_to_use_fat_otherwise() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    thin_fixture(&root);
+    std::fs::create_dir_all(root.join("elsewhere/demo")).unwrap();
+    let nested = thin::tilo_source_root(&root.join("elsewhere/demo")).unwrap_err();
+    assert!(nested.to_string().contains("apps/<name>"), "{nested}");
+    assert!(nested.to_string().contains("--fat"), "{nested}");
+
+    let outside = tempfile::tempdir().unwrap();
+    let error = thin::tilo_source_root(outside.path()).unwrap_err();
+    assert!(error.to_string().contains("--fat"), "{error}");
+}
+
+#[test]
+fn thin_manifest_names_the_runtime_it_was_linked_against() {
+    let source = std::fs::read_to_string(tilo_checkout().join("apps/chat/tilo-app.toml")).unwrap();
+    let (retargeted, reference) =
+        thin::retarget_runtime(&source, "0.0.0-local+0123456789abcdef").unwrap();
+    assert_eq!(reference, "tilo-runtime/0.0.0-local+0123456789abcdef");
+    let manifest = tilo_app_package::Manifest::from_toml_str(&retargeted).unwrap();
+    assert_eq!(
+        manifest.package.runtime.as_deref(),
+        Some(reference.as_str())
+    );
+    tilo_app_package::validate::validate_manifest(&manifest).unwrap();
+    // Nothing but that one line changes.
+    assert_eq!(
+        source
+            .lines()
+            .filter(|l| !l.starts_with("runtime"))
+            .collect::<Vec<_>>(),
+        retargeted
+            .lines()
+            .filter(|l| !l.starts_with("runtime"))
+            .collect::<Vec<_>>()
+    );
+
+    let error = thin::retarget_runtime("[package]\nid = \"so.tilo.x\"\n", "1.0.0").unwrap_err();
+    assert!(error.to_string().contains("[package].runtime"));
+    // A `runtime` key in another table is not the package's runtime.
+    assert!(thin::retarget_runtime("[sandbox]\nruntime = \"x/1\"\n", "1.0.0").is_err());
+}
+
+#[test]
+fn local_runtime_version_follows_the_runtime_and_toolchain() {
+    let temp = tempfile::tempdir().unwrap();
+    let dylib = temp.path().join("libruntime_dylib.so");
+    std::fs::write(&dylib, b"runtime one").unwrap();
+    let libstd = Path::new("/toolchain/lib/libstd-aaaa.so");
+    let one = thin::local_runtime_version(&dylib, libstd).unwrap();
+    assert!(one.starts_with("0.0.0-local+"), "{one}");
+    assert_eq!(one.len(), "0.0.0-local+".len() + 16);
+    assert_eq!(one, thin::local_runtime_version(&dylib, libstd).unwrap());
+    assert_ne!(
+        one,
+        thin::local_runtime_version(&dylib, Path::new("/toolchain/lib/libstd-bbbb.so")).unwrap()
+    );
+    std::fs::write(&dylib, b"runtime two").unwrap();
+    assert_ne!(one, thin::local_runtime_version(&dylib, libstd).unwrap());
 }
 
 #[test]

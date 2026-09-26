@@ -260,11 +260,22 @@ enum RevokedCmd {
 enum RuntimeCmd {
     /// Build + install a runtime bundle into
     /// `$XDG_DATA_HOME/tilo-runtime/<version>/`, from the host root or an
-    /// explicit prefix.
+    /// explicit prefix, or install a bundle that is already built.
+    ///
+    /// `--bundle DIR` installs a baked bundle as is, for example the one
+    /// `tilo-app package` writes next to a thin app: its `bundle.toml` names
+    /// the version, and every file is checked against it before and after
+    /// the copy.
     Install {
-        /// Bundle version tag, written into bundle.toml and used to look it up at launch.
-        #[arg(long)]
-        version: String,
+        /// Bundle version tag, written into bundle.toml and used to look it up
+        /// at launch. With --bundle it defaults to (and must equal) the
+        /// bundle's own version.
+        #[arg(long, required_unless_present = "bundle")]
+        version: Option<String>,
+        /// Install this already-built bundle directory (the one holding
+        /// `bundle.toml`) instead of building one.
+        #[arg(long, conflicts_with_all = ["from_host", "from", "arch", "identity"])]
+        bundle: Option<PathBuf>,
         /// Copy from the running host root. Equivalent to `--from /`.
         #[arg(long)]
         from_host: bool,
@@ -351,7 +362,8 @@ enum Error {
         "{package} declares runtime `{runtime}`, and no bundle for it is installed. \
          That package will not launch: the launcher refuses to start an app whose \
          declared runtime is absent.\n  \
-         Install it and retry:  tilo-install runtime install --version {version} --from-host --identity <key.json>\n  \
+         A thin app from `tilo-app package` ships the matching bundle beside it:  tilo-install runtime install --bundle <runtime-dir>/tilo-runtime/{version}\n  \
+         Otherwise build one and retry:  tilo-install runtime install --version {version} --from-host --identity <key.json>\n  \
          Or build it as part of this install:  add --with-runtime\n  \
          Or install anyway, knowing it cannot launch yet:  add --ignore-missing-runtime"
     )]
@@ -1764,6 +1776,121 @@ fn runtime_install(
     Ok(())
 }
 
+/// Install an already-baked bundle directory under the per-user root.
+///
+/// The source is verified first (so a truncated or tampered copy is refused
+/// before anything is replaced), copied into a sibling staging directory,
+/// verified again there, and only then moved into place.
+fn runtime_install_bundle(
+    source: &Path,
+    expected_version: Option<&str>,
+    force: bool,
+) -> Result<(), Error> {
+    let integrity = runtime_bundle::VerifyOptions {
+        require_publisher: None,
+        require_signature: false,
+        require_arch: None,
+    };
+    let manifest = runtime_bundle::verify_bundle_with(source, &integrity)
+        .map_err(|e| Error::RuntimeBundle(format!("{}: {e}", source.display())))?;
+    let version = manifest.version.as_str();
+    if let Some(expected) = expected_version
+        && expected != version
+    {
+        return Err(Error::RuntimeBundle(format!(
+            "{} is tilo-runtime/{version}, not the requested tilo-runtime/{expected}",
+            source.display()
+        )));
+    }
+    let dest = runtime_bundle::default_bundle_path(version)
+        .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
+    if dest.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() && !force {
+        return Err(Error::RuntimeBundleExists(version.to_string()));
+    }
+    let parent = dest
+        .parent()
+        .ok_or_else(|| Error::RuntimeBundle(format!("{} has no parent", dest.display())))?;
+    fs::create_dir_all(parent)?;
+    let staging = parent.join(format!(".{version}.installing"));
+    if staging.exists() {
+        fs::remove_dir_all(&staging)?;
+    }
+    let copied = copy_bundle_tree(source, &staging).and_then(|()| {
+        runtime_bundle::verify_bundle_with(&staging, &integrity)
+            .map_err(|e| Error::RuntimeBundle(format!("copied bundle: {e}")))
+    });
+    if let Err(error) = copied {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    if dest.exists() {
+        fs::remove_dir_all(&dest)?;
+    }
+    fs::rename(&staging, &dest)?;
+    println!("installed runtime bundle: tilo-runtime/{version}");
+    println!("  path     : {}", dest.display());
+    println!("  arch     : {}", manifest.arch);
+    println!("  files    : {}", manifest.files.len());
+    println!("  root-hash: blake3:{}", manifest.root_hash);
+    match &manifest.publisher_hex {
+        Some(pk) => {
+            println!("  publisher: ed25519:{pk}");
+            if let Some(note) = untrusted_publisher_note(Path::new(TRUSTED_RUNTIME_PUBLISHERS), pk)
+            {
+                println!("{note}");
+            }
+        }
+        None => println!(
+            "  unsigned : the launcher refuses an unsigned runtime bundle unless it runs with --allow-unsigned-runtime"
+        ),
+    }
+    Ok(())
+}
+
+/// The launcher's runtime trust list. When it is non-empty, only the
+/// publishers it names are accepted.
+const TRUSTED_RUNTIME_PUBLISHERS: &str = "/etc/tilo/runtime-bundle-trusted-publishers.txt";
+
+/// A warning for a publisher the launcher's trust list would refuse, or
+/// `None` when there is no list (any signed publisher is accepted) or it
+/// already names `publisher`.
+fn untrusted_publisher_note(list: &Path, publisher: &str) -> Option<String> {
+    let text = fs::read_to_string(list).ok()?;
+    let mut entries = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .peekable();
+    entries.peek()?;
+    if entries.any(|entry| entry.eq_ignore_ascii_case(publisher)) {
+        return None;
+    }
+    Some(format!(
+        "  warning  : {list} does not name this publisher, so the launcher will refuse the bundle.\n  \
+         Trust it (as root):  echo {publisher} >> {list}",
+        list = list.display(),
+    ))
+}
+
+/// Copy a bundle directory tree; symlinks stay symlinks, as the bundle
+/// manifest records them.
+fn copy_bundle_tree(source: &Path, dest: &Path) -> Result<(), Error> {
+    fs::create_dir_all(dest)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let target = dest.join(entry.file_name());
+        if kind.is_dir() {
+            copy_bundle_tree(&entry.path(), &target)?;
+        } else if kind.is_symlink() {
+            std::os::unix::fs::symlink(fs::read_link(entry.path())?, &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 fn runtime_list() -> Result<(), Error> {
     let base = xdg_paths::data_dir()
         .ok_or(Error::NoDataDir)?
@@ -1837,13 +1964,20 @@ fn runtime(cmd: RuntimeCmd) -> Result<(), Error> {
     match cmd {
         RuntimeCmd::Install {
             version,
+            bundle: Some(bundle),
+            force,
+            ..
+        } => runtime_install_bundle(&bundle, version.as_deref(), force),
+        RuntimeCmd::Install {
+            version,
+            bundle: None,
             from_host,
             from,
             arch,
             identity,
             force,
         } => runtime_install(
-            &version,
+            version.as_deref().unwrap_or_default(),
             from_host,
             from.as_deref(),
             arch.as_deref(),
