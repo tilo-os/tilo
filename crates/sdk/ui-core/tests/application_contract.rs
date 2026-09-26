@@ -6,7 +6,7 @@ use tilo_ui::application::{ApplicationCatalog, HostContext, LaunchTarget, Restor
 use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
 use tilo_ui::launch::LaunchError;
 use tilo_ui::record::RecordId;
-use tilo_ui::view::{FocusView, FrozenApp, ThawError, View};
+use tilo_ui::view::{FROZEN_VERSION, FocusView, FrozenApp, ThawError, View};
 
 #[test]
 fn new_instances_are_distinct_and_catalogue_never_fabricates_apps() {
@@ -196,7 +196,7 @@ fn legacy_recovery_is_validated_but_never_adopted() {
     let a = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
     let checkout = a.record().clone();
     let frozen = FrozenApp {
-        version: 1,
+        version: FROZEN_VERSION,
         state: automerge::AutoCommit::new().save(),
         view: View::default(),
     };
