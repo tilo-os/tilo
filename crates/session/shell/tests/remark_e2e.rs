@@ -361,6 +361,9 @@ fn a_remark_about_a_field_with_a_redacted_recording_reaches_the_team_privately()
                     .as_array()?
                     .iter()
                     .find(|node| node["id"] == "t:subject")
+                    .inspect(|node| {
+                        assert_eq!(node["label"], "Subject", "a field goes by its name");
+                    })
                     .map(|node| (surface["surface"].clone(), node["id"].clone()))
             });
         subject.is_some()

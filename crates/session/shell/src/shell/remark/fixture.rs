@@ -454,6 +454,11 @@ mod tests {
             .collect();
         assert_eq!(differs, vec![Offset(31_500_000)]);
         assert_eq!(report.steps.len(), 1, "a real window is described whole");
+        assert_eq!(
+            super::super::review::diverging_places(&report).len(),
+            1,
+            "the banner is one place, not also the window around it: {report:?}"
+        );
 
         let mut review =
             super::super::review::Review::from_trace("uuid:1", &recording.trace, &|_| {

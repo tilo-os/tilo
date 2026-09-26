@@ -812,23 +812,15 @@ fn apply_hosted_window_and_wheel_drag(driver: &mut ShellDriver, action: &Action)
         Action::OpenHostedWindow { app, title } => {
             let kind = app_kind_for(app);
             let title = *title;
+            // The production open-app action: placed by the launch rule
+            // against the layout on screen, and given its document.
             driver.with_chrome(|st: &mut ChromeState| {
-                // Where the window goes is decided now, against the
-                // layout on screen — the same rule a launch applies. A
-                // hosted app has no client process to correlate a
-                // pending-placement note against, so the answer is used
-                // here rather than left for an adoption to pick up.
-                let placement = {
-                    let tree = st.tree();
-                    shell::shell::placement::placement_for_new_window(&tree, st.strip_viewport())
-                };
-                {
-                    let mut tree = st.tree_mut();
-                    shell::compositor::tab_binding::open_hosted_app(
-                        &mut tree, kind, title, placement,
-                    );
-                }
-                st.bump();
+                shell::shell::window_actions::open_hosted(
+                    st,
+                    kind,
+                    title,
+                    shell::shell::window_actions::Destination::Beside,
+                );
             });
         }
         Action::EnableNativeAppSearch => {

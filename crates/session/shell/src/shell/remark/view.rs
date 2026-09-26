@@ -273,7 +273,41 @@ fn role_icon(role: &str) -> Icon {
 }
 
 /// A role as a person reads it: `text_input` → `Text input`.
+/// A role as a person reads it: the localized name of a known role, else
+/// the app's own spelling made readable.
 fn role_label(role: &str) -> String {
+    match role {
+        "button" => t("remark-role-button"),
+        "toggle_button" => t("remark-role-toggle-button"),
+        "text_input" => t("remark-role-text-input"),
+        "multiline_text_input" => t("remark-role-multiline-text-input"),
+        "search_box" => t("remark-role-search-box"),
+        "combo_box" => t("remark-role-combo-box"),
+        "link" => t("remark-role-link"),
+        "checkbox" => t("remark-role-checkbox"),
+        "switch" => t("remark-role-switch"),
+        "radio_button" => t("remark-role-radio-button"),
+        "tab" => t("remark-role-tab"),
+        "menu_item" => t("remark-role-menu-item"),
+        "heading" => t("remark-role-heading"),
+        "image" => t("remark-role-image"),
+        "list" => t("remark-role-list"),
+        "list_item" => t("remark-role-list-item"),
+        "alert" => t("remark-role-alert"),
+        "status" => t("remark-role-status"),
+        "window" => t("remark-role-window"),
+        "text" => t("remark-role-text"),
+        "label" => t("remark-role-label"),
+        "slider" => t("remark-role-slider"),
+        "toolbar" => t("remark-role-toolbar"),
+        "group" => t("remark-role-group"),
+        "dialog" => t("remark-role-dialog"),
+        "application" => t("remark-role-application"),
+        _ => readable_role(role),
+    }
+}
+
+fn readable_role(role: &str) -> String {
     let spaced = role.replace('_', " ");
     let mut chars = spaced.chars();
     chars.next().map_or_else(String::new, |first| {
@@ -2294,11 +2328,7 @@ impl RemarkView {
                 reason.clone(),
             ),
             Verdict::Checked(report) => {
-                let regions: Vec<_> = report
-                    .steps
-                    .iter()
-                    .flat_map(|step| step.regions.iter())
-                    .collect();
+                let regions = super::review::diverging_places(report);
                 if regions.is_empty() {
                     (
                         Icon::Check,

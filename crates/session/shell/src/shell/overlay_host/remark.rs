@@ -148,17 +148,24 @@ fn pick_surface(key: &str, surface: &InspectedSurface) -> Option<PickSurface> {
         .iter()
         .filter_map(|node| {
             let bounds = node.visible.or(node.bounds)?;
+            // A field goes by its name; only a node without one is shown by
+            // what it holds.
+            let name = node.label.clone().filter(|name| !name.trim().is_empty());
+            let (label, shows_content) = match (&node.content, name) {
+                (tilo_reference::inspect::Content::Value, Some(name)) => (Some(name), false),
+                (tilo_reference::inspect::Content::Value, None) => {
+                    (node.value.clone(), node.value.is_some())
+                }
+                (tilo_reference::inspect::Content::Label, name) => (name, true),
+            };
             Some(PickNode {
                 id: node.id.clone(),
                 role: node.role.clone(),
-                label: node
-                    .content_text()
-                    .map(ToString::to_string)
-                    .or_else(|| node.label.clone()),
+                label,
                 bounds: rect_of(bounds),
                 children: node.children.clone(),
                 reference: node.reference.clone(),
-                personal: node.sensitivity == tilo_actions::Sensitivity::Personal,
+                personal: shows_content && node.sensitivity == tilo_actions::Sensitivity::Personal,
             })
         })
         .collect();
@@ -200,14 +207,21 @@ fn in_process_surface(
         .iter()
         .filter_map(|node| {
             let bounds = node.visible_bounds().or(node.bounds)?;
+            // A field goes by its name; only a node without one is shown by
+            // what it holds.
+            let name = node.name.clone().filter(|name| !name.trim().is_empty());
+            let (label, shows_content) = if node.presents_value() {
+                match name {
+                    Some(name) => (Some(name), false),
+                    None => (node.value.clone(), node.value.is_some()),
+                }
+            } else {
+                (name, true)
+            };
             Some(PickNode {
                 id: node.id.as_str().to_string(),
                 role: ui::inspect::role_name(node.role),
-                label: node
-                    .value
-                    .clone()
-                    .filter(|_| node.presents_value())
-                    .or_else(|| node.name.clone()),
+                label,
                 bounds: Rect::new(
                     bounds.x0 - tile.x0,
                     bounds.y0 - tile.y0,
@@ -221,7 +235,7 @@ fn in_process_surface(
                     .filter(|child| ids.contains(child.as_str()))
                     .collect(),
                 reference: node.reference.clone(),
-                personal: node.sensitivity == tilo_actions::Sensitivity::Personal,
+                personal: shows_content && node.sensitivity == tilo_actions::Sensitivity::Personal,
             })
         })
         .collect();

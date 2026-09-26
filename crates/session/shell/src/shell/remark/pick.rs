@@ -29,7 +29,8 @@ pub struct PickNode {
     pub children: Vec<String>,
     /// The document address the node stands for, when the app has one.
     pub reference: Option<ResourceRef>,
-    /// The node's value is personal: shown here, never sent unreviewed.
+    /// The label shows a personal value (a field with no name, shown by
+    /// what it holds): shown here, never sent unreviewed.
     pub personal: bool,
 }
 

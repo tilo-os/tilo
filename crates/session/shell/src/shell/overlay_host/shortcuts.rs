@@ -193,8 +193,13 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(&'stat
         ("New window", "Super+N".into()),
         ("Add tab here", "Super+T".into()),
         ("Duplicate tab", "Super+D".into()),
-        ("Global search", chord(ShortcutAction::Search)),
-        ("Global search", "Super+Space".into()),
+        // One row for both chords, so every action keeps its row in the
+        // guide's three groups of six.
+        (
+            "Global search",
+            format!("{}  /  Super+Space", chord(ShortcutAction::Search)),
+        ),
+        ("Say something", chord(ShortcutAction::Remark)),
         ("Overview", chord(ShortcutAction::WorkspaceOverview)),
         ("Quick Settings", chord(ShortcutAction::QuickSettings)),
         ("Workspace wheel", "Super+S".into()),

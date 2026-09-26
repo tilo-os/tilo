@@ -27872,8 +27872,8 @@ mod palette_dispatch_tests {
             "Add tab here:Super+T",
             "Duplicate tab:Super+D",
             "Open terminal:Super+Enter",
-            "Global search:Super+K",
-            "Global search:Super+Space",
+            "Global search:Super+K  /  Super+Space",
+            "Say something:Super+M",
             "Overview:Super+Tab",
             "Lock:Super+L",
             "Quick Settings:Super+Q",
@@ -27900,14 +27900,29 @@ mod palette_dispatch_tests {
             )
             .unwrap();
         let rows = shortcut_reference_rows(&shortcuts);
-        assert!(rows.contains(&("Global search", "Alt+G".into())));
-        assert!(!rows.contains(&("Global search", "Super+K".into())));
+        let search: Vec<&String> = rows
+            .iter()
+            .filter(|(label, _)| *label == "Global search")
+            .map(|(_, chord)| chord)
+            .collect();
+        assert!(
+            search.iter().any(|chord| chord.starts_with("Alt+G")),
+            "{search:?}"
+        );
+        assert!(
+            search.iter().all(|chord| !chord.contains("Super+K")),
+            "{search:?}"
+        );
     }
 
     #[test]
     fn shortcut_reference_does_not_repeat_the_open_guide_action() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         assert_eq!(rows.len(), 18);
+        assert!(
+            rows.contains(&("Say something", "Super+M".into())),
+            "saying something about what is on screen is a desktop essential"
+        );
         assert!(rows.iter().all(|(label, _)| *label != "Shortcut guide"));
     }
 
