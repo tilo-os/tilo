@@ -4,6 +4,7 @@
 
 use super::container::OdtContainer;
 use crate::format::CodecError;
+use crate::preserve::MARK_ODT_XML;
 use crate::resolved::Resolved;
 use qdoc::document::MarkSpan;
 use qdoc::export::InlinePlan;
@@ -45,7 +46,8 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
         .find(|(k, _)| k == "odt/part/styles.xml")
         .map(|(_, b)| style_names_in(b))
         .unwrap_or_default();
-    let content = build_content_xml(snap, &existing_style_names);
+    let head = ContentHead::preserved(&doc);
+    let content = build_content_xml(snap, &existing_style_names, &head);
 
     let mut c = OdtContainer { parts: Vec::new() };
     let mut had_mimetype = false;
@@ -332,6 +334,8 @@ fn render_inline(
     let plan = InlinePlan::new(text, marks);
     let text_len = text.chars().count();
     let mut out = String::new();
+    // A leading space would be collapsed away; see `push_odf_text`.
+    let mut after_space = true;
     let mut open: Vec<String> = Vec::new();
     let mut cur_link: Option<&str> = None;
     let close_spans = |out: &mut String, open: &mut Vec<String>| {
@@ -403,18 +407,7 @@ fn render_inline(
             }
             cur_link = link;
         }
-        let mut want: Vec<String> = run
-            .marks
-            .iter()
-            .filter_map(|m| {
-                mark_style(m).map(|(name, props)| {
-                    used.insert(name.clone(), props);
-                    name
-                })
-            })
-            .collect();
-        want.sort();
-        want.dedup();
+        let want = span_styles(run, used);
         if want != open {
             close_spans(&mut out, &mut open);
             for name in &want {
@@ -430,14 +423,80 @@ fn render_inline(
                 *note_ctr = note_ctr.saturating_add(1);
                 out.push_str(&super::notes::render_inline_note(note, *note_ctr));
             }
+            after_space = false;
             continue;
         }
-        for c in run.text.chars() {
-            push_text(&mut out, c);
-        }
+        push_run_text(&mut out, run, &mut after_space);
     }
     close_inline(&mut out, &mut open, &mut cur_link);
     out
+}
+
+/// The text styles a run is wrapped in, outermost first: a kept text style, then the
+/// generated ones stating the modeled properties (registered in `used`).
+fn span_styles(
+    run: &qdoc::export::InlineRun<'_>,
+    used: &mut std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut want: Vec<String> = run
+        .marks
+        .iter()
+        .filter_map(|m| {
+            mark_style(m).map(|(name, props)| {
+                used.insert(name.clone(), props);
+                name
+            })
+        })
+        .collect();
+    want.sort();
+    want.dedup();
+    if let Some(kept) = run
+        .marks
+        .iter()
+        .find(|m| m.name == super::content::MARK_ODT_SPAN)
+        .and_then(|m| m.value.as_str())
+    {
+        want.insert(0, escape_attr(kept));
+    }
+    want
+}
+
+/// Append a run's content: the unmodeled inline element kept verbatim that it shows, while it
+/// still shows it unedited (see `preserve::run_content`), then its text.
+fn push_run_text(out: &mut String, run: &qdoc::export::InlineRun<'_>, after_space: &mut bool) {
+    let content = crate::preserve::run_content(run.text, &run.marks, MARK_ODT_XML);
+    if let Some(xml) = content.kept {
+        out.push_str(xml);
+        *after_space = false;
+    }
+    push_odf_text(out, &content.text, after_space);
+}
+
+/// Append paragraph text, writing what ODF whitespace handling would otherwise collapse as
+/// elements: a tab as `text:tab`, a line break as `text:line-break`, and a space at the start
+/// or after another space as `text:s`. `after_space` carries over between runs of a paragraph.
+fn push_odf_text(out: &mut String, text: &str, after_space: &mut bool) {
+    for c in text.chars() {
+        match c {
+            '\t' => {
+                out.push_str("<text:tab/>");
+                *after_space = true;
+            }
+            '\n' => {
+                out.push_str("<text:line-break/>");
+                *after_space = true;
+            }
+            ' ' if *after_space => out.push_str("<text:s/>"),
+            ' ' => {
+                out.push(' ');
+                *after_space = true;
+            }
+            _ => {
+                push_text(out, c);
+                *after_space = false;
+            }
+        }
+    }
 }
 
 fn font_name(generic: &str) -> &'static str {
@@ -513,7 +572,7 @@ fn image_frame_xml(
     let _ = write!(frame, r#" text:anchor-type="{anchor_type}""#);
     // A graphic automatic style carries the wrap; only emit it when meaningful (a floating frame, since `as-char` ignores wrap in ODF anyway).
     if anchor != "inline" {
-        let gname = format!("gr{}", graphic_styles.len().saturating_add(1));
+        let gname = format!("Grqdoc{}", graphic_styles.len().saturating_add(1));
         graphic_styles.push((
             gname.clone(),
             super::styles::model_wrap_to_odf(wrap).to_string(),
@@ -587,44 +646,76 @@ fn odf_num_format(fmt: &str) -> &'static str {
 
 /// A `text:list-style` definition reconstructing a level-0 numbering (format + start) so an
 /// ordered list re-imports with its numbering intact; `name` is the generated automatic-style name.
-fn list_style_def_xml(name: &str, fmt: &str, start: i64) -> String {
-    let nf = odf_num_format(fmt);
-    let sv = if start == 1 {
-        String::new()
-    } else {
-        format!(r#" text:start-value="{start}""#)
-    };
-    format!(
-        r#"<text:list-style style:name="{name}"><text:list-level-style-number text:level="1" style:num-format="{nf}"{sv}/></text:list-style>"#
-    )
+/// A `text:list-style` definition for a list of `key`'s kind: numbered in the model's format
+/// from its start, or bulleted. Every level is defined, since a nested list without a style of
+/// its own continues its parent's at the deeper level.
+fn list_style_def_xml(name: &str, key: &ListKey) -> String {
+    let mut levels = String::new();
+    for level in 1..=10 {
+        if key.ordered {
+            let nf = odf_num_format(&key.format);
+            let sv = if key.start == 1 || level > 1 {
+                String::new()
+            } else {
+                format!(r#" text:start-value="{}""#, key.start)
+            };
+            let _ = write!(
+                levels,
+                r#"<text:list-level-style-number text:level="{level}" style:num-suffix="." style:num-format="{nf}"{sv}/>"#
+            );
+        } else {
+            let _ = write!(
+                levels,
+                r#"<text:list-level-style-bullet text:level="{level}" text:bullet-char="•"/>"#
+            );
+        }
+    }
+    format!(r#"<text:list-style style:name="{name}">{levels}</text:list-style>"#)
 }
 
-/// A registered reconstructed list-style: its generated name + the `(format, start)` key it encodes + its full XML.
+/// What a list's style encodes: numbered (in a format, from a start) or bulleted.
+#[derive(Clone, PartialEq, Eq)]
+struct ListKey {
+    ordered: bool,
+    format: String,
+    start: i64,
+}
+
+impl ListKey {
+    fn of(li: &BlockView) -> Self {
+        let ordered = snap_list_ordered(li);
+        Self {
+            ordered,
+            format: if ordered {
+                snap_num_format(li).to_string()
+            } else {
+                String::new()
+            },
+            start: if ordered { snap_num_start(li) } else { 1 },
+        }
+    }
+}
+
+/// A registered reconstructed list-style: its generated name + the key it encodes + its full XML.
 struct ListStyle {
     name: String,
-    key: (String, i64),
+    key: ListKey,
     xml: String,
 }
 
-/// The opening `<text:list …>` tag for the list `li` lives in. An ordered item with a
-/// non-default format and/or start gets a reconstructed `text:list-style` (deduped on
-/// `(format, start)`), plus `text:start-value` (a restart) or `text:continue-numbering`.
-fn open_list_tag(li: &BlockView, list_styles: &mut Vec<ListStyle>) -> String {
-    if !snap_list_ordered(li) {
-        return "<text:list>".to_string();
-    }
-    let fmt = snap_num_format(li);
-    let start = snap_num_start(li);
-    // Plain decimal-from-1 ordered lists need no explicit style (LibreOffice's default), keeping the output minimal.
-    if fmt == "decimal" && start == 1 {
-        return "<text:list>".to_string();
-    }
-    let key = (fmt.to_string(), start);
-    let name = if let Some(s) = list_styles.iter().find(|s| s.key == key) {
+/// The opening `<text:list …>` tag for the list `li` lives in, referencing a reconstructed
+/// `text:list-style` (deduped on its key), plus `text:start-value` (a restart) or
+/// `text:continue-numbering`. Without a style a list re-imports, and renders, unnumbered.
+fn open_list_tag(li: &BlockView, head: &ContentHead, list_styles: &mut Vec<ListStyle>) -> String {
+    let key = ListKey::of(li);
+    let start = key.start;
+    let name = if let Some(kept) = head.reused_list_style(li, &key) {
+        kept.to_string()
+    } else if let Some(s) = list_styles.iter().find(|s| s.key == key) {
         s.name.clone()
     } else {
         let name = format!("Lqdoc{}", list_styles.len().saturating_add(1));
-        let xml = list_style_def_xml(&name, fmt, start);
+        let xml = list_style_def_xml(&name, &key);
         list_styles.push(ListStyle {
             name: name.clone(),
             key,
@@ -665,10 +756,10 @@ type ParaStyleEntry = (Option<String>, String, String);
 /// Get-or-create a paragraph automatic style for `(parent, paragraph-props, text-props)`, returning its `P{n}` name. Dedups identical styles.
 fn register_auto(styles: &mut Vec<ParaStyleEntry>, key: ParaStyleEntry) -> String {
     if let Some(i) = styles.iter().position(|p| p == &key) {
-        format!("P{}", i.saturating_add(1))
+        format!("Pqdoc{}", i.saturating_add(1))
     } else {
         styles.push(key);
-        format!("P{}", styles.len())
+        format!("Pqdoc{}", styles.len())
     }
 }
 
@@ -676,10 +767,15 @@ fn register_auto(styles: &mut Vec<ParaStyleEntry>, key: ParaStyleEntry) -> Strin
 /// an alignment override; registers any referenced named/derived automatic style as a side effect.
 fn resolve_para_style(
     b: &BlockView,
+    head: &ContentHead,
     styles: &BTreeMap<String, BTreeMap<String, AttrVal>>,
     auto: &mut Vec<ParaStyleEntry>,
     named_refs: &mut BTreeSet<String>,
 ) -> String {
+    // The imported automatic style, while the model still agrees with it.
+    if let Some(style) = head.reused_para_style(b) {
+        return format!(r#" text:style-name="{}""#, escape_attr(style));
+    }
     let named = match b.attrs.get("style") {
         Some(AttrVal::Str(s)) if styles.contains_key(s) => Some(s.clone()),
         _ => None,
@@ -820,7 +916,184 @@ fn named_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
 use crate::xml_escape::{escape_attr, escape_text, push_text};
 use qdoc::snapshot::BlockView;
 
-fn build_content_xml(snap: &Resolved<'_>, existing_style_names: &BTreeSet<String>) -> String {
+/// The imported `content.xml`'s root start tag, prelude and automatic styles (see
+/// `content::content_head`), written back around the regenerated body. Generated automatic
+/// style names carry a `qdoc` infix so they never collide with the carried-through ones.
+#[derive(Default)]
+struct ContentHead {
+    root: Option<String>,
+    prelude: String,
+    automatic_styles: String,
+    /// The carried automatic styles and the preserved `styles.xml`, parsed as import does, to
+    /// tell whether a kept style reference still agrees with the model.
+    registry: super::styles::StyleRegistry,
+    automatic_names: BTreeSet<String>,
+}
+
+impl ContentHead {
+    fn preserved(doc: &DocRef) -> Self {
+        let get = |key: &str| {
+            qdoc::model::preserved_part(doc.doc, doc.c, key, &tilo_content::NoContent)
+                .and_then(|b| String::from_utf8(b).ok())
+        };
+        let automatic_styles = get(super::CONTENT_AUTOMATIC_STYLES_KEY).unwrap_or_default();
+        let mut registry = super::styles::StyleRegistry::default();
+        if let Some(styles) = qdoc::model::preserved_part(
+            doc.doc,
+            doc.c,
+            "odt/part/styles.xml",
+            &tilo_content::NoContent,
+        ) {
+            super::styles::parse_styles(&styles, &mut registry, true);
+        }
+        super::styles::parse_styles(automatic_styles.as_bytes(), &mut registry, false);
+        Self {
+            root: get(super::CONTENT_ROOT_KEY),
+            prelude: get(super::CONTENT_PRELUDE_KEY).unwrap_or_default(),
+            automatic_names: style_names_in(automatic_styles.as_bytes()),
+            automatic_styles,
+            registry,
+        }
+    }
+
+    /// The imported style of the list `li` is in, while it still numbers `li` the way the
+    /// model says (`key`).
+    fn reused_list_style<'b>(&self, li: &'b BlockView, key: &ListKey) -> Option<&'b str> {
+        let Some(AttrVal::Str(style)) = li.attrs.get(super::content::ODT_LIST_STYLE) else {
+            return None;
+        };
+        let ordered = self.registry.list_ordered.get(style.as_str()).copied()?;
+        let numbering = self.registry.list_numbering.get(style.as_str());
+        let format = numbering.and_then(|n| n.num_format).unwrap_or("decimal");
+        let start = numbering.and_then(|n| n.num_start).unwrap_or(1);
+        let agrees =
+            ordered == key.ordered && (!ordered || (format == key.format && start == key.start));
+        agrees.then_some(style.as_str())
+    }
+
+    /// The imported automatic paragraph style of `b`, while the block's modeled paragraph
+    /// attributes (no named style, alignment, line spacing) still agree with it.
+    fn reused_para_style<'b>(&self, b: &'b BlockView) -> Option<&'b str> {
+        let Some(AttrVal::Str(style)) = b.attrs.get(super::content::ODT_STYLE) else {
+            return None;
+        };
+        let align = match b.attrs.get("align") {
+            Some(AttrVal::Str(a)) => Some(a.clone()),
+            _ => None,
+        };
+        let line = match b.attrs.get("line_spacing") {
+            Some(AttrVal::Float(f)) => Some(*f),
+            _ => None,
+        };
+        let agrees = self.automatic_names.contains(style)
+            && !b.attrs.contains_key("style")
+            && self.registry.para_align(style) == align
+            && self.registry.para_line_height(style) == line;
+        agrees.then_some(style.as_str())
+    }
+
+    /// The imported root keeps its namespace declarations, so the elements carried through
+    /// verbatim resolve; the ones this exporter writes are added.
+    fn root_tag(&self) -> String {
+        const NAME: &str = "office:document-content";
+        self.root
+            .as_deref()
+            .and_then(|r| crate::preserve::merge_root_namespaces(r, NAME, CONTENT_NAMESPACES))
+            .unwrap_or_else(|| {
+                let mut tag = format!("<{NAME}");
+                for (prefix, uri) in CONTENT_NAMESPACES {
+                    let _ = write!(tag, r#" xmlns:{prefix}="{uri}""#);
+                }
+                tag.push('>');
+                tag
+            })
+    }
+
+    /// The carried automatic styles, less any this export generates again (a style that came
+    /// from an earlier export), so every name is declared once.
+    fn carried_styles(&self, generated: &str) -> String {
+        without_styles_named(
+            &self.automatic_styles,
+            &style_names_in(generated.as_bytes()),
+        )
+    }
+}
+
+/// `styles` (a sequence of style elements) without the top-level ones whose `style:name` is in
+/// `names`.
+fn without_styles_named(styles: &str, names: &BTreeSet<String>) -> String {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(styles);
+    let mut out = String::with_capacity(styles.len());
+    let mut depth = 0usize;
+    let mut at = 0usize;
+    let mut skip_from: Option<usize> = None;
+    loop {
+        let before = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+        let Ok(ev) = reader.read_event() else {
+            return styles.to_string();
+        };
+        let after = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+        let listed = |e: &quick_xml::events::BytesStart| {
+            super::styles::attr_val(e, b"style:name").is_some_and(|n| names.contains(&n))
+        };
+        match ev {
+            Event::Start(e) => {
+                if depth == 0 && listed(&e) {
+                    skip_from = Some(before);
+                }
+                depth = depth.saturating_add(1);
+            }
+            Event::Empty(e) if depth == 0 && listed(&e) => {
+                out.push_str(styles.get(at..before).unwrap_or_default());
+                at = after;
+            }
+            Event::End(_) => {
+                depth = depth.saturating_sub(1);
+                if depth == 0
+                    && let Some(start) = skip_from.take()
+                {
+                    out.push_str(styles.get(at..start).unwrap_or_default());
+                    at = after;
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    out.push_str(styles.get(at..).unwrap_or_default());
+    out
+}
+
+/// The namespaces the exported `content.xml` declares on its root.
+const CONTENT_NAMESPACES: &[(&str, &str)] = &[
+    ("office", "urn:oasis:names:tc:opendocument:xmlns:office:1.0"),
+    ("text", "urn:oasis:names:tc:opendocument:xmlns:text:1.0"),
+    (
+        "fo",
+        "urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0",
+    ),
+    ("style", "urn:oasis:names:tc:opendocument:xmlns:style:1.0"),
+    ("table", "urn:oasis:names:tc:opendocument:xmlns:table:1.0"),
+    ("draw", "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"),
+    ("xlink", "http://www.w3.org/1999/xlink"),
+    (
+        "svg",
+        "urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0",
+    ),
+    ("dc", "http://purl.org/dc/elements/1.1/"),
+    ("meta", "urn:oasis:names:tc:opendocument:xmlns:meta:1.0"),
+    (
+        "number",
+        "urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0",
+    ),
+];
+
+fn build_content_xml(
+    snap: &Resolved<'_>,
+    existing_style_names: &BTreeSet<String>,
+    head: &ContentHead,
+) -> String {
     let mut body = String::new();
     let mut used: BTreeMap<String, String> = BTreeMap::new();
     let mut pstyles: Vec<ParaStyleEntry> = Vec::new();
@@ -830,9 +1103,10 @@ fn build_content_xml(snap: &Resolved<'_>, existing_style_names: &BTreeSet<String
     let notes = note_index(snap);
     let mut note_ctr = 0usize;
     let comments = comment_index(snap);
-    let tracked_changes = super::changes::render_tracked_changes(&snap.changes);
+    let (split, tracked_changes) = super::changes::split_tracked_changes(snap);
+    let snap = &snap.with_snapshot(split.as_ref());
     let mut style_attr = |b: &BlockView| -> String {
-        resolve_para_style(b, &snap.styles, &mut pstyles, &mut named_refs)
+        resolve_para_style(b, head, &snap.styles, &mut pstyles, &mut named_refs)
     };
     let mut i = 0;
     while let Some(b) = snap.blocks.get(i) {
@@ -854,6 +1128,7 @@ fn build_content_xml(snap: &Resolved<'_>, existing_style_names: &BTreeSet<String
                     snap,
                     &mut i,
                     &mut body,
+                    head,
                     &mut list_styles,
                     &mut style_attr,
                     &mut used,
@@ -872,7 +1147,7 @@ fn build_content_xml(snap: &Resolved<'_>, existing_style_names: &BTreeSet<String
             }
             "fidelity" => {
                 // Re-emit the preserved unmodeled element verbatim, in place.
-                if let Some(AttrVal::Str(xml)) = b.attrs.get("xml") {
+                if let Some(xml) = crate::preserve::fidelity_xml(b, "odt") {
                     body.push_str(xml);
                 }
                 i = i.saturating_add(1);
@@ -914,12 +1189,13 @@ fn build_content_xml(snap: &Resolved<'_>, existing_style_names: &BTreeSet<String
         &graphic_styles,
     );
 
-    // Declare the common ODF namespaces so re-emitted fidelity atoms (tables, drawings, …) stay
-    // well-formed. Exotic namespaces are only preserved once the content prologue is (future).
+    let root = head.root_tag();
+    let prelude = &head.prelude;
+    let carried_styles = head.carried_styles(&styles);
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0">
-<office:automatic-styles>{styles}</office:automatic-styles>
+{root}{prelude}
+<office:automatic-styles>{carried_styles}{styles}</office:automatic-styles>
 <office:body><office:text>{tracked_changes}{body}</office:text></office:body>
 </office:document-content>"#
     )
@@ -985,6 +1261,7 @@ fn render_list_run(
     snap: &Resolved<'_>,
     i: &mut usize,
     body: &mut String,
+    head: &ContentHead,
     list_styles: &mut Vec<ListStyle>,
     style_attr: &mut impl FnMut(&BlockView) -> String,
     used: &mut BTreeMap<String, String>,
@@ -994,15 +1271,25 @@ fn render_list_run(
 ) {
     let mut depth: i64 = 0; // number of <text:list> currently open
     let mut item_open = false; // a <text:list-item> awaiting its close
+    let mut top: Option<ListKey> = None; // what the outermost open list encodes
     while let Some(li) = snap.blocks.get(*i).filter(|b| b.kind == "list_item") {
         let target = snap_list_level(li).saturating_add(1); // lists that should be open
+        let key = ListKey::of(li);
+        // A top-level item of another kind (numbered after bulleted, another format) starts a new list.
+        if target == 1 && depth > 0 && top.as_ref() != Some(&key) {
+            close_lists(body, &mut depth, &mut item_open);
+        }
+        if depth == 0 {
+            top = Some(key.clone());
+        }
         if target > depth {
-            // Deeper: open new lists nested inside the current open item. The innermost (last) list
-            // opened is the one `li` lives in, so it gets `li`'s numbering reference.
+            // Deeper: open new lists nested inside the current open item. The outermost list,
+            // and the innermost one when it differs from it, reference `li`'s list style; the
+            // others continue the outer list's style at their level.
             while depth < target {
                 depth = depth.saturating_add(1);
-                let open = if depth == target {
-                    open_list_tag(li, list_styles)
+                let open = if depth == 1 || (depth == target && top.as_ref() != Some(&key)) {
+                    open_list_tag(li, head, list_styles)
                 } else {
                     "<text:list>".to_string()
                 };
@@ -1028,13 +1315,18 @@ fn render_list_run(
         item_open = true;
         *i = i.saturating_add(1);
     }
-    if item_open {
+    close_lists(body, &mut depth, &mut item_open);
+}
+
+/// Close the open list item and every open list.
+fn close_lists(body: &mut String, depth: &mut i64, item_open: &mut bool) {
+    if std::mem::take(item_open) {
         body.push_str("</text:list-item>");
     }
-    while depth > 0 {
+    while *depth > 0 {
         body.push_str("</text:list>");
-        depth = depth.saturating_sub(1);
-        if depth > 0 {
+        *depth = depth.saturating_sub(1);
+        if *depth > 0 {
             body.push_str("</text:list-item>");
         }
     }
@@ -1083,31 +1375,158 @@ fn render_table_run(
         .max()
         .unwrap_or(0)
         .saturating_add(1);
-    let _ = write!(body, r#"<table:table table:name="{tid}">"#);
-    let _ = write!(
-        body,
-        r#"<table:table-column table:number-columns-repeated="{ncols}"/>"#
-    );
-    for r in 0..nrows {
-        body.push_str("<table:table-row>");
+    let grid = CellGrid::new(cells);
+    let ncols = grid.cols.max(ncols);
+    push_table_open(body, &tid, cells.first(), ncols);
+    // A row's style rides on its first cell.
+    let mut row_styles: BTreeMap<usize, &str> = BTreeMap::new();
+    for cell in cells {
+        if let Some(AttrVal::Str(s)) = cell.attrs.get(super::content::ODT_ROW_STYLE) {
+            row_styles.entry(snap_cell_rc(cell).0).or_insert(s.as_str());
+        }
+    }
+    for r in 0..grid.rows.max(nrows) {
+        match row_styles.get(&r) {
+            Some(s) => {
+                let _ = write!(
+                    body,
+                    r#"<table:table-row table:style-name="{}">"#,
+                    escape_attr(s)
+                );
+            }
+            None => body.push_str("<table:table-row>"),
+        }
         for c in 0..ncols {
-            let cell = cells.iter().find(|cl| snap_cell_rc(cl) == (r, c));
-            let sa = match cell {
-                Some(cl) => style_attr(cl),
-                None => String::new(),
+            if grid.covered.contains(&(r, c)) {
+                body.push_str("<table:covered-table-cell/>");
+                continue;
+            }
+            let cell = grid.at.get(&(r, c)).copied();
+            let (sa, inner, mut spans) = match cell {
+                Some(cl) => (
+                    style_attr(cl),
+                    render_inline(&cl.text, &cl.marks, used, notes, note_ctr, comments),
+                    cell_spans_xml(cl),
+                ),
+                None => (String::new(), String::new(), String::new()),
             };
-            let inner = match cell {
-                Some(cl) => render_inline(&cl.text, &cl.marks, used, notes, note_ctr, comments),
-                None => String::new(),
-            };
+            if let Some(AttrVal::Str(s)) =
+                cell.and_then(|cl| cl.attrs.get(super::content::ODT_CELL_STYLE))
+            {
+                spans.insert_str(0, &format!(r#" table:style-name="{}""#, escape_attr(s)));
+            }
             let _ = write!(
                 body,
-                r"<table:table-cell><text:p{sa}>{inner}</text:p></table:table-cell>"
+                r"<table:table-cell{spans}><text:p{sa}>{inner}</text:p></table:table-cell>"
             );
         }
         body.push_str("</table:table-row>");
     }
     body.push_str("</table:table>");
+}
+
+/// A table's start tag and columns: the style and `table:table-column` elements kept from
+/// import on its `first` cell (the columns only while they still number `ncols`), else one
+/// run of plain columns.
+fn push_table_open(body: &mut String, tid: &str, first: Option<&BlockView>, ncols: usize) {
+    let kept = |key: &str| match first.and_then(|c| c.attrs.get(key)) {
+        Some(AttrVal::Str(s)) => Some(s.as_str()),
+        _ => None,
+    };
+    let _ = write!(body, r#"<table:table table:name="{}""#, escape_attr(tid));
+    if let Some(style) = kept(super::content::ODT_TABLE_STYLE) {
+        let _ = write!(body, r#" table:style-name="{}""#, escape_attr(style));
+    }
+    body.push('>');
+    match kept(super::content::ODT_COLUMNS).filter(|cols| column_count(cols) == ncols) {
+        Some(cols) => body.push_str(cols),
+        None => {
+            let _ = write!(
+                body,
+                r#"<table:table-column table:number-columns-repeated="{ncols}"/>"#
+            );
+        }
+    }
+}
+
+/// How many grid columns a run of `table:table-column` elements declares.
+fn column_count(columns: &str) -> usize {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(columns);
+    let mut n = 0usize;
+    while let Ok(ev) = reader.read_event() {
+        match ev {
+            Event::Start(e) | Event::Empty(e) if e.name().as_ref() == b"table:table-column" => {
+                let repeated = super::styles::attr_val(&e, b"table:number-columns-repeated")
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(1);
+                n = n.saturating_add(repeated);
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    n
+}
+
+/// A cell's `colspan`/`rowspan` (1 when absent).
+fn snap_cell_span(b: &BlockView, key: &str) -> usize {
+    match b.attrs.get(key) {
+        Some(AttrVal::Int(n)) if *n > 1 => usize::try_from(*n).unwrap_or(1).min(1024),
+        _ => 1,
+    }
+}
+
+/// The spanning attributes of a merged cell.
+fn cell_spans_xml(b: &BlockView) -> String {
+    let mut out = String::new();
+    let (cols, rows) = (snap_cell_span(b, "colspan"), snap_cell_span(b, "rowspan"));
+    if cols > 1 {
+        let _ = write!(out, r#" table:number-columns-spanned="{cols}""#);
+    }
+    if rows > 1 {
+        let _ = write!(out, r#" table:number-rows-spanned="{rows}""#);
+    }
+    out
+}
+
+/// The cells of one table by grid position, the positions merged cells cover, and the grid
+/// size including every span.
+struct CellGrid<'a> {
+    at: BTreeMap<(usize, usize), &'a BlockView>,
+    covered: BTreeSet<(usize, usize)>,
+    rows: usize,
+    cols: usize,
+}
+
+impl<'a> CellGrid<'a> {
+    fn new(cells: &'a [BlockView]) -> Self {
+        let mut grid = Self {
+            at: BTreeMap::new(),
+            covered: BTreeSet::new(),
+            rows: 0,
+            cols: 0,
+        };
+        for cell in cells {
+            let (r, c) = snap_cell_rc(cell);
+            let (cols, rows) = (
+                snap_cell_span(cell, "colspan"),
+                snap_cell_span(cell, "rowspan"),
+            );
+            grid.at.entry((r, c)).or_insert(cell);
+            for dr in 0..rows {
+                for dc in 0..cols {
+                    if dr > 0 || dc > 0 {
+                        grid.covered
+                            .insert((r.saturating_add(dr), c.saturating_add(dc)));
+                    }
+                }
+            }
+            grid.rows = grid.rows.max(r.saturating_add(rows));
+            grid.cols = grid.cols.max(c.saturating_add(cols));
+        }
+        grid
+    }
 }
 
 /// Builds the `office:automatic-styles` body: run marks used inline, common named styles
@@ -1150,7 +1569,7 @@ fn render_automatic_styles(
             .unwrap_or_default();
         let _ = write!(
             styles,
-            r#"<style:style style:name="P{}" style:family="paragraph"{parent_attr}><style:paragraph-properties{pp}/><style:text-properties{tp}/></style:style>"#,
+            r#"<style:style style:name="Pqdoc{}" style:family="paragraph"{parent_attr}><style:paragraph-properties{pp}/><style:text-properties{tp}/></style:style>"#,
             idx.saturating_add(1)
         );
     }
@@ -1728,6 +2147,258 @@ mod tests {
             Some(&AttrVal::Int(80)),
             "{:?}",
             im.attrs
+        );
+    }
+
+    #[test]
+    fn unedited_page_regions_keep_their_original_elements() {
+        let styles = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">"#,
+            r#"<office:master-styles><style:master-page style:name="Standard">"#,
+            r#"<style:header><text:p>Head</text:p></style:header>"#,
+            r#"<style:header-first><text:p>Cover</text:p></style:header-first>"#,
+            r#"<style:footer><text:p>Page <text:page-number>1</text:page-number> of <text:page-count>2</text:page-count></text:p></style:footer>"#,
+            r#"</style:master-page></office:master-styles></office:document-styles>"#,
+        );
+        let mut c = OdtContainer::read(&minimal_odt("<text:p>body</text:p>")).unwrap();
+        c.set("styles.xml", styles.as_bytes().to_vec());
+        let odt = c.write().unwrap();
+        let styles_of = |bytes: &[u8]| {
+            let c = OdtContainer::read(bytes).unwrap();
+            String::from_utf8(c.get("styles.xml").unwrap().to_vec()).unwrap()
+        };
+
+        let mut d = Document::new();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            styles_of(
+                &OdtCodec
+                    .export(d.as_ref(), &tilo_content::NoContent)
+                    .unwrap()
+            ),
+            styles
+        );
+
+        // Editing the header regenerates it (dropping the first-page variant with it); the
+        // unedited footer keeps its page count.
+        let head = d.header_blocks_in_order()[0].clone();
+        d.splice_header_text(&head, 4, 0, "er");
+        let out = styles_of(
+            &OdtCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap(),
+        );
+        assert!(out.contains("<text:p>Header</text:p>"), "{out}");
+        assert!(
+            out.contains("<text:page-count>2</text:page-count>"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn keeps_paragraph_span_and_table_styles_while_they_agree() {
+        let styles = concat!(
+            r#"<style:style style:name="P1" style:family="paragraph"><style:paragraph-properties fo:break-before="page" fo:text-align="center"/></style:style>"#,
+            r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:letter-spacing="0.1cm" fo:font-weight="bold"/></style:style>"#,
+            r#"<style:style style:name="Tbl" style:family="table"><style:table-properties style:width="10cm"/></style:style>"#,
+            r#"<style:style style:name="Col" style:family="table-column"><style:table-column-properties style:column-width="5cm"/></style:style>"#,
+            r#"<style:style style:name="Cell" style:family="table-cell"><style:table-cell-properties fo:border="0.5pt solid #000000"/></style:style>"#,
+        );
+        let body = concat!(
+            r#"<text:p text:style-name="P1">A <text:span text:style-name="T1">spaced</text:span> word</text:p>"#,
+            r#"<text:p text:style-name="P1">second</text:p>"#,
+            r#"<table:table table:name="T" table:style-name="Tbl"><table:table-column table:style-name="Col" table:number-columns-repeated="2"/>"#,
+            r#"<table:table-row><table:table-cell table:style-name="Cell"><text:p>a</text:p></table:table-cell>"#,
+            r#"<table:table-cell table:style-name="Cell"><text:p>b</text:p></table:table-cell></table:table-row></table:table>"#,
+        );
+        let mut d = Document::new();
+        OdtCodec
+            .import(
+                &minimal_odt_styled(styles, body),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        let snap = d.materialize();
+        assert!(
+            snap.blocks[0]
+                .marks
+                .iter()
+                .any(|m| m.name == "strong" && m.start == 2 && m.end == 8)
+        );
+        // The second paragraph is realigned in the model: its style no longer agrees.
+        let second = snap.blocks[1].id.clone();
+        d.as_mut().set_attr(&second, "align", "right");
+
+        let exported = OdtCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        for kept in [
+            r#"<text:p text:style-name="P1">A <text:span text:style-name="T1"><text:span text:style-name="qdoc-strong">spaced</text:span></text:span>"#,
+            r#"<table:table table:name="T" table:style-name="Tbl"><table:table-column table:style-name="Col" table:number-columns-repeated="2"/>"#,
+            r#"<table:table-cell table:style-name="Cell"><text:p>a</text:p>"#,
+            r#"<style:style style:name="P1" style:family="paragraph">"#,
+        ] {
+            assert!(content.contains(kept), "{kept} in {content}");
+        }
+        assert!(
+            !content.contains(r#"<text:p text:style-name="P1">second"#),
+            "{content}"
+        );
+        let mut d2 = Document::new();
+        OdtCodec
+            .import(
+                &exported,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        let again = d2.materialize();
+        assert_eq!(norm(&again)[0], norm(&snap)[0]);
+        assert_eq!(
+            again.blocks[1].attrs.get("align"),
+            Some(&AttrVal::Str("right".into()))
+        );
+    }
+
+    #[test]
+    fn deleted_text_moves_between_body_and_changed_region() {
+        let body = concat!(
+            r#"<text:tracked-changes><text:changed-region xml:id="ct2" text:id="ct2"><text:deletion>"#,
+            r#"<office:change-info><dc:creator>Bob</dc:creator></office:change-info><text:p>removed words</text:p>"#,
+            r#"</text:deletion></text:changed-region></text:tracked-changes>"#,
+            r#"<text:p>Tracked: <text:change text:change-id="ct2"/>gone.</text:p>"#,
+        );
+        let mut d = Document::new();
+        OdtCodec
+            .import(
+                &minimal_odt(body),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        let snap = d.materialize();
+        let p = &snap.blocks[0];
+        assert_eq!(p.text, "Tracked: removed wordsgone.");
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "del" && m.start == 9 && m.end == 22),
+            "{:?}",
+            p.marks
+        );
+
+        let exported = OdtCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert!(
+            content.contains("<text:p>removed words</text:p></text:deletion>"),
+            "{content}"
+        );
+        assert!(
+            content.contains(r#"Tracked: <text:change text:change-id=""#),
+            "{content}"
+        );
+        assert!(!content.contains("removed wordsgone"), "{content}");
+        let mut d2 = Document::new();
+        OdtCodec
+            .import(
+                &exported,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        assert_eq!(norm(&d2.materialize()), norm(&snap));
+    }
+
+    #[test]
+    fn merged_cells_roundtrip_through_odt() {
+        let body = concat!(
+            r#"<table:table table:name="T"><table:table-column table:number-columns-repeated="3"/>"#,
+            r#"<table:table-row><table:table-cell table:number-columns-spanned="2" table:number-rows-spanned="2"><text:p>big</text:p></table:table-cell>"#,
+            r#"<table:covered-table-cell/><table:table-cell><text:p>c</text:p></table:table-cell></table:table-row>"#,
+            r#"<table:table-row><table:covered-table-cell table:number-columns-repeated="2"/><table:table-cell><text:p>f</text:p></table:table-cell></table:table-row>"#,
+            r#"</table:table>"#,
+        );
+        let mut d = Document::new();
+        OdtCodec
+            .import(
+                &minimal_odt(body),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        let snap = d.materialize();
+        let big = snap.blocks.iter().find(|b| b.text == "big").unwrap();
+        assert_eq!(big.attrs.get("colspan"), Some(&AttrVal::Int(2)));
+        assert_eq!(big.attrs.get("rowspan"), Some(&AttrVal::Int(2)));
+        let f = snap.blocks.iter().find(|b| b.text == "f").unwrap();
+        assert_eq!(f.attrs.get("col"), Some(&AttrVal::Int(2)), "{:?}", f.attrs);
+
+        let exported = OdtCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert!(
+            content.contains(r#"<table:table-cell table:number-columns-spanned="2" table:number-rows-spanned="2"><text:p>big</text:p></table:table-cell><table:covered-table-cell/>"#),
+            "{content}"
+        );
+        assert_eq!(content.matches("<table:covered-table-cell/>").count(), 3);
+        let mut d2 = Document::new();
+        OdtCodec
+            .import(
+                &exported,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        assert_eq!(norm(&d2.materialize()), norm(&snap));
+    }
+
+    #[test]
+    fn numbered_then_bulleted_lists_stay_apart_and_numbered() {
+        let mut d = Document::new();
+        let one = d.insert_block(None, "list_item");
+        d.splice_text(&one, 0, 0, "one");
+        d.as_mut().set_attr(&one, "ordered", true);
+        let bullet = d.insert_block(Some(&one), "list_item");
+        d.splice_text(&bullet, 0, 0, "dot");
+        d.as_mut().set_attr(&bullet, "ordered", false);
+
+        let exported = OdtCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert_eq!(content.matches("<text:list ").count(), 2, "{content}");
+
+        let mut d2 = Document::new();
+        OdtCodec
+            .import(
+                &exported,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        let snap = d2.materialize();
+        assert_eq!(
+            snap.blocks[0].attrs.get("ordered"),
+            Some(&AttrVal::Bool(true))
+        );
+        assert_eq!(
+            snap.blocks[1].attrs.get("ordered"),
+            Some(&AttrVal::Bool(false))
         );
     }
 

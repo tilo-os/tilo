@@ -34,8 +34,8 @@ impl<'a> Resolved<'a> {
 
     /// A different snapshot sharing this one's resolved images.
     #[cfg_attr(
-        not(feature = "epub"),
-        allow(dead_code, reason = "used by the epub exporter")
+        not(any(feature = "epub", feature = "odt")),
+        allow(dead_code, reason = "used by the epub and odt exporters")
     )]
     pub(crate) fn with_snapshot<'b>(&self, snap: &'b DocSnapshot) -> Resolved<'b> {
         Resolved {

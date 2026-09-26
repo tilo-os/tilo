@@ -10,6 +10,7 @@ pub mod export;
 pub mod headers;
 pub mod meta;
 pub mod notes;
+mod paragraph;
 mod section;
 pub mod styles;
 
@@ -17,6 +18,9 @@ use crate::format::{CodecError, Confidence, FormatProvider};
 use qdoc::model::{DocMut, DocRef};
 use qdoc::schema::SCHEMA_ID;
 use tilo_content::{ContentInputs, ContentSource};
+
+/// Preservation-layer key of the imported `word/document.xml` root start tag.
+pub(crate) const DOCUMENT_ROOT_KEY: &str = "docx/document-root";
 
 pub struct DocxCodec;
 
@@ -74,16 +78,14 @@ impl FormatProvider for DocxCodec {
             }
             // Resolve each `r:embed` rel id to its media part's bytes for the body parser to store.
             let image_map = content::build_image_map(&container);
-            content::parse_body(
-                &document,
-                &reg,
-                &foot_map,
-                &end_map,
-                &comment_map,
-                &image_map,
-                doc,
-                inputs,
-            )?;
+            let link_map = content::build_link_map(&container);
+            let maps = content::RefMaps {
+                foot: &foot_map,
+                end: &end_map,
+                comment: &comment_map,
+                links: &link_map,
+            };
+            content::parse_body(&document, &reg, &maps, &image_map, doc, inputs)?;
             // Document properties from `docProps/core.xml` + `docProps/app.xml` into `meta.props`.
             if let Some(core_xml) = container.get("docProps/core.xml") {
                 meta::import_core(core_xml, doc);
@@ -113,6 +115,11 @@ impl FormatProvider for DocxCodec {
                 if name != "word/document.xml" {
                     crate::preserve::set_preserved(doc, &format!("docx/part/{name}"), part, inputs);
                 }
+            }
+            // The regenerated document.xml keeps the original root's namespace declarations,
+            // which the body content carried through verbatim relies on.
+            if let Some(root) = crate::preserve::root_start_tag(&document) {
+                crate::preserve::set_preserved(doc, DOCUMENT_ROOT_KEY, root.as_bytes(), inputs);
             }
             Ok(())
         })
