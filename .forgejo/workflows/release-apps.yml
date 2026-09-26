@@ -151,13 +151,13 @@ jobs:
           from urllib.parse import quote, urlencode, urlparse
           from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-          RAW_ROOT = 'https://code.podesta.ai/api/v1/repos/qos/qos/raw/'
+          RAW_ROOT = 'https://code.podesta.ai/api/v1/repos/tilo/tilo/raw/'
           FILES = (
               ('tools/app_packaging_qualification.py', 3650, 'c6fd766344d1b18d9c365b2f667627d2102df741a8ab1d1e18e7304240e14063'),
               ('tools/app_packaging_contract.py', 4099, 'f0a5862a39aca5fd0a61bd7915ca87c0915420989c056df3c64151ab9b70989b'),
               ('tools/ci/__init__.py', 61, 'd4ca8c8ec9228fafe30fae7d4532c4ac4455661dc92f75d2428f9d7779dba462'),
               ('tools/ci/python.py', 4352, 'd376bc605d185b6a235db30dfac79d9f0825db96d38b19ac5e9f1e174a242a57'),
-              ('tools/ci/resolve_builder.py', 5466, '4ba30c8d5f0171a91babca24a2bc526149c6f943a599f144257fc050978126d0'),
+              ('tools/ci/resolve_builder.py', 5467, '146234b76a510c29e4d66de0f6fbf9199b627517c46e493315f0763e4cec4bd4'),
           )
 
           class NoRedirect(HTTPRedirectHandler):
