@@ -41,6 +41,9 @@ pub mod hosted_test_control;
 pub mod idle;
 #[cfg(target_os = "linux")]
 pub mod idle_inhibit;
+pub mod input_method;
+#[cfg(target_os = "linux")]
+pub mod input_method_service;
 pub mod lock_auth;
 pub mod lock_controller;
 pub mod lock_screen;
@@ -50,8 +53,6 @@ pub mod metrics;
 pub mod mp4_recording;
 #[cfg(target_os = "linux")]
 pub mod native;
-#[cfg(target_os = "linux")]
-pub mod osk_service;
 #[cfg(target_os = "linux")]
 pub mod output_globals;
 pub mod output_heads;

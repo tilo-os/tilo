@@ -3390,13 +3390,13 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     }
     let mut add_choices: Vec<String> = catalog
         .iter()
-        .filter(|entry| !sources.contains(&entry.id))
+        .filter(|entry| {
+            !sources.contains(&entry.id) && crate::input_sources::has_room_for(&sources, &entry.id)
+        })
         .map(|entry| entry.label.clone())
         .collect();
     add_choices.sort();
-    if !add_choices.is_empty()
-        && sources.len() < settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
-    {
+    if !add_choices.is_empty() {
         let Some(fallback) = add_choices.first().cloned() else {
             return sec;
         };
@@ -3405,7 +3405,7 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             ActionSpec::typed_operation(
                 "add-source",
                 "Add keyboard input source",
-                "Choose an installed keyboard layout",
+                "Choose an installed keyboard layout or input method",
                 OperationKind::Effect,
                 KEYBOARD_SOURCE_OPERATION_TYPE,
                 vec![
