@@ -74,6 +74,31 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             };
             return Some((channel, retention));
         }
+        // Channel governance is replayable state a device that was offline
+        // must still receive: every frame of the chain, and the latest access
+        // request and acknowledgement of each device. None of it is content.
+        // Each frame is its own baseline, keyed by its digest, so a steward
+        // redelivering a frame replaces the retained copy instead of growing
+        // the host's tail; receivers restore chain order themselves.
+        NeighbourMsg::MlsGovernance { frame, .. } => {
+            let digest = frame.digest().ok()?;
+            let mut route = b"mls-governance\0".to_vec();
+            route.extend_from_slice(frame.channel.0.as_bytes());
+            route.extend_from_slice(&digest);
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
+        }
+        NeighbourMsg::MlsAccessRequest { request, .. } => {
+            let mut route = b"mls-access\0".to_vec();
+            route.extend_from_slice(request.channel.0.as_bytes());
+            route.extend_from_slice(request.device.as_bytes());
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
+        }
+        NeighbourMsg::MlsGovernanceAck { ack, .. } => {
+            let mut route = b"mls-ack\0".to_vec();
+            route.extend_from_slice(ack.channel.0.as_bytes());
+            route.extend_from_slice(ack.device.as_bytes());
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
+        }
         NeighbourMsg::PersonalContinuityCheckpoint {
             user_public_key, ..
         } => {
@@ -183,6 +208,60 @@ mod tests {
             )),
             None
         );
+    }
+
+    /// A device that was offline gets every frame of a channel's chain
+    /// (a redelivered frame replaces its copy), and the steward gets each
+    /// device's latest request and acknowledgement.
+    #[test]
+    fn host_retains_channel_governance_per_channel_and_device() {
+        use collab_types::{
+            ChannelId, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
+            MlsGovernanceFrameV1,
+        };
+        let steward = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let other = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let channel = ChannelId::new();
+        let frame = |previous| NeighbourMsg::MlsGovernance {
+            room: "room".into(),
+            frame: Box::new(
+                MlsGovernanceFrameV1::signed(
+                    channel,
+                    [1; 32],
+                    1,
+                    previous,
+                    0,
+                    MlsGovernanceAction::Genesis,
+                    &steward,
+                )
+                .unwrap(),
+            ),
+            delivery: 0,
+        };
+        let first = retention(&frame([0; 32]), false).unwrap();
+        assert_eq!(first, retention(&frame([0; 32]), false).unwrap());
+        assert_ne!(first.0, retention(&frame([1; 32]), false).unwrap().0);
+        assert_eq!(first.1, Retention::Checkpoint);
+
+        let request = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsAccessRequest {
+            room: "room".into(),
+            request: Box::new(MlsAccessRequestV1::signed(channel, vec![1], 1, key).unwrap()),
+            delivery: 0,
+        };
+        let (mine, kind) = retention(&request(&device), false).unwrap();
+        assert_eq!(kind, Retention::Checkpoint);
+        assert_ne!(mine, retention(&request(&other), false).unwrap().0);
+        assert_ne!(mine, first.0);
+
+        let ack = NeighbourMsg::MlsGovernanceAck {
+            room: "room".into(),
+            ack: Box::new(MlsGovernanceAckV1::signed(channel, [4; 32], &device).unwrap()),
+            delivery: 0,
+        };
+        let (acked, kind) = retention(&ack, false).unwrap();
+        assert_eq!(kind, Retention::Checkpoint);
+        assert_ne!(acked, mine);
     }
 
     #[test]

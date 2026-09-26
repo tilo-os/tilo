@@ -1164,6 +1164,9 @@ pub struct ShellNetwork {
     /// Inbound signed document envelopes pushed by [`Self::tick`]. The
     /// broker validates and decodes each before local fan-out.
     inbound_documents: Arc<Mutex<Vec<InboundDocument>>>,
+    /// Inbound channel governance pushed by [`Self::tick`], drained by the
+    /// channel encryption service.
+    inbound_channel_governance: Arc<Mutex<Vec<InboundChannelGovernance>>>,
     /// Local record ids behind the sealed wire names this device publishes
     /// and accepts; path-bearing record ids never leave the device.
     wire_records: Mutex<crate::network::wire_record::WireRecordIds>,
@@ -1249,6 +1252,28 @@ pub struct InboundDocument {
     /// Boxed to mirror the wire shape and bound the queue entry size —
     /// `SignedOp` is large (32-byte pubkey + 64-byte sig + payload + UUIDs).
     pub envelope: Box<collab_types::SignedOp>,
+}
+
+/// One received piece of channel governance, addressed to a room this
+/// device is in. Every variant is signed by a device key and verified by
+/// the channel service before it changes any state.
+#[derive(Debug, Clone)]
+pub enum InboundChannelGovernance {
+    /// A frame from a channel's steward.
+    Frame {
+        room: RoomId,
+        frame: Box<collab_types::MlsGovernanceFrameV1>,
+    },
+    /// A device asking a channel's steward for membership.
+    AccessRequest {
+        room: RoomId,
+        request: Box<collab_types::MlsAccessRequestV1>,
+    },
+    /// A device's cumulative acknowledgement of a channel's frames.
+    Ack {
+        room: RoomId,
+        ack: Box<collab_types::MlsGovernanceAckV1>,
+    },
 }
 
 /// One received cooperative-scrollback request. The broker's drainer
@@ -1532,6 +1557,7 @@ impl ShellNetwork {
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
+            inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
             wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
@@ -1783,7 +1809,10 @@ impl ShellNetwork {
             NeighbourMsg::IdentityAnnouncement { room, .. }
             | NeighbourMsg::IdentityAnnouncementV2 { room, .. }
             | NeighbourMsg::SyncReq { room, .. }
-            | NeighbourMsg::SyncResp { room, .. } => Some(room.as_str()),
+            | NeighbourMsg::SyncResp { room, .. }
+            | NeighbourMsg::MlsGovernance { room, .. }
+            | NeighbourMsg::MlsAccessRequest { room, .. }
+            | NeighbourMsg::MlsGovernanceAck { room, .. } => Some(room.as_str()),
             NeighbourMsg::AppDocument { cluster_id, .. }
             | NeighbourMsg::AppPresenceV2 { cluster_id, .. } => Some(cluster_id.as_str()),
             _ => None,
@@ -2064,6 +2093,33 @@ impl ShellNetwork {
     /// Shared handle to inbound signed document envelopes.
     pub fn inbound_documents_handle(&self) -> Arc<Mutex<Vec<InboundDocument>>> {
         Arc::clone(&self.inbound_documents)
+    }
+
+    /// Shared handle to inbound channel governance.
+    pub fn inbound_channel_governance_handle(&self) -> Arc<Mutex<Vec<InboundChannelGovernance>>> {
+        Arc::clone(&self.inbound_channel_governance)
+    }
+
+    /// Publish one piece of channel governance to `room`. Durable workspace
+    /// hosts retain it (the frame chain per channel, the newest request and
+    /// acknowledgement per device), so devices that are offline now still
+    /// receive it. Returns whether it was handed to the transport.
+    pub fn publish_channel_governance(&self, message: NeighbourMsg) -> bool {
+        if !matches!(
+            message,
+            NeighbourMsg::MlsGovernance { .. }
+                | NeighbourMsg::MlsAccessRequest { .. }
+                | NeighbourMsg::MlsGovernanceAck { .. }
+        ) {
+            return false;
+        }
+        self.publish_message(message)
+    }
+
+    fn queue_channel_governance(&self, entry: InboundChannelGovernance) {
+        if let Ok(mut inbound) = self.inbound_channel_governance.lock() {
+            inbound.push(entry);
+        }
     }
 
     /// Publish one validated signed document mutation. A record id that
@@ -5019,6 +5075,24 @@ impl ShellNetwork {
                 &hardware_encode,
                 &software_encode,
             ),
+            NeighbourMsg::MlsGovernance { room, frame, .. } => {
+                if let Some(room) = RoomId::parse(&room) {
+                    self.queue_channel_governance(InboundChannelGovernance::Frame { room, frame });
+                }
+            }
+            NeighbourMsg::MlsAccessRequest { room, request, .. } => {
+                if let Some(room) = RoomId::parse(&room) {
+                    self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
+                        room,
+                        request,
+                    });
+                }
+            }
+            NeighbourMsg::MlsGovernanceAck { room, ack, .. } => {
+                if let Some(room) = RoomId::parse(&room) {
+                    self.queue_channel_governance(InboundChannelGovernance::Ack { room, ack });
+                }
+            }
             other => self.dispatch_to_replica(peer, &other),
         }
     }
@@ -5230,7 +5304,10 @@ impl ShellNetwork {
             | NeighbourMsg::IdentityHello { .. }
             | NeighbourMsg::IdentityAnnouncement { .. }
             | NeighbourMsg::IdentityAnnouncementV2 { .. }
-            | NeighbourMsg::RemoteAction { .. } => None,
+            | NeighbourMsg::RemoteAction { .. }
+            | NeighbourMsg::MlsGovernance { .. }
+            | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsGovernanceAck { .. } => None,
         }
     }
 
@@ -5853,6 +5930,7 @@ pub(crate) fn shell_network_for_test(
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
+        inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
         wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
@@ -9342,6 +9420,62 @@ mod tests {
         net.tick();
         net.redeem_invited_identity(room_topic_id(our_room), [3; 32], &device.public(), &cert);
         (net, our_room, device, device_signing)
+    }
+
+    /// Channel governance from an admitted device reaches the channel
+    /// service's queue only on its own room's topic, and is published on
+    /// that topic.
+    #[test]
+    fn channel_governance_is_queued_and_published_per_room() {
+        let (net, room, device, device_signing) = network_with_admitted_peer();
+        let channel = collab_types::ChannelId::new();
+        let request =
+            collab_types::MlsAccessRequestV1::signed(channel, vec![1], 1, &device_signing)
+                .expect("signed request");
+        let message = NeighbourMsg::MlsAccessRequest {
+            room: room.to_string(),
+            request: Box::new(request),
+            delivery: 1,
+        };
+        for ws in [DEFAULT_WS_TOPIC, room_topic_id(room)] {
+            net.event_tx
+                .try_send(NetEvent::Msg {
+                    ws,
+                    peer: device.public(),
+                    membership_epoch: None,
+                    msg: message.clone(),
+                })
+                .expect("queue governance");
+            net.tick();
+        }
+        let queued = std::mem::take(
+            &mut *net
+                .inbound_channel_governance_handle()
+                .lock()
+                .expect("governance queue"),
+        );
+        assert!(
+            matches!(
+                queued.as_slice(),
+                [InboundChannelGovernance::AccessRequest { room: queued_room, request }]
+                    if *queued_room == room && request.channel == channel
+            ),
+            "only the copy on the room's own topic is queued: {queued:?}"
+        );
+
+        let (net, mut cmd_rx) = shell_network_for_test(WorkspaceTree::default().shared(), 7);
+        assert!(net.publish_channel_governance(message));
+        let Some((ws, msg)) =
+            std::iter::from_fn(|| cmd_rx.try_recv().ok()).find_map(|command| match command {
+                NetCmd::Publish { ws, msg } => Some((ws, msg)),
+                _ => None,
+            })
+        else {
+            panic!("governance must be published");
+        };
+        assert_eq!(ws, room_topic_id(room));
+        assert!(matches!(msg, NeighbourMsg::MlsAccessRequest { .. }));
+        assert!(!net.publish_channel_governance(NeighbourMsg::Heartbeat { peer: 1, ts: 1 }));
     }
 
     /// The SDK guide promises a path-bearing record id never leaves the
