@@ -2470,6 +2470,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 }
                 return;
             }
+            UserEvent::DevSessionStop => {
+                self.app.autosave_flush();
+                super::checkpoint_and_exit(&self.app, event_loop);
+                return;
+            }
             other => other,
         };
         let Some(window) = self.window.clone() else {
@@ -2579,7 +2584,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.needs_sync = true;
                 window.request_redraw();
             }
-            UserEvent::Wake(_) | UserEvent::NativeScenarioInput(_) | UserEvent::RenderReady(_) => {}
+            UserEvent::Wake(_)
+            | UserEvent::NativeScenarioInput(_)
+            | UserEvent::RenderReady(_)
+            | UserEvent::DevSessionStop => {}
             UserEvent::AccessKit(ak_event) => {
                 use accesskit_winit::WindowEvent as AkWindowEvent;
                 match ak_event {
@@ -3370,6 +3378,7 @@ impl App {
         }
         let event_loop = event_loop_builder.build().unwrap();
         let proxy = event_loop.create_proxy();
+        super::install_dev_session_stop(proxy.clone());
         let wake_proxy = proxy.clone();
         self.wake_scope
             .as_mut()
