@@ -578,6 +578,44 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
 }
 
 impl Widget for Toolbar {
+    /// The overflow menu, anchored to its own chip.
+    fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
+        if self.menu.is_open() {
+            vec![crate::view::OverlayState::menu(
+                crate::view::OverlayAnchor::Owner,
+                self.menu.hovered(),
+            )]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn restore_overlays(
+        &mut self,
+        states: &[crate::view::OverlayState],
+        _presentation: crate::view::OverlayPresentation,
+    ) {
+        let menu = states.iter().find_map(|state| match state {
+            crate::view::OverlayState::Menu { highlighted, .. } => Some(*highlighted),
+            _ => None,
+        });
+        match menu {
+            Some(highlighted) => {
+                if !self.menu.is_open() {
+                    self.open_menu(false);
+                }
+                if let Some(row) = highlighted {
+                    self.menu.focus_item(row);
+                }
+            }
+            None => {
+                if self.menu.is_open() {
+                    self.menu.close();
+                }
+            }
+        }
+    }
+
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
@@ -1282,6 +1320,23 @@ mod tests {
             !tb.overflow_rect.is_zero_area(),
             "overflow chip rect must be populated when has_overflow() is true"
         );
+    }
+
+    /// The overflow menu is the toolbar's overlay: captured while open,
+    /// re-opened against its own chip, closed by an empty View.
+    #[test]
+    fn the_overflow_menu_round_trips_through_the_view() {
+        let mut tb = lay_out(n_button_toolbar(10), 150.0);
+        assert!(tb.open_overlays().is_empty());
+        tb.open_menu(false);
+        let captured = tb.open_overlays();
+        assert_eq!(captured.len(), 1);
+
+        tb.restore_overlays(&[], crate::view::OverlayPresentation::Owned);
+        assert!(tb.open_overlays().is_empty());
+
+        tb.restore_overlays(&captured, crate::view::OverlayPresentation::Owned);
+        assert_eq!(tb.open_overlays(), captured);
     }
 
     /// `[Button, Separator, Button]` — the divider paints as a thin filled

@@ -662,6 +662,30 @@ fn with_menu() -> (TreeView<()>, Log<(Option<NodeId>, usize)>, Log<NodeId>) {
     (view, chosen, selected)
 }
 
+/// The row menu is reported with its row, and a View re-opens the same
+/// menu with the rows this tree now builds for that node.
+#[test]
+fn the_row_menu_round_trips_through_the_view() {
+    let (mut view, _chosen, _selected) = with_menu();
+    let (taffy, node) = lay_out_tree(&mut view, 240.0);
+    let at = row_center(&view, 4);
+    dispatch_laid_out(&mut view, &cursor_moved(at.x, at.y), &taffy, node);
+    assert!(dispatch_laid_out(&mut view, &right_press(), &taffy, node));
+    let captured = view.open_overlays();
+    assert!(matches!(
+        captured.as_slice(),
+        [crate::view::OverlayState::Menu { menu: Some(menu), target: Some(target), .. }]
+            if menu == "row" && target == "4"
+    ));
+
+    view.restore_overlays(&[], crate::view::OverlayPresentation::Owned);
+    assert!(!view.context_menu_is_open());
+
+    view.restore_overlays(&captured, crate::view::OverlayPresentation::Owned);
+    assert!(view.context_menu_is_open());
+    assert_eq!(view.open_overlays(), captured);
+}
+
 #[test]
 fn right_click_selects_the_row_and_opens_its_menu() {
     let (mut view, chosen, selected) = with_menu();

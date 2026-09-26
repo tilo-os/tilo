@@ -4205,6 +4205,76 @@ impl FloatingSurfaceProvider for BrowserWidget {
 }
 
 impl Widget for BrowserWidget {
+    /// The back/forward history menu and the page's own context menu. The
+    /// page menu belongs to the web engine, which alone can open it, so it
+    /// is reported but never re-opened; the history menu is re-requested.
+    fn open_overlays(&self) -> Vec<ui::view::OverlayState> {
+        let mut overlays = Vec::new();
+        if self.back_menu.is_open()
+            && let Some(direction) = self.menu_direction
+            && let ui::view::OverlayState::Menu { highlighted, .. } = self.back_menu.overlay_state()
+        {
+            overlays.push(ui::view::OverlayState::Menu {
+                anchor: ui::view::OverlayAnchor::Owner,
+                highlighted,
+                menu: Some(
+                    match direction {
+                        NavigationDirection::Back => "back",
+                        NavigationDirection::Forward => "forward",
+                    }
+                    .into(),
+                ),
+                target: None,
+            });
+        }
+        if self.page_menu.menu.is_open() {
+            let ui::view::OverlayState::Menu {
+                anchor,
+                highlighted,
+                ..
+            } = self.page_menu.menu.overlay_state()
+            else {
+                return overlays;
+            };
+            overlays.push(ui::view::OverlayState::Menu {
+                anchor,
+                highlighted,
+                menu: Some("page".into()),
+                target: None,
+            });
+        }
+        overlays
+    }
+
+    fn restore_overlays(
+        &mut self,
+        states: &[ui::view::OverlayState],
+        _presentation: ui::view::OverlayPresentation,
+    ) {
+        let direction = states.iter().find_map(|state| match state {
+            ui::view::OverlayState::Menu {
+                menu: Some(menu), ..
+            } => match menu.as_str() {
+                "back" => Some(NavigationDirection::Back),
+                "forward" => Some(NavigationDirection::Forward),
+                _ => None,
+            },
+            _ => None,
+        });
+        match direction {
+            Some(direction)
+                if self.menu_direction != Some(direction) || !self.back_menu.is_open() =>
+            {
+                self.request_navigation_history(direction);
+            }
+            None if self.back_menu.is_open() => {
+                self.back_menu.close();
+                self.menu_direction = None;
+            }
+            _ => {}
+        }
+    }
+
     fn continuable(&self) -> Option<&dyn Continuable> {
         Some(self)
     }

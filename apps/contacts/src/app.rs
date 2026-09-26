@@ -6826,6 +6826,53 @@ impl ContactsApp {
 }
 
 impl Widget for ContactsApp {
+    /// The unsaved-changes prompt is this app's own state: which contact the
+    /// person tried to switch to while an edit was unsaved.
+    fn open_overlays(&self) -> Vec<ui::view::OverlayState> {
+        self.pending_switch
+            .map(|target| ui::view::OverlayState::Dialog {
+                dialog: Some(format!("unsaved-changes:{target}")),
+            })
+            .into_iter()
+            .collect()
+    }
+
+    /// Put the prompt back under the same condition that opens it: only
+    /// while an edit here really is unsaved, so restoring never switches
+    /// contacts. It asks about this person's own edit, so a live follower
+    /// only sees that it was asked.
+    fn restore_overlays(
+        &mut self,
+        states: &[ui::view::OverlayState],
+        presentation: ui::view::OverlayPresentation,
+    ) {
+        if presentation != ui::view::OverlayPresentation::Owned {
+            return;
+        }
+        let target = states.iter().find_map(|state| match state {
+            ui::view::OverlayState::Dialog {
+                dialog: Some(dialog),
+            } => dialog
+                .strip_prefix("unsaved-changes:")
+                .and_then(|id| id.parse::<ContactId>().ok()),
+            _ => None,
+        });
+        match target {
+            Some(id)
+                if self.pending_switch != Some(id)
+                    && self.mode == Mode::Edit
+                    && self.form_is_dirty() =>
+            {
+                self.request_select(id);
+            }
+            None if self.pending_switch.is_some() => {
+                self.pending_switch = None;
+                self.dirty = true;
+            }
+            _ => {}
+        }
+    }
+
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
     }

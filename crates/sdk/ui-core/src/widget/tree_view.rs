@@ -2680,6 +2680,77 @@ fn px(value: f64) -> f32 {
 }
 
 impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
+    /// The context menu is reported with the row it is for, so a View can
+    /// open the same menu on the same node.
+    fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
+        if !self.menu.is_open() {
+            return Vec::new();
+        }
+        let crate::view::OverlayState::Menu {
+            anchor,
+            highlighted,
+            ..
+        } = self.menu.overlay_state()
+        else {
+            return Vec::new();
+        };
+        vec![crate::view::OverlayState::Menu {
+            anchor,
+            highlighted,
+            menu: Some(
+                if self.menu_target.is_some() {
+                    "row"
+                } else {
+                    "tree"
+                }
+                .into(),
+            ),
+            target: self.menu_target.map(|node| node.to_string()),
+        }]
+    }
+
+    /// Re-open the menu through the same builder a right click uses, so its
+    /// rows are this tree's current rows for that node.
+    fn restore_overlays(
+        &mut self,
+        states: &[crate::view::OverlayState],
+        _presentation: crate::view::OverlayPresentation,
+    ) {
+        let menu = states
+            .iter()
+            .find(|state| matches!(state, crate::view::OverlayState::Menu { .. }));
+        let Some(
+            restored @ crate::view::OverlayState::Menu {
+                anchor,
+                menu: Some(kind),
+                target,
+                ..
+            },
+        ) = menu
+        else {
+            if self.menu.is_open() {
+                self.close_context_menu();
+            }
+            return;
+        };
+        let target = match (kind.as_str(), target) {
+            ("row", Some(node)) => match node.parse::<NodeId>() {
+                Ok(node) => Some(node),
+                Err(_) => return,
+            },
+            ("tree", _) => None,
+            _ => return,
+        };
+        let at = match *anchor {
+            crate::view::OverlayAnchor::Point { x, y } => Point::new(x, y),
+            crate::view::OverlayAnchor::Rect { x0, y1, .. } => Point::new(x0, y1),
+            crate::view::OverlayAnchor::Owner => Point::new(self.rect.x0, self.rect.y0),
+        };
+        if self.open_context_menu(target, at) {
+            self.menu.restore_overlay_state(Some(restored));
+        }
+    }
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,

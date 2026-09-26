@@ -862,6 +862,62 @@ impl BrowserTabs {
 }
 
 impl Widget for BrowserTabs {
+    /// The tab menu, with the tab it is for.
+    fn open_overlays(&self) -> Vec<ui::view::OverlayState> {
+        if !self.tab_menu.is_open() {
+            return Vec::new();
+        }
+        let ui::view::OverlayState::Menu {
+            anchor,
+            highlighted,
+            ..
+        } = self.tab_menu.overlay_state()
+        else {
+            return Vec::new();
+        };
+        vec![ui::view::OverlayState::Menu {
+            anchor,
+            highlighted,
+            menu: Some("tab".into()),
+            target: self.tab_menu_target.map(|id| id.to_string()),
+        }]
+    }
+
+    /// Re-open the tab menu for that tab through the path a right click
+    /// uses, so its rows (pin, mute) match the tab as it is now.
+    fn restore_overlays(
+        &mut self,
+        states: &[ui::view::OverlayState],
+        _presentation: ui::view::OverlayPresentation,
+    ) {
+        let menu = states.iter().find_map(|state| match state {
+            restored @ ui::view::OverlayState::Menu {
+                anchor,
+                menu: Some(menu),
+                target: Some(target),
+                ..
+            } if menu == "tab" => target.parse::<u64>().ok().map(|id| (restored, *anchor, id)),
+            _ => None,
+        });
+        let Some((restored, anchor, id)) = menu else {
+            if self.tab_menu.is_open() {
+                self.tab_menu.close();
+                self.tab_menu_target = None;
+            }
+            return;
+        };
+        if !self.tabs.iter().any(|tab| tab.id == id) {
+            return;
+        }
+        let point = match anchor {
+            ui::view::OverlayAnchor::Point { x, y } => Point::new(x, y),
+            ui::view::OverlayAnchor::Rect { x0, y1, .. } => Point::new(x0, y1),
+            ui::view::OverlayAnchor::Owner => Point::new(self.rect.x0, self.rect.y0),
+        };
+        self.open_tab_menu(id, point);
+        self.tab_menu.restore_overlay_state(Some(restored));
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if self.fullscreen_hint_deadline.is_some()
             && !fullscreen_hint_visible(self.fullscreen_hint_deadline, Instant::now())

@@ -12866,20 +12866,26 @@ impl ShellOverlayHost {
         false
     }
 
-    fn handle_workspace_navigation_click(&mut self, p: Point) -> bool {
-        if !self.cursor_over_open_overlay(p) && self.follow_stop_rect.contains(p) {
-            self.set_followed_peer(None);
-            return true;
-        }
-        // Following is a viewing mode, not a lock. The first deliberate
-        // click back into the workspace hands control to the local user and
-        // continues routing that very click to its intended target.
+    /// Following is a viewing mode, not a lock. The first deliberate press
+    /// back into the workspace, by pointer or by touch, hands control to the
+    /// local user; the press itself continues to its intended target. Presses
+    /// on open shell overlays and on the follow chip are about following, not
+    /// about the workspace, and keep it.
+    fn release_follow_for_local_press(&mut self, p: Point) {
         if self.followed_peer.is_some()
             && !self.cursor_over_open_overlay(p)
             && !self.follow_chip_rect.contains(p)
         {
             self.set_followed_peer(None);
         }
+    }
+
+    fn handle_workspace_navigation_click(&mut self, p: Point) -> bool {
+        if !self.cursor_over_open_overlay(p) && self.follow_stop_rect.contains(p) {
+            self.set_followed_peer(None);
+            return true;
+        }
+        self.release_follow_for_local_press(p);
         if self.followed_peer.is_none()
             && !self.cursor_over_open_overlay(p)
             && let Some((peer_id, _)) = self
@@ -16736,6 +16742,9 @@ impl Widget for ShellOverlayHost {
                 touch.location.x / scale_factor,
                 touch.location.y / scale_factor,
             );
+            if touch.phase == winit::event::TouchPhase::Started {
+                self.release_follow_for_local_press(point);
+            }
             let events = self.touch_gestures.on_touch(touch.id, point, phase);
             let shell_owned = shell_owned_before || self.touch_gestures.shell_owns_current();
             let mut claimed = false;
@@ -35295,6 +35304,61 @@ mod peer_cursor_tests {
                 (expected_room, None),
             ],
             "the shell and every local app enter and leave Follow together"
+        );
+    }
+
+    /// A finger is the same local input as a click: the first touch into
+    /// the workspace releases follow through the one follow control.
+    #[test]
+    fn a_local_workspace_touch_releases_follow_like_a_click() {
+        let mut tree = one_group_seed();
+        let target_tab = tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab;
+        tree.desktop.workspaces[0]
+            .collaborators
+            .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
+        let expected_room = tree.desktop.workspaces[0].room;
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&calls);
+        host.set_follow_bridge(std::rc::Rc::new(move |room, target| {
+            captured.borrow_mut().push((room, target));
+        }));
+        host.set_followed_peer(Some("ada".into()));
+
+        let touch = WindowEvent::Touch(winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase: winit::event::TouchPhase::Started,
+            location: winit::dpi::PhysicalPosition::new(640.0, 500.0),
+            force: None,
+            id: 1,
+        });
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let mut focus = None;
+        let mut taffy = taffy::TaffyTree::<()>::new();
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+        host.handle_event(
+            &touch,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+
+        assert!(host.followed_peer.is_none(), "a local touch takes control");
+        assert_eq!(
+            calls.borrow().as_slice(),
+            &[
+                (expected_room, Some("peer@77".to_string())),
+                (expected_room, None),
+            ],
+            "the workspace's apps are released through the follow bridge",
         );
     }
 
