@@ -1170,9 +1170,8 @@ mod tests {
             architecture: "aarch64".into(),
             hardware_profile: "generic".into(),
             local_path: String::new(),
-            url:
-                "https://code.tilo.so/tilo/releases/releases/download/imager-v1.0.0/tilo.img.zst"
-                    .into(),
+            url: "https://code.tilo.so/tilo/releases/releases/download/imager-v1.0.0/tilo.img.zst"
+                .into(),
             archive_sha256: "a".repeat(64),
             archive_size: 1,
             image_sha256: "b".repeat(64),
@@ -1578,10 +1577,7 @@ mod internal_catalog_tests {
             ("manifest_size", json!(65537)),
             ("manifest_sha256", json!("A".repeat(64))),
             ("purpose", json!("removable-media")),
-            (
-                "manifest_url",
-                json!("https://code.tilo.so:444/manifest"),
-            ),
+            ("manifest_url", json!("https://code.tilo.so:444/manifest")),
         ] {
             let mut value = internal(&bytes);
             value[field] = bad;
