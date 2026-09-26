@@ -105,6 +105,9 @@ pub const AGENT_MODEL_OPERATION_TYPE: &str = "settings.agent-model-operation";
 /// machine's trust boundary. They are local effects, never CRDT preferences.
 pub const DEVICE_MESH_OPERATION_TYPE: &str = "settings.device-mesh-operation";
 pub const AGENT_PROVIDER_OPERATION_TYPE: &str = "settings.agent-provider-operation";
+/// Speaker groups across the person's devices. The compositor owns groups,
+/// consent and calibration; Settings only asks, so these never replicate.
+pub const SPEAKER_OPERATION_TYPE: &str = "settings.speaker-operation";
 
 /// Collaboration policy for every action exported by Settings. There is no
 /// implicit/default bucket: a new operation type must be added here before it
@@ -134,6 +137,7 @@ pub(crate) const DEVICE_LOCAL_OPERATION_TYPES: &[&str] = &[
     AGENT_MODEL_OPERATION_TYPE,
     DEVICE_MESH_OPERATION_TYPE,
     AGENT_PROVIDER_OPERATION_TYPE,
+    SPEAKER_OPERATION_TYPE,
 ];
 
 pub fn classify_action(spec: &ActionSpec) -> Option<SettingScope> {
@@ -298,6 +302,9 @@ pub enum AudioOperation {
         value: f64,
     },
     SetMono {
+        enabled: bool,
+    },
+    SetEchoCancellation {
         enabled: bool,
     },
     SetDeviceProfile {
@@ -489,6 +496,62 @@ pub enum DeviceMeshOperation {
     SetWorkspace { id: u64, enabled: bool },
 }
 
+/// Typed speaker commands. Agents and the Speakers pane share this door;
+/// flow steps (which screen is showing) are presentation and are not here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpeakerOperation {
+    Create {
+        name: String,
+        members: Vec<ui::collaboration::SpeakerMemberSpec>,
+    },
+    Identify {
+        device: String,
+        output: String,
+    },
+    Calibrate {
+        group: String,
+        microphone_device: String,
+        microphone: String,
+    },
+    ApplyCalibration {
+        group: String,
+    },
+    RevertCalibration {
+        group: String,
+    },
+    DismissCalibration {
+        group: String,
+    },
+    Delete {
+        group: String,
+    },
+}
+
+impl SpeakerOperation {
+    /// The shell command this operation asks for.
+    #[must_use]
+    pub fn command(&self) -> ui::collaboration::SpeakerCommand {
+        use ui::collaboration::SpeakerCommand as Command;
+        match self.clone() {
+            Self::Create { name, members } => Command::Create { name, members },
+            Self::Identify { device, output } => Command::Identify { device, output },
+            Self::Calibrate {
+                group,
+                microphone_device,
+                microphone,
+            } => Command::StartCalibration {
+                group,
+                microphone_device,
+                microphone,
+            },
+            Self::ApplyCalibration { group } => Command::ApplyCalibration { group },
+            Self::RevertCalibration { group } => Command::RevertCalibration { group },
+            Self::DismissCalibration { group } => Command::DismissCalibration { group },
+            Self::Delete { group } => Command::Delete { group },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentProviderOperation {
     Add {
@@ -613,6 +676,11 @@ pub fn local_operation_token(type_id: &str, payload: &[u8]) -> Result<String, St
         }
         DEVICE_MESH_OPERATION_TYPE => {
             let operation: DeviceMeshOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        SPEAKER_OPERATION_TYPE => {
+            let operation: SpeakerOperation =
                 serde_json::from_slice(payload).map_err(|e| e.to_string())?;
             Ok(local_operation_token_for(type_id, &operation))
         }
@@ -1263,6 +1331,7 @@ fn section_resource(
         Category::TimeDate => time_date_section(doc, prefs),
         Category::KeyboardShortcuts => shortcuts_section(doc),
         Category::DeviceMesh => device_mesh_section(doc),
+        Category::Speakers => speakers_section(),
         Category::Updates => updates_section(),
         Category::ExternalAccounts => accounts_section(account_inventory),
         Category::AgentModels => agent_models_section(),
@@ -1309,6 +1378,7 @@ fn category_for_resource_id(id: &str) -> Option<Category> {
         ("settings.print-job:", Category::Printers),
         ("settings.user:", Category::Users),
         ("settings.device-mesh-workspace:", Category::DeviceMesh),
+        ("settings.speaker-group:", Category::Speakers),
         (
             "settings.agent-model-recommendation:",
             Category::AgentModels,
@@ -1847,6 +1917,7 @@ fn sound_section(doc: &AutoCommit) -> Resource {
             encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetMono { enabled })
         },
     ));
+    sec = sec.with_action(echo_cancellation_spec());
     sec = sec.with_action(local_number_spec(
         "input-volume",
         "Set input volume",
@@ -2130,6 +2201,21 @@ fn audio_control_resource(action: ActionSpec) -> Resource {
     .with_action(action)
 }
 
+fn echo_cancellation_spec() -> ActionSpec {
+    local_bool_spec(
+        "echo-cancellation",
+        "Reduce echo in calls",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "session"],
+        |enabled| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetEchoCancellation { enabled },
+            )
+        },
+    )
+}
+
 pub fn audio_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
     let action = match action_id {
         "muted" => local_bool_spec(
@@ -2153,6 +2239,7 @@ pub fn audio_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding
                 encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetMono { enabled })
             },
         ),
+        "echo-cancellation" => echo_cancellation_spec(),
         _ => return None,
     };
     bool_binding_for(&audio_control_resource(action), action_id)
@@ -5100,6 +5187,155 @@ fn device_mesh_section(_doc: &AutoCommit) -> Resource {
     section
 }
 
+fn speaker_spec(
+    id: &str,
+    label: &str,
+    placeholder: &str,
+    params: Vec<ActionParam>,
+    encode: impl Fn(&tilo_actions::ActionArgs) -> SpeakerOperation + Send + Sync + 'static,
+) -> ActionSpec {
+    ActionSpec::typed_operation(
+        id,
+        label,
+        placeholder,
+        OperationKind::Effect,
+        SPEAKER_OPERATION_TYPE,
+        params,
+        move |args| encode_local_operation(SPEAKER_OPERATION_TYPE, &encode(args)),
+    )
+    .with_contract(local_operation_contract(&["device-local", "speakers"]))
+}
+
+/// Speaker sets: create one, and per set delete, calibrate, apply or revert
+/// a calibration. Sets come from the last snapshot the Speakers pane
+/// received, so building this tree never waits on the compositor.
+fn speakers_section() -> Resource {
+    let mut section = Resource::new(
+        pane_resource_id(Category::Speakers),
+        "settings.section",
+        "Speakers",
+    );
+    section = section.with_action(speaker_spec(
+        "create",
+        "Create a speaker set",
+        "Name and members",
+        vec![
+            ActionParam::required("name", ParamType::Text, "Name, such as Living room"),
+            ActionParam::required(
+                "members",
+                ParamType::Text,
+                "JSON list of {device, output, role}; role is {\"role\":\"left\"}, \"right\", \"center\", \"lfe\", \"surround-left\", \"surround-right\" or {\"role\":\"room\",\"x_mm\":…,\"y_mm\":…,\"z_mm\":…}",
+            ),
+        ],
+        |args| SpeakerOperation::Create {
+            name: args.text("name").unwrap_or_default().to_string(),
+            members: serde_json::from_str(args.text("members").unwrap_or_default())
+                .unwrap_or_default(),
+        },
+    ));
+    section = section.with_action(speaker_spec(
+        "identify",
+        "Play a sound on a speaker",
+        "Device and output",
+        vec![
+            ActionParam::required("device", ParamType::Text, "Device id"),
+            ActionParam::required("output", ParamType::Text, "Output selector"),
+        ],
+        |args| SpeakerOperation::Identify {
+            device: args.text("device").unwrap_or_default().to_string(),
+            output: args.text("output").unwrap_or_default().to_string(),
+        },
+    ));
+    let snapshot = crate::speaker_setup::cached_snapshot();
+    let microphones = snapshot
+        .devices
+        .iter()
+        .filter(|device| device.online)
+        .flat_map(|device| {
+            device
+                .microphones
+                .iter()
+                .map(move |microphone| format!("{}/{}", device.id, microphone.selector))
+        })
+        .take(MAX_DYNAMIC_CHOICES)
+        .collect::<Vec<_>>();
+    for group in snapshot
+        .groups
+        .iter()
+        .filter(|group| group.led_here)
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
+        let id = group.id.clone();
+        let mut resource = Resource::new(
+            format!("settings.speaker-group:{id}"),
+            "settings.speaker-group",
+            group.name.clone(),
+        );
+        let delete_id = id.clone();
+        resource = resource.with_action(
+            speaker_spec(
+                "delete",
+                "Delete this speaker set",
+                "",
+                Vec::new(),
+                move |_| SpeakerOperation::Delete {
+                    group: delete_id.clone(),
+                },
+            )
+            .destructive(),
+        );
+        if !microphones.is_empty() {
+            let calibrate_id = id.clone();
+            resource = resource.with_action(speaker_spec(
+                "calibrate",
+                "Calibrate with a microphone",
+                "Microphone",
+                vec![
+                    ActionParam::required_owned(
+                        "microphone",
+                        ParamType::Text,
+                        "Microphone that listens at your seat",
+                    )
+                    .with_choices(microphones.clone()),
+                ],
+                move |args| {
+                    let (device, selector) = args
+                        .text("microphone")
+                        .unwrap_or_default()
+                        .split_once('/')
+                        .unwrap_or_default();
+                    SpeakerOperation::Calibrate {
+                        group: calibrate_id.clone(),
+                        microphone_device: device.to_string(),
+                        microphone: selector.to_string(),
+                    }
+                },
+            ));
+        }
+        for (action, label, make) in [
+            (
+                "apply-calibration",
+                "Apply the measured calibration",
+                (|group| SpeakerOperation::ApplyCalibration { group })
+                    as fn(String) -> SpeakerOperation,
+            ),
+            (
+                "revert-calibration",
+                "Revert to the previous calibration",
+                |group| SpeakerOperation::RevertCalibration { group },
+            ),
+        ] {
+            let group_id = id.clone();
+            resource =
+                resource.with_action(speaker_spec(action, label, "", Vec::new(), move |_| {
+                    make(group_id.clone())
+                }));
+        }
+        section = section.with_child(resource);
+    }
+    section
+}
+
 fn device_mesh_choice_spec(
     id: &'static str,
     label: &'static str,
@@ -6191,6 +6427,7 @@ mod tests {
             "audio.input_volume",
             "audio.balance",
             "audio.mono",
+            "audio.echo_cancellation",
             "display.brightness",
             "display.auto_brightness",
             "display.scale",

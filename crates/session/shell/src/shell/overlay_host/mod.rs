@@ -915,6 +915,28 @@ const PALETTE_ROW_BUDGET: usize = 8;
 /// Glyph that stands for a result kind in the palette. Giving each kind
 /// a picture is what replaced the bracketed kind literal the shell used
 /// to prepend to every subtitle.
+/// The file manager Super+E opens.
+const FILES_PACKAGE: (&str, &str) = ("so.tilo.file-explorer", "Files");
+
+/// Flip the desktop magnifier between off and its default 2× zoom. The
+/// frame builder reads `accessibility.magnifier_zoom` on its settings poll,
+/// the same path the Settings slider takes.
+fn toggle_magnifier(settings: Option<&std::path::Path>) {
+    let Some(settings) = settings else {
+        return;
+    };
+    let zoom = settings_store::load_section_at(settings, "accessibility")
+        .get("magnifier_zoom")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1);
+    let next = if zoom > 1 { 1 } else { 2 };
+    let mut values = serde_json::Map::new();
+    values.insert("magnifier_zoom".into(), serde_json::Value::from(next));
+    if let Err(error) = settings_store::update_section_at(settings, "accessibility", values) {
+        tracing::warn!(%error, "magnifier toggle could not be saved");
+    }
+}
+
 /// The Shift+Print capture: everything on `viewport`, saved and copied.
 fn instant_screen_capture(viewport: Rect) -> ui::widget::CaptureIntent {
     instant_capture(ui::widget::SourceMode::Display, vec![viewport], Vec::new())
@@ -3018,6 +3040,12 @@ impl ShellOverlayHost {
     /// interval later).
     pub fn status_bridge(&self) -> Option<&crate::shell::status::StatusBridge> {
         self.status_bridge.as_ref()
+    }
+
+    /// Open global search, as a lone Super tap does.
+    pub fn open_global_search(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
+        self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+        self.refresh_search_results(doc, root);
     }
 
     /// Open an installed app through the launcher the palette uses, so a
@@ -5553,6 +5581,12 @@ impl ShellOverlayHost {
         self.portal_dialogs.pump()
     }
 
+    /// The compositor-owned sheet on screen, for `state-dump`; masked
+    /// values appear only as their length.
+    pub fn portal_dialog_state_json(&self) -> serde_json::Value {
+        self.portal_dialogs.state_json()
+    }
+
     /// Moves buffered portal prompts onto the chrome's queue for
     /// `pump_permission_prompt`. Senders travel with them rather than being
     /// dropped — dropping one would answer deny before the user was asked.
@@ -6036,7 +6070,7 @@ impl ShellOverlayHost {
         action(row, group)
     }
 
-    fn toggle_focused_group_maximized(&mut self) -> bool {
+    pub(crate) fn toggle_focused_group_maximized(&mut self) -> bool {
         self.mutate_focused_group_widget(|row, group| {
             let Some(group) = row
                 .groups
@@ -10197,7 +10231,7 @@ impl ShellOverlayHost {
                         || state.alt_key()
                         || state.shift_key()
                         || state.super_key());
-                if self.portal_dialogs.is_authentication() {
+                if self.portal_dialogs.is_secret_entry() {
                     // Every key belongs to the authentication sheet while it
                     // is up; none reaches an application.
                     match logical_key {
@@ -10994,6 +11028,12 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        if let Some(action) = configured_action
+            && self.handle_desktop_chord(action, repeat)
+        {
+            *handled = true;
+            return true;
+        }
         // Chords bound to published actions, a saved shortcut's keyboard
         // trigger among them. Saving refuses every fixed chord below, so
         // order only matters for a chord nothing else claims.
@@ -11245,6 +11285,101 @@ impl ShellOverlayHost {
             return true;
         }
         false
+    }
+
+    /// The conventional desktop chords (Super+1…9, Super+E, Ctrl+Alt+T,
+    /// Super+V, Super+A, Super+F, Super+Alt+8, Ctrl+Alt+Delete by
+    /// default). Returns `false` for any other action. A held chord acts
+    /// once: every action here is an edge, not a step.
+    fn handle_desktop_chord(
+        &mut self,
+        action: settings_store::hardware::ShortcutAction,
+        repeat: bool,
+    ) -> bool {
+        use crate::shell::quick_settings::QsLevel;
+        use settings_store::hardware::ShortcutAction as A;
+        if let Some(index) = action.focus_group_index() {
+            if !repeat {
+                let _ = self.focus_nth_group_in_strip(index);
+            }
+            return true;
+        }
+        if !matches!(
+            action,
+            A::OpenFiles
+                | A::OpenTerminal
+                | A::ClipboardHistory
+                | A::Notifications
+                | A::ToggleFullscreen
+                | A::ToggleMagnifier
+                | A::PowerMenu
+        ) {
+            return false;
+        }
+        if repeat {
+            return true;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return true;
+        };
+        match action {
+            A::OpenFiles => (self.app_launcher)(&chrome, FILES_PACKAGE.0, FILES_PACKAGE.1),
+            A::OpenTerminal => {
+                let _ = crate::shell::window_actions::open_terminal(
+                    &mut chrome.borrow_mut(),
+                    crate::shell::window_actions::Destination::Beside,
+                );
+            }
+            A::ClipboardHistory => chrome
+                .borrow_mut()
+                .open_quick_settings_level(QsLevel::Clipboard),
+            A::Notifications => chrome
+                .borrow_mut()
+                .open_quick_settings_level(QsLevel::Notifications),
+            A::ToggleFullscreen => chrome.borrow_mut().request_fullscreen_toggle(),
+            A::ToggleMagnifier => toggle_magnifier(settings_store::settings_path().as_deref()),
+            A::PowerMenu => {
+                self.power_menu.open();
+                let mut st = chrome.borrow_mut();
+                st.overlays.quick_settings = false;
+                st.bump();
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// Focus the `index`th window group of the active strip, on its active
+    /// tab. `false` when the strip has fewer groups.
+    fn focus_nth_group_in_strip(&mut self, index: usize) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let target = (|| -> Option<(StripId, GroupId, u64)> {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            let strip = tree
+                .desktop
+                .active_strip
+                .get(&tree.desktop.active)
+                .copied()?;
+            let group = tree
+                .desktop
+                .active_workspace()?
+                .strips
+                .iter()
+                .find(|candidate| candidate.id == strip)?
+                .window_groups
+                .get(index)
+                .map(|group| (group.id, group.active_tab));
+            drop(tree);
+            let (group, tab) = group?;
+            Some((strip, group, tab))
+        })();
+        let Some((strip, group, tab)) = target else {
+            return false;
+        };
+        self.focus_window_on_strip(strip, group, tab)
     }
 
     /// Arrow/Enter navigation of the room overview list, unmodified so
@@ -12808,6 +12943,17 @@ impl ShellOverlayHost {
                     group.name
                 ),
             )),
+            DeviceFabricPaneRow::SpeakerSetup => {
+                if let Some(chrome) = self.chrome.clone() {
+                    {
+                        let mut state = chrome.borrow_mut();
+                        state.overlays.quick_settings = false;
+                        state.bump();
+                    }
+                    (self.app_launcher)(&chrome, "so.tilo.settings", "Settings");
+                }
+                return;
+            }
             DeviceFabricPaneRow::SpeakerMembership(membership) => Some((
                 DeviceFabricUiAction::LeaveSpeakerGroup {
                     group: membership.group,
@@ -16759,6 +16905,12 @@ impl Widget for ShellOverlayHost {
                                             ),
                                             Vec::new(),
                                         ),
+                                        DeviceFabricPaneRow::SpeakerSetup => (
+                                            "Set up speakers".into(),
+                                            "Open Settings to use several devices as a stereo pair or room speakers"
+                                                .into(),
+                                            Vec::new(),
+                                        ),
                                         DeviceFabricPaneRow::SpeakerMembership(membership) => (
                                             format!(
                                                 "{} in {}",
@@ -19823,6 +19975,58 @@ impl ShellOverlayHost {
                 ui::chrome::SelectionState::active(true),
             );
         }
+        // Network secrets: one row per field, the label inside it until
+        // something is typed; masked values only ever as bullets.
+        for (field, rect) in self
+            .portal_dialogs
+            .secret_field_displays()
+            .iter()
+            .zip(&layout.secret_fields)
+        {
+            let label = if field.shown.is_empty() {
+                field.label.clone()
+            } else {
+                format!("{}  {}", field.label, field.shown)
+            };
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                *rect,
+                &label,
+                theme.tokens.typography.scale.base,
+                ui::chrome::SelectionState::active(field.focused),
+            );
+        }
+        if let (Some(rect), Some((remember, focused))) =
+            (layout.remember, self.portal_dialogs.remember_display())
+        {
+            let label = format!(
+                "[{}] Remember on this device",
+                if remember { "✓" } else { " " }
+            );
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                &label,
+                theme.tokens.typography.scale.base,
+                ui::chrome::SelectionState::active(focused),
+            );
+        }
+        if let Some(error) = self.portal_dialogs.entry_error() {
+            text_renderer.draw_text(
+                scene,
+                error,
+                12.0,
+                theme.tokens.colors.semantic.warning,
+                transform.pre_translate((layout.sheet.x0 + 24.0, layout.cancel.y0 - 22.0).into()),
+                None,
+            );
+        }
         for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate() {
             let accelerator = row.accelerator.as_deref().map_or_else(
                 || "Not set".into(),
@@ -22537,6 +22741,13 @@ impl ShellOverlayHost {
                     group.ready_members() > 0
                         && (self.qs_selected_remote_audio.is_some()
                             || self.qs_selected_media.is_some()),
+                ),
+                DeviceFabricPaneRow::SpeakerSetup => (
+                    "Set up speakers".into(),
+                    "Stereo pair or room speakers · opens Settings → Speakers".into(),
+                    ui::icons::Icon::Volume2,
+                    false,
+                    true,
                 ),
                 DeviceFabricPaneRow::SpeakerMembership(membership) => (
                     format!(

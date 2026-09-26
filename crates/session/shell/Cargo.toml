@@ -49,6 +49,9 @@ tempfile.workspace = true
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 notify.workspace = true
 xdg-paths = { path = "../../system/xdg-paths" }
+# Remembered network secrets (802.1X, VPN, SIM PIN) are sealed here, never
+# written to settings.
+secret-vault = { path = "../../system/secret-vault" }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 desktop-policy = { path = "../../system/desktop-policy" }
 # Canonical desktop model: workspaces, strips, groups, tabs, permissions.

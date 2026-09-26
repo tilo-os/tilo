@@ -441,6 +441,13 @@ fn parse_hardware_device(o: &Value) -> Option<AudioHardwareDevice> {
     })
 }
 
+/// `node.name` prefix of every node the session's echo-cancellation client
+/// creates (os/usr/share/pipewire/tilo-echo-cancel.conf).
+pub const ECHO_CANCEL_NODE_PREFIX: &str = "tilo_echo_cancel_";
+
+/// The echo-cancelled microphone calls are routed to.
+pub const ECHO_CANCEL_SOURCE_NAME: &str = "tilo_echo_cancel_source";
+
 /// Parse one audio `Node` object and push it into `graph` as a device
 /// (sink/source) or a stream (playback/record), whichever `media.class` says
 /// it is. Ignored (no push) when it carries no usable id or an unrecognised
@@ -463,6 +470,12 @@ fn push_node(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    // The echo-cancelled microphone and its internal streams are a session
+    // transform over the real devices, not a device or an app: listing them
+    // would offer a microphone that records itself as the default.
+    if name.starts_with(ECHO_CANCEL_NODE_PREFIX) {
+        return;
+    }
     let (volume, muted) = node_volume_mute(o);
 
     match media_class {
@@ -849,6 +862,26 @@ mod tests {
             "serial is the routing handle, distinct from id"
         );
         assert_eq!(hp.id, 91);
+    }
+
+    #[test]
+    fn echo_cancelled_microphone_nodes_are_neither_devices_nor_apps() {
+        let g = parse_pw_dump(
+            r#"[
+            {"id":10,"type":"PipeWire:Interface:Node","info":{"props":{
+              "media.class":"Audio/Source","node.name":"alsa_input.usb-mic"}}},
+            {"id":11,"type":"PipeWire:Interface:Node","info":{"props":{
+              "media.class":"Audio/Source","node.name":"tilo_echo_cancel_source",
+              "node.description":"Echo-cancelled microphone"}}},
+            {"id":12,"type":"PipeWire:Interface:Node","info":{"props":{
+              "media.class":"Stream/Input/Audio","node.name":"tilo_echo_cancel_capture"}}},
+            {"id":13,"type":"PipeWire:Interface:Node","info":{"props":{
+              "media.class":"Stream/Input/Audio","node.name":"tilo_echo_cancel_reference"}}}
+        ]"#,
+        );
+        let sources: Vec<_> = g.sources.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(sources, ["alsa_input.usb-mic"]);
+        assert!(g.record_streams.is_empty(), "{:?}", g.record_streams);
     }
 
     #[test]

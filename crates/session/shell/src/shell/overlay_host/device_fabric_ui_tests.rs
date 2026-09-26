@@ -864,7 +864,8 @@ fn every_enrolled_device_remains_reachable_beyond_the_compact_first_page() {
         .collect();
     assert_eq!(
         device_fabric_pane_rows(&view, &RealtimeContinuityUiView::default()).len(),
-        view.local_media.len() + view.local_outputs.len() + view.devices.len(),
+        // One extra row offers speaker setup once two devices can play.
+        view.local_media.len() + view.local_outputs.len() + view.devices.len() + 1,
         "the pane model must not truncate media, outputs, or devices"
     );
     let tree = WorkspaceTree::bootstrap_demo();

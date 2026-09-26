@@ -106,6 +106,7 @@ pub struct SettingsApp {
     account_resources: Vec<accounts::Account>,
     account_commands: ui::LocalState<Option<crate::panes::accounts::AccountViewCommand>>,
     device_mesh_commands: ui::LocalState<Option<crate::actions::DeviceMeshOperation>>,
+    speaker_commands: ui::LocalState<Option<crate::actions::SpeakerOperation>>,
     account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
     local_operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     local_operation: Option<tilo_actions::InvocationId>,
@@ -168,6 +169,7 @@ impl SettingsApp {
             account_root,
             account_commands: ui::LocalState::new(None),
             device_mesh_commands: ui::LocalState::new(None),
+            speaker_commands: ui::LocalState::new(None),
             account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
             local_operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             local_operation: None,
@@ -436,6 +438,10 @@ impl SettingsApp {
     }
 
     /// Dispatch to the per-category pane body.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match constructs every category's pane"
+    )]
     fn build_pane_body(&self) -> Box<dyn Widget> {
         match self.selected {
             // A capture never waits for NetworkManager; it renders the
@@ -463,6 +469,11 @@ impl SettingsApp {
             Category::Sound => Box::new(
                 panes::audio::AudioPane::new()
                     .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
+            ),
+            Category::Speakers => Box::new(
+                panes::speakers::SpeakersPane::new()
+                    .with_command_state(&self.speaker_commands)
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::Displays if self.deterministic_hardware_for_shot => {
@@ -846,7 +857,8 @@ impl SettingsApp {
                         }
                         Ok(())
                     }
-                    crate::actions::AudioOperation::SetMono { .. } => Ok(()),
+                    crate::actions::AudioOperation::SetMono { .. }
+                    | crate::actions::AudioOperation::SetEchoCancellation { .. } => Ok(()),
                     crate::actions::AudioOperation::SetDeviceProfile {
                         device_id,
                         profile_index,
@@ -1237,6 +1249,20 @@ impl SettingsApp {
                 self.select(Category::DeviceMesh);
                 self.device_mesh_commands.set(Some(operation));
                 Ok(())
+            }
+            crate::actions::SPEAKER_OPERATION_TYPE => {
+                let operation: crate::actions::SpeakerOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if operation.command().valid() {
+                    self.select(Category::Speakers);
+                    self.speaker_commands.set(Some(operation));
+                    Ok(())
+                } else {
+                    Err(
+                        "that speaker request is incomplete: check the names, members and ids"
+                            .to_string(),
+                    )
+                }
             }
             _ => return Ok(None),
         };
@@ -2559,6 +2585,13 @@ mod tests {
                 })
                 .unwrap(),
             ),
+            (
+                crate::actions::SPEAKER_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::SpeakerOperation::Delete {
+                    group: "ab".repeat(16),
+                })
+                .unwrap(),
+            ),
         ];
         let mut covered = BTreeSet::new();
         for (type_id, payload) in cases {
@@ -2578,6 +2611,7 @@ mod tests {
             covered.insert(type_id);
             app.local_pane_command.set(None);
             app.device_mesh_commands.set(None);
+            app.speaker_commands.set(None);
             app.local_operation_status
                 .set(crate::actions::LocalOperationStatus::Idle);
             app.local_operation_token = None;

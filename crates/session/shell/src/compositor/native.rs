@@ -1901,6 +1901,9 @@ impl ControlState for FrameBuilderControlState<'_> {
         // The hosted file manager's drag, if in flight, and whether the compositor took it over to a client.
             "files_drag": file_explorer::external_drag::unclaimed().map(|d| d.paths),
             "files_drag_handed_off": file_explorer::external_drag::is_handed_off(),
+            // The compositor-owned sheet on screen (portal review, polkit,
+            // network secrets); masked values appear only as their length.
+            "portal_dialog": self.fb.host().portal_dialog_state_json(),
             "editing_workspace_name": chrome.editing_workspace_name,
             "pending_grants_count": chrome.pending_grants.len(),
         // Mirrored from the SessionManager each tick; lets a headless test observe lock/unlock transitions.
@@ -4499,6 +4502,7 @@ fn install_session_peer_sync(
     tracing::info!("peer-sync: actor spawned, default workspace joined");
     let net = Arc::new(handle);
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
+    crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
     install_device_fabric_bridge(
         frame_builder.host_mut(),
         Arc::clone(&net),
@@ -5976,6 +5980,7 @@ pub fn run() {
     // A media player's answer to a transport key, as the OSD to raise.
     let (transport_osd, transport_osds) =
         crate::session_runtime::mailbox::<crate::shell::osd::Osd>(Arc::clone(&session_wake));
+    let mut super_tap = crate::shell::input_policy::SuperTap::default();
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
@@ -6137,6 +6142,23 @@ pub fn run() {
                 crate::shell::portal_dialog::PortalDialogQueue::global(),
             ),
             |_| tracing::info!("polkit: authentication agent registered for this session"),
+        )
+    });
+
+    // NetworkManager secret agent: a Wi-Fi password that changed, 802.1X
+    // sign-in, VPN secrets and SIM PINs become a sheet only the compositor
+    // draws, instead of a connection that silently fails.
+    let network_secret_agent: Option<
+        crate::session_runtime::Registration<crate::network_secrets::service::AgentHandle>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "network secret agent",
+            crate::network_secrets::service::serve(
+                crate::shell::portal_dialog::PortalDialogQueue::global(),
+                crate::network_secrets::store::RoamingWifiSlot::global(),
+            ),
+            |_| tracing::info!("network: secret agent registered with NetworkManager"),
         )
     });
 
@@ -6575,6 +6597,14 @@ pub fn run() {
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());
+                    // A lone Super tap opens global search. Observed ahead of every
+                    // branch below, so a chord one of them handles still disarms it.
+                    if super_tap.observe(wev) && !session.is_locked() {
+                        frame_builder
+                            .host_mut()
+                            .open_global_search(&test_control_ctx.doc, &test_control_ctx.root_obj);
+                        session_changed = true;
+                    }
 
                     let locked = session.is_locked();
                     let route = priority_route(
@@ -7517,6 +7547,13 @@ pub fn run() {
                     toplevel.send_close();
                 }
                 state.close_sheets_over(surface_id);
+            }
+            let mut fullscreen_toggle = false;
+            frame_builder.with_chrome(|chrome| {
+                fullscreen_toggle = chrome.take_fullscreen_toggle_request();
+            });
+            if fullscreen_toggle {
+                toggle_focused_client_fullscreen(&mut state, &mut frame_builder);
             }
 
             // Protocol callbacks and the frame builder share one tree handle, so
@@ -9079,6 +9116,7 @@ pub fn run() {
     drop(notif_handle);
     drop(tray_handle);
     drop(polkit_agent);
+    drop(network_secret_agent);
 }
 
 /// Publish a successful machine-level change to every shell surface that
@@ -11577,6 +11615,37 @@ fn apply_shell_gesture(
 /// above the normal tiled scene.  The requested `wl_output` wins; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
+/// The full-screen chord: the focused Wayland client enters or leaves
+/// `xdg_toplevel` fullscreen exactly as if it had asked. A Tilo app has no
+/// protocol fullscreen, so its window group maximizes instead.
+fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder) {
+    use smithay::wayland::shell::xdg::XdgShellHandler;
+    let toplevel = state.client_input.keyboard_focus().and_then(|surface_id| {
+        state
+            .xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .find(|toplevel| {
+                crate::compositor::state::surface_id(toplevel.wl_surface()) == surface_id
+            })
+            .cloned()
+            .map(|toplevel| (surface_id, toplevel))
+    });
+    let Some((surface_id, toplevel)) = toplevel else {
+        let _ = frame.host_mut().toggle_focused_group_maximized();
+        return;
+    };
+    if state
+        .fullscreen_target
+        .as_ref()
+        .is_some_and(|target| target.surface_id == surface_id)
+    {
+        state.unfullscreen_request(toplevel);
+    } else {
+        state.fullscreen_request(toplevel, None);
+    }
+}
+
 fn reconcile_fullscreen_overlay(
     state: &mut State,
     frame: &mut FrameBuilder,
