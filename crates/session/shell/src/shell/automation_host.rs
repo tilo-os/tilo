@@ -649,14 +649,14 @@ pub fn document_share(run: RunId, record: &str, doc: &mut AutoCommit) -> Option<
     let mut last = None;
     let mut app = String::new();
     let mut labels: Vec<String> = Vec::new();
-    for version in qdoc::history::versions(doc) {
+    for version in tilo_resource::history::versions(doc) {
         let Some(context) = made_by_run(version.message.as_deref(), run) else {
             continue;
         };
         if first.is_none() {
-            first = Some((version.time_ms, version.change_hash.clone()));
+            first = Some((version.time_ms, version.hash.to_string()));
         }
-        last = Some(version.change_hash.clone());
+        last = Some(version.hash.to_string());
         if let Some(owner) = &context.app
             && app.is_empty()
         {
