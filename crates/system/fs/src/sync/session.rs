@@ -837,7 +837,7 @@ impl SessionProtocol {
         let Ok(decoded) = crate::content::Manifest::decode(&bytes) else {
             return Vec::new();
         };
-        let total: u64 = decoded.chunks.iter().map(|c| u64::from(c.len)).sum();
+        let total = decoded.total_len();
         if total > limit {
             return Vec::new();
         }
@@ -845,7 +845,7 @@ impl SessionProtocol {
             hash: *manifest.as_bytes(),
             bytes: bytes.to_vec(),
         }];
-        for chunk in &decoded.chunks {
+        for chunk in decoded.chunks() {
             let Some(data) = self.store.local(iroh_blobs::Hash::from(chunk.hash)).await else {
                 return Vec::new();
             };
