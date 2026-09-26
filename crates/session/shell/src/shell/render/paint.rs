@@ -1397,6 +1397,61 @@ impl VelloDrmBridge {
             .and_then(|epoch| epoch.checked_add(1));
     }
 
+    /// Compile the renderer's full and sparse pipelines outside any frame deadline, then start
+    /// over from an invalidated target and a new history epoch.
+    ///
+    /// llvmpipe builds compute variants at first dispatch. On a cold shader cache that takes
+    /// longer than the Linux per-phase fence allowance, so a fixture asserting on
+    /// deadline-bound frames warms the renderer first instead of timing the compiler.
+    #[cfg(test)]
+    pub(crate) fn warm_renderer_for_test(&mut self) {
+        use vello::kurbo::{Affine, Rect};
+        use vello::peniko::Fill;
+
+        let (width, height) = self.target.size;
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(0x80, 0x80, 0x80),
+            None,
+            &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+        );
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(60))
+            .expect("warm-up deadline fits Instant");
+        self.target
+            .render_until(
+                &scene,
+                SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: None,
+                },
+                deadline,
+            )
+            .expect("warm-up full render");
+        let region = [vello::FineDamageRect {
+            x: 0,
+            y: 0,
+            width: width.min(16),
+            height: height.min(16),
+        }];
+        self.target
+            .render_until(
+                &scene,
+                SceneDamage {
+                    revision: 2,
+                    previous_revision: Some(1),
+                    regions: Some(&region),
+                },
+                deadline,
+            )
+            .expect("warm-up sparse render");
+        self.invalidate_retained();
+        self.bump_xrgb_history_epoch();
+    }
+
     /// Refuse to submit another frame while a timed-out software-rendered submission drains.
     /// Returning before `render_normal` is called leaves the caller's dumb buffer untouched, so
     /// KMS continues showing the last complete frame instead of exposing a half-painted one.

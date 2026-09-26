@@ -53,6 +53,8 @@ pub mod osk_service;
 #[cfg(target_os = "linux")]
 pub mod output_globals;
 pub mod pacing;
+#[cfg(target_os = "linux")]
+pub mod pointer_lock;
 pub mod present;
 pub mod projection_capture;
 #[cfg(target_os = "linux")]

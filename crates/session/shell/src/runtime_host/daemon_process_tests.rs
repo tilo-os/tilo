@@ -249,11 +249,17 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
             .unwrap()
     };
     apps.0.push(start_app("dev.tilo.independent-first"));
-    let deadline = Instant::now().checked_add(Duration::from_secs(15)).unwrap();
+    // The app's own launcher bounds the daemon start and exits with the
+    // reason when it fails, so wait as long as that launcher is alive.
+    let deadline = Instant::now()
+        .checked_add(super::daemon::STARTUP.cap)
+        .unwrap();
     while UnixStream::connect(profile.path().join("native.sock")).is_err() {
         assert!(
-            Instant::now() < deadline,
-            "first SDK process did not start daemon"
+            apps.0[0].try_wait().unwrap().is_none() && Instant::now() < deadline,
+            "first SDK process did not start daemon: {}",
+            std::fs::read_to_string(profile.path().join("dev.tilo.independent-first.log"))
+                .unwrap_or_default()
         );
         std::thread::sleep(Duration::from_millis(25));
     }
@@ -379,7 +385,11 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
         .stdout(Stdio::from(log.try_clone().unwrap()))
         .stderr(Stdio::from(log));
     let mut family = Family(command.spawn().unwrap());
-    let deadline = Instant::now().checked_add(Duration::from_secs(15)).unwrap();
+    // The launcher bounds the daemon start itself and exits with the reason
+    // when it fails, which the loop reports at once.
+    let deadline = Instant::now()
+        .checked_add(super::daemon::STARTUP.cap)
+        .unwrap();
     loop {
         assert!(
             family.0.try_wait().unwrap().is_none(),
