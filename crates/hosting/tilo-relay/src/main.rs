@@ -72,6 +72,10 @@ enum Cmd {
     },
 }
 
+/// The running daemon's dial address, as the JSON `EndpointAddr` clients
+/// take, under the state root.
+const ENDPOINT_FILE: &str = "endpoint.json";
+
 fn install_logging() {
     let filter = EnvFilter::try_from_env("TILO_RELAY_LOG")
         .unwrap_or_else(|_| EnvFilter::new("tilo_relay=info,warn"));
@@ -146,6 +150,10 @@ fn cmd_status(path: &Path) -> anyhow::Result<()> {
     println!("state_root:    {}", cfg.state_root.display());
     println!("full replica:  {}", cfg.full_replica_status.display());
     println!("iroh_listen:   {}", cfg.iroh_listen);
+    match std::fs::read_to_string(cfg.state_root.join(ENDPOINT_FILE)) {
+        Ok(endpoint) => println!("endpoint:      {endpoint}"),
+        Err(_) => println!("endpoint:      (not running since this state root was created)"),
+    }
     println!("workspaces bound:");
     for ws in &cfg.workspaces {
         println!("  - {} (pin={})", ws.id, ws.pin);
@@ -183,8 +191,12 @@ fn cmd_run(path: &Path) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
     tilo_rt::daemon("tilo-relay").run(async move {
         let identity = load_identity(&cfg.identity_root, &cfg.state_root)?;
+        let endpoint_path = cfg.state_root.join(ENDPOINT_FILE);
         let relay = Relay::start(cfg, identity).await?;
         let addr = relay.node_addr();
+        // Where clients dial this host (`TILO_COLLAB_HOSTS` takes a JSON
+        // array of these), published for operators and `status`.
+        atomic_file::write(&endpoint_path, &serde_json::to_vec(&addr)?)?;
         tracing::info!(?addr, "relay online");
         // Best-effort sd_notify (silently no-ops outside systemd).
         let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
