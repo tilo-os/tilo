@@ -4026,12 +4026,13 @@ fn dev_build_cancels_when_a_newer_source_edit_arrives() {
     let leader_pid = std::fs::read_to_string(&leader).unwrap_or_default();
     let sleeper_pid = std::fs::read_to_string(&sleeper).unwrap_or_default();
     assert!(
-        process_is_gone(leader_pid.trim()),
+        !command_still_running(leader_pid.trim(), "sh"),
         "cargo process {leader_pid} still running"
     );
     assert!(
-        process_is_gone(sleeper_pid.trim()),
-        "rustc child {sleeper_pid} still running"
+        !command_still_running(sleeper_pid.trim(), "sleep"),
+        "rustc child {sleeper_pid} still running ({})",
+        command_file_name(sleeper_pid.trim()).unwrap_or_else(|| "gone".into())
     );
 }
 
@@ -4119,29 +4120,37 @@ done\n",
     assert_eq!(restored, b"document-route-caret");
 }
 
+/// True while `pid` is still the named command.
+///
+/// `kill -0` stays true for a zombie and for a pid the next test reused.
+/// An empty `/proc/<pid>/cmdline` is a zombie or a recycled slot, not the
+/// compiler this build started.
 #[cfg(unix)]
-fn process_is_gone(pid: &str) -> bool {
-    let Ok(pid) = pid.parse::<i32>() else {
-        return false;
-    };
+fn command_still_running(pid: &str, name: &str) -> bool {
     let Some(deadline) = Instant::now().checked_add(Duration::from_millis(500)) else {
-        return false;
+        return true;
     };
     loop {
-        let alive = std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
-        if !alive {
-            return true;
+        if command_file_name(pid).as_deref() != Some(name) {
+            return false;
         }
         if Instant::now() >= deadline {
-            return false;
+            return true;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[cfg(unix)]
+fn command_file_name(pid: &str) -> Option<String> {
+    let pid = pid.parse::<i32>().ok()?;
+    let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let first = bytes
+        .split(|byte| *byte == 0)
+        .next()
+        .filter(|arg| !arg.is_empty())?;
+    let name = first.rsplit(|byte| *byte == b'/').next().unwrap_or(first);
+    Some(String::from_utf8_lossy(name).into_owned())
 }
 
 #[cfg(unix)]
