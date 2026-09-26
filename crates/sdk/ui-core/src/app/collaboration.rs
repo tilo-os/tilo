@@ -215,11 +215,7 @@ impl App {
     /// incremental cursor and route separate so an annotation/document delta
     /// can never be merged into the index (or vice versa).
     fn broadcast_room_index_delta(&mut self) {
-        let connected = self.collaboration.room_manager.as_ref().map_or_else(
-            || self.persistence.records.is_some() && self.collaboration.manager.is_connected(),
-            CollaborationManager::is_connected,
-        );
-        if !connected {
+        if self.persistence.records.is_none() || !self.collaboration.manager.is_connected() {
             return;
         }
         let Some(room) = self.persistence.room_index.as_mut() else {
@@ -231,30 +227,18 @@ impl App {
         }
         // Adding only this device's own comment references is the one index
         // change a Commenter may make; it travels `Comment`-class.
-        let author = self
-            .collaboration
-            .room_manager
-            .as_ref()
-            .unwrap_or(&self.collaboration.manager)
-            .document_author();
+        let author = self.collaboration.manager.document_author();
         let request =
             if author.is_some_and(|author| room.pending_outbound_is_comment_references(&author)) {
                 crate::collaboration::CollabRequest::CommentReferences { delta }
             } else {
                 crate::collaboration::CollabRequest::document_incremental(delta)
             };
-        let result = if let Some(manager) = self.collaboration.room_manager.as_mut() {
-            if !manager.is_connected() {
-                return;
-            }
-            manager.try_send(request)
-        } else if self.persistence.records.is_some() && self.collaboration.manager.is_connected() {
-            // Before the first record checkout the primary manager is the
-            // room route. It becomes `collaboration.room_manager` at that checkout.
-            // Do not advance this cursor for ordinary (non-record) apps.
-            self.collaboration.manager.try_send(request)
-        } else {
-            return;
+        // Before the first record checkout the primary route is the room
+        // route; after it, the room route is joined beside the record's.
+        let result = match self.collaboration.room_route.clone() {
+            Some(route) => self.collaboration.manager.try_send_to_route(route, request),
+            None => self.collaboration.manager.try_send(request),
         };
         if result.is_ok() {
             room.advance_outbound(heads);
@@ -466,12 +450,41 @@ impl App {
         self.needs_sync = true;
     }
 
+    /// One turn of the work a live window does between input and paint —
+    /// records, collaboration, the model's update and sync, queued controls,
+    /// directed invocations and document publication — without a window.
+    /// For tests that drive apps over a real broker. Returns whether anything
+    /// changed.
+    #[doc(hidden)]
+    pub fn step_headless(&mut self) -> bool {
+        let _entry = self.enter_wake_scope();
+        let mut changed = self.record_tick();
+        changed |= self.pump_collab_presence();
+        if self
+            .root_widget
+            .update(&mut self.state.doc, &self.state.root)
+        {
+            self.needs_sync = true;
+        }
+        if self.needs_sync {
+            self.root_widget.sync(&mut self.state.doc, &self.state.root);
+            self.invalidate_widget_resource_cache();
+            self.needs_sync = false;
+            changed = true;
+        }
+        changed |= self.dispatch_control_invocations() > 0;
+        changed |= self.poll_directed_invocations();
+        self.broadcast_doc_delta();
+        self.publish_owned_documents();
+        self.publish_action_surface();
+        changed
+    }
+
     /// Lets integration tests drive the collab pump without a real winit
     /// event loop.
     #[doc(hidden)]
     pub fn poll_and_apply_collab_events(&mut self) {
         let _entry = self.enter_wake_scope();
-        self.pump_room_index_events();
         let events = self.collaboration.manager.poll();
         for event in events {
             self.apply_collab_event_for_test(event);
@@ -533,74 +546,32 @@ impl App {
         applied
     }
 
-    /// Drain only document traffic on the room-index route. Actions and
-    /// presence are record scoped, so an index update cannot alter the app's
-    /// resource/action namespace or presentation state.
-    fn pump_room_index_events(&mut self) -> bool {
-        let Some(manager) = self.collaboration.room_manager.as_mut() else {
+    /// Answer a late joiner's request for the room index's state on the
+    /// room route. Returns whether `route` was the room route.
+    pub(super) fn answer_room_index_snapshot(
+        &mut self,
+        route: &crate::collaboration::RouteSpec,
+    ) -> bool {
+        if self.collaboration.room_route.as_ref() != Some(route) {
             return false;
-        };
-        let events = manager.poll();
-        let mut any = false;
-        for event in events {
-            match event {
-                CollabEvent::Document {
-                    envelope,
-                    decrypted_payload,
-                    ..
-                } => {
-                    any |= self.apply_room_index_document_envelope(
-                        &envelope,
-                        decrypted_payload.as_deref(),
-                    );
-                }
-                CollabEvent::ScrollbackBatch {
-                    ops,
-                    decrypted_payloads,
-                    ..
-                } => {
-                    for (index, envelope) in ops.into_iter().enumerate() {
-                        any |= self.apply_room_index_document_envelope(
-                            &envelope,
-                            decrypted_payloads
-                                .get(index)
-                                .and_then(|payload| payload.as_deref()),
-                        );
-                    }
-                }
-                CollabEvent::Inspection { id, request } => {
-                    let reply = self.inspect(&request);
-                    if let Some(manager) = self.collaboration.room_manager.as_mut() {
-                        manager.send(crate::collaboration::CollabRequest::CompleteInspection {
-                            id,
-                            reply: Box::new(reply),
-                        });
-                    }
-                }
-                CollabEvent::DocumentSnapshotRequested { .. } => {
-                    if let (Some(manager), Some(room)) = (
-                        self.collaboration.room_manager.as_mut(),
-                        self.persistence.room_index.as_mut(),
-                    ) {
-                        let snapshot = room.document_mut().save();
-                        if let Err(error) = manager.try_send(
-                            crate::collaboration::CollabRequest::document_snapshot(snapshot),
-                        ) {
-                            tracing::warn!(%error, "collab: room-index snapshot not sent");
-                        }
-                    }
-                }
-                _ => {}
+        }
+        if let Some(room) = self.persistence.room_index.as_mut() {
+            let snapshot = room.document_mut().save();
+            if let Err(error) = self.collaboration.manager.try_send_to_route(
+                route.clone(),
+                crate::collaboration::CollabRequest::document_snapshot(snapshot),
+            ) {
+                tracing::warn!(%error, "collab: room-index snapshot not sent");
             }
         }
-        any
+        true
     }
 
     /// Shared by the per-frame tick and the headless test path. Returns
     /// `true` iff at least one event was processed.
     pub fn pump_collab_presence(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
-        let mut any = self.pump_room_index_events();
+        let mut any = false;
         // Replies to broker pull-directory callbacks must run before regular
         // inbound events. This is the sole place capability requests acquire
         // widget/document authority, and it always runs on the App owner
@@ -681,12 +652,7 @@ impl App {
     /// the owner to name in [`crate::record::RecordId::for_comment`]. A
     /// comment record owned by any other key is not this app's to write.
     pub fn comment_author(&self) -> Option<[u8; 32]> {
-        self.collaboration.manager.document_author().or_else(|| {
-            self.collaboration
-                .room_manager
-                .as_ref()
-                .and_then(crate::collaboration::CollaborationManager::document_author)
-        })
+        self.collaboration.manager.document_author()
     }
 
     /// Where the app's collaboration connection stands. Managers connect in
@@ -704,17 +670,8 @@ impl App {
     /// publishes the current state once instead of waiting for the next
     /// unrelated change. Returns whether anything changed.
     fn observe_collaboration_state(&mut self) -> bool {
-        let room_ready = self
-            .collaboration
-            .room_manager
-            .as_mut()
-            .and_then(CollaborationManager::take_state_change)
-            .is_some_and(|state| state.is_ready());
-        if room_ready {
-            self.broadcast_room_index_delta();
-        }
         let Some(state) = self.collaboration.manager.take_state_change() else {
-            return room_ready;
+            return false;
         };
         tracing::debug!(
             target: "tilo.state",
@@ -775,8 +732,12 @@ impl App {
                 Some(peer_id) => self.follow_with(peer_id, mode),
                 None => self.unfollow(),
             },
-            CollabEvent::DocumentSnapshotRequested { .. } => {
-                self.respond_primary_document_snapshot();
+            CollabEvent::DocumentSnapshotRequested { route } => {
+                if !self.answer_room_index_snapshot(&route)
+                    && !self.answer_owned_document_snapshot(&route)
+                {
+                    self.respond_primary_document_snapshot();
+                }
             }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                 self.presence_ctx
@@ -1192,8 +1153,12 @@ impl App {
                 Some(peer_id) => self.follow_with(peer_id, mode),
                 None => self.unfollow(),
             },
-            CollabEvent::DocumentSnapshotRequested { .. } => {
-                self.respond_primary_document_snapshot();
+            CollabEvent::DocumentSnapshotRequested { route } => {
+                if !self.answer_room_index_snapshot(&route)
+                    && !self.answer_owned_document_snapshot(&route)
+                {
+                    self.respond_primary_document_snapshot();
+                }
             }
             CollabEvent::Context { collaborators, .. } => {
                 self.apply_collab_context(collaborators);

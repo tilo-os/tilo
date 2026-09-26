@@ -1851,6 +1851,13 @@ impl App {
 }
 
 impl App {
+    /// The root widget, for a test to read what the app holds (its joined
+    /// records, a resource) without a window.
+    #[doc(hidden)]
+    pub fn root_widget_for_test(&self) -> &dyn Widget {
+        self.root_widget.as_ref()
+    }
+
     #[doc(hidden)]
     pub fn state_mut_for_test(&mut self) -> &mut crate::state::State {
         self.invalidate_widget_resource_cache();

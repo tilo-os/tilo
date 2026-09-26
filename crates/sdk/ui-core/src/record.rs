@@ -22,6 +22,15 @@
 //! [`JoinedRecords`]: the host joins, merges and publishes each one, and
 //! brings the ones it creates into the room. Not all app state is a record — a theme or account stays
 //! in the package-level document ([`crate::persist`]) instead.
+//!
+//! A checkout changes where the live document travels, not how: the app
+//! keeps its one broker connection, moves its primary route to the checked
+//! out record and stays joined to the route it left, which then carries the
+//! room index. One app process, one transport, every route multiplexed on
+//! it — the identity the broker admitted the app under is the one each
+//! record's changes are authored by. The identity stamp a checkout writes is
+//! the adopted document's baseline, not an edit, so remote changes merge
+//! from the first frame.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -482,6 +491,9 @@ pub struct RecordCheckout {
     /// the host adopts the stored document of the first former identity that
     /// no other successor has claimed (see [`RecordCheckout::formerly`]).
     pub formerly: Vec<RecordId>,
+    /// This peer only reads the record: checking it out leaves the room
+    /// index alone (see [`RecordCheckout::read_only`]).
+    pub read_only: bool,
 }
 
 impl RecordCheckout {
@@ -491,7 +503,20 @@ impl RecordCheckout {
             kind,
             references: Vec::new(),
             formerly: Vec::new(),
+            read_only: false,
         }
+    }
+
+    /// Declare that this peer only reads the record — a Commenter or Viewer
+    /// following a record another member brought into the room. Checking it
+    /// out does not bring it (or what it references) into the room index:
+    /// that write is not this peer's to make, and a refused change would
+    /// hold back every later change this peer makes to the index, its own
+    /// comment references included, since each depends on the ones before.
+    #[must_use]
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self
     }
 
     /// Declare that this record used to be `former`. Opening it where
@@ -1235,8 +1260,9 @@ struct Parked {
 
 /// The records one app process has open, and which is live. Owns
 /// per-record persistence and parking — not collaboration: routing a
-/// record's deltas is the toolkit's business (`tilo_ui::App` re-announces its
-/// channel on checkout), since a channel is a property of the connection.
+/// record's deltas is the toolkit's business (`tilo_ui::App` moves its
+/// primary route to the record on the same connection at checkout), since a
+/// route is a property of the connection.
 pub struct RecordSet {
     package_id: String,
     /// The room these records are being opened in — the cluster/workspace id.
@@ -1519,7 +1545,7 @@ impl RecordSet {
                 &RecordRef::new(target.id.clone(), relation.clone()),
             );
         }
-        if let Some(room) = room {
+        if let Some(room) = room.filter(|_| !want.read_only) {
             room::reference(room, &want.id, &want.kind);
             // Targets too: a room holding the annotations but not their
             // target would hand a member a reference they can't reach.
@@ -1744,7 +1770,7 @@ impl RecordSet {
                 },
             );
         }
-        if let Some(room) = room {
+        if let Some(room) = room.filter(|_| !want.read_only) {
             room::reference(room, &want.id, &want.kind);
             for (target, _) in &want.references {
                 room::reference(room, &target.id, &target.kind);

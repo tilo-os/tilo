@@ -803,6 +803,9 @@ pub struct CollaborationManager {
     /// Whether the action directory was registered on the current primary
     /// route. A new `Hello` resets it.
     action_directory_published: bool,
+    /// The participant handle the latest `Hello` announced, repeated when the
+    /// primary route moves to a record over this same connection.
+    hello_handle: Option<String>,
 }
 
 impl CollaborationManager {
@@ -825,6 +828,7 @@ impl CollaborationManager {
             reported_state: None,
             identity: None,
             action_directory_published: false,
+            hello_handle: None,
         };
         manager.reported_state = Some(manager.state());
         manager
@@ -875,6 +879,35 @@ impl CollaborationManager {
         Self::new_scoped(Some(record.as_str().to_string()))
     }
 
+    /// Move this connection's primary route to `record` in the same app and
+    /// room, keeping the route it leaves joined — one process, one
+    /// transport, its routes multiplexed. Returns the route left behind (the
+    /// room's unqualified route, which carries the room's record index), or
+    /// `None` when there is no connection or no primary route to move.
+    pub fn move_primary_to_record(
+        &mut self,
+        record: &crate::record::RecordId,
+    ) -> Option<RouteSpec> {
+        if matches!(self.backend, Backend::Disabled(_)) {
+            return None;
+        }
+        let previous = self.primary_route.requested.clone()?;
+        let hello = CollabRequest::Hello {
+            app_id: previous.app_id.clone(),
+            cluster_id: previous.cluster_id,
+            record: Some(record.as_str().to_string()),
+            handle: self.hello_handle.clone(),
+        };
+        if self.try_send(hello).is_err() {
+            return None;
+        }
+        if !self.awaiting_primary {
+            self.confirm_primary_route_in_background();
+        }
+        self.join_route(previous.clone());
+        Some(previous)
+    }
+
     /// Explicitly disconnected construction: no identity, service or worker discovery.
     pub(crate) fn disabled() -> Self {
         Self::offline(NO_SERVICE.to_owned())
@@ -888,6 +921,7 @@ impl CollaborationManager {
             awaiting_primary: false,
             identity: None,
             action_directory_published: false,
+            hello_handle: None,
         }
     }
 
@@ -1072,6 +1106,9 @@ impl CollaborationManager {
             cluster_id: *cluster_id,
             record: record.clone(),
         });
+        if let CollabRequest::Hello { handle, .. } = &req {
+            self.hello_handle.clone_from(handle);
+        }
         self.action_directory_published = false;
         self.submit(TransportCommand::Primary(req))?;
         if self.awaiting_primary {

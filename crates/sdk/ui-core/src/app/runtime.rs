@@ -287,9 +287,9 @@ impl ContinuationRuntime {
 /// Collaboration transports and local authorship identity.
 pub(super) struct CollaborationRuntime {
     pub(super) manager: CollaborationManager,
-    /// Keeps the room record index subscribed while `manager` follows a
-    /// checked-out record route.
-    pub(super) room_manager: Option<CollaborationManager>,
+    /// The room's unqualified route, which carries its record index, once
+    /// the primary route has moved to a record over the same connection.
+    pub(super) room_route: Option<crate::collaboration::RouteSpec>,
     pub(super) local_author: crate::permissions::UserId,
     /// A record checkout asks its new route for the current document once
     /// that route is acknowledged.
@@ -305,7 +305,7 @@ impl CollaborationRuntime {
     ) -> Self {
         Self {
             manager,
-            room_manager: None,
+            room_route: None,
             local_author,
             snapshot_on_ready: false,
             history: crate::collaboration::DocumentHistory::default(),

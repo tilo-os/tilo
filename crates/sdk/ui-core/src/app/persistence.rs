@@ -105,19 +105,16 @@ impl App {
                     history.invalidate_owner();
                     self.layout.structure_dirty = true;
                 }
-                self.state.rebase_outbound();
+                self.state.rebase_checkout();
                 // Preserve the launcher's unqualified route for the room
                 // index before moving the editable document to its record
                 // route. The two Automerge graphs never share a channel or
                 // an apply target.
-                if self.collaboration.room_manager.is_none() {
-                    let room = std::mem::replace(
-                        &mut self.collaboration.manager,
-                        CollaborationManager::for_record(&id),
-                    );
-                    self.collaboration.room_manager = Some(room);
-                } else {
-                    self.collaboration.manager = CollaborationManager::for_record(&id);
+                // One connection: the primary route moves to the record and the
+                // route it leaves stays joined for the room index.
+                let left = self.collaboration.manager.move_primary_to_record(&id);
+                if self.collaboration.room_route.is_none() {
+                    self.collaboration.room_route = left;
                 }
                 tracing::debug!(
                     target: "tilo.state",

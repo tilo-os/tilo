@@ -1231,6 +1231,16 @@ impl State {
         self.outbound.rebase(&mut self.doc);
     }
 
+    /// Take the document as it stands as the baseline, both for what goes
+    /// out and for what undo and remote merges compare against. A record
+    /// checkout stamps the adopted document with its identity; that stamp is
+    /// where this document starts, not an edit, and left out of the baseline
+    /// it would hold every remote change back as if an edit were in flight.
+    pub fn rebase_checkout(&mut self) {
+        self.outbound.rebase(&mut self.doc);
+        self.undo.rebase(&mut self.doc);
+    }
+
     /// Serialize the changes made since the last `save/save_incremental` call.
     /// The returned bytes can be fed into another peer's `load_incremental`
     /// to replay just the delta — the basic building block of efficient

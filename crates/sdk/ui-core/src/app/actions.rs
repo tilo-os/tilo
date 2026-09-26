@@ -133,6 +133,8 @@ impl App {
         let trace = self.trace_resource_stage(Stage::SurfaceValidation);
         let mut operation_handlers = self.root_widget.resource_operation_handlers();
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
+        // The host forwards workspace requests to the shell itself.
+        operation_handlers.insert(tilo_actions::remote::WORKSPACE_REQUEST_TYPE.to_string());
         let violations = tilo_actions::validate_surface(
             &complete,
             &self.actions.action_registry,
@@ -476,7 +478,16 @@ impl App {
         {
             return witness.route.app_id.clone();
         }
-        crate::collaboration::local_app_id()
+        // The app id the connection was admitted under is the one the broker
+        // accepts a publication for; the process environment names the same
+        // app when the launcher started it, and nothing when a host connected
+        // the app itself.
+        self.collaboration
+            .manager
+            .primary_route()
+            .map_or_else(crate::collaboration::local_app_id, |witness| {
+                witness.route.app_id.clone()
+            })
     }
     fn require_bound_broker_route(
         &self,
@@ -624,6 +635,8 @@ impl App {
         }
         let mut operation_handlers = self.root_widget.resource_operation_handlers();
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
+        // The host forwards workspace requests to the shell itself.
+        operation_handlers.insert(tilo_actions::remote::WORKSPACE_REQUEST_TYPE.to_string());
         // Bound components have already been validated against their own registries
         // by publication_resources. Only legacy resources use the host registry.
         let unbound_resources = resources
@@ -662,7 +675,7 @@ impl App {
             self.collaboration
                 .manager
                 .send(CollabRequest::PublishActions {
-                    app_id: crate::collaboration::local_app_id(),
+                    app_id: self.publication_app_id(),
                     actions: Vec::new(),
                 });
             self.actions.last_published_actions = Some(Vec::new());
@@ -1758,9 +1771,7 @@ impl App {
         }
         let Some(room) = self
             .collaboration
-            .room_manager
-            .as_ref()
-            .unwrap_or(&self.collaboration.manager)
+            .manager
             .primary_route()
             .map(|witness| witness.route.cluster_id.to_string())
         else {
@@ -2315,12 +2326,12 @@ impl App {
                 .local_invocations
                 .insert(operation_invocation, (address.clone(), kind));
         }
-        if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
-            // Queued widget work advances from `sync`; admission must
-            // therefore schedule a model pass even if no document
-            // mutation or input event accompanied the invocation.
-            self.needs_sync = true;
-        }
+        // Queued widget work advances from `sync`, whether the operation
+        // reports it still running or already done (a view change, or work
+        // the widget performs with the document on its next pass); admission
+        // therefore schedules a model pass even if no document mutation or
+        // input event accompanied the invocation.
+        self.needs_sync = true;
         if let crate::widget::ResourceOperationStart::Completed(output) = &started
             && kind == tilo_actions::OperationKind::Effect
             && invocation.is_none()

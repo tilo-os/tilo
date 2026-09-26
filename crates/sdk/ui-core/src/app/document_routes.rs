@@ -138,6 +138,22 @@ impl App {
         #[cfg(not(test))]
         self.collaboration.manager.try_send_to_route(route, request)
     }
+    /// Answer a late joiner's request for a document this app owns on its
+    /// own route — a record it created and others follow — with the whole
+    /// document on the next publication. Returns whether `route` was one.
+    pub(super) fn answer_owned_document_snapshot(&mut self, route: &RouteSpec) -> bool {
+        let Some(entry) = self
+            .document_routes
+            .owners
+            .iter_mut()
+            .find(|entry| &entry.route == route)
+        else {
+            return false;
+        };
+        entry.needs_snapshot = true;
+        self.publish_owned_documents();
+        true
+    }
     pub(super) fn publish_owned_documents(&mut self) {
         self.refresh_document_routes();
         if self.document_routes.witness.is_none() {
@@ -333,11 +349,26 @@ impl App {
         if self.apply_followed_document_envelope(envelope, decrypted_payload) {
             return;
         }
-        // Before the first record checkout the launcher's unqualified route
-        // carries room-index discovery, never the editable record document.
-        if self.persistence.records.is_some() && self.collaboration.room_manager.is_none() {
-            let _ = self.apply_room_index_document_envelope(envelope, decrypted_payload);
-            return;
+        // The launcher's unqualified route carries room-index discovery, never
+        // the editable record document: it is the primary route until the
+        // first record checkout, and joined beside the record's after it.
+        if self.persistence.records.is_some() {
+            let room_route = match &self.collaboration.room_route {
+                Some(route) => Some(route.clone()),
+                None => self
+                    .collaboration
+                    .manager
+                    .primary_route()
+                    .map(|witness| witness.route.clone())
+                    .filter(|route| route.record.is_none()),
+            };
+            let on_room_route = room_route
+                .as_ref()
+                .is_some_and(|route| matches_route(route, envelope));
+            if on_room_route || self.collaboration.room_route.is_none() {
+                let _ = self.apply_room_index_document_envelope(envelope, decrypted_payload);
+                return;
+            }
         }
         self.refresh_document_routes();
         let Some(witness) = self.document_routes.witness.as_ref() else {
