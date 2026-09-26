@@ -24,10 +24,10 @@ use crate::error::CliError;
 use crate::hypervisor::{CommandLine, Runner};
 
 pub const FORGE: &str = "code.podesta.ai";
-pub const PACKAGES: &str = "https://code.podesta.ai/api/packages/qos/generic/tilo-vm-disk";
+pub const PACKAGES: &str = "https://code.podesta.ai/api/packages/tilo/generic/tilo-vm-disk";
 /// Lists the package's published versions.
 pub const VERSIONS: &str =
-    "https://code.podesta.ai/api/v1/packages/qos?type=generic&q=tilo-vm-disk&limit=50";
+    "https://code.podesta.ai/api/v1/packages/tilo?type=generic&q=tilo-vm-disk&limit=50";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,7 +62,7 @@ pub fn manifest_url(tag: &str, arch: &str) -> String {
 
 /// Lists the files of one published tag.
 pub fn files_url(tag: &str) -> String {
-    format!("https://code.podesta.ai/api/v1/packages/qos/generic/tilo-vm-disk/{tag}/files")
+    format!("https://code.podesta.ai/api/v1/packages/tilo/generic/tilo-vm-disk/{tag}/files")
 }
 
 /// What a tag offers, as `<arch> <format>`, from its file listing: the disks
@@ -462,7 +462,7 @@ mod tests {
       "imageDigest": "sha256:aa",
       "disks": [
         {"arch": "x86_64", "format": "qcow2", "file": "tilo-vm-main-1a2b3c4-x86_64.qcow2",
-         "url": "https://code.podesta.ai/api/packages/qos/generic/tilo-vm-disk/main-1a2b3c4/tilo-vm-main-1a2b3c4-x86_64.qcow2",
+         "url": "https://code.podesta.ai/api/packages/tilo/generic/tilo-vm-disk/main-1a2b3c4/tilo-vm-main-1a2b3c4-x86_64.qcow2",
          "sha256": "ab", "size": 3, "virtualSize": 10}
       ]
     }"#;
@@ -477,11 +477,11 @@ mod tests {
         assert_eq!(manifest.offered(), ["x86_64 qcow2"]);
         assert_eq!(
             manifest_url("main-1a2b3c4", "x86_64"),
-            "https://code.podesta.ai/api/packages/qos/generic/tilo-vm-disk/main-1a2b3c4/tilo-vm-disk-x86_64.json"
+            "https://code.podesta.ai/api/packages/tilo/generic/tilo-vm-disk/main-1a2b3c4/tilo-vm-disk-x86_64.json"
         );
         assert_eq!(
             files_url("main-1a2b3c4"),
-            "https://code.podesta.ai/api/v1/packages/qos/generic/tilo-vm-disk/main-1a2b3c4/files"
+            "https://code.podesta.ai/api/v1/packages/tilo/generic/tilo-vm-disk/main-1a2b3c4/files"
         );
     }
 
