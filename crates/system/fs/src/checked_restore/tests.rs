@@ -1937,6 +1937,7 @@ async fn checked_restore_startup_completion_rejects_incomplete_or_mismatching_ad
             fixture.directory.path().join("records"),
         )
         .unwrap();
+        repository.clear_admission_fences();
         if mismatching_batch {
             assert!(
                 repository
@@ -2050,9 +2051,7 @@ async fn checked_restore_startup_completion_io_failure_remains_retryable_and_fen
         fixture.journal.clone(),
         fixture.directory.path().join("namespace.am"),
     );
-    let unavailable = fixture.directory.path().join("records-during-io-fault");
-    std::fs::rename(&records_path, &unavailable).unwrap();
-    std::fs::write(&records_path, b"unavailable record directory").unwrap();
+    repository.fail_writes(true);
     assert!(matches!(
         materializer.reconcile_repository(&repository),
         Err(crate::record_materializer::RecordMaterializerError::TransactionRecoveryUnavailable)
@@ -2082,8 +2081,7 @@ async fn checked_restore_startup_completion_io_failure_remains_retryable_and_fen
     assert!(
         matches!(repository.apply_batch(key,&admitted.participant_batches[0].envelopes,&publisher.local_authorizer(key.record_id)),Err(crate::record_repository::RecordRepositoryError::RestoreRecoveryRequired(id)) if id==request.intent_id)
     );
-    std::fs::remove_file(&records_path).unwrap();
-    std::fs::rename(&unavailable, &records_path).unwrap();
+    repository.fail_writes(false);
     materializer.reconcile_repository(&repository).unwrap();
     assert_eq!(
         fixture

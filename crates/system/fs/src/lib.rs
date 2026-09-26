@@ -64,6 +64,10 @@ pub mod recipient_mount;
 #[cfg(feature = "filesystem")]
 pub mod record_access;
 #[cfg(feature = "filesystem")]
+pub mod record_changeset;
+#[cfg(feature = "filesystem")]
+mod record_log;
+#[cfg(feature = "filesystem")]
 pub mod record_materializer;
 #[cfg(feature = "filesystem")]
 pub mod record_mesh;
