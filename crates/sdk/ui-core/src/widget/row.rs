@@ -5,6 +5,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
+use std::any::Any;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -43,6 +44,9 @@ pub struct Row {
     /// Retained Taffy identities for `children`. Rebuilt only with the layout
     /// tree; hot event/layout traversal must not allocate `taffy.children()`.
     child_nodes: Vec<NodeId>,
+    /// Stable graph / test identity when this row was built from a serialized
+    /// UI node.
+    id: Option<String>,
     rect: vello::kurbo::Rect,
     /// Overflow extent used for culling independently of an exact allocation.
     paint_rect: vello::kurbo::Rect,
@@ -88,6 +92,7 @@ impl Row {
         Self {
             children: Vec::new(),
             child_nodes: Vec::new(),
+            id: None,
             rect: vello::kurbo::Rect::ZERO,
             paint_rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
@@ -111,6 +116,35 @@ impl Row {
     pub fn push(mut self, child: Box<dyn Widget>) -> Self {
         self.children.push(child);
         self
+    }
+
+    /// Address this row by a stable id in inspection and graph reconcile.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Take ownership of the child list for identity-preserving reconcile.
+    pub fn take_children(&mut self) -> Vec<Box<dyn Widget>> {
+        self.child_nodes.clear();
+        self.cache_present = false;
+        std::mem::take(&mut self.children)
+    }
+
+    /// Replace the child list after a graph reconcile pass.
+    pub fn set_children(&mut self, children: Vec<Box<dyn Widget>>) {
+        self.children = children;
+        self.child_nodes.clear();
+        self.cache_present = false;
+    }
+
+    /// Apply layout flags from a serialized row node without rebuilding.
+    pub fn apply_graph_props(&mut self, id: &str, no_wrap: bool, fill_remaining_height: bool) {
+        self.id = Some(id.to_owned());
+        self.no_wrap = no_wrap;
+        self.fill_height = fill_remaining_height;
+        self.cache_present = false;
     }
 
     #[must_use]
@@ -449,6 +483,14 @@ impl Widget for Row {
         "Row"
     }
 
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
+    }
+
     fn is_focused(&self) -> bool {
         false
     }
@@ -613,102 +655,108 @@ mod tests {
     }
 
     #[test]
-    fn default_row_gap_is_the_theme_gap_standard_and_children_pack_at_start() {
-        let theme = Theme::dark();
-        let rects = lay_out(&mut two_texts(), 600.0);
-        assert!(
-            (rects[1].x0 - rects[0].x1 - f64::from(theme.gap_standard)).abs() < 0.5,
-            "default gap is gap_standard: {rects:?}"
-        );
-        assert!(
-            (rects[0].x0).abs() < 0.5,
-            "children start at the leading edge: {rects:?}"
-        );
+    fn row_gap_justify_and_alignment_place_children() {
+        // Case `default_row_gap_is_the_theme_gap_standard_and_children_pack_at_start`.
+        {
+            let theme = Theme::dark();
+            let rects = lay_out(&mut two_texts(), 600.0);
+            assert!(
+                (rects[1].x0 - rects[0].x1 - f64::from(theme.gap_standard)).abs() < 0.5,
+                "default gap is gap_standard: {rects:?}"
+            );
+            assert!(
+                (rects[0].x0).abs() < 0.5,
+                "children start at the leading edge: {rects:?}"
+            );
+        }
+
+        // Case `with_gap_overrides_the_gap_between_children`.
+        {
+            let rects = lay_out(&mut two_texts().with_gap(4.0), 600.0);
+            assert!((rects[1].x0 - rects[0].x1 - 4.0).abs() < 0.5, "{rects:?}");
+            let tight = lay_out(&mut two_texts().with_gap(0.0), 600.0);
+            assert!((tight[1].x0 - tight[0].x1).abs() < 0.5, "{tight:?}");
+        }
+
+        // Case `with_justify_space_between_pushes_the_last_child_to_the_far_edge`.
+        {
+            let rects = lay_out(
+                &mut two_texts().with_justify(taffy::JustifyContent::SpaceBetween),
+                600.0,
+            );
+            assert!((rects[0].x0).abs() < 0.5, "{rects:?}");
+            assert!((rects[1].x1 - 600.0).abs() < 0.5, "{rects:?}");
+            let end = lay_out(
+                &mut two_texts().with_justify(taffy::JustifyContent::End),
+                600.0,
+            );
+            assert!((end[1].x1 - 600.0).abs() < 0.5, "{end:?}");
+            assert!(
+                end[0].x0 > 300.0,
+                "both children sit at the trailing end: {end:?}"
+            );
+        }
+
+        // Case `with_align_items_start_keeps_a_short_child_at_the_top_of_a_tall_row`.
+        {
+            let tall = Box::new(
+                crate::widget::Container::new()
+                    .with_no_padding()
+                    .with_size(40.0, 80.0),
+            );
+            let centred = lay_out(
+                &mut Row::new()
+                    .no_wrap()
+                    .push(Box::new(Text::new("x")))
+                    .push(tall),
+                600.0,
+            );
+            let text_mid = centred[0].y0.midpoint(centred[0].y1);
+            let tall_mid = centred[1].y0.midpoint(centred[1].y1);
+            assert!(
+                (text_mid - tall_mid).abs() < 1.0,
+                "default centres the short child: {centred:?}"
+            );
+
+            let tall = Box::new(
+                crate::widget::Container::new()
+                    .with_no_padding()
+                    .with_size(40.0, 80.0),
+            );
+            let start = lay_out(
+                &mut Row::new()
+                    .no_wrap()
+                    .with_align_items(taffy::AlignItems::Start)
+                    .push(Box::new(Text::new("x")))
+                    .push(tall),
+                600.0,
+            );
+            assert!(
+                (start[0].y0 - start[1].y0).abs() < 0.5,
+                "Start aligns the short child's top with the tall child's: {start:?}"
+            );
+        }
     }
 
     #[test]
-    fn with_gap_overrides_the_gap_between_children() {
-        let rects = lay_out(&mut two_texts().with_gap(4.0), 600.0);
-        assert!((rects[1].x0 - rects[0].x1 - 4.0).abs() < 0.5, "{rects:?}");
-        let tight = lay_out(&mut two_texts().with_gap(0.0), 600.0);
-        assert!((tight[1].x0 - tight[0].x1).abs() < 0.5, "{tight:?}");
-    }
+    fn damage_merge_coalesces_near_children_but_keeps_wrap_endpoints() {
+        // Case `damage_merge_keeps_progress_wrap_endpoints_separate`.
+        {
+            // These are the clipped old/new segments at opposite ends of a
+            // 200px indeterminate progress bar. Their union would repaint the
+            // entire track even though each changed strip is only 60px wide.
+            let old_segment = vello::kurbo::Rect::new(140.0, 0.0, 200.0, 8.0);
+            let new_segment = vello::kurbo::Rect::new(0.0, 0.0, 60.0, 8.0);
 
-    #[test]
-    fn with_justify_space_between_pushes_the_last_child_to_the_far_edge() {
-        let rects = lay_out(
-            &mut two_texts().with_justify(taffy::JustifyContent::SpaceBetween),
-            600.0,
-        );
-        assert!((rects[0].x0).abs() < 0.5, "{rects:?}");
-        assert!((rects[1].x1 - 600.0).abs() < 0.5, "{rects:?}");
-        let end = lay_out(
-            &mut two_texts().with_justify(taffy::JustifyContent::End),
-            600.0,
-        );
-        assert!((end[1].x1 - 600.0).abs() < 0.5, "{end:?}");
-        assert!(
-            end[0].x0 > 300.0,
-            "both children sit at the trailing end: {end:?}"
-        );
-    }
+            assert!(!can_merge_damage(old_segment, new_segment));
+        }
 
-    #[test]
-    fn with_align_items_start_keeps_a_short_child_at_the_top_of_a_tall_row() {
-        let tall = Box::new(
-            crate::widget::Container::new()
-                .with_no_padding()
-                .with_size(40.0, 80.0),
-        );
-        let centred = lay_out(
-            &mut Row::new()
-                .no_wrap()
-                .push(Box::new(Text::new("x")))
-                .push(tall),
-            600.0,
-        );
-        let text_mid = centred[0].y0.midpoint(centred[0].y1);
-        let tall_mid = centred[1].y0.midpoint(centred[1].y1);
-        assert!(
-            (text_mid - tall_mid).abs() < 1.0,
-            "default centres the short child: {centred:?}"
-        );
+        // Case `damage_merge_coalesces_nearby_row_children`.
+        {
+            let left = vello::kurbo::Rect::new(0.0, 0.0, 40.0, 20.0);
+            let right = vello::kurbo::Rect::new(44.0, 0.0, 84.0, 20.0);
 
-        let tall = Box::new(
-            crate::widget::Container::new()
-                .with_no_padding()
-                .with_size(40.0, 80.0),
-        );
-        let start = lay_out(
-            &mut Row::new()
-                .no_wrap()
-                .with_align_items(taffy::AlignItems::Start)
-                .push(Box::new(Text::new("x")))
-                .push(tall),
-            600.0,
-        );
-        assert!(
-            (start[0].y0 - start[1].y0).abs() < 0.5,
-            "Start aligns the short child's top with the tall child's: {start:?}"
-        );
-    }
-
-    #[test]
-    fn damage_merge_keeps_progress_wrap_endpoints_separate() {
-        // These are the clipped old/new segments at opposite ends of a
-        // 200px indeterminate progress bar. Their union would repaint the
-        // entire track even though each changed strip is only 60px wide.
-        let old_segment = vello::kurbo::Rect::new(140.0, 0.0, 200.0, 8.0);
-        let new_segment = vello::kurbo::Rect::new(0.0, 0.0, 60.0, 8.0);
-
-        assert!(!can_merge_damage(old_segment, new_segment));
-    }
-
-    #[test]
-    fn damage_merge_coalesces_nearby_row_children() {
-        let left = vello::kurbo::Rect::new(0.0, 0.0, 40.0, 20.0);
-        let right = vello::kurbo::Rect::new(44.0, 0.0, 84.0, 20.0);
-
-        assert!(can_merge_damage(left, right));
+            assert!(can_merge_damage(left, right));
+        }
     }
 }

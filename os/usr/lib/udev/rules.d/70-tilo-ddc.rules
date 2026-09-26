@@ -1,0 +1,14 @@
+# External-monitor brightness over DDC/CI, for the seat's active user.
+#
+# A monitor answers DDC/CI on the I²C bus its connector carries; Linux
+# exposes that bus as /dev/i2c-N through i2c-dev (loaded by
+# /etc/modules-load.d/tilo-ddc.conf). The compositor and Settings talk
+# to it directly (crates/system/os-actions/src/ddc.rs) instead of running
+# ddcutil for every slider step.
+#
+# Only adapters that belong to a display controller (PCI class 0x03xxxx:
+# connector DDC lines and DP AUX channels) are handed out. SMBus and other
+# motherboard buses, where a stray write can reach a SPD EEPROM or a sensor
+# chip, stay root-only. `uaccess` grants the active local session rather
+# than a group, and must be tagged before 73-seat-late.rules applies it.
+SUBSYSTEM=="i2c-dev", KERNEL=="i2c-[0-9]*", ATTRS{class}=="0x03[0-9]*", TAG+="uaccess"

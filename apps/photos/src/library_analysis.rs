@@ -209,89 +209,92 @@ mod tests {
     use super::*;
 
     #[test]
-    fn queue_keeps_only_ids_and_one_in_flight_item() {
-        let invocation = InvocationId::new();
-        let mut state = LibraryAnalysisState::default();
-        state.begin(
-            invocation,
-            ["one".to_owned(), "two".to_owned()],
-            3,
-            "Local vision".to_owned(),
-            "r1".to_owned(),
-        );
-        assert_eq!(state.remaining(), 2);
-        assert_eq!(
-            state.take_next(|id| Some(format!("{id}.jpg"))),
-            Some("one".to_owned())
-        );
-        assert!(state.take_next(|_| None).is_none());
-        assert_eq!(state.current_name.as_deref(), Some("one.jpg"));
-        assert!(state.record_success("one"));
-        assert!((state.progress() - 0.5).abs() < f64::EPSILON);
-        assert_eq!(state.unavailable, 3);
-    }
-
-    #[test]
-    fn pause_resume_and_retry_preserve_honest_counts() {
-        let mut state = LibraryAnalysisState::default();
-        state.begin(
-            InvocationId::new(),
-            ["one".to_owned(), "two".to_owned()],
-            0,
-            "Model".to_owned(),
-            "r1".to_owned(),
-        );
-        assert!(state.pause());
-        assert!(state.take_next(|_| None).is_none());
-        assert!(state.resume(InvocationId::new()));
-        assert_eq!(
-            state.take_next(|_| Some("One".into())).as_deref(),
-            Some("one")
-        );
-        assert!(state.record_failure(LibraryAnalysisFailure {
-            photo_id: "one".into(),
-            name: "One".into(),
-            message: "decode failed".into(),
-        }));
-        assert_eq!(
-            state.take_next(|_| Some("Two".into())).as_deref(),
-            Some("two")
-        );
-        assert!(state.record_success("two"));
-        assert_eq!(state.phase, LibraryAnalysisPhase::Complete);
-        assert_eq!((state.succeeded, state.failed), (1, 1));
-
-        assert!(state.begin_retry(InvocationId::new(), "Model".into(), "r1".into()));
-        assert_eq!(state.total, 1);
-        assert_eq!(state.remaining(), 1);
-        assert_eq!(state.failed, 0);
-    }
-
-    #[test]
-    fn failure_details_are_bounded_without_losing_total() {
-        let total = FAILURE_DETAIL_LIMIT + 5;
-        let mut state = LibraryAnalysisState::default();
-        state.begin(
-            InvocationId::new(),
-            (0..total).map(|n| n.to_string()),
-            0,
-            "Model".into(),
-            "r1".into(),
-        );
-        for n in 0..total {
-            let id = n.to_string();
+    fn analysis_queue_is_bounded_and_counts_honestly() {
+        eprintln!("phase queue_keeps_only_ids_and_one_in_flight_item");
+        {
+            let invocation = InvocationId::new();
+            let mut state = LibraryAnalysisState::default();
+            state.begin(
+                invocation,
+                ["one".to_owned(), "two".to_owned()],
+                3,
+                "Local vision".to_owned(),
+                "r1".to_owned(),
+            );
+            assert_eq!(state.remaining(), 2);
             assert_eq!(
-                state.take_next(|_| Some(id.clone())).as_deref(),
-                Some(id.as_str())
+                state.take_next(|id| Some(format!("{id}.jpg"))),
+                Some("one".to_owned())
+            );
+            assert!(state.take_next(|_| None).is_none());
+            assert_eq!(state.current_name.as_deref(), Some("one.jpg"));
+            assert!(state.record_success("one"));
+            assert!((state.progress() - 0.5).abs() < f64::EPSILON);
+            assert_eq!(state.unavailable, 3);
+        }
+
+        eprintln!("phase pause_resume_and_retry_preserve_honest_counts");
+        {
+            let mut state = LibraryAnalysisState::default();
+            state.begin(
+                InvocationId::new(),
+                ["one".to_owned(), "two".to_owned()],
+                0,
+                "Model".to_owned(),
+                "r1".to_owned(),
+            );
+            assert!(state.pause());
+            assert!(state.take_next(|_| None).is_none());
+            assert!(state.resume(InvocationId::new()));
+            assert_eq!(
+                state.take_next(|_| Some("One".into())).as_deref(),
+                Some("one")
             );
             assert!(state.record_failure(LibraryAnalysisFailure {
-                photo_id: id.clone(),
-                name: id,
-                message: "failed".into(),
+                photo_id: "one".into(),
+                name: "One".into(),
+                message: "decode failed".into(),
             }));
+            assert_eq!(
+                state.take_next(|_| Some("Two".into())).as_deref(),
+                Some("two")
+            );
+            assert!(state.record_success("two"));
+            assert_eq!(state.phase, LibraryAnalysisPhase::Complete);
+            assert_eq!((state.succeeded, state.failed), (1, 1));
+
+            assert!(state.begin_retry(InvocationId::new(), "Model".into(), "r1".into()));
+            assert_eq!(state.total, 1);
+            assert_eq!(state.remaining(), 1);
+            assert_eq!(state.failed, 0);
         }
-        assert_eq!(state.failed, total);
-        assert_eq!(state.failures().count(), FAILURE_DETAIL_LIMIT);
-        assert_eq!(state.phase, LibraryAnalysisPhase::Complete);
+
+        eprintln!("phase failure_details_are_bounded_without_losing_total");
+        {
+            let total = FAILURE_DETAIL_LIMIT + 5;
+            let mut state = LibraryAnalysisState::default();
+            state.begin(
+                InvocationId::new(),
+                (0..total).map(|n| n.to_string()),
+                0,
+                "Model".into(),
+                "r1".into(),
+            );
+            for n in 0..total {
+                let id = n.to_string();
+                assert_eq!(
+                    state.take_next(|_| Some(id.clone())).as_deref(),
+                    Some(id.as_str())
+                );
+                assert!(state.record_failure(LibraryAnalysisFailure {
+                    photo_id: id.clone(),
+                    name: id,
+                    message: "failed".into(),
+                }));
+            }
+            assert_eq!(state.failed, total);
+            assert_eq!(state.failures().count(), FAILURE_DETAIL_LIMIT);
+            assert_eq!(state.phase, LibraryAnalysisPhase::Complete);
+        }
     }
 }

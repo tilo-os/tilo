@@ -2754,8 +2754,18 @@ fn ascii_glyph(b: u8) -> String {
 mod tests {
     use super::*;
 
+    /// Resource operations drive the local buffer: a direct open is accepted
+    /// then succeeds, and canonical edit/undo/redo stay local while updating
+    /// the published availability.
     #[test]
-    fn direct_open_is_accepted_then_succeeds() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the open and edit/undo/redo phases share one resource-operation surface"
+    )]
+    fn resource_operations_open_edit_undo_and_redo_the_local_buffer() {
+        use automerge::ReadDoc as _;
+
+        // Direct open is accepted, then succeeds.
         let dir = std::env::temp_dir().join(format!(
             "hex-direct-{}-{}",
             std::process::id(),
@@ -2793,12 +2803,8 @@ mod tests {
         ));
         assert_eq!(view.model.bytes(), &[1, 2, 3]);
         std::fs::remove_dir_all(dir).ok();
-    }
 
-    #[test]
-    fn canonical_edit_undo_and_redo_stay_local_and_update_availability() {
-        use automerge::ReadDoc as _;
-
+        // Canonical edit, undo and redo stay local and update availability.
         let mut view = HexView::new(vec![0x10, 0x20], "bytes.bin");
         let doc = AutoCommit::new();
         let undo = serde_json::to_vec(&crate::actions::HexOperation::Undo).unwrap();
@@ -2869,8 +2875,10 @@ mod tests {
         assert!(doc.get(automerge::ROOT, "bytes").unwrap().is_none());
     }
 
+    /// The shared text fields keep the hex editor's own parsing policies.
     #[test]
-    fn shared_search_field_still_drives_byte_match_policy() {
+    fn shared_search_and_goto_fields_keep_byte_policies() {
+        // The shared search field still drives the byte-match policy.
         let mut view = HexView::new(vec![0xde, 0xad, 0x00, 0xde, 0xad], "bytes.bin");
         view.search_input.set_text("de ad");
         view.recompute_matches();
@@ -2883,10 +2891,8 @@ mod tests {
         view.search_input.set_text("Þ");
         view.recompute_matches();
         assert!(view.matches.is_empty());
-    }
 
-    #[test]
-    fn shared_goto_field_keeps_hex_and_decimal_offset_parsing() {
+        // The shared goto field keeps hex and decimal offset parsing.
         let mut view = HexView::new(vec![0; 64], "bytes.bin");
 
         view.overlay = Overlay::Goto;
@@ -2899,10 +2905,8 @@ mod tests {
         view.goto_input.set_text("12");
         view.commit_goto();
         assert_eq!(view.model.cursor(), 12);
-    }
 
-    #[test]
-    fn large_search_retains_a_bounded_result_index() {
+        // A large search retains a bounded result index.
         let mut view = HexView::new(vec![0; search::MAX_RETAINED_MATCHES + 50], "large.bin");
         view.search_input.set_text("00");
         view.recompute_matches();
@@ -2914,6 +2918,8 @@ mod tests {
         assert!(view.is_match_offset(search::MAX_RETAINED_MATCHES));
     }
 
+    /// Surface geometry and semantics.
+    ///
     /// The grid's pitches come from the renderer's measured monospace advance
     /// and line height, so paint and hit-testing share one geometry at every
     /// text scale: a painted cell's centre maps back to its own byte.
@@ -2922,7 +2928,9 @@ mod tests {
         clippy::float_cmp,
         reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
     )]
-    fn grid_pitches_follow_the_measured_mono_metrics_and_hit_their_cells() {
+    fn surface_geometry_follows_measured_metrics_width_and_state() {
+        use ui::a11y::Role;
+
         let mut tr = TextRenderer::new();
         let base = CellMetrics::measure(&mut tr);
         assert!(
@@ -3000,22 +3008,16 @@ mod tests {
                 );
             }
         }
-    }
 
-    #[test]
-    fn narrow_layout_hides_the_inspector_without_shrinking_the_grid() {
+        // A narrow layout hides the inspector without shrinking the grid.
         let mut view = HexView::new(vec![0; 128], "narrow.bin");
         view.rect = Rect::new(0.0, 0.0, 540.0, 500.0);
 
         assert!(!view.show_inspector());
         assert!(view.fit_bytes_per_row() >= 8);
         assert!((view.metrics().inspector_x0 - view.rect.x1).abs() < f64::EPSILON);
-    }
 
-    #[test]
-    fn closed_editor_exposes_a_local_document_a11y_summary() {
-        use ui::a11y::Role;
-
+        // A closed editor exposes a local-document a11y summary.
         let view = HexView::empty();
         let tree = Widget::accessibility(&view).expect("semantic root");
         assert_eq!(tree.role, Role::Document);

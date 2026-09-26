@@ -323,89 +323,93 @@ impl Harness {
     }
 }
 
+/// The search field is top-level focusable, focuses on click and keeps focus while typing.
 #[test]
-fn search_field_is_a_top_level_focusable() {
-    // The structural fix: the field lives in the main taffy tree, so the
-    // host's focus walk actually reaches it. (Buried in `NavSplit` it never
-    // would.)
-    let h = Harness::new();
-    assert!(
-        h.search_field().is_some(),
-        "the search field must exist in the composed tree"
-    );
-    let has_text_input = h.focus_order.iter().any(|&id| {
-        h.node_map
-            .get(&id)
-            .is_some_and(|&w| unsafe { (*w).name() == "TextInput" })
-    });
-    assert!(
-        has_text_input,
-        "the search field must appear in the focusable order (proving it is not \
+fn search_field_is_focusable_and_keeps_focus_while_filtering() {
+    // Case `search_field_is_a_top_level_focusable`.
+    {
+        // The structural fix: the field lives in the main taffy tree, so the
+        // host's focus walk actually reaches it. (Buried in `NavSplit` it never
+        // would.)
+        let h = Harness::new();
+        assert!(
+            h.search_field().is_some(),
+            "the search field must exist in the composed tree"
+        );
+        let has_text_input = h.focus_order.iter().any(|&id| {
+            h.node_map
+                .get(&id)
+                .is_some_and(|&w| unsafe { (*w).name() == "TextInput" })
+        });
+        assert!(
+            has_text_input,
+            "the search field must appear in the focusable order (proving it is not \
          trapped inside NavSplit's isolated inner tree)"
-    );
-}
-
-#[test]
-fn clicking_search_field_focuses_it() {
-    let mut h = Harness::new();
-    assert!(
-        !h.search_field().unwrap().is_focused(),
-        "the field starts unfocused (no autofocus on launch)"
-    );
-    let rect = h.search_field_rect();
-    assert!(
-        rect.width() > 0.0 && rect.height() > 0.0,
-        "field has a real rect"
-    );
-
-    h.click(rect.center());
-
-    assert!(
-        h.search_field().unwrap().is_focused(),
-        "clicking the search field must focus it"
-    );
-}
-
-#[test]
-fn typing_into_search_filters_and_keeps_focus() {
-    let mut h = Harness::new();
-    let before = h.sidebar_row_count();
-    assert!(before > 3, "the unfiltered sidebar lists every category");
-
-    // Click to focus, then type a query that filters to a couple of panes.
-    let rect = h.search_field_rect();
-    h.click(rect.center());
-    assert!(
-        h.search_field().unwrap().is_focused(),
-        "click focused the field"
-    );
-
-    for c in ["n", "e", "t"] {
-        h.type_char(c);
+        );
     }
 
-    // The query reached the app and drove the filter (real sidebar rebuild).
-    assert_eq!(
-        h.app.search_query(),
-        "net",
-        "each typed char reached the query"
-    );
-    let after = h.sidebar_row_count();
-    assert!(
-        after < before && after >= 1,
-        "typing filtered the sidebar (before={before}, after={after})"
-    );
+    // Case `clicking_search_field_focuses_it`.
+    {
+        let mut h = Harness::new();
+        assert!(
+            !h.search_field().unwrap().is_focused(),
+            "the field starts unfocused (no autofocus on launch)"
+        );
+        let rect = h.search_field_rect();
+        assert!(
+            rect.width() > 0.0 && rect.height() > 0.0,
+            "field has a real rect"
+        );
 
-    // The field survived every per-keystroke rebuild: it is still focused and
-    // still holds the full typed text (the caret never got dropped, so all
-    // three characters landed — the exact thing the old bug broke).
-    let field = h
-        .search_field()
-        .expect("field still present after filtering");
-    assert!(field.is_focused(), "focus survived the filter rebuilds");
-    assert_eq!(
-        field.text_review().map(|(_, t)| t),
-        Some("net".to_string()),
-        "the field holds the full query it accumulated across rebuilds"
-    );
+        h.click(rect.center());
+
+        assert!(
+            h.search_field().unwrap().is_focused(),
+            "clicking the search field must focus it"
+        );
+    }
+
+    // Case `typing_into_search_filters_and_keeps_focus`.
+    {
+        let mut h = Harness::new();
+        let before = h.sidebar_row_count();
+        assert!(before > 3, "the unfiltered sidebar lists every category");
+
+        // Click to focus, then type a query that filters to a couple of panes.
+        let rect = h.search_field_rect();
+        h.click(rect.center());
+        assert!(
+            h.search_field().unwrap().is_focused(),
+            "click focused the field"
+        );
+
+        for c in ["n", "e", "t"] {
+            h.type_char(c);
+        }
+
+        // The query reached the app and drove the filter (real sidebar rebuild).
+        assert_eq!(
+            h.app.search_query(),
+            "net",
+            "each typed char reached the query"
+        );
+        let after = h.sidebar_row_count();
+        assert!(
+            after < before && after >= 1,
+            "typing filtered the sidebar (before={before}, after={after})"
+        );
+
+        // The field survived every per-keystroke rebuild: it is still focused and
+        // still holds the full typed text (the caret never got dropped, so all
+        // three characters landed — the exact thing the old bug broke).
+        let field = h
+            .search_field()
+            .expect("field still present after filtering");
+        assert!(field.is_focused(), "focus survived the filter rebuilds");
+        assert_eq!(
+            field.text_review().map(|(_, t)| t),
+            Some("net".to_string()),
+            "the field holds the full query it accumulated across rebuilds"
+        );
+    }
 }

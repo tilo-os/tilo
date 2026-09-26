@@ -2034,7 +2034,8 @@ mod tests {
     }
 
     #[test]
-    fn client_drag_uri_paths_are_local_absolute_and_percent_decoded() {
+    fn drags_carry_decoded_local_paths_and_safe_payloads() {
+        // Phase `client_drag_uri_paths_are_local_absolute_and_percent_decoded`.
         assert_eq!(
             paths_from_uri_list(
                 b"# source names\r\nfile:///var/workspace/My%20Photo.png\r\n\
@@ -2045,398 +2046,395 @@ mod tests {
                 std::path::PathBuf::from("/tmp/report#final.pdf"),
             ]
         );
+        // Phase `client_drag_content_prefers_visual_or_text_payload_not_uri_or_secret`.
+        {
+            let mimes = vec![
+                URI_LIST_MIME.to_string(),
+                SECRET_MIME.to_string(),
+                "image/png".to_string(),
+                "text/plain".to_string(),
+            ];
+            assert_eq!(preferred_drag_content_mime(&mimes), Some("image/png"));
+            assert_eq!(drag_content_suffix("video/webm"), ".webm");
+            assert_eq!(drag_content_suffix("image/bmp"), ".bmp");
+            assert_eq!(drag_content_suffix("image/avif"), ".avif");
+            assert_eq!(drag_content_suffix("video/x-matroska"), ".mkv");
+            assert_eq!(drag_content_suffix("video/quicktime"), ".mov");
+            assert_eq!(drag_content_suffix("text/plain;charset=utf-8"), ".txt");
+            assert_eq!(drag_content_limit("text/plain").0, 32 * 1024 * 1024);
+            assert_eq!(drag_content_limit("audio/ogg").0, 256 * 1024 * 1024);
+            assert_eq!(drag_content_limit("video/mp4").0, 512 * 1024 * 1024);
+        }
+        // Phase `multi_item_drop_advances_exact_insertion_side`.
+        {
+            use crate::shell::tab_binding::Placement;
+            assert_eq!(
+                advance_drop_placement(Placement::TabAt(7, 2), 3),
+                Placement::TabAt(7, 5)
+            );
+            assert_eq!(
+                advance_drop_placement(
+                    Placement::GroupAt(crate::shell::state::StripId::from(8), 1),
+                    2
+                ),
+                Placement::GroupAt(crate::shell::state::StripId::from(8), 3)
+            );
+        }
+        // Phase `a_chrome_drag_offers_a_uri_list_and_the_single_files_bytes`.
+        {
+            let drag = ChromeDrag::new(vec![std::path::PathBuf::from(
+                "/var/workspace/Demo/my photo.png",
+            )]);
+            assert_eq!(
+                drag.mime_types,
+                vec![URI_LIST_MIME.to_string(), "image/png".to_string()]
+            );
+            assert_eq!(
+                drag.uri_list(),
+                "file:///var/workspace/Demo/my%20photo.png\r\n"
+            );
+            assert_eq!(
+                drag.file_for_mime("image/png"),
+                Some(std::path::Path::new("/var/workspace/Demo/my photo.png"))
+            );
+            assert_eq!(drag.file_for_mime("image/jpeg"), None, "not offered");
+            assert_eq!(
+                drag.file_for_mime(URI_LIST_MIME),
+                None,
+                "the list is not a file"
+            );
+        }
+        // Phase `a_multi_file_drag_is_paths_only`.
+        {
+            let drag = ChromeDrag::new(vec![
+                std::path::PathBuf::from("/a.png"),
+                std::path::PathBuf::from("/b.png"),
+            ]);
+            assert_eq!(drag.mime_types, vec![URI_LIST_MIME.to_string()]);
+            assert_eq!(drag.uri_list(), "file:///a.png\r\nfile:///b.png\r\n");
+            assert_eq!(drag.file_for_mime("image/png"), None);
+        }
+        // Phase `unknown_extensions_travel_as_paths_only`.
+        {
+            let drag = ChromeDrag::new(vec![std::path::PathBuf::from("/thing.qcow2")]);
+            assert_eq!(drag.mime_types, vec![URI_LIST_MIME.to_string()]);
+            assert_eq!(
+                mime_for_path(std::path::Path::new("x.JPG")),
+                Some("image/jpeg")
+            );
+            assert_eq!(mime_for_path(std::path::Path::new("x")), None);
+        }
     }
 
     #[test]
-    fn client_drag_content_prefers_visual_or_text_payload_not_uri_or_secret() {
-        let mimes = vec![
-            URI_LIST_MIME.to_string(),
-            SECRET_MIME.to_string(),
-            "image/png".to_string(),
-            "text/plain".to_string(),
-        ];
-        assert_eq!(preferred_drag_content_mime(&mimes), Some("image/png"));
-        assert_eq!(drag_content_suffix("video/webm"), ".webm");
-        assert_eq!(drag_content_suffix("image/bmp"), ".bmp");
-        assert_eq!(drag_content_suffix("image/avif"), ".avif");
-        assert_eq!(drag_content_suffix("video/x-matroska"), ".mkv");
-        assert_eq!(drag_content_suffix("video/quicktime"), ".mov");
-        assert_eq!(drag_content_suffix("text/plain;charset=utf-8"), ".txt");
-        assert_eq!(drag_content_limit("text/plain").0, 32 * 1024 * 1024);
-        assert_eq!(drag_content_limit("audio/ogg").0, 256 * 1024 * 1024);
-        assert_eq!(drag_content_limit("video/mp4").0, 512 * 1024 * 1024);
+    fn selection_ownership_follows_the_newest_valid_writer() {
+        // Phase `chrome_copy_is_readable_immediately_and_queues_a_publish`.
+        // Chrome's clipboard write must be readable in-process immediately (paste
+        // can't wait for a tick) and leave a publish flag for the real Wayland selection.
+        {
+            let s = store();
+            set_mirror_text(&s, Target::Clipboard, "from chrome");
+            assert_eq!(
+                mirror_text(&s, Target::Clipboard).as_deref(),
+                Some("from chrome")
+            );
+            assert!(compositor_owns(&s, Target::Clipboard));
+            assert!(s.lock().unwrap().clipboard.publish_pending);
+            // Primary is a separate buffer and must not have been touched.
+            assert_eq!(mirror_text(&s, Target::Primary), None);
+        }
+        // Phase `client_copy_drops_compositor_ownership`.
+        // A client taking the clipboard drops compositor ownership, so a later
+        // `receive` is answered by that client and not out of a stale mirror.
+        {
+            let s = store();
+            set_mirror_text(&s, Target::Clipboard, "from chrome");
+            assert!(compositor_owns(&s, Target::Clipboard));
+
+            let generation =
+                begin_client_selection(&s, Target::Clipboard, Some(vec![TEXT_MIME.to_string()]));
+            record_client_bytes(
+                &s,
+                Target::Clipboard,
+                generation,
+                TEXT_MIME,
+                b"from a client".to_vec(),
+            );
+            assert!(!compositor_owns(&s, Target::Clipboard));
+            assert_eq!(
+                mirror_text(&s, Target::Clipboard).as_deref(),
+                Some("from a client"),
+            );
+            // The queued chrome publish must not fire after the client won the
+            // selection — that would silently take the clipboard back.
+            assert!(!s.lock().unwrap().clipboard.publish_pending);
+        }
+        // Phase `primary_and_clipboard_do_not_alias`.
+        // Primary and clipboard are independent; middle-click must not return what Ctrl+C put down.
+        {
+            let s = store();
+            set_mirror_text(&s, Target::Clipboard, "ctrl-c text");
+            set_mirror_text(&s, Target::Primary, "drag-selected text");
+            assert_eq!(
+                mirror_text(&s, Target::Clipboard).as_deref(),
+                Some("ctrl-c text")
+            );
+            assert_eq!(
+                mirror_text(&s, Target::Primary).as_deref(),
+                Some("drag-selected text"),
+            );
+        }
+        // Phase `clear_is_distinct_from_an_empty_selection`.
+        // Clearing must distinguish "nothing was ever copied" from "an empty
+        // string was copied" — a client may legitimately own an empty selection.
+        {
+            let s = store();
+            set_mirror_text(&s, Target::Clipboard, "");
+            assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some(""));
+            clear_mirror(&s, Target::Clipboard);
+            assert_eq!(mirror_text(&s, Target::Clipboard), None);
+            assert!(!compositor_owns(&s, Target::Clipboard));
+            assert!(s.lock().unwrap().clipboard.clear_pending);
+        }
+        // Phase `chrome_write_supersedes_stale_client_payloads`.
+        {
+            let s = store();
+            let generation = begin_client_selection(
+                &s,
+                Target::Clipboard,
+                Some(vec!["application/octet-stream".into()]),
+            );
+            record_client_bytes(
+                &s,
+                Target::Clipboard,
+                generation,
+                "application/octet-stream",
+                vec![1, 2, 3],
+            );
+            assert!(set_mirror_text(&s, Target::Clipboard, "fresh"));
+            assert_eq!(
+                mirror_bytes(&s, Target::Clipboard, "application/octet-stream"),
+                None
+            );
+            assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("fresh"));
+        }
+        // Phase `overlarge_or_stale_client_payload_cannot_replace_current_selection`.
+        {
+            let s = store();
+            let old =
+                begin_client_selection(&s, Target::Clipboard, Some(vec!["image/jpeg".into()]));
+            let new = begin_client_selection(&s, Target::Clipboard, Some(vec!["image/png".into()]));
+            record_client_bytes(&s, Target::Clipboard, old, "image/jpeg", vec![7]);
+            assert_eq!(mirror_bytes(&s, Target::Clipboard, "image/jpeg"), None);
+            record_client_bytes(
+                &s,
+                Target::Clipboard,
+                new,
+                "image/png",
+                vec![0; MAX_SELECTION_BYTES + 1],
+            );
+            assert_eq!(mirror_bytes(&s, Target::Clipboard, "image/png"), None);
+        }
     }
 
     #[test]
-    fn multi_item_drop_advances_exact_insertion_side() {
-        use crate::shell::tab_binding::Placement;
-        assert_eq!(
-            advance_drop_placement(Placement::TabAt(7, 2), 3),
-            Placement::TabAt(7, 5)
-        );
-        assert_eq!(
-            advance_drop_placement(
-                Placement::GroupAt(crate::shell::state::StripId::from(8), 1),
-                2
-            ),
-            Placement::GroupAt(crate::shell::state::StripId::from(8), 3)
-        );
-    }
-
-    /// Chrome's clipboard write must be readable in-process immediately (paste
-    /// can't wait for a tick) and leave a publish flag for the real Wayland selection.
-    #[test]
-    fn chrome_copy_is_readable_immediately_and_queues_a_publish() {
-        let s = store();
-        set_mirror_text(&s, Target::Clipboard, "from chrome");
-        assert_eq!(
-            mirror_text(&s, Target::Clipboard).as_deref(),
-            Some("from chrome")
-        );
-        assert!(compositor_owns(&s, Target::Clipboard));
-        assert!(s.lock().unwrap().clipboard.publish_pending);
-        // Primary is a separate buffer and must not have been touched.
-        assert_eq!(mirror_text(&s, Target::Primary), None);
-    }
-
-    /// A client taking the clipboard drops compositor ownership, so a later
-    /// `receive` is answered by that client and not out of a stale mirror.
-    #[test]
-    fn client_copy_drops_compositor_ownership() {
-        let s = store();
-        set_mirror_text(&s, Target::Clipboard, "from chrome");
-        assert!(compositor_owns(&s, Target::Clipboard));
-
-        let generation =
-            begin_client_selection(&s, Target::Clipboard, Some(vec![TEXT_MIME.to_string()]));
-        record_client_bytes(
-            &s,
-            Target::Clipboard,
-            generation,
-            TEXT_MIME,
-            b"from a client".to_vec(),
-        );
-        assert!(!compositor_owns(&s, Target::Clipboard));
-        assert_eq!(
-            mirror_text(&s, Target::Clipboard).as_deref(),
-            Some("from a client"),
-        );
-        // The queued chrome publish must not fire after the client won the
-        // selection — that would silently take the clipboard back.
-        assert!(!s.lock().unwrap().clipboard.publish_pending);
-    }
-
-    /// Primary and clipboard are independent; middle-click must not return what Ctrl+C put down.
-    #[test]
-    fn primary_and_clipboard_do_not_alias() {
-        let s = store();
-        set_mirror_text(&s, Target::Clipboard, "ctrl-c text");
-        set_mirror_text(&s, Target::Primary, "drag-selected text");
-        assert_eq!(
-            mirror_text(&s, Target::Clipboard).as_deref(),
-            Some("ctrl-c text")
-        );
-        assert_eq!(
-            mirror_text(&s, Target::Primary).as_deref(),
-            Some("drag-selected text"),
-        );
-    }
-
-    /// Clearing must distinguish "nothing was ever copied" from "an empty
-    /// string was copied" — a client may legitimately own an empty selection.
-    #[test]
-    fn clear_is_distinct_from_an_empty_selection() {
-        let s = store();
-        set_mirror_text(&s, Target::Clipboard, "");
-        assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some(""));
-        clear_mirror(&s, Target::Clipboard);
-        assert_eq!(mirror_text(&s, Target::Clipboard), None);
-        assert!(!compositor_owns(&s, Target::Clipboard));
-        assert!(s.lock().unwrap().clipboard.clear_pending);
-    }
-
-    /// Offered mimes must lead with the specific UTF-8 type — the first match
-    /// wins, and a client stuck with `STRING` has to guess the encoding.
-    #[test]
-    fn text_mimes_lead_with_utf8() {
-        let mimes = text_mime_types();
-        assert_eq!(mimes.first().map(String::as_str), Some(TEXT_MIME));
-        assert!(mimes.iter().any(|m| m == "text/plain"));
-        assert!(mimes.iter().any(|m| m == "UTF8_STRING"));
+    fn selection_mime_offers_preserve_text_and_binary_payloads() {
+        // Phase `text_mimes_lead_with_utf8`.
+        // Offered mimes must lead with the specific UTF-8 type — the first match
+        // wins, and a client stuck with `STRING` has to guess the encoding.
+        {
+            let mimes = text_mime_types();
+            assert_eq!(mimes.first().map(String::as_str), Some(TEXT_MIME));
+            assert!(mimes.iter().any(|m| m == "text/plain"));
+            assert!(mimes.iter().any(|m| m == "UTF8_STRING"));
+        }
+        // Phase `binary_offer_round_trips_without_text_decoding_and_keeps_text_aliases`.
+        {
+            let s = store();
+            begin_mirror_offer(
+                &s,
+                Target::Clipboard,
+                &["image/png".into(), "text/plain".into()],
+            )
+            .unwrap();
+            let png = vec![0x89, b'P', b'N', b'G', 0, 0xff];
+            set_mirror_bytes(&s, Target::Clipboard, "image/png", png.clone()).unwrap();
+            set_mirror_bytes(&s, Target::Clipboard, "text/plain", b"hello".to_vec()).unwrap();
+            assert_eq!(mirror_bytes(&s, Target::Clipboard, "image/png"), Some(png));
+            assert_eq!(
+                mirror_bytes(&s, Target::Clipboard, "UTF8_STRING"),
+                Some(b"hello".to_vec())
+            );
+            assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("hello"));
+            let mimes = mirror_mime_types(&s, Target::Clipboard);
+            assert!(mimes.iter().any(|mime| mime == "image/png"));
+            assert!(mimes.iter().any(|mime| mime == "UTF8_STRING"));
+        }
+        // Phase `chrome_image_copy_offers_png_and_preserves_text`.
+        {
+            let s = store();
+            set_mirror_text(&s, Target::Clipboard, "caption");
+            let host = HostClipboard {
+                store: Arc::clone(&s),
+            };
+            assert!(host.set_image(1, 1, &[0xff, 0x00, 0x80, 0xff]));
+            let bytes = mirror_bytes(&s, Target::Clipboard, "image/png").unwrap();
+            assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+            assert_eq!(
+                mirror_text(&s, Target::Clipboard).as_deref(),
+                Some("caption")
+            );
+            let mimes = mirror_mime_types(&s, Target::Clipboard);
+            assert!(mimes.iter().any(|mime| mime == "image/png"));
+            assert!(mimes.iter().any(|mime| mime == TEXT_MIME));
+        }
+        // Phase `chrome_image_copy_rejects_invalid_dimensions_and_payload_size`.
+        {
+            let s = store();
+            let host = HostClipboard { store: s };
+            assert!(!host.set_image(0, 1, &[]));
+            assert!(!host.set_image(1, 1, &[]));
+            assert!(!host.set_image(usize::MAX, 1, &[0; 4]));
+            assert!(!host.set_image(
+                ui::clipboard::MAX_CLIPBOARD_IMAGE_INPUT_BYTES / 4 + 1,
+                1,
+                &[0; 4]
+            ));
+        }
     }
 
     #[test]
-    fn binary_offer_round_trips_without_text_decoding_and_keeps_text_aliases() {
-        let s = store();
-        begin_mirror_offer(
-            &s,
-            Target::Clipboard,
-            &["image/png".into(), "text/plain".into()],
-        )
-        .unwrap();
-        let png = vec![0x89, b'P', b'N', b'G', 0, 0xff];
-        set_mirror_bytes(&s, Target::Clipboard, "image/png", png.clone()).unwrap();
-        set_mirror_bytes(&s, Target::Clipboard, "text/plain", b"hello".to_vec()).unwrap();
-        assert_eq!(mirror_bytes(&s, Target::Clipboard, "image/png"), Some(png));
-        assert_eq!(
-            mirror_bytes(&s, Target::Clipboard, "UTF8_STRING"),
-            Some(b"hello".to_vec())
-        );
-        assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("hello"));
-        let mimes = mirror_mime_types(&s, Target::Clipboard);
-        assert!(mimes.iter().any(|mime| mime == "image/png"));
-        assert!(mimes.iter().any(|mime| mime == "UTF8_STRING"));
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn clipboard_history_keeps_distinct_safe_copies() {
+        // Phase `clipboard_manager_tracks_distinct_copies_newest_first`.
+        {
+            let s = store();
+            assert!(set_mirror_text(&s, Target::Clipboard, "first"));
+            assert!(set_mirror_text(&s, Target::Clipboard, "second"));
+            assert!(set_mirror_text(&s, Target::Clipboard, "first"));
+            let history = clipboard_history(&s);
+            assert_eq!(
+                history.len(),
+                2,
+                "copying identical content de-duplicates it"
+            );
+            assert_eq!(history[0].text_preview.as_deref(), Some("first"));
+            assert_eq!(history[1].text_preview.as_deref(), Some("second"));
+        }
+        // Phase `primary_and_secret_or_oversized_selections_never_enter_history`.
+        {
+            let s = store();
+            assert!(set_mirror_text(&s, Target::Primary, "selection churn"));
+            assert!(clipboard_history(&s).is_empty());
 
-    #[test]
-    fn chrome_image_copy_offers_png_and_preserves_text() {
-        let s = store();
-        set_mirror_text(&s, Target::Clipboard, "caption");
-        let host = HostClipboard {
-            store: Arc::clone(&s),
-        };
-        assert!(host.set_image(1, 1, &[0xff, 0x00, 0x80, 0xff]));
-        let bytes = mirror_bytes(&s, Target::Clipboard, "image/png").unwrap();
-        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
-        assert_eq!(
-            mirror_text(&s, Target::Clipboard).as_deref(),
-            Some("caption")
-        );
-        let mimes = mirror_mime_types(&s, Target::Clipboard);
-        assert!(mimes.iter().any(|mime| mime == "image/png"));
-        assert!(mimes.iter().any(|mime| mime == TEXT_MIME));
-    }
+            begin_mirror_offer(&s, Target::Clipboard, &[SECRET_MIME.into()]).unwrap();
+            set_mirror_bytes(&s, Target::Clipboard, SECRET_MIME, b"totp".to_vec()).unwrap();
+            assert!(clipboard_history(&s).is_empty());
 
-    #[test]
-    fn chrome_image_copy_rejects_invalid_dimensions_and_payload_size() {
-        let s = store();
-        let host = HostClipboard { store: s };
-        assert!(!host.set_image(0, 1, &[]));
-        assert!(!host.set_image(1, 1, &[]));
-        assert!(!host.set_image(usize::MAX, 1, &[0; 4]));
-        assert!(!host.set_image(
-            ui::clipboard::MAX_CLIPBOARD_IMAGE_INPUT_BYTES / 4 + 1,
-            1,
-            &[0; 4]
-        ));
-    }
+            set_mirror_bytes(
+                &s,
+                Target::Clipboard,
+                "application/octet-stream",
+                vec![0; MAX_CLIPBOARD_HISTORY_ITEM_BYTES + 1],
+            )
+            .unwrap();
+            assert!(clipboard_history(&s).is_empty());
+        }
+        // Phase `clipboard_manager_can_pin_clear_restore_and_remove`.
+        {
+            let s = store();
+            set_mirror_text(&s, Target::Clipboard, "keep");
+            let keep = clipboard_history(&s)[0].id;
+            assert!(pin_history_item(&s, keep, true));
+            set_mirror_text(&s, Target::Clipboard, "discard");
+            let discard = clipboard_history(&s)[0].id;
 
-    #[test]
-    fn chrome_write_supersedes_stale_client_payloads() {
-        let s = store();
-        let generation = begin_client_selection(
-            &s,
-            Target::Clipboard,
-            Some(vec!["application/octet-stream".into()]),
-        );
-        record_client_bytes(
-            &s,
-            Target::Clipboard,
-            generation,
-            "application/octet-stream",
-            vec![1, 2, 3],
-        );
-        assert!(set_mirror_text(&s, Target::Clipboard, "fresh"));
-        assert_eq!(
-            mirror_bytes(&s, Target::Clipboard, "application/octet-stream"),
-            None
-        );
-        assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("fresh"));
-    }
+            clear_clipboard_history(&s);
+            let history = clipboard_history(&s);
+            assert_eq!(history.len(), 1);
+            assert_eq!(history[0].id, keep);
 
-    #[test]
-    fn overlarge_or_stale_client_payload_cannot_replace_current_selection() {
-        let s = store();
-        let old = begin_client_selection(&s, Target::Clipboard, Some(vec!["image/jpeg".into()]));
-        let new = begin_client_selection(&s, Target::Clipboard, Some(vec!["image/png".into()]));
-        record_client_bytes(&s, Target::Clipboard, old, "image/jpeg", vec![7]);
-        assert_eq!(mirror_bytes(&s, Target::Clipboard, "image/jpeg"), None);
-        record_client_bytes(
-            &s,
-            Target::Clipboard,
-            new,
-            "image/png",
-            vec![0; MAX_SELECTION_BYTES + 1],
-        );
-        assert_eq!(mirror_bytes(&s, Target::Clipboard, "image/png"), None);
-    }
+            clear_mirror(&s, Target::Clipboard);
+            assert!(activate_history_item(&s, keep));
+            assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("keep"));
+            assert!(compositor_owns(&s, Target::Clipboard));
+            assert!(remove_history_item(&s, keep));
+            assert!(!remove_history_item(&s, discard));
+        }
+        // Phase `asynchronous_multi_mime_copy_becomes_one_history_item`.
+        {
+            let s = store();
+            let generation = begin_client_selection(
+                &s,
+                Target::Clipboard,
+                Some(vec![TEXT_MIME.into(), "image/png".into()]),
+            );
+            record_client_bytes(
+                &s,
+                Target::Clipboard,
+                generation,
+                TEXT_MIME,
+                b"caption".to_vec(),
+            );
+            record_client_bytes(
+                &s,
+                Target::Clipboard,
+                generation,
+                "image/png",
+                vec![1, 2, 3],
+            );
+            let history = clipboard_history(&s);
+            assert_eq!(history.len(), 1);
+            assert_eq!(history[0].text_preview.as_deref(), Some("caption"));
+            assert!(history[0].mime_types.iter().any(|mime| mime == "image/png"));
+        }
+        // Phase `fabric_clipboard_is_history_only_and_is_not_reauthored`.
+        {
+            use crate::shell::device_fabric::{ClipboardEntry, ClipboardPayload, FabricStamp};
+            use crate::shell::personal_continuity::DeviceId;
 
-    #[test]
-    fn clipboard_manager_tracks_distinct_copies_newest_first() {
-        let s = store();
-        assert!(set_mirror_text(&s, Target::Clipboard, "first"));
-        assert!(set_mirror_text(&s, Target::Clipboard, "second"));
-        assert!(set_mirror_text(&s, Target::Clipboard, "first"));
-        let history = clipboard_history(&s);
-        assert_eq!(
-            history.len(),
-            2,
-            "copying identical content de-duplicates it"
-        );
-        assert_eq!(history[0].text_preview.as_deref(), Some("first"));
-        assert_eq!(history[1].text_preview.as_deref(), Some("second"));
-    }
+            let s = store();
+            let origin = DeviceId::new("remote-device").unwrap();
+            let entry = ClipboardEntry::shareable(
+                ClipboardPayload::Text("from the other screen".into()),
+                origin.clone(),
+                42,
+                FabricStamp {
+                    counter: 7,
+                    device: origin.clone(),
+                },
+            )
+            .unwrap();
+            merge_shared_clipboard_history(&s, std::slice::from_ref(&entry));
 
-    #[test]
-    fn primary_and_secret_or_oversized_selections_never_enter_history() {
-        let s = store();
-        assert!(set_mirror_text(&s, Target::Primary, "selection churn"));
-        assert!(clipboard_history(&s).is_empty());
+            assert_eq!(mirror_text(&s, Target::Clipboard), None);
+            assert_eq!(
+                clipboard_history(&s)[0].text_preview.as_deref(),
+                Some("from the other screen")
+            );
+            assert_eq!(
+                clipboard_history(&s)[0].source_device.as_ref(),
+                Some(&origin)
+            );
+            assert_eq!(clipboard_history(&s)[0].created_unix_ms, 42);
+            assert!(shareable_clipboard_history(&s).is_empty());
 
-        begin_mirror_offer(&s, Target::Clipboard, &[SECRET_MIME.into()]).unwrap();
-        set_mirror_bytes(&s, Target::Clipboard, SECRET_MIME, b"totp".to_vec()).unwrap();
-        assert!(clipboard_history(&s).is_empty());
+            assert!(activate_history_item(&s, entry.id));
+            assert_eq!(
+                mirror_text(&s, Target::Clipboard).as_deref(),
+                Some("from the other screen")
+            );
+            assert!(shareable_clipboard_history(&s).is_empty());
 
-        set_mirror_bytes(
-            &s,
-            Target::Clipboard,
-            "application/octet-stream",
-            vec![0; MAX_CLIPBOARD_HISTORY_ITEM_BYTES + 1],
-        )
-        .unwrap();
-        assert!(clipboard_history(&s).is_empty());
-    }
-
-    #[test]
-    fn clipboard_manager_can_pin_clear_restore_and_remove() {
-        let s = store();
-        set_mirror_text(&s, Target::Clipboard, "keep");
-        let keep = clipboard_history(&s)[0].id;
-        assert!(pin_history_item(&s, keep, true));
-        set_mirror_text(&s, Target::Clipboard, "discard");
-        let discard = clipboard_history(&s)[0].id;
-
-        clear_clipboard_history(&s);
-        let history = clipboard_history(&s);
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].id, keep);
-
-        clear_mirror(&s, Target::Clipboard);
-        assert!(activate_history_item(&s, keep));
-        assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("keep"));
-        assert!(compositor_owns(&s, Target::Clipboard));
-        assert!(remove_history_item(&s, keep));
-        assert!(!remove_history_item(&s, discard));
-    }
-
-    #[test]
-    fn asynchronous_multi_mime_copy_becomes_one_history_item() {
-        let s = store();
-        let generation = begin_client_selection(
-            &s,
-            Target::Clipboard,
-            Some(vec![TEXT_MIME.into(), "image/png".into()]),
-        );
-        record_client_bytes(
-            &s,
-            Target::Clipboard,
-            generation,
-            TEXT_MIME,
-            b"caption".to_vec(),
-        );
-        record_client_bytes(
-            &s,
-            Target::Clipboard,
-            generation,
-            "image/png",
-            vec![1, 2, 3],
-        );
-        let history = clipboard_history(&s);
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].text_preview.as_deref(), Some("caption"));
-        assert!(history[0].mime_types.iter().any(|mime| mime == "image/png"));
-    }
-
-    #[test]
-    fn fabric_clipboard_is_history_only_and_is_not_reauthored() {
-        use crate::shell::device_fabric::{ClipboardEntry, ClipboardPayload, FabricStamp};
-        use crate::shell::personal_continuity::DeviceId;
-
-        let s = store();
-        let origin = DeviceId::new("remote-device").unwrap();
-        let entry = ClipboardEntry::shareable(
-            ClipboardPayload::Text("from the other screen".into()),
-            origin.clone(),
-            42,
-            FabricStamp {
-                counter: 7,
-                device: origin.clone(),
-            },
-        )
-        .unwrap();
-        merge_shared_clipboard_history(&s, std::slice::from_ref(&entry));
-
-        assert_eq!(mirror_text(&s, Target::Clipboard), None);
-        assert_eq!(
-            clipboard_history(&s)[0].text_preview.as_deref(),
-            Some("from the other screen")
-        );
-        assert_eq!(
-            clipboard_history(&s)[0].source_device.as_ref(),
-            Some(&origin)
-        );
-        assert_eq!(clipboard_history(&s)[0].created_unix_ms, 42);
-        assert!(shareable_clipboard_history(&s).is_empty());
-
-        assert!(activate_history_item(&s, entry.id));
-        assert_eq!(
-            mirror_text(&s, Target::Clipboard).as_deref(),
-            Some("from the other screen")
-        );
-        assert!(shareable_clipboard_history(&s).is_empty());
-
-        clear_shared_clipboard_history(&s);
-        assert!(clipboard_history(&s).is_empty());
-        assert_eq!(
-            mirror_text(&s, Target::Clipboard).as_deref(),
-            Some("from the other screen")
-        );
-    }
-
-    #[test]
-    fn a_chrome_drag_offers_a_uri_list_and_the_single_files_bytes() {
-        let drag = ChromeDrag::new(vec![std::path::PathBuf::from(
-            "/var/workspace/Demo/my photo.png",
-        )]);
-        assert_eq!(
-            drag.mime_types,
-            vec![URI_LIST_MIME.to_string(), "image/png".to_string()]
-        );
-        assert_eq!(
-            drag.uri_list(),
-            "file:///var/workspace/Demo/my%20photo.png\r\n"
-        );
-        assert_eq!(
-            drag.file_for_mime("image/png"),
-            Some(std::path::Path::new("/var/workspace/Demo/my photo.png"))
-        );
-        assert_eq!(drag.file_for_mime("image/jpeg"), None, "not offered");
-        assert_eq!(
-            drag.file_for_mime(URI_LIST_MIME),
-            None,
-            "the list is not a file"
-        );
-    }
-
-    #[test]
-    fn a_multi_file_drag_is_paths_only() {
-        let drag = ChromeDrag::new(vec![
-            std::path::PathBuf::from("/a.png"),
-            std::path::PathBuf::from("/b.png"),
-        ]);
-        assert_eq!(drag.mime_types, vec![URI_LIST_MIME.to_string()]);
-        assert_eq!(drag.uri_list(), "file:///a.png\r\nfile:///b.png\r\n");
-        assert_eq!(drag.file_for_mime("image/png"), None);
-    }
-
-    #[test]
-    fn unknown_extensions_travel_as_paths_only() {
-        let drag = ChromeDrag::new(vec![std::path::PathBuf::from("/thing.qcow2")]);
-        assert_eq!(drag.mime_types, vec![URI_LIST_MIME.to_string()]);
-        assert_eq!(
-            mime_for_path(std::path::Path::new("x.JPG")),
-            Some("image/jpeg")
-        );
-        assert_eq!(mime_for_path(std::path::Path::new("x")), None);
+            clear_shared_clipboard_history(&s);
+            assert!(clipboard_history(&s).is_empty());
+            assert_eq!(
+                mirror_text(&s, Target::Clipboard).as_deref(),
+                Some("from the other screen")
+            );
+        }
     }
 }

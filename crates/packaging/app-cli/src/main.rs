@@ -608,97 +608,97 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
-    fn command_tree_is_valid() {
-        Cli::command().debug_assert();
+    fn the_cli_surface_parses_and_names_both_public_commands() {
+        // Phase `command_tree_is_valid`.
+        {
+            Cli::command().debug_assert();
+        }
+        // Phase `store_alias_help_names_the_command_the_user_typed`.
+        {
+            let help = Cli::command().bin_name("store").render_help().to_string();
+            assert!(help.contains("Usage: store"), "{help}");
+            let help = Cli::command()
+                .bin_name("tilo app")
+                .render_help()
+                .to_string();
+            assert!(help.contains("Usage: tilo app"), "{help}");
+        }
+        // Phase `completion_scripts_cover_both_public_names`.
+        {
+            let mut output = Vec::new();
+            clap_complete::generate(Shell::Bash, &mut Cli::command(), "app", &mut output);
+            clap_complete::generate(Shell::Bash, &mut Cli::command(), "store", &mut output);
+            let script = String::from_utf8(output).expect("completion is UTF-8");
+            assert!(script.contains("_app()"), "{script}");
+            assert!(script.contains("default app"), "{script}");
+            assert!(script.contains("_store()"), "{script}");
+            assert!(script.contains("default store"), "{script}");
+        }
+        // Phase `concise_update_parses`.
+        {
+            let cli = Cli::try_parse_from(["app", "u", "browser"]).expect("short update parses");
+            assert!(matches!(cli.cmd, Cmd::Update { app: Some(ref app) } if app == "browser"));
+        }
     }
 
     #[test]
-    fn store_alias_help_names_the_command_the_user_typed() {
-        let help = Cli::command().bin_name("store").render_help().to_string();
-        assert!(help.contains("Usage: store"), "{help}");
-        let help = Cli::command()
-            .bin_name("tilo app")
-            .render_help()
-            .to_string();
-        assert!(help.contains("Usage: tilo app"), "{help}");
-    }
-
-    #[test]
-    fn completion_scripts_cover_both_public_names() {
-        let mut output = Vec::new();
-        clap_complete::generate(Shell::Bash, &mut Cli::command(), "app", &mut output);
-        clap_complete::generate(Shell::Bash, &mut Cli::command(), "store", &mut output);
-        let script = String::from_utf8(output).expect("completion is UTF-8");
-        assert!(script.contains("_app()"), "{script}");
-        assert!(script.contains("default app"), "{script}");
-        assert!(script.contains("_store()"), "{script}");
-        assert!(script.contains("default store"), "{script}");
-    }
-
-    #[test]
-    fn progress_units_are_readable() {
-        assert_eq!(human_bytes(999), "999 B");
-        assert_eq!(human_bytes(1536), "1.5 KiB");
-        assert_eq!(human_duration(Duration::from_secs(65)), "1m 05s");
-    }
-
-    #[test]
-    fn concise_update_parses() {
-        let cli = Cli::try_parse_from(["app", "u", "browser"]).expect("short update parses");
-        assert!(matches!(cli.cmd, Cmd::Update { app: Some(ref app) } if app == "browser"));
-    }
-
-    #[test]
-    fn bulk_update_always_reports_what_it_checked() {
-        assert_eq!(bulk_update_summary(0, 0), "no apps are installed yet");
-        assert_eq!(
-            bulk_update_summary(1, 0),
-            "could not find update metadata for 1 installed app"
-        );
-        assert_eq!(
-            bulk_update_summary(3, 0),
-            "could not find update metadata for 3 installed apps"
-        );
-        assert_eq!(bulk_update_summary(2, 2), "checked 2 of 2 installed apps");
-    }
-
-    #[test]
-    fn bulk_update_fails_when_a_configured_repository_is_unreachable() {
-        let listing = app_cli::CatalogueListing {
-            apps: Vec::new(),
-            unreachable: vec![app_cli::UnreachableRegistry {
-                name: "main".into(),
-                detail: "connection refused".into(),
-            }],
-        };
-        assert_eq!(
-            update_from_listing(&listing, &std::collections::HashMap::new()),
-            ExitCode::FAILURE
-        );
-    }
-
-    #[test]
-    fn install_refuses_an_already_installed_offer() {
-        let offer = CatalogueApp {
-            package_id: "so.tilo.browser".into(),
-            display_name: "Browser".into(),
-            description: String::new(),
-            tagline: String::new(),
-            images: Vec::new(),
-            supported_languages: vec!["en".into()],
-            category: None,
-            version: "1.0.0".into(),
-            registry: "main".into(),
-            download_url: "https://apps.tilo.so/browser.tapp".into(),
-            tapp_root_hash_hex: "ab".repeat(32),
-            tapp_size_bytes: 1,
-            tapp_blake3_hex: "cd".repeat(32),
-            architecture: std::env::consts::ARCH.into(),
-            isa: std::env::consts::ARCH.into(),
-            runtime: None,
-            publisher_pubkey_hex: "ef".repeat(32),
-            trust: "verified".into(),
-        };
-        assert_eq!(change_app(&offer, false, Some("2.0.0")), ExitCode::FAILURE);
+    fn updates_and_installs_report_what_they_checked_or_refused() {
+        // Phase `progress_units_are_readable`.
+        {
+            assert_eq!(human_bytes(999), "999 B");
+            assert_eq!(human_bytes(1536), "1.5 KiB");
+            assert_eq!(human_duration(Duration::from_secs(65)), "1m 05s");
+        }
+        // Phase `bulk_update_always_reports_what_it_checked`.
+        {
+            assert_eq!(bulk_update_summary(0, 0), "no apps are installed yet");
+            assert_eq!(
+                bulk_update_summary(1, 0),
+                "could not find update metadata for 1 installed app"
+            );
+            assert_eq!(
+                bulk_update_summary(3, 0),
+                "could not find update metadata for 3 installed apps"
+            );
+            assert_eq!(bulk_update_summary(2, 2), "checked 2 of 2 installed apps");
+        }
+        // Phase `bulk_update_fails_when_a_configured_repository_is_unreachable`.
+        {
+            let listing = app_cli::CatalogueListing {
+                apps: Vec::new(),
+                unreachable: vec![app_cli::UnreachableRegistry {
+                    name: "main".into(),
+                    detail: "connection refused".into(),
+                }],
+            };
+            assert_eq!(
+                update_from_listing(&listing, &std::collections::HashMap::new()),
+                ExitCode::FAILURE
+            );
+        }
+        // Phase `install_refuses_an_already_installed_offer`.
+        {
+            let offer = CatalogueApp {
+                package_id: "so.tilo.browser".into(),
+                display_name: "Browser".into(),
+                description: String::new(),
+                tagline: String::new(),
+                images: Vec::new(),
+                supported_languages: vec!["en".into()],
+                category: None,
+                version: "1.0.0".into(),
+                registry: "main".into(),
+                download_url: "https://apps.tilo.so/browser.tapp".into(),
+                tapp_root_hash_hex: "ab".repeat(32),
+                tapp_size_bytes: 1,
+                tapp_blake3_hex: "cd".repeat(32),
+                architecture: std::env::consts::ARCH.into(),
+                isa: std::env::consts::ARCH.into(),
+                runtime: None,
+                publisher_pubkey_hex: "ef".repeat(32),
+                trust: "verified".into(),
+            };
+            assert_eq!(change_app(&offer, false, Some("2.0.0")), ExitCode::FAILURE);
+        }
     }
 }

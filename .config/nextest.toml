@@ -26,6 +26,7 @@ path = "junit.xml"
 compositor = { max-threads = 2 }
 gpu-golden = { max-threads = 1 }
 agent-collaboration = { max-threads = 1 }
+imager-durable-disk = { max-threads = 2 }
 
 # Golden rendering shares Vulkan resources across test processes.
 [[profile.default.overrides]]
@@ -44,14 +45,14 @@ test-group = "compositor"
 filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
 test-group = "compositor"
 
-# Collaboration binaries share bounded socket resources.
+# Collaboration suites (modules of the agent `it` binary) share bounded socket resources.
 [[profile.default.overrides]]
-filter = 'package(agent) and (binary(presence_semantics) or binary(relay_roundtrip) or binary(discovered_operations) or binary(concurrent_edit))'
+filter = 'package(agent) and binary(it) and (test(presence_semantics::) or test(relay_roundtrip::) or test(discovered_operations::) or test(concurrent_edit::))'
 test-group = "agent-collaboration"
 threads-required = "num-cpus"
 
 [[profile.ci.overrides]]
-filter = 'package(agent) and (binary(presence_semantics) or binary(relay_roundtrip) or binary(discovered_operations) or binary(concurrent_edit))'
+filter = 'package(agent) and binary(it) and (test(presence_semantics::) or test(relay_roundtrip::) or test(discovered_operations::) or test(concurrent_edit::))'
 test-group = "agent-collaboration"
 threads-required = "num-cpus"
 
@@ -93,3 +94,15 @@ threads-required = "num-cpus"
 [[profile.ci.overrides]]
 filter = '(package(notes) and binary(it) and (test(screenshot_critique::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
 threads-required = "num-cpus"
+
+# The imager's migration, cache and download tests fsync journals and
+# payloads on the real disk that CI qualifies for them. Dozens at once queue
+# behind each other's flushes until their worker deadlines expire, so they
+# share a cap.
+[[profile.default.overrides]]
+filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
+test-group = "imager-durable-disk"
+
+[[profile.ci.overrides]]
+filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
+test-group = "imager-durable-disk"

@@ -517,24 +517,112 @@ mod tests {
     use vello_encoding::DrawTag;
 
     #[test]
-    fn retained_measure_uses_the_active_text_scale() {
-        let mut banner = Banner::info("A title").with_message("Supporting detail");
-        let mut taffy = TaffyTree::new();
-        let mut map = HashMap::new();
-        banner.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
-        let mut text = TextRenderer::new();
-        let measured = banner.measure(
-            taffy::Size {
-                width: Some(320.0),
-                height: None,
-            },
-            taffy::Size::MAX_CONTENT,
-            &mut text,
-        );
-        let default_height = Banner::info("A title")
-            .with_message("Supporting detail")
-            .content_height(&Theme::dark(), &mut text, 320.0);
-        assert!(f64::from(measured.height) > default_height);
+    fn banner_kind_icon_and_message_drive_paint_and_height() {
+        fn retained_measure_uses_the_active_text_scale() {
+            let mut banner = Banner::info("A title").with_message("Supporting detail");
+            let mut taffy = TaffyTree::new();
+            let mut map = HashMap::new();
+            banner.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
+            let mut text = TextRenderer::new();
+            let measured = banner.measure(
+                taffy::Size {
+                    width: Some(320.0),
+                    height: None,
+                },
+                taffy::Size::MAX_CONTENT,
+                &mut text,
+            );
+            let default_height = Banner::info("A title")
+                .with_message("Supporting detail")
+                .content_height(&Theme::dark(), &mut text, 320.0);
+            assert!(f64::from(measured.height) > default_height);
+        }
+
+        fn kind_maps_to_semantic_color_and_icon() {
+            let theme = Theme::dark();
+            assert_eq!(
+                BannerKind::Error.color(&theme),
+                theme.tokens.colors.semantic.danger
+            );
+            assert_eq!(
+                BannerKind::Success.color(&theme),
+                theme.tokens.colors.semantic.success
+            );
+            assert_eq!(
+                BannerKind::Warning.color(&theme),
+                theme.tokens.colors.semantic.warning
+            );
+            assert_eq!(
+                BannerKind::Info.color(&theme),
+                theme.tokens.colors.semantic.info
+            );
+            assert_eq!(BannerKind::Success.default_icon(), Icon::Check);
+        }
+
+        fn icon_override_wins() {
+            let b = Banner::info("Heads up").with_icon(Icon::Bell);
+            assert_eq!(b.icon(), Icon::Bell);
+            let d = Banner::info("Heads up");
+            assert_eq!(d.icon(), Icon::Info, "defaults to the severity icon");
+        }
+
+        fn message_makes_the_banner_taller() {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let short = Banner::info("One line").content_height(&theme, &mut text, 500.0);
+            let tall = Banner::info("One line")
+                .with_message("Plus a detail line")
+                .content_height(&theme, &mut text, 500.0);
+            assert!(tall > short, "a message adds a second line of height");
+        }
+
+        fn long_message_wraps_and_grows_to_its_painted_height() {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let message = "Tilo found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
+            let banner =
+                Banner::warning("Your existing identity needs recovery").with_message(message);
+            let width = 700.0;
+            let height = banner.content_height(&theme, &mut text, width);
+            let text_width =
+                banner_text_width(Rect::new(0.0, 0.0, f64::from(width), height), false);
+            let (_, message_height) =
+                text.measure(message, theme.tokens.typography.scale.sm, Some(text_width));
+
+            assert!(
+                message_height > theme.tokens.typography.scale.sm * 1.25,
+                "the recovery copy must wrap instead of escaping the banner"
+            );
+            assert!(
+                height >= f64::from(message_height) + PAD_Y * 2.0,
+                "the banner must reserve the same wrapped height that it paints"
+            );
+        }
+
+        fn draws_accent_bar_and_text() {
+            let mut b = Banner::error("Upload failed")
+                .with_message("Check your connection")
+                .dismissible();
+            lay_out(&mut b, 500.0, 200.0);
+            let scene = draw(&mut b);
+            let fills = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert!(
+                fills > 4,
+                "surface + border + bar + icon + text ⇒ many fills, got {fills}"
+            );
+        }
+
+        retained_measure_uses_the_active_text_scale();
+        kind_maps_to_semantic_color_and_icon();
+        icon_override_wins();
+        message_makes_the_banner_taller();
+        long_message_wraps_and_grows_to_its_painted_height();
+        draws_accent_bar_and_text();
     }
 
     fn lay_out(w: &mut dyn Widget, vw: f32, vh: f32) {
@@ -607,139 +695,61 @@ mod tests {
     }
 
     #[test]
-    fn kind_maps_to_semantic_color_and_icon() {
-        let theme = Theme::dark();
-        assert_eq!(
-            BannerKind::Error.color(&theme),
-            theme.tokens.colors.semantic.danger
-        );
-        assert_eq!(
-            BannerKind::Success.color(&theme),
-            theme.tokens.colors.semantic.success
-        );
-        assert_eq!(
-            BannerKind::Warning.color(&theme),
-            theme.tokens.colors.semantic.warning
-        );
-        assert_eq!(
-            BannerKind::Info.color(&theme),
-            theme.tokens.colors.semantic.info
-        );
-        assert_eq!(BannerKind::Success.default_icon(), Icon::Check);
-    }
+    fn banner_dismissal_and_live_region_semantics() {
+        fn dismiss_click_fires_once_and_collapses() {
+            let mut b = Banner::warning("Offline")
+                .with_message("Changes will sync later")
+                .dismissible();
+            lay_out(&mut b, 500.0, 200.0);
+            let _ = draw(&mut b);
+            let target = b.dismiss_rect.center();
+            assert!(target.x > 0.0, "dismiss rect resolves after draw");
+            dispatch(&mut b, &cursor(target));
+            assert!(dispatch(&mut b, &press()), "clicking × is consumed");
+            assert!(b.take_dismissed(), "dismiss signal fires");
+            assert!(!b.take_dismissed(), "dismiss signal drains after one read");
+            assert!(b.is_dismissed());
+            let scene = draw(&mut b);
+            let fills = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert_eq!(fills, 0, "a dismissed banner paints nothing");
+        }
 
-    #[test]
-    fn icon_override_wins() {
-        let b = Banner::info("Heads up").with_icon(Icon::Bell);
-        assert_eq!(b.icon(), Icon::Bell);
-        let d = Banner::info("Heads up");
-        assert_eq!(d.icon(), Icon::Info, "defaults to the severity icon");
-    }
+        fn non_dismissible_has_no_close_target() {
+            let mut b = Banner::success("Saved");
+            lay_out(&mut b, 500.0, 200.0);
+            let _ = draw(&mut b);
+            assert_eq!(b.dismiss_rect, Rect::ZERO, "no × when not dismissible");
+            let center = b.get_rect().center();
+            dispatch(&mut b, &cursor(center));
+            assert!(!dispatch(&mut b, &press()), "a body click is not consumed");
+            assert!(!b.take_dismissed());
+        }
 
-    #[test]
-    fn dismiss_click_fires_once_and_collapses() {
-        let mut b = Banner::warning("Offline")
-            .with_message("Changes will sync later")
-            .dismissible();
-        lay_out(&mut b, 500.0, 200.0);
-        let _ = draw(&mut b);
-        let target = b.dismiss_rect.center();
-        assert!(target.x > 0.0, "dismiss rect resolves after draw");
-        dispatch(&mut b, &cursor(target));
-        assert!(dispatch(&mut b, &press()), "clicking × is consumed");
-        assert!(b.take_dismissed(), "dismiss signal fires");
-        assert!(!b.take_dismissed(), "dismiss signal drains after one read");
-        assert!(b.is_dismissed());
-        let scene = draw(&mut b);
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert_eq!(fills, 0, "a dismissed banner paints nothing");
-    }
+        fn accessibility_is_live_region_with_severity_politeness() {
+            use crate::a11y::{Politeness, Role};
+            let err = Banner::error("Boom").with_message("details");
+            let node = Widget::accessibility(&err).expect("banner exposes a11y");
+            assert_eq!(node.role, Role::Group);
+            assert_eq!(node.name.as_deref(), Some("Boom"));
+            assert_eq!(
+                node.live,
+                Some(Politeness::Assertive),
+                "errors announce assertively"
+            );
+            let info = Banner::info("FYI");
+            assert_eq!(
+                Widget::accessibility(&info).unwrap().live,
+                Some(Politeness::Polite)
+            );
+        }
 
-    #[test]
-    fn non_dismissible_has_no_close_target() {
-        let mut b = Banner::success("Saved");
-        lay_out(&mut b, 500.0, 200.0);
-        let _ = draw(&mut b);
-        assert_eq!(b.dismiss_rect, Rect::ZERO, "no × when not dismissible");
-        let center = b.get_rect().center();
-        dispatch(&mut b, &cursor(center));
-        assert!(!dispatch(&mut b, &press()), "a body click is not consumed");
-        assert!(!b.take_dismissed());
-    }
-
-    #[test]
-    fn message_makes_the_banner_taller() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let short = Banner::info("One line").content_height(&theme, &mut text, 500.0);
-        let tall = Banner::info("One line")
-            .with_message("Plus a detail line")
-            .content_height(&theme, &mut text, 500.0);
-        assert!(tall > short, "a message adds a second line of height");
-    }
-
-    #[test]
-    fn long_message_wraps_and_grows_to_its_painted_height() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let message = "Tilo found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
-        let banner = Banner::warning("Your existing identity needs recovery").with_message(message);
-        let width = 700.0;
-        let height = banner.content_height(&theme, &mut text, width);
-        let text_width = banner_text_width(Rect::new(0.0, 0.0, f64::from(width), height), false);
-        let (_, message_height) =
-            text.measure(message, theme.tokens.typography.scale.sm, Some(text_width));
-
-        assert!(
-            message_height > theme.tokens.typography.scale.sm * 1.25,
-            "the recovery copy must wrap instead of escaping the banner"
-        );
-        assert!(
-            height >= f64::from(message_height) + PAD_Y * 2.0,
-            "the banner must reserve the same wrapped height that it paints"
-        );
-    }
-
-    #[test]
-    fn draws_accent_bar_and_text() {
-        let mut b = Banner::error("Upload failed")
-            .with_message("Check your connection")
-            .dismissible();
-        lay_out(&mut b, 500.0, 200.0);
-        let scene = draw(&mut b);
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert!(
-            fills > 4,
-            "surface + border + bar + icon + text ⇒ many fills, got {fills}"
-        );
-    }
-
-    #[test]
-    fn accessibility_is_live_region_with_severity_politeness() {
-        use crate::a11y::{Politeness, Role};
-        let err = Banner::error("Boom").with_message("details");
-        let node = Widget::accessibility(&err).expect("banner exposes a11y");
-        assert_eq!(node.role, Role::Group);
-        assert_eq!(node.name.as_deref(), Some("Boom"));
-        assert_eq!(
-            node.live,
-            Some(Politeness::Assertive),
-            "errors announce assertively"
-        );
-        let info = Banner::info("FYI");
-        assert_eq!(
-            Widget::accessibility(&info).unwrap().live,
-            Some(Politeness::Polite)
-        );
+        dismiss_click_fires_once_and_collapses();
+        non_dismissible_has_no_close_target();
+        accessibility_is_live_region_with_severity_politeness();
     }
 }

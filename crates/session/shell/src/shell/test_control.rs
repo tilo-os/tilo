@@ -1071,592 +1071,717 @@ mod tests {
     }
 
     #[test]
-    fn parse_list_targets_command_round_trips() {
-        let cmd = parse_command(r#"{"op":"list_targets"}"#).unwrap();
-        assert_eq!(cmd, Command::ListTargets);
-    }
-
-    #[test]
-    fn parse_pointer_button_defaults_to_left() {
-        let cmd = parse_command(r#"{"op":"pointer_button","pressed":true}"#).unwrap();
-        assert_eq!(
-            cmd,
-            Command::PointerButton {
-                pressed: true,
-                button: PointerButtonKind::Left,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn control_wire_parses_commands_serialises_responses_and_dumps_state() {
+        // Phase `control_commands_parse_and_responses_serialise_on_the_wire`.
+        {
+            // Phase `parse_list_targets_command_round_trips`.
+            {
+                let cmd = parse_command(r#"{"op":"list_targets"}"#).unwrap();
+                assert_eq!(cmd, Command::ListTargets);
             }
-        );
-    }
 
-    #[test]
-    fn parse_pointer_button_reads_the_right_button() {
-        let cmd =
-            parse_command(r#"{"op":"pointer_button","pressed":true,"button":"right"}"#).unwrap();
-        assert_eq!(
-            cmd,
-            Command::PointerButton {
-                pressed: true,
-                button: PointerButtonKind::Right,
+            // Phase `parse_unknown_command_returns_structured_error`.
+            {
+                let err = parse_command(r#"{"op":"go_fishing"}"#).unwrap_err();
+                let Response::Err { code, .. } = err else {
+                    panic!("expected Response::Err");
+                };
+                assert_eq!(code, "parse_error");
             }
-        );
-    }
 
-    #[test]
-    fn dispatching_a_right_click_plans_a_typed_button_not_the_left_one() {
-        let state = StaticState::new(&[]);
-        let (_, actions) = dispatch_command(
-            &Command::PointerButton {
-                pressed: true,
-                button: PointerButtonKind::Right,
-            },
-            &state,
-        );
-        assert_eq!(
-            actions,
-            vec![PlannedAction::MousePointerButton {
-                pressed: true,
-                button: PointerButtonKind::Right,
-            }],
-            "a right-click must not plan as MouseLeftButton, or the \
-             harness would be pressing the wrong button on the wire",
-        );
-    }
+            // Phase `parse_malformed_json_returns_structured_error`.
+            {
+                let err = parse_command(r"this is not json").unwrap_err();
+                let Response::Err { code, .. } = err else {
+                    panic!("expected Response::Err");
+                };
+                assert_eq!(code, "parse_error");
+            }
 
-    #[test]
-    fn dispatching_a_left_click_still_plans_the_original_variant() {
-        let state = StaticState::new(&[]);
-        let (_, actions) = dispatch_command(
-            &Command::PointerButton {
-                pressed: false,
-                button: PointerButtonKind::Left,
-            },
-            &state,
-        );
-        assert_eq!(
-            actions,
-            vec![PlannedAction::MouseLeftButton { pressed: false }],
-        );
-    }
+            // Phase `parse_snapshot_command_round_trips`.
+            {
+                let cmd = parse_command(r#"{"op":"snapshot","path":"/tmp/round.png"}"#).unwrap();
+                assert_eq!(
+                    cmd,
+                    Command::Snapshot {
+                        path: "/tmp/round.png".to_string()
+                    }
+                );
+            }
 
-    #[test]
-    fn parse_unknown_command_returns_structured_error() {
-        let err = parse_command(r#"{"op":"go_fishing"}"#).unwrap_err();
-        let Response::Err { code, .. } = err else {
-            panic!("expected Response::Err");
-        };
-        assert_eq!(code, "parse_error");
-    }
+            // Phase `parse_state_dump_command_round_trips`.
+            {
+                let cmd = parse_command(r#"{"op":"state_dump"}"#).unwrap();
+                assert_eq!(cmd, Command::StateDump);
+            }
 
-    #[test]
-    fn parse_malformed_json_returns_structured_error() {
-        let err = parse_command(r"this is not json").unwrap_err();
-        let Response::Err { code, .. } = err else {
-            panic!("expected Response::Err");
-        };
-        assert_eq!(code, "parse_error");
-    }
+            // Phase `serialise_response_emits_kebab_friendly_json`.
+            {
+                let resp = Response::Targets(vec![TargetEntry {
+                    name: "btn".to_string(),
+                    rect: [0.0, 0.0, 10.0, 10.0],
+                }]);
+                let out = serialise_response(&resp);
+                assert!(out.contains("\"targets\""));
+                assert!(out.contains("\"name\":\"btn\""));
+                assert!(out.contains("\"rect\""));
+            }
 
-    #[test]
-    fn list_targets_returns_sorted_entries() {
-        let state = StaticState::new(&[
-            ("zeta", Rect::new(0.0, 0.0, 10.0, 10.0)),
-            ("alpha", Rect::new(100.0, 100.0, 20.0, 20.0)),
-            ("mid", Rect::new(50.0, 50.0, 15.0, 15.0)),
-        ]);
-        let (resp, actions) = dispatch_command(&Command::ListTargets, &state);
-        assert!(actions.is_empty(), "list_targets has no side effects");
-        let Response::Targets(entries) = resp else {
-            panic!("expected Targets response");
-        };
-        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["alpha", "mid", "zeta"]);
-    }
+            // Phase `serialise_error_emits_code_and_message`.
+            {
+                let resp = Response::Err {
+                    code: "parse_error".to_string(),
+                    message: "oops".to_string(),
+                };
+                let out = serialise_response(&resp);
+                assert!(out.contains("\"code\":\"parse_error\""));
+                assert!(out.contains("\"message\":\"oops\""));
+                assert!(out.contains("\"err\""));
+            }
 
-    #[test]
-    fn list_targets_drops_zero_area_widgets() {
-        let state = StaticState::new(&[
-            ("clickable", Rect::new(0.0, 0.0, 10.0, 10.0)),
-            ("not_laid_out", Rect::ZERO),
-        ]);
-        let (resp, _) = dispatch_command(&Command::ListTargets, &state);
-        let Response::Targets(entries) = resp else {
-            panic!("expected Targets response");
-        };
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].name, "clickable");
-    }
+            // Phase `serialise_state_response_emits_workspace_tree_chrome_and_peers`.
+            {
+                let resp = Response::State {
+                    workspace_tree: serde_json::json!({ "workspaces": [] }),
+                    chrome: serde_json::json!({ "overlays": {} }),
+                    peers: serde_json::json!({ "pointers": [] }),
+                    sharing: serde_json::json!({ "exposures": [] }),
+                };
+                let out = serialise_response(&resp);
+                assert!(
+                    out.contains("\"state\""),
+                    "tag should be `state`; got {out}"
+                );
+                assert!(out.contains("\"workspace_tree\""), "got {out}");
+                assert!(out.contains("\"chrome\""), "got {out}");
+                assert!(out.contains("\"peers\""), "got {out}");
+                assert!(out.contains("\"sharing\""), "got {out}");
+            }
+        }
 
-    #[test]
-    fn list_targets_carries_rect_in_xywh_order() {
-        let state = StaticState::new(&[(
-            "tab",
-            Rect::from_origin_size(
-                vello::kurbo::Point::new(40.0, 80.0),
-                vello::kurbo::Size::new(120.0, 36.0),
-            ),
-        )]);
-        let (resp, _) = dispatch_command(&Command::ListTargets, &state);
-        let Response::Targets(entries) = resp else {
-            panic!("expected Targets response");
-        };
-        assert_eq!(entries[0].rect, [40.0, 80.0, 120.0, 36.0]);
-    }
+        // Phase `snapshot_and_state_dump_answer_or_refuse_without_side_effects`.
+        {
+            // Phase `snapshot_returns_ok_and_planned_action`.
+            {
+                let state = StaticState::new(&[]);
+                let (resp, actions) = dispatch_command(
+                    &Command::Snapshot {
+                        path: "/tmp/x.png".to_string(),
+                    },
+                    &state,
+                );
+                assert!(matches!(resp, Response::Ok { .. }));
+                assert_eq!(
+                    actions,
+                    vec![PlannedAction::Snapshot {
+                        path: PathBuf::from("/tmp/x.png"),
+                    }]
+                );
+            }
 
-    #[test]
-    fn click_at_emits_motion_press_release_in_order() {
-        let state = StaticState::new(&[]);
-        let (resp, actions) = dispatch_command(&Command::ClickAt { x: 42.0, y: 7.0 }, &state);
-        assert!(matches!(resp, Response::Ok { .. }));
-        assert_eq!(
-            actions,
-            vec![
-                PlannedAction::CursorMoved { x: 42.0, y: 7.0 },
-                PlannedAction::MouseLeftButton { pressed: true },
-                PlannedAction::MouseLeftButton { pressed: false },
-            ]
-        );
-    }
+            // Phase `snapshot_with_empty_path_returns_error`.
+            {
+                let state = StaticState::new(&[]);
+                let (resp, actions) = dispatch_command(
+                    &Command::Snapshot {
+                        path: String::new(),
+                    },
+                    &state,
+                );
+                assert!(actions.is_empty());
+                let Response::Err { code, .. } = resp else {
+                    panic!("expected Response::Err for empty snapshot path");
+                };
+                assert_eq!(code, "invalid_path");
+            }
 
-    #[test]
-    fn click_named_resolves_to_rect_centre() {
-        let state = StaticState::new(&[(
-            "btn",
-            Rect::from_origin_size(
-                vello::kurbo::Point::new(100.0, 200.0),
-                vello::kurbo::Size::new(40.0, 20.0),
-            ),
-        )]);
-        let (resp, actions) = dispatch_command(
-            &Command::ClickNamed {
-                name: "btn".to_string(),
-            },
-            &state,
-        );
-        assert!(matches!(resp, Response::Ok { .. }));
-        assert_eq!(
-            actions[0],
-            PlannedAction::CursorMoved { x: 120.0, y: 210.0 }
-        );
-    }
+            // Phase `state_dump_returns_state_response`.
+            {
+                let state = StateDumpMockState {
+                    workspace_tree: serde_json::json!({
+                        "workspaces": [{ "id": "w-1", "name": "demo" }],
+                        "active": "w-1",
+                    }),
+                    chrome: serde_json::json!({
+                        "overlays": { "overview": false, "quick_settings": false },
+                        "revision": 7_u64,
+                    }),
+                };
+                let (resp, actions) = dispatch_command(&Command::StateDump, &state);
+                assert!(actions.is_empty(), "state_dump must have no side effects");
+                let Response::State {
+                    workspace_tree,
+                    chrome,
+                    peers: _,
+                    sharing: _,
+                } = resp
+                else {
+                    panic!("expected Response::State, got something else");
+                };
+                assert!(
+                    workspace_tree.get("workspaces").is_some(),
+                    "workspace_tree should carry `workspaces` key; got {workspace_tree:?}"
+                );
+                let workspaces = workspace_tree["workspaces"].as_array().unwrap();
+                assert_eq!(workspaces.len(), 1);
+                assert!(
+                    chrome.get("overlays").is_some(),
+                    "chrome should carry `overlays` key; got {chrome:?}"
+                );
+            }
 
-    #[test]
-    fn click_named_unknown_target_returns_error_with_no_actions() {
-        let state = StaticState::new(&[]);
-        let (resp, actions) = dispatch_command(
-            &Command::ClickNamed {
-                name: "ghost".to_string(),
-            },
-            &state,
-        );
-        assert!(actions.is_empty());
-        let Response::Err { code, .. } = resp else {
-            panic!("expected Err");
-        };
-        assert_eq!(code, "unknown_target");
-    }
-
-    #[test]
-    fn click_named_zero_area_returns_error() {
-        let state = StaticState::new(&[("pending", Rect::ZERO)]);
-        let (resp, actions) = dispatch_command(
-            &Command::ClickNamed {
-                name: "pending".to_string(),
-            },
-            &state,
-        );
-        assert!(actions.is_empty());
-        assert!(matches!(resp, Response::Err { .. }));
-    }
-
-    #[test]
-    fn serialise_response_emits_kebab_friendly_json() {
-        let resp = Response::Targets(vec![TargetEntry {
-            name: "btn".to_string(),
-            rect: [0.0, 0.0, 10.0, 10.0],
-        }]);
-        let out = serialise_response(&resp);
-        assert!(out.contains("\"targets\""));
-        assert!(out.contains("\"name\":\"btn\""));
-        assert!(out.contains("\"rect\""));
-    }
-
-    #[test]
-    fn serialise_error_emits_code_and_message() {
-        let resp = Response::Err {
-            code: "parse_error".to_string(),
-            message: "oops".to_string(),
-        };
-        let out = serialise_response(&resp);
-        assert!(out.contains("\"code\":\"parse_error\""));
-        assert!(out.contains("\"message\":\"oops\""));
-        assert!(out.contains("\"err\""));
-    }
-
-    #[test]
-    fn drag_emits_press_motions_release() {
-        let state = StaticState::new(&[]);
-        let (resp, actions) = dispatch_command(
-            &Command::Drag {
-                x_from: 0.0,
-                y_from: 0.0,
-                x_to: 100.0,
-                y_to: 100.0,
-                steps: Some(4),
-            },
-            &state,
-        );
-        assert!(matches!(resp, Response::Ok { .. }));
-        // Intermediates use approximate equality to dodge f64 round-off; endpoints are exact integers.
-        assert_eq!(actions.len(), 7);
-        assert_eq!(actions[0], PlannedAction::CursorMoved { x: 0.0, y: 0.0 });
-        assert_eq!(actions[1], PlannedAction::MouseLeftButton { pressed: true });
-        assert_eq!(
-            actions[6],
-            PlannedAction::MouseLeftButton { pressed: false }
-        );
-        // Interpolated motions, t = 0/3, 1/3, 2/3, 3/3.
-        let expected_ts = [0.0_f64, 1.0 / 3.0, 2.0 / 3.0, 1.0];
-        for (idx, t) in expected_ts.iter().enumerate() {
-            let PlannedAction::CursorMoved { x, y } = actions[2 + idx] else {
-                panic!("expected CursorMoved at index {}", 2 + idx);
-            };
-            let expected = 100.0 * t;
-            assert!(
-                (x - expected).abs() < 1e-9,
-                "x mismatch at step {idx}: got {x}, want {expected}"
-            );
-            assert!(
-                (y - expected).abs() < 1e-9,
-                "y mismatch at step {idx}: got {y}, want {expected}"
-            );
+            // Phase `state_dump_default_impl_returns_nulls`.
+            {
+                let state = StaticState::new(&[]);
+                let (resp, actions) = dispatch_command(&Command::StateDump, &state);
+                assert!(actions.is_empty());
+                let Response::State {
+                    workspace_tree,
+                    chrome,
+                    peers: _,
+                    sharing: _,
+                } = resp
+                else {
+                    panic!("expected Response::State");
+                };
+                assert!(workspace_tree.is_null());
+                assert!(chrome.is_null());
+            }
         }
     }
 
     #[test]
-    fn drag_default_steps_is_eight() {
-        let state = StaticState::new(&[]);
-        let (_, actions) = dispatch_command(
-            &Command::Drag {
-                x_from: 0.0,
-                y_from: 0.0,
-                x_to: 80.0,
-                y_to: 0.0,
-                steps: None,
-            },
-            &state,
-        );
-        assert_eq!(actions.len(), 11);
-    }
-
-    #[test]
-    fn key_named_emits_press_then_release() {
-        let state = StaticState::new(&[]);
-        let (resp, actions) = dispatch_command(
-            &Command::Key {
-                key: "Enter".to_string(),
-            },
-            &state,
-        );
-        assert!(matches!(resp, Response::Ok { .. }));
-        assert_eq!(
-            actions,
-            vec![
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Named(NamedKeyTag::Enter),
-                    pressed: true,
-                },
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Named(NamedKeyTag::Enter),
-                    pressed: false,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn key_single_char_maps_to_char_variant() {
-        let state = StaticState::new(&[]);
-        let (_, actions) = dispatch_command(
-            &Command::Key {
-                key: "a".to_string(),
-            },
-            &state,
-        );
-        assert_eq!(
-            actions[0],
-            PlannedAction::KeyboardKey {
-                key: KeyTag::Char('a'),
-                pressed: true,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn pointer_commands_plan_typed_buttons_clicks_drags_and_list_targets() {
+        // Phase `pointer_button_parses_and_plans_the_typed_button`.
+        {
+            // Phase `parse_pointer_button_defaults_to_left`.
+            {
+                let cmd = parse_command(r#"{"op":"pointer_button","pressed":true}"#).unwrap();
+                assert_eq!(
+                    cmd,
+                    Command::PointerButton {
+                        pressed: true,
+                        button: PointerButtonKind::Left,
+                    }
+                );
             }
-        );
-    }
 
-    #[test]
-    fn key_unknown_returns_parse_error() {
-        let state = StaticState::new(&[]);
-        let (resp, actions) = dispatch_command(
-            &Command::Key {
-                key: "go_fishing".to_string(),
-            },
-            &state,
-        );
-        assert!(actions.is_empty());
-        let Response::Err { code, .. } = resp else {
-            panic!("expected Response::Err");
-        };
-        assert_eq!(code, "parse_error");
-    }
+            // Phase `parse_pointer_button_reads_the_right_button`.
+            {
+                let cmd =
+                    parse_command(r#"{"op":"pointer_button","pressed":true,"button":"right"}"#)
+                        .unwrap();
+                assert_eq!(
+                    cmd,
+                    Command::PointerButton {
+                        pressed: true,
+                        button: PointerButtonKind::Right,
+                    }
+                );
+            }
 
-    #[test]
-    fn type_text_emits_press_release_per_char() {
-        let state = StaticState::new(&[]);
-        let (resp, actions) = dispatch_command(
-            &Command::Type {
-                text: "ab".to_string(),
-            },
-            &state,
-        );
-        assert!(matches!(resp, Response::Ok { .. }));
-        assert_eq!(actions.len(), 4);
-        assert_eq!(
-            actions,
-            vec![
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Char('a'),
-                    pressed: true,
-                },
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Char('a'),
-                    pressed: false,
-                },
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Char('b'),
-                    pressed: true,
-                },
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Char('b'),
-                    pressed: false,
-                },
-            ]
-        );
-    }
+            // Phase `dispatching_a_right_click_plans_a_typed_button_not_the_left_one`.
+            {
+                let state = StaticState::new(&[]);
+                let (_, actions) = dispatch_command(
+                    &Command::PointerButton {
+                        pressed: true,
+                        button: PointerButtonKind::Right,
+                    },
+                    &state,
+                );
+                assert_eq!(
+                    actions,
+                    vec![PlannedAction::MousePointerButton {
+                        pressed: true,
+                        button: PointerButtonKind::Right,
+                    }],
+                    "a right-click must not plan as MouseLeftButton, or the \
+                     harness would be pressing the wrong button on the wire",
+                );
+            }
 
-    /// Asserts the exact action sequence, not just a count — a missing Shift bracket is invisible to chrome (reads `text`) and only shows up on the delivered key stream.
-    #[test]
-    fn typing_a_capital_holds_shift_around_it() {
-        let state = StaticState::new(&[]);
-        let (resp, actions) = dispatch_command(
-            &Command::Type {
-                text: "Hi".to_string(),
-            },
-            &state,
-        );
-        assert!(matches!(resp, Response::Ok { .. }));
-        assert_eq!(
-            actions,
-            vec![
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Named(NamedKeyTag::Shift),
-                    pressed: true,
-                },
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Char('H'),
-                    pressed: true,
-                },
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Char('H'),
-                    pressed: false,
-                },
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Named(NamedKeyTag::Shift),
-                    pressed: false,
-                },
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Char('i'),
-                    pressed: true,
-                },
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Char('i'),
-                    pressed: false,
-                },
-            ],
-            "a capital is typed with Shift held across it, and a lowercase \
-             letter is not — a bare keycode would reach the client as its \
-             lowercase letter either way",
-        );
-    }
+            // Phase `dispatching_a_left_click_still_plans_the_original_variant`.
+            {
+                let state = StaticState::new(&[]);
+                let (_, actions) = dispatch_command(
+                    &Command::PointerButton {
+                        pressed: false,
+                        button: PointerButtonKind::Left,
+                    },
+                    &state,
+                );
+                assert_eq!(
+                    actions,
+                    vec![PlannedAction::MouseLeftButton { pressed: false }],
+                );
+            }
+        }
 
-    #[test]
-    fn typing_a_shifted_punctuation_mark_holds_shift_around_it() {
-        let state = StaticState::new(&[]);
-        let (_, actions) = dispatch_command(
-            &Command::Type {
-                text: ":".to_string(),
-            },
-            &state,
-        );
-        assert_eq!(
-            actions,
-            vec![
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Named(NamedKeyTag::Shift),
-                    pressed: true,
-                },
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Char(':'),
-                    pressed: true,
-                },
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Char(':'),
-                    pressed: false,
-                },
-                PlannedAction::KeyboardKey {
-                    key: KeyTag::Named(NamedKeyTag::Shift),
-                    pressed: false,
-                },
-            ],
-        );
-    }
+        // Phase `list_targets_returns_sorted_non_empty_xywh_entries`.
+        {
+            // Phase `list_targets_returns_sorted_entries`.
+            {
+                let state = StaticState::new(&[
+                    ("zeta", Rect::new(0.0, 0.0, 10.0, 10.0)),
+                    ("alpha", Rect::new(100.0, 100.0, 20.0, 20.0)),
+                    ("mid", Rect::new(50.0, 50.0, 15.0, 15.0)),
+                ]);
+                let (resp, actions) = dispatch_command(&Command::ListTargets, &state);
+                assert!(actions.is_empty(), "list_targets has no side effects");
+                let Response::Targets(entries) = resp else {
+                    panic!("expected Targets response");
+                };
+                let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
+                assert_eq!(names, vec!["alpha", "mid", "zeta"]);
+            }
 
-    #[test]
-    fn type_empty_text_is_a_noop() {
-        let state = StaticState::new(&[]);
-        let (resp, actions) = dispatch_command(
-            &Command::Type {
-                text: String::new(),
-            },
-            &state,
-        );
-        assert!(matches!(resp, Response::Ok { .. }));
-        assert!(actions.is_empty());
-    }
+            // Phase `list_targets_drops_zero_area_widgets`.
+            {
+                let state = StaticState::new(&[
+                    ("clickable", Rect::new(0.0, 0.0, 10.0, 10.0)),
+                    ("not_laid_out", Rect::ZERO),
+                ]);
+                let (resp, _) = dispatch_command(&Command::ListTargets, &state);
+                let Response::Targets(entries) = resp else {
+                    panic!("expected Targets response");
+                };
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].name, "clickable");
+            }
 
-    #[test]
-    fn modifiers_command_emits_single_action_with_mask() {
-        let state = StaticState::new(&[]);
-        let (resp, actions) = dispatch_command(
-            &Command::Modifiers {
-                ctrl: true,
-                shift: false,
-                alt: true,
-                logo: false,
-            },
-            &state,
-        );
-        assert!(matches!(resp, Response::Ok { .. }));
-        assert_eq!(
-            actions,
-            vec![PlannedAction::SetModifiers {
-                ctrl: true,
-                shift: false,
-                alt: true,
-                logo: false,
-            }]
-        );
-    }
+            // Phase `list_targets_carries_rect_in_xywh_order`.
+            {
+                let state = StaticState::new(&[(
+                    "tab",
+                    Rect::from_origin_size(
+                        vello::kurbo::Point::new(40.0, 80.0),
+                        vello::kurbo::Size::new(120.0, 36.0),
+                    ),
+                )]);
+                let (resp, _) = dispatch_command(&Command::ListTargets, &state);
+                let Response::Targets(entries) = resp else {
+                    panic!("expected Targets response");
+                };
+                assert_eq!(entries[0].rect, [40.0, 80.0, 120.0, 36.0]);
+            }
+        }
 
-    #[test]
-    fn modifiers_all_false_still_emits_action() {
-        let state = StaticState::new(&[]);
-        let (_, actions) = dispatch_command(
-            &Command::Modifiers {
-                ctrl: false,
-                shift: false,
-                alt: false,
-                logo: false,
-            },
-            &state,
-        );
-        assert_eq!(actions.len(), 1);
-    }
+        // Phase `clicks_resolve_to_rect_centres_or_structured_errors`.
+        {
+            // Phase `click_at_emits_motion_press_release_in_order`.
+            {
+                let state = StaticState::new(&[]);
+                let (resp, actions) =
+                    dispatch_command(&Command::ClickAt { x: 42.0, y: 7.0 }, &state);
+                assert!(matches!(resp, Response::Ok { .. }));
+                assert_eq!(
+                    actions,
+                    vec![
+                        PlannedAction::CursorMoved { x: 42.0, y: 7.0 },
+                        PlannedAction::MouseLeftButton { pressed: true },
+                        PlannedAction::MouseLeftButton { pressed: false },
+                    ]
+                );
+            }
 
-    #[test]
-    fn parse_key_tag_covers_all_named_keys() {
-        let cases = [
-            ("Enter", NamedKeyTag::Enter),
-            ("Escape", NamedKeyTag::Escape),
-            ("Tab", NamedKeyTag::Tab),
-            ("ArrowLeft", NamedKeyTag::ArrowLeft),
-            ("ArrowRight", NamedKeyTag::ArrowRight),
-            ("ArrowUp", NamedKeyTag::ArrowUp),
-            ("ArrowDown", NamedKeyTag::ArrowDown),
-            ("Backspace", NamedKeyTag::Backspace),
-            ("Delete", NamedKeyTag::Delete),
-            ("Home", NamedKeyTag::Home),
-            ("End", NamedKeyTag::End),
-            ("PageUp", NamedKeyTag::PageUp),
-            ("PageDown", NamedKeyTag::PageDown),
-            ("F1", NamedKeyTag::F1),
-            ("F4", NamedKeyTag::F4),
-            ("PrintScreen", NamedKeyTag::PrintScreen),
-            ("AudioVolumeUp", NamedKeyTag::AudioVolumeUp),
-            ("AudioVolumeDown", NamedKeyTag::AudioVolumeDown),
-            ("AudioVolumeMute", NamedKeyTag::AudioVolumeMute),
-            ("MicrophoneVolumeMute", NamedKeyTag::MicrophoneVolumeMute),
-            ("BrightnessUp", NamedKeyTag::BrightnessUp),
-            ("BrightnessDown", NamedKeyTag::BrightnessDown),
-            ("MediaPlayPause", NamedKeyTag::MediaPlayPause),
-            ("MediaTrackNext", NamedKeyTag::MediaTrackNext),
-            ("MediaTrackPrevious", NamedKeyTag::MediaTrackPrevious),
-            ("Space", NamedKeyTag::Space),
-        ];
-        for (name, expected) in cases {
-            assert_eq!(
-                parse_key_tag(name),
-                Some(KeyTag::Named(expected)),
-                "named-key parse failed for `{name}`"
-            );
+            // Phase `click_named_resolves_to_rect_centre`.
+            {
+                let state = StaticState::new(&[(
+                    "btn",
+                    Rect::from_origin_size(
+                        vello::kurbo::Point::new(100.0, 200.0),
+                        vello::kurbo::Size::new(40.0, 20.0),
+                    ),
+                )]);
+                let (resp, actions) = dispatch_command(
+                    &Command::ClickNamed {
+                        name: "btn".to_string(),
+                    },
+                    &state,
+                );
+                assert!(matches!(resp, Response::Ok { .. }));
+                assert_eq!(
+                    actions[0],
+                    PlannedAction::CursorMoved { x: 120.0, y: 210.0 }
+                );
+            }
+
+            // Phase `click_named_unknown_target_returns_error_with_no_actions`.
+            {
+                let state = StaticState::new(&[]);
+                let (resp, actions) = dispatch_command(
+                    &Command::ClickNamed {
+                        name: "ghost".to_string(),
+                    },
+                    &state,
+                );
+                assert!(actions.is_empty());
+                let Response::Err { code, .. } = resp else {
+                    panic!("expected Err");
+                };
+                assert_eq!(code, "unknown_target");
+            }
+
+            // Phase `click_named_zero_area_returns_error`.
+            {
+                let state = StaticState::new(&[("pending", Rect::ZERO)]);
+                let (resp, actions) = dispatch_command(
+                    &Command::ClickNamed {
+                        name: "pending".to_string(),
+                    },
+                    &state,
+                );
+                assert!(actions.is_empty());
+                assert!(matches!(resp, Response::Err { .. }));
+            }
+        }
+
+        // Phase `drag_emits_press_eight_default_motions_and_release`.
+        {
+            // Phase `drag_emits_press_motions_release`.
+            {
+                let state = StaticState::new(&[]);
+                let (resp, actions) = dispatch_command(
+                    &Command::Drag {
+                        x_from: 0.0,
+                        y_from: 0.0,
+                        x_to: 100.0,
+                        y_to: 100.0,
+                        steps: Some(4),
+                    },
+                    &state,
+                );
+                assert!(matches!(resp, Response::Ok { .. }));
+                // Intermediates use approximate equality to dodge f64 round-off; endpoints are exact integers.
+                assert_eq!(actions.len(), 7);
+                assert_eq!(actions[0], PlannedAction::CursorMoved { x: 0.0, y: 0.0 });
+                assert_eq!(actions[1], PlannedAction::MouseLeftButton { pressed: true });
+                assert_eq!(
+                    actions[6],
+                    PlannedAction::MouseLeftButton { pressed: false }
+                );
+                // Interpolated motions, t = 0/3, 1/3, 2/3, 3/3.
+                let expected_ts = [0.0_f64, 1.0 / 3.0, 2.0 / 3.0, 1.0];
+                for (idx, t) in expected_ts.iter().enumerate() {
+                    let PlannedAction::CursorMoved { x, y } = actions[2 + idx] else {
+                        panic!("expected CursorMoved at index {}", 2 + idx);
+                    };
+                    let expected = 100.0 * t;
+                    assert!(
+                        (x - expected).abs() < 1e-9,
+                        "x mismatch at step {idx}: got {x}, want {expected}"
+                    );
+                    assert!(
+                        (y - expected).abs() < 1e-9,
+                        "y mismatch at step {idx}: got {y}, want {expected}"
+                    );
+                }
+            }
+
+            // Phase `drag_default_steps_is_eight`.
+            {
+                let state = StaticState::new(&[]);
+                let (_, actions) = dispatch_command(
+                    &Command::Drag {
+                        x_from: 0.0,
+                        y_from: 0.0,
+                        x_to: 80.0,
+                        y_to: 0.0,
+                        steps: None,
+                    },
+                    &state,
+                );
+                assert_eq!(actions.len(), 11);
+            }
         }
     }
 
     #[test]
-    fn parse_key_tag_rejects_empty_string() {
-        assert!(parse_key_tag("").is_none());
-    }
-
-    #[test]
-    fn snapshot_returns_ok_and_planned_action() {
-        let state = StaticState::new(&[]);
-        let (resp, actions) = dispatch_command(
-            &Command::Snapshot {
-                path: "/tmp/x.png".to_string(),
-            },
-            &state,
-        );
-        assert!(matches!(resp, Response::Ok { .. }));
-        assert_eq!(
-            actions,
-            vec![PlannedAction::Snapshot {
-                path: PathBuf::from("/tmp/x.png"),
-            }]
-        );
-    }
-
-    #[test]
-    fn snapshot_with_empty_path_returns_error() {
-        let state = StaticState::new(&[]);
-        let (resp, actions) = dispatch_command(
-            &Command::Snapshot {
-                path: String::new(),
-            },
-            &state,
-        );
-        assert!(actions.is_empty());
-        let Response::Err { code, .. } = resp else {
-            panic!("expected Response::Err for empty snapshot path");
-        };
-        assert_eq!(code, "invalid_path");
-    }
-
-    #[test]
-    fn parse_snapshot_command_round_trips() {
-        let cmd = parse_command(r#"{"op":"snapshot","path":"/tmp/round.png"}"#).unwrap();
-        assert_eq!(
-            cmd,
-            Command::Snapshot {
-                path: "/tmp/round.png".to_string()
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn keyboard_commands_plan_keys_modifiers_and_typed_text() {
+        // Phase `keys_and_modifiers_plan_press_release_actions`.
+        {
+            // Phase `key_named_emits_press_then_release`.
+            {
+                let state = StaticState::new(&[]);
+                let (resp, actions) = dispatch_command(
+                    &Command::Key {
+                        key: "Enter".to_string(),
+                    },
+                    &state,
+                );
+                assert!(matches!(resp, Response::Ok { .. }));
+                assert_eq!(
+                    actions,
+                    vec![
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Named(NamedKeyTag::Enter),
+                            pressed: true,
+                        },
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Named(NamedKeyTag::Enter),
+                            pressed: false,
+                        },
+                    ]
+                );
             }
-        );
+
+            // Phase `key_single_char_maps_to_char_variant`.
+            {
+                let state = StaticState::new(&[]);
+                let (_, actions) = dispatch_command(
+                    &Command::Key {
+                        key: "a".to_string(),
+                    },
+                    &state,
+                );
+                assert_eq!(
+                    actions[0],
+                    PlannedAction::KeyboardKey {
+                        key: KeyTag::Char('a'),
+                        pressed: true,
+                    }
+                );
+            }
+
+            // Phase `key_unknown_returns_parse_error`.
+            {
+                let state = StaticState::new(&[]);
+                let (resp, actions) = dispatch_command(
+                    &Command::Key {
+                        key: "go_fishing".to_string(),
+                    },
+                    &state,
+                );
+                assert!(actions.is_empty());
+                let Response::Err { code, .. } = resp else {
+                    panic!("expected Response::Err");
+                };
+                assert_eq!(code, "parse_error");
+            }
+
+            // Phase `parse_key_tag_covers_all_named_keys`.
+            {
+                let cases = [
+                    ("Enter", NamedKeyTag::Enter),
+                    ("Escape", NamedKeyTag::Escape),
+                    ("Tab", NamedKeyTag::Tab),
+                    ("ArrowLeft", NamedKeyTag::ArrowLeft),
+                    ("ArrowRight", NamedKeyTag::ArrowRight),
+                    ("ArrowUp", NamedKeyTag::ArrowUp),
+                    ("ArrowDown", NamedKeyTag::ArrowDown),
+                    ("Backspace", NamedKeyTag::Backspace),
+                    ("Delete", NamedKeyTag::Delete),
+                    ("Home", NamedKeyTag::Home),
+                    ("End", NamedKeyTag::End),
+                    ("PageUp", NamedKeyTag::PageUp),
+                    ("PageDown", NamedKeyTag::PageDown),
+                    ("F1", NamedKeyTag::F1),
+                    ("F4", NamedKeyTag::F4),
+                    ("PrintScreen", NamedKeyTag::PrintScreen),
+                    ("AudioVolumeUp", NamedKeyTag::AudioVolumeUp),
+                    ("AudioVolumeDown", NamedKeyTag::AudioVolumeDown),
+                    ("AudioVolumeMute", NamedKeyTag::AudioVolumeMute),
+                    ("MicrophoneVolumeMute", NamedKeyTag::MicrophoneVolumeMute),
+                    ("BrightnessUp", NamedKeyTag::BrightnessUp),
+                    ("BrightnessDown", NamedKeyTag::BrightnessDown),
+                    ("MediaPlayPause", NamedKeyTag::MediaPlayPause),
+                    ("MediaTrackNext", NamedKeyTag::MediaTrackNext),
+                    ("MediaTrackPrevious", NamedKeyTag::MediaTrackPrevious),
+                    ("Space", NamedKeyTag::Space),
+                ];
+                for (name, expected) in cases {
+                    assert_eq!(
+                        parse_key_tag(name),
+                        Some(KeyTag::Named(expected)),
+                        "named-key parse failed for `{name}`"
+                    );
+                }
+            }
+
+            // Phase `parse_key_tag_rejects_empty_string`.
+            {
+                assert!(parse_key_tag("").is_none());
+            }
+
+            // Phase `modifiers_command_emits_single_action_with_mask`.
+            {
+                let state = StaticState::new(&[]);
+                let (resp, actions) = dispatch_command(
+                    &Command::Modifiers {
+                        ctrl: true,
+                        shift: false,
+                        alt: true,
+                        logo: false,
+                    },
+                    &state,
+                );
+                assert!(matches!(resp, Response::Ok { .. }));
+                assert_eq!(
+                    actions,
+                    vec![PlannedAction::SetModifiers {
+                        ctrl: true,
+                        shift: false,
+                        alt: true,
+                        logo: false,
+                    }]
+                );
+            }
+
+            // Phase `modifiers_all_false_still_emits_action`.
+            {
+                let state = StaticState::new(&[]);
+                let (_, actions) = dispatch_command(
+                    &Command::Modifiers {
+                        ctrl: false,
+                        shift: false,
+                        alt: false,
+                        logo: false,
+                    },
+                    &state,
+                );
+                assert_eq!(actions.len(), 1);
+            }
+        }
+
+        // Phase `typing_plans_press_release_per_char_with_shift_where_needed`.
+        {
+            // Phase `type_text_emits_press_release_per_char`.
+            {
+                let state = StaticState::new(&[]);
+                let (resp, actions) = dispatch_command(
+                    &Command::Type {
+                        text: "ab".to_string(),
+                    },
+                    &state,
+                );
+                assert!(matches!(resp, Response::Ok { .. }));
+                assert_eq!(actions.len(), 4);
+                assert_eq!(
+                    actions,
+                    vec![
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Char('a'),
+                            pressed: true,
+                        },
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Char('a'),
+                            pressed: false,
+                        },
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Char('b'),
+                            pressed: true,
+                        },
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Char('b'),
+                            pressed: false,
+                        },
+                    ]
+                );
+            }
+
+            // Phase `typing_a_capital_holds_shift_around_it`.
+            // Asserts the exact action sequence, not just a count — a missing Shift bracket is invisible to chrome (reads `text`) and only shows up on the delivered key stream.
+            {
+                let state = StaticState::new(&[]);
+                let (resp, actions) = dispatch_command(
+                    &Command::Type {
+                        text: "Hi".to_string(),
+                    },
+                    &state,
+                );
+                assert!(matches!(resp, Response::Ok { .. }));
+                assert_eq!(
+                    actions,
+                    vec![
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Named(NamedKeyTag::Shift),
+                            pressed: true,
+                        },
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Char('H'),
+                            pressed: true,
+                        },
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Char('H'),
+                            pressed: false,
+                        },
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Named(NamedKeyTag::Shift),
+                            pressed: false,
+                        },
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Char('i'),
+                            pressed: true,
+                        },
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Char('i'),
+                            pressed: false,
+                        },
+                    ],
+                    "a capital is typed with Shift held across it, and a lowercase \
+                     letter is not — a bare keycode would reach the client as its \
+                     lowercase letter either way",
+                );
+            }
+
+            // Phase `typing_a_shifted_punctuation_mark_holds_shift_around_it`.
+            {
+                let state = StaticState::new(&[]);
+                let (_, actions) = dispatch_command(
+                    &Command::Type {
+                        text: ":".to_string(),
+                    },
+                    &state,
+                );
+                assert_eq!(
+                    actions,
+                    vec![
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Named(NamedKeyTag::Shift),
+                            pressed: true,
+                        },
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Char(':'),
+                            pressed: true,
+                        },
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Char(':'),
+                            pressed: false,
+                        },
+                        PlannedAction::KeyboardKey {
+                            key: KeyTag::Named(NamedKeyTag::Shift),
+                            pressed: false,
+                        },
+                    ],
+                );
+            }
+
+            // Phase `type_empty_text_is_a_noop`.
+            {
+                let state = StaticState::new(&[]);
+                let (resp, actions) = dispatch_command(
+                    &Command::Type {
+                        text: String::new(),
+                    },
+                    &state,
+                );
+                assert!(matches!(resp, Response::Ok { .. }));
+                assert!(actions.is_empty());
+            }
+        }
     }
 
     struct StateDumpMockState {
@@ -1674,84 +1799,6 @@ mod tests {
         fn chrome_state_json(&self) -> serde_json::Value {
             self.chrome.clone()
         }
-    }
-
-    #[test]
-    fn parse_state_dump_command_round_trips() {
-        let cmd = parse_command(r#"{"op":"state_dump"}"#).unwrap();
-        assert_eq!(cmd, Command::StateDump);
-    }
-
-    #[test]
-    fn state_dump_returns_state_response() {
-        let state = StateDumpMockState {
-            workspace_tree: serde_json::json!({
-                "workspaces": [{ "id": "w-1", "name": "demo" }],
-                "active": "w-1",
-            }),
-            chrome: serde_json::json!({
-                "overlays": { "overview": false, "quick_settings": false },
-                "revision": 7_u64,
-            }),
-        };
-        let (resp, actions) = dispatch_command(&Command::StateDump, &state);
-        assert!(actions.is_empty(), "state_dump must have no side effects");
-        let Response::State {
-            workspace_tree,
-            chrome,
-            peers: _,
-            sharing: _,
-        } = resp
-        else {
-            panic!("expected Response::State, got something else");
-        };
-        assert!(
-            workspace_tree.get("workspaces").is_some(),
-            "workspace_tree should carry `workspaces` key; got {workspace_tree:?}"
-        );
-        let workspaces = workspace_tree["workspaces"].as_array().unwrap();
-        assert_eq!(workspaces.len(), 1);
-        assert!(
-            chrome.get("overlays").is_some(),
-            "chrome should carry `overlays` key; got {chrome:?}"
-        );
-    }
-
-    #[test]
-    fn state_dump_default_impl_returns_nulls() {
-        let state = StaticState::new(&[]);
-        let (resp, actions) = dispatch_command(&Command::StateDump, &state);
-        assert!(actions.is_empty());
-        let Response::State {
-            workspace_tree,
-            chrome,
-            peers: _,
-            sharing: _,
-        } = resp
-        else {
-            panic!("expected Response::State");
-        };
-        assert!(workspace_tree.is_null());
-        assert!(chrome.is_null());
-    }
-
-    #[test]
-    fn serialise_state_response_emits_workspace_tree_chrome_and_peers() {
-        let resp = Response::State {
-            workspace_tree: serde_json::json!({ "workspaces": [] }),
-            chrome: serde_json::json!({ "overlays": {} }),
-            peers: serde_json::json!({ "pointers": [] }),
-            sharing: serde_json::json!({ "exposures": [] }),
-        };
-        let out = serialise_response(&resp);
-        assert!(
-            out.contains("\"state\""),
-            "tag should be `state`; got {out}"
-        );
-        assert!(out.contains("\"workspace_tree\""), "got {out}");
-        assert!(out.contains("\"chrome\""), "got {out}");
-        assert!(out.contains("\"peers\""), "got {out}");
-        assert!(out.contains("\"sharing\""), "got {out}");
     }
 
     struct ActionState;
@@ -1823,268 +1870,284 @@ mod tests {
         }
     }
 
-    /// If enumeration could produce a `PlannedAction`, surveying the surface would mutate the session just by looking at it.
     #[test]
-    fn enumerate_answers_without_planning_any_side_effect() {
-        let (resp, actions) = dispatch_command(
-            &Command::ActionsEnumerate {
-                query: String::new(),
-            },
-            &ActionState,
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn action_ops_resolve_addresses_and_bind_arguments_strictly() {
+        // Phase `action_ops_enumerate_invoke_and_track_jobs_by_address`.
+        {
+            // Phase `enumerate_answers_without_planning_any_side_effect`.
+            // If enumeration could produce a `PlannedAction`, surveying the surface would mutate the session just by looking at it.
+            {
+                let (resp, actions) = dispatch_command(
+                    &Command::ActionsEnumerate {
+                        query: String::new(),
+                    },
+                    &ActionState,
+                );
 
-        assert!(
-            actions.is_empty(),
-            "enumeration must plan no actions; got {actions:?}"
-        );
-        let Response::Answer(payload) = resp else {
-            panic!("expected Response::Answer, got {resp:?}");
-        };
-        assert_eq!(payload["count"], 1);
-        assert_eq!(payload["actions"][0]["provider"], "shell.actions");
-        assert_eq!(payload["actions"][0]["id"], "settings.open");
-    }
+                assert!(
+                    actions.is_empty(),
+                    "enumeration must plan no actions; got {actions:?}"
+                );
+                let Response::Answer(payload) = resp else {
+                    panic!("expected Response::Answer, got {resp:?}");
+                };
+                assert_eq!(payload["count"], 1);
+                assert_eq!(payload["actions"][0]["provider"], "shell.actions");
+                assert_eq!(payload["actions"][0]["id"], "settings.open");
+            }
 
-    #[test]
-    fn invoke_resolves_the_address_then_plans_one_invocation() {
-        let (resp, actions) = dispatch_command(
-            &invoke_with("settings.open", &serde_json::json!({})),
-            &ActionState,
-        );
+            // Phase `invoke_resolves_the_address_then_plans_one_invocation`.
+            {
+                let (resp, actions) = dispatch_command(
+                    &invoke_with("settings.open", &serde_json::json!({})),
+                    &ActionState,
+                );
 
-        let Response::Answer(payload) = resp else {
-            panic!("expected Response::Answer, got {resp:?}");
-        };
-        assert_eq!(payload["title"], "Open settings");
-        assert_eq!(
-            actions,
-            vec![PlannedAction::InvokeAction {
-                provider: "shell.actions".to_string(),
-                id: "settings.open".to_string(),
-                args: serde_json::Map::new(),
-            }]
-        );
-    }
+                let Response::Answer(payload) = resp else {
+                    panic!("expected Response::Answer, got {resp:?}");
+                };
+                assert_eq!(payload["title"], "Open settings");
+                assert_eq!(
+                    actions,
+                    vec![PlannedAction::InvokeAction {
+                        provider: "shell.actions".to_string(),
+                        id: "settings.open".to_string(),
+                        args: serde_json::Map::new(),
+                    }]
+                );
+            }
 
-    #[test]
-    fn status_and_cancel_plan_the_broker_job_addresses() {
-        for (command, expected) in [
-            (
-                Command::ActionsStatus { invocation_id: 37 },
-                crate::shell::search::providers::live_app_actions::job_status_id(37),
-            ),
-            (
-                Command::ActionsCancel { invocation_id: 37 },
-                crate::shell::search::providers::live_app_actions::job_cancel_id(37),
-            ),
-        ] {
-            let (response, actions) = dispatch_command(&command, &ActionState);
-            assert!(matches!(response, Response::Answer(_)));
-            assert_eq!(
-                actions,
-                vec![PlannedAction::InvokeAction {
-                    provider: crate::shell::search::providers::live_app_actions::PROVIDER_ID.into(),
-                    id: expected,
-                    args: serde_json::Map::new(),
-                }]
-            );
+            // Phase `status_and_cancel_plan_the_broker_job_addresses`.
+            {
+                for (command, expected) in [
+                    (
+                        Command::ActionsStatus { invocation_id: 37 },
+                        crate::shell::search::providers::live_app_actions::job_status_id(37),
+                    ),
+                    (
+                        Command::ActionsCancel { invocation_id: 37 },
+                        crate::shell::search::providers::live_app_actions::job_cancel_id(37),
+                    ),
+                ] {
+                    let (response, actions) = dispatch_command(&command, &ActionState);
+                    assert!(matches!(response, Response::Answer(_)));
+                    assert_eq!(
+                        actions,
+                        vec![PlannedAction::InvokeAction {
+                            provider:
+                                crate::shell::search::providers::live_app_actions::PROVIDER_ID
+                                    .into(),
+                            id: expected,
+                            args: serde_json::Map::new(),
+                        }]
+                    );
+                }
+            }
+
+            // Phase `unknown_address_is_refused_and_plans_nothing`.
+            // Something driving the shell without seeing it can't tell "ran and changed nothing" from "never ran" unless the wire says so.
+            {
+                let (resp, actions) = dispatch_command(
+                    &invoke_with("definitely.not.a.real.action", &serde_json::json!({})),
+                    &ActionState,
+                );
+
+                assert!(
+                    actions.is_empty(),
+                    "a refused address must plan no invocation; got {actions:?}"
+                );
+                let Response::Err { code, .. } = resp else {
+                    panic!("expected Response::Err, got {resp:?}");
+                };
+                assert_eq!(code, "unknown_action");
+            }
+
+            // Phase `stateless_control_refuses_enumeration_rather_than_reporting_empty`.
+            {
+                let state = StaticState::new(&[]);
+                let (resp, actions) = dispatch_command(
+                    &Command::ActionsEnumerate {
+                        query: String::new(),
+                    },
+                    &state,
+                );
+
+                assert!(actions.is_empty());
+                let Response::Err { code, .. } = resp else {
+                    panic!("a stateless control must refuse, not answer; got {resp:?}");
+                };
+                assert_eq!(code, "enumerate_failed");
+            }
+
+            // Phase `action_ops_round_trip_over_the_wire`.
+            {
+                let enumerate = parse_command(r#"{"op":"actions_enumerate","query":"settings"}"#)
+                    .expect("actions_enumerate should parse");
+                assert_eq!(
+                    enumerate,
+                    Command::ActionsEnumerate {
+                        query: "settings".to_string()
+                    }
+                );
+
+                let bare = parse_command(r#"{"op":"actions_enumerate"}"#)
+                    .expect("actions_enumerate should parse without a query");
+                assert_eq!(
+                    bare,
+                    Command::ActionsEnumerate {
+                        query: String::new()
+                    }
+                );
+
+                let invoke = parse_command(r#"{"op":"actions_invoke","provider":"p","id":"i"}"#)
+                    .expect("actions_invoke should parse");
+                assert_eq!(
+                    invoke,
+                    Command::ActionsInvoke {
+                        provider: "p".to_string(),
+                        id: "i".to_string(),
+                        args: serde_json::Map::new(),
+                    }
+                );
+
+                let with_args = parse_command(
+                    r#"{"op":"actions_invoke","provider":"p","id":"i","args":{"text":"hi","at":2}}"#,
+                )
+                .expect("actions_invoke should parse with args");
+                let Command::ActionsInvoke { args, .. } = with_args else {
+                    panic!("expected ActionsInvoke");
+                };
+                assert_eq!(args["text"], "hi");
+                assert_eq!(args["at"], 2);
+            }
         }
-    }
 
-    #[test]
-    fn a_nullary_invocation_needs_no_args_key() {
-        let cmd = parse_command(
-            r#"{"op":"actions_invoke","provider":"shell.actions","id":"settings.open"}"#,
-        )
-        .expect("an invocation without `args` must still parse");
-        let (resp, actions) = dispatch_command(&cmd, &ActionState);
-        assert!(matches!(resp, Response::Answer(_)), "got {resp:?}");
-        assert_eq!(
-            actions.len(),
-            1,
-            "the nullary path still plans one invocation"
-        );
-    }
+        // Phase `action_arguments_bind_strictly_to_the_invoked_action`.
+        {
+            // Phase `a_nullary_invocation_needs_no_args_key`.
+            {
+                let cmd = parse_command(
+                    r#"{"op":"actions_invoke","provider":"shell.actions","id":"settings.open"}"#,
+                )
+                .expect("an invocation without `args` must still parse");
+                let (resp, actions) = dispatch_command(&cmd, &ActionState);
+                assert!(matches!(resp, Response::Answer(_)), "got {resp:?}");
+                assert_eq!(
+                    actions.len(),
+                    1,
+                    "the nullary path still plans one invocation"
+                );
+            }
 
-    #[test]
-    fn arguments_bind_and_reach_the_planned_invocation() {
-        let (resp, actions) = dispatch_command(
-            &invoke_with(
-                "text.insert",
-                &serde_json::json!({"text": "hello", "at": 3}),
-            ),
-            &ActionState,
-        );
-        assert!(matches!(resp, Response::Answer(_)), "got {resp:?}");
-        let [PlannedAction::InvokeAction { args, .. }] = actions.as_slice() else {
-            panic!("expected exactly one planned invocation, got {actions:?}");
-        };
-        assert_eq!(args["text"], "hello");
-        assert_eq!(args["at"], 3);
-    }
+            // Phase `arguments_bind_and_reach_the_planned_invocation`.
+            {
+                let (resp, actions) = dispatch_command(
+                    &invoke_with(
+                        "text.insert",
+                        &serde_json::json!({"text": "hello", "at": 3}),
+                    ),
+                    &ActionState,
+                );
+                assert!(matches!(resp, Response::Answer(_)), "got {resp:?}");
+                let [PlannedAction::InvokeAction { args, .. }] = actions.as_slice() else {
+                    panic!("expected exactly one planned invocation, got {actions:?}");
+                };
+                assert_eq!(args["text"], "hello");
+                assert_eq!(args["at"], 3);
+            }
 
-    /// The refusal code matters: `unknown_action` would send the caller looking for an address that's actually fine — the two mistakes are corrected differently.
-    #[test]
-    fn a_missing_required_argument_is_refused_under_its_own_code() {
-        let (resp, actions) = dispatch_command(
-            &invoke_with("text.insert", &serde_json::json!({})),
-            &ActionState,
-        );
-        assert!(
-            actions.is_empty(),
-            "a refused invocation must plan nothing; got {actions:?}"
-        );
-        let Response::Err { code, message } = resp else {
-            panic!("expected Response::Err, got {resp:?}");
-        };
-        assert_eq!(code, "invalid_arguments");
-        assert!(
-            message.contains("text"),
-            "the refusal must name the parameter at fault, got {message:?}"
-        );
-    }
+            // Phase `a_missing_required_argument_is_refused_under_its_own_code`.
+            // The refusal code matters: `unknown_action` would send the caller looking for an address that's actually fine — the two mistakes are corrected differently.
+            {
+                let (resp, actions) = dispatch_command(
+                    &invoke_with("text.insert", &serde_json::json!({})),
+                    &ActionState,
+                );
+                assert!(
+                    actions.is_empty(),
+                    "a refused invocation must plan nothing; got {actions:?}"
+                );
+                let Response::Err { code, message } = resp else {
+                    panic!("expected Response::Err, got {resp:?}");
+                };
+                assert_eq!(code, "invalid_arguments");
+                assert!(
+                    message.contains("text"),
+                    "the refusal must name the parameter at fault, got {message:?}"
+                );
+            }
 
-    /// Refused rather than coerced — guessing at intent is how a caller ends up believing an edit happened that didn't.
-    #[test]
-    fn a_wrong_typed_argument_is_refused_not_coerced() {
-        let (resp, actions) = dispatch_command(
-            &invoke_with("text.insert", &serde_json::json!({"text": 7})),
-            &ActionState,
-        );
-        assert!(actions.is_empty(), "got {actions:?}");
-        let Response::Err { code, message } = resp else {
-            panic!("expected Response::Err, got {resp:?}");
-        };
-        assert_eq!(code, "invalid_arguments");
-        assert!(
-            message.contains("text") && message.contains("integer"),
-            "{message}"
-        );
-    }
+            // Phase `a_wrong_typed_argument_is_refused_not_coerced`.
+            // Refused rather than coerced — guessing at intent is how a caller ends up believing an edit happened that didn't.
+            {
+                let (resp, actions) = dispatch_command(
+                    &invoke_with("text.insert", &serde_json::json!({"text": 7})),
+                    &ActionState,
+                );
+                assert!(actions.is_empty(), "got {actions:?}");
+                let Response::Err { code, message } = resp else {
+                    panic!("expected Response::Err, got {resp:?}");
+                };
+                assert_eq!(code, "invalid_arguments");
+                assert!(
+                    message.contains("text") && message.contains("integer"),
+                    "{message}"
+                );
+            }
 
-    /// Silently dropping it is worst: the caller believes it asked for something, gets `ok`, and the difference is invisible without eyes on the screen.
-    #[test]
-    fn an_unknown_argument_is_refused_not_silently_ignored() {
-        let (resp, actions) = dispatch_command(
-            &invoke_with(
-                "text.insert",
-                &serde_json::json!({"text": "hi", "colour": "red"}),
-            ),
-            &ActionState,
-        );
-        assert!(actions.is_empty(), "got {actions:?}");
-        let Response::Err { code, message } = resp else {
-            panic!("expected Response::Err, got {resp:?}");
-        };
-        assert_eq!(code, "invalid_arguments");
-        assert!(message.contains("colour"), "{message}");
-    }
+            // Phase `an_unknown_argument_is_refused_not_silently_ignored`.
+            // Silently dropping it is worst: the caller believes it asked for something, gets `ok`, and the difference is invisible without eyes on the screen.
+            {
+                let (resp, actions) = dispatch_command(
+                    &invoke_with(
+                        "text.insert",
+                        &serde_json::json!({"text": "hi", "colour": "red"}),
+                    ),
+                    &ActionState,
+                );
+                assert!(actions.is_empty(), "got {actions:?}");
+                let Response::Err { code, message } = resp else {
+                    panic!("expected Response::Err, got {resp:?}");
+                };
+                assert_eq!(code, "invalid_arguments");
+                assert!(message.contains("colour"), "{message}");
+            }
 
-    #[test]
-    fn a_json_shape_with_no_parameter_type_is_refused() {
-        for bad in [
-            serde_json::json!({"text": null}),
-            serde_json::json!({"text": ["a"]}),
-            serde_json::json!({"text": "ok", "at": 1.5}),
-        ] {
-            let (resp, actions) = dispatch_command(&invoke_with("text.insert", &bad), &ActionState);
-            assert!(actions.is_empty(), "got {actions:?}");
-            let Response::Err { code, .. } = resp else {
-                panic!("expected Response::Err, got {resp:?}");
-            };
-            assert_eq!(code, "invalid_arguments");
+            // Phase `a_json_shape_with_no_parameter_type_is_refused`.
+            {
+                for bad in [
+                    serde_json::json!({"text": null}),
+                    serde_json::json!({"text": ["a"]}),
+                    serde_json::json!({"text": "ok", "at": 1.5}),
+                ] {
+                    let (resp, actions) =
+                        dispatch_command(&invoke_with("text.insert", &bad), &ActionState);
+                    assert!(actions.is_empty(), "got {actions:?}");
+                    let Response::Err { code, .. } = resp else {
+                        panic!("expected Response::Err, got {resp:?}");
+                    };
+                    assert_eq!(code, "invalid_arguments");
+                }
+            }
+
+            // Phase `arguments_meant_for_another_action_are_refused`.
+            // Arguments are checked against the action the *address* resolves to, not the one the caller intended.
+            {
+                let (resp, actions) = dispatch_command(
+                    &invoke_with("settings.open", &serde_json::json!({"text": "hi"})),
+                    &ActionState,
+                );
+                assert!(actions.is_empty(), "got {actions:?}");
+                let Response::Err { code, .. } = resp else {
+                    panic!("expected Response::Err, got {resp:?}");
+                };
+                assert_eq!(code, "invalid_arguments");
+            }
         }
-    }
-
-    /// Arguments are checked against the action the *address* resolves to, not the one the caller intended.
-    #[test]
-    fn arguments_meant_for_another_action_are_refused() {
-        let (resp, actions) = dispatch_command(
-            &invoke_with("settings.open", &serde_json::json!({"text": "hi"})),
-            &ActionState,
-        );
-        assert!(actions.is_empty(), "got {actions:?}");
-        let Response::Err { code, .. } = resp else {
-            panic!("expected Response::Err, got {resp:?}");
-        };
-        assert_eq!(code, "invalid_arguments");
-    }
-
-    /// Something driving the shell without seeing it can't tell "ran and changed nothing" from "never ran" unless the wire says so.
-    #[test]
-    fn unknown_address_is_refused_and_plans_nothing() {
-        let (resp, actions) = dispatch_command(
-            &invoke_with("definitely.not.a.real.action", &serde_json::json!({})),
-            &ActionState,
-        );
-
-        assert!(
-            actions.is_empty(),
-            "a refused address must plan no invocation; got {actions:?}"
-        );
-        let Response::Err { code, .. } = resp else {
-            panic!("expected Response::Err, got {resp:?}");
-        };
-        assert_eq!(code, "unknown_action");
-    }
-
-    #[test]
-    fn stateless_control_refuses_enumeration_rather_than_reporting_empty() {
-        let state = StaticState::new(&[]);
-        let (resp, actions) = dispatch_command(
-            &Command::ActionsEnumerate {
-                query: String::new(),
-            },
-            &state,
-        );
-
-        assert!(actions.is_empty());
-        let Response::Err { code, .. } = resp else {
-            panic!("a stateless control must refuse, not answer; got {resp:?}");
-        };
-        assert_eq!(code, "enumerate_failed");
-    }
-
-    #[test]
-    fn action_ops_round_trip_over_the_wire() {
-        let enumerate = parse_command(r#"{"op":"actions_enumerate","query":"settings"}"#)
-            .expect("actions_enumerate should parse");
-        assert_eq!(
-            enumerate,
-            Command::ActionsEnumerate {
-                query: "settings".to_string()
-            }
-        );
-
-        let bare = parse_command(r#"{"op":"actions_enumerate"}"#)
-            .expect("actions_enumerate should parse without a query");
-        assert_eq!(
-            bare,
-            Command::ActionsEnumerate {
-                query: String::new()
-            }
-        );
-
-        let invoke = parse_command(r#"{"op":"actions_invoke","provider":"p","id":"i"}"#)
-            .expect("actions_invoke should parse");
-        assert_eq!(
-            invoke,
-            Command::ActionsInvoke {
-                provider: "p".to_string(),
-                id: "i".to_string(),
-                args: serde_json::Map::new(),
-            }
-        );
-
-        let with_args = parse_command(
-            r#"{"op":"actions_invoke","provider":"p","id":"i","args":{"text":"hi","at":2}}"#,
-        )
-        .expect("actions_invoke should parse with args");
-        let Command::ActionsInvoke { args, .. } = with_args else {
-            panic!("expected ActionsInvoke");
-        };
-        assert_eq!(args["text"], "hi");
-        assert_eq!(args["at"], 2);
     }
 }
 

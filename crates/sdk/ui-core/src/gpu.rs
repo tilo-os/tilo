@@ -395,70 +395,73 @@ mod tests {
     use crate::offscreen::shared_gpu;
 
     #[test]
-    fn device_loss_observers_share_the_context_callback() {
-        let mut context = super::RenderContext::new();
-        let index = pollster::block_on(context.device(None)).expect("real GPU adapter");
-        let handle = &context.devices[index];
-        let first = handle.loss_monitor();
-        let second = handle.loss_monitor();
-        assert!(first.reason().is_none());
-        handle.device.destroy();
-        let _ = handle.device.poll(wgpu::PollType::Poll);
-        assert!(
-            first.reason().is_some(),
-            "context must record actual destroyed-device loss"
-        );
-        assert_eq!(first.reason(), second.reason());
-    }
+    fn gpu_context_shares_device_loss_callbacks_and_accepts_native_damage() {
+        // Case `device_loss_observers_share_the_context_callback`.
+        {
+            let mut context = super::RenderContext::new();
+            let index = pollster::block_on(context.device(None)).expect("real GPU adapter");
+            let handle = &context.devices[index];
+            let first = handle.loss_monitor();
+            let second = handle.loss_monitor();
+            assert!(first.reason().is_none());
+            handle.device.destroy();
+            let _ = handle.device.poll(wgpu::PollType::Poll);
+            assert!(
+                first.reason().is_some(),
+                "context must record actual destroyed-device loss"
+            );
+            assert_eq!(first.reason(), second.reason());
+        }
 
-    #[test]
-    fn live_retained_target_accepts_native_damage_copy() {
-        let gpu = shared_gpu().expect("shared GPU context for live-target copy test");
-        let (target, _) = create_targets(4, 4, &gpu.device);
-        assert!(target.usage().contains(wgpu::TextureUsages::COPY_DST));
-        let source = gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("gpu-test-copy-source"),
-            size: wgpu::Extent3d {
-                width: 4,
-                height: 4,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let mut encoder = gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("gpu-test-copy-into-live-target"),
+        // Case `live_retained_target_accepts_native_damage_copy`.
+        {
+            let gpu = shared_gpu().expect("shared GPU context for live-target copy test");
+            let (target, _) = create_targets(4, 4, &gpu.device);
+            assert!(target.usage().contains(wgpu::TextureUsages::COPY_DST));
+            let source = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("gpu-test-copy-source"),
+                size: wgpu::Extent3d {
+                    width: 4,
+                    height: 4,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
             });
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &source,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: &target,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-                width: 4,
-                height: 4,
-                depth_or_array_layers: 1,
-            },
-        );
-        gpu.queue.submit([encoder.finish()]);
-        assert!(
-            pollster::block_on(scope.pop()).is_none(),
-            "live target rejected COPY_DST damage copy"
-        );
+            let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("gpu-test-copy-into-live-target"),
+                });
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &source,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &target,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: 4,
+                    height: 4,
+                    depth_or_array_layers: 1,
+                },
+            );
+            gpu.queue.submit([encoder.finish()]);
+            assert!(
+                pollster::block_on(scope.pop()).is_none(),
+                "live target rejected COPY_DST damage copy"
+            );
+        }
     }
 }

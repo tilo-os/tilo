@@ -131,33 +131,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wall_clock_units_agree() {
-        let secs = unix_now();
-        let ms = unix_now_ms();
-        let ns = unix_now_ns();
-        assert!(secs > 1_600_000_000);
-        assert!(ms / 1_000 >= secs);
-        assert!(ns / 1_000_000 >= ms);
-        assert_eq!(unix_now_i64(), i64::try_from(unix_now()).unwrap());
-    }
-
-    #[test]
-    fn test_clocks_hold_and_move_as_told() {
-        assert_eq!(FixedClock(7).now_ms(), 7);
-        let clock = ManualClock::new(10);
-        assert_eq!(clock.now_ms(), 10);
-        clock.advance(5);
-        assert_eq!(clock.now_ms(), 15);
-        clock.set(3);
-        assert_eq!(clock.now_ms(), 3);
-        clock.set(u64::MAX - 1);
-        clock.advance(10);
-        assert_eq!(clock.now_ms(), u64::MAX);
-    }
-
-    #[test]
-    fn monotonic_clock_never_moves_backwards() {
-        let first = MonotonicClock.now_ms();
-        assert!(MonotonicClock.now_ms() >= first);
+    fn clocks_agree_on_units_move_only_as_told_and_never_backwards() {
+        // Phase `wall_clock_units_agree`.
+        {
+            let secs = unix_now();
+            let ms = unix_now_ms();
+            let ns = unix_now_ns();
+            assert!(secs > 1_600_000_000);
+            assert!(ms / 1_000 >= secs);
+            assert!(ns / 1_000_000 >= ms);
+            assert_eq!(unix_now_i64(), i64::try_from(unix_now()).unwrap());
+        }
+        // Phase `test_clocks_hold_and_move_as_told`.
+        {
+            assert_eq!(FixedClock(7).now_ms(), 7);
+            let clock = ManualClock::new(10);
+            assert_eq!(clock.now_ms(), 10);
+            clock.advance(5);
+            assert_eq!(clock.now_ms(), 15);
+            clock.set(3);
+            assert_eq!(clock.now_ms(), 3);
+            clock.set(u64::MAX - 1);
+            clock.advance(10);
+            assert_eq!(clock.now_ms(), u64::MAX);
+        }
+        // Phase `monotonic_clock_never_moves_backwards`.
+        {
+            let first = MonotonicClock.now_ms();
+            assert!(MonotonicClock.now_ms() >= first);
+        }
     }
 }

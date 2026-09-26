@@ -307,92 +307,97 @@ pub fn style_key_for(kind: &str, level: Option<i64>, explicit: Option<&str>) -> 
 mod tests {
     use super::*;
 
+    /// Defaults cover builtin kinds, JSON round-trips, display names localise builtins and pass custom
+    /// names through, and structural kinds map builtins only.
     #[test]
-    fn defaults_cover_builtin_kinds() {
-        let sheet = StyleSheet::default();
-        assert_eq!(
-            sheet.get(&style_key_for("heading", Some(1), None)).name,
-            "Heading 1"
-        );
-        assert_eq!(
-            sheet.get(&style_key_for("heading", Some(2), None)).name,
-            "Heading 2"
-        );
-        assert_eq!(
-            sheet.get(&style_key_for("list_item", None, None)).name,
-            "List Item"
-        );
-        assert_eq!(
-            sheet.get(&style_key_for("paragraph", None, None)).name,
-            "Body"
-        );
-        // explicit override wins
-        assert_eq!(style_key_for("paragraph", None, Some("quote")), "quote");
-    }
+    fn stylesheets_cover_builtins_round_trip_and_localise() {
+        // Phase: defaults_cover_builtin_kinds.
+        {
+            let sheet = StyleSheet::default();
+            assert_eq!(
+                sheet.get(&style_key_for("heading", Some(1), None)).name,
+                "Heading 1"
+            );
+            assert_eq!(
+                sheet.get(&style_key_for("heading", Some(2), None)).name,
+                "Heading 2"
+            );
+            assert_eq!(
+                sheet.get(&style_key_for("list_item", None, None)).name,
+                "List Item"
+            );
+            assert_eq!(
+                sheet.get(&style_key_for("paragraph", None, None)).name,
+                "Body"
+            );
+            // explicit override wins
+            assert_eq!(style_key_for("paragraph", None, Some("quote")), "quote");
+        }
 
-    #[test]
-    fn json_round_trips() {
-        let sheet = StyleSheet::default();
-        let back = StyleSheet::from_json(&sheet.to_json()).unwrap();
-        assert_eq!(back.get("body"), sheet.get("body"));
-        assert_eq!(back.get("quote").italic, sheet.get("quote").italic);
-    }
+        // Phase: json_round_trips.
+        {
+            let sheet = StyleSheet::default();
+            let back = StyleSheet::from_json(&sheet.to_json()).unwrap();
+            assert_eq!(back.get("body"), sheet.get("body"));
+            assert_eq!(back.get("quote").italic, sheet.get("quote").italic);
+        }
 
-    /// Built-in styles resolve a localized display name through Fluent (non-empty
-    /// in the ambient locale); a custom style shows its stored, user-authored name
-    /// verbatim (never a Fluent key). Locale-independent: only asserts the mapping
-    /// and the custom passthrough, not a specific translation.
-    #[test]
-    fn display_name_localizes_builtins_and_passes_custom_through() {
-        let sheet = StyleSheet::default();
-        for id in BUILTIN_STYLES {
-            let shown = style_display_name(id, &sheet.get(id));
-            assert!(
-                !shown.is_empty(),
-                "{id} resolves to a non-empty display name"
+        // Phase: display_name_localizes_builtins_and_passes_custom_through.
+        // Built-in styles resolve a localized display name through Fluent (non-empty
+        // in the ambient locale); a custom style shows its stored, user-authored name
+        // verbatim (never a Fluent key). Locale-independent: only asserts the mapping
+        // and the custom passthrough, not a specific translation.
+        {
+            let sheet = StyleSheet::default();
+            for id in BUILTIN_STYLES {
+                let shown = style_display_name(id, &sheet.get(id));
+                assert!(
+                    !shown.is_empty(),
+                    "{id} resolves to a non-empty display name"
+                );
+            }
+            let custom = StyleProps {
+                name: "My Callout".into(),
+                ..StyleProps::default()
+            };
+            assert_eq!(
+                style_display_name("custom1", &custom),
+                "My Callout",
+                "custom styles show their authored name, not a Fluent key"
             );
         }
-        let custom = StyleProps {
-            name: "My Callout".into(),
-            ..StyleProps::default()
-        };
-        assert_eq!(
-            style_display_name("custom1", &custom),
-            "My Callout",
-            "custom styles show their authored name, not a Fluent key"
-        );
-    }
 
-    /// The built-in style → structural kind map: applying a built-in from the
-    /// panel picker also switches the block kind (so "Heading 1" is a real
-    /// heading). Custom styles imply no kind.
-    #[test]
-    fn structural_kind_maps_builtins_only() {
-        assert_eq!(structural_kind_for("body"), Some(("paragraph", None, None)));
-        assert_eq!(
-            structural_kind_for("quote"),
-            Some(("paragraph", None, None))
-        );
-        assert_eq!(
-            structural_kind_for("heading1"),
-            Some(("heading", Some(1), None))
-        );
-        assert_eq!(
-            structural_kind_for("heading2"),
-            Some(("heading", Some(2), None))
-        );
-        assert_eq!(
-            structural_kind_for("heading3"),
-            Some(("heading", Some(3), None))
-        );
-        assert_eq!(
-            structural_kind_for("list"),
-            Some(("list_item", None, Some(false)))
-        );
-        assert_eq!(
-            structural_kind_for("custom1"),
-            None,
-            "custom styles imply no structural kind"
-        );
+        // Phase: structural_kind_maps_builtins_only.
+        // The built-in style → structural kind map: applying a built-in from the
+        // panel picker also switches the block kind (so "Heading 1" is a real
+        // heading). Custom styles imply no kind.
+        {
+            assert_eq!(structural_kind_for("body"), Some(("paragraph", None, None)));
+            assert_eq!(
+                structural_kind_for("quote"),
+                Some(("paragraph", None, None))
+            );
+            assert_eq!(
+                structural_kind_for("heading1"),
+                Some(("heading", Some(1), None))
+            );
+            assert_eq!(
+                structural_kind_for("heading2"),
+                Some(("heading", Some(2), None))
+            );
+            assert_eq!(
+                structural_kind_for("heading3"),
+                Some(("heading", Some(3), None))
+            );
+            assert_eq!(
+                structural_kind_for("list"),
+                Some(("list_item", None, Some(false)))
+            );
+            assert_eq!(
+                structural_kind_for("custom1"),
+                None,
+                "custom styles imply no structural kind"
+            );
+        }
     }
 }

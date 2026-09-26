@@ -235,6 +235,9 @@ enum CompletionPolicy {
 const LINUX_FENCE_WAIT: Duration = Duration::from_secs(1);
 const LINUX_MAP_CALLBACK_WAIT: Duration = Duration::from_secs(1);
 const BUMP_SETTLEMENT_WAIT: Duration = Duration::from_secs(1);
+/// Bound on the construction-time warm-up frames, which include pipeline compilation on CPU
+/// Vulkan drivers and so are not frame work.
+const PIPELINE_WARMUP: Duration = Duration::from_secs(60);
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -378,6 +381,10 @@ pub struct RetainedGpuTarget {
     completion_markers: usize,
     #[cfg(test)]
     completion_test: Option<CompletionTest>,
+    /// Replaces the Linux per-phase completion allowance for correctness fixtures that must
+    /// wait for the GPU to finish rather than for a production frame budget.
+    #[cfg(test)]
+    phase_wait_override: Option<Duration>,
     /// The vello renderer parented to the same wgpu device as `texture`, cached across frames so we don't pay the pipeline-compile cost on every paint.
     renderer: Renderer,
     /// Offscreen render target. Recreated on resize.
@@ -443,7 +450,7 @@ impl RetainedGpuTarget {
             },
         )
         .map_err(|e| BridgeError::Renderer(format!("{e:?}")))?;
-        Ok(Self {
+        let mut target = Self {
             device: gpu.device.clone(),
             queue: gpu.queue.clone(),
             renderer,
@@ -455,6 +462,8 @@ impl RetainedGpuTarget {
             completion_markers: 0,
             #[cfg(test)]
             completion_test: None,
+            #[cfg(test)]
+            phase_wait_override: None,
             size: (width, height),
             base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
             retained_target_valid: false,
@@ -469,7 +478,78 @@ impl RetainedGpuTarget {
             last_clip_single_group_full_attempts: 0,
             last_clip_single_group_sparse_attempts: 0,
             last_sparse_render_stats: None,
-        })
+        };
+        target.warm_pipelines()?;
+        Ok(target)
+    }
+
+    /// Run the full and the sparse render paths once so every frame deadline measures rendering
+    /// alone. Mesa's CPU Vulkan driver (lavapipe, the DRM CPU-fallback adapter) compiles each
+    /// compute pipeline on its first dispatch, not at creation. With a cold shader cache (first
+    /// boot, or a fresh CI home) that compilation ran inside the first frame's one-second fence
+    /// allowance and failed it, and the first sparse frame paid it again.
+    ///
+    /// # Errors
+    /// Fails when the device cannot complete the warm-up frames within [`PIPELINE_WARMUP`].
+    fn warm_pipelines(&mut self) -> Result<(), BridgeError> {
+        use vello::kurbo::{Affine, Rect};
+        use vello::peniko::{BlendMode, Fill};
+
+        let (width, height) = self.size;
+        let full = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+        let inset = full.inset(-f64::from(width.min(height)) / 4.0);
+        // The picture is never shown, so it reuses the base colour rather than stating its own.
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            self.base_color,
+            None,
+            &full,
+        );
+        // A clip layer adds the clip reduce/leaf stages ordinary shell frames use.
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &inset,
+        );
+        scene.fill(
+            Fill::EvenOdd,
+            Affine::IDENTITY,
+            self.base_color.with_alpha(0.5),
+            None,
+            &full,
+        );
+        scene.pop_layer();
+        let damage = [vello::FineDamageRect {
+            x: 0,
+            y: 0,
+            width: width.min(16),
+            height: height.min(16),
+        }];
+        let deadline = Instant::now()
+            .checked_add(PIPELINE_WARMUP)
+            .ok_or_else(|| BridgeError::Renderer("warm-up deadline out of range".to_owned()))?;
+        for damage in [
+            SceneDamage {
+                revision: 1,
+                previous_revision: None,
+                regions: None,
+            },
+            SceneDamage {
+                revision: 2,
+                previous_revision: Some(1),
+                regions: Some(&damage),
+            },
+        ] {
+            self.render_until(&scene, damage, deadline)?;
+        }
+        // The warm-up picture is not content: the first real frame renders in full.
+        self.invalidate();
+        self.reset_attempts();
+        Ok(())
     }
 
     /// Change the clear color, invalidating retained content only when it changes.
@@ -541,6 +621,19 @@ impl RetainedGpuTarget {
             return clock.now();
         }
         Instant::now()
+    }
+
+    /// The allowance for one Linux completion phase: `nominal` outside correctness fixtures.
+    #[allow(
+        clippy::unused_self,
+        reason = "correctness fixtures replace the allowance on this actual target instance"
+    )]
+    fn linux_phase_wait(&self, nominal: Duration) -> Duration {
+        #[cfg(test)]
+        if let Some(wait) = self.phase_wait_override {
+            return wait;
+        }
+        nominal
     }
 
     fn eligible_sparse_damage(
@@ -853,12 +946,14 @@ impl RetainedGpuTarget {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
+        let fence_wait = self.linux_phase_wait(LINUX_FENCE_WAIT);
+        let callback_wait = self.linux_phase_wait(LINUX_MAP_CALLBACK_WAIT);
         let result = (|| {
             #[cfg(test)]
-            self.before_wait(WaitPhase::Fence, LINUX_FENCE_WAIT)?;
+            self.before_wait(WaitPhase::Fence, fence_wait)?;
             let waited = self.device.poll(wgpu::PollType::Wait {
                 submission_index: None,
-                timeout: Some(LINUX_FENCE_WAIT),
+                timeout: Some(fence_wait),
             });
             self.check_health()?;
             waited.map_err(|error| {
@@ -866,8 +961,8 @@ impl RetainedGpuTarget {
             })?;
             // A fresh one-second callback allowance follows the independent one-second fence.
             #[cfg(test)]
-            self.before_wait(WaitPhase::MapCallback, LINUX_MAP_CALLBACK_WAIT)?;
-            rx.recv_timeout(LINUX_MAP_CALLBACK_WAIT)
+            self.before_wait(WaitPhase::MapCallback, callback_wait)?;
+            rx.recv_timeout(callback_wait)
                 .map_err(|error| {
                     BridgeError::Map(format!("LinuxPerPhase map_async channel: {error}"))
                 })?
@@ -886,7 +981,7 @@ impl RetainedGpuTarget {
             CompletionPolicy::Absolute(deadline) => deadline,
             CompletionPolicy::LinuxPerPhase => self
                 .now()
-                .checked_add(BUMP_SETTLEMENT_WAIT)
+                .checked_add(self.linux_phase_wait(BUMP_SETTLEMENT_WAIT))
                 .ok_or_else(|| {
                     BridgeError::BumpReadback("counter deadline out of range".to_owned())
                 })?,
@@ -1179,7 +1274,7 @@ impl RetainedGpuTarget {
         height: u32,
     ) -> (wgpu::Texture, wgpu::TextureView) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("quick-desktop-drm-paint-target"),
+            label: Some("tilo-desktop-drm-paint-target"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -1395,6 +1490,72 @@ impl VelloDrmBridge {
         self.xrgb_history_epoch = self
             .xrgb_history_epoch
             .and_then(|epoch| epoch.checked_add(1));
+    }
+
+    /// Wait for each Linux completion phase until the GPU actually finishes, bounded only by a
+    /// generous backstop, instead of the production one-second allowance.
+    ///
+    /// On a shared CI host llvmpipe competes with every other test for CPU, so a frame whose
+    /// pixels a fixture checks can legitimately miss the per-phase budget. Fixtures that assert
+    /// what is rendered, not how fast, opt in here; device loss still fails immediately.
+    #[cfg(test)]
+    pub(crate) fn wait_for_gpu_completion_for_test(&mut self) {
+        self.target.phase_wait_override = Some(Duration::from_secs(120));
+    }
+
+    /// Compile the renderer's full and sparse pipelines outside any frame deadline, then start
+    /// over from an invalidated target and a new history epoch.
+    ///
+    /// llvmpipe builds compute variants at first dispatch. On a cold shader cache that takes
+    /// longer than the Linux per-phase fence allowance, so a fixture asserting on
+    /// deadline-bound frames warms the renderer first instead of timing the compiler.
+    #[cfg(test)]
+    pub(crate) fn warm_renderer_for_test(&mut self) {
+        use vello::kurbo::{Affine, Rect};
+        use vello::peniko::Fill;
+
+        let (width, height) = self.target.size;
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(0x80, 0x80, 0x80),
+            None,
+            &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+        );
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(60))
+            .expect("warm-up deadline fits Instant");
+        self.target
+            .render_until(
+                &scene,
+                SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: None,
+                },
+                deadline,
+            )
+            .expect("warm-up full render");
+        let region = [vello::FineDamageRect {
+            x: 0,
+            y: 0,
+            width: width.min(16),
+            height: height.min(16),
+        }];
+        self.target
+            .render_until(
+                &scene,
+                SceneDamage {
+                    revision: 2,
+                    previous_revision: Some(1),
+                    regions: Some(&region),
+                },
+                deadline,
+            )
+            .expect("warm-up sparse render");
+        self.invalidate_retained();
+        self.bump_xrgb_history_epoch();
     }
 
     /// Refuse to submit another frame while a timed-out software-rendered submission drains.
@@ -3358,7 +3519,7 @@ impl VelloDrmBridge {
         let padded_bytes_per_row = unpadded.div_ceil(align).saturating_mul(align);
         let readback_size = u64::from(padded_bytes_per_row).saturating_mul(u64::from(height));
         let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("quick-desktop-drm-paint-readback"),
+            label: Some("tilo-desktop-drm-paint-readback"),
             size: readback_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
@@ -3565,162 +3726,169 @@ mod subrect_tests {
     }
 
     #[test]
-    fn whole_buffer_swizzles_like_paint_into_xrgb8888() {
-        // A single output at the origin: src_x=src_y=0, out size == src size. Every pixel swizzles R,G,B -> B,G,R,0xFF.
-        let (w, h) = (4usize, 3usize);
-        let src = ramp_rgba(w, h);
-        let pitch = w * 4;
-        let mut dst = vec![0u8; pitch * h];
-        swizzle_subrect_rgba_to_xrgb8888(
-            SubrectSource {
-                src_rgba: &src,
-                src_w: w,
-                src_h: h,
-                src_x: 0,
-                src_y: 0,
-            },
-            &mut dst,
-            pitch,
-            w,
-            h,
-        );
-        for y in 0..h {
-            for x in 0..w {
-                let s = (y * w + x) * 4;
-                let d = y * pitch + x * 4;
-                assert_eq!(dst[d], src[s + 2], "B at ({x},{y})");
-                assert_eq!(dst[d + 1], src[s + 1], "G at ({x},{y})");
-                assert_eq!(dst[d + 2], src[s], "R at ({x},{y})");
-                assert_eq!(dst[d + 3], 0xFF, "X at ({x},{y})");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn subrect_swizzle_copies_exactly_the_output_viewport() {
+        // Phase `whole_buffer_swizzles_like_paint_into_xrgb8888`.
+        {
+            // A single output at the origin: src_x=src_y=0, out size == src size. Every pixel swizzles R,G,B -> B,G,R,0xFF.
+            let (w, h) = (4usize, 3usize);
+            let src = ramp_rgba(w, h);
+            let pitch = w * 4;
+            let mut dst = vec![0u8; pitch * h];
+            swizzle_subrect_rgba_to_xrgb8888(
+                SubrectSource {
+                    src_rgba: &src,
+                    src_w: w,
+                    src_h: h,
+                    src_x: 0,
+                    src_y: 0,
+                },
+                &mut dst,
+                pitch,
+                w,
+                h,
+            );
+            for y in 0..h {
+                for x in 0..w {
+                    let s = (y * w + x) * 4;
+                    let d = y * pitch + x * 4;
+                    assert_eq!(dst[d], src[s + 2], "B at ({x},{y})");
+                    assert_eq!(dst[d + 1], src[s + 1], "G at ({x},{y})");
+                    assert_eq!(dst[d + 2], src[s], "R at ({x},{y})");
+                    assert_eq!(dst[d + 3], 0xFF, "X at ({x},{y})");
+                }
             }
         }
-    }
 
-    #[test]
-    fn offset_subrect_picks_the_right_source_region() {
-        // Combined scene 6x2; second output is a 2x2 region at global position (4,0) — the swizzle must pull source columns 4 and 5, not 0 and 1.
-        let (cw, ch) = (6usize, 2usize);
-        let src = ramp_rgba(cw, ch);
-        let (ow, oh) = (2usize, 2usize);
-        let pitch = ow * 4;
-        let mut dst = vec![0u8; pitch * oh];
-        swizzle_subrect_rgba_to_xrgb8888(
-            SubrectSource {
-                src_rgba: &src,
-                src_w: cw,
-                src_h: ch,
-                src_x: 4,
-                src_y: 0,
-            },
-            &mut dst,
-            pitch,
-            ow,
-            oh,
-        );
-        // dst pixel (0,0) must be source pixel (4,0): R channel == 4.
-        assert_eq!(dst[2], 4, "dst(0,0).R should be source column 4");
-        // dst pixel (1,1) must be source pixel (5,1): R==5, G==1.
-        let d = pitch + 4;
-        assert_eq!(dst[d + 2], 5, "dst(1,1).R should be source column 5");
-        assert_eq!(dst[d + 1], 1, "dst(1,1).G should be source row 1");
-    }
-
-    #[test]
-    fn destination_pitch_padding_is_untouched() {
-        // A DRM dumb buffer's pitch usually exceeds out_w*4; the trailing padding bytes must stay as they were.
-        let (w, h) = (2usize, 2usize);
-        let src = ramp_rgba(w, h);
-        let pitch = 16;
-        let mut dst = vec![0xEEu8; pitch * h];
-        swizzle_subrect_rgba_to_xrgb8888(
-            SubrectSource {
-                src_rgba: &src,
-                src_w: w,
-                src_h: h,
-                src_x: 0,
-                src_y: 0,
-            },
-            &mut dst,
-            pitch,
-            w,
-            h,
-        );
-        for row in 0..h {
-            // Padding after the 2 written pixels (offset 8..) stays 0xEE.
-            assert_eq!(dst[row * pitch + 8], 0xEE, "row {row} padding untouched");
+        // Phase `offset_subrect_picks_the_right_source_region`.
+        {
+            // Combined scene 6x2; second output is a 2x2 region at global position (4,0) — the swizzle must pull source columns 4 and 5, not 0 and 1.
+            let (cw, ch) = (6usize, 2usize);
+            let src = ramp_rgba(cw, ch);
+            let (ow, oh) = (2usize, 2usize);
+            let pitch = ow * 4;
+            let mut dst = vec![0u8; pitch * oh];
+            swizzle_subrect_rgba_to_xrgb8888(
+                SubrectSource {
+                    src_rgba: &src,
+                    src_w: cw,
+                    src_h: ch,
+                    src_x: 4,
+                    src_y: 0,
+                },
+                &mut dst,
+                pitch,
+                ow,
+                oh,
+            );
+            // dst pixel (0,0) must be source pixel (4,0): R channel == 4.
+            assert_eq!(dst[2], 4, "dst(0,0).R should be source column 4");
+            // dst pixel (1,1) must be source pixel (5,1): R==5, G==1.
+            let d = pitch + 4;
+            assert_eq!(dst[d + 2], 5, "dst(1,1).R should be source column 5");
+            assert_eq!(dst[d + 1], 1, "dst(1,1).G should be source row 1");
         }
-    }
 
-    #[test]
-    fn overhanging_output_is_clamped_not_panicking() {
-        // Output wider/taller than the source region remaining: must clamp.
-        let (w, h) = (3usize, 3usize);
-        let src = ramp_rgba(w, h);
-        let (ow, oh) = (4usize, 4usize);
-        let pitch = ow * 4;
-        let mut dst = vec![0u8; pitch * oh];
-        // src_x=2 leaves only 1 valid source column; must not panic.
-        swizzle_subrect_rgba_to_xrgb8888(
-            SubrectSource {
-                src_rgba: &src,
-                src_w: w,
-                src_h: h,
-                src_x: 2,
-                src_y: 0,
-            },
-            &mut dst,
-            pitch,
-            ow,
-            oh,
-        );
-        // Column 0 maps to source column 2 (valid); R==2.
-        assert_eq!(dst[2], 2);
-    }
+        // Phase `destination_pitch_padding_is_untouched`.
+        {
+            // A DRM dumb buffer's pitch usually exceeds out_w*4; the trailing padding bytes must stay as they were.
+            let (w, h) = (2usize, 2usize);
+            let src = ramp_rgba(w, h);
+            let pitch = 16;
+            let mut dst = vec![0xEEu8; pitch * h];
+            swizzle_subrect_rgba_to_xrgb8888(
+                SubrectSource {
+                    src_rgba: &src,
+                    src_w: w,
+                    src_h: h,
+                    src_x: 0,
+                    src_y: 0,
+                },
+                &mut dst,
+                pitch,
+                w,
+                h,
+            );
+            for row in 0..h {
+                // Padding after the 2 written pixels (offset 8..) stays 0xEE.
+                assert_eq!(dst[row * pitch + 8], 0xEE, "row {row} padding untouched");
+            }
+        }
 
-    #[test]
-    fn rotate_90_maps_portrait_scene_to_landscape_scanout() {
-        let src = ramp_rgba(2, 3);
-        let mut dst = vec![0u8; 3 * 2 * 4];
-        swizzle_subrect_rgba_to_xrgb8888_transformed(
-            SubrectSource {
-                src_rgba: &src,
-                src_w: 2,
-                src_h: 3,
-                src_x: 0,
-                src_y: 0,
-            },
-            &mut dst,
-            3 * 4,
-            3,
-            2,
-            settings_store::hardware::OutputTransform::Rotate90,
-        );
-        let top_right = 2 * 4;
-        assert_eq!((dst[top_right + 2], dst[top_right + 1]), (0, 0));
-        let bottom_left = 3 * 4;
-        assert_eq!((dst[bottom_left + 2], dst[bottom_left + 1]), (1, 2));
-    }
+        // Phase `overhanging_output_is_clamped_not_panicking`.
+        {
+            // Output wider/taller than the source region remaining: must clamp.
+            let (w, h) = (3usize, 3usize);
+            let src = ramp_rgba(w, h);
+            let (ow, oh) = (4usize, 4usize);
+            let pitch = ow * 4;
+            let mut dst = vec![0u8; pitch * oh];
+            // src_x=2 leaves only 1 valid source column; must not panic.
+            swizzle_subrect_rgba_to_xrgb8888(
+                SubrectSource {
+                    src_rgba: &src,
+                    src_w: w,
+                    src_h: h,
+                    src_x: 2,
+                    src_y: 0,
+                },
+                &mut dst,
+                pitch,
+                ow,
+                oh,
+            );
+            // Column 0 maps to source column 2 (valid); R==2.
+            assert_eq!(dst[2], 2);
+        }
 
-    #[test]
-    fn profiled_path_copies_only_the_output_viewport() {
-        let src = ramp_rgba(5, 2);
-        let mut output = Vec::new();
-        copy_rgba_subrect(
-            SubrectSource {
-                src_rgba: &src,
-                src_w: 5,
-                src_h: 2,
-                src_x: 3,
-                src_y: 0,
-            },
-            2,
-            2,
-            &mut output,
-        );
-        assert_eq!(output.len(), 16);
-        assert_eq!(output[0], 3);
-        assert_eq!(output[4], 4);
-        assert_eq!(output[9], 1);
+        // Phase `rotate_90_maps_portrait_scene_to_landscape_scanout`.
+        {
+            let src = ramp_rgba(2, 3);
+            let mut dst = vec![0u8; 3 * 2 * 4];
+            swizzle_subrect_rgba_to_xrgb8888_transformed(
+                SubrectSource {
+                    src_rgba: &src,
+                    src_w: 2,
+                    src_h: 3,
+                    src_x: 0,
+                    src_y: 0,
+                },
+                &mut dst,
+                3 * 4,
+                3,
+                2,
+                settings_store::hardware::OutputTransform::Rotate90,
+            );
+            let top_right = 2 * 4;
+            assert_eq!((dst[top_right + 2], dst[top_right + 1]), (0, 0));
+            let bottom_left = 3 * 4;
+            assert_eq!((dst[bottom_left + 2], dst[bottom_left + 1]), (1, 2));
+        }
+
+        // Phase `profiled_path_copies_only_the_output_viewport`.
+        {
+            let src = ramp_rgba(5, 2);
+            let mut output = Vec::new();
+            copy_rgba_subrect(
+                SubrectSource {
+                    src_rgba: &src,
+                    src_w: 5,
+                    src_h: 2,
+                    src_x: 3,
+                    src_y: 0,
+                },
+                2,
+                2,
+                &mut output,
+            );
+            assert_eq!(output.len(), 16);
+            assert_eq!(output[0], 3);
+            assert_eq!(output[4], 4);
+            assert_eq!(output[9], 1);
+        }
     }
 }
 
@@ -3828,44 +3996,242 @@ mod tests {
     }
 
     #[test]
-    fn gpu_target_unchanged_clear_color_preserves_retained_damage() {
-        let mut bridge = required_bridge(128, 128);
-        let mut pixels = vec![0; 128 * 128 * 4];
-        let scene = Scene::new();
-        bridge
-            .paint_damage_into_xrgb8888(
-                &scene,
-                SceneDamage {
-                    revision: 1,
-                    previous_revision: None,
-                    regions: None,
-                },
-                &mut pixels,
-                512,
-            )
-            .expect("seed");
-        let identity = bridge.xrgb_history_identity(512, 1);
-        bridge.set_base_color(bridge.target.base_color);
-        let rects = [vello::FineDamageRect {
-            x: 16,
-            y: 16,
-            width: 16,
-            height: 16,
-        }];
-        bridge
-            .paint_damage_into_xrgb8888(
-                &scene,
-                SceneDamage {
-                    revision: 2,
-                    previous_revision: Some(1),
-                    regions: Some(&rects),
-                },
-                &mut pixels,
-                512,
-            )
-            .expect("retained repaint");
-        assert_eq!(bridge.last_sparse_render_attempts(), 1);
-        assert_eq!(bridge.xrgb_history_identity(512, 1), identity);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
+        // Phase `gpu_target_unchanged_clear_color_preserves_retained_damage`.
+        {
+            let mut bridge = required_bridge(128, 128);
+            let mut pixels = vec![0; 128 * 128 * 4];
+            let scene = Scene::new();
+            bridge
+                .paint_damage_into_xrgb8888(
+                    &scene,
+                    SceneDamage {
+                        revision: 1,
+                        previous_revision: None,
+                        regions: None,
+                    },
+                    &mut pixels,
+                    512,
+                )
+                .expect("seed");
+            let identity = bridge.xrgb_history_identity(512, 1);
+            bridge.set_base_color(bridge.target.base_color);
+            let rects = [vello::FineDamageRect {
+                x: 16,
+                y: 16,
+                width: 16,
+                height: 16,
+            }];
+            bridge
+                .paint_damage_into_xrgb8888(
+                    &scene,
+                    SceneDamage {
+                        revision: 2,
+                        previous_revision: Some(1),
+                        regions: Some(&rects),
+                    },
+                    &mut pixels,
+                    512,
+                )
+                .expect("retained repaint");
+            assert_eq!(bridge.last_sparse_render_attempts(), 1);
+            assert_eq!(bridge.xrgb_history_identity(512, 1), identity);
+        }
+
+        // Phase `gpu_target_sparse_without_staging_matches_dense`.
+        {
+            let mut target = required_target(129, 128);
+            let stats = target
+                .render_until(
+                    &Scene::new(),
+                    version(1, None, None),
+                    Instant::now() + Duration::from_secs(10),
+                )
+                .unwrap();
+            assert_eq!(stats.framebuffer_staging_bytes, 0);
+            assert_eq!(stats.framebuffer_copy_bytes, 0);
+            let seed = target_pixels(&target);
+            let allocation = target.texture.clone();
+            let region = vello::FineDamageRect {
+                x: 16,
+                y: 16,
+                width: 16,
+                height: 16,
+            };
+            let scene = region_scene(region, Color::WHITE);
+            let outcome = target
+                .render_until(
+                    &scene,
+                    version(2, Some(1), Some(&[region])),
+                    Instant::now() + Duration::from_secs(10),
+                )
+                .unwrap();
+            assert!(outcome.damage_admitted);
+            assert_eq!(outcome.framebuffer_staging_bytes, 0);
+            assert_eq!(outcome.framebuffer_copy_bytes, 0);
+            assert_eq!(
+                outcome.render_attempts,
+                outcome.sparse_attempts + outcome.full_attempts
+            );
+            assert_eq!(outcome.completion_markers, outcome.render_attempts);
+            assert_eq!(
+                target.texture, allocation,
+                "sparse render must reuse actual target allocation"
+            );
+            let actual = target_pixels(&target);
+            for y in 0..128 {
+                for x in 0..129 {
+                    if !(16..32).contains(&x) || !(16..32).contains(&y) {
+                        let offset = (y * 129 + x) * 4;
+                        assert_eq!(
+                            &actual[offset..offset + 4],
+                            &seed[offset..offset + 4],
+                            "untouched pixel {x},{y}"
+                        );
+                    }
+                }
+            }
+            let mut oracle = required_target(129, 128);
+            oracle
+                .render_until(
+                    &scene,
+                    version(2, None, None),
+                    Instant::now() + Duration::from_secs(10),
+                )
+                .unwrap();
+            assert_eq!(actual, target_pixels(&oracle));
+        }
+
+        // Phase `gpu_target_revision_gap_and_resize_force_dense`.
+        {
+            let mut target = required_target(128, 128);
+            let regions = [vello::FineDamageRect {
+                x: 16,
+                y: 16,
+                width: 16,
+                height: 16,
+            }];
+            let scene = region_scene(regions[0], Color::WHITE);
+            target
+                .render_until(
+                    &scene,
+                    version(1, None, None),
+                    Instant::now() + Duration::from_secs(10),
+                )
+                .unwrap();
+            let outcome = target
+                .render_until(
+                    &scene,
+                    version(3, Some(2), Some(&regions)),
+                    Instant::now() + Duration::from_secs(10),
+                )
+                .unwrap();
+            assert!(!outcome.damage_admitted);
+            assert_eq!(outcome.sparse_attempts, 0);
+            target.resize(128, 128).unwrap();
+            assert!(target.completed_view().is_none());
+            let outcome = target
+                .render_until(
+                    &scene,
+                    version(4, Some(3), Some(&regions)),
+                    Instant::now() + Duration::from_secs(10),
+                )
+                .unwrap();
+            assert_eq!(outcome.sparse_attempts, 0);
+            assert!(matches!(
+                target.resize(0, 128),
+                Err(BridgeError::InvalidSize(_))
+            ));
+            assert!(target.completed_view().is_none());
+            let limit = target.device.limits().max_texture_dimension_2d;
+            assert!(matches!(
+                target.resize(limit + 1, 128),
+                Err(BridgeError::InvalidSize(_))
+            ));
+            let old = target.texture.clone();
+            target.resize(160, 128).unwrap();
+            assert_ne!(old, target.texture);
+            assert_eq!(target.size(), (160, 128));
+            let outcome = target
+                .render_until(
+                    &scene,
+                    version(5, Some(4), Some(&regions)),
+                    Instant::now() + Duration::from_secs(10),
+                )
+                .unwrap();
+            assert_eq!(outcome.sparse_attempts, 0);
+            target.set_base_color(Color::WHITE);
+            assert!(target.completed_view().is_none());
+        }
+
+        // Phase `gpu_target_xrgb_staging_gap_gets_complete_refresh`.
+        {
+            let mut bridge = required_bridge(129, 128);
+            bridge.set_phase_timing_enabled(true);
+            let mut actual = vec![0; 129 * 128 * 4];
+            bridge
+                .paint_damage_into_xrgb8888(
+                    &Scene::new(),
+                    version(1, None, None),
+                    &mut actual,
+                    129 * 4,
+                )
+                .unwrap();
+            let first = vello::FineDamageRect {
+                x: 16,
+                y: 16,
+                width: 16,
+                height: 16,
+            };
+            let second = vello::FineDamageRect {
+                x: 64,
+                y: 64,
+                width: 16,
+                height: 16,
+            };
+            let mut scene = region_scene(first, Color::WHITE);
+            bridge
+                .target
+                .render_until(
+                    &scene,
+                    version(2, Some(1), Some(&[first])),
+                    Instant::now() + Duration::from_secs(10),
+                )
+                .unwrap();
+            scene.append(&region_scene(second, Color::from_rgb8(200, 30, 50)), None);
+            bridge
+                .paint_damage_into_xrgb8888(
+                    &scene,
+                    version(3, Some(2), Some(&[second])),
+                    &mut actual,
+                    129 * 4,
+                )
+                .unwrap();
+            assert_eq!(
+                bridge.last_sparse_render_attempts(),
+                1,
+                "target continuity survives GPU-only middle frame"
+            );
+            assert_eq!(
+                bridge.last_phase_timing().unwrap().readback_bytes,
+                129 * 128 * 4,
+                "stale staging needs complete refresh in same submission"
+            );
+            let mut oracle = required_bridge(129, 128);
+            let mut expected = vec![0; actual.len()];
+            oracle
+                .paint_into_xrgb8888(&scene, &mut expected, 129 * 4)
+                .unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(
+                bridge.staging_content,
+                Some((bridge.target.geometry_generation, Some(3)))
+            );
+        }
     }
 
     fn required_target(width: u32, height: u32) -> RetainedGpuTarget {
@@ -3899,142 +4265,318 @@ mod tests {
     }
 
     #[test]
-    fn gpu_target_sparse_without_staging_matches_dense() {
-        let mut target = required_target(129, 128);
-        let stats = target
-            .render_until(
-                &Scene::new(),
-                version(1, None, None),
-                Instant::now() + Duration::from_secs(10),
-            )
-            .unwrap();
-        assert_eq!(stats.framebuffer_staging_bytes, 0);
-        assert_eq!(stats.framebuffer_copy_bytes, 0);
-        let seed = target_pixels(&target);
-        let allocation = target.texture.clone();
-        let region = vello::FineDamageRect {
-            x: 16,
-            y: 16,
-            width: 16,
-            height: 16,
-        };
-        let scene = region_scene(region, Color::WHITE);
-        let outcome = target
-            .render_until(
-                &scene,
-                version(2, Some(1), Some(&[region])),
-                Instant::now() + Duration::from_secs(10),
-            )
-            .unwrap();
-        assert!(outcome.damage_admitted);
-        assert_eq!(outcome.framebuffer_staging_bytes, 0);
-        assert_eq!(outcome.framebuffer_copy_bytes, 0);
-        assert_eq!(
-            outcome.render_attempts,
-            outcome.sparse_attempts + outcome.full_attempts
-        );
-        assert_eq!(outcome.completion_markers, outcome.render_attempts);
-        assert_eq!(
-            target.texture, allocation,
-            "sparse render must reuse actual target allocation"
-        );
-        let actual = target_pixels(&target);
-        for y in 0..128 {
-            for x in 0..129 {
-                if !(16..32).contains(&x) || !(16..32).contains(&y) {
-                    let offset = (y * 129 + x) * 4;
-                    assert_eq!(
-                        &actual[offset..offset + 4],
-                        &seed[offset..offset + 4],
-                        "untouched pixel {x},{y}"
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing() {
+        // Phase `gpu_target_failure_and_device_loss_hide_output_until_reconstruction`.
+        {
+            // Phase `gpu_target_failure_hides_view_until_reconstruction`.
+            {
+                let mut target = required_target(128, 128);
+                let scene = Scene::new();
+                let damage = SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: None,
+                };
+                target
+                    .render_until(&scene, damage, Instant::now() + Duration::from_secs(10))
+                    .expect("seed");
+                assert!(target.completed_view().is_some());
+                let result = target.render_until(&scene, damage, Instant::now());
+                assert!(
+                    matches!(result, Err(BridgeError::DeadlineExceeded)),
+                    "expired call must fail: {result:?}"
+                );
+                assert!(target.completed_view().is_none());
+                assert_eq!(target.last_render_attempts, 0);
+            }
+
+            // Phase `gpu_target_counter_failures_and_device_loss_hide_output`.
+            {
+                for error in [
+                    vello::BumpBudgetError::MapFailed,
+                    vello::BumpBudgetError::MissingDownload,
+                    vello::BumpBudgetError::InvalidDownload,
+                    vello::BumpBudgetError::Poll("injected wrong submission index".to_owned()),
+                ] {
+                    let mut target = required_target(128, 128);
+                    let mut test = completion_clock();
+                    test.counters.push_back(Err(error));
+                    let deadline = test.start + Duration::from_secs(1);
+                    target.completion_test = Some(test);
+                    let result =
+                        target.render_until(&Scene::new(), version(1, None, None), deadline);
+                    assert!(matches!(
+                        result,
+                        Err(BridgeError::BumpReadback(_) | BridgeError::DevicePoll(_))
+                    ));
+                    assert_eq!(target.last_render_attempts, 1);
+                    assert!(target.completed_view().is_none() && target.poisoned);
+                }
+                let mut target = required_target(128, 128);
+                target
+                    .render_until(
+                        &Scene::new(),
+                        version(1, None, None),
+                        Instant::now() + Duration::from_secs(10),
+                    )
+                    .unwrap();
+                target.device.destroy();
+                let _ = target.device.poll(wgpu::PollType::Poll);
+                assert!(target.completed_view().is_none());
+                assert!(matches!(
+                    target.render_until(
+                        &Scene::new(),
+                        version(2, None, None),
+                        Instant::now() + Duration::from_secs(10)
+                    ),
+                    Err(BridgeError::DeviceLost(_))
+                ));
+                assert_eq!(target.last_render_attempts, 0);
+            }
+
+            // Phase `gpu_target_device_loss_at_marker_hides_output`.
+            {
+                let mut target = required_target(128, 128);
+                let mut test = completion_clock();
+                test.destroy_at_marker = true;
+                let deadline = test.start + Duration::from_secs(1);
+                target.completion_test = Some(test);
+                let result = target.render_until(&Scene::new(), version(1, None, None), deadline);
+                assert!(
+                    matches!(result, Err(BridgeError::DeviceLost(_))),
+                    "marker-time device loss must not publish: {result:?}"
+                );
+                assert!(target.completed_view().is_none());
+                assert_eq!(target.completion_markers, 1);
+            }
+        }
+
+        // Phase `gpu_target_aborted_or_poisoned_frames_submit_and_publish_nothing`.
+        {
+            // Phase `gpu_target_encoded_dense_and_sparse_abort_before_submission`.
+            {
+                for sparse in [false, true] {
+                    let mut target = required_target(128, 128);
+                    let params = RenderParams {
+                        base_color: Color::BLACK,
+                        width: 128,
+                        height: 128,
+                        antialiasing_method: AaConfig::Area,
+                    };
+                    let scene = Scene::new();
+                    let mut encoded = false;
+                    let result = if sparse {
+                        let damage = [vello::FineDamageRect {
+                            x: 16,
+                            y: 16,
+                            width: 16,
+                            height: 16,
+                        }];
+                        target
+                            .renderer
+                            .render_to_texture_with_damage_and_post_render_checked(
+                                &target.device,
+                                &target.queue,
+                                &scene,
+                                &target.view,
+                                &params,
+                                &damage,
+                                |_| encoded = true,
+                                || false,
+                            )
+                            .map(|_| ())
+                    } else {
+                        target.renderer.render_to_texture_with_post_render_checked(
+                            &target.device,
+                            &target.queue,
+                            &scene,
+                            &target.view,
+                            &params,
+                            |_| encoded = true,
+                            || false,
+                        )
+                    };
+                    assert!(
+                        encoded,
+                        "gate test must reach actual post-encoding boundary"
+                    );
+                    assert!(
+                        matches!(result, Err(vello::Error::SubmissionAborted)),
+                        "gate must cancel encoded render: {result:?}"
                     );
                 }
             }
-        }
-        let mut oracle = required_target(129, 128);
-        oracle
-            .render_until(
-                &scene,
-                version(2, None, None),
-                Instant::now() + Duration::from_secs(10),
-            )
-            .unwrap();
-        assert_eq!(actual, target_pixels(&oracle));
-    }
 
-    #[test]
-    fn gpu_target_failure_hides_view_until_reconstruction() {
-        let mut target = required_target(128, 128);
-        let scene = Scene::new();
-        let damage = SceneDamage {
-            revision: 1,
-            previous_revision: None,
-            regions: None,
-        };
-        target
-            .render_until(&scene, damage, Instant::now() + Duration::from_secs(10))
-            .expect("seed");
-        assert!(target.completed_view().is_some());
-        let result = target.render_until(&scene, damage, Instant::now());
-        assert!(
-            matches!(result, Err(BridgeError::DeadlineExceeded)),
-            "expired call must fail: {result:?}"
-        );
-        assert!(target.completed_view().is_none());
-        assert_eq!(target.last_render_attempts, 0);
-    }
+            // Phase `gpu_target_expiry_after_encoding_submits_no_render_or_marker`.
+            {
+                for sparse in [false, true] {
+                    let mut target = required_target(128, 128);
+                    target
+                        .render_until(
+                            &Scene::new(),
+                            version(1, None, None),
+                            Instant::now() + Duration::from_secs(10),
+                        )
+                        .unwrap();
+                    let mut test = completion_clock();
+                    test.encode_elapsed = Duration::from_secs(2);
+                    let deadline = test.start + Duration::from_secs(1);
+                    target.completion_test = Some(test);
+                    let regions = [vello::FineDamageRect {
+                        x: 16,
+                        y: 16,
+                        width: 16,
+                        height: 16,
+                    }];
+                    let result = target.render_until(
+                        &Scene::new(),
+                        version(2, Some(1), sparse.then_some(&regions)),
+                        deadline,
+                    );
+                    assert!(matches!(result, Err(BridgeError::DeadlineExceeded)));
+                    assert_eq!(target.last_render_attempts, 0);
+                    assert_eq!(target.completion_markers, 0);
+                    assert!(target.completed_view().is_none() && target.poisoned);
+                }
+            }
 
-    #[test]
-    fn gpu_target_encoded_dense_and_sparse_abort_before_submission() {
-        for sparse in [false, true] {
-            let mut target = required_target(128, 128);
-            let params = RenderParams {
-                base_color: Color::BLACK,
-                width: 128,
-                height: 128,
-                antialiasing_method: AaConfig::Area,
-            };
-            let scene = Scene::new();
-            let mut encoded = false;
-            let result = if sparse {
-                let damage = [vello::FineDamageRect {
-                    x: 16,
-                    y: 16,
-                    width: 16,
-                    height: 16,
-                }];
-                target
-                    .renderer
-                    .render_to_texture_with_damage_and_post_render_checked(
-                        &target.device,
-                        &target.queue,
-                        &scene,
-                        &target.view,
-                        &params,
-                        &damage,
-                        |_| encoded = true,
-                        || false,
+            // Phase `gpu_target_aborted_encoding_does_not_publish_timestamps`.
+            {
+                let mut target = required_target_with_env("VELLO_GPU_TIMESTAMPS", "1", 128, 128);
+                let mut test = completion_clock();
+                test.encode_elapsed = Duration::from_secs(2);
+                let deadline = test.start + Duration::from_secs(1);
+                target.completion_test = Some(test);
+                assert!(matches!(
+                    target.render_until(&Scene::new(), version(1, None, None), deadline),
+                    Err(BridgeError::DeadlineExceeded)
+                ));
+                assert_eq!(
+                    target.gpu_timestamp_latest_submission_id(),
+                    None,
+                    "aborted recording must not advertise a submitted timestamp identity"
+                );
+                assert!(target.take_gpu_timestamp_sample().is_none());
+                assert!(target.completed_view().is_none());
+            }
+
+            // Phase `gpu_target_late_counter_callback_cannot_publish_replacement`.
+            {
+                let mut context = RenderContext::new();
+                let id = context.device(None).block_on().expect("real GPU adapter");
+                let gpu = &context.devices[id];
+                assert!(matches!(
+                    RetainedGpuTarget::new(gpu, 0, 128),
+                    Err(BridgeError::InvalidSize(_))
+                ));
+                assert!(matches!(
+                    RetainedGpuTarget::new(
+                        gpu,
+                        gpu.device.limits().max_texture_dimension_2d + 1,
+                        128
+                    ),
+                    Err(BridgeError::InvalidSize(_))
+                ));
+                let mut old = RetainedGpuTarget::new(gpu, 128, 128).unwrap();
+                let mut test = completion_clock();
+                test.failure = Some(WaitPhase::Marker);
+                let deadline = test.start + Duration::from_secs(1);
+                old.completion_test = Some(test);
+                assert!(matches!(
+                    old.render_until(&Scene::new(), version(1, None, None), deadline),
+                    Err(BridgeError::DeadlineExceeded)
+                ));
+                let mut replacement = RetainedGpuTarget::new(gpu, 128, 128).unwrap();
+                gpu.device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: None,
+                        timeout: Some(Duration::from_secs(1)),
+                    })
+                    .unwrap();
+                assert!(matches!(
+                    old.renderer.poll_bump_budget(&gpu.device),
+                    Ok(vello::BumpBudgetPoll::Complete { .. })
+                ));
+                assert!(
+                    old.completed_view().is_none(),
+                    "late callback cannot unpoison old target"
+                );
+                assert!(
+                    replacement.completed_view().is_none(),
+                    "late callback cannot validate fresh target"
+                );
+                replacement
+                    .render_until(
+                        &Scene::new(),
+                        version(2, None, None),
+                        Instant::now() + Duration::from_secs(10),
                     )
-                    .map(|_| ())
-            } else {
-                target.renderer.render_to_texture_with_post_render_checked(
-                    &target.device,
-                    &target.queue,
-                    &scene,
-                    &target.view,
-                    &params,
-                    |_| encoded = true,
-                    || false,
-                )
-            };
-            assert!(
-                encoded,
-                "gate test must reach actual post-encoding boundary"
-            );
-            assert!(
-                matches!(result, Err(vello::Error::SubmissionAborted)),
-                "gate must cancel encoded render: {result:?}"
-            );
+                    .unwrap();
+                assert!(replacement.completed_view().is_some());
+                assert!(old.completed_view().is_none());
+            }
+
+            // Phase `gpu_target_poisoned_shared_coarse_diagnostic_rejects_before_encoding`.
+            {
+                assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
+                    bridge
+                        .shared_coarse_fine_diagnostic_into_xrgb8888(
+                            scene,
+                            &[vello::FineDamageRect {
+                                x: 16,
+                                y: 16,
+                                width: 16,
+                                height: 16,
+                            }],
+                            left,
+                            right,
+                            512,
+                        )
+                        .map(|_| ())
+                });
+            }
+
+            // Phase `gpu_target_poisoned_geometry_diagnostic_rejects_before_encoding`.
+            {
+                assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
+                    bridge
+                        .shared_coarse_fine_geometry_diagnostic_into_xrgb8888(
+                            scene,
+                            &[vello::FineDamageRect {
+                                x: 16,
+                                y: 16,
+                                width: 16,
+                                height: 16,
+                            }],
+                            left,
+                            right,
+                            512,
+                        )
+                        .map(|_| ())
+                });
+            }
+
+            // Phase `gpu_target_poisoned_segment_replay_rejects_before_encoding`.
+            {
+                assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
+                    let input = vello::SegmentOrderReplayInput {
+                        tile: 0,
+                        logical_command: 0,
+                        size_and_rule: 98,
+                        backdrop: 0,
+                        expected: [[0; 5]; 49],
+                        left: [[0; 5]; 49],
+                        right: [[0; 5]; 49],
+                    };
+                    bridge
+                        .segment_order_replay_into_xrgb8888(scene, &input, left, right, 512)
+                        .map(|_| ())
+                });
+            }
         }
     }
 
@@ -4126,615 +4668,353 @@ mod tests {
     }
 
     #[test]
-    fn gpu_target_revision_gap_and_resize_force_dense() {
-        let mut target = required_target(128, 128);
-        let regions = [vello::FineDamageRect {
-            x: 16,
-            y: 16,
-            width: 16,
-            height: 16,
-        }];
-        let scene = region_scene(regions[0], Color::WHITE);
-        target
-            .render_until(
-                &scene,
-                version(1, None, None),
-                Instant::now() + Duration::from_secs(10),
-            )
-            .unwrap();
-        let outcome = target
-            .render_until(
-                &scene,
-                version(3, Some(2), Some(&regions)),
-                Instant::now() + Duration::from_secs(10),
-            )
-            .unwrap();
-        assert!(!outcome.damage_admitted);
-        assert_eq!(outcome.sparse_attempts, 0);
-        target.resize(128, 128).unwrap();
-        assert!(target.completed_view().is_none());
-        let outcome = target
-            .render_until(
-                &scene,
-                version(4, Some(3), Some(&regions)),
-                Instant::now() + Duration::from_secs(10),
-            )
-            .unwrap();
-        assert_eq!(outcome.sparse_attempts, 0);
-        assert!(matches!(
-            target.resize(0, 128),
-            Err(BridgeError::InvalidSize(_))
-        ));
-        assert!(target.completed_view().is_none());
-        let limit = target.device.limits().max_texture_dimension_2d;
-        assert!(matches!(
-            target.resize(limit + 1, 128),
-            Err(BridgeError::InvalidSize(_))
-        ));
-        let old = target.texture.clone();
-        target.resize(160, 128).unwrap();
-        assert_ne!(old, target.texture);
-        assert_eq!(target.size(), (160, 128));
-        let outcome = target
-            .render_until(
-                &scene,
-                version(5, Some(4), Some(&regions)),
-                Instant::now() + Duration::from_secs(10),
-            )
-            .unwrap();
-        assert_eq!(outcome.sparse_attempts, 0);
-        target.set_base_color(Color::WHITE);
-        assert!(target.completed_view().is_none());
-    }
-
-    #[test]
-    fn gpu_target_xrgb_staging_gap_gets_complete_refresh() {
-        let mut bridge = required_bridge(129, 128);
-        bridge.set_phase_timing_enabled(true);
-        let mut actual = vec![0; 129 * 128 * 4];
-        bridge
-            .paint_damage_into_xrgb8888(&Scene::new(), version(1, None, None), &mut actual, 129 * 4)
-            .unwrap();
-        let first = vello::FineDamageRect {
-            x: 16,
-            y: 16,
-            width: 16,
-            height: 16,
-        };
-        let second = vello::FineDamageRect {
-            x: 64,
-            y: 64,
-            width: 16,
-            height: 16,
-        };
-        let mut scene = region_scene(first, Color::WHITE);
-        bridge
-            .target
-            .render_until(
-                &scene,
-                version(2, Some(1), Some(&[first])),
-                Instant::now() + Duration::from_secs(10),
-            )
-            .unwrap();
-        scene.append(&region_scene(second, Color::from_rgb8(200, 30, 50)), None);
-        bridge
-            .paint_damage_into_xrgb8888(
-                &scene,
-                version(3, Some(2), Some(&[second])),
-                &mut actual,
-                129 * 4,
-            )
-            .unwrap();
-        assert_eq!(
-            bridge.last_sparse_render_attempts(),
-            1,
-            "target continuity survives GPU-only middle frame"
-        );
-        assert_eq!(
-            bridge.last_phase_timing().unwrap().readback_bytes,
-            129 * 128 * 4,
-            "stale staging needs complete refresh in same submission"
-        );
-        let mut oracle = required_bridge(129, 128);
-        let mut expected = vec![0; actual.len()];
-        oracle
-            .paint_into_xrgb8888(&scene, &mut expected, 129 * 4)
-            .unwrap();
-        assert_eq!(actual, expected);
-        assert_eq!(
-            bridge.staging_content,
-            Some((bridge.target.geometry_generation, Some(3)))
-        );
-    }
-
-    #[test]
-    fn gpu_target_overflow_uses_four_attempt_budget() {
-        let mut target = required_target(384, 256);
-        let region = vello::FineDamageRect {
-            x: 144,
-            y: 80,
-            width: 96,
-            height: 96,
-        };
-        target
-            .render_until(
-                &Scene::new(),
-                version(1, None, None),
-                Instant::now() + Duration::from_secs(10),
-            )
-            .unwrap();
-        let scene = opaque_rect_stack_in_rect_scene(region);
-        let outcome = target
-            .render_until(
-                &scene,
-                version(2, Some(1), Some(&[region])),
-                Instant::now() + Duration::from_secs(10),
-            )
-            .unwrap();
-        assert_eq!(outcome.sparse_attempts, 1);
-        assert!(
-            outcome.full_attempts >= 1,
-            "real sparse overflow must recover densely"
-        );
-        assert_eq!(
-            outcome.render_attempts,
-            outcome.sparse_attempts + outcome.full_attempts
-        );
-        assert_eq!(outcome.completion_markers, outcome.render_attempts);
-        assert!(outcome.render_attempts <= 4);
-        let actual = target_pixels(&target);
-        let mut oracle = required_target(384, 256);
-        oracle
-            .render_until(
-                &scene,
-                version(2, None, None),
-                Instant::now() + Duration::from_secs(10),
-            )
-            .unwrap();
-        assert_eq!(actual, target_pixels(&oracle));
-        let mut test = completion_clock();
-        test.counters = (0..4)
-            .map(|_| Ok(vello::BumpBudgetPoll::Complete { overflowed: true }))
-            .collect();
-        let deadline = test.start + Duration::from_secs(10);
-        target.completion_test = Some(test);
-        let result = target.render_until(&scene, version(3, Some(2), Some(&[region])), deadline);
-        assert!(matches!(
-            result,
-            Err(BridgeError::RecoveryExhausted { attempts: 4 })
-        ));
-        assert_eq!(target.last_sparse_render_attempts, 1);
-        assert_eq!(target.last_full_render_attempts, 3);
-        assert_eq!(target.completion_markers, 4);
-        assert!(target.completed_view().is_none());
-        assert!(target.poisoned);
-        assert!(matches!(
-            target.render_until(&scene, version(4, None, None), deadline),
-            Err(BridgeError::RecreateRequired)
-        ));
-    }
-
-    #[test]
-    fn gpu_target_linux_phase_limits_survive_recovery() {
-        let mut bridge = required_bridge(128, 128);
-        let mut test = completion_clock();
-        test.fence_elapsed = Duration::from_millis(750);
-        test.callback_elapsed = Duration::from_millis(750);
-        test.counters = [
-            Ok(vello::BumpBudgetPoll::Pending),
-            Ok(vello::BumpBudgetPoll::Pending),
-            Ok(vello::BumpBudgetPoll::Complete { overflowed: true }),
-            Ok(vello::BumpBudgetPoll::Complete { overflowed: false }),
-        ]
-        .into();
-        bridge.target.completion_test = Some(test);
-        let mut actual = vec![0; 128 * 128 * 4];
-        bridge
-            .paint_damage_into_xrgb8888(&Scene::new(), version(1, None, None), &mut actual, 512)
-            .unwrap();
-        let test = bridge.target.completion_test.as_ref().unwrap();
-        assert_eq!(
-            test.waits,
-            vec![
-                (WaitPhase::Fence, Duration::from_secs(1)),
-                (WaitPhase::MapCallback, Duration::from_secs(1)),
-                (WaitPhase::Fence, Duration::from_secs(1)),
-                (WaitPhase::MapCallback, Duration::from_secs(1))
-            ]
-        );
-        assert_eq!(
-            &test.counter_remaining[..4],
-            &[
-                Duration::from_millis(1000),
-                Duration::from_millis(800),
-                Duration::from_millis(600),
-                Duration::from_millis(1000)
-            ]
-        );
-        assert!(
-            test.elapsed > Duration::from_secs(1),
-            "Linux has separate phase allowances"
-        );
-        assert_eq!(bridge.last_render_attempts(), 2);
-        assert_eq!(bridge.target.completion_markers, 0);
-        assert!(bridge.retained_staging_valid && bridge.target.retained_target_valid);
-        let explicit_budget: Duration = test
-            .waits
-            .iter()
-            .map(|(_, duration)| *duration)
-            .sum::<Duration>()
-            + BUMP_SETTLEMENT_WAIT * 2;
-        assert!(explicit_budget <= Duration::from_secs(12));
-
-        let mut exhausted = required_bridge(128, 128);
-        let mut test = completion_clock();
-        test.fence_elapsed = Duration::from_millis(750);
-        test.callback_elapsed = Duration::from_millis(750);
-        test.counters = (0..4)
-            .map(|_| Ok(vello::BumpBudgetPoll::Complete { overflowed: true }))
-            .collect();
-        exhausted.target.completion_test = Some(test);
-        assert!(matches!(
-            exhausted.paint_damage_into_xrgb8888(
-                &Scene::new(),
-                version(1, None, None),
-                &mut actual,
-                512
-            ),
-            Err(BridgeError::RecoveryExhausted { attempts: 4 })
-        ));
-        let test = exhausted.target.completion_test.as_ref().unwrap();
-        let requested: Duration = test
-            .waits
-            .iter()
-            .map(|(_, duration)| *duration)
-            .sum::<Duration>()
-            + BUMP_SETTLEMENT_WAIT * 4;
-        assert_eq!(requested, Duration::from_secs(12));
-        assert_eq!(exhausted.last_render_attempts(), 4);
-        assert!(exhausted.target.completed_view().is_none());
-    }
-
-    #[test]
-    fn gpu_target_linux_phase_failures_abort_without_recovery() {
-        // Every individual Linux phase failure aborts immediately; no completed overflow may
-        // turn a failed fence/callback/counter observation into another attempt.
-        for phase in [Some(WaitPhase::Fence), Some(WaitPhase::MapCallback), None] {
-            let mut bridge = required_bridge(128, 128);
-            let mut test = completion_clock();
-            test.failure = phase;
-            if phase.is_none() {
-                test.counters = (0..8).map(|_| Ok(vello::BumpBudgetPoll::Pending)).collect();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
+        // Phase `gpu_target_recovery_stays_within_attempt_phase_and_deadline_budgets`.
+        {
+            // Phase `gpu_target_overflow_uses_four_attempt_budget`.
+            {
+                let mut target = required_target(384, 256);
+                let region = vello::FineDamageRect {
+                    x: 144,
+                    y: 80,
+                    width: 96,
+                    height: 96,
+                };
+                target
+                    .render_until(
+                        &Scene::new(),
+                        version(1, None, None),
+                        Instant::now() + Duration::from_secs(10),
+                    )
+                    .unwrap();
+                let scene = opaque_rect_stack_in_rect_scene(region);
+                let outcome = target
+                    .render_until(
+                        &scene,
+                        version(2, Some(1), Some(&[region])),
+                        Instant::now() + Duration::from_secs(10),
+                    )
+                    .unwrap();
+                assert_eq!(outcome.sparse_attempts, 1);
+                assert!(
+                    outcome.full_attempts >= 1,
+                    "real sparse overflow must recover densely"
+                );
+                assert_eq!(
+                    outcome.render_attempts,
+                    outcome.sparse_attempts + outcome.full_attempts
+                );
+                assert_eq!(outcome.completion_markers, outcome.render_attempts);
+                assert!(outcome.render_attempts <= 4);
+                let actual = target_pixels(&target);
+                let mut oracle = required_target(384, 256);
+                oracle
+                    .render_until(
+                        &scene,
+                        version(2, None, None),
+                        Instant::now() + Duration::from_secs(10),
+                    )
+                    .unwrap();
+                assert_eq!(actual, target_pixels(&oracle));
+                let mut test = completion_clock();
+                test.counters = (0..4)
+                    .map(|_| Ok(vello::BumpBudgetPoll::Complete { overflowed: true }))
+                    .collect();
+                let deadline = test.start + Duration::from_secs(10);
+                target.completion_test = Some(test);
+                let result =
+                    target.render_until(&scene, version(3, Some(2), Some(&[region])), deadline);
+                assert!(matches!(
+                    result,
+                    Err(BridgeError::RecoveryExhausted { attempts: 4 })
+                ));
+                assert_eq!(target.last_sparse_render_attempts, 1);
+                assert_eq!(target.last_full_render_attempts, 3);
+                assert_eq!(target.completion_markers, 4);
+                assert!(target.completed_view().is_none());
+                assert!(target.poisoned);
+                assert!(matches!(
+                    target.render_until(&scene, version(4, None, None), deadline),
+                    Err(BridgeError::RecreateRequired)
+                ));
             }
-            bridge.target.completion_test = Some(test);
-            let mut bytes = vec![0xAB; 128 * 128 * 4];
-            let result = bridge.paint_damage_into_xrgb8888(
-                &Scene::new(),
-                version(1, None, None),
-                &mut bytes,
-                512,
-            );
-            assert!(result.is_err());
-            assert_eq!(bridge.last_render_attempts(), 1);
-            assert!(!bridge.retained_staging_valid && bridge.target.completed_view().is_none());
-            assert!(bytes.iter().all(|byte| *byte == 0xAB));
-            let identity = bridge.xrgb_history_identity(512, 1);
-            assert!(matches!(
-                bridge.paint_damage_into_xrgb8888(
-                    &Scene::new(),
-                    version(2, Some(1), None),
-                    &mut bytes,
-                    512,
-                ),
-                Err(BridgeError::RecoveryBackoff { .. })
-            ));
-            assert_eq!(bridge.last_render_attempts(), 1);
-            assert!(bytes.iter().all(|byte| *byte == 0xAB));
-            // Once the cool-down expires the poisoned target is reconstructed exactly once; the
-            // failure fixture belongs to the old target and cannot poison its replacement.
-            bridge.recovery_not_before = Some(
-                Instant::now()
-                    .checked_sub(Duration::from_millis(1))
-                    .expect("monotonic clock is past its first millisecond"),
-            );
-            bridge
-                .paint_damage_into_xrgb8888(
-                    &Scene::new(),
-                    version(3, Some(2), None),
-                    &mut bytes,
-                    512,
-                )
-                .expect("bridge reconstructs poisoned renderer after backoff");
-            assert_ne!(bridge.xrgb_history_identity(512, 1), identity);
-            assert!(bridge.target.completed_view().is_some());
+
+            // Phase `gpu_target_linux_phase_limits_survive_recovery`.
+            {
+                let mut bridge = required_bridge(128, 128);
+                let mut test = completion_clock();
+                test.fence_elapsed = Duration::from_millis(750);
+                test.callback_elapsed = Duration::from_millis(750);
+                test.counters = [
+                    Ok(vello::BumpBudgetPoll::Pending),
+                    Ok(vello::BumpBudgetPoll::Pending),
+                    Ok(vello::BumpBudgetPoll::Complete { overflowed: true }),
+                    Ok(vello::BumpBudgetPoll::Complete { overflowed: false }),
+                ]
+                .into();
+                bridge.target.completion_test = Some(test);
+                let mut actual = vec![0; 128 * 128 * 4];
+                bridge
+                    .paint_damage_into_xrgb8888(
+                        &Scene::new(),
+                        version(1, None, None),
+                        &mut actual,
+                        512,
+                    )
+                    .unwrap();
+                let test = bridge.target.completion_test.as_ref().unwrap();
+                assert_eq!(
+                    test.waits,
+                    vec![
+                        (WaitPhase::Fence, Duration::from_secs(1)),
+                        (WaitPhase::MapCallback, Duration::from_secs(1)),
+                        (WaitPhase::Fence, Duration::from_secs(1)),
+                        (WaitPhase::MapCallback, Duration::from_secs(1))
+                    ]
+                );
+                assert_eq!(
+                    &test.counter_remaining[..4],
+                    &[
+                        Duration::from_millis(1000),
+                        Duration::from_millis(800),
+                        Duration::from_millis(600),
+                        Duration::from_millis(1000)
+                    ]
+                );
+                assert!(
+                    test.elapsed > Duration::from_secs(1),
+                    "Linux has separate phase allowances"
+                );
+                assert_eq!(bridge.last_render_attempts(), 2);
+                assert_eq!(bridge.target.completion_markers, 0);
+                assert!(bridge.retained_staging_valid && bridge.target.retained_target_valid);
+                let explicit_budget: Duration = test
+                    .waits
+                    .iter()
+                    .map(|(_, duration)| *duration)
+                    .sum::<Duration>()
+                    + BUMP_SETTLEMENT_WAIT * 2;
+                assert!(explicit_budget <= Duration::from_secs(12));
+
+                let mut exhausted = required_bridge(128, 128);
+                let mut test = completion_clock();
+                test.fence_elapsed = Duration::from_millis(750);
+                test.callback_elapsed = Duration::from_millis(750);
+                test.counters = (0..4)
+                    .map(|_| Ok(vello::BumpBudgetPoll::Complete { overflowed: true }))
+                    .collect();
+                exhausted.target.completion_test = Some(test);
+                assert!(matches!(
+                    exhausted.paint_damage_into_xrgb8888(
+                        &Scene::new(),
+                        version(1, None, None),
+                        &mut actual,
+                        512
+                    ),
+                    Err(BridgeError::RecoveryExhausted { attempts: 4 })
+                ));
+                let test = exhausted.target.completion_test.as_ref().unwrap();
+                let requested: Duration = test
+                    .waits
+                    .iter()
+                    .map(|(_, duration)| *duration)
+                    .sum::<Duration>()
+                    + BUMP_SETTLEMENT_WAIT * 4;
+                assert_eq!(requested, Duration::from_secs(12));
+                assert_eq!(exhausted.last_render_attempts(), 4);
+                assert!(exhausted.target.completed_view().is_none());
+            }
+
+            // Phase `gpu_target_linux_phase_failures_abort_without_recovery`.
+            {
+                // Every individual Linux phase failure aborts immediately; no completed overflow may
+                // turn a failed fence/callback/counter observation into another attempt.
+                for phase in [Some(WaitPhase::Fence), Some(WaitPhase::MapCallback), None] {
+                    let mut bridge = required_bridge(128, 128);
+                    let mut test = completion_clock();
+                    test.failure = phase;
+                    if phase.is_none() {
+                        test.counters =
+                            (0..8).map(|_| Ok(vello::BumpBudgetPoll::Pending)).collect();
+                    }
+                    bridge.target.completion_test = Some(test);
+                    let mut bytes = vec![0xAB; 128 * 128 * 4];
+                    let result = bridge.paint_damage_into_xrgb8888(
+                        &Scene::new(),
+                        version(1, None, None),
+                        &mut bytes,
+                        512,
+                    );
+                    assert!(result.is_err());
+                    assert_eq!(bridge.last_render_attempts(), 1);
+                    assert!(
+                        !bridge.retained_staging_valid && bridge.target.completed_view().is_none()
+                    );
+                    assert!(bytes.iter().all(|byte| *byte == 0xAB));
+                    let identity = bridge.xrgb_history_identity(512, 1);
+                    assert!(matches!(
+                        bridge.paint_damage_into_xrgb8888(
+                            &Scene::new(),
+                            version(2, Some(1), None),
+                            &mut bytes,
+                            512,
+                        ),
+                        Err(BridgeError::RecoveryBackoff { .. })
+                    ));
+                    assert_eq!(bridge.last_render_attempts(), 1);
+                    assert!(bytes.iter().all(|byte| *byte == 0xAB));
+                    // Once the cool-down expires the poisoned target is reconstructed exactly once; the
+                    // failure fixture belongs to the old target and cannot poison its replacement.
+                    bridge.recovery_not_before = Some(
+                        Instant::now()
+                            .checked_sub(Duration::from_millis(1))
+                            .expect("monotonic clock is past its first millisecond"),
+                    );
+                    bridge
+                        .paint_damage_into_xrgb8888(
+                            &Scene::new(),
+                            version(3, Some(2), None),
+                            &mut bytes,
+                            512,
+                        )
+                        .expect("bridge reconstructs poisoned renderer after backoff");
+                    assert_ne!(bridge.xrgb_history_identity(512, 1), identity);
+                    assert!(bridge.target.completed_view().is_some());
+                }
+            }
+
+            // Phase `gpu_target_absolute_deadline_spans_recovery`.
+            {
+                let mut target = required_target(128, 128);
+                let mut test = completion_clock();
+                test.fence_elapsed = Duration::from_millis(750);
+                test.counters = [
+                    Ok(vello::BumpBudgetPoll::Pending),
+                    Ok(vello::BumpBudgetPoll::Pending),
+                    Ok(vello::BumpBudgetPoll::Complete { overflowed: true }),
+                ]
+                .into();
+                let deadline = test.start + Duration::from_secs(1);
+                target.completion_test = Some(test);
+                let result = target.render_until(&Scene::new(), version(1, None, None), deadline);
+                assert!(matches!(result, Err(BridgeError::DeadlineExceeded)));
+                assert_eq!(target.last_render_attempts, 1);
+                assert_eq!(target.completion_markers, 1);
+                assert!(target.completed_view().is_none());
+                let test = target.completion_test.as_ref().unwrap();
+                assert_eq!(
+                    test.counter_remaining,
+                    [Duration::from_millis(250), Duration::from_millis(50)]
+                );
+                assert_eq!(test.elapsed, Duration::from_secs(1));
+
+                // A completed overflow consumes the same caller deadline on the next attempt.
+                let mut target = required_target(128, 128);
+                let mut test = completion_clock();
+                test.fence_elapsed = Duration::from_millis(750);
+                test.counters
+                    .push_back(Ok(vello::BumpBudgetPoll::Complete { overflowed: true }));
+                let deadline = test.start + Duration::from_secs(1);
+                target.completion_test = Some(test);
+                assert!(matches!(
+                    target.render_until(&Scene::new(), version(1, None, None), deadline),
+                    Err(BridgeError::DeadlineExceeded)
+                ));
+                assert_eq!(target.last_render_attempts, 2);
+                assert_eq!(target.completion_markers, 2);
+                assert_eq!(
+                    target.completion_test.as_ref().unwrap().waits,
+                    [
+                        (WaitPhase::Marker, Duration::from_secs(1)),
+                        (WaitPhase::Marker, Duration::from_millis(250))
+                    ]
+                );
+            }
         }
-    }
 
-    #[test]
-    fn gpu_target_absolute_deadline_spans_recovery() {
-        let mut target = required_target(128, 128);
-        let mut test = completion_clock();
-        test.fence_elapsed = Duration::from_millis(750);
-        test.counters = [
-            Ok(vello::BumpBudgetPoll::Pending),
-            Ok(vello::BumpBudgetPoll::Pending),
-            Ok(vello::BumpBudgetPoll::Complete { overflowed: true }),
-        ]
-        .into();
-        let deadline = test.start + Duration::from_secs(1);
-        target.completion_test = Some(test);
-        let result = target.render_until(&Scene::new(), version(1, None, None), deadline);
-        assert!(matches!(result, Err(BridgeError::DeadlineExceeded)));
-        assert_eq!(target.last_render_attempts, 1);
-        assert_eq!(target.completion_markers, 1);
-        assert!(target.completed_view().is_none());
-        let test = target.completion_test.as_ref().unwrap();
-        assert_eq!(
-            test.counter_remaining,
-            [Duration::from_millis(250), Duration::from_millis(50)]
-        );
-        assert_eq!(test.elapsed, Duration::from_secs(1));
+        // Phase `gpu_target_always_waits_on_a_completion_marker`.
+        {
+            // Phase `gpu_target_disabled_measurement_still_waits_for_completion`.
+            {
+                let mut target =
+                    required_target_with_env("VELLO_BUMP_BUDGET", "upstream", 128, 128);
+                assert_eq!(
+                    target.renderer.poll_bump_budget(&target.device).unwrap(),
+                    vello::BumpBudgetPoll::Complete { overflowed: false }
+                );
+                let mut test = completion_clock();
+                test.failure = Some(WaitPhase::Marker);
+                let deadline = test.start + Duration::from_secs(1);
+                target.completion_test = Some(test);
+                assert!(matches!(
+                    target.render_until(&Scene::new(), version(1, None, None), deadline),
+                    Err(BridgeError::DeadlineExceeded)
+                ));
+                assert_eq!(target.completion_markers, 1);
+                assert_eq!(
+                    target.renderer.poll_bump_budget(&target.device).unwrap(),
+                    vello::BumpBudgetPoll::Complete { overflowed: false }
+                );
+                assert!(target.completed_view().is_none());
+                let mut replacement =
+                    required_target_with_env("VELLO_BUMP_BUDGET", "upstream", 128, 128);
+                let stats = replacement
+                    .render_until(
+                        &Scene::new(),
+                        version(2, None, None),
+                        Instant::now() + Duration::from_secs(10),
+                    )
+                    .unwrap();
+                assert_eq!(stats.completion_markers, stats.render_attempts);
+                assert!(stats.completion_markers > 0 && replacement.completed_view().is_some());
+            }
 
-        // A completed overflow consumes the same caller deadline on the next attempt.
-        let mut target = required_target(128, 128);
-        let mut test = completion_clock();
-        test.fence_elapsed = Duration::from_millis(750);
-        test.counters
-            .push_back(Ok(vello::BumpBudgetPoll::Complete { overflowed: true }));
-        let deadline = test.start + Duration::from_secs(1);
-        target.completion_test = Some(test);
-        assert!(matches!(
-            target.render_until(&Scene::new(), version(1, None, None), deadline),
-            Err(BridgeError::DeadlineExceeded)
-        ));
-        assert_eq!(target.last_render_attempts, 2);
-        assert_eq!(target.completion_markers, 2);
-        assert_eq!(
-            target.completion_test.as_ref().unwrap().waits,
-            [
-                (WaitPhase::Marker, Duration::from_secs(1)),
-                (WaitPhase::Marker, Duration::from_millis(250))
-            ]
-        );
-    }
+            // Phase `gpu_target_post_render_is_covered_by_existing_completion_marker`.
+            {
+                let mut target = required_target(8, 4);
+                let output = target.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("retained-bgra-test-output"),
+                    size: wgpu::Extent3d {
+                        width: 8,
+                        height: 4,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                });
+                let view = output.create_view(&wgpu::TextureViewDescriptor::default());
+                let mut test = completion_clock();
+                test.failure = Some(WaitPhase::Marker);
+                let deadline = test.start + Duration::from_secs(1);
+                target.completion_test = Some(test);
 
-    #[test]
-    fn gpu_target_counter_failures_and_device_loss_hide_output() {
-        for error in [
-            vello::BumpBudgetError::MapFailed,
-            vello::BumpBudgetError::MissingDownload,
-            vello::BumpBudgetError::InvalidDownload,
-            vello::BumpBudgetError::Poll("injected wrong submission index".to_owned()),
-        ] {
-            let mut target = required_target(128, 128);
-            let mut test = completion_clock();
-            test.counters.push_back(Err(error));
-            let deadline = test.start + Duration::from_secs(1);
-            target.completion_test = Some(test);
-            let result = target.render_until(&Scene::new(), version(1, None, None), deadline);
-            assert!(matches!(
-                result,
-                Err(BridgeError::BumpReadback(_) | BridgeError::DevicePoll(_))
-            ));
-            assert_eq!(target.last_render_attempts, 1);
-            assert!(target.completed_view().is_none() && target.poisoned);
+                assert!(matches!(
+                    target.render(
+                        &Scene::new(),
+                        Some(version(1, None, None)),
+                        FrameOutput::GpuOnly,
+                        CompletionPolicy::Absolute(deadline),
+                        None,
+                        |device, encoder, source| {
+                            TextureBlitter::new(device, wgpu::TextureFormat::Bgra8Unorm)
+                                .copy(device, encoder, source, &view);
+                        },
+                    ),
+                    Err(BridgeError::DeadlineExceeded)
+                ));
+                assert_eq!(target.last_render_attempts, 1);
+                assert_eq!(target.completion_markers, 1);
+                assert!(target.completed_view().is_none() && target.poisoned);
+            }
         }
-        let mut target = required_target(128, 128);
-        target
-            .render_until(
-                &Scene::new(),
-                version(1, None, None),
-                Instant::now() + Duration::from_secs(10),
-            )
-            .unwrap();
-        target.device.destroy();
-        let _ = target.device.poll(wgpu::PollType::Poll);
-        assert!(target.completed_view().is_none());
-        assert!(matches!(
-            target.render_until(
-                &Scene::new(),
-                version(2, None, None),
-                Instant::now() + Duration::from_secs(10)
-            ),
-            Err(BridgeError::DeviceLost(_))
-        ));
-        assert_eq!(target.last_render_attempts, 0);
-    }
-
-    #[test]
-    fn gpu_target_disabled_measurement_still_waits_for_completion() {
-        let mut target = required_target_with_env("VELLO_BUMP_BUDGET", "upstream", 128, 128);
-        assert_eq!(
-            target.renderer.poll_bump_budget(&target.device).unwrap(),
-            vello::BumpBudgetPoll::Complete { overflowed: false }
-        );
-        let mut test = completion_clock();
-        test.failure = Some(WaitPhase::Marker);
-        let deadline = test.start + Duration::from_secs(1);
-        target.completion_test = Some(test);
-        assert!(matches!(
-            target.render_until(&Scene::new(), version(1, None, None), deadline),
-            Err(BridgeError::DeadlineExceeded)
-        ));
-        assert_eq!(target.completion_markers, 1);
-        assert_eq!(
-            target.renderer.poll_bump_budget(&target.device).unwrap(),
-            vello::BumpBudgetPoll::Complete { overflowed: false }
-        );
-        assert!(target.completed_view().is_none());
-        let mut replacement = required_target_with_env("VELLO_BUMP_BUDGET", "upstream", 128, 128);
-        let stats = replacement
-            .render_until(
-                &Scene::new(),
-                version(2, None, None),
-                Instant::now() + Duration::from_secs(10),
-            )
-            .unwrap();
-        assert_eq!(stats.completion_markers, stats.render_attempts);
-        assert!(stats.completion_markers > 0 && replacement.completed_view().is_some());
-    }
-
-    #[test]
-    fn gpu_target_post_render_is_covered_by_existing_completion_marker() {
-        let mut target = required_target(8, 4);
-        let output = target.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("retained-bgra-test-output"),
-            size: wgpu::Extent3d {
-                width: 8,
-                height: 4,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bgra8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let view = output.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut test = completion_clock();
-        test.failure = Some(WaitPhase::Marker);
-        let deadline = test.start + Duration::from_secs(1);
-        target.completion_test = Some(test);
-
-        assert!(matches!(
-            target.render(
-                &Scene::new(),
-                Some(version(1, None, None)),
-                FrameOutput::GpuOnly,
-                CompletionPolicy::Absolute(deadline),
-                None,
-                |device, encoder, source| {
-                    TextureBlitter::new(device, wgpu::TextureFormat::Bgra8Unorm)
-                        .copy(device, encoder, source, &view);
-                },
-            ),
-            Err(BridgeError::DeadlineExceeded)
-        ));
-        assert_eq!(target.last_render_attempts, 1);
-        assert_eq!(target.completion_markers, 1);
-        assert!(target.completed_view().is_none() && target.poisoned);
-    }
-
-    #[test]
-    fn gpu_target_expiry_after_encoding_submits_no_render_or_marker() {
-        for sparse in [false, true] {
-            let mut target = required_target(128, 128);
-            target
-                .render_until(
-                    &Scene::new(),
-                    version(1, None, None),
-                    Instant::now() + Duration::from_secs(10),
-                )
-                .unwrap();
-            let mut test = completion_clock();
-            test.encode_elapsed = Duration::from_secs(2);
-            let deadline = test.start + Duration::from_secs(1);
-            target.completion_test = Some(test);
-            let regions = [vello::FineDamageRect {
-                x: 16,
-                y: 16,
-                width: 16,
-                height: 16,
-            }];
-            let result = target.render_until(
-                &Scene::new(),
-                version(2, Some(1), sparse.then_some(&regions)),
-                deadline,
-            );
-            assert!(matches!(result, Err(BridgeError::DeadlineExceeded)));
-            assert_eq!(target.last_render_attempts, 0);
-            assert_eq!(target.completion_markers, 0);
-            assert!(target.completed_view().is_none() && target.poisoned);
-        }
-    }
-
-    #[test]
-    fn gpu_target_device_loss_at_marker_hides_output() {
-        let mut target = required_target(128, 128);
-        let mut test = completion_clock();
-        test.destroy_at_marker = true;
-        let deadline = test.start + Duration::from_secs(1);
-        target.completion_test = Some(test);
-        let result = target.render_until(&Scene::new(), version(1, None, None), deadline);
-        assert!(
-            matches!(result, Err(BridgeError::DeviceLost(_))),
-            "marker-time device loss must not publish: {result:?}"
-        );
-        assert!(target.completed_view().is_none());
-        assert_eq!(target.completion_markers, 1);
-    }
-
-    #[test]
-    fn gpu_target_late_counter_callback_cannot_publish_replacement() {
-        let mut context = RenderContext::new();
-        let id = context.device(None).block_on().expect("real GPU adapter");
-        let gpu = &context.devices[id];
-        assert!(matches!(
-            RetainedGpuTarget::new(gpu, 0, 128),
-            Err(BridgeError::InvalidSize(_))
-        ));
-        assert!(matches!(
-            RetainedGpuTarget::new(gpu, gpu.device.limits().max_texture_dimension_2d + 1, 128),
-            Err(BridgeError::InvalidSize(_))
-        ));
-        let mut old = RetainedGpuTarget::new(gpu, 128, 128).unwrap();
-        let mut test = completion_clock();
-        test.failure = Some(WaitPhase::Marker);
-        let deadline = test.start + Duration::from_secs(1);
-        old.completion_test = Some(test);
-        assert!(matches!(
-            old.render_until(&Scene::new(), version(1, None, None), deadline),
-            Err(BridgeError::DeadlineExceeded)
-        ));
-        let mut replacement = RetainedGpuTarget::new(gpu, 128, 128).unwrap();
-        gpu.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: Some(Duration::from_secs(1)),
-            })
-            .unwrap();
-        assert!(matches!(
-            old.renderer.poll_bump_budget(&gpu.device),
-            Ok(vello::BumpBudgetPoll::Complete { .. })
-        ));
-        assert!(
-            old.completed_view().is_none(),
-            "late callback cannot unpoison old target"
-        );
-        assert!(
-            replacement.completed_view().is_none(),
-            "late callback cannot validate fresh target"
-        );
-        replacement
-            .render_until(
-                &Scene::new(),
-                version(2, None, None),
-                Instant::now() + Duration::from_secs(10),
-            )
-            .unwrap();
-        assert!(replacement.completed_view().is_some());
-        assert!(old.completed_view().is_none());
-    }
-
-    #[test]
-    fn gpu_target_aborted_encoding_does_not_publish_timestamps() {
-        let mut target = required_target_with_env("VELLO_GPU_TIMESTAMPS", "1", 128, 128);
-        let mut test = completion_clock();
-        test.encode_elapsed = Duration::from_secs(2);
-        let deadline = test.start + Duration::from_secs(1);
-        target.completion_test = Some(test);
-        assert!(matches!(
-            target.render_until(&Scene::new(), version(1, None, None), deadline),
-            Err(BridgeError::DeadlineExceeded)
-        ));
-        assert_eq!(
-            target.gpu_timestamp_latest_submission_id(),
-            None,
-            "aborted recording must not advertise a submitted timestamp identity"
-        );
-        assert!(target.take_gpu_timestamp_sample().is_none());
-        assert!(target.completed_view().is_none());
     }
 
     fn assert_poisoned_diagnostic_rejected(
@@ -4795,64 +5075,6 @@ mod tests {
             ),
             "actual device loss takes precedence over reconstruction"
         );
-    }
-
-    #[test]
-    fn gpu_target_poisoned_shared_coarse_diagnostic_rejects_before_encoding() {
-        assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
-            bridge
-                .shared_coarse_fine_diagnostic_into_xrgb8888(
-                    scene,
-                    &[vello::FineDamageRect {
-                        x: 16,
-                        y: 16,
-                        width: 16,
-                        height: 16,
-                    }],
-                    left,
-                    right,
-                    512,
-                )
-                .map(|_| ())
-        });
-    }
-
-    #[test]
-    fn gpu_target_poisoned_geometry_diagnostic_rejects_before_encoding() {
-        assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
-            bridge
-                .shared_coarse_fine_geometry_diagnostic_into_xrgb8888(
-                    scene,
-                    &[vello::FineDamageRect {
-                        x: 16,
-                        y: 16,
-                        width: 16,
-                        height: 16,
-                    }],
-                    left,
-                    right,
-                    512,
-                )
-                .map(|_| ())
-        });
-    }
-
-    #[test]
-    fn gpu_target_poisoned_segment_replay_rejects_before_encoding() {
-        assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
-            let input = vello::SegmentOrderReplayInput {
-                tile: 0,
-                logical_command: 0,
-                size_and_rule: 98,
-                backdrop: 0,
-                expected: [[0; 5]; 49],
-                left: [[0; 5]; 49],
-                right: [[0; 5]; 49],
-            };
-            bridge
-                .segment_order_replay_into_xrgb8888(scene, &input, left, right, 512)
-                .map(|_| ())
-        });
     }
 
     const NATIVE_BENCHMARK_ACTION_TARGETS: [&str; 2] =
@@ -4986,210 +5208,192 @@ mod tests {
     }
 
     #[test]
-    fn tracked_full_swizzle_rejects_truncated_source_without_mutating_destination() {
-        let source_bytes = [0x51_u8; 15];
-        let source = MappedXrgbSource {
-            bytes: &source_bytes,
-            padded_bytes_per_row: 8,
-            width: 2,
-            height: 2,
-        };
-        let mut destination = [0xA7_u8; 16];
-        let before = destination;
-        let result = VelloDrmBridge::swizzle_mapped_xrgb8888_with_plan(
-            source,
-            &mut destination,
-            8,
-            false,
-            XrgbWritePlan::Full,
-            true,
-        );
-        assert!(matches!(result, Err(BridgeError::InvalidSize(_))));
-        assert_eq!(
-            destination, before,
-            "tracked source rejection must be atomic"
-        );
-    }
-
-    #[test]
-    fn tracked_partial_swizzle_validates_every_rect_before_mutating_destination() {
-        let source_bytes = [0x51_u8; 16];
-        let source = MappedXrgbSource {
-            bytes: &source_bytes,
-            padded_bytes_per_row: 16,
-            width: 4,
-            height: 1,
-        };
-        let rects = [
-            vello::FineDamageRect {
-                x: 0,
-                y: 0,
-                width: 1,
-                height: 1,
-            },
-            vello::FineDamageRect {
-                x: 3,
-                y: 0,
-                width: 2,
-                height: 1,
-            },
-        ];
-        let mut destination = [0xA7_u8; 16];
-        let before = destination;
-        let result = VelloDrmBridge::swizzle_mapped_xrgb8888_with_plan(
-            source,
-            &mut destination,
-            16,
-            false,
-            XrgbWritePlan::Rects(&rects),
-            true,
-        );
-        assert!(matches!(result, Err(BridgeError::InvalidSize(_))));
-        assert_eq!(
-            destination, before,
-            "later invalid rect must not expose an earlier write"
-        );
-    }
-
-    #[test]
     #[allow(
         clippy::arithmetic_side_effects,
         reason = "fixed test dimensions are bounded by their literal fixture values"
     )]
-    fn tracked_short_destination_and_prepared_damage_mismatch_abort_without_writes() {
-        let (width, height) = (32_u32, 24_u32);
-        let mut bridge = required_bridge(width, height);
-        let pitch = usize::try_from(width).expect("test width") * 4;
-        let scene = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
-        let left = [vello::FineDamageRect {
-            x: 2,
-            y: 3,
-            width: 5,
-            height: 4,
-        }];
-        let right = [vello::FineDamageRect {
-            x: 16,
-            y: 8,
-            width: 5,
-            height: 4,
-        }];
-        let identity = bridge
-            .xrgb_history_identity(pitch, 1)
-            .expect("test bridge identity");
-        let mut history = XrgbTargetHistory::new(1);
-        let damage = SceneDamage {
-            revision: 1,
-            previous_revision: None,
-            regions: Some(&left),
-        };
-        let transaction = history.prepare(
-            0,
-            Some(identity),
-            damage.revision,
-            damage.previous_revision,
-            damage.regions,
-            &[],
-        );
-        let mut short = vec![0xA7; pitch * usize::try_from(height).expect("test height") - 1];
-        let short_before = short.clone();
-        let result = bridge.paint_damage_into_xrgb8888_with_history(
-            &scene,
-            damage,
-            &transaction,
-            &mut short,
-            pitch,
-        );
-        assert!(matches!(result, Err(BridgeError::InvalidSize(_))));
-        assert_eq!(
-            short, short_before,
-            "short tracked output must remain untouched"
-        );
-        transaction.abort();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn tracked_swizzle_validates_before_writing_and_unmaps_on_error() {
+        // Phase `tracked_full_swizzle_rejects_truncated_source_without_mutating_destination`.
+        {
+            let source_bytes = [0x51_u8; 15];
+            let source = MappedXrgbSource {
+                bytes: &source_bytes,
+                padded_bytes_per_row: 8,
+                width: 2,
+                height: 2,
+            };
+            let mut destination = [0xA7_u8; 16];
+            let before = destination;
+            let result = VelloDrmBridge::swizzle_mapped_xrgb8888_with_plan(
+                source,
+                &mut destination,
+                8,
+                false,
+                XrgbWritePlan::Full,
+                true,
+            );
+            assert!(matches!(result, Err(BridgeError::InvalidSize(_))));
+            assert_eq!(
+                destination, before,
+                "tracked source rejection must be atomic"
+            );
+        }
 
-        let transaction = history.prepare(0, Some(identity), 1, None, Some(&left), &[]);
-        let mismatch = SceneDamage {
-            revision: 1,
-            previous_revision: None,
-            regions: Some(&right),
-        };
-        let mut destination = vec![0xB8; pitch * usize::try_from(height).expect("test height")];
-        let before = destination.clone();
-        let result = bridge.paint_damage_into_xrgb8888_with_history(
-            &scene,
-            mismatch,
-            &transaction,
-            &mut destination,
-            pitch,
-        );
-        assert!(matches!(result, Err(BridgeError::XrgbHistoryMismatch)));
-        assert_eq!(
-            destination, before,
-            "mismatched prepared damage must not write"
-        );
-        transaction.abort();
-
-        let transaction = history.prepare(0, Some(identity), 1, None, Some(&right), &[]);
-        bridge
-            .paint_damage_into_xrgb8888_with_history(
-                &scene,
-                SceneDamage {
-                    revision: 1,
-                    previous_revision: None,
-                    regions: Some(&right),
+        // Phase `tracked_partial_swizzle_validates_every_rect_before_mutating_destination`.
+        {
+            let source_bytes = [0x51_u8; 16];
+            let source = MappedXrgbSource {
+                bytes: &source_bytes,
+                padded_bytes_per_row: 16,
+                width: 4,
+                height: 1,
+            };
+            let rects = [
+                vello::FineDamageRect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
                 },
+                vello::FineDamageRect {
+                    x: 3,
+                    y: 0,
+                    width: 2,
+                    height: 1,
+                },
+            ];
+            let mut destination = [0xA7_u8; 16];
+            let before = destination;
+            let result = VelloDrmBridge::swizzle_mapped_xrgb8888_with_plan(
+                source,
+                &mut destination,
+                16,
+                false,
+                XrgbWritePlan::Rects(&rects),
+                true,
+            );
+            assert!(matches!(result, Err(BridgeError::InvalidSize(_))));
+            assert_eq!(
+                destination, before,
+                "later invalid rect must not expose an earlier write"
+            );
+        }
+
+        // Phase `tracked_short_destination_and_prepared_damage_mismatch_abort_without_writes`.
+        {
+            let (width, height) = (32_u32, 24_u32);
+            let mut bridge = required_bridge(width, height);
+            let pitch = usize::try_from(width).expect("test width") * 4;
+            let scene = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
+            let left = [vello::FineDamageRect {
+                x: 2,
+                y: 3,
+                width: 5,
+                height: 4,
+            }];
+            let right = [vello::FineDamageRect {
+                x: 16,
+                y: 8,
+                width: 5,
+                height: 4,
+            }];
+            let identity = bridge
+                .xrgb_history_identity(pitch, 1)
+                .expect("test bridge identity");
+            let mut history = XrgbTargetHistory::new(1);
+            let damage = SceneDamage {
+                revision: 1,
+                previous_revision: None,
+                regions: Some(&left),
+            };
+            let transaction = history.prepare(
+                0,
+                Some(identity),
+                damage.revision,
+                damage.previous_revision,
+                damage.regions,
+                &[],
+            );
+            let mut short = vec![0xA7; pitch * usize::try_from(height).expect("test height") - 1];
+            let short_before = short.clone();
+            let result = bridge.paint_damage_into_xrgb8888_with_history(
+                &scene,
+                damage,
+                &transaction,
+                &mut short,
+                pitch,
+            );
+            assert!(matches!(result, Err(BridgeError::InvalidSize(_))));
+            assert_eq!(
+                short, short_before,
+                "short tracked output must remain untouched"
+            );
+            transaction.abort();
+
+            let transaction = history.prepare(0, Some(identity), 1, None, Some(&left), &[]);
+            let mismatch = SceneDamage {
+                revision: 1,
+                previous_revision: None,
+                regions: Some(&right),
+            };
+            let mut destination = vec![0xB8; pitch * usize::try_from(height).expect("test height")];
+            let before = destination.clone();
+            let result = bridge.paint_damage_into_xrgb8888_with_history(
+                &scene,
+                mismatch,
                 &transaction,
                 &mut destination,
                 pitch,
-            )
-            .expect("next tracked paint after aborted errors");
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
-    }
+            );
+            assert!(matches!(result, Err(BridgeError::XrgbHistoryMismatch)));
+            assert_eq!(
+                destination, before,
+                "mismatched prepared damage must not write"
+            );
+            transaction.abort();
 
-    #[test]
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixed test dimensions are bounded by their literal fixture values"
-    )]
-    fn tracked_swizzle_error_unmaps_before_the_next_paint() {
-        let (width, height) = (32_u32, 24_u32);
-        let mut bridge = required_bridge(width, height);
-        let pitch = usize::try_from(width).expect("test width") * 4;
-        let scene = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
-        let damage = [vello::FineDamageRect {
-            x: 2,
-            y: 3,
-            width: 5,
-            height: 4,
-        }];
-        let identity = bridge
-            .xrgb_history_identity(pitch, 1)
-            .expect("test bridge identity");
-        let mut history = XrgbTargetHistory::new(1);
-        let mut destination = vec![0xA7; pitch * usize::try_from(height).expect("test height")];
-        let before = destination.clone();
-        let transaction = history.prepare(0, Some(identity), 1, None, Some(&damage), &[]);
-        bridge.inject_next_tracked_swizzle_failure_for_test();
-        let failed = bridge.paint_damage_into_xrgb8888_with_history(
-            &scene,
-            SceneDamage {
-                revision: 1,
-                previous_revision: None,
-                regions: Some(&damage),
-            },
-            &transaction,
-            &mut destination,
-            pitch,
-        );
-        assert!(matches!(failed, Err(BridgeError::InvalidSize(_))));
-        assert_eq!(
-            destination, before,
-            "injected post-map swizzle error must be atomic"
-        );
-        transaction.abort();
+            let transaction = history.prepare(0, Some(identity), 1, None, Some(&right), &[]);
+            bridge
+                .paint_damage_into_xrgb8888_with_history(
+                    &scene,
+                    SceneDamage {
+                        revision: 1,
+                        previous_revision: None,
+                        regions: Some(&right),
+                    },
+                    &transaction,
+                    &mut destination,
+                    pitch,
+                )
+                .expect("next tracked paint after aborted errors");
+            transaction.commit(XrgbHistoryCommit::FullBoundary);
+        }
 
-        let transaction = history.prepare(0, Some(identity), 1, None, Some(&damage), &[]);
-        bridge
-            .paint_damage_into_xrgb8888_with_history(
+        // Phase `tracked_swizzle_error_unmaps_before_the_next_paint`.
+        {
+            let (width, height) = (32_u32, 24_u32);
+            let mut bridge = required_bridge(width, height);
+            let pitch = usize::try_from(width).expect("test width") * 4;
+            let scene = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
+            let damage = [vello::FineDamageRect {
+                x: 2,
+                y: 3,
+                width: 5,
+                height: 4,
+            }];
+            let identity = bridge
+                .xrgb_history_identity(pitch, 1)
+                .expect("test bridge identity");
+            let mut history = XrgbTargetHistory::new(1);
+            let mut destination = vec![0xA7; pitch * usize::try_from(height).expect("test height")];
+            let before = destination.clone();
+            let transaction = history.prepare(0, Some(identity), 1, None, Some(&damage), &[]);
+            bridge.inject_next_tracked_swizzle_failure_for_test();
+            let failed = bridge.paint_damage_into_xrgb8888_with_history(
                 &scene,
                 SceneDamage {
                     revision: 1,
@@ -5199,9 +5403,30 @@ mod tests {
                 &transaction,
                 &mut destination,
                 pitch,
-            )
-            .expect("staging must be unmapped for the next tracked paint");
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
+            );
+            assert!(matches!(failed, Err(BridgeError::InvalidSize(_))));
+            assert_eq!(
+                destination, before,
+                "injected post-map swizzle error must be atomic"
+            );
+            transaction.abort();
+
+            let transaction = history.prepare(0, Some(identity), 1, None, Some(&damage), &[]);
+            bridge
+                .paint_damage_into_xrgb8888_with_history(
+                    &scene,
+                    SceneDamage {
+                        revision: 1,
+                        previous_revision: None,
+                        regions: Some(&damage),
+                    },
+                    &transaction,
+                    &mut destination,
+                    pitch,
+                )
+                .expect("staging must be unmapped for the next tracked paint");
+            transaction.commit(XrgbHistoryCommit::FullBoundary);
+        }
     }
 
     #[test]
@@ -5209,191 +5434,196 @@ mod tests {
         clippy::arithmetic_side_effects,
         reason = "fixed test dimensions are bounded by their literal fixture values"
     )]
-    fn saturated_bridge_history_epoch_disables_tracking_but_not_full_paint() {
-        let mut bridge = required_bridge(16, 12);
-        bridge.xrgb_history_epoch = Some(u64::MAX);
-        bridge.set_base_color(Color::from_rgb8(0x20, 0x30, 0x40));
-        assert!(!bridge.xrgb_history_available());
-        let mut destination = vec![0xA7; 16 * 12 * 4];
-        bridge
-            .paint_into_xrgb8888(&Scene::new(), &mut destination, 16 * 4)
-            .expect("ordinary full paint remains available after tracking epoch saturation");
-    }
-
-    #[test]
     #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixed test dimensions are bounded by their literal fixture values"
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn history_bridge_accepts_gap_and_oversized_damage_as_real_full_boundaries() {
-        let (width, height) = (32_u32, 24_u32);
-        let mut bridge = required_bridge(width, height);
-        let pitch = usize::try_from(width).expect("test width") * 4 + 16;
-        let mut destination = vec![0xA7; pitch * usize::try_from(height).expect("test height")];
-        let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
-        let small = [vello::FineDamageRect {
-            x: 3,
-            y: 4,
-            width: 6,
-            height: 5,
-        }];
-        let identity = bridge
-            .xrgb_history_identity(pitch, 1)
-            .expect("test bridge identity");
-        let mut history = XrgbTargetHistory::new(1);
+    fn history_bridge_treats_saturation_gaps_and_scanout_epochs_as_full_boundaries() {
+        // Phase `saturated_bridge_history_epoch_disables_tracking_but_not_full_paint`.
+        {
+            let mut bridge = required_bridge(16, 12);
+            bridge.xrgb_history_epoch = Some(u64::MAX);
+            bridge.set_base_color(Color::from_rgb8(0x20, 0x30, 0x40));
+            assert!(!bridge.xrgb_history_available());
+            let mut destination = vec![0xA7; 16 * 12 * 4];
+            bridge
+                .paint_into_xrgb8888(&Scene::new(), &mut destination, 16 * 4)
+                .expect("ordinary full paint remains available after tracking epoch saturation");
+        }
 
-        let seed = SceneDamage {
-            revision: 1,
-            previous_revision: None,
-            regions: Some(&small),
-        };
-        let transaction = history.prepare(
-            0,
-            Some(identity),
-            seed.revision,
-            seed.previous_revision,
-            seed.regions,
-            &[],
-        );
-        let write = bridge
-            .paint_damage_into_xrgb8888_with_history(
-                &scene,
-                seed,
-                &transaction,
-                &mut destination,
-                pitch,
-            )
-            .expect("seed full boundary");
-        assert_eq!(write.mode, XrgbCpuWriteMode::Full);
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
+        // Phase `history_bridge_accepts_gap_and_oversized_damage_as_real_full_boundaries`.
+        {
+            let (width, height) = (32_u32, 24_u32);
+            let mut bridge = required_bridge(width, height);
+            let pitch = usize::try_from(width).expect("test width") * 4 + 16;
+            let mut destination = vec![0xA7; pitch * usize::try_from(height).expect("test height")];
+            let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
+            let small = [vello::FineDamageRect {
+                x: 3,
+                y: 4,
+                width: 6,
+                height: 5,
+            }];
+            let identity = bridge
+                .xrgb_history_identity(pitch, 1)
+                .expect("test bridge identity");
+            let mut history = XrgbTargetHistory::new(1);
 
-        // This is a legitimate model gap, not an identity mismatch. It must render densely and
-        // establish the new revision rather than reject before the bridge can recover.
-        let gap = SceneDamage {
-            revision: 4,
-            previous_revision: Some(2),
-            regions: Some(&small),
-        };
-        let transaction = history.prepare(
-            0,
-            Some(identity),
-            gap.revision,
-            gap.previous_revision,
-            gap.regions,
-            &[],
-        );
-        let write = bridge
-            .paint_damage_into_xrgb8888_with_history(
-                &scene,
-                gap,
-                &transaction,
-                &mut destination,
-                pitch,
-            )
-            .expect("gap full boundary");
-        assert_eq!(write.mode, XrgbCpuWriteMode::Full);
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
+            let seed = SceneDamage {
+                revision: 1,
+                previous_revision: None,
+                regions: Some(&small),
+            };
+            let transaction = history.prepare(
+                0,
+                Some(identity),
+                seed.revision,
+                seed.previous_revision,
+                seed.regions,
+                &[],
+            );
+            let write = bridge
+                .paint_damage_into_xrgb8888_with_history(
+                    &scene,
+                    seed,
+                    &transaction,
+                    &mut destination,
+                    pitch,
+                )
+                .expect("seed full boundary");
+            assert_eq!(write.mode, XrgbCpuWriteMode::Full);
+            transaction.commit(XrgbHistoryCommit::FullBoundary);
 
-        let oversized = vec![small[0]; 65];
-        let oversized_damage = SceneDamage {
-            revision: 5,
-            previous_revision: Some(4),
-            regions: Some(&oversized),
-        };
-        let transaction = history.prepare(
-            0,
-            Some(identity),
-            oversized_damage.revision,
-            oversized_damage.previous_revision,
-            oversized_damage.regions,
-            &[],
-        );
-        let write = bridge
-            .paint_damage_into_xrgb8888_with_history(
-                &scene,
-                oversized_damage,
-                &transaction,
-                &mut destination,
-                pitch,
-            )
-            .expect("oversized damage must be a full boundary, not a mismatch");
-        assert_eq!(write.mode, XrgbCpuWriteMode::Full);
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
-    }
+            // This is a legitimate model gap, not an identity mismatch. It must render densely and
+            // establish the new revision rather than reject before the bridge can recover.
+            let gap = SceneDamage {
+                revision: 4,
+                previous_revision: Some(2),
+                regions: Some(&small),
+            };
+            let transaction = history.prepare(
+                0,
+                Some(identity),
+                gap.revision,
+                gap.previous_revision,
+                gap.regions,
+                &[],
+            );
+            let write = bridge
+                .paint_damage_into_xrgb8888_with_history(
+                    &scene,
+                    gap,
+                    &transaction,
+                    &mut destination,
+                    pitch,
+                )
+                .expect("gap full boundary");
+            assert_eq!(write.mode, XrgbCpuWriteMode::Full);
+            transaction.commit(XrgbHistoryCommit::FullBoundary);
 
-    #[test]
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixed test dimensions are bounded by their literal fixture values"
-    )]
-    fn history_bridge_accepts_nonzero_scanout_epoch_across_two_targets() {
-        let (width, height) = (32_u32, 24_u32);
-        let mut bridge = required_bridge(width, height);
-        let pitch = usize::try_from(width).expect("test width") * 4;
-        let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
-        let damage = [vello::FineDamageRect {
-            x: 3,
-            y: 4,
-            width: 6,
-            height: 5,
-        }];
-        let identity = bridge
-            .xrgb_history_identity(pitch, 2)
-            .expect("test bridge identity")
-            .with_scanout_epoch(7);
-        let mut history = XrgbTargetHistory::new(2);
-        let mut left = vec![0xA7; pitch * usize::try_from(height).expect("test height")];
-        let mut right = left.clone();
+            let oversized = vec![small[0]; 65];
+            let oversized_damage = SceneDamage {
+                revision: 5,
+                previous_revision: Some(4),
+                regions: Some(&oversized),
+            };
+            let transaction = history.prepare(
+                0,
+                Some(identity),
+                oversized_damage.revision,
+                oversized_damage.previous_revision,
+                oversized_damage.regions,
+                &[],
+            );
+            let write = bridge
+                .paint_damage_into_xrgb8888_with_history(
+                    &scene,
+                    oversized_damage,
+                    &transaction,
+                    &mut destination,
+                    pitch,
+                )
+                .expect("oversized damage must be a full boundary, not a mismatch");
+            assert_eq!(write.mode, XrgbCpuWriteMode::Full);
+            transaction.commit(XrgbHistoryCommit::FullBoundary);
+        }
 
-        let first = SceneDamage {
-            revision: 1,
-            previous_revision: None,
-            regions: Some(&damage),
-        };
-        let transaction = history.prepare(
-            0,
-            Some(identity),
-            first.revision,
-            first.previous_revision,
-            first.regions,
-            &[],
-        );
-        let write = bridge
-            .paint_damage_into_xrgb8888_with_history(&scene, first, &transaction, &mut left, pitch)
-            .expect("nonzero scanout epoch seed");
-        transaction.commit(if write.damage_admitted {
-            XrgbHistoryCommit::DamageAccepted
-        } else {
-            XrgbHistoryCommit::FullBoundary
-        });
+        // Phase `history_bridge_accepts_nonzero_scanout_epoch_across_two_targets`.
+        {
+            let (width, height) = (32_u32, 24_u32);
+            let mut bridge = required_bridge(width, height);
+            let pitch = usize::try_from(width).expect("test width") * 4;
+            let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
+            let damage = [vello::FineDamageRect {
+                x: 3,
+                y: 4,
+                width: 6,
+                height: 5,
+            }];
+            let identity = bridge
+                .xrgb_history_identity(pitch, 2)
+                .expect("test bridge identity")
+                .with_scanout_epoch(7);
+            let mut history = XrgbTargetHistory::new(2);
+            let mut left = vec![0xA7; pitch * usize::try_from(height).expect("test height")];
+            let mut right = left.clone();
 
-        let second = SceneDamage {
-            revision: 2,
-            previous_revision: Some(1),
-            regions: Some(&damage),
-        };
-        let transaction = history.prepare(
-            1,
-            Some(identity),
-            second.revision,
-            second.previous_revision,
-            second.regions,
-            &[],
-        );
-        let write = bridge
-            .paint_damage_into_xrgb8888_with_history(
-                &scene,
-                second,
-                &transaction,
-                &mut right,
-                pitch,
-            )
-            .expect("nonzero scanout epoch must not mismatch bridge identity");
-        transaction.commit(if write.damage_admitted {
-            XrgbHistoryCommit::DamageAccepted
-        } else {
-            XrgbHistoryCommit::FullBoundary
-        });
+            let first = SceneDamage {
+                revision: 1,
+                previous_revision: None,
+                regions: Some(&damage),
+            };
+            let transaction = history.prepare(
+                0,
+                Some(identity),
+                first.revision,
+                first.previous_revision,
+                first.regions,
+                &[],
+            );
+            let write = bridge
+                .paint_damage_into_xrgb8888_with_history(
+                    &scene,
+                    first,
+                    &transaction,
+                    &mut left,
+                    pitch,
+                )
+                .expect("nonzero scanout epoch seed");
+            transaction.commit(if write.damage_admitted {
+                XrgbHistoryCommit::DamageAccepted
+            } else {
+                XrgbHistoryCommit::FullBoundary
+            });
+
+            let second = SceneDamage {
+                revision: 2,
+                previous_revision: Some(1),
+                regions: Some(&damage),
+            };
+            let transaction = history.prepare(
+                1,
+                Some(identity),
+                second.revision,
+                second.previous_revision,
+                second.regions,
+                &[],
+            );
+            let write = bridge
+                .paint_damage_into_xrgb8888_with_history(
+                    &scene,
+                    second,
+                    &transaction,
+                    &mut right,
+                    pitch,
+                )
+                .expect("nonzero scanout epoch must not mismatch bridge identity");
+            transaction.commit(if write.damage_admitted {
+                XrgbHistoryCommit::DamageAccepted
+            } else {
+                XrgbHistoryCommit::FullBoundary
+            });
+        }
     }
 
     #[test]
@@ -5740,364 +5970,454 @@ mod tests {
     }
 
     #[test]
-    fn l_shaped_damage_does_not_expand_to_a_bounding_box() {
-        // A QS popover overlapping a full-width top bar is the common case that made a bounding
-        // union look like a near-full frame. Keep both copies precise; Vello unions their tiles.
-        let damage = [
-            vello::FineDamageRect {
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 68,
-            },
-            vello::FineDamageRect {
-                x: 1440,
-                y: 40,
-                width: 480,
-                height: 800,
-            },
-        ];
-        let normalized = VelloDrmBridge::normalize_damage(&damage, (1920, 1080))
-            .expect("the precise L shape is sparse eligible");
-        assert_eq!(
-            normalized.as_slice(),
-            &damage,
-            "partial overlap stays as exact copies"
-        );
-        let copied_pixels = normalized.iter().fold(0_u64, |pixels, rect| {
-            pixels + u64::from(rect.width) * u64::from(rect.height)
-        });
-        assert_eq!(copied_pixels, 514_560);
-        let bounding_pixels = 1920_u64 * 840;
-        assert!(
-            bounding_pixels > u64::from(1920_u32) * u64::from(1080_u32) / 2,
-            "the old bounding box would have forced a full fallback"
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn versioned_damage_copies_dirty_regions_until_invalidated() {
+        // Phase `versioned_damage_copies_exactly_the_dirty_region`.
+        {
+            // Phase `l_shaped_damage_does_not_expand_to_a_bounding_box`.
+            {
+                // A QS popover overlapping a full-width top bar is the common case that made a bounding
+                // union look like a near-full frame. Keep both copies precise; Vello unions their tiles.
+                let damage = [
+                    vello::FineDamageRect {
+                        x: 0,
+                        y: 0,
+                        width: 1920,
+                        height: 68,
+                    },
+                    vello::FineDamageRect {
+                        x: 1440,
+                        y: 40,
+                        width: 480,
+                        height: 800,
+                    },
+                ];
+                let normalized = VelloDrmBridge::normalize_damage(&damage, (1920, 1080))
+                    .expect("the precise L shape is sparse eligible");
+                assert_eq!(
+                    normalized.as_slice(),
+                    &damage,
+                    "partial overlap stays as exact copies"
+                );
+                let copied_pixels = normalized.iter().fold(0_u64, |pixels, rect| {
+                    pixels + u64::from(rect.width) * u64::from(rect.height)
+                });
+                assert_eq!(copied_pixels, 514_560);
+                let bounding_pixels = 1920_u64 * 840;
+                assert!(
+                    bounding_pixels > u64::from(1920_u32) * u64::from(1080_u32) / 2,
+                    "the old bounding box would have forced a full fallback"
+                );
+            }
 
-    #[test]
-    fn shared_coarse_diagnostic_accepts_full_damage_without_relaxing_sparse_policy() {
-        let full = [vello::FineDamageRect {
-            x: 0,
-            y: 0,
-            width: 64,
-            height: 48,
-        }];
-        assert!(
-            VelloDrmBridge::normalize_damage(&full, (64, 48)).is_none(),
-            "ordinary sparse damage must retain its full-frame profitability fallback"
-        );
-        assert_eq!(
-            VelloDrmBridge::validate_diagnostic_damage(&full, (64, 48))
-                .expect("the diagnostic must compare full native damage")
-                .as_slice(),
-            &full,
-        );
+            // Phase `shared_coarse_diagnostic_accepts_full_damage_without_relaxing_sparse_policy`.
+            {
+                let full = [vello::FineDamageRect {
+                    x: 0,
+                    y: 0,
+                    width: 64,
+                    height: 48,
+                }];
+                assert!(
+                    VelloDrmBridge::normalize_damage(&full, (64, 48)).is_none(),
+                    "ordinary sparse damage must retain its full-frame profitability fallback"
+                );
+                assert_eq!(
+                    VelloDrmBridge::validate_diagnostic_damage(&full, (64, 48))
+                        .expect("the diagnostic must compare full native damage")
+                        .as_slice(),
+                    &full,
+                );
 
-        let invalid = [vello::FineDamageRect {
-            x: 63,
-            y: 0,
-            width: 2,
-            height: 1,
-        }];
-        assert!(
-            VelloDrmBridge::validate_diagnostic_damage(&invalid, (64, 48)).is_none(),
-            "diagnostic rendering must still reject out-of-bounds rectangles"
-        );
-    }
+                let invalid = [vello::FineDamageRect {
+                    x: 63,
+                    y: 0,
+                    width: 2,
+                    height: 1,
+                }];
+                assert!(
+                    VelloDrmBridge::validate_diagnostic_damage(&invalid, (64, 48)).is_none(),
+                    "diagnostic rendering must still reject out-of-bounds rectangles"
+                );
+            }
 
-    #[test]
-    fn versioned_damage_retains_full_pixels_and_copies_only_dirty_rectangles() {
-        let (width, height) = (64_u32, 48_u32);
-        let mut bridge = required_bridge(width, height);
-        let pitch = width as usize * 4 + 16;
-        let first = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
-        let damage = [vello::FineDamageRect {
-            x: 7,
-            y: 9,
-            width: 13,
-            height: 11,
-        }];
-        let second = layered_scene(
-            width,
-            height,
-            Color::from_rgb8(0x11, 0x22, 0x33),
-            &[(damage[0], Color::from_rgb8(0xC0, 0x50, 0x20))],
-        );
+            // Phase `versioned_damage_retains_full_pixels_and_copies_only_dirty_rectangles`.
+            {
+                let (width, height) = (64_u32, 48_u32);
+                let mut bridge = required_bridge(width, height);
+                let pitch = width as usize * 4 + 16;
+                let first = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
+                let damage = [vello::FineDamageRect {
+                    x: 7,
+                    y: 9,
+                    width: 13,
+                    height: 11,
+                }];
+                let second = layered_scene(
+                    width,
+                    height,
+                    Color::from_rgb8(0x11, 0x22, 0x33),
+                    &[(damage[0], Color::from_rgb8(0xC0, 0x50, 0x20))],
+                );
 
-        bridge.set_phase_timing_enabled(true);
-        let mut first_destination = vec![0xD1; pitch * height as usize];
-        bridge
-            .paint_damage_into_xrgb8888(
-                &first,
-                SceneDamage {
-                    revision: 1,
-                    previous_revision: None,
-                    regions: Some(&damage),
-                },
-                &mut first_destination,
-                pitch,
-            )
-            .expect("first versioned paint is dense");
-        assert_eq!(
-            bridge.last_phase_timing().expect("timing").readback_bytes,
-            u64::from(width) * u64::from(height) * 4,
-            "a first versioned paint must not use stale sparse backing"
-        );
+                bridge.set_phase_timing_enabled(true);
+                let mut first_destination = vec![0xD1; pitch * height as usize];
+                bridge
+                    .paint_damage_into_xrgb8888(
+                        &first,
+                        SceneDamage {
+                            revision: 1,
+                            previous_revision: None,
+                            regions: Some(&damage),
+                        },
+                        &mut first_destination,
+                        pitch,
+                    )
+                    .expect("first versioned paint is dense");
+                assert_eq!(
+                    bridge.last_phase_timing().expect("timing").readback_bytes,
+                    u64::from(width) * u64::from(height) * 4,
+                    "a first versioned paint must not use stale sparse backing"
+                );
 
-        let sparse_supported = bridge.target.renderer.sparse_fine_supported();
-        let mut alternating_destination = vec![0xA7; pitch * height as usize];
-        bridge
-            .paint_damage_into_xrgb8888(
-                &second,
-                SceneDamage {
-                    revision: 2,
-                    previous_revision: Some(1),
-                    regions: Some(&damage),
-                },
-                &mut alternating_destination,
-                pitch,
-            )
-            .expect("second versioned paint");
+                let sparse_supported = bridge.target.renderer.sparse_fine_supported();
+                let mut alternating_destination = vec![0xA7; pitch * height as usize];
+                bridge
+                    .paint_damage_into_xrgb8888(
+                        &second,
+                        SceneDamage {
+                            revision: 2,
+                            previous_revision: Some(1),
+                            regions: Some(&damage),
+                        },
+                        &mut alternating_destination,
+                        pitch,
+                    )
+                    .expect("second versioned paint");
 
-        let mut oracle = required_bridge(width, height);
-        let mut expected = vec![0x4E; pitch * height as usize];
-        oracle
-            .paint_into_xrgb8888(&second, &mut expected, pitch)
-            .expect("dense oracle");
-        assert_xrgb_pixels_eq(
-            &alternating_destination,
-            &expected,
-            width as usize,
-            height as usize,
-            pitch,
-        );
-        if sparse_supported {
-            let timing = bridge.last_phase_timing().expect("timing");
-            assert_eq!(
-                timing.readback_bytes,
-                u64::from(damage[0].width) * u64::from(damage[0].height) * 4,
-                "profiled bytes are the submitted dirty copy, not a whole staging frame"
-            );
-            assert_eq!(
-                timing.cpu_output_bytes,
-                u64::from(width) * u64::from(height) * 4,
-                "alternating DRM destinations still receive a complete CPU XRGB image"
-            );
-            assert_eq!(bridge.last_sparse_render_attempts(), 1);
-            assert_eq!(bridge.last_full_render_attempts(), 0);
-            assert_eq!(bridge.last_render_attempts(), 1);
+                let mut oracle = required_bridge(width, height);
+                let mut expected = vec![0x4E; pitch * height as usize];
+                oracle
+                    .paint_into_xrgb8888(&second, &mut expected, pitch)
+                    .expect("dense oracle");
+                assert_xrgb_pixels_eq(
+                    &alternating_destination,
+                    &expected,
+                    width as usize,
+                    height as usize,
+                    pitch,
+                );
+                if sparse_supported {
+                    let timing = bridge.last_phase_timing().expect("timing");
+                    assert_eq!(
+                        timing.readback_bytes,
+                        u64::from(damage[0].width) * u64::from(damage[0].height) * 4,
+                        "profiled bytes are the submitted dirty copy, not a whole staging frame"
+                    );
+                    assert_eq!(
+                        timing.cpu_output_bytes,
+                        u64::from(width) * u64::from(height) * 4,
+                        "alternating DRM destinations still receive a complete CPU XRGB image"
+                    );
+                    assert_eq!(bridge.last_sparse_render_attempts(), 1);
+                    assert_eq!(bridge.last_full_render_attempts(), 0);
+                    assert_eq!(bridge.last_render_attempts(), 1);
+                }
+                for row in 0..height as usize {
+                    assert_eq!(
+                        alternating_destination[row * pitch + width as usize * 4],
+                        0xA7,
+                        "destination padding remains outside the XRGB image"
+                    );
+                }
+            }
+
+            // Phase `overlapping_disjoint_and_edge_damage_matches_dense_oracle`.
+            {
+                let (width, height) = (64_u32, 48_u32);
+                let mut bridge = required_bridge(width, height);
+                let pitch = width as usize * 4 + 32;
+                let first = rect_scene(width, height, Color::from_rgb8(0x08, 0x18, 0x28));
+                let damage = [
+                    vello::FineDamageRect {
+                        x: 0,
+                        y: 0,
+                        width: 7,
+                        height: 9,
+                    },
+                    vello::FineDamageRect {
+                        x: 5,
+                        y: 6,
+                        width: 12,
+                        height: 10,
+                    },
+                    vello::FineDamageRect {
+                        x: 48,
+                        y: 31,
+                        width: 16,
+                        height: 17,
+                    },
+                ];
+                let second = layered_scene(
+                    width,
+                    height,
+                    Color::from_rgb8(0x08, 0x18, 0x28),
+                    &[
+                        (damage[0], Color::from_rgb8(0xCC, 0x11, 0x22)),
+                        (damage[1], Color::from_rgb8(0x22, 0xCC, 0x11)),
+                        (damage[2], Color::from_rgb8(0x11, 0x22, 0xCC)),
+                    ],
+                );
+                let mut initial = vec![0; pitch * height as usize];
+                bridge
+                    .paint_damage_into_xrgb8888(
+                        &first,
+                        SceneDamage {
+                            revision: 20,
+                            previous_revision: None,
+                            regions: Some(&damage),
+                        },
+                        &mut initial,
+                        pitch,
+                    )
+                    .expect("dense seed");
+                let mut actual = vec![0xE2; pitch * height as usize];
+                bridge
+                    .paint_damage_into_xrgb8888(
+                        &second,
+                        SceneDamage {
+                            revision: 21,
+                            previous_revision: Some(20),
+                            regions: Some(&damage),
+                        },
+                        &mut actual,
+                        pitch,
+                    )
+                    .expect("damage paint");
+
+                let mut oracle = required_bridge(width, height);
+                let mut expected = vec![0; pitch * height as usize];
+                oracle
+                    .paint_into_xrgb8888(&second, &mut expected, pitch)
+                    .expect("dense oracle");
+                assert_xrgb_pixels_eq(&actual, &expected, width as usize, height as usize, pitch);
+            }
+
+            // Phase `revision_gap_and_empty_damage_force_full_readback`.
+            {
+                let (width, height) = (32_u32, 24_u32);
+                let mut bridge = required_bridge(width, height);
+                bridge.set_phase_timing_enabled(true);
+                let pitch = width as usize * 4;
+                let rect = [vello::FineDamageRect {
+                    x: 2,
+                    y: 3,
+                    width: 5,
+                    height: 7,
+                }];
+                let mut destination = vec![0; pitch * height as usize];
+                bridge
+                    .paint_damage_into_xrgb8888(
+                        &rect_scene(width, height, Color::from_rgb8(1, 2, 3)),
+                        SceneDamage {
+                            revision: 100,
+                            previous_revision: None,
+                            regions: Some(&rect),
+                        },
+                        &mut destination,
+                        pitch,
+                    )
+                    .expect("seed");
+                bridge
+                    .paint_damage_into_xrgb8888(
+                        &rect_scene(width, height, Color::from_rgb8(4, 5, 6)),
+                        SceneDamage {
+                            revision: 102,
+                            previous_revision: Some(101),
+                            regions: Some(&rect),
+                        },
+                        &mut destination,
+                        pitch,
+                    )
+                    .expect("revision gap uses full render");
+                assert_eq!(
+                    bridge.last_phase_timing().expect("timing").readback_bytes,
+                    u64::from(width) * u64::from(height) * 4
+                );
+
+                bridge
+                    .paint_damage_into_xrgb8888(
+                        &rect_scene(width, height, Color::from_rgb8(7, 8, 9)),
+                        SceneDamage {
+                            revision: 103,
+                            previous_revision: Some(102),
+                            regions: Some(&[]),
+                        },
+                        &mut destination,
+                        pitch,
+                    )
+                    .expect("empty damage uses full render");
+                assert_eq!(
+                    bridge.last_phase_timing().expect("timing").readback_bytes,
+                    u64::from(width) * u64::from(height) * 4
+                );
+            }
         }
-        for row in 0..height as usize {
-            assert_eq!(
-                alternating_destination[row * pitch + width as usize * 4],
-                0xA7,
-                "destination padding remains outside the XRGB image"
-            );
+
+        // Phase `failed_paint_base_color_and_resize_invalidate_sparse_backing`.
+        {
+            // Phase `failed_versioned_paint_invalidates_sparse_backing_before_retry`.
+            {
+                let (width, height) = (32_u32, 24_u32);
+                let mut bridge = required_bridge(width, height);
+                bridge.set_phase_timing_enabled(true);
+                let pitch = width as usize * 4;
+                let damage = [vello::FineDamageRect {
+                    x: 4,
+                    y: 5,
+                    width: 8,
+                    height: 7,
+                }];
+                let scene = rect_scene(width, height, Color::from_rgb8(0x12, 0x23, 0x34));
+                let mut destination = vec![0; pitch * height as usize];
+                bridge
+                    .paint_damage_into_xrgb8888(
+                        &scene,
+                        SceneDamage {
+                            revision: 1,
+                            previous_revision: None,
+                            regions: Some(&damage),
+                        },
+                        &mut destination,
+                        pitch,
+                    )
+                    .expect("seed complete retained frame");
+
+                let valid_dev_id = bridge.dev_id;
+                bridge.dev_id = usize::MAX;
+                let failed = bridge.paint_damage_into_xrgb8888(
+                    &scene,
+                    SceneDamage {
+                        revision: 2,
+                        previous_revision: Some(1),
+                        regions: Some(&damage),
+                    },
+                    &mut destination,
+                    pitch,
+                );
+                assert!(
+                    matches!(failed, Err(BridgeError::InvalidDevice(_))),
+                    "test-only invalid device must exercise a post-gate paint failure"
+                );
+                assert!(
+                    !bridge.target.retained_target_valid
+                        && !bridge.retained_staging_valid
+                        && bridge.target.last_successful_revision.is_none(),
+                    "a failed paint must invalidate the previously compatible retained frame before retry"
+                );
+                bridge.dev_id = valid_dev_id;
+
+                bridge
+                    .paint_damage_into_xrgb8888(
+                        &scene,
+                        SceneDamage {
+                            revision: 3,
+                            previous_revision: Some(1),
+                            regions: Some(&damage),
+                        },
+                        &mut destination,
+                        pitch,
+                    )
+                    .expect("retry after failed paint");
+                assert_eq!(
+                    bridge.last_phase_timing().expect("timing").readback_bytes,
+                    u64::from(width) * u64::from(height) * 4,
+                    "failed paint must erase the sparse retained revision"
+                );
+                assert_eq!(bridge.last_sparse_render_attempts(), 0);
+                assert_eq!(bridge.last_full_render_attempts(), 1);
+            }
+
+            // Phase `base_color_and_resize_invalidate_versioned_sparse_backing`.
+            {
+                let (width, height) = (32_u32, 24_u32);
+                let mut bridge = required_bridge(width, height);
+                bridge.set_phase_timing_enabled(true);
+                let pitch = width as usize * 4;
+                let damage = [vello::FineDamageRect {
+                    x: 3,
+                    y: 4,
+                    width: 6,
+                    height: 5,
+                }];
+                let mut destination = vec![0; pitch * height as usize];
+                let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
+                bridge
+                    .paint_damage_into_xrgb8888(
+                        &scene,
+                        SceneDamage {
+                            revision: 1,
+                            previous_revision: None,
+                            regions: Some(&damage),
+                        },
+                        &mut destination,
+                        pitch,
+                    )
+                    .expect("seed");
+
+                bridge.set_base_color(Color::from_rgb8(0x10, 0x20, 0x30));
+                bridge
+                    .paint_damage_into_xrgb8888(
+                        &scene,
+                        SceneDamage {
+                            revision: 2,
+                            previous_revision: Some(1),
+                            regions: Some(&damage),
+                        },
+                        &mut destination,
+                        pitch,
+                    )
+                    .expect("base-color boundary");
+                assert_eq!(
+                    bridge.last_phase_timing().expect("timing").readback_bytes,
+                    u64::from(width) * u64::from(height) * 4,
+                    "base color change must refresh the complete retained staging image"
+                );
+
+                let (resized_width, resized_height) = (width + 8, height + 4);
+                bridge
+                    .resize(resized_width, resized_height)
+                    .expect("different-mode resize boundary");
+                assert_eq!(bridge.size(), (resized_width, resized_height));
+                let resized_pitch = resized_width as usize * 4;
+                let mut resized_destination = vec![0; resized_pitch * resized_height as usize];
+                let resized_scene = rect_scene(
+                    resized_width,
+                    resized_height,
+                    Color::from_rgb8(0x20, 0x30, 0x40),
+                );
+                bridge
+                    .paint_damage_into_xrgb8888(
+                        &resized_scene,
+                        SceneDamage {
+                            revision: 3,
+                            previous_revision: Some(2),
+                            regions: Some(&damage),
+                        },
+                        &mut resized_destination,
+                        resized_pitch,
+                    )
+                    .expect("resize boundary");
+                assert_eq!(
+                    bridge.last_phase_timing().expect("timing").readback_bytes,
+                    u64::from(resized_width) * u64::from(resized_height) * 4,
+                    "resize must not retain a sparse backing frame"
+                );
+            }
         }
-    }
-
-    #[test]
-    fn overlapping_disjoint_and_edge_damage_matches_dense_oracle() {
-        let (width, height) = (64_u32, 48_u32);
-        let mut bridge = required_bridge(width, height);
-        let pitch = width as usize * 4 + 32;
-        let first = rect_scene(width, height, Color::from_rgb8(0x08, 0x18, 0x28));
-        let damage = [
-            vello::FineDamageRect {
-                x: 0,
-                y: 0,
-                width: 7,
-                height: 9,
-            },
-            vello::FineDamageRect {
-                x: 5,
-                y: 6,
-                width: 12,
-                height: 10,
-            },
-            vello::FineDamageRect {
-                x: 48,
-                y: 31,
-                width: 16,
-                height: 17,
-            },
-        ];
-        let second = layered_scene(
-            width,
-            height,
-            Color::from_rgb8(0x08, 0x18, 0x28),
-            &[
-                (damage[0], Color::from_rgb8(0xCC, 0x11, 0x22)),
-                (damage[1], Color::from_rgb8(0x22, 0xCC, 0x11)),
-                (damage[2], Color::from_rgb8(0x11, 0x22, 0xCC)),
-            ],
-        );
-        let mut initial = vec![0; pitch * height as usize];
-        bridge
-            .paint_damage_into_xrgb8888(
-                &first,
-                SceneDamage {
-                    revision: 20,
-                    previous_revision: None,
-                    regions: Some(&damage),
-                },
-                &mut initial,
-                pitch,
-            )
-            .expect("dense seed");
-        let mut actual = vec![0xE2; pitch * height as usize];
-        bridge
-            .paint_damage_into_xrgb8888(
-                &second,
-                SceneDamage {
-                    revision: 21,
-                    previous_revision: Some(20),
-                    regions: Some(&damage),
-                },
-                &mut actual,
-                pitch,
-            )
-            .expect("damage paint");
-
-        let mut oracle = required_bridge(width, height);
-        let mut expected = vec![0; pitch * height as usize];
-        oracle
-            .paint_into_xrgb8888(&second, &mut expected, pitch)
-            .expect("dense oracle");
-        assert_xrgb_pixels_eq(&actual, &expected, width as usize, height as usize, pitch);
-    }
-
-    #[test]
-    fn revision_gap_and_empty_damage_force_full_readback() {
-        let (width, height) = (32_u32, 24_u32);
-        let mut bridge = required_bridge(width, height);
-        bridge.set_phase_timing_enabled(true);
-        let pitch = width as usize * 4;
-        let rect = [vello::FineDamageRect {
-            x: 2,
-            y: 3,
-            width: 5,
-            height: 7,
-        }];
-        let mut destination = vec![0; pitch * height as usize];
-        bridge
-            .paint_damage_into_xrgb8888(
-                &rect_scene(width, height, Color::from_rgb8(1, 2, 3)),
-                SceneDamage {
-                    revision: 100,
-                    previous_revision: None,
-                    regions: Some(&rect),
-                },
-                &mut destination,
-                pitch,
-            )
-            .expect("seed");
-        bridge
-            .paint_damage_into_xrgb8888(
-                &rect_scene(width, height, Color::from_rgb8(4, 5, 6)),
-                SceneDamage {
-                    revision: 102,
-                    previous_revision: Some(101),
-                    regions: Some(&rect),
-                },
-                &mut destination,
-                pitch,
-            )
-            .expect("revision gap uses full render");
-        assert_eq!(
-            bridge.last_phase_timing().expect("timing").readback_bytes,
-            u64::from(width) * u64::from(height) * 4
-        );
-
-        bridge
-            .paint_damage_into_xrgb8888(
-                &rect_scene(width, height, Color::from_rgb8(7, 8, 9)),
-                SceneDamage {
-                    revision: 103,
-                    previous_revision: Some(102),
-                    regions: Some(&[]),
-                },
-                &mut destination,
-                pitch,
-            )
-            .expect("empty damage uses full render");
-        assert_eq!(
-            bridge.last_phase_timing().expect("timing").readback_bytes,
-            u64::from(width) * u64::from(height) * 4
-        );
-    }
-
-    #[test]
-    fn failed_versioned_paint_invalidates_sparse_backing_before_retry() {
-        let (width, height) = (32_u32, 24_u32);
-        let mut bridge = required_bridge(width, height);
-        bridge.set_phase_timing_enabled(true);
-        let pitch = width as usize * 4;
-        let damage = [vello::FineDamageRect {
-            x: 4,
-            y: 5,
-            width: 8,
-            height: 7,
-        }];
-        let scene = rect_scene(width, height, Color::from_rgb8(0x12, 0x23, 0x34));
-        let mut destination = vec![0; pitch * height as usize];
-        bridge
-            .paint_damage_into_xrgb8888(
-                &scene,
-                SceneDamage {
-                    revision: 1,
-                    previous_revision: None,
-                    regions: Some(&damage),
-                },
-                &mut destination,
-                pitch,
-            )
-            .expect("seed complete retained frame");
-
-        let valid_dev_id = bridge.dev_id;
-        bridge.dev_id = usize::MAX;
-        let failed = bridge.paint_damage_into_xrgb8888(
-            &scene,
-            SceneDamage {
-                revision: 2,
-                previous_revision: Some(1),
-                regions: Some(&damage),
-            },
-            &mut destination,
-            pitch,
-        );
-        assert!(
-            matches!(failed, Err(BridgeError::InvalidDevice(_))),
-            "test-only invalid device must exercise a post-gate paint failure"
-        );
-        assert!(
-            !bridge.target.retained_target_valid
-                && !bridge.retained_staging_valid
-                && bridge.target.last_successful_revision.is_none(),
-            "a failed paint must invalidate the previously compatible retained frame before retry"
-        );
-        bridge.dev_id = valid_dev_id;
-
-        bridge
-            .paint_damage_into_xrgb8888(
-                &scene,
-                SceneDamage {
-                    revision: 3,
-                    previous_revision: Some(1),
-                    regions: Some(&damage),
-                },
-                &mut destination,
-                pitch,
-            )
-            .expect("retry after failed paint");
-        assert_eq!(
-            bridge.last_phase_timing().expect("timing").readback_bytes,
-            u64::from(width) * u64::from(height) * 4,
-            "failed paint must erase the sparse retained revision"
-        );
-        assert_eq!(bridge.last_sparse_render_attempts(), 0);
-        assert_eq!(bridge.last_full_render_attempts(), 1);
     }
 
     #[test]
@@ -6307,279 +6627,217 @@ mod tests {
     }
 
     #[test]
-    fn base_color_and_resize_invalidate_versioned_sparse_backing() {
-        let (width, height) = (32_u32, 24_u32);
-        let mut bridge = required_bridge(width, height);
-        bridge.set_phase_timing_enabled(true);
-        let pitch = width as usize * 4;
-        let damage = [vello::FineDamageRect {
-            x: 3,
-            y: 4,
-            width: 6,
-            height: 5,
-        }];
-        let mut destination = vec![0; pitch * height as usize];
-        let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
-        bridge
-            .paint_damage_into_xrgb8888(
-                &scene,
-                SceneDamage {
-                    revision: 1,
-                    previous_revision: None,
-                    regions: Some(&damage),
-                },
-                &mut destination,
-                pitch,
-            )
-            .expect("seed");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn bridge_paint_fills_sized_buffers_and_xrgb_output_matches_swizzled_paint() {
+        // Phase `bridge_paint_sizes_and_fills_its_buffer`.
+        {
+            // Phase `bridge_paint_returns_non_empty_buffer_for_non_empty_scene`.
+            {
+                let mut bridge = required_bridge(64, 64);
+                // Fill with cyan so the buffer is definitely not the (dark) base color.
+                let scene = rect_scene(64, 64, Color::from_rgb8(0, 255, 255));
+                let bytes = bridge.paint(&scene).expect("paint");
+                assert_eq!(bytes.len(), 64 * 64 * 4);
+                // Find at least one non-background pixel (background is the bridge's default base color, ~0x1A,0x1B,0x26).
+                let any_non_bg = bytes
+                    .chunks_exact(4)
+                    .any(|p| p[0] != 0x1A || p[1] != 0x1B || p[2] != 0x26);
+                assert!(
+                    any_non_bg,
+                    "expected at least one non-background pixel after painting a cyan rect"
+                );
+                assert_eq!(bridge.last_phase_timing(), None, "profiling defaults off");
+            }
 
-        bridge.set_base_color(Color::from_rgb8(0x10, 0x20, 0x30));
-        bridge
-            .paint_damage_into_xrgb8888(
-                &scene,
-                SceneDamage {
-                    revision: 2,
-                    previous_revision: Some(1),
-                    regions: Some(&damage),
-                },
-                &mut destination,
-                pitch,
-            )
-            .expect("base-color boundary");
-        assert_eq!(
-            bridge.last_phase_timing().expect("timing").readback_bytes,
-            u64::from(width) * u64::from(height) * 4,
-            "base color change must refresh the complete retained staging image"
-        );
+            // Phase `bridge_resize_changes_buffer_size`.
+            {
+                let mut bridge = required_bridge(1600, 900);
+                let bytes = bridge.paint(&Scene::new()).expect("paint at initial size");
+                assert_eq!(bytes.len(), 1600 * 900 * 4);
 
-        let (resized_width, resized_height) = (width + 8, height + 4);
-        bridge
-            .resize(resized_width, resized_height)
-            .expect("different-mode resize boundary");
-        assert_eq!(bridge.size(), (resized_width, resized_height));
-        let resized_pitch = resized_width as usize * 4;
-        let mut resized_destination = vec![0; resized_pitch * resized_height as usize];
-        let resized_scene = rect_scene(
-            resized_width,
-            resized_height,
-            Color::from_rgb8(0x20, 0x30, 0x40),
-        );
-        bridge
-            .paint_damage_into_xrgb8888(
-                &resized_scene,
-                SceneDamage {
-                    revision: 3,
-                    previous_revision: Some(2),
-                    regions: Some(&damage),
-                },
-                &mut resized_destination,
-                resized_pitch,
-            )
-            .expect("resize boundary");
-        assert_eq!(
-            bridge.last_phase_timing().expect("timing").readback_bytes,
-            u64::from(resized_width) * u64::from(resized_height) * 4,
-            "resize must not retain a sparse backing frame"
-        );
-    }
+                // Resize to 1280x720 and verify the next paint returns the new buffer size.
+                bridge.resize(1280, 720).expect("resize");
+                assert_eq!(bridge.size(), (1280, 720));
+                let bytes = bridge.paint(&Scene::new()).expect("paint after resize");
+                assert_eq!(bytes.len(), 1280 * 720 * 4);
+            }
 
-    #[test]
-    fn bridge_paint_returns_non_empty_buffer_for_non_empty_scene() {
-        let mut bridge = required_bridge(64, 64);
-        // Fill with cyan so the buffer is definitely not the (dark) base color.
-        let scene = rect_scene(64, 64, Color::from_rgb8(0, 255, 255));
-        let bytes = bridge.paint(&scene).expect("paint");
-        assert_eq!(bytes.len(), 64 * 64 * 4);
-        // Find at least one non-background pixel (background is the bridge's default base color, ~0x1A,0x1B,0x26).
-        let any_non_bg = bytes
-            .chunks_exact(4)
-            .any(|p| p[0] != 0x1A || p[1] != 0x1B || p[2] != 0x26);
-        assert!(
-            any_non_bg,
-            "expected at least one non-background pixel after painting a cyan rect"
-        );
-        assert_eq!(bridge.last_phase_timing(), None, "profiling defaults off");
-    }
+            // Phase `bridge_paint_uses_base_color_for_empty_scene`.
+            {
+                let mut bridge = required_bridge(32, 32);
+                // Pick a distinctive base color so the empty background is distinguishable from any other clear.
+                bridge.set_base_color(Color::from_rgb8(0x12, 0x34, 0x56));
+                let bytes = bridge.paint(&Scene::new()).expect("paint empty");
+                assert_eq!(bytes.len(), 32 * 32 * 4);
+                for (i, p) in bytes.chunks_exact(4).enumerate() {
+                    assert_eq!(
+                        (p[0], p[1], p[2]),
+                        (0x12, 0x34, 0x56),
+                        "pixel {i} expected base color, got ({:#x}, {:#x}, {:#x})",
+                        p[0],
+                        p[1],
+                        p[2]
+                    );
+                }
+            }
 
-    #[test]
-    fn diagnostic_zero_pitch_records_readback_but_no_output_bytes() {
-        let mut bridge = required_bridge(8, 4);
-        bridge.set_phase_timing_enabled(true);
-        bridge
-            .paint_into_xrgb8888(&Scene::new(), &mut [], 0)
-            .expect("zero-pitch diagnostic paint");
-        let timing = bridge
-            .last_phase_timing()
-            .expect("enabled diagnostic timing");
-        assert!(timing.readback_bytes > 0, "the GPU copy still completed");
-        assert_eq!(timing.cpu_output_bytes, 0, "no destination was writable");
-    }
-
-    #[test]
-    fn diagnostic_xrgb_counts_written_bytes_without_changing_pixels() {
-        let mut bridge = required_bridge(8, 4);
-        bridge.set_phase_timing_enabled(true);
-        let scene = rect_scene(8, 4, Color::from_rgb8(0x12, 0x34, 0x56));
-        let mut destination = vec![0_u8; 8 * 4 * 4];
-        bridge
-            .paint_into_xrgb8888(&scene, &mut destination, 8 * 4)
-            .expect("diagnostic XRGB paint");
-        let timing = bridge
-            .last_phase_timing()
-            .expect("enabled diagnostic timing");
-        assert_eq!(timing.cpu_output_bytes, 8 * 4 * 4);
-        assert_eq!(timing.readback_bytes, 8 * 4 * 4);
-        for pixel in destination.chunks_exact(4) {
-            assert_eq!(pixel, &[0x56, 0x34, 0x12, 0xFF]);
-        }
-    }
-
-    #[test]
-    fn bridge_resize_changes_buffer_size() {
-        let mut bridge = required_bridge(1600, 900);
-        let bytes = bridge.paint(&Scene::new()).expect("paint at initial size");
-        assert_eq!(bytes.len(), 1600 * 900 * 4);
-
-        // Resize to 1280x720 and verify the next paint returns the new buffer size.
-        bridge.resize(1280, 720).expect("resize");
-        assert_eq!(bridge.size(), (1280, 720));
-        let bytes = bridge.paint(&Scene::new()).expect("paint after resize");
-        assert_eq!(bytes.len(), 1280 * 720 * 4);
-    }
-
-    #[test]
-    fn bridge_paint_uses_base_color_for_empty_scene() {
-        let mut bridge = required_bridge(32, 32);
-        // Pick a distinctive base color so the empty background is distinguishable from any other clear.
-        bridge.set_base_color(Color::from_rgb8(0x12, 0x34, 0x56));
-        let bytes = bridge.paint(&Scene::new()).expect("paint empty");
-        assert_eq!(bytes.len(), 32 * 32 * 4);
-        for (i, p) in bytes.chunks_exact(4).enumerate() {
-            assert_eq!(
-                (p[0], p[1], p[2]),
-                (0x12, 0x34, 0x56),
-                "pixel {i} expected base color, got ({:#x}, {:#x}, {:#x})",
-                p[0],
-                p[1],
-                p[2]
-            );
-        }
-    }
-
-    #[test]
-    fn paint_into_xrgb8888_matches_paint_swizzled() {
-        // The direct XRGB path must produce the same pixels as tight-RGBA `paint()` output
-        // swizzled to XRGB8888.
-        let mut bridge = required_bridge(40, 24);
-        let scene = rect_scene(40, 24, Color::from_rgb8(10, 200, 90));
-
-        let rgba = bridge.paint(&scene).expect("paint").to_vec();
-        let mut expected = vec![0u8; 40 * 24 * 4];
-        for (i, p) in rgba.chunks_exact(4).enumerate() {
-            let d = &mut expected[i * 4..i * 4 + 4];
-            d[0] = p[2]; // B
-            d[1] = p[1]; // G
-            d[2] = p[0]; // R
-            d[3] = 0xFF; // X
+            // Phase `bridge_handles_non_aligned_width_via_padding`.
+            {
+                // Width=33 → tight stride=132, padded to 256 — verifies the row-pitch stripping in `paint`.
+                let mut bridge = required_bridge(33, 16);
+                bridge.set_base_color(Color::from_rgb8(0xAA, 0xBB, 0xCC));
+                let bytes = bridge.paint(&Scene::new()).expect("paint non-aligned");
+                assert_eq!(bytes.len(), 33 * 16 * 4);
+                for p in bytes.chunks_exact(4) {
+                    assert_eq!((p[0], p[1], p[2]), (0xAA, 0xBB, 0xCC));
+                }
+            }
         }
 
-        let pitch = 40 * 4;
-        let mut dst = vec![0u8; pitch * 24];
-        bridge
-            .paint_into_xrgb8888(&scene, &mut dst, pitch)
-            .expect("paint_into_xrgb8888");
-        assert_eq!(
-            dst, expected,
-            "direct XRGB output must equal swizzled paint()"
-        );
-    }
+        // Phase `xrgb_output_matches_swizzled_paint_and_honours_pitch_and_diagnostics`.
+        {
+            // Phase `paint_into_xrgb8888_matches_paint_swizzled`.
+            {
+                // The direct XRGB path must produce the same pixels as tight-RGBA `paint()` output
+                // swizzled to XRGB8888.
+                let mut bridge = required_bridge(40, 24);
+                let scene = rect_scene(40, 24, Color::from_rgb8(10, 200, 90));
 
-    #[test]
-    fn paint_into_xrgb8888_respects_destination_pitch() {
-        // A destination whose pitch exceeds width*4 (the common DRM dumb-buffer case) must leave trailing padding untouched and place each row at `row * dst_pitch`.
-        let mut bridge = required_bridge(8, 4);
-        bridge.set_base_color(Color::from_rgb8(0x11, 0x22, 0x33));
-        let pitch = 64;
-        let mut dst = vec![0xEEu8; pitch * 4];
-        bridge
-            .paint_into_xrgb8888(&Scene::new(), &mut dst, pitch)
-            .expect("paint into padded dst");
-        for row in 0..4usize {
-            for x in 0..8usize {
-                let o = row * pitch + x * 4;
+                let rgba = bridge.paint(&scene).expect("paint").to_vec();
+                let mut expected = vec![0u8; 40 * 24 * 4];
+                for (i, p) in rgba.chunks_exact(4).enumerate() {
+                    let d = &mut expected[i * 4..i * 4 + 4];
+                    d[0] = p[2]; // B
+                    d[1] = p[1]; // G
+                    d[2] = p[0]; // R
+                    d[3] = 0xFF; // X
+                }
+
+                let pitch = 40 * 4;
+                let mut dst = vec![0u8; pitch * 24];
+                bridge
+                    .paint_into_xrgb8888(&scene, &mut dst, pitch)
+                    .expect("paint_into_xrgb8888");
                 assert_eq!(
-                    (dst[o], dst[o + 1], dst[o + 2]),
-                    (0x33, 0x22, 0x11),
-                    "row {row} px {x} should be base color in BGR order"
+                    dst, expected,
+                    "direct XRGB output must equal swizzled paint()"
                 );
             }
-            assert_eq!(
-                dst[row * pitch + 8 * 4],
-                0xEE,
-                "row {row} padding untouched"
-            );
-        }
-    }
 
-    #[test]
-    fn bridge_handles_non_aligned_width_via_padding() {
-        // Width=33 → tight stride=132, padded to 256 — verifies the row-pitch stripping in `paint`.
-        let mut bridge = required_bridge(33, 16);
-        bridge.set_base_color(Color::from_rgb8(0xAA, 0xBB, 0xCC));
-        let bytes = bridge.paint(&Scene::new()).expect("paint non-aligned");
-        assert_eq!(bytes.len(), 33 * 16 * 4);
-        for p in bytes.chunks_exact(4) {
-            assert_eq!((p[0], p[1], p[2]), (0xAA, 0xBB, 0xCC));
-        }
-    }
+            // Phase `paint_into_xrgb8888_respects_destination_pitch`.
+            {
+                // A destination whose pitch exceeds width*4 (the common DRM dumb-buffer case) must leave trailing padding untouched and place each row at `row * dst_pitch`.
+                let mut bridge = required_bridge(8, 4);
+                bridge.set_base_color(Color::from_rgb8(0x11, 0x22, 0x33));
+                let pitch = 64;
+                let mut dst = vec![0xEEu8; pitch * 4];
+                bridge
+                    .paint_into_xrgb8888(&Scene::new(), &mut dst, pitch)
+                    .expect("paint into padded dst");
+                for row in 0..4usize {
+                    for x in 0..8usize {
+                        let o = row * pitch + x * 4;
+                        assert_eq!(
+                            (dst[o], dst[o + 1], dst[o + 2]),
+                            (0x33, 0x22, 0x11),
+                            "row {row} px {x} should be base color in BGR order"
+                        );
+                    }
+                    assert_eq!(
+                        dst[row * pitch + 8 * 4],
+                        0xEE,
+                        "row {row} padding untouched"
+                    );
+                }
+            }
 
-    #[test]
-    fn overflow_recovery_retries_before_xrgb_output() {
-        let (width, height) = (384, 256);
-        let mut xrgb_bridge = required_bridge(width, height);
-        let scene = opaque_rect_stack_scene(width, height);
-        let pitch = width as usize * 4;
-        let mut xrgb = vec![0_u8; pitch * height as usize];
-        xrgb_bridge
-            .paint_into_xrgb8888(&scene, &mut xrgb, pitch)
-            .expect("cold opaque-stack XRGB paint");
-        assert!(
-            xrgb_bridge.last_render_attempts() >= 2,
-            "512 opaque rects at 384x256 must exercise bounded bump recovery"
-        );
-        for (index, pixel) in xrgb.chunks_exact(4).enumerate() {
-            // Fill 511 is the visible opaque top layer: RGB=(0xFF, 0xFD, 0xA5).
-            assert_eq!(pixel, &[0xA5, 0xFD, 0xFF, 0xFF], "XRGB pixel {index}");
-        }
+            // Phase `diagnostic_zero_pitch_records_readback_but_no_output_bytes`.
+            {
+                let mut bridge = required_bridge(8, 4);
+                bridge.set_phase_timing_enabled(true);
+                bridge
+                    .paint_into_xrgb8888(&Scene::new(), &mut [], 0)
+                    .expect("zero-pitch diagnostic paint");
+                let timing = bridge
+                    .last_phase_timing()
+                    .expect("enabled diagnostic timing");
+                assert!(timing.readback_bytes > 0, "the GPU copy still completed");
+                assert_eq!(timing.cpu_output_bytes, 0, "no destination was writable");
+            }
 
-        // Use a separate cold renderer so this comparison cannot inherit the XRGB bridge's grown
-        // budget. Both public outputs must agree after their own recovery path.
-        let mut rgba_bridge = required_bridge(width, height);
-        let rgba = rgba_bridge
-            .paint(&scene)
-            .expect("cold opaque-stack RGBA paint")
-            .to_vec();
-        assert!(rgba_bridge.last_render_attempts() >= 2);
-        for (index, (rgba, xrgb)) in rgba.chunks_exact(4).zip(xrgb.chunks_exact(4)).enumerate() {
-            assert_eq!(rgba, &[0xFF, 0xFD, 0xA5, 0xFF], "RGBA pixel {index}");
-            assert_eq!(xrgb, &[rgba[2], rgba[1], rgba[0], 0xFF], "pixel {index}");
-        }
-    }
+            // Phase `diagnostic_xrgb_counts_written_bytes_without_changing_pixels`.
+            {
+                let mut bridge = required_bridge(8, 4);
+                bridge.set_phase_timing_enabled(true);
+                let scene = rect_scene(8, 4, Color::from_rgb8(0x12, 0x34, 0x56));
+                let mut destination = vec![0_u8; 8 * 4 * 4];
+                bridge
+                    .paint_into_xrgb8888(&scene, &mut destination, 8 * 4)
+                    .expect("diagnostic XRGB paint");
+                let timing = bridge
+                    .last_phase_timing()
+                    .expect("enabled diagnostic timing");
+                assert_eq!(timing.cpu_output_bytes, 8 * 4 * 4);
+                assert_eq!(timing.readback_bytes, 8 * 4 * 4);
+                for pixel in destination.chunks_exact(4) {
+                    assert_eq!(pixel, &[0x56, 0x34, 0x12, 0xFF]);
+                }
+            }
 
-    #[test]
-    fn zero_destination_pitch_unmaps_before_the_next_frame() {
-        let mut bridge = required_bridge(8, 4);
-        let scene = rect_scene(8, 4, Color::from_rgb8(0x12, 0x34, 0x56));
-        bridge
-            .paint_into_xrgb8888(&scene, &mut [], 0)
-            .expect("zero-pitch paint");
+            // Phase `zero_destination_pitch_unmaps_before_the_next_frame`.
+            {
+                let mut bridge = required_bridge(8, 4);
+                let scene = rect_scene(8, 4, Color::from_rgb8(0x12, 0x34, 0x56));
+                bridge
+                    .paint_into_xrgb8888(&scene, &mut [], 0)
+                    .expect("zero-pitch paint");
 
-        let mut destination = vec![0_u8; 8 * 4 * 4];
-        bridge
-            .paint_into_xrgb8888(&scene, &mut destination, 8 * 4)
-            .expect("paint after zero-pitch paint");
-        for pixel in destination.chunks_exact(4) {
-            assert_eq!(pixel, &[0x56, 0x34, 0x12, 0xFF]);
+                let mut destination = vec![0_u8; 8 * 4 * 4];
+                bridge
+                    .paint_into_xrgb8888(&scene, &mut destination, 8 * 4)
+                    .expect("paint after zero-pitch paint");
+                for pixel in destination.chunks_exact(4) {
+                    assert_eq!(pixel, &[0x56, 0x34, 0x12, 0xFF]);
+                }
+            }
+
+            // Phase `overflow_recovery_retries_before_xrgb_output`.
+            {
+                let (width, height) = (384, 256);
+                let mut xrgb_bridge = required_bridge(width, height);
+                let scene = opaque_rect_stack_scene(width, height);
+                let pitch = width as usize * 4;
+                let mut xrgb = vec![0_u8; pitch * height as usize];
+                xrgb_bridge
+                    .paint_into_xrgb8888(&scene, &mut xrgb, pitch)
+                    .expect("cold opaque-stack XRGB paint");
+                assert!(
+                    xrgb_bridge.last_render_attempts() >= 2,
+                    "512 opaque rects at 384x256 must exercise bounded bump recovery"
+                );
+                for (index, pixel) in xrgb.chunks_exact(4).enumerate() {
+                    // Fill 511 is the visible opaque top layer: RGB=(0xFF, 0xFD, 0xA5).
+                    assert_eq!(pixel, &[0xA5, 0xFD, 0xFF, 0xFF], "XRGB pixel {index}");
+                }
+
+                // Use a separate cold renderer so this comparison cannot inherit the XRGB bridge's grown
+                // budget. Both public outputs must agree after their own recovery path.
+                let mut rgba_bridge = required_bridge(width, height);
+                let rgba = rgba_bridge
+                    .paint(&scene)
+                    .expect("cold opaque-stack RGBA paint")
+                    .to_vec();
+                assert!(rgba_bridge.last_render_attempts() >= 2);
+                for (index, (rgba, xrgb)) in
+                    rgba.chunks_exact(4).zip(xrgb.chunks_exact(4)).enumerate()
+                {
+                    assert_eq!(rgba, &[0xFF, 0xFD, 0xA5, 0xFF], "RGBA pixel {index}");
+                    assert_eq!(xrgb, &[rgba[2], rgba[1], rgba[0], 0xFF], "pixel {index}");
+                }
+            }
         }
     }
 }

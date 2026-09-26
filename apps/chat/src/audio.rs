@@ -242,9 +242,26 @@ impl OpusDecoder {
     }
 }
 
+/// Capture sources a call tries in order. The first tags the stream as a
+/// call (`media.role=phone`, the audio server's `Communication` role), which
+/// routes it to the desktop's echo-cancelled microphone when there is one; the
+/// second is any microphone at all.
+const MIC_SOURCES: [&str; 2] = [
+    "pulsesrc stream-properties=\"props,media.role=(string)phone\"",
+    "autoaudiosrc",
+];
+
+fn mic_pipeline_description(source: &str) -> String {
+    format!(
+        "{source} ! audioconvert ! audioresample \
+         ! audio/x-raw,rate=48000,channels=1 ! opusenc ! appsink name=sink sync=false max-buffers=8 drop=true"
+    )
+}
+
 /// Live microphone → Opus packets. A continuous pipeline
-/// (`autoaudiosrc`→`opusenc`→`appsink`) that a running call polls each frame for
-/// freshly-encoded packets to publish. `None` when there is no capture device.
+/// (capture source→`opusenc`→`appsink`) that a running call polls each frame
+/// for freshly-encoded packets to publish. `None` when there is no capture
+/// device.
 pub struct MicCapture {
     pipeline: gst::Pipeline,
     sink: gst_app::AppSink,
@@ -255,16 +272,18 @@ impl MicCapture {
         if !ensure_init() {
             return None;
         }
-        let pipeline = gst::parse::launch(
-            "autoaudiosrc ! audioconvert ! audioresample \
-             ! audio/x-raw,rate=48000,channels=1 ! opusenc ! appsink name=sink sync=false max-buffers=8 drop=true",
-        )
-        .ok()?
-        .downcast::<gst::Pipeline>()
-        .ok()?;
+        MIC_SOURCES.iter().find_map(|source| Self::start(source))
+    }
+
+    fn start(source: &str) -> Option<Self> {
+        let pipeline = gst::parse::launch(&mic_pipeline_description(source))
+            .ok()?
+            .downcast::<gst::Pipeline>()
+            .ok()?;
         let sink = appsink_of(&pipeline, "sink")?;
         // A missing/blocked capture device fails the state change → no capture.
         if pipeline.set_state(gst::State::Playing).is_err() {
+            let _ = pipeline.set_state(gst::State::Null);
             return None;
         }
         Some(Self { pipeline, sink })
@@ -355,25 +374,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pcm_bytes_round_trip() {
-        let pcm = vec![0i16, 1, -1, 32767, -32768, 12345];
-        assert_eq!(bytes_to_pcm(&pcm_to_bytes(&pcm)), pcm);
+    fn a_call_microphone_asks_for_the_communication_role_first() {
+        assert!(MIC_SOURCES[0].contains("media.role=(string)phone"));
+        assert!(mic_pipeline_description(MIC_SOURCES[0]).starts_with("pulsesrc "));
+        assert_eq!(MIC_SOURCES.last(), Some(&"autoaudiosrc"));
     }
 
+    /// PCM byte framing, the synthetic test tone, and the real codec round-trip
+    /// with no audio device: PCM → Opus → PCM. Proves the `GStreamer` Opus
+    /// encode/decode contract the call transport carries.
     #[test]
-    fn test_tone_has_expected_length_and_signal() {
+    fn test_tone_round_trips_through_pcm_bytes_and_opus_without_a_device() {
+        // PCM bytes round-trip, including the i16 extremes.
+        let pcm = vec![0i16, 1, -1, 32767, -32768, 12345];
+        assert_eq!(bytes_to_pcm(&pcm_to_bytes(&pcm)), pcm, "case pcm bytes");
+
+        // Test tone has the expected length and an actual signal.
         let t = test_tone(RATE, CHANNELS, 40);
         assert_eq!(t.len(), (RATE as usize / 1000) * 40, "40 ms of 48 kHz mono");
         assert!(
             t.iter().any(|&s| s.abs() > 1000),
             "tone actually oscillates"
         );
-    }
 
-    /// Real codec round-trip with no audio device: PCM → Opus → PCM. Proves the
-    /// `GStreamer` Opus encode/decode contract the call transport carries.
-    #[test]
-    fn opus_encode_decode_round_trips_without_a_device() {
+        // Opus round-trip (last: the only phase that depends on GStreamer).
         let (Some(mut enc), Some(mut dec)) = (OpusEncoder::new(), OpusDecoder::new()) else {
             eprintln!("GStreamer Opus elements unavailable; skipping codec round-trip");
             return;

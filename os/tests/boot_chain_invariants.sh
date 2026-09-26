@@ -142,7 +142,7 @@ for kver in "${kvers[@]}"; do
        && [ -n "$(lsinitrd "$img" 2>/dev/null)" ]; then
     listing="$(lsinitrd "$img" 2>/dev/null)"
     for want in systemd-cryptsetup cryptsetup tilo-rollback-initrd-unlock; do
-      if printf '%s' "$listing" | grep -q "$want"; then
+      if grep -q "$want" <<<"$listing"; then
         ok "initramfs carries $want"
       else
         bad "initramfs has no $want — it cannot unlock an encrypted root"

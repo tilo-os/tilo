@@ -925,14 +925,19 @@ impl Engine {
             .unwrap_or_else(|_| QuickFS::record_clock_ms());
         let applied = match &node.kind {
             NodeKind::Dir => self.fs.apply_local_dir_as(path, attrs),
-            NodeKind::File => match std::fs::read(snapshot.join(path)) {
-                Ok(data) => {
-                    out.bytes = out.bytes.saturating_add(data.len() as u64);
-                    self.fs
-                        .apply_local_file_as(path, &data, mtime_ms, attrs, fence)
-                }
-                Err(error) => Err(error.raw_os_error().unwrap_or(libc::EIO)),
-            },
+            // The snapshot never changes, and the capture already chunked
+            // it: the content store clones it instead of reading it.
+            NodeKind::File => {
+                out.bytes = out.bytes.saturating_add(node.size);
+                self.fs.apply_local_snapshot(
+                    path,
+                    &snapshot.join(path),
+                    node.manifest.clone(),
+                    mtime_ms,
+                    attrs,
+                    fence,
+                )
+            }
             // A link is a record whose content is its target, verbatim.
             NodeKind::Symlink(target) => {
                 let bytes = target.as_os_str().as_encoded_bytes();
@@ -1014,8 +1019,8 @@ impl Engine {
         }
     }
 
-    /// Marks files written in place (same inode, extents shared with the
-    /// previous version) as lease-class.
+    /// Marks files written in place (same inode, some of the previous
+    /// version's bytes kept where they were) as lease-class.
     fn detect_in_place(
         &mut self,
         cs: &Changeset,
@@ -1052,8 +1057,19 @@ impl Engine {
             let Ok(changed) = fs_native::extents::diff_files(&old, &new) else {
                 continue;
             };
-            let changed_bytes: u64 = changed.iter().map(|r| r.end.saturating_sub(r.start)).sum();
-            if changed_bytes < now.size && self.leases.classify(path) {
+            let (Ok(old_meta), Ok(new_meta)) = (old.metadata(), new.metadata()) else {
+                continue;
+            };
+            let Ok(in_place) = super::lease::kept_bytes_in_place(
+                &old,
+                &new,
+                &changed,
+                old_meta.len(),
+                new_meta.len(),
+            ) else {
+                continue;
+            };
+            if in_place && self.leases.classify(path) {
                 println!(
                     "{} is modified in place: it now takes a write lease per writing session",
                     path.display()
@@ -1241,7 +1257,15 @@ fn start_placeholders(
                 runtime.clone(),
                 DEFAULT_PARALLEL_CHUNKS,
             )),
-            HydratorConfig::default(),
+            // Content arrives in parallel ranged requests straight into the
+            // store's area and is cloned into place, so a sequential reader
+            // is served best by a deep read-ahead: more windows in flight,
+            // and larger ones.
+            HydratorConfig {
+                readahead_max: 256 * 1024 * 1024,
+                readahead_workers: 8,
+                ..HydratorConfig::default()
+            },
         )
         .context("starting the pre-content group (needs CAP_SYS_ADMIN)")?,
     );
@@ -1272,7 +1296,9 @@ fn open_capture(
     persisted: Option<fs_native::capture::CaptureState>,
 ) -> Result<EpochCapture> {
     let mut cfg = CaptureConfig::new(live, epochs);
-    cfg.hash_content = false;
+    // The capture chunks what changed (re-hashing only changed extents of a
+    // file it chunked before); publishing reuses its manifests.
+    cfg.hash_content = true;
     cfg.defer_release = true;
     let Some(resume) = persisted else {
         remove_other_snapshots(epochs, None);

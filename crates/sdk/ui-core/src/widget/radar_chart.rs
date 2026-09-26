@@ -835,34 +835,37 @@ impl Widget for RadarChart {
 mod tests {
     use super::*;
     #[test]
-    fn axes_never_accept_a_zero_maximum() {
-        assert!(RadarAxis::new("x", "X", 0.0).max > 0.0);
-    }
+    fn radar_axes_and_legend_validate_and_expose_state() {
+        // Case `axes_never_accept_a_zero_maximum`.
+        {
+            assert!(RadarAxis::new("x", "X", 0.0).max > 0.0);
+        }
 
-    #[test]
-    fn legend_visibility_is_programmatic_observable_and_excludes_inspection() {
-        let axes = vec![
-            RadarAxis::new("a", "A", 10.0),
-            RadarAxis::new("b", "B", 10.0),
-            RadarAxis::new("c", "C", 10.0),
-        ];
-        let mut chart = RadarChart::new(
-            axes,
-            vec![RadarSeries::new(
-                "current",
-                "Current",
-                Color::from_rgb8(1, 2, 3),
-                vec![1.0, 2.0, 3.0],
-            )],
-        );
-        assert!(chart.set_series_visible("current", false));
-        assert!(!chart.is_series_visible("current"));
-        assert!(!chart.inspect("current", "a"));
-        assert_eq!(
-            chart.take_visibility_changed(),
-            Some(("current".to_owned(), false))
-        );
-        assert!(chart.toggle_series("current"));
-        assert!(chart.inspect("current", "a"));
+        // Case `legend_visibility_is_programmatic_observable_and_excludes_inspection`.
+        {
+            let axes = vec![
+                RadarAxis::new("a", "A", 10.0),
+                RadarAxis::new("b", "B", 10.0),
+                RadarAxis::new("c", "C", 10.0),
+            ];
+            let mut chart = RadarChart::new(
+                axes,
+                vec![RadarSeries::new(
+                    "current",
+                    "Current",
+                    Color::from_rgb8(1, 2, 3),
+                    vec![1.0, 2.0, 3.0],
+                )],
+            );
+            assert!(chart.set_series_visible("current", false));
+            assert!(!chart.is_series_visible("current"));
+            assert!(!chart.inspect("current", "a"));
+            assert_eq!(
+                chart.take_visibility_changed(),
+                Some(("current".to_owned(), false))
+            );
+            assert!(chart.toggle_series("current"));
+            assert!(chart.inspect("current", "a"));
+        }
     }
 }

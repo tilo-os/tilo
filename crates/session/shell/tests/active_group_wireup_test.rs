@@ -98,84 +98,87 @@ fn two_strip_two_group_tree() -> (WorkspaceTree, StripGroups, StripGroups) {
 }
 
 #[test]
-fn shell_tick_advances_active_group_off_closing_in_strip_0_only() {
-    let (tree, (s0_id, [a0, a1]), (s1_id, [b0, _b1])) = two_strip_two_group_tree();
-
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-
-    // If this fires, the builder reset the active_group map — fix that before
-    // chasing the wire-up.
+fn shell_tick_moves_the_active_group_off_closing_groups_or_clears_it() {
+    // Phase `shell_tick_advances_active_group_off_closing_in_strip_0_only`.
     {
-        let st = chrome.borrow();
-        assert_eq!(st.tree().desktop.active_group_for(s0_id), Some(a0));
-        assert_eq!(st.tree().desktop.active_group_for(s1_id), Some(b0));
+        let (tree, (s0_id, [a0, a1]), (s1_id, [b0, _b1])) = two_strip_two_group_tree();
+
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+
+        // If this fires, the builder reset the active_group map — fix that before
+        // chasing the wire-up.
+        {
+            let st = chrome.borrow();
+            assert_eq!(st.tree().desktop.active_group_for(s0_id), Some(a0));
+            assert_eq!(st.tree().desktop.active_group_for(s1_id), Some(b0));
+        }
+
+        // No-op tick: nothing is closing, so the reconciler must leave both
+        // pointers untouched.
+        host.tick_active_group_reconcile_for_tests();
+        {
+            let st = chrome.borrow();
+            assert_eq!(st.tree().desktop.active_group_for(s0_id), Some(a0));
+            assert_eq!(st.tree().desktop.active_group_for(s1_id), Some(b0));
+        }
+
+        {
+            let g = host
+                .group_at_for_tests(s0_id, 0)
+                .expect("strip-0 group-0 widget");
+            assert_eq!(g.id, a0, "expected the first group of strip-0 to be A0");
+            g.start_closing();
+            assert!(g.is_closing(), "start_closing must latch is_closing()");
+        }
+
+        host.tick_active_group_reconcile_for_tests();
+
+        // Without the wire-up strip-0's pointer would still point at A0.
+        {
+            let st = chrome.borrow();
+            assert_eq!(
+                st.tree().desktop.active_group_for(s0_id),
+                Some(a1),
+                "active-group pointer must advance to A1 once A0 enters the close fade",
+            );
+            assert_eq!(
+                st.tree().desktop.active_group_for(s1_id),
+                Some(b0),
+                "strip-1 pointer must not change when only strip-0 has a closing group",
+            );
+        }
     }
 
-    // No-op tick: nothing is closing, so the reconciler must leave both
-    // pointers untouched.
-    host.tick_active_group_reconcile_for_tests();
+    // Phase `shell_tick_clears_pointer_when_every_group_in_strip_is_closing`.
     {
-        let st = chrome.borrow();
-        assert_eq!(st.tree().desktop.active_group_for(s0_id), Some(a0));
-        assert_eq!(st.tree().desktop.active_group_for(s1_id), Some(b0));
-    }
+        // With both groups in a strip closing, the pointer must be *removed* from
+        // the map rather than clamped to a corpse.
+        let (tree, (s0_id, [a0, a1]), (s1_id, [b0, _])) = two_strip_two_group_tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
-    {
-        let g = host
-            .group_at_for_tests(s0_id, 0)
-            .expect("strip-0 group-0 widget");
-        assert_eq!(g.id, a0, "expected the first group of strip-0 to be A0");
-        g.start_closing();
-        assert!(g.is_closing(), "start_closing must latch is_closing()");
-    }
+        host.group_at_for_tests(s0_id, 0)
+            .expect("strip-0 group-0")
+            .start_closing();
+        host.group_at_for_tests(s0_id, 1)
+            .expect("strip-0 group-1")
+            .start_closing();
 
-    host.tick_active_group_reconcile_for_tests();
+        host.tick_active_group_reconcile_for_tests();
 
-    // Without the wire-up strip-0's pointer would still point at A0.
-    {
         let st = chrome.borrow();
         assert_eq!(
             st.tree().desktop.active_group_for(s0_id),
-            Some(a1),
-            "active-group pointer must advance to A1 once A0 enters the close fade",
+            None,
+            "every-group-closing must drop the strip-0 pointer entirely; \
+             the data-layer reconciler clears it rather than dangle",
         );
+        // Survivors we don't drive: they keep the tree shape symmetric and guard
+        // the strip-1-untouched assertion below.
+        let _ = (a0, a1);
         assert_eq!(
             st.tree().desktop.active_group_for(s1_id),
             Some(b0),
-            "strip-1 pointer must not change when only strip-0 has a closing group",
+            "strip-1 must remain unaffected even when strip-0 fully empties",
         );
     }
-}
-
-#[test]
-fn shell_tick_clears_pointer_when_every_group_in_strip_is_closing() {
-    // With both groups in a strip closing, the pointer must be *removed* from
-    // the map rather than clamped to a corpse.
-    let (tree, (s0_id, [a0, a1]), (s1_id, [b0, _])) = two_strip_two_group_tree();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-
-    host.group_at_for_tests(s0_id, 0)
-        .expect("strip-0 group-0")
-        .start_closing();
-    host.group_at_for_tests(s0_id, 1)
-        .expect("strip-0 group-1")
-        .start_closing();
-
-    host.tick_active_group_reconcile_for_tests();
-
-    let st = chrome.borrow();
-    assert_eq!(
-        st.tree().desktop.active_group_for(s0_id),
-        None,
-        "every-group-closing must drop the strip-0 pointer entirely; \
-         the data-layer reconciler clears it rather than dangle",
-    );
-    // Survivors we don't drive: they keep the tree shape symmetric and guard
-    // the strip-1-untouched assertion below.
-    let _ = (a0, a1);
-    assert_eq!(
-        st.tree().desktop.active_group_for(s1_id),
-        Some(b0),
-        "strip-1 must remain unaffected even when strip-0 fully empties",
-    );
 }

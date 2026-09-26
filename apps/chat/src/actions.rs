@@ -1989,498 +1989,596 @@ mod tests {
         }
     }
 
-    /// Ctrl+K keeps the workspace/channel snapshot small while message actions
-    /// remain available through stable lazy resolution.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "the resource covenant is intentionally asserted as one end-to-end inventory"
     )]
-    fn ctrl_k_publishes_workspace_channel_and_message_tree() {
-        let mut doc = seeded();
-        let resources = provide_resources(&ctx_from(&doc), &doc);
-        let ws = resources
-            .iter()
-            .find(|resource| resource.id.as_str() == "chat.workspace:ws_acme")
-            .expect("Acme workspace root");
-        assert_eq!(ws.kind, "chat.workspace");
-        let ws_actions: Vec<&str> = ws.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(ws_actions.contains(&"new-channel"), "{ws_actions:?}");
-
-        // The open channel (c_crit) carries message children; a channel exports
-        // rename / archive / mark-read / delete.
-        let crit = ws
-            .children
-            .iter()
-            .find(|c| c.id.as_str() == "chat.channel:c_crit")
-            .expect("the open channel is a resource");
-        assert_eq!(crit.kind, "chat.channel");
-        let c_actions: Vec<&str> = crit.actions.iter().map(|a| a.id.as_str()).collect();
-        for want in ["post", "rename", "archive", "mark-read", "delete"] {
-            assert!(
-                c_actions.contains(&want),
-                "channel missing {want}: {c_actions:?}"
-            );
-        }
-        assert!(crit.children.is_empty(), "messages resolve lazily");
-        let source = ChatDoc::list_messages(&doc, "c_crit").remove(0);
-        let ctx = ctx_from(&doc);
-        let ch = ctx.channels.iter().find(|ch| ch.id == "c_crit").unwrap();
-        let msg_model = MessageResource {
-            id: source.id,
-            label: source.text,
-            pinned: source.pinned,
-            parent: source.parent,
-            attachment: source
-                .attachment
-                .as_ref()
-                .map(|attachment| AttachmentResource {
-                    name: attachment.name().to_owned(),
-                    blob: attachment.blob().to_owned(),
-                }),
-            reactions: source
-                .reactions
+    fn resources_publish_a_bounded_snapshot_with_lazy_canonical_children() {
+        // Phase: ctrl_k_publishes_workspace_channel_and_message_tree.
+        // Ctrl+K keeps the workspace/channel snapshot small while message actions
+        // remain available through stable lazy resolution.
+        {
+            let mut doc = seeded();
+            let resources = provide_resources(&ctx_from(&doc), &doc);
+            let ws = resources
                 .iter()
-                .map(|reaction| ReactionResource {
-                    emoji: reaction.emoji.clone(),
-                    count: reaction.count(),
-                    reacted_by_me: reaction.reacted_by(model::ME),
-                })
-                .collect(),
-        };
-        let msg = build_message_resource(&ctx, "ws_acme", ch, &msg_model);
-        assert_eq!(msg.kind, "chat.message");
-        let m_actions: Vec<&str> = msg.actions.iter().map(|a| a.id.as_str()).collect();
-        for want in ["edit", "react", "pin", "delete"] {
-            assert!(
-                m_actions.contains(&want),
-                "message missing {want}: {m_actions:?}"
-            );
-        }
+                .find(|resource| resource.id.as_str() == "chat.workspace:ws_acme")
+                .expect("Acme workspace root");
+            assert_eq!(ws.kind, "chat.workspace");
+            let ws_actions: Vec<&str> = ws.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(ws_actions.contains(&"new-channel"), "{ws_actions:?}");
 
-        // Non-open channels are exported too, so a global message hit can be
-        // resolved without granting it a private navigation escape hatch.
-        let general = ws
-            .children
-            .iter()
-            .find(|c| c.id.as_str() == "chat.channel:c_general")
-            .expect("a second channel is present");
-        assert!(general.children.is_empty());
+            // The open channel (c_crit) carries message children; a channel exports
+            // rename / archive / mark-read / delete.
+            let crit = ws
+                .children
+                .iter()
+                .find(|c| c.id.as_str() == "chat.channel:c_crit")
+                .expect("the open channel is a resource");
+            assert_eq!(crit.kind, "chat.channel");
+            let c_actions: Vec<&str> = crit.actions.iter().map(|a| a.id.as_str()).collect();
+            for want in ["post", "rename", "archive", "mark-read", "delete"] {
+                assert!(
+                    c_actions.contains(&want),
+                    "channel missing {want}: {c_actions:?}"
+                );
+            }
+            assert!(crit.children.is_empty(), "messages resolve lazily");
+            let source = ChatDoc::list_messages(&doc, "c_crit").remove(0);
+            let ctx = ctx_from(&doc);
+            let ch = ctx.channels.iter().find(|ch| ch.id == "c_crit").unwrap();
+            let msg_model = MessageResource {
+                id: source.id,
+                label: source.text,
+                pinned: source.pinned,
+                parent: source.parent,
+                attachment: source
+                    .attachment
+                    .as_ref()
+                    .map(|attachment| AttachmentResource {
+                        name: attachment.name().to_owned(),
+                        blob: attachment.blob().to_owned(),
+                    }),
+                reactions: source
+                    .reactions
+                    .iter()
+                    .map(|reaction| ReactionResource {
+                        emoji: reaction.emoji.clone(),
+                        count: reaction.count(),
+                        reacted_by_me: reaction.reacted_by(model::ME),
+                    })
+                    .collect(),
+            };
+            let msg = build_message_resource(&ctx, "ws_acme", ch, &msg_model);
+            assert_eq!(msg.kind, "chat.message");
+            let m_actions: Vec<&str> = msg.actions.iter().map(|a| a.id.as_str()).collect();
+            for want in ["edit", "react", "pin", "delete"] {
+                assert!(
+                    m_actions.contains(&want),
+                    "message missing {want}: {m_actions:?}"
+                );
+            }
 
-        let call = resolve_resource(&ctx, &doc, "chat.call:c_huddle")
-            .expect("voice call resolves as its own canonical resource");
-        assert_eq!(call.kind, "chat.call");
-        let call_actions: Vec<_> = call
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        for want in ["open", "join"] {
-            assert!(
-                call_actions.contains(&want),
-                "call missing {want}: {call_actions:?}"
-            );
-        }
-        let join = call
-            .actions
-            .iter()
-            .find(|action| action.id == "join")
-            .expect("join action");
-        let mut call_doc = AutoCommit::load(&doc.save()).unwrap();
-        let join = ui::testing::action_contract::spec_encoding(join, None);
-        let joined = registry().decode(&join).unwrap();
-        let mut transport = LocalTransport::new();
-        tilo_actions::dispatch(&mut call_doc, joined.as_ref(), join, &mut transport).unwrap();
-        let joined_call = resolve_resource(&ctx, &call_doc, "chat.call:c_huddle").unwrap();
-        let joined_actions: Vec<_> = joined_call
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        for want in ["leave", "mute", "deafen", "audio-only"] {
-            assert!(
-                joined_actions.contains(&want),
-                "call missing {want}: {joined_actions:?}"
-            );
-        }
+            // Non-open channels are exported too, so a global message hit can be
+            // resolved without granting it a private navigation escape hatch.
+            let general = ws
+                .children
+                .iter()
+                .find(|c| c.id.as_str() == "chat.channel:c_general")
+                .expect("a second channel is present");
+            assert!(general.children.is_empty());
 
-        // Every exported action is reachable — flatten the forest (parents before
-        // children) and confirm the message + workspace actions are present.
-        let flat = tilo_actions::flatten(&resources);
-        let flat_labels: Vec<&str> = flat.iter().map(|f| f.action.label.as_str()).collect();
-        assert!(flat_labels.contains(&"New channel"), "{flat_labels:?}");
-        assert!(!flat_labels.contains(&"Delete message"), "{flat_labels:?}");
-    }
-
-    /// Attachments and reaction aggregates are durable parts of a message, so
-    /// both must have a stable lazy address rather than being discoverable only
-    /// by scanning the painted timeline.
-    #[test]
-    fn attachment_and_reaction_resources_resolve_with_canonical_actions() {
-        let doc = seeded();
-        let ctx = ctx_from(&doc);
-
-        let attachment = resolve_resource(&ctx, &doc, "chat.attachment:m_concept")
-            .expect("attached message exposes its portable child resource");
-        assert_eq!(attachment.kind, "chat.attachment");
-        assert!(
-            attachment
+            let call = resolve_resource(&ctx, &doc, "chat.call:c_huddle")
+                .expect("voice call resolves as its own canonical resource");
+            assert_eq!(call.kind, "chat.call");
+            let call_actions: Vec<_> = call
                 .actions
                 .iter()
-                .any(|action| action.id == "open-message")
-        );
-
-        let reaction = resolve_resource(&ctx, &doc, "chat.reaction:m_concept:❤️")
-            .expect("reaction aggregate exposes its canonical child resource");
-        assert_eq!(reaction.kind, "chat.reaction");
-        let remove = reaction
-            .actions
-            .iter()
-            .find(|action| action.id == "remove")
-            .expect("your current reaction offers the shared remove action");
-        let expected = encode(&remove_reaction_action(
-            "c_crit",
-            "m_concept",
-            "❤️",
-            model::ME,
-        ));
-        assert_eq!(
-            ui::testing::action_contract::spec_encoding(remove, None).payload,
-            expected.payload
-        );
-    }
-
-    #[test]
-    fn ten_thousand_messages_do_not_expand_the_open_snapshot() {
-        let doc = seeded();
-        let mut ctx = ctx_from(&doc);
-        ctx.messages = (0..10_000)
-            .map(|id| MessageResource {
-                id: format!("message-{id}"),
-                label: format!("Message {id}"),
-                pinned: false,
-                parent: None,
-                attachment: None,
-                reactions: Vec::new(),
-            })
-            .collect();
-        let resources = provide_resources(&ctx, &doc);
-        assert!(
-            resources
+                .map(|action| action.id.as_str())
+                .collect();
+            for want in ["open", "join"] {
+                assert!(
+                    call_actions.contains(&want),
+                    "call missing {want}: {call_actions:?}"
+                );
+            }
+            let join = call
+                .actions
                 .iter()
-                .flat_map(|workspace| &workspace.children)
-                .filter(|resource| resource.kind == "chat.channel")
-                .all(|channel| channel
-                    .children
-                    .iter()
-                    .all(|child| child.kind != "chat.message"))
-        );
-    }
-
-    #[test]
-    fn large_organisation_keeps_context_bounded_and_resolves_omitted_room() {
-        fn resource_count(resources: &[Resource]) -> usize {
-            resources
+                .find(|action| action.id == "join")
+                .expect("join action");
+            let mut call_doc = AutoCommit::load(&doc.save()).unwrap();
+            let join = ui::testing::action_contract::spec_encoding(join, None);
+            let joined = registry().decode(&join).unwrap();
+            let mut transport = LocalTransport::new();
+            tilo_actions::dispatch(&mut call_doc, joined.as_ref(), join, &mut transport).unwrap();
+            let joined_call = resolve_resource(&ctx, &call_doc, "chat.call:c_huddle").unwrap();
+            let joined_actions: Vec<_> = joined_call
+                .actions
                 .iter()
-                .map(|resource| 1 + resource_count(&resource.children))
-                .sum()
+                .map(|action| action.id.as_str())
+                .collect();
+            for want in ["leave", "mute", "deafen", "audio-only"] {
+                assert!(
+                    joined_actions.contains(&want),
+                    "call missing {want}: {joined_actions:?}"
+                );
+            }
+
+            // Every exported action is reachable — flatten the forest (parents before
+            // children) and confirm the message + workspace actions are present.
+            let flat = tilo_actions::flatten(&resources);
+            let flat_labels: Vec<&str> = flat.iter().map(|f| f.action.label.as_str()).collect();
+            assert!(flat_labels.contains(&"New channel"), "{flat_labels:?}");
+            assert!(!flat_labels.contains(&"Delete message"), "{flat_labels:?}");
         }
+        // Phase: attachment_and_reaction_resources_resolve_with_canonical_actions.
+        // Attachments and reaction aggregates are durable parts of a message, so
+        // both must have a stable lazy address rather than being discoverable only
+        // by scanning the painted timeline.
+        {
+            let doc = seeded();
+            let ctx = ctx_from(&doc);
 
-        let mut doc = seeded();
-        for index in 0..(EAGER_RESOURCE_SNAPSHOT_LIMIT + 12) {
-            ChatDoc::insert_channel(
-                &mut doc,
-                &format!("c_late_{index:03}"),
-                "ws_acme",
-                "cat_acme_main",
-                &format!("room-{index:03}"),
-                ChannelKind::Text,
+            let attachment = resolve_resource(&ctx, &doc, "chat.attachment:m_concept")
+                .expect("attached message exposes its portable child resource");
+            assert_eq!(attachment.kind, "chat.attachment");
+            assert!(
+                attachment
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "open-message")
+            );
+
+            let reaction = resolve_resource(&ctx, &doc, "chat.reaction:m_concept:❤️")
+                .expect("reaction aggregate exposes its canonical child resource");
+            assert_eq!(reaction.kind, "chat.reaction");
+            let remove = reaction
+                .actions
+                .iter()
+                .find(|action| action.id == "remove")
+                .expect("your current reaction offers the shared remove action");
+            let expected = encode(&remove_reaction_action(
+                "c_crit",
+                "m_concept",
+                "❤️",
+                model::ME,
+            ));
+            assert_eq!(
+                ui::testing::action_contract::spec_encoding(remove, None).payload,
+                expected.payload
             );
         }
-        let ctx = ctx_from(&doc);
-        let resources = provide_resources(&ctx, &doc);
-        assert!(resource_count(&resources) <= EAGER_RESOURCE_SNAPSHOT_LIMIT);
-        assert!(
-            resources
+        // Phase: ten_thousand_messages_do_not_expand_the_open_snapshot.
+        {
+            let doc = seeded();
+            let mut ctx = ctx_from(&doc);
+            ctx.messages = (0..10_000)
+                .map(|id| MessageResource {
+                    id: format!("message-{id}"),
+                    label: format!("Message {id}"),
+                    pinned: false,
+                    parent: None,
+                    attachment: None,
+                    reactions: Vec::new(),
+                })
+                .collect();
+            let resources = provide_resources(&ctx, &doc);
+            assert!(
+                resources
+                    .iter()
+                    .flat_map(|workspace| &workspace.children)
+                    .filter(|resource| resource.kind == "chat.channel")
+                    .all(|channel| channel
+                        .children
+                        .iter()
+                        .all(|child| child.kind != "chat.message"))
+            );
+        }
+        // Phase: large_organisation_keeps_context_bounded_and_resolves_omitted_room.
+        {
+            fn resource_count(resources: &[Resource]) -> usize {
+                resources
+                    .iter()
+                    .map(|resource| 1 + resource_count(&resource.children))
+                    .sum()
+            }
+
+            let mut doc = seeded();
+            for index in 0..(EAGER_RESOURCE_SNAPSHOT_LIMIT + 12) {
+                ChatDoc::insert_channel(
+                    &mut doc,
+                    &format!("c_late_{index:03}"),
+                    "ws_acme",
+                    "cat_acme_main",
+                    &format!("room-{index:03}"),
+                    ChannelKind::Text,
+                );
+            }
+            let ctx = ctx_from(&doc);
+            let resources = provide_resources(&ctx, &doc);
+            assert!(resource_count(&resources) <= EAGER_RESOURCE_SNAPSHOT_LIMIT);
+            assert!(
+                resources
+                    .iter()
+                    .flat_map(|resource| &resource.children)
+                    .all(|resource| resource.id.as_str() != "chat.channel:c_late_107")
+            );
+            let lazy = resolve_resource(&ctx, &doc, "chat.channel:c_late_107")
+                .expect("an omitted room remains directly addressable");
+            assert_eq!(lazy.kind, "chat.channel");
+            assert!(lazy.actions.iter().any(|action| action.id == "open"));
+            assert!(lazy.actions.iter().any(|action| action.id == "post"));
+        }
+        // Phase: resource_actions_declare_undo_and_delete_confirmation.
+        {
+            let doc = seeded();
+            let resources = provide_resources(&ctx_from(&doc), &doc);
+            let channel = resources[0]
+                .children
                 .iter()
-                .flat_map(|resource| &resource.children)
-                .all(|resource| resource.id.as_str() != "chat.channel:c_late_107")
-        );
-        let lazy = resolve_resource(&ctx, &doc, "chat.channel:c_late_107")
-            .expect("an omitted room remains directly addressable");
-        assert_eq!(lazy.kind, "chat.channel");
-        assert!(lazy.actions.iter().any(|action| action.id == "open"));
-        assert!(lazy.actions.iter().any(|action| action.id == "post"));
-    }
-
-    /// Sending a message through the action appends a row carrying the payload's
-    /// id, author and text.
-    #[test]
-    fn send_message_action_appends_the_row() {
-        let mut doc = seeded();
-        let before = ChatDoc::list_messages(&doc, "c_general").len();
-        dispatch(
-            &mut doc,
-            &send_message_action(
-                "c_general",
-                "m_test1",
-                model::ME,
-                TS,
-                "hello",
-                None,
-                None,
-                Vec::new(),
-            ),
-        );
-        let msgs = ChatDoc::list_messages(&doc, "c_general");
-        assert_eq!(msgs.len(), before + 1);
-        let m = msgs.iter().find(|m| m.id == "m_test1").unwrap();
-        assert_eq!(m.text, "hello");
-        assert_eq!(m.author, model::ME);
-    }
-
-    #[test]
-    fn send_message_retries_are_exactly_once_and_reject_invalid_targets() {
-        let mut doc = seeded();
-        let action = send_message_action(
-            "c_general",
-            "m_retry_once",
-            model::ME,
-            TS,
-            "retry-safe",
-            None,
-            None,
-            Vec::new(),
-        );
-        dispatch(&mut doc, &action);
-        dispatch(&mut doc, &action);
-        assert_eq!(
-            ChatDoc::list_messages(&doc, "c_general")
+                .find(|r| r.id.as_str() == "chat.channel:c_crit")
+                .unwrap();
+            assert!(
+                channel
+                    .actions
+                    .iter()
+                    .filter(|action| action.kind == OperationKind::Document)
+                    .all(|action| action.contract.reversible)
+            );
+            let open = channel
+                .actions
                 .iter()
-                .filter(|message| message.id == "m_retry_once")
-                .count(),
-            1,
-            "replaying one authored action cannot create a second resource row"
-        );
-
-        dispatch(
-            &mut doc,
-            &send_message_action(
-                "c_missing",
-                "m_missing_target",
-                model::ME,
-                TS,
-                "must not create a hidden channel",
-                None,
-                None,
-                Vec::new(),
-            ),
-        );
-        assert!(ChatDoc::list_messages(&doc, "c_missing").is_empty());
-    }
-
-    /// An agent's progress on a summons, through the same action/doc path a
-    /// real dispatch takes: posted as an empty reply, taken, then finished
-    /// with words — and a body that already has words is never overwritten.
-    #[test]
-    fn set_agent_work_action_records_progress_and_only_ever_supplies_empty_words() {
-        use crate::model::{AgentReasoning, AgentRoute, AgentWork, AgentWorkState};
-
-        let mut doc = seeded();
-        dispatch(
-            &mut doc,
-            &send_message_action(
-                "c_crit",
-                "m_reply",
-                "agent_claude",
-                TS,
-                "",
-                Some("m_me1".into()),
-                None,
-                Vec::new(),
-            ),
-        );
-        let taken = AgentWork::new(AgentWorkState::Taken, TS);
-        dispatch(
-            &mut doc,
-            &set_agent_work_action("c_crit", "m_reply", taken.clone(), None),
-        );
-        let m = ChatDoc::list_messages(&doc, "c_crit")
-            .into_iter()
-            .find(|m| m.id == "m_reply")
-            .unwrap();
-        assert_eq!(m.work, Some(taken), "the taken record was not stored");
-        assert_eq!(m.text, "", "no words yet — the body must stay empty");
-
-        let done = AgentWork::new(AgentWorkState::Done { did: "Crop".into() }, TS + 5).because(
-            AgentReasoning {
-                route: AgentRoute::Floor,
-                why: "matched the word processor".into(),
-            },
-        );
-        dispatch(
-            &mut doc,
-            &set_agent_work_action("c_crit", "m_reply", done.clone(), Some("Cropped it.")),
-        );
-        let m = ChatDoc::list_messages(&doc, "c_crit")
-            .into_iter()
-            .find(|m| m.id == "m_reply")
-            .unwrap();
-        assert_eq!(m.work, Some(done), "the finished record was not stored");
-        assert_eq!(m.text, "Cropped it.", "the agent's words were not supplied");
-
-        // A later state must not restate the body — it is authored once.
-        let refused = AgentWork::new(AgentWorkState::Refused, TS + 9);
-        dispatch(
-            &mut doc,
-            &set_agent_work_action("c_crit", "m_reply", refused.clone(), Some("never mind")),
-        );
-        let m = ChatDoc::list_messages(&doc, "c_crit")
-            .into_iter()
-            .find(|m| m.id == "m_reply")
-            .unwrap();
-        assert_eq!(m.work, Some(refused), "the last state must still win");
-        assert_eq!(
-            m.text, "Cropped it.",
-            "an already-written body must never be overwritten"
-        );
-    }
-
-    /// Add then remove a reaction through the action path (both mutating), and
-    /// the reaction comes and goes.
-    #[test]
-    fn reaction_add_and_remove_actions_round_trip() {
-        let mut doc = seeded();
-        dispatch(
-            &mut doc,
-            &add_reaction_action("c_crit", "m_me1", "🔥", model::ME),
-        );
-        let m = ChatDoc::list_messages(&doc, "c_crit")
-            .into_iter()
-            .find(|m| m.id == "m_me1")
-            .unwrap();
-        let fire = m.reactions.iter().find(|r| r.emoji == "🔥").unwrap();
-        assert_eq!(fire.count(), 1, "the add landed one reaction");
-        dispatch(
-            &mut doc,
-            &remove_reaction_action("c_crit", "m_me1", "🔥", model::ME),
-        );
-        let m = ChatDoc::list_messages(&doc, "c_crit")
-            .into_iter()
-            .find(|m| m.id == "m_me1")
-            .unwrap();
-        assert!(
-            !m.reactions.iter().any(|r| r.emoji == "🔥"),
-            "remove cleared it"
-        );
-    }
-
-    /// Idempotency is a doc-level guarantee: a duplicate add does not
-    /// double-count (this is what makes a duplicate action safe to apply twice).
-    #[test]
-    fn add_reaction_is_idempotent_at_the_doc_level() {
-        let mut doc = seeded();
-        ChatDoc::add_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
-        ChatDoc::add_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
-        let m = ChatDoc::list_messages(&doc, "c_crit")
-            .into_iter()
-            .find(|m| m.id == "m_me1")
-            .unwrap();
-        let fire = m.reactions.iter().find(|r| r.emoji == "🔥").unwrap();
-        assert_eq!(fire.count(), 1, "a repeated add does not double-count");
-    }
-
-    /// Pin then delete a message through their actions.
-    #[test]
-    fn pin_and_delete_message_actions() {
-        let mut doc = seeded();
-        dispatch(&mut doc, &pin_message_action("c_crit", "m_me1", true));
-        let m = ChatDoc::list_messages(&doc, "c_crit")
-            .into_iter()
-            .find(|m| m.id == "m_me1")
-            .unwrap();
-        assert!(m.pinned, "the message is pinned");
-        dispatch(&mut doc, &delete_message_action("c_crit", "m_me1"));
-        assert!(
-            ChatDoc::list_messages(&doc, "c_crit")
-                .into_iter()
-                .all(|m| m.id != "m_me1"),
-            "the message row was deleted"
-        );
-    }
-
-    /// Channel create / rename / archive / delete round-trip through actions.
-    #[test]
-    fn channel_crud_actions_round_trip() {
-        let mut doc = seeded();
-        dispatch(
-            &mut doc,
-            &create_channel_action(
+                .find(|action| action.id == "open")
+                .unwrap();
+            assert_eq!(open.kind, OperationKind::View);
+            assert!(!open.contract.reversible);
+            let attach = channel
+                .actions
+                .iter()
+                .find(|action| action.id == "attach")
+                .unwrap();
+            assert_eq!(attach.kind, OperationKind::Effect);
+            assert_eq!(attach.operation_type.as_deref(), Some(CHAT_OPERATION_TYPE));
+            let source = ChatDoc::list_messages(&doc, "c_crit").remove(0);
+            let ctx = ctx_from(&doc);
+            let ch = ctx.channels.iter().find(|ch| ch.id == "c_crit").unwrap();
+            let message = build_message_resource(
+                &ctx,
                 "ws_acme",
-                "cat_acme_main",
-                "c_new",
-                "design-ops",
-                ChannelKind::Text,
-            ),
-        );
-        assert!(
-            ChatDoc::list_channels(&doc)
-                .iter()
-                .any(|c| c.id == "c_new" && c.name == "design-ops")
-        );
-        dispatch(&mut doc, &rename_channel_action("c_new", "ops"));
-        assert!(
-            ChatDoc::list_channels(&doc)
-                .iter()
-                .any(|c| c.id == "c_new" && c.name == "ops")
-        );
-        dispatch(&mut doc, &archive_channel_action("c_new", true));
-        assert!(
-            ChatDoc::list_channels(&doc)
-                .iter()
-                .any(|c| c.id == "c_new" && c.archived)
-        );
-        dispatch(&mut doc, &delete_channel_action("c_new"));
-        assert!(ChatDoc::list_channels(&doc).iter().all(|c| c.id != "c_new"));
+                ch,
+                &MessageResource {
+                    id: source.id,
+                    label: source.text,
+                    pinned: source.pinned,
+                    parent: source.parent,
+                    attachment: source
+                        .attachment
+                        .as_ref()
+                        .map(|attachment| AttachmentResource {
+                            name: attachment.name().to_owned(),
+                            blob: attachment.blob().to_owned(),
+                        }),
+                    reactions: source
+                        .reactions
+                        .iter()
+                        .map(|reaction| ReactionResource {
+                            emoji: reaction.emoji.clone(),
+                            count: reaction.count(),
+                            reacted_by_me: reaction.reacted_by(model::ME),
+                        })
+                        .collect(),
+                },
+            );
+            assert_eq!(
+                message
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "open")
+                    .unwrap()
+                    .kind,
+                OperationKind::View
+            );
+            assert!(
+                message
+                    .actions
+                    .iter()
+                    .filter(|action| action.id != "open")
+                    .all(|action| action.kind == OperationKind::Document)
+            );
+            let delete = channel.actions.iter().find(|a| a.id == "delete").unwrap();
+            assert_eq!(delete.contract.risk, tilo_actions::RiskLevel::Destructive);
+            assert_eq!(
+                delete.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm
+            );
+        }
     }
 
     #[test]
-    fn category_mutations_replay_through_resources_and_history() {
-        let mut doc = seeded();
-        dispatch(
-            &mut doc,
-            &create_category_action("ws_acme", "cat_action", "Design"),
-        );
-        dispatch(
-            &mut doc,
-            &rename_category_action("cat_action", "Design reviews"),
-        );
-        dispatch(&mut doc, &set_category_collapsed_action("cat_action", true));
-        assert!(
-            ChatDoc::list_categories(&doc)
-                .iter()
-                .any(|category| category.id == "cat_action"
-                    && category.name == "Design reviews"
-                    && category.collapsed)
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn message_actions_mutate_the_document_exactly_once() {
+        // Phase: send_message_action_appends_the_row.
+        // Sending a message through the action appends a row carrying the payload's
+        // id, author and text.
+        {
+            let mut doc = seeded();
+            let before = ChatDoc::list_messages(&doc, "c_general").len();
+            dispatch(
+                &mut doc,
+                &send_message_action(
+                    "c_general",
+                    "m_test1",
+                    model::ME,
+                    TS,
+                    "hello",
+                    None,
+                    None,
+                    Vec::new(),
+                ),
+            );
+            let msgs = ChatDoc::list_messages(&doc, "c_general");
+            assert_eq!(msgs.len(), before + 1);
+            let m = msgs.iter().find(|m| m.id == "m_test1").unwrap();
+            assert_eq!(m.text, "hello");
+            assert_eq!(m.author, model::ME);
+        }
+        // Phase: send_message_retries_are_exactly_once_and_reject_invalid_targets.
+        {
+            let mut doc = seeded();
+            let action = send_message_action(
+                "c_general",
+                "m_retry_once",
+                model::ME,
+                TS,
+                "retry-safe",
+                None,
+                None,
+                Vec::new(),
+            );
+            dispatch(&mut doc, &action);
+            dispatch(&mut doc, &action);
+            assert_eq!(
+                ChatDoc::list_messages(&doc, "c_general")
+                    .iter()
+                    .filter(|message| message.id == "m_retry_once")
+                    .count(),
+                1,
+                "replaying one authored action cannot create a second resource row"
+            );
 
-        let resources = provide_resources(&ctx_from(&doc), &doc);
-        let category = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "chat.category:cat_action")
-            .unwrap();
-        assert!(category.actions.iter().any(|action| action.id == "open"));
-        assert!(category.actions.iter().any(|action| action.id == "rename"));
-        assert!(category.actions.iter().any(|action| action.id == "expand"));
-        assert!(category.actions.iter().any(|action| action.id == "delete"));
-        assert_eq!(
-            history_context(&delete_category_action("cat_action"))
-                .resource
-                .unwrap()
-                .id,
-            "chat.category:cat_action"
-        );
+            dispatch(
+                &mut doc,
+                &send_message_action(
+                    "c_missing",
+                    "m_missing_target",
+                    model::ME,
+                    TS,
+                    "must not create a hidden channel",
+                    None,
+                    None,
+                    Vec::new(),
+                ),
+            );
+            assert!(ChatDoc::list_messages(&doc, "c_missing").is_empty());
+        }
+        // Phase: set_agent_work_action_records_progress_and_only_ever_supplies_empty_words.
+        // An agent's progress on a summons, through the same action/doc path a
+        // real dispatch takes: posted as an empty reply, taken, then finished
+        // with words — and a body that already has words is never overwritten.
+        {
+            use crate::model::{AgentReasoning, AgentRoute, AgentWork, AgentWorkState};
+
+            let mut doc = seeded();
+            dispatch(
+                &mut doc,
+                &send_message_action(
+                    "c_crit",
+                    "m_reply",
+                    "agent_claude",
+                    TS,
+                    "",
+                    Some("m_me1".into()),
+                    None,
+                    Vec::new(),
+                ),
+            );
+            let taken = AgentWork::new(AgentWorkState::Taken, TS);
+            dispatch(
+                &mut doc,
+                &set_agent_work_action("c_crit", "m_reply", taken.clone(), None),
+            );
+            let m = ChatDoc::list_messages(&doc, "c_crit")
+                .into_iter()
+                .find(|m| m.id == "m_reply")
+                .unwrap();
+            assert_eq!(m.work, Some(taken), "the taken record was not stored");
+            assert_eq!(m.text, "", "no words yet — the body must stay empty");
+
+            let done = AgentWork::new(AgentWorkState::Done { did: "Crop".into() }, TS + 5).because(
+                AgentReasoning {
+                    route: AgentRoute::Floor,
+                    why: "matched the word processor".into(),
+                },
+            );
+            dispatch(
+                &mut doc,
+                &set_agent_work_action("c_crit", "m_reply", done.clone(), Some("Cropped it.")),
+            );
+            let m = ChatDoc::list_messages(&doc, "c_crit")
+                .into_iter()
+                .find(|m| m.id == "m_reply")
+                .unwrap();
+            assert_eq!(m.work, Some(done), "the finished record was not stored");
+            assert_eq!(m.text, "Cropped it.", "the agent's words were not supplied");
+
+            // A later state must not restate the body — it is authored once.
+            let refused = AgentWork::new(AgentWorkState::Refused, TS + 9);
+            dispatch(
+                &mut doc,
+                &set_agent_work_action("c_crit", "m_reply", refused.clone(), Some("never mind")),
+            );
+            let m = ChatDoc::list_messages(&doc, "c_crit")
+                .into_iter()
+                .find(|m| m.id == "m_reply")
+                .unwrap();
+            assert_eq!(m.work, Some(refused), "the last state must still win");
+            assert_eq!(
+                m.text, "Cropped it.",
+                "an already-written body must never be overwritten"
+            );
+        }
+        // Phase: reaction_add_and_remove_actions_round_trip.
+        // Add then remove a reaction through the action path (both mutating), and
+        // the reaction comes and goes.
+        {
+            let mut doc = seeded();
+            dispatch(
+                &mut doc,
+                &add_reaction_action("c_crit", "m_me1", "🔥", model::ME),
+            );
+            let m = ChatDoc::list_messages(&doc, "c_crit")
+                .into_iter()
+                .find(|m| m.id == "m_me1")
+                .unwrap();
+            let fire = m.reactions.iter().find(|r| r.emoji == "🔥").unwrap();
+            assert_eq!(fire.count(), 1, "the add landed one reaction");
+            dispatch(
+                &mut doc,
+                &remove_reaction_action("c_crit", "m_me1", "🔥", model::ME),
+            );
+            let m = ChatDoc::list_messages(&doc, "c_crit")
+                .into_iter()
+                .find(|m| m.id == "m_me1")
+                .unwrap();
+            assert!(
+                !m.reactions.iter().any(|r| r.emoji == "🔥"),
+                "remove cleared it"
+            );
+        }
+        // Phase: add_reaction_is_idempotent_at_the_doc_level.
+        // Idempotency is a doc-level guarantee: a duplicate add does not
+        // double-count (this is what makes a duplicate action safe to apply twice).
+        {
+            let mut doc = seeded();
+            ChatDoc::add_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
+            ChatDoc::add_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
+            let m = ChatDoc::list_messages(&doc, "c_crit")
+                .into_iter()
+                .find(|m| m.id == "m_me1")
+                .unwrap();
+            let fire = m.reactions.iter().find(|r| r.emoji == "🔥").unwrap();
+            assert_eq!(fire.count(), 1, "a repeated add does not double-count");
+        }
+        // Phase: pin_and_delete_message_actions.
+        // Pin then delete a message through their actions.
+        {
+            let mut doc = seeded();
+            dispatch(&mut doc, &pin_message_action("c_crit", "m_me1", true));
+            let m = ChatDoc::list_messages(&doc, "c_crit")
+                .into_iter()
+                .find(|m| m.id == "m_me1")
+                .unwrap();
+            assert!(m.pinned, "the message is pinned");
+            dispatch(&mut doc, &delete_message_action("c_crit", "m_me1"));
+            assert!(
+                ChatDoc::list_messages(&doc, "c_crit")
+                    .into_iter()
+                    .all(|m| m.id != "m_me1"),
+                "the message row was deleted"
+            );
+        }
+    }
+
+    #[test]
+    fn channel_and_category_actions_round_trip_and_target_history() {
+        // Phase: channel_crud_actions_round_trip.
+        // Channel create / rename / archive / delete round-trip through actions.
+        {
+            let mut doc = seeded();
+            dispatch(
+                &mut doc,
+                &create_channel_action(
+                    "ws_acme",
+                    "cat_acme_main",
+                    "c_new",
+                    "design-ops",
+                    ChannelKind::Text,
+                ),
+            );
+            assert!(
+                ChatDoc::list_channels(&doc)
+                    .iter()
+                    .any(|c| c.id == "c_new" && c.name == "design-ops")
+            );
+            dispatch(&mut doc, &rename_channel_action("c_new", "ops"));
+            assert!(
+                ChatDoc::list_channels(&doc)
+                    .iter()
+                    .any(|c| c.id == "c_new" && c.name == "ops")
+            );
+            dispatch(&mut doc, &archive_channel_action("c_new", true));
+            assert!(
+                ChatDoc::list_channels(&doc)
+                    .iter()
+                    .any(|c| c.id == "c_new" && c.archived)
+            );
+            dispatch(&mut doc, &delete_channel_action("c_new"));
+            assert!(ChatDoc::list_channels(&doc).iter().all(|c| c.id != "c_new"));
+        }
+        // Phase: category_mutations_replay_through_resources_and_history.
+        {
+            let mut doc = seeded();
+            dispatch(
+                &mut doc,
+                &create_category_action("ws_acme", "cat_action", "Design"),
+            );
+            dispatch(
+                &mut doc,
+                &rename_category_action("cat_action", "Design reviews"),
+            );
+            dispatch(&mut doc, &set_category_collapsed_action("cat_action", true));
+            assert!(
+                ChatDoc::list_categories(&doc)
+                    .iter()
+                    .any(|category| category.id == "cat_action"
+                        && category.name == "Design reviews"
+                        && category.collapsed)
+            );
+
+            let resources = provide_resources(&ctx_from(&doc), &doc);
+            let category = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == "chat.category:cat_action")
+                .unwrap();
+            assert!(category.actions.iter().any(|action| action.id == "open"));
+            assert!(category.actions.iter().any(|action| action.id == "rename"));
+            assert!(category.actions.iter().any(|action| action.id == "expand"));
+            assert!(category.actions.iter().any(|action| action.id == "delete"));
+            assert_eq!(
+                history_context(&delete_category_action("cat_action"))
+                    .resource
+                    .unwrap()
+                    .id,
+                "chat.category:cat_action"
+            );
+        }
+        // Phase: message_action_history_targets_the_message.
+        {
+            let context = history_context(&ChatAction::DeleteMessage {
+                channel: "launch".into(),
+                id: "msg-9".into(),
+            });
+            assert_eq!(context.action_label, "Delete message");
+            let resource = context.resource.expect("message resource");
+            assert_eq!(resource.id, "chat.message:msg-9");
+            assert_eq!(resource.kind, "chat.message");
+        }
     }
 
     /// The open workspace snapshot plus the lazily resolved resources Ctrl+K,
@@ -2556,101 +2654,5 @@ mod tests {
                 encode(&remove_reaction_action("c_crit", "m_concept", "❤️", model::ME))
             }),
         ],
-    }
-
-    #[test]
-    fn message_action_history_targets_the_message() {
-        let context = history_context(&ChatAction::DeleteMessage {
-            channel: "launch".into(),
-            id: "msg-9".into(),
-        });
-        assert_eq!(context.action_label, "Delete message");
-        let resource = context.resource.expect("message resource");
-        assert_eq!(resource.id, "chat.message:msg-9");
-        assert_eq!(resource.kind, "chat.message");
-    }
-
-    #[test]
-    fn resource_actions_declare_undo_and_delete_confirmation() {
-        let doc = seeded();
-        let resources = provide_resources(&ctx_from(&doc), &doc);
-        let channel = resources[0]
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == "chat.channel:c_crit")
-            .unwrap();
-        assert!(
-            channel
-                .actions
-                .iter()
-                .filter(|action| action.kind == OperationKind::Document)
-                .all(|action| action.contract.reversible)
-        );
-        let open = channel
-            .actions
-            .iter()
-            .find(|action| action.id == "open")
-            .unwrap();
-        assert_eq!(open.kind, OperationKind::View);
-        assert!(!open.contract.reversible);
-        let attach = channel
-            .actions
-            .iter()
-            .find(|action| action.id == "attach")
-            .unwrap();
-        assert_eq!(attach.kind, OperationKind::Effect);
-        assert_eq!(attach.operation_type.as_deref(), Some(CHAT_OPERATION_TYPE));
-        let source = ChatDoc::list_messages(&doc, "c_crit").remove(0);
-        let ctx = ctx_from(&doc);
-        let ch = ctx.channels.iter().find(|ch| ch.id == "c_crit").unwrap();
-        let message = build_message_resource(
-            &ctx,
-            "ws_acme",
-            ch,
-            &MessageResource {
-                id: source.id,
-                label: source.text,
-                pinned: source.pinned,
-                parent: source.parent,
-                attachment: source
-                    .attachment
-                    .as_ref()
-                    .map(|attachment| AttachmentResource {
-                        name: attachment.name().to_owned(),
-                        blob: attachment.blob().to_owned(),
-                    }),
-                reactions: source
-                    .reactions
-                    .iter()
-                    .map(|reaction| ReactionResource {
-                        emoji: reaction.emoji.clone(),
-                        count: reaction.count(),
-                        reacted_by_me: reaction.reacted_by(model::ME),
-                    })
-                    .collect(),
-            },
-        );
-        assert_eq!(
-            message
-                .actions
-                .iter()
-                .find(|action| action.id == "open")
-                .unwrap()
-                .kind,
-            OperationKind::View
-        );
-        assert!(
-            message
-                .actions
-                .iter()
-                .filter(|action| action.id != "open")
-                .all(|action| action.kind == OperationKind::Document)
-        );
-        let delete = channel.actions.iter().find(|a| a.id == "delete").unwrap();
-        assert_eq!(delete.contract.risk, tilo_actions::RiskLevel::Destructive);
-        assert_eq!(
-            delete.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm
-        );
     }
 }

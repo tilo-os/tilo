@@ -89,14 +89,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_config_builds_with_the_ring_provider() {
-        assert!(client_config_with_roots(RootCertStore::empty()).is_ok());
-    }
-
-    #[test]
-    fn install_is_idempotent() {
-        install_crypto_provider();
-        install_crypto_provider();
-        assert!(CryptoProvider::get_default().is_some());
+    fn the_ring_provider_installs_idempotently_and_builds_client_configs() {
+        // Phase `client_config_builds_with_the_ring_provider`.
+        {
+            assert!(client_config_with_roots(RootCertStore::empty()).is_ok());
+        }
+        // Phase `install_is_idempotent`.
+        {
+            install_crypto_provider();
+            install_crypto_provider();
+            assert!(CryptoProvider::get_default().is_some());
+        }
     }
 }

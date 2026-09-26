@@ -267,139 +267,139 @@ mod tests {
     use super::*;
 
     #[test]
-    fn install_argv_pins_the_release_and_refuses_weak_dependencies() {
-        let argv = install_argv(&["htop".into()], "44");
-        assert_eq!(argv[0], "dnf5");
-        assert!(argv.contains(&"--releasever=44".to_string()));
-        assert!(
-            argv.contains(&"--setopt=install_weak_deps=False".to_string()),
-            "a recommends-chain in a layer is how a delta stops being one: {argv:?}"
-        );
-        assert_eq!(argv.last().unwrap(), "htop");
-    }
-
-    /// No flag may point the transaction at anything but the guest's own root.
-    /// `--installroot` would write outside the overlay, which is the one thing
-    /// this design exists to prevent.
-    #[test]
-    fn no_transaction_names_a_root_outside_the_guest() {
-        for argv in [
-            install_argv(&["htop".into()], "44"),
-            remove_argv(&["htop".into()], "44"),
-        ] {
-            for arg in &argv {
-                assert!(
-                    !arg.starts_with("--installroot"),
-                    "the transaction must land in the guest's own /, which is \
+    fn transactions_pin_the_release_and_stay_inside_the_guest() {
+        // phase: install_argv_pins_the_release_and_refuses_weak_dependencies
+        {
+            let argv = install_argv(&["htop".into()], "44");
+            assert_eq!(argv[0], "dnf5");
+            assert!(argv.contains(&"--releasever=44".to_string()));
+            assert!(
+                argv.contains(&"--setopt=install_weak_deps=False".to_string()),
+                "a recommends-chain in a layer is how a delta stops being one: {argv:?}"
+            );
+            assert_eq!(argv.last().unwrap(), "htop");
+        }
+        // phase: no_transaction_names_a_root_outside_the_guest
+        // No flag may point the transaction at anything but the guest's own root.
+        // `--installroot` would write outside the overlay, which is the one thing
+        // this design exists to prevent.
+        {
+            for argv in [
+                install_argv(&["htop".into()], "44"),
+                remove_argv(&["htop".into()], "44"),
+            ] {
+                for arg in &argv {
+                    assert!(
+                        !arg.starts_with("--installroot"),
+                        "the transaction must land in the guest's own /, which is \
                      the layer: {argv:?}"
-                );
+                    );
+                }
             }
         }
-    }
-
-    #[test]
-    fn the_manifest_records_replaces_and_forgets() {
-        let mut m = Manifest::default();
-        m.record(InstalledPackage {
-            name: "htop".into(),
-            nevra: "htop-3.4.1-1.fc44.x86_64".into(),
-            at: 1,
-            one_time: false,
-        });
-        m.record(InstalledPackage {
-            name: "sl".into(),
-            nevra: "sl-5.02-25.fc44.x86_64".into(),
-            at: 2,
-            one_time: true,
-        });
-        assert_eq!(m.packages.len(), 2);
-        // Re-installing replaces rather than duplicates.
-        m.record(InstalledPackage {
-            name: "htop".into(),
-            nevra: "htop-3.4.2-1.fc44.x86_64".into(),
-            at: 3,
-            one_time: false,
-        });
-        assert_eq!(m.packages.len(), 2);
-        assert_eq!(m.packages[0].nevra, "htop-3.4.2-1.fc44.x86_64");
-
-        assert_eq!(m.one_time(), vec!["sl".to_string()]);
-        assert!(m.forget("sl"));
-        assert!(!m.forget("sl"));
-        assert!(m.one_time().is_empty());
-    }
-
-    #[test]
-    fn freeze_promotes_every_one_time_install() {
-        let mut m = Manifest::default();
-        for (name, one_time) in [("sl", true), ("htop", false), ("nethack", true)] {
-            m.record(InstalledPackage {
-                name: name.into(),
-                nevra: name.into(),
-                at: 1,
-                one_time,
-            });
+        // phase: releasever_is_never_empty
+        {
+            let r = releasever();
+            assert!(!r.is_empty());
+            assert!(
+                !r.contains('%'),
+                "an unexpanded rpm macro leaked through: {r}"
+            );
         }
-        let promoted = m.freeze();
-        assert_eq!(promoted, vec!["nethack".to_string(), "sl".to_string()]);
-        assert!(
-            m.one_time().is_empty(),
-            "after a freeze nothing is scheduled for removal"
-        );
-        assert_eq!(m.packages.len(), 3, "freeze must not drop a package");
-    }
-
-    #[test]
-    fn the_manifest_round_trips_and_tolerates_a_missing_or_broken_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("usr/lib/ush/packages.json");
-        assert!(Manifest::load(&path).packages.is_empty());
-
-        let mut m = Manifest::default();
-        m.record(InstalledPackage {
-            name: "htop".into(),
-            nevra: "htop-3.4.1-1.fc44.x86_64".into(),
-            at: 7,
-            one_time: false,
-        });
-        m.save(&path).unwrap();
-        assert_eq!(Manifest::load(&path), m);
-
-        std::fs::write(&path, b"{ truncated").unwrap();
-        assert!(
-            Manifest::load(&path).packages.is_empty(),
-            "a broken manifest must read as empty, not abort the session"
-        );
-    }
-
-    #[test]
-    fn the_manifest_lives_inside_the_layer() {
-        assert!(
-            MANIFEST_PATH.starts_with("/usr/"),
-            "the manifest has to be under a shadowed subtree, or it lands on \
-             the host instead of in the layer"
-        );
-    }
-
-    /// Stops a `--one-time` install of something the base already ships from
-    /// whiting the base's copy out at session end; `rpm`/`bash` are always present.
-    #[test]
-    fn is_installed_distinguishes_the_base_from_a_name_nothing_provides() {
-        assert!(
-            is_installed("bash"),
-            "rpm does not know about bash; the guard against removing a base \
+        // phase: is_installed_distinguishes_the_base_from_a_name_nothing_provides
+        // Stops a `--one-time` install of something the base already ships from
+        // whiting the base's copy out at session end; `rpm`/`bash` are always present.
+        {
+            assert!(
+                is_installed("bash"),
+                "rpm does not know about bash; the guard against removing a base \
              package at session end cannot work"
-        );
-        assert!(!is_installed("no-such-package-fbb27a1c"));
+            );
+            assert!(!is_installed("no-such-package-fbb27a1c"));
+        }
     }
 
     #[test]
-    fn releasever_is_never_empty() {
-        let r = releasever();
-        assert!(!r.is_empty());
-        assert!(
-            !r.contains('%'),
-            "an unexpanded rpm macro leaked through: {r}"
-        );
+    fn the_manifest_records_freezes_and_persists_inside_the_layer() {
+        // phase: the_manifest_records_replaces_and_forgets
+        {
+            let mut m = Manifest::default();
+            m.record(InstalledPackage {
+                name: "htop".into(),
+                nevra: "htop-3.4.1-1.fc44.x86_64".into(),
+                at: 1,
+                one_time: false,
+            });
+            m.record(InstalledPackage {
+                name: "sl".into(),
+                nevra: "sl-5.02-25.fc44.x86_64".into(),
+                at: 2,
+                one_time: true,
+            });
+            assert_eq!(m.packages.len(), 2);
+            // Re-installing replaces rather than duplicates.
+            m.record(InstalledPackage {
+                name: "htop".into(),
+                nevra: "htop-3.4.2-1.fc44.x86_64".into(),
+                at: 3,
+                one_time: false,
+            });
+            assert_eq!(m.packages.len(), 2);
+            assert_eq!(m.packages[0].nevra, "htop-3.4.2-1.fc44.x86_64");
+
+            assert_eq!(m.one_time(), vec!["sl".to_string()]);
+            assert!(m.forget("sl"));
+            assert!(!m.forget("sl"));
+            assert!(m.one_time().is_empty());
+        }
+        // phase: freeze_promotes_every_one_time_install
+        {
+            let mut m = Manifest::default();
+            for (name, one_time) in [("sl", true), ("htop", false), ("nethack", true)] {
+                m.record(InstalledPackage {
+                    name: name.into(),
+                    nevra: name.into(),
+                    at: 1,
+                    one_time,
+                });
+            }
+            let promoted = m.freeze();
+            assert_eq!(promoted, vec!["nethack".to_string(), "sl".to_string()]);
+            assert!(
+                m.one_time().is_empty(),
+                "after a freeze nothing is scheduled for removal"
+            );
+            assert_eq!(m.packages.len(), 3, "freeze must not drop a package");
+        }
+        // phase: the_manifest_round_trips_and_tolerates_a_missing_or_broken_file
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("usr/lib/ush/packages.json");
+            assert!(Manifest::load(&path).packages.is_empty());
+
+            let mut m = Manifest::default();
+            m.record(InstalledPackage {
+                name: "htop".into(),
+                nevra: "htop-3.4.1-1.fc44.x86_64".into(),
+                at: 7,
+                one_time: false,
+            });
+            m.save(&path).unwrap();
+            assert_eq!(Manifest::load(&path), m);
+
+            std::fs::write(&path, b"{ truncated").unwrap();
+            assert!(
+                Manifest::load(&path).packages.is_empty(),
+                "a broken manifest must read as empty, not abort the session"
+            );
+        }
+        // phase: the_manifest_lives_inside_the_layer
+        {
+            assert!(
+                MANIFEST_PATH.starts_with("/usr/"),
+                "the manifest has to be under a shadowed subtree, or it lands on \
+             the host instead of in the layer"
+            );
+        }
     }
 }

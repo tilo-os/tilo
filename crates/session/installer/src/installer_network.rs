@@ -400,60 +400,60 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_keeps_wifi_when_connectivity_check_fails() {
-        let backend = FakeBackend {
-            connectivity: Err("check disabled".to_string()),
-            networks: Ok(vec![wifi("Cafe", 2, false, false)]),
-            portal: Err("unused".to_string()),
-        };
-        let snapshot = NetworkSnapshot::collect(&backend);
-        assert_eq!(snapshot.connectivity, ConnectivityState::Unknown);
-        assert_eq!(snapshot.networks.len(), 1);
-        assert_eq!(
-            snapshot.connectivity_error.as_deref(),
-            Some("check disabled")
-        );
-        assert!(snapshot.guidance().contains("could not be confirmed"));
-    }
-
-    #[test]
-    fn portal_uri_is_requested_only_for_portal_state() {
-        let backend = FakeBackend {
-            connectivity: Ok(ConnectivityState::Portal),
-            networks: Ok(Vec::new()),
-            portal: Ok("http://nm-check.example/".to_string()),
-        };
-        let snapshot = NetworkSnapshot::collect(&backend);
-        assert_eq!(
-            snapshot.portal_uri.as_deref(),
-            Some("http://nm-check.example/")
-        );
-        assert!(snapshot.guidance().contains("sign-in page"));
-    }
-
-    #[test]
-    fn networks_sort_connected_then_by_signal() {
-        let mut networks = vec![
-            wifi("Weak", 1, true, false),
-            wifi("Connected", 2, true, true),
-            wifi("Strong", 4, false, false),
-        ];
-        sort_networks(&mut networks);
-        let names: Vec<&str> = networks
-            .iter()
-            .map(|network| network.ssid.as_str())
-            .collect();
-        assert_eq!(names, vec!["Connected", "Strong", "Weak"]);
-    }
-
-    #[test]
-    fn offline_guidance_explicitly_preserves_install() {
-        let backend = FakeBackend {
-            connectivity: Ok(ConnectivityState::Offline),
-            networks: Ok(Vec::new()),
-            portal: Err("unused".to_string()),
-        };
-        let snapshot = NetworkSnapshot::collect(&backend);
-        assert!(snapshot.guidance().contains("install completely offline"));
+    fn network_snapshot_orders_networks_and_guides_offline_installs() {
+        // Phase `snapshot_keeps_wifi_when_connectivity_check_fails`.
+        {
+            let backend = FakeBackend {
+                connectivity: Err("check disabled".to_string()),
+                networks: Ok(vec![wifi("Cafe", 2, false, false)]),
+                portal: Err("unused".to_string()),
+            };
+            let snapshot = NetworkSnapshot::collect(&backend);
+            assert_eq!(snapshot.connectivity, ConnectivityState::Unknown);
+            assert_eq!(snapshot.networks.len(), 1);
+            assert_eq!(
+                snapshot.connectivity_error.as_deref(),
+                Some("check disabled")
+            );
+            assert!(snapshot.guidance().contains("could not be confirmed"));
+        }
+        // Phase `portal_uri_is_requested_only_for_portal_state`.
+        {
+            let backend = FakeBackend {
+                connectivity: Ok(ConnectivityState::Portal),
+                networks: Ok(Vec::new()),
+                portal: Ok("http://nm-check.example/".to_string()),
+            };
+            let snapshot = NetworkSnapshot::collect(&backend);
+            assert_eq!(
+                snapshot.portal_uri.as_deref(),
+                Some("http://nm-check.example/")
+            );
+            assert!(snapshot.guidance().contains("sign-in page"));
+        }
+        // Phase `networks_sort_connected_then_by_signal`.
+        {
+            let mut networks = vec![
+                wifi("Weak", 1, true, false),
+                wifi("Connected", 2, true, true),
+                wifi("Strong", 4, false, false),
+            ];
+            sort_networks(&mut networks);
+            let names: Vec<&str> = networks
+                .iter()
+                .map(|network| network.ssid.as_str())
+                .collect();
+            assert_eq!(names, vec!["Connected", "Strong", "Weak"]);
+        }
+        // Phase `offline_guidance_explicitly_preserves_install`.
+        {
+            let backend = FakeBackend {
+                connectivity: Ok(ConnectivityState::Offline),
+                networks: Ok(Vec::new()),
+                portal: Err("unused".to_string()),
+            };
+            let snapshot = NetworkSnapshot::collect(&backend);
+            assert!(snapshot.guidance().contains("install completely offline"));
+        }
     }
 }

@@ -1000,65 +1000,71 @@ mod tests {
             rssi: Some(-42),
         }
     }
+    /// Object paths and zero battery, inert replicated latches, and confirmed forget.
     #[test]
-    fn uses_object_path_and_preserves_zero_battery() {
-        let m = Arc::new(Mock {
-            calls: Mutex::new(vec![]),
-            devices: vec![dev()],
-        });
-        let mut p = BluetoothPane::with_control(m.clone(), vec![dev()], true, false);
-        let mut d = AutoCommit::new();
-        let r = automerge::ROOT;
-        p.sync(&mut d, &r);
-        let _ = d.put(&r, key(&dev().path, "connect"), true);
-        p.sync(&mut d, &r);
-        assert_eq!(
-            m.calls.lock().unwrap().as_slice(),
-            ["connect:/org/bluez/hci0/dev_AA"]
-        );
-        assert_eq!(p.devices()[0].battery, Some(0));
-    }
-    #[test]
-    fn replicated_bluetooth_latches_are_inert_without_a_local_token() {
-        let mock = Arc::new(Mock {
-            calls: Mutex::new(vec![]),
-            devices: vec![dev()],
-        });
-        let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
-        let commands = ui::LocalState::new(None);
-        let mut pane = BluetoothPane::with_control(mock.clone(), vec![dev()], true, false)
-            .with_command_state(&commands)
-            .with_operation_status(&status);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let initial_heads = doc.get_heads();
-        pane.sync(&mut doc, &root);
-        assert_eq!(doc.get_heads(), initial_heads);
-        let _ = doc.put(&root, BT_ENABLED_KEY, false);
-        let _ = doc.put(&root, key(&dev().path, "connect"), true);
-        pane.sync(&mut doc, &root);
-        assert!(mock.calls.lock().unwrap().is_empty());
-        assert!(pane.powered);
-    }
-    #[test]
-    fn forget_requires_confirmation() {
-        let mock = Arc::new(Mock {
-            calls: Mutex::new(vec![]),
-            devices: vec![dev()],
-        });
-        let mut pane = BluetoothPane::with_control(mock.clone(), vec![dev()], true, false);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let forget_key = key(&dev().path, "forget");
-        let _ = doc.put(&root, &forget_key, true);
-        pane.sync(&mut doc, &root);
-        assert!(mock.calls.lock().unwrap().is_empty());
-        let _ = doc.put(&root, &forget_key, true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(
-            mock.calls.lock().unwrap().as_slice(),
-            ["forget:/org/bluez/hci0/dev_AA"]
-        );
+    fn bluetooth_devices_are_addressed_by_path_and_guarded() {
+        // Case `uses_object_path_and_preserves_zero_battery`.
+        {
+            let m = Arc::new(Mock {
+                calls: Mutex::new(vec![]),
+                devices: vec![dev()],
+            });
+            let mut p = BluetoothPane::with_control(m.clone(), vec![dev()], true, false);
+            let mut d = AutoCommit::new();
+            let r = automerge::ROOT;
+            p.sync(&mut d, &r);
+            let _ = d.put(&r, key(&dev().path, "connect"), true);
+            p.sync(&mut d, &r);
+            assert_eq!(
+                m.calls.lock().unwrap().as_slice(),
+                ["connect:/org/bluez/hci0/dev_AA"]
+            );
+            assert_eq!(p.devices()[0].battery, Some(0));
+        }
+
+        // Case `replicated_bluetooth_latches_are_inert_without_a_local_token`.
+        {
+            let mock = Arc::new(Mock {
+                calls: Mutex::new(vec![]),
+                devices: vec![dev()],
+            });
+            let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
+            let commands = ui::LocalState::new(None);
+            let mut pane = BluetoothPane::with_control(mock.clone(), vec![dev()], true, false)
+                .with_command_state(&commands)
+                .with_operation_status(&status);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let initial_heads = doc.get_heads();
+            pane.sync(&mut doc, &root);
+            assert_eq!(doc.get_heads(), initial_heads);
+            let _ = doc.put(&root, BT_ENABLED_KEY, false);
+            let _ = doc.put(&root, key(&dev().path, "connect"), true);
+            pane.sync(&mut doc, &root);
+            assert!(mock.calls.lock().unwrap().is_empty());
+            assert!(pane.powered);
+        }
+
+        // Case `forget_requires_confirmation`.
+        {
+            let mock = Arc::new(Mock {
+                calls: Mutex::new(vec![]),
+                devices: vec![dev()],
+            });
+            let mut pane = BluetoothPane::with_control(mock.clone(), vec![dev()], true, false);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let forget_key = key(&dev().path, "forget");
+            let _ = doc.put(&root, &forget_key, true);
+            pane.sync(&mut doc, &root);
+            assert!(mock.calls.lock().unwrap().is_empty());
+            let _ = doc.put(&root, &forget_key, true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                mock.calls.lock().unwrap().as_slice(),
+                ["forget:/org/bluez/hci0/dev_AA"]
+            );
+        }
     }
 }
