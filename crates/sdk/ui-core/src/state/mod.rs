@@ -2672,4 +2672,35 @@ mod tests {
             "the restore itself is undoable"
         );
     }
+
+    #[test]
+    fn undo_of_one_mark_over_several_texts_clears_it_from_each() {
+        use automerge::marks::{ExpandMark, Mark};
+        let mut state = State::new();
+        let texts: Vec<ObjId> = ["Background", "Method", "Results"]
+            .into_iter()
+            .map(|word| {
+                let text = state.doc.put_object(ROOT, word, ObjType::Text).unwrap();
+                state.doc.splice_text(&text, 0, 0, word).unwrap();
+                text
+            })
+            .collect();
+        state.commit_action(None, None);
+        for text in &texts {
+            let end = state.doc.length(text);
+            state
+                .doc
+                .mark(
+                    text,
+                    Mark::new("bold".into(), true, 0, end),
+                    ExpandMark::After,
+                )
+                .unwrap();
+        }
+        state.commit_action(None, None);
+        state.undo(None, None).unwrap();
+        for text in &texts {
+            assert_eq!(state.doc.marks(text).unwrap(), [], "{text}");
+        }
+    }
 }
