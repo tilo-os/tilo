@@ -1414,163 +1414,180 @@ impl CustomizePanel {
 mod tests {
     use super::*;
 
+    /// Timezone catalog and canonical values.
     #[test]
-    fn built_in_timezone_catalog_is_worldwide_canonical_and_safe() {
-        let zones = timezones();
-        assert!(zones.len() >= 400, "catalog unexpectedly incomplete");
-        for representative in [
-            "Africa/Nairobi",
-            "America/New_York",
-            "Antarctica/McMurdo",
-            "Asia/Kolkata",
-            "Atlantic/Reykjavik",
-            "Australia/Sydney",
-            "Europe/Berlin",
-            "Pacific/Auckland",
-            "UTC",
-        ] {
-            assert!(zones.iter().any(|zone| zone == representative));
-        }
-        assert!(zones.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(zones.iter().all(|zone| {
-            !zone.starts_with('/')
-                && !zone.contains("..")
-                && zone
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'/' | b'+' | b'-'))
-        }));
-    }
-
-    #[test]
-    fn canonical_values_match_the_embedded_profile_contract() {
-        let panel = CustomizePanel::new();
-        assert_eq!(
-            panel.canonical_value(CzField::Keyboard, "German (QWERTZ)"),
-            Some("de".into())
-        );
-        assert_eq!(
-            panel.canonical_value(CzField::Keyboard, "de"),
-            Some("de".into())
-        );
-        assert_eq!(
-            panel.canonical_value(CzField::Timezone, "Europe/Berlin"),
-            Some("Europe/Berlin".into())
-        );
-        assert_eq!(
-            panel.canonical_value(CzField::Timezone, "Europe/DefinitelyMissing"),
-            None
-        );
-        assert_eq!(panel.canonical_value(CzField::Locale, "not a locale"), None);
-        assert_eq!(
-            panel.canonical_value(CzField::Filesystem, "xfs"),
-            Some("xfs".into())
-        );
-        assert_eq!(panel.canonical_value(CzField::Filesystem, "FAT32"), None);
-    }
-
-    #[test]
-    fn compact_layout_stacks_fields_at_full_width_for_large_text() {
-        let content = Rect::new(24.0, 10.0, 344.0, 900.0);
-        let geometry = CustomizePanel::new().geom(content);
-        for field in CzField::ALL {
-            let rect = geometry.field(field);
-            assert_eq!(rect.x0, content.x0);
-            assert_eq!(rect.x1, content.x1);
-        }
-        assert!(geometry.full_name.y1 < geometry.username.y0);
-        assert!(geometry.username.y1 < geometry.timezone.y0);
-        assert!(geometry.timezone.y1 < geometry.locale.y0);
-        assert!(geometry.locale.y1 < geometry.keyboard.y0);
-        assert!(geometry.keyboard.y1 < geometry.filesystem.y0);
-    }
-
-    /// Every caption keeps a `LABEL` step above its field, every field of a
-    /// section a `SECTION` step before the next caption, and the two sections
-    /// and the Preview action a `GROUP` — at a wide and a compact width, with
-    /// the unmeasured and a measured caption line.
-    #[test]
-    fn captions_fields_and_sections_keep_their_rhythm() {
-        let mut panel = CustomizePanel::new();
-        let mut tr = TextRenderer::new();
-        for measured in [false, true] {
-            if measured {
-                assert!(panel.measure(&mut tr, 61.0));
-            }
-            let label_h = panel.anchors.label_h;
-            for content in [
-                Rect::new(190.0, 90.0, 1090.0, 700.0),
-                Rect::new(16.0, 90.0, 304.0, 700.0),
+    fn customization_catalogs_match_the_embedded_profile_contract() {
+        // Phase `built_in_timezone_catalog_is_worldwide_canonical_and_safe`.
+        {
+            let zones = timezones();
+            assert!(zones.len() >= 400, "catalog unexpectedly incomplete");
+            for representative in [
+                "Africa/Nairobi",
+                "America/New_York",
+                "Antarctica/McMurdo",
+                "Asia/Kolkata",
+                "Atlantic/Reykjavik",
+                "Australia/Sydney",
+                "Europe/Berlin",
+                "Pacific/Auckland",
+                "UTC",
             ] {
-                let g = panel.geom(content);
-                // Section caption → first field caption → field.
-                assert!(
-                    (g.hostname.y0 - (g.identity_label_y + label_h + RELATED + label_h + LABEL))
-                        .abs()
-                        < 1e-6
-                );
-                // Fields of one section, top to bottom, a caption band plus a
-                // `SECTION` apart; two-column rows share a top.
-                let mut tops: Vec<f64> =
-                    [g.hostname, g.full_name, g.username, g.timezone, g.locale]
-                        .iter()
-                        .map(|r| r.y0)
-                        .collect();
-                tops.dedup();
-                for pair in tops.windows(2) {
-                    assert!(
-                        (pair[1] - (pair[0] + FIELD_H + SECTION + label_h + LABEL)).abs() < 1e-6
-                    );
+                assert!(zones.iter().any(|zone| zone == representative));
+            }
+            assert!(zones.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(zones.iter().all(|zone| {
+                !zone.starts_with('/')
+                    && !zone.contains("..")
+                    && zone.bytes().all(|c| {
+                        c.is_ascii_alphanumeric() || matches!(c, b'_' | b'/' | b'+' | b'-')
+                    })
+            }));
+        }
+
+        // Phase `canonical_values_match_the_embedded_profile_contract`.
+        {
+            let panel = CustomizePanel::new();
+            assert_eq!(
+                panel.canonical_value(CzField::Keyboard, "German (QWERTZ)"),
+                Some("de".into())
+            );
+            assert_eq!(
+                panel.canonical_value(CzField::Keyboard, "de"),
+                Some("de".into())
+            );
+            assert_eq!(
+                panel.canonical_value(CzField::Timezone, "Europe/Berlin"),
+                Some("Europe/Berlin".into())
+            );
+            assert_eq!(
+                panel.canonical_value(CzField::Timezone, "Europe/DefinitelyMissing"),
+                None
+            );
+            assert_eq!(panel.canonical_value(CzField::Locale, "not a locale"), None);
+            assert_eq!(
+                panel.canonical_value(CzField::Filesystem, "xfs"),
+                Some("xfs".into())
+            );
+            assert_eq!(panel.canonical_value(CzField::Filesystem, "FAT32"), None);
+        }
+    }
+
+    /// Customization form layout.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn customization_layout_keeps_rhythm_and_stacks_for_large_text() {
+        // Phase `compact_layout_stacks_fields_at_full_width_for_large_text`.
+        {
+            let content = Rect::new(24.0, 10.0, 344.0, 900.0);
+            let geometry = CustomizePanel::new().geom(content);
+            for field in CzField::ALL {
+                let rect = geometry.field(field);
+                assert_eq!(rect.x0, content.x0);
+                assert_eq!(rect.x1, content.x1);
+            }
+            assert!(geometry.full_name.y1 < geometry.username.y0);
+            assert!(geometry.username.y1 < geometry.timezone.y0);
+            assert!(geometry.timezone.y1 < geometry.locale.y0);
+            assert!(geometry.locale.y1 < geometry.keyboard.y0);
+            assert!(geometry.keyboard.y1 < geometry.filesystem.y0);
+        }
+
+        // Phase `captions_fields_and_sections_keep_their_rhythm`.
+        // Every caption keeps a `LABEL` step above its field, every field of a
+        // section a `SECTION` step before the next caption, and the two sections
+        // and the Preview action a `GROUP` — at a wide and a compact width, with
+        // the unmeasured and a measured caption line.
+        {
+            let mut panel = CustomizePanel::new();
+            let mut tr = TextRenderer::new();
+            for measured in [false, true] {
+                if measured {
+                    assert!(panel.measure(&mut tr, 61.0));
                 }
-                assert!((g.region_label_y - (g.locale.y1 + GROUP)).abs() < 1e-6);
-                assert!(
-                    (g.keyboard.y0 - (g.region_label_y + label_h + RELATED + label_h + LABEL))
-                        .abs()
-                        < 1e-6
-                );
-                let option_bottom = g.keyboard.y1.max(g.filesystem.y1);
-                assert!((g.export.y0 - (option_bottom + GROUP)).abs() < 1e-6);
-                // Independent of the formula: fields are the toolkit's bar
-                // control, the Preview action a pointer target, a caption band
-                // plus an `s1` step separates every field from the caption
-                // above it, and no two rows come closer than an `s4` step.
-                let s = ui::tokens::Spacing::BASE;
-                let fields = [
-                    g.hostname,
-                    g.full_name,
-                    g.username,
-                    g.timezone,
-                    g.locale,
-                    g.keyboard,
-                ];
-                assert!(
-                    fields
-                        .iter()
-                        .all(|f| (f.height() - f64::from(Metrics::BASE.bar_height)).abs() < 1e-6)
-                );
-                assert!(
-                    (g.export.height() - f64::from(Metrics::BASE.min_pointer_target)).abs() < 1e-6
-                );
-                assert!(
-                    g.hostname.y0 - (g.identity_label_y + label_h)
-                        >= label_h + f64::from(s.s1) - 1e-6
-                );
-                assert!(
-                    g.keyboard.y0 - (g.region_label_y + label_h)
-                        >= label_h + f64::from(s.s1) - 1e-6
-                );
-                let mut rows: Vec<Rect> = fields.iter().copied().chain([g.export]).collect();
-                rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-                for pair in rows.windows(2) {
-                    if pair[1].y0 > pair[0].y0 + 1e-6 {
+                let label_h = panel.anchors.label_h;
+                for content in [
+                    Rect::new(190.0, 90.0, 1090.0, 700.0),
+                    Rect::new(16.0, 90.0, 304.0, 700.0),
+                ] {
+                    let g = panel.geom(content);
+                    // Section caption → first field caption → field.
+                    assert!(
+                        (g.hostname.y0
+                            - (g.identity_label_y + label_h + RELATED + label_h + LABEL))
+                            .abs()
+                            < 1e-6
+                    );
+                    // Fields of one section, top to bottom, a caption band plus a
+                    // `SECTION` apart; two-column rows share a top.
+                    let mut tops: Vec<f64> =
+                        [g.hostname, g.full_name, g.username, g.timezone, g.locale]
+                            .iter()
+                            .map(|r| r.y0)
+                            .collect();
+                    tops.dedup();
+                    for pair in tops.windows(2) {
                         assert!(
-                            pair[1].y0 - pair[0].y1 >= f64::from(s.s4) - 1e-6,
-                            "rows never touch ({} → {})",
-                            pair[0].y1,
-                            pair[1].y0
+                            (pair[1] - (pair[0] + FIELD_H + SECTION + label_h + LABEL)).abs()
+                                < 1e-6
                         );
                     }
+                    assert!((g.region_label_y - (g.locale.y1 + GROUP)).abs() < 1e-6);
+                    assert!(
+                        (g.keyboard.y0 - (g.region_label_y + label_h + RELATED + label_h + LABEL))
+                            .abs()
+                            < 1e-6
+                    );
+                    let option_bottom = g.keyboard.y1.max(g.filesystem.y1);
+                    assert!((g.export.y0 - (option_bottom + GROUP)).abs() < 1e-6);
+                    // Independent of the formula: fields are the toolkit's bar
+                    // control, the Preview action a pointer target, a caption band
+                    // plus an `s1` step separates every field from the caption
+                    // above it, and no two rows come closer than an `s4` step.
+                    let s = ui::tokens::Spacing::BASE;
+                    let fields = [
+                        g.hostname,
+                        g.full_name,
+                        g.username,
+                        g.timezone,
+                        g.locale,
+                        g.keyboard,
+                    ];
+                    assert!(
+                        fields
+                            .iter()
+                            .all(
+                                |f| (f.height() - f64::from(Metrics::BASE.bar_height)).abs() < 1e-6
+                            )
+                    );
+                    assert!(
+                        (g.export.height() - f64::from(Metrics::BASE.min_pointer_target)).abs()
+                            < 1e-6
+                    );
+                    assert!(
+                        g.hostname.y0 - (g.identity_label_y + label_h)
+                            >= label_h + f64::from(s.s1) - 1e-6
+                    );
+                    assert!(
+                        g.keyboard.y0 - (g.region_label_y + label_h)
+                            >= label_h + f64::from(s.s1) - 1e-6
+                    );
+                    let mut rows: Vec<Rect> = fields.iter().copied().chain([g.export]).collect();
+                    rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+                    for pair in rows.windows(2) {
+                        if pair[1].y0 > pair[0].y0 + 1e-6 {
+                            assert!(
+                                pair[1].y0 - pair[0].y1 >= f64::from(s.s4) - 1e-6,
+                                "rows never touch ({} → {})",
+                                pair[0].y1,
+                                pair[1].y0
+                            );
+                        }
+                    }
+                    assert!(g.export.x0 >= content.x0, "Preview fits the column");
                 }
-                assert!(g.export.x0 >= content.x0, "Preview fits the column");
             }
         }
     }

@@ -357,120 +357,123 @@ mod tests {
     }
 
     #[test]
-    fn defaults_do_not_redirect_host_data() {
-        let launcher = FreeRdpLauncher::new(Runner::default());
-        let request = launcher
-            .command(&guest(), &BrokeredLaunch::deny_all("lease"))
-            .unwrap();
-        let args = request
-            .args
-            .iter()
-            .map(|arg| arg.to_string_lossy())
-            .collect::<Vec<_>>();
-        assert!(args.iter().any(|arg| arg == "-clipboard"));
-        assert!(!args.iter().any(|arg| arg.starts_with("/drive:")));
-        assert!(!args.iter().any(|arg| arg.starts_with("/microphone:")));
-        assert!(!args.iter().any(|arg| arg.contains("one-time-password")));
-        assert!(String::from_utf8_lossy(&request.stdin).contains("one-time-password"));
-    }
-
-    #[test]
-    fn only_brokered_capabilities_become_redirectors() {
-        let launcher = FreeRdpLauncher::new(Runner::default());
-        let brokered = BrokeredLaunch {
-            lease_id: "lease".to_string(),
-            network_binding: None,
-            clipboard: true,
-            microphone: true,
-            shares: vec![ShareBinding {
-                drive_name: "TILO1".to_string(),
-                portal_document_id: "document-42".to_string(),
-                host_path: crate::portal_lease_root().join("lease/document-42"),
-                read_only: true,
-            }],
-            network: false,
-        };
-        let request = launcher.command(&guest(), &brokered).unwrap();
-        let args = request
-            .args
-            .iter()
-            .map(|arg| arg.to_string_lossy())
-            .collect::<Vec<_>>();
-        assert!(
-            args.iter()
-                .any(|arg| arg == "/clipboard:direction-to:all,files-to:off")
-        );
-        assert!(args.iter().any(|arg| arg.starts_with("/drive:TILO1,")));
-        assert!(args.iter().any(|arg| arg.starts_with("/microphone:")));
-        assert!(args.iter().any(|arg| arg.starts_with("/sound:sys:pulse")));
-        assert!(args.iter().any(|arg| arg == "/network:lan"));
-    }
-
-    #[test]
-    fn rail_uses_upstream_client_binary_not_a_nonexistent_wayland_wrapper() {
-        let launcher = FreeRdpLauncher::new(Runner::default());
-        let request = launcher
-            .command(&guest(), &BrokeredLaunch::deny_all("lease"))
-            .unwrap();
-        assert_eq!(request.program, OsString::from("xfreerdp"));
-        assert!(
-            request
+    fn remote_app_redirects_only_brokered_capabilities() {
+        // Phase `defaults_do_not_redirect_host_data`.
+        {
+            let launcher = FreeRdpLauncher::new(Runner::default());
+            let request = launcher
+                .command(&guest(), &BrokeredLaunch::deny_all("lease"))
+                .unwrap();
+            let args = request
                 .args
                 .iter()
-                .any(|arg| arg == "/app:program:||tilo-word")
-        );
-        assert!(request.args.iter().any(|arg| arg == "+auto-reconnect"));
-        assert!(
-            request
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>();
+            assert!(args.iter().any(|arg| arg == "-clipboard"));
+            assert!(!args.iter().any(|arg| arg.starts_with("/drive:")));
+            assert!(!args.iter().any(|arg| arg.starts_with("/microphone:")));
+            assert!(!args.iter().any(|arg| arg.contains("one-time-password")));
+            assert!(String::from_utf8_lossy(&request.stdin).contains("one-time-password"));
+        }
+        // Phase `only_brokered_capabilities_become_redirectors`.
+        {
+            let launcher = FreeRdpLauncher::new(Runner::default());
+            let brokered = BrokeredLaunch {
+                lease_id: "lease".to_string(),
+                network_binding: None,
+                clipboard: true,
+                microphone: true,
+                shares: vec![ShareBinding {
+                    drive_name: "TILO1".to_string(),
+                    portal_document_id: "document-42".to_string(),
+                    host_path: crate::portal_lease_root().join("lease/document-42"),
+                    read_only: true,
+                }],
+                network: false,
+            };
+            let request = launcher.command(&guest(), &brokered).unwrap();
+            let args = request
                 .args
                 .iter()
-                .any(|arg| arg == "/auto-reconnect-max-retries:3")
-        );
-        assert!(!request.args.iter().any(|arg| arg == "/dynamic-resolution"));
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>();
+            assert!(
+                args.iter()
+                    .any(|arg| arg == "/clipboard:direction-to:all,files-to:off")
+            );
+            assert!(args.iter().any(|arg| arg.starts_with("/drive:TILO1,")));
+            assert!(args.iter().any(|arg| arg.starts_with("/microphone:")));
+            assert!(args.iter().any(|arg| arg.starts_with("/sound:sys:pulse")));
+            assert!(args.iter().any(|arg| arg == "/network:lan"));
+        }
+        // Phase `rail_uses_upstream_client_binary_not_a_nonexistent_wayland_wrapper`.
+        {
+            let launcher = FreeRdpLauncher::new(Runner::default());
+            let request = launcher
+                .command(&guest(), &BrokeredLaunch::deny_all("lease"))
+                .unwrap();
+            assert_eq!(request.program, OsString::from("xfreerdp"));
+            assert!(
+                request
+                    .args
+                    .iter()
+                    .any(|arg| arg == "/app:program:||tilo-word")
+            );
+            assert!(request.args.iter().any(|arg| arg == "+auto-reconnect"));
+            assert!(
+                request
+                    .args
+                    .iter()
+                    .any(|arg| arg == "/auto-reconnect-max-retries:3")
+            );
+            assert!(!request.args.iter().any(|arg| arg == "/dynamic-resolution"));
+        }
     }
 
     #[test]
-    fn spice_fallback_attaches_only_to_the_singleton_domain() {
-        let launcher = AppFocusedSpiceLauncher::new(Runner::default());
-        let mut guest = guest();
-        guest.presentation = ApplicationPresentation::AppFocusedSpice;
-        let request = launcher
-            .command(&guest, &BrokeredLaunch::deny_all("lease"))
-            .unwrap();
-        assert_eq!(request.program, OsString::from("virt-viewer"));
-        let args = request
-            .args
-            .iter()
-            .map(|arg| arg.to_string_lossy())
-            .collect::<Vec<_>>();
-        assert!(args.iter().any(|arg| arg == "--attach"));
-        assert!(args.iter().any(|arg| arg == "--auto-resize=always"));
-        assert!(args.iter().any(|arg| arg == "--cursor=local"));
-        assert!(args.iter().any(|arg| arg == crate::APPLIANCE_DOMAIN_NAME));
-        assert!(!args.iter().any(|arg| arg.contains("/app")));
-    }
-
-    #[test]
-    fn spice_fallback_does_not_silently_redirect_files_or_devices() {
-        let launcher = AppFocusedSpiceLauncher::new(Runner::default());
-        let mut guest = guest();
-        guest.presentation = ApplicationPresentation::AppFocusedSpice;
-        let brokered = BrokeredLaunch {
-            lease_id: "lease".to_string(),
-            network_binding: None,
-            network: false,
-            clipboard: false,
-            microphone: false,
-            shares: vec![ShareBinding {
-                drive_name: "TILO1".to_string(),
-                portal_document_id: "document-42".to_string(),
-                host_path: crate::portal_lease_root().join("lease/document-42"),
-                read_only: true,
-            }],
-        };
-        assert!(matches!(
-            launcher.command(&guest, &brokered),
-            Err(RemoteAppError::SpiceCapabilityRequiresRail)
-        ));
+    fn spice_fallback_is_singleton_and_never_redirects_silently() {
+        // Phase `spice_fallback_attaches_only_to_the_singleton_domain`.
+        {
+            let launcher = AppFocusedSpiceLauncher::new(Runner::default());
+            let mut guest = guest();
+            guest.presentation = ApplicationPresentation::AppFocusedSpice;
+            let request = launcher
+                .command(&guest, &BrokeredLaunch::deny_all("lease"))
+                .unwrap();
+            assert_eq!(request.program, OsString::from("virt-viewer"));
+            let args = request
+                .args
+                .iter()
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>();
+            assert!(args.iter().any(|arg| arg == "--attach"));
+            assert!(args.iter().any(|arg| arg == "--auto-resize=always"));
+            assert!(args.iter().any(|arg| arg == "--cursor=local"));
+            assert!(args.iter().any(|arg| arg == crate::APPLIANCE_DOMAIN_NAME));
+            assert!(!args.iter().any(|arg| arg.contains("/app")));
+        }
+        // Phase `spice_fallback_does_not_silently_redirect_files_or_devices`.
+        {
+            let launcher = AppFocusedSpiceLauncher::new(Runner::default());
+            let mut guest = guest();
+            guest.presentation = ApplicationPresentation::AppFocusedSpice;
+            let brokered = BrokeredLaunch {
+                lease_id: "lease".to_string(),
+                network_binding: None,
+                network: false,
+                clipboard: false,
+                microphone: false,
+                shares: vec![ShareBinding {
+                    drive_name: "TILO1".to_string(),
+                    portal_document_id: "document-42".to_string(),
+                    host_path: crate::portal_lease_root().join("lease/document-42"),
+                    read_only: true,
+                }],
+            };
+            assert!(matches!(
+                launcher.command(&guest, &brokered),
+                Err(RemoteAppError::SpiceCapabilityRequiresRail)
+            ));
+        }
     }
 }

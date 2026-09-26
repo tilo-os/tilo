@@ -37,18 +37,49 @@ use media::realtime::{
 /// A gradient that moves one step per frame, so every frame differs and an
 /// encoder cannot skip any.
 fn frame(width: u32, height: u32, n: u32) -> Vec<u8> {
-    let mut out = Vec::with_capacity((width * height * 4) as usize);
-    for y in 0..height {
-        for x in 0..width {
-            // Smooth in both axes (a fair test of a 4:2:0 codec), shifted a
-            // little each frame.
-            out.push(((x * 200 / width.max(1)) + n).min(255) as u8);
-            out.push((y * 200 / height.max(1) + 20) as u8);
-            out.push((((x + y) * 100 / (width + height).max(1)) + 60) as u8);
-            out.push(255);
+    Frames::new(width, height).frame(n)
+}
+
+/// [`frame`] for every `n` at one size. Smooth in both axes (a fair test of a
+/// 4:2:0 codec) and shifted a little each frame: green depends only on y and
+/// blue only on x + y, so only red moves between frames and the rest is built
+/// once. The test binary is unoptimised and a 720p frame is almost a million
+/// pixels, so this is most of what a long round trip costs.
+struct Frames {
+    width: u32,
+    /// Each frame with red still zero.
+    base: Vec<u8>,
+}
+
+impl Frames {
+    fn new(width: u32, height: u32) -> Self {
+        let blue: Vec<u8> = (0..width + height)
+            .map(|d| ((d * 100 / (width + height).max(1)) + 60) as u8)
+            .collect();
+        let mut base = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            let green = (y * 200 / height.max(1) + 20) as u8;
+            for &b in &blue[y as usize..(y + width) as usize] {
+                base.extend_from_slice(&[0, green, b, 255]);
+            }
         }
+        Self { width, base }
     }
-    out
+
+    fn frame(&self, n: u32) -> Vec<u8> {
+        let red: Vec<u8> = (0..self.width)
+            .map(|x| ((x * 200 / self.width.max(1)) + n).min(255) as u8)
+            .collect();
+        let mut out = self.base.clone();
+        if self.width > 0 {
+            for row in out.chunks_exact_mut(self.width as usize * 4) {
+                for (px, &r) in row.chunks_exact_mut(4).zip(&red) {
+                    px[0] = r;
+                }
+            }
+        }
+        out
+    }
 }
 
 fn psnr_rgb(a: &[u8], b: &[u8]) -> f64 {
@@ -105,7 +136,11 @@ fn round_trip(
 
 /// `frame` in `format`'s byte order (BGR formats swap red and blue).
 fn frame_as(format: InputFormat, width: u32, height: u32, n: u32) -> Vec<u8> {
-    let mut f = frame(width, height, n);
+    in_format(format, frame(width, height, n))
+}
+
+/// An RGBA `frame` in `format`'s byte order.
+fn in_format(format: InputFormat, mut f: Vec<u8>) -> Vec<u8> {
     if matches!(format, InputFormat::Bgra | InputFormat::Bgrx) {
         for px in f.chunks_exact_mut(4) {
             px.swap(0, 2);
@@ -141,12 +176,15 @@ fn round_trip_from(
     // `av1dec` guesses BT.601 below HD while `dav1ddec` reads BT.709).
     decoder.set_stream_color(Some(config.color));
     let mut decoded = 0;
-    let mut last_psnr = 0.0;
+    // Only the last picture's PSNR is reported, so it alone is scored, after
+    // the loop; every picture is still checked to be RGBA of the input's size.
+    let mut last_picture: Option<(u32, Vec<u8>)> = None;
+    let source = Frames::new(width, height);
     let mut encode_times = Vec::new();
     let mut decode_times = Vec::new();
     for n in 0..frames {
-        let packed = frame_as(format, width, height, n);
-        let input = frame(width, height, n);
+        let input = source.frame(n);
+        let packed = in_format(format, input.clone());
         let t = Instant::now();
         let units = encoder.encode(
             InputFrame::Packed(&packed),
@@ -178,10 +216,13 @@ fn round_trip_from(
                 )
             });
             assert_eq!((picture.frame.width, picture.frame.height), (width, height));
-            last_psnr = psnr_rgb(&input, &rgba_of(&picture));
+            let rgba = rgba_of(&picture);
+            assert_eq!(rgba.len(), input.len());
+            last_picture = Some((n, rgba));
             decoded += 1;
         }
     }
+    let last_psnr = last_picture.map_or(0.0, |(n, rgba)| psnr_rgb(&source.frame(n), &rgba));
     Ok(RoundTrip {
         encoder_element: encoder.element().element,
         decoder_element: decoder.element().map_or("?", |e| e.element),
@@ -217,128 +258,187 @@ fn software_round_trip(codec: StreamCodec) {
 }
 
 #[test]
-fn vp9_round_trips_in_software_without_a_gpu() {
-    software_round_trip(StreamCodec::Vp9);
-}
-
-#[test]
-fn av1_round_trips_in_software_without_a_gpu() {
-    software_round_trip(StreamCodec::Av1);
-}
-
-#[test]
-fn software_elements_are_the_royalty_free_tier() {
-    for codec in [StreamCodec::Vp9, StreamCodec::Av1] {
-        let mut config = EncoderConfig::new(codec, 64, 64, 30);
+fn software_codecs_round_trip_royalty_free_and_ten_bit() {
+    // Phase `vp9_round_trips_in_software_without_a_gpu`.
+    {
+        software_round_trip(StreamCodec::Vp9);
+    }
+    // Phase `av1_round_trips_in_software_without_a_gpu`.
+    {
+        software_round_trip(StreamCodec::Av1);
+    }
+    // Phase `software_elements_are_the_royalty_free_tier`.
+    {
+        for codec in [StreamCodec::Vp9, StreamCodec::Av1] {
+            let mut config = EncoderConfig::new(codec, 64, 64, 30);
+            config.policy = RealtimePolicy::SoftwareOnly;
+            let enc = RealtimeEncoder::new(&config).expect("software encoder");
+            assert_eq!(
+                enc.element().tier,
+                CodecTier::RoyaltyFree,
+                "{:?}",
+                enc.element()
+            );
+            let dec = RealtimeDecoder::new(DecoderConfig {
+                codec,
+                output: DecodeOutput::Rgba,
+                policy: RealtimePolicy::SoftwareOnly,
+                display_size: None,
+            })
+            .expect("software decoder");
+            assert_eq!(dec.element().unwrap().tier, CodecTier::RoyaltyFree);
+        }
+    }
+    // Phase `ten_bit_output_is_p010_planes`.
+    {
+        let mut config = EncoderConfig::new(StreamCodec::Vp9, 64, 64, 30);
         config.policy = RealtimePolicy::SoftwareOnly;
-        let enc = RealtimeEncoder::new(&config).expect("software encoder");
+        let mut enc = RealtimeEncoder::new(&config).expect("encoder");
+        let unit = enc
+            .encode(InputFrame::Packed(&frame(64, 64, 0)), Duration::ZERO)
+            .expect("encode")
+            .remove(0);
+        let mut dec = RealtimeDecoder::new(DecoderConfig {
+            codec: StreamCodec::Vp9,
+            output: DecodeOutput::P010,
+            policy: RealtimePolicy::SoftwareOnly,
+            display_size: None,
+        })
+        .expect("decoder");
+        let pic = dec
+            .decode(&unit.data, Some(true))
+            .expect("decode")
+            .expect("picture");
+        let planar = pic.frame.planar().expect("planar payload");
+        assert_eq!(planar.format, media::PlanarFormat::P010);
+        assert_eq!(planar.planes.len(), 2);
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each phase keeps one former test's body verbatim"
+)]
+fn keyframes_and_hardware_round_trips_behave_for_realtime_streams() {
+    // Phase `hardware_round_trips_where_the_device_has_them`.
+    fn hardware_round_trips_where_the_device_has_them() {
+        let codecs = hardware_codecs();
+        if codecs.is_empty() {
+            eprintln!("realtime: no hardware encode+decode listed on this machine; not run");
+            return;
+        }
+        // RGBA (a CPU readback), BGRx (what a compositor renders), and BGRx
+        // through the dmabuf-capable pipeline, which converts on the GPU.
+        for (codec, format, dmabuf) in codecs.iter().flat_map(|c| {
+            [
+                (*c, InputFormat::Rgba, false),
+                (*c, InputFormat::Bgrx, false),
+                (*c, InputFormat::Bgrx, true),
+            ]
+        }) {
+            let rt = round_trip_from(codec, RealtimePolicy::Auto, format, dmabuf, 1280, 720, 30)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{} hardware is listed but did not run: {e}",
+                        codec.wire_label()
+                    )
+                });
+            let caps_listing: Vec<&str> = media::hw::realtime_encoders(codec)
+                .iter()
+                .filter(|e| e.is_hardware())
+                .map(|e| e.element)
+                .collect();
+            assert!(
+                caps_listing.contains(&rt.encoder_element),
+                "{}: a hardware encoder is listed ({caps_listing:?}) but {} ran",
+                codec.wire_label(),
+                rt.encoder_element
+            );
+            assert_eq!(rt.decoded, 30);
+            assert!(
+                rt.last_psnr >= 35.0,
+                "{} from {format:?} (dmabuf pipeline {dmabuf}): PSNR {:.1} dB means a colour \
+                 conversion is wrong",
+                rt.encoder_element,
+                rt.last_psnr
+            );
+            eprintln!(
+                "realtime: {} hardware round trip from {format:?} (dmabuf pipeline {dmabuf}) {} -> {}: PSNR {:.1} dB",
+                codec.wire_label(),
+                rt.encoder_element,
+                rt.decoder_element,
+                rt.last_psnr
+            );
+        }
+    }
+    // Phase `a_forced_keyframe_lands_on_the_next_frame_only`.
+    {
+        let mut config = EncoderConfig::new(StreamCodec::Vp9, 160, 120, 30);
+        config.policy = RealtimePolicy::SoftwareOnly;
+        config.keyframe_interval = 0;
+        let mut enc = RealtimeEncoder::new(&config).expect("encoder");
+        let mut flags = Vec::new();
+        for n in 0..8u32 {
+            if n == 5 {
+                enc.force_keyframe();
+            }
+            if n == 3 {
+                // A live bitrate change must not disturb the stream.
+                enc.set_bitrate(1_000_000);
+            }
+            let units = enc
+                .encode(
+                    InputFrame::Packed(&frame(160, 120, n)),
+                    Duration::from_millis(u64::from(n) * 33),
+                )
+                .expect("encode");
+            flags.push(units.first().expect("one unit per frame").keyframe);
+        }
         assert_eq!(
-            enc.element().tier,
-            CodecTier::RoyaltyFree,
-            "{:?}",
-            enc.element()
+            flags,
+            [true, false, false, false, false, true, false, false],
+            "keyframes exactly at the start and where one was forced"
         );
-        let dec = RealtimeDecoder::new(DecoderConfig {
-            codec,
+    }
+    // Phase `a_late_joiner_decodes_nothing_until_a_keyframe`.
+    {
+        let mut config = EncoderConfig::new(StreamCodec::Vp9, 160, 120, 30);
+        config.policy = RealtimePolicy::SoftwareOnly;
+        let mut enc = RealtimeEncoder::new(&config).expect("encoder");
+        let mut units = Vec::new();
+        for n in 0..4u32 {
+            if n == 3 {
+                enc.force_keyframe();
+            }
+            units.extend(
+                enc.encode(
+                    InputFrame::Packed(&frame(160, 120, n)),
+                    Duration::from_millis(u64::from(n) * 33),
+                )
+                .expect("encode"),
+            );
+        }
+        let mut dec = RealtimeDecoder::new(DecoderConfig {
+            codec: StreamCodec::Vp9,
             output: DecodeOutput::Rgba,
             policy: RealtimePolicy::SoftwareOnly,
             display_size: None,
         })
-        .expect("software decoder");
-        assert_eq!(dec.element().unwrap().tier, CodecTier::RoyaltyFree);
-    }
-}
-
-#[test]
-fn a_forced_keyframe_lands_on_the_next_frame_only() {
-    let mut config = EncoderConfig::new(StreamCodec::Vp9, 160, 120, 30);
-    config.policy = RealtimePolicy::SoftwareOnly;
-    config.keyframe_interval = 0;
-    let mut enc = RealtimeEncoder::new(&config).expect("encoder");
-    let mut flags = Vec::new();
-    for n in 0..8u32 {
-        if n == 5 {
-            enc.force_keyframe();
+        .expect("decoder");
+        // Join after the first keyframe: frames 1 and 2 reference what we never saw.
+        for u in &units[1..3] {
+            assert!(!u.keyframe);
+            assert!(
+                dec.decode(&u.data, None).expect("no error").is_none(),
+                "a delta frame before any keyframe must not produce garbage"
+            );
         }
-        if n == 3 {
-            // A live bitrate change must not disturb the stream.
-            enc.set_bitrate(1_000_000);
-        }
-        let units = enc
-            .encode(
-                InputFrame::Packed(&frame(160, 120, n)),
-                Duration::from_millis(u64::from(n) * 33),
-            )
-            .expect("encode");
-        flags.push(units.first().expect("one unit per frame").keyframe);
+        assert!(units[3].keyframe);
+        assert!(dec.decode(&units[3].data, None).expect("decode").is_some());
     }
-    assert_eq!(
-        flags,
-        [true, false, false, false, false, true, false, false],
-        "keyframes exactly at the start and where one was forced"
-    );
-}
-
-#[test]
-fn a_late_joiner_decodes_nothing_until_a_keyframe() {
-    let mut config = EncoderConfig::new(StreamCodec::Vp9, 160, 120, 30);
-    config.policy = RealtimePolicy::SoftwareOnly;
-    let mut enc = RealtimeEncoder::new(&config).expect("encoder");
-    let mut units = Vec::new();
-    for n in 0..4u32 {
-        if n == 3 {
-            enc.force_keyframe();
-        }
-        units.extend(
-            enc.encode(
-                InputFrame::Packed(&frame(160, 120, n)),
-                Duration::from_millis(u64::from(n) * 33),
-            )
-            .expect("encode"),
-        );
-    }
-    let mut dec = RealtimeDecoder::new(DecoderConfig {
-        codec: StreamCodec::Vp9,
-        output: DecodeOutput::Rgba,
-        policy: RealtimePolicy::SoftwareOnly,
-        display_size: None,
-    })
-    .expect("decoder");
-    // Join after the first keyframe: frames 1 and 2 reference what we never saw.
-    for u in &units[1..3] {
-        assert!(!u.keyframe);
-        assert!(
-            dec.decode(&u.data, None).expect("no error").is_none(),
-            "a delta frame before any keyframe must not produce garbage"
-        );
-    }
-    assert!(units[3].keyframe);
-    assert!(dec.decode(&units[3].data, None).expect("decode").is_some());
-}
-
-#[test]
-fn ten_bit_output_is_p010_planes() {
-    let mut config = EncoderConfig::new(StreamCodec::Vp9, 64, 64, 30);
-    config.policy = RealtimePolicy::SoftwareOnly;
-    let mut enc = RealtimeEncoder::new(&config).expect("encoder");
-    let unit = enc
-        .encode(InputFrame::Packed(&frame(64, 64, 0)), Duration::ZERO)
-        .expect("encode")
-        .remove(0);
-    let mut dec = RealtimeDecoder::new(DecoderConfig {
-        codec: StreamCodec::Vp9,
-        output: DecodeOutput::P010,
-        policy: RealtimePolicy::SoftwareOnly,
-        display_size: None,
-    })
-    .expect("decoder");
-    let pic = dec
-        .decode(&unit.data, Some(true))
-        .expect("decode")
-        .expect("picture");
-    let planar = pic.frame.planar().expect("planar payload");
-    assert_eq!(planar.format, media::PlanarFormat::P010);
-    assert_eq!(planar.planes.len(), 2);
+    // Phase `hardware_round_trips_where_the_device_has_them` (defined above).
+    hardware_round_trips_where_the_device_has_them();
 }
 
 /// Hardware paths this machine lists, never substituted.
@@ -348,58 +448,6 @@ fn hardware_codecs() -> Vec<StreamCodec> {
         .into_iter()
         .filter(|c| caps.hardware_encode.contains(c) && caps.hardware_decode.contains(c))
         .collect()
-}
-
-#[test]
-fn hardware_round_trips_where_the_device_has_them() {
-    let codecs = hardware_codecs();
-    if codecs.is_empty() {
-        eprintln!("realtime: no hardware encode+decode listed on this machine; not run");
-        return;
-    }
-    // RGBA (a CPU readback), BGRx (what a compositor renders), and BGRx
-    // through the dmabuf-capable pipeline, which converts on the GPU.
-    for (codec, format, dmabuf) in codecs.iter().flat_map(|c| {
-        [
-            (*c, InputFormat::Rgba, false),
-            (*c, InputFormat::Bgrx, false),
-            (*c, InputFormat::Bgrx, true),
-        ]
-    }) {
-        let rt = round_trip_from(codec, RealtimePolicy::Auto, format, dmabuf, 1280, 720, 30)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{} hardware is listed but did not run: {e}",
-                    codec.wire_label()
-                )
-            });
-        let caps_listing: Vec<&str> = media::hw::realtime_encoders(codec)
-            .iter()
-            .filter(|e| e.is_hardware())
-            .map(|e| e.element)
-            .collect();
-        assert!(
-            caps_listing.contains(&rt.encoder_element),
-            "{}: a hardware encoder is listed ({caps_listing:?}) but {} ran",
-            codec.wire_label(),
-            rt.encoder_element
-        );
-        assert_eq!(rt.decoded, 30);
-        assert!(
-            rt.last_psnr >= 35.0,
-            "{} from {format:?} (dmabuf pipeline {dmabuf}): PSNR {:.1} dB means a colour \
-             conversion is wrong",
-            rt.encoder_element,
-            rt.last_psnr
-        );
-        eprintln!(
-            "realtime: {} hardware round trip from {format:?} (dmabuf pipeline {dmabuf}) {} -> {}: PSNR {:.1} dB",
-            codec.wire_label(),
-            rt.encoder_element,
-            rt.decoder_element,
-            rt.last_psnr
-        );
-    }
 }
 
 fn percentile(times: &[Duration], p: f64) -> Duration {

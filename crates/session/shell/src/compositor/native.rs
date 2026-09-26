@@ -1473,6 +1473,35 @@ struct FrameBuilderControlState<'a> {
     lock: Option<&'a LockController>,
 }
 
+impl FrameBuilderControlState<'_> {
+    /// Which windows each display holds, in the order they are laid out,
+    /// and which display has focus: the per-device partition as the person
+    /// sees it. Empty on a single display.
+    fn displays_json(&self) -> Vec<serde_json::Value> {
+        if !self.fb.host().is_partitioned() {
+            return Vec::new();
+        }
+        let summary = self.fb.host().display_partition_summary();
+        let chrome = self.fb.chrome();
+        let tree = chrome.tree();
+        let partition = &tree.desktop.outputs;
+        let displays = summary
+            .into_iter()
+            .map(|(id, groups)| {
+                serde_json::json!({
+                    "id": id,
+                    "primary": partition.primary() == Some(id),
+                    "focused": partition.focused_display() == Some(id),
+                    "groups": groups,
+                })
+            })
+            .collect();
+        drop(tree);
+        drop(chrome);
+        displays
+    }
+}
+
 impl ControlState for FrameBuilderControlState<'_> {
     fn widget_registry(&self) -> HashMap<String, Rect> {
         self.fb.widget_registry()
@@ -1884,6 +1913,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             // own surface, or nothing because the client hid it.
             "pointer": self.fb.pointer_image().describe(),
             "search_scope": format!("{:?}", chrome.search_scope),
+            "displays": self.displays_json(),
             // Applications' status-notifier items and their menus, as the top bar shows them.
             "tray": crate::tray::Tray::global().state_json(),
             // Each tab pill's artwork: `toplevel:` when the window set its
@@ -3616,7 +3646,8 @@ mod spatial_edge_tests {
     use crate::shell::device_fabric::DisplayEdge;
 
     #[test]
-    fn pointer_can_depart_through_all_four_edges() {
+    fn pointer_departs_through_edges_and_arms_nearby_drops() {
+        // Phase `pointer_can_depart_through_all_four_edges`.
         assert_eq!(
             spatial_departure_edge(0.0, 400.0, 1_000, 800, -2.0, 0.0),
             Some(DisplayEdge::Left)
@@ -3633,10 +3664,7 @@ mod spatial_edge_tests {
             spatial_departure_edge(500.0, 799.0, 1_000, 800, 0.0, 2.0),
             Some(DisplayEdge::Bottom)
         );
-    }
-
-    #[test]
-    fn corner_departure_follows_the_dominant_motion_axis() {
+        // Phase `corner_departure_follows_the_dominant_motion_axis`.
         assert_eq!(
             spatial_departure_edge(999.0, 799.0, 1_000, 800, 8.0, 3.0),
             Some(DisplayEdge::Right)
@@ -3649,28 +3677,27 @@ mod spatial_edge_tests {
             spatial_departure_edge(500.0, 400.0, 1_000, 800, 8.0, 8.0),
             None
         );
-    }
-
-    #[test]
-    fn one_safe_file_or_folder_can_arm_a_nearby_drop() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("note.txt");
-        std::fs::write(&path, b"hello").unwrap();
-        assert_eq!(
-            nearby_drop_candidate(Some(std::slice::from_ref(&path))),
-            Ok(Some(path.clone()))
-        );
-        let folder = temp.path().join("folder");
-        std::fs::create_dir(&folder).unwrap();
-        assert_eq!(
-            nearby_drop_candidate(Some(std::slice::from_ref(&folder))),
-            Ok(Some(folder))
-        );
-        let link = temp.path().join("link");
-        std::os::unix::fs::symlink(&path, &link).unwrap();
-        assert!(nearby_drop_candidate(Some(&[link])).is_err());
-        assert!(nearby_drop_candidate(Some(&[path.clone(), path])).is_err());
-        assert!(nearby_drop_candidate(Some(&[])).is_err());
+        // Phase `one_safe_file_or_folder_can_arm_a_nearby_drop`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("note.txt");
+            std::fs::write(&path, b"hello").unwrap();
+            assert_eq!(
+                nearby_drop_candidate(Some(std::slice::from_ref(&path))),
+                Ok(Some(path.clone()))
+            );
+            let folder = temp.path().join("folder");
+            std::fs::create_dir(&folder).unwrap();
+            assert_eq!(
+                nearby_drop_candidate(Some(std::slice::from_ref(&folder))),
+                Ok(Some(folder))
+            );
+            let link = temp.path().join("link");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(nearby_drop_candidate(Some(&[link])).is_err());
+            assert!(nearby_drop_candidate(Some(&[path.clone(), path])).is_err());
+            assert!(nearby_drop_candidate(Some(&[])).is_err());
+        }
     }
 }
 
@@ -4187,6 +4214,12 @@ fn install_device_fabric_bridge(
                 }
                 DeviceFabricUiAction::RouteLocalAudio { node_id } => {
                     crate::shell::device_fabric_runtime::route_local_audio(node_id)?;
+                }
+                DeviceFabricUiAction::SelectLocalInput { node_id } => {
+                    crate::shell::device_fabric_runtime::select_local_input(node_id)?;
+                }
+                DeviceFabricUiAction::StepInputLevel { node_id, raise } => {
+                    crate::shell::device_fabric_runtime::step_input_level(node_id, raise)?;
                 }
                 DeviceFabricUiAction::HandoffBluetooth {
                     address,
@@ -9300,20 +9333,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn consumed_shell_input_is_a_redraw_edge() {
-        let mut session_changed = false;
-        session_changed |= true;
-        assert!(
-            NativeRedrawReasons {
-                session: session_changed,
-                ..NativeRedrawReasons::default()
-            }
-            .content_changed(false)
-        );
-    }
-
-    #[test]
-    fn client_routed_pointer_motion_still_redraws_the_compositor_cursor() {
+    fn redraw_edges_and_idle_parking_follow_real_wake_sources() {
+        // Phase `consumed_shell_input_is_a_redraw_edge`.
+        {
+            let mut session_changed = false;
+            session_changed |= true;
+            assert!(
+                NativeRedrawReasons {
+                    session: session_changed,
+                    ..NativeRedrawReasons::default()
+                }
+                .content_changed(false)
+            );
+        }
+        // Phase `client_routed_pointer_motion_still_redraws_the_compositor_cursor`.
         assert!(
             NativeRedrawReasons {
                 visible_input: true,
@@ -9322,161 +9355,207 @@ mod tests {
             .content_changed(false),
             "the cursor belongs to the compositor, so a client consuming its motion must not suppress the reflecting frame"
         );
-    }
-
-    #[test]
-    fn idle_park_ignores_display_cadence() {
-        let now = Instant::now();
-        let frame = now + Duration::from_millis(8);
-        let keepalive = now + Duration::from_secs(1);
-        assert_eq!(
-            native_loop_park(now, true, false, frame, [Some(keepalive)]),
-            Some(Duration::from_secs(1)),
-            "a registered backend wake fd lets a static desktop sleep until semantic work"
-        );
-    }
-
-    #[test]
-    fn idle_park_without_any_semantic_deadline_still_services_nested_backend() {
-        let now = Instant::now();
-        assert_eq!(
-            native_loop_park(now, true, false, now + Duration::from_millis(8), []),
-            None,
-            "a static DRM session can block indefinitely because libinput wakes the outer loop"
-        );
-    }
-
-    #[test]
-    fn failed_backend_wake_registration_keeps_the_bounded_idle_poll() {
-        let now = Instant::now();
-        assert_eq!(
-            native_loop_park(now, false, false, now + Duration::from_millis(8), []),
-            Some(IDLE_BACKEND_POLL),
-            "a backend whose wake fd could not be registered must still be serviced"
-        );
-    }
-
-    #[test]
-    fn backend_owned_repeat_deadline_wakes_an_otherwise_idle_loop() {
-        let now = Instant::now();
-        let repeat = now + Duration::from_millis(275);
-        assert_eq!(
-            native_loop_park(
-                now,
-                true,
-                false,
-                now + Duration::from_millis(8),
-                [Some(repeat)],
-            ),
-            Some(Duration::from_millis(275)),
-            "registered backend fds do not replace timers synthesized inside the backend"
-        );
-    }
-
-    #[test]
-    fn registered_wayland_wake_removes_periodic_idle_poll() {
-        let now = Instant::now();
-
-        assert_eq!(wayland_client_service_deadline(true, now), None);
-        assert_eq!(
-            native_loop_park(
-                now,
-                true,
-                false,
-                now + Duration::from_millis(8),
-                [wayland_client_service_deadline(true, now)],
-            ),
-            None,
-            "a static desktop must block on registered fds instead of waking every 4 ms"
-        );
-    }
-
-    #[test]
-    fn failed_wayland_wake_registration_keeps_bounded_service_fallback() {
-        let now = Instant::now();
-
-        assert_eq!(
-            wayland_client_service_deadline(false, now),
-            Some(now + WAYLAND_CLIENT_SERVICE_FALLBACK),
-            "an unsupported edge-triggered wake must not strand Wayland client requests"
-        );
-    }
-
-    #[test]
-    fn stale_private_wayland_endpoints_are_recovered_without_touching_live_pids() {
-        let runtime = tempfile::tempdir().expect("temporary runtime");
-        let dead_pid = u32::MAX;
-        let live_pid = std::process::id();
-        for name in [
-            format!("tilo-privileged-{dead_pid}"),
-            format!("tilo-osk-{dead_pid}-old"),
-            format!("tilo-privileged-{live_pid}"),
-            format!("tilo-osk-{live_pid}-live"),
-        ] {
-            std::fs::write(runtime.path().join(&name), b"").expect("socket fixture");
-            std::fs::write(runtime.path().join(format!("{name}.lock")), b"").expect("lock fixture");
+        // Phase `idle_park_ignores_display_cadence`.
+        {
+            let now = Instant::now();
+            let frame = now + Duration::from_millis(8);
+            let keepalive = now + Duration::from_secs(1);
+            assert_eq!(
+                native_loop_park(now, true, false, frame, [Some(keepalive)]),
+                Some(Duration::from_secs(1)),
+                "a registered backend wake fd lets a static desktop sleep until semantic work"
+            );
         }
-
-        remove_stale_private_wayland_endpoints(runtime.path());
-
-        for name in [
-            format!("tilo-privileged-{dead_pid}"),
-            format!("tilo-osk-{dead_pid}-old"),
-        ] {
-            assert!(!runtime.path().join(&name).exists());
-            assert!(!runtime.path().join(format!("{name}.lock")).exists());
+        // Phase `idle_park_without_any_semantic_deadline_still_services_nested_backend`.
+        {
+            let now = Instant::now();
+            assert_eq!(
+                native_loop_park(now, true, false, now + Duration::from_millis(8), []),
+                None,
+                "a static DRM session can block indefinitely because libinput wakes the outer loop"
+            );
         }
-        for name in [
-            format!("tilo-privileged-{live_pid}"),
-            format!("tilo-osk-{live_pid}-live"),
-        ] {
-            assert!(runtime.path().join(&name).exists());
-            assert!(runtime.path().join(format!("{name}.lock")).exists());
+        // Phase `failed_backend_wake_registration_keeps_the_bounded_idle_poll`.
+        {
+            let now = Instant::now();
+            assert_eq!(
+                native_loop_park(now, false, false, now + Duration::from_millis(8), []),
+                Some(IDLE_BACKEND_POLL),
+                "a backend whose wake fd could not be registered must still be serviced"
+            );
+        }
+        // Phase `backend_owned_repeat_deadline_wakes_an_otherwise_idle_loop`.
+        {
+            let now = Instant::now();
+            let repeat = now + Duration::from_millis(275);
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    true,
+                    false,
+                    now + Duration::from_millis(8),
+                    [Some(repeat)],
+                ),
+                Some(Duration::from_millis(275)),
+                "registered backend fds do not replace timers synthesized inside the backend"
+            );
+        }
+        // Phase `registered_wayland_wake_removes_periodic_idle_poll`.
+        {
+            let now = Instant::now();
+
+            assert_eq!(wayland_client_service_deadline(true, now), None);
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    true,
+                    false,
+                    now + Duration::from_millis(8),
+                    [wayland_client_service_deadline(true, now)],
+                ),
+                None,
+                "a static desktop must block on registered fds instead of waking every 4 ms"
+            );
+        }
+        // Phase `failed_wayland_wake_registration_keeps_bounded_service_fallback`.
+        {
+            let now = Instant::now();
+
+            assert_eq!(
+                wayland_client_service_deadline(false, now),
+                Some(now + WAYLAND_CLIENT_SERVICE_FALLBACK),
+                "an unsupported edge-triggered wake must not strand Wayland client requests"
+            );
+        }
+        // Phase `visual_work_parks_on_frame_cadence`.
+        {
+            let now = Instant::now();
+            let frame = now + Duration::from_millis(8);
+            let keepalive = now + Duration::from_secs(1);
+            assert_eq!(
+                native_loop_park(now, true, true, frame, [Some(keepalive)]),
+                Some(Duration::from_millis(8))
+            );
         }
     }
 
     #[test]
-    fn visual_work_parks_on_frame_cadence() {
-        let now = Instant::now();
-        let frame = now + Duration::from_millis(8);
-        let keepalive = now + Duration::from_secs(1);
-        assert_eq!(
-            native_loop_park(now, true, true, frame, [Some(keepalive)]),
-            Some(Duration::from_millis(8))
-        );
+    fn wayland_socket_attribution_and_cleanup_fail_closed() {
+        // Phase `stale_private_wayland_endpoints_are_recovered_without_touching_live_pids`.
+        {
+            let runtime = tempfile::tempdir().expect("temporary runtime");
+            let dead_pid = u32::MAX;
+            let live_pid = std::process::id();
+            for name in [
+                format!("tilo-privileged-{dead_pid}"),
+                format!("tilo-osk-{dead_pid}-old"),
+                format!("tilo-privileged-{live_pid}"),
+                format!("tilo-osk-{live_pid}-live"),
+            ] {
+                std::fs::write(runtime.path().join(&name), b"").expect("socket fixture");
+                std::fs::write(runtime.path().join(format!("{name}.lock")), b"")
+                    .expect("lock fixture");
+            }
+
+            remove_stale_private_wayland_endpoints(runtime.path());
+
+            for name in [
+                format!("tilo-privileged-{dead_pid}"),
+                format!("tilo-osk-{dead_pid}-old"),
+            ] {
+                assert!(!runtime.path().join(&name).exists());
+                assert!(!runtime.path().join(format!("{name}.lock")).exists());
+            }
+            for name in [
+                format!("tilo-privileged-{live_pid}"),
+                format!("tilo-osk-{live_pid}-live"),
+            ] {
+                assert!(runtime.path().join(&name).exists());
+                assert!(runtime.path().join(format!("{name}.lock")).exists());
+            }
+        }
+        // Phase `public_socket_attribution_reads_kernel_peer_pid`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let path = runtime.path().join("peer.sock");
+            let listener = UnixListener::bind(path.clone()).unwrap();
+            let client = UnixStream::connect(path).unwrap();
+            let (server, _) = listener.accept().unwrap();
+            assert_eq!(
+                wayland_peer_credentials(&server).map(|credentials| credentials.pid),
+                i32::try_from(std::process::id()).ok()
+            );
+            assert!(
+                public_client_state(&server)
+                    .expect("same-namespace host clients remain compatible")
+                    .package_id
+                    .is_none()
+            );
+            drop(client);
+        }
+        // Phase `unattributed_public_clients_fail_closed_outside_host_namespaces`.
+        {
+            // SAFETY: `geteuid` has no failure mode.
+            let uid = unsafe { libc::geteuid() };
+            assert!(unattributed_host_client_allowed(uid, true));
+            assert!(!unattributed_host_client_allowed(uid, false));
+            assert!(!unattributed_host_client_allowed(
+                uid.saturating_add(1),
+                true
+            ));
+        }
+        // Phase `unlink_on_drop_removes_socket_file_on_drop`.
+        // Dropping an `UnlinkOnDrop` removes the file at its path — `run` holds
+        // one around the test-control socket so it unlinks on clean exit + panic-unwind.
+        {
+            let tmpdir = tempfile::tempdir().expect("tempdir");
+            let path = tmpdir.path().join("tilo-test-control.sock");
+            // Use an arbitrary regular-file stand-in — the guard removes anything
+            // `remove_file` accepts, no real unix socket needed to exercise the contract.
+            std::fs::write(&path, b"").expect("create stand-in file");
+            assert!(path.exists(), "test setup: file should exist after write");
+            let guard = UnlinkOnDrop(path.clone());
+            drop(guard);
+            assert!(
+                !path.exists(),
+                "UnlinkOnDrop must remove the file at its path on drop \
+                 (D-3); got lingering file at {path:?}"
+            );
+        }
     }
 
     #[test]
-    fn prepaint_stall_threshold_reports_fifty_milliseconds_and_above() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn presenter_backpressure_and_deadlines_schedule_work() {
+        // Phase `prepaint_stall_threshold_reports_fifty_milliseconds_and_above`.
         assert!(!slow_prepaint_phase(Duration::from_millis(49)));
         assert!(slow_prepaint_phase(Duration::from_millis(50)));
         assert!(slow_prepaint_phase(Duration::from_secs(2)));
-    }
-
-    #[test]
-    fn full_presenter_parks_instead_of_spinning_on_overdue_deadlines() {
-        let now = Instant::now();
-        let stale = now
-            .checked_sub(Duration::from_millis(1))
-            .expect("monotonic clock is past its origin");
-        // Animation stays dirty and both the frame and widget deadlines are
-        // already due, but the presenter has no capacity.
-        let cadence_needed = cadence_wait_needed(false, true);
-        assert_eq!(
-            native_loop_park(
-                now,
-                false,
-                cadence_needed,
-                stale,
-                [widget_deadline_for_presenter(false, Some(stale))],
-            ),
-            Some(IDLE_BACKEND_POLL),
-            "a saturated presenter must wait for its retirement wake, not poll with a zero timeout"
-        );
-    }
-
-    #[test]
-    fn lock_state_edge_survives_presenter_backpressure_until_submitted() {
+        // Phase `full_presenter_parks_instead_of_spinning_on_overdue_deadlines`.
+        {
+            let now = Instant::now();
+            let stale = now
+                .checked_sub(Duration::from_millis(1))
+                .expect("monotonic clock is past its origin");
+            // Animation stays dirty and both the frame and widget deadlines are
+            // already due, but the presenter has no capacity.
+            let cadence_needed = cadence_wait_needed(false, true);
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    false,
+                    cadence_needed,
+                    stale,
+                    [widget_deadline_for_presenter(false, Some(stale))],
+                ),
+                Some(IDLE_BACKEND_POLL),
+                "a saturated presenter must wait for its retirement wake, not poll with a zero timeout"
+            );
+        }
+        // Phase `lock_state_edge_survives_presenter_backpressure_until_submitted`.
         assert!(retain_session_redraw(true, false));
         assert!(
             !retain_session_redraw(true, true),
@@ -9486,50 +9565,104 @@ mod tests {
             !retain_session_redraw(false, false),
             "ordinary idle ticks must not manufacture redraw work"
         );
+        // Phase `available_presenter_keeps_overdue_work_immediate`.
+        {
+            let now = Instant::now();
+            let stale = now
+                .checked_sub(Duration::from_millis(1))
+                .expect("monotonic clock is past its origin");
+            assert_eq!(
+                widget_deadline_for_presenter(true, Some(stale)),
+                Some(stale)
+            );
+            let frame = now + Duration::from_millis(7);
+            assert_eq!(
+                native_loop_park(now, false, cadence_wait_needed(true, true), frame, []),
+                Some(Duration::from_millis(7)),
+                "the back-pressure guard must not weaken normal animation pacing"
+            );
+        }
+        // Phase `earliest_non_frame_deadline_wins_and_overdue_is_immediate`.
+        {
+            let now = Instant::now();
+            let frame = now + Duration::from_millis(8);
+            let widget = now + Duration::from_millis(300);
+            let keepalive = now + Duration::from_secs(1);
+            assert_eq!(
+                native_loop_park(now, true, false, frame, [Some(keepalive), Some(widget)],),
+                Some(Duration::from_millis(300))
+            );
+            assert_eq!(
+                native_loop_park(
+                    now + Duration::from_millis(1),
+                    true,
+                    false,
+                    frame,
+                    [Some(now)]
+                ),
+                Some(Duration::ZERO)
+            );
+        }
+        // Phase `apply_transition_drives_backend_dpms`.
+        // `apply_session_transition` maps Blanked/Woke to `set_dpms`;
+        // Locked/Unlocked are pure state and touch no backend — asserted via a spy backend recording `set_dpms` calls.
+        {
+            use crate::compositor::backend::{Backend, BackendEvent, Output};
+            use vello::Scene;
+
+            #[derive(Default)]
+            struct SpyBackend {
+                dpms_calls: Vec<bool>,
+                outputs: Vec<Output>,
+            }
+            impl Backend for SpyBackend {
+                fn submit_frame(&mut self, _scene: &Scene, _output: OutputId) {}
+                fn poll_events(&mut self, _cb: &mut dyn FnMut(BackendEvent)) {}
+                fn outputs(&self) -> &[Output] {
+                    &self.outputs
+                }
+                fn set_dpms(&mut self, on: bool) {
+                    self.dpms_calls.push(on);
+                }
+            }
+
+            struct NoBacklight;
+            impl crate::compositor::screen_dim::Backlight for NoBacklight {
+                fn brightness(&self) -> Option<f32> {
+                    None
+                }
+                fn set_brightness(&self, _fraction: f32) -> bool {
+                    false
+                }
+            }
+
+            let mut backend = SpyBackend::default();
+            let mut dimmer = ScreenDimmer::new(NoBacklight);
+            for t in [
+                SessionTransition::Dimmed,
+                SessionTransition::Blanked,
+                SessionTransition::Woke,
+                SessionTransition::Locked,
+                SessionTransition::Unlocked,
+            ] {
+                apply_session_transition(t, &mut backend, None, &mut dimmer);
+            }
+            // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
+            assert_eq!(backend.dpms_calls, vec![false, true]);
+            // Without a backlight the dim falls back to the paint overlay, lifted by Undimmed.
+            assert!(dimmer.overlay_alpha().is_some());
+            apply_session_transition(SessionTransition::Undimmed, &mut backend, None, &mut dimmer);
+            assert_eq!(dimmer.overlay_alpha(), None);
+        }
     }
 
     #[test]
-    fn available_presenter_keeps_overdue_work_immediate() {
-        let now = Instant::now();
-        let stale = now
-            .checked_sub(Duration::from_millis(1))
-            .expect("monotonic clock is past its origin");
-        assert_eq!(
-            widget_deadline_for_presenter(true, Some(stale)),
-            Some(stale)
-        );
-        let frame = now + Duration::from_millis(7);
-        assert_eq!(
-            native_loop_park(now, false, cadence_wait_needed(true, true), frame, []),
-            Some(Duration::from_millis(7)),
-            "the back-pressure guard must not weaken normal animation pacing"
-        );
-    }
-
-    #[test]
-    fn earliest_non_frame_deadline_wins_and_overdue_is_immediate() {
-        let now = Instant::now();
-        let frame = now + Duration::from_millis(8);
-        let widget = now + Duration::from_millis(300);
-        let keepalive = now + Duration::from_secs(1);
-        assert_eq!(
-            native_loop_park(now, true, false, frame, [Some(keepalive), Some(widget)],),
-            Some(Duration::from_millis(300))
-        );
-        assert_eq!(
-            native_loop_park(
-                now + Duration::from_millis(1),
-                true,
-                false,
-                frame,
-                [Some(now)]
-            ),
-            Some(Duration::ZERO)
-        );
-    }
-
-    #[test]
-    fn locked_redraw_ignores_hidden_desktop_work_but_keeps_lock_edges() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn locked_redraw_repaints_only_lock_edges() {
+        // Phase `locked_redraw_ignores_hidden_desktop_work_but_keeps_lock_edges`.
         for hidden in [
             NativeRedrawReasons {
                 hidden_desktop_animation: true,
@@ -9587,98 +9720,91 @@ mod tests {
         ] {
             assert!(visible_lock_edge.content_changed(true));
         }
-    }
-
-    #[test]
-    fn due_lock_animation_waits_for_cadence_or_presenter_instead_of_spinning() {
-        let due_at = Instant::now();
-        let now = due_at + Duration::from_millis(1);
-        let due = Some(due_at);
-        let frame = now + Duration::from_millis(8);
-        assert_eq!(
-            native_loop_park(
-                now,
-                false,
+        // Phase `due_lock_animation_waits_for_cadence_or_presenter_instead_of_spinning`.
+        {
+            let due_at = Instant::now();
+            let now = due_at + Duration::from_millis(1);
+            let due = Some(due_at);
+            let frame = now + Duration::from_millis(8);
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    false,
+                    true,
+                    frame,
+                    [lock_animation_park_deadline(now, due)]
+                ),
+                Some(Duration::from_millis(8))
+            );
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    false,
+                    false,
+                    frame,
+                    [lock_animation_park_deadline(now, due)]
+                ),
+                Some(IDLE_BACKEND_POLL)
+            );
+            let future = Some(now + Duration::from_millis(42));
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    false,
+                    false,
+                    frame,
+                    [lock_animation_park_deadline(now, future)]
+                ),
+                Some(Duration::from_millis(42))
+            );
+        }
+        // Phase `lock_osd_fade_repaints_only_while_the_lock_is_visible`.
+        {
+            let fading = NativeRedrawReasons {
+                lock_osd: true,
+                ..NativeRedrawReasons::default()
+            };
+            assert!(fading.content_changed(true));
+            assert!(
+                !fading.content_changed(false),
+                "the unlocked host drives its own OSD frames"
+            );
+        }
+        // Phase `artwork_repaints_only_while_the_lock_is_visible`.
+        {
+            let artwork = NativeRedrawReasons {
+                lock_animation: true,
+                ..NativeRedrawReasons::default()
+            };
+            assert!(artwork.content_changed(true));
+            assert!(!artwork.content_changed(false));
+        }
+        // Phase `locked_clock_gets_an_explicit_minute_refresh_edge`.
+        {
+            let start = Instant::now();
+            let mut last = start;
+            assert!(!lock_clock_refresh_due(true, start, &mut last));
+            assert!(!lock_clock_refresh_due(
                 true,
-                frame,
-                [lock_animation_park_deadline(now, due)]
-            ),
-            Some(Duration::from_millis(8))
-        );
-        assert_eq!(
-            native_loop_park(
-                now,
-                false,
-                false,
-                frame,
-                [lock_animation_park_deadline(now, due)]
-            ),
-            Some(IDLE_BACKEND_POLL)
-        );
-        let future = Some(now + Duration::from_millis(42));
-        assert_eq!(
-            native_loop_park(
-                now,
-                false,
-                false,
-                frame,
-                [lock_animation_park_deadline(now, future)]
-            ),
-            Some(Duration::from_millis(42))
-        );
-    }
+                start + Duration::from_millis(59_999),
+                &mut last,
+            ));
+            assert!(lock_clock_refresh_due(
+                true,
+                start + LOCK_CLOCK_REFRESH,
+                &mut last,
+            ));
+            assert!(!lock_clock_refresh_due(
+                true,
+                start + LOCK_CLOCK_REFRESH + Duration::from_secs(1),
+                &mut last,
+            ));
 
-    #[test]
-    fn lock_osd_fade_repaints_only_while_the_lock_is_visible() {
-        let fading = NativeRedrawReasons {
-            lock_osd: true,
-            ..NativeRedrawReasons::default()
-        };
-        assert!(fading.content_changed(true));
-        assert!(
-            !fading.content_changed(false),
-            "the unlocked host drives its own OSD frames"
-        );
-    }
-
-    #[test]
-    fn artwork_repaints_only_while_the_lock_is_visible() {
-        let artwork = NativeRedrawReasons {
-            lock_animation: true,
-            ..NativeRedrawReasons::default()
-        };
-        assert!(artwork.content_changed(true));
-        assert!(!artwork.content_changed(false));
-    }
-
-    #[test]
-    fn locked_clock_gets_an_explicit_minute_refresh_edge() {
-        let start = Instant::now();
-        let mut last = start;
-        assert!(!lock_clock_refresh_due(true, start, &mut last));
-        assert!(!lock_clock_refresh_due(
-            true,
-            start + Duration::from_millis(59_999),
-            &mut last,
-        ));
-        assert!(lock_clock_refresh_due(
-            true,
-            start + LOCK_CLOCK_REFRESH,
-            &mut last,
-        ));
-        assert!(!lock_clock_refresh_due(
-            true,
-            start + LOCK_CLOCK_REFRESH + Duration::from_secs(1),
-            &mut last,
-        ));
-
-        let unlocked = start + Duration::from_secs(75);
-        assert!(!lock_clock_refresh_due(false, unlocked, &mut last));
-        assert_eq!(last, unlocked);
-    }
-
-    #[test]
-    fn force_and_password_feedback_edges_always_repaint_the_lock() {
+            let unlocked = start + Duration::from_secs(75);
+            assert!(!lock_clock_refresh_due(false, unlocked, &mut last));
+            assert_eq!(last, unlocked);
+        }
+        // Phase `force_and_password_feedback_edges_always_repaint_the_lock`.
         for visible in [
             NativeRedrawReasons {
                 force: true,
@@ -9696,49 +9822,17 @@ mod tests {
     }
 
     #[test]
-    fn deferred_peer_sync_starts_in_the_session_that_finishes_onboarding() {
-        let mut deferred = true;
-        assert!(!take_deferred_peer_sync_activation(&mut deferred, true));
-        assert!(deferred, "onboarding retains the pending start");
-        assert!(take_deferred_peer_sync_activation(&mut deferred, false));
-        assert!(!deferred, "the current-session start is one-shot");
-        assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
-    }
-
-    #[test]
-    fn output_presentation_removal_stays_pending_until_a_full_frame_submits() {
-        let mut pending = false;
-        let mut previous_surface_count = 1;
-
-        assert!(update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            false,
-        ));
-        assert_eq!(previous_surface_count, 0);
-        assert!(
-            pending,
-            "an off-cadence removal must survive until the next submitted frame"
-        );
-
-        pending = false;
-        assert!(!update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            false,
-        ));
-        assert!(update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            true,
-        ));
-    }
-
-    #[test]
-    fn unfinished_post_identity_setup_reactivates_trusted_first_use_chrome() {
+    fn onboarding_and_lock_gate_session_services_and_input() {
+        // Phase `deferred_peer_sync_starts_in_the_session_that_finishes_onboarding`.
+        {
+            let mut deferred = true;
+            assert!(!take_deferred_peer_sync_activation(&mut deferred, true));
+            assert!(deferred, "onboarding retains the pending start");
+            assert!(take_deferred_peer_sync_activation(&mut deferred, false));
+            assert!(!deferred, "the current-session start is one-shot");
+            assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
+        }
+        // Phase `unfinished_post_identity_setup_reactivates_trusted_first_use_chrome`.
         assert!(should_activate_first_use(false, true, false, false));
         assert!(
             !should_activate_first_use(false, false, false, false),
@@ -9752,288 +9846,337 @@ mod tests {
             !should_activate_first_use(true, true, true, true),
             "the explicit development control session remains isolated"
         );
-    }
-
-    #[test]
-    fn portal_screencast_never_publishes_a_locked_frame() {
+        // Phase `onboarding_blocks_every_client_input_route`.
+        {
+            let mut fb = FrameBuilder::new((800, 600));
+            assert!(client_input_allowed(&fb));
+            fb.enable_onboarding(std::path::PathBuf::from("/tmp/tilo-onboarding-test"));
+            assert!(fb.host().onboarding_active());
+            assert!(
+                !client_input_allowed(&fb),
+                "trusted first-login chrome must own input before any Wayland client"
+            );
+        }
+        // Phase `portal_screencast_never_publishes_a_locked_frame`.
         assert!(portal_screencast_should_publish(true, false));
         assert!(!portal_screencast_should_publish(true, true));
         assert!(!portal_screencast_should_publish(false, false));
     }
 
     #[test]
-    fn switching_tabs_leaves_the_hidden_surface_and_enters_the_visible_one() {
-        use crate::compositor::tab_binding::{self, Placement};
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn output_membership_waits_for_submitted_frames_and_relayout() {
+        // Phase `output_presentation_removal_stays_pending_until_a_full_frame_submits`.
+        {
+            let mut pending = false;
+            let mut previous_surface_count = 1;
 
-        const FIRST_SURFACE: u64 = 71_001;
-        const SECOND_SURFACE: u64 = 71_002;
-
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
-
-        let mut ids = None;
-        fb.with_chrome(|chrome| {
-            let mut tree = chrome.tree_mut();
-            let first = tab_binding::adopt_toplevel_at(
-                &mut tree,
-                FIRST_SURFACE,
-                Some("org.example.first".into()),
-                Placement::NewGroup,
+            assert!(update_output_presentation_repaint_pending(
+                &mut pending,
+                &mut previous_surface_count,
+                0,
+                false,
+            ));
+            assert_eq!(previous_surface_count, 0);
+            assert!(
+                pending,
+                "an off-cadence removal must survive until the next submitted frame"
             );
-            let (strip, group) = tree
-                .desktop
-                .active_workspace()
-                .and_then(|workspace| {
-                    workspace.strips.iter().find_map(|strip| {
-                        strip
-                            .window_groups
-                            .iter()
-                            .find(|group| group.tabs.iter().any(|tab| tab.id == first))
-                            .map(|group| (strip.id, group.id))
+
+            pending = false;
+            assert!(!update_output_presentation_repaint_pending(
+                &mut pending,
+                &mut previous_surface_count,
+                0,
+                false,
+            ));
+            assert!(update_output_presentation_repaint_pending(
+                &mut pending,
+                &mut previous_surface_count,
+                0,
+                true,
+            ));
+        }
+        // Phase `switching_tabs_leaves_the_hidden_surface_and_enters_the_visible_one`.
+        {
+            use crate::compositor::tab_binding::{self, Placement};
+
+            const FIRST_SURFACE: u64 = 71_001;
+            const SECOND_SURFACE: u64 = 71_002;
+
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+
+            let mut ids = None;
+            fb.with_chrome(|chrome| {
+                let mut tree = chrome.tree_mut();
+                let first = tab_binding::adopt_toplevel_at(
+                    &mut tree,
+                    FIRST_SURFACE,
+                    Some("org.example.first".into()),
+                    Placement::NewGroup,
+                );
+                let (strip, group) = tree
+                    .desktop
+                    .active_workspace()
+                    .and_then(|workspace| {
+                        workspace.strips.iter().find_map(|strip| {
+                            strip
+                                .window_groups
+                                .iter()
+                                .find(|group| group.tabs.iter().any(|tab| tab.id == first))
+                                .map(|group| (strip.id, group.id))
+                        })
                     })
-                })
-                .expect("the first foreign tab has a group");
-            let second = tab_binding::adopt_toplevel_at(
-                &mut tree,
-                SECOND_SURFACE,
-                Some("org.example.second".into()),
-                Placement::TabIn(group),
-            );
-            ids = Some((strip, group, first, second));
-            drop(tree);
-            chrome.bump();
-        });
-        let (strip, group, first, _second) = ids.expect("fixture ids");
-        let _ = fb.paint_settled();
+                    .expect("the first foreign tab has a group");
+                let second = tab_binding::adopt_toplevel_at(
+                    &mut tree,
+                    SECOND_SURFACE,
+                    Some("org.example.second".into()),
+                    Placement::TabIn(group),
+                );
+                ids = Some((strip, group, first, second));
+                drop(tree);
+                chrome.bump();
+            });
+            let (strip, group, first, _second) = ids.expect("fixture ids");
+            let _ = fb.paint_settled();
 
-        let output = Output {
-            id: OutputId(0),
-            position: (0, 0),
-            size: (1600, 900),
-            scale: 1.0,
-            transform: settings_store::hardware::OutputTransform::Normal,
-            color_profile: None,
-            refresh_mhz: None,
-            logical_position: (0, 0),
-            identity: crate::compositor::backend::OutputIdentity::default(),
-        };
-        let mut memberships = SurfaceOutputMemberships::default();
-        assert_eq!(
-            visible_tiled_surface_rects(&fb)
-                .into_iter()
-                .map(|(surface, _)| surface)
-                .collect::<Vec<_>>(),
-            vec![SECOND_SURFACE],
-            "only the active tab is painted"
-        );
-        assert_eq!(
-            memberships.reconcile(
-                std::slice::from_ref(&output),
-                &visible_tiled_surface_rects(&fb)
-            ),
-            vec![SurfaceOutputChange::Enter {
+            let output = Output {
+                id: OutputId(0),
+                position: (0, 0),
+                size: (1600, 900),
+                scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
+                refresh_mhz: None,
+                logical_position: (0, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
+            };
+            let mut memberships = SurfaceOutputMemberships::default();
+            assert_eq!(
+                visible_tiled_surface_rects(&fb)
+                    .into_iter()
+                    .map(|(surface, _)| surface)
+                    .collect::<Vec<_>>(),
+                vec![SECOND_SURFACE],
+                "only the active tab is painted"
+            );
+            assert_eq!(
+                memberships.reconcile(
+                    std::slice::from_ref(&output),
+                    &visible_tiled_surface_rects(&fb)
+                ),
+                vec![SurfaceOutputChange::Enter {
+                    surface_id: SECOND_SURFACE,
+                    output: OutputId(0),
+                }]
+            );
+
+            assert!(
+                fb.host_mut().focus_window_on_strip(strip, group, first),
+                "the existing tab can be focused through the production focus path"
+            );
+            let _ = fb.paint_settled();
+            assert_eq!(
+                visible_tiled_surface_rects(&fb)
+                    .into_iter()
+                    .map(|(surface, _)| surface)
+                    .collect::<Vec<_>>(),
+                vec![FIRST_SURFACE]
+            );
+            let changes = memberships.reconcile(&[output], &visible_tiled_surface_rects(&fb));
+            assert_eq!(changes.len(), 2);
+            assert!(changes.contains(&SurfaceOutputChange::Leave {
                 surface_id: SECOND_SURFACE,
                 output: OutputId(0),
-            }]
-        );
+            }));
+            assert!(changes.contains(&SurfaceOutputChange::Enter {
+                surface_id: FIRST_SURFACE,
+                output: OutputId(0),
+            }));
+        }
+        // Phase `changed_output_geometry_waits_for_relayout_before_membership_diff`.
+        {
+            let output = |id, x| Output {
+                id: OutputId(id),
+                position: (x, 0),
+                size: (100, 100),
+                scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
+                refresh_mhz: None,
+                logical_position: (x, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
+            };
+            let old_outputs = [output(0, 0), output(1, 100)];
+            let moved_outputs = [output(0, 100), output(1, 0)];
+            let old_rect = Rect::new(10.0, 10.0, 60.0, 60.0);
+            let relaid_rect = Rect::new(110.0, 10.0, 160.0, 60.0);
+            let mut memberships = SurfaceOutputMemberships::default();
+            memberships.reconcile(&old_outputs, &[(7, old_rect)]);
 
-        assert!(
-            fb.host_mut().focus_window_on_strip(strip, group, first),
-            "the existing tab can be focused through the production focus path"
-        );
-        let _ = fb.paint_settled();
-        assert_eq!(
-            visible_tiled_surface_rects(&fb)
-                .into_iter()
-                .map(|(surface, _)| surface)
-                .collect::<Vec<_>>(),
-            vec![FIRST_SURFACE]
-        );
-        let changes = memberships.reconcile(&[output], &visible_tiled_surface_rects(&fb));
-        assert_eq!(changes.len(), 2);
-        assert!(changes.contains(&SurfaceOutputChange::Leave {
-            surface_id: SECOND_SURFACE,
-            output: OutputId(0),
-        }));
-        assert!(changes.contains(&SurfaceOutputChange::Enter {
-            surface_id: FIRST_SURFACE,
-            output: OutputId(0),
-        }));
+            let mut counterexample = SurfaceOutputMemberships::default();
+            counterexample.reconcile(&old_outputs, &[(7, old_rect)]);
+            assert_eq!(
+                counterexample.reconcile(&moved_outputs, &[(7, old_rect)]),
+                vec![
+                    SurfaceOutputChange::Leave {
+                        surface_id: 7,
+                        output: OutputId(0),
+                    },
+                    SurfaceOutputChange::Enter {
+                        surface_id: 7,
+                        output: OutputId(1),
+                    },
+                ],
+                "old tile coordinates compared with new outputs create false wire transitions"
+            );
+
+            assert!(
+                !surface_output_geometry_is_current(true),
+                "the pre-layout reconciliation must be skipped after an output change"
+            );
+            assert!(
+                memberships
+                    .reconcile(&moved_outputs, &[(7, relaid_rect)])
+                    .is_empty(),
+                "post-layout geometry keeps the surface on the same physical output"
+            );
+        }
     }
 
-    #[test]
-    fn changed_output_geometry_waits_for_relayout_before_membership_diff() {
-        let output = |id, x| Output {
-            id: OutputId(id),
-            position: (x, 0),
-            size: (100, 100),
-            scale: 1.0,
-            transform: settings_store::hardware::OutputTransform::Normal,
-            color_profile: None,
-            refresh_mhz: None,
-            logical_position: (x, 0),
-            identity: crate::compositor::backend::OutputIdentity::default(),
-        };
-        let old_outputs = [output(0, 0), output(1, 100)];
-        let moved_outputs = [output(0, 100), output(1, 0)];
-        let old_rect = Rect::new(10.0, 10.0, 60.0, 60.0);
-        let relaid_rect = Rect::new(110.0, 10.0, 160.0, 60.0);
-        let mut memberships = SurfaceOutputMemberships::default();
-        memberships.reconcile(&old_outputs, &[(7, old_rect)]);
-
-        let mut counterexample = SurfaceOutputMemberships::default();
-        counterexample.reconcile(&old_outputs, &[(7, old_rect)]);
-        assert_eq!(
-            counterexample.reconcile(&moved_outputs, &[(7, old_rect)]),
-            vec![
-                SurfaceOutputChange::Leave {
-                    surface_id: 7,
-                    output: OutputId(0),
-                },
-                SurfaceOutputChange::Enter {
-                    surface_id: 7,
-                    output: OutputId(1),
-                },
-            ],
-            "old tile coordinates compared with new outputs create false wire transitions"
-        );
-
-        assert!(
-            !surface_output_geometry_is_current(true),
-            "the pre-layout reconciliation must be skipped after an output change"
-        );
-        assert!(
-            memberships
-                .reconcile(&moved_outputs, &[(7, relaid_rect)])
-                .is_empty(),
-            "post-layout geometry keeps the surface on the same physical output"
-        );
-    }
-
-    #[test]
-    fn onboarding_blocks_every_client_input_route() {
-        let mut fb = FrameBuilder::new((800, 600));
-        assert!(client_input_allowed(&fb));
-        fb.enable_onboarding(std::path::PathBuf::from("/tmp/tilo-onboarding-test"));
-        assert!(fb.host().onboarding_active());
-        assert!(
-            !client_input_allowed(&fb),
-            "trusted first-login chrome must own input before any Wayland client"
-        );
-    }
-
-    /// The compositor binds the socket the launcher dials. Assert across both
-    /// production paths, not either one's idea of the path: bind with the
-    /// compositor's spawn function, resolve with the launcher's resolver,
-    /// require an open descriptor. `required@1` makes a divergence an error, not the skip an optional service gets.
     #[test]
     #[serial_test::serial(process_env)]
-    fn compositor_binds_the_socket_the_launcher_dials() {
-        let runtime = tempfile::tempdir().expect("tempdir");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_RUNTIME_DIR", runtime.path());
-        let fb = FrameBuilder::new((800, 600));
-        let chrome = fb.chrome_handle();
-        let broker = spawn_session_collab_broker(&chrome, None)
-            .expect("the compositor must be able to bind its own collab socket");
+    fn collab_socket_is_bound_once_for_the_launcher() {
+        // Phase `compositor_binds_the_socket_the_launcher_dials`.
+        // The compositor binds the socket the launcher dials. Assert across both
+        // production paths, not either one's idea of the path: bind with the
+        // compositor's spawn function, resolve with the launcher's resolver,
+        // require an open descriptor. `required@1` makes a divergence an error, not the skip an optional service gets.
+        {
+            let runtime = tempfile::tempdir().expect("tempdir");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", runtime.path());
+            let fb = FrameBuilder::new((800, 600));
+            let chrome = fb.chrome_handle();
+            let broker = spawn_session_collab_broker(&chrome, None)
+                .expect("the compositor must be able to bind its own collab socket");
 
-        assert!(
-            chrome.borrow().collab_available(),
-            "a session that bound its broker must not report collaboration unavailable: {:?}",
-            chrome.borrow().collab_unavailable
-        );
+            assert!(
+                chrome.borrow().collab_available(),
+                "a session that bound its broker must not report collaboration unavailable: {:?}",
+                chrome.borrow().collab_unavailable
+            );
 
-        // The launcher's real resolver, on a manifest demanding the service.
-        // Use the authenticated launch path: collaboration deliberately rejects
-        // a bare socket connection with no app/workspace handoff.
-        let mut services = std::collections::BTreeMap::new();
-        services.insert(
-            launcher::services::COLLAB_SERVICE.to_string(),
-            "required@1".to_string(),
-        );
-        let resolved = launcher::services::resolve_service_binds_for_launch(
-            &services,
-            false,
-            launcher::services::ServiceLaunchContext {
-                app_id: "so.tilo.socket-contract-test",
-                workspace_id: Some("socket-contract-workspace"),
-            },
-        )
-        .expect("the launcher must authenticate with the socket the compositor just bound");
+            // The launcher's real resolver, on a manifest demanding the service.
+            // Use the authenticated launch path: collaboration deliberately rejects
+            // a bare socket connection with no app/workspace handoff.
+            let mut services = std::collections::BTreeMap::new();
+            services.insert(
+                launcher::services::COLLAB_SERVICE.to_string(),
+                "required@1".to_string(),
+            );
+            let resolved = launcher::services::resolve_service_binds_for_launch(
+                &services,
+                false,
+                launcher::services::ServiceLaunchContext {
+                    app_id: "so.tilo.socket-contract-test",
+                    workspace_id: Some("socket-contract-workspace"),
+                },
+            )
+            .expect("the launcher must authenticate with the socket the compositor just bound");
 
-        assert_eq!(
-            resolved.len(),
-            1,
-            "expected exactly one resolved service, got {resolved:?}"
-        );
-        assert_eq!(resolved[0].name, launcher::services::COLLAB_SERVICE);
-        assert!(
-            resolved[0].host_fd() >= 0,
-            "the launcher must hand the app a real connected descriptor"
-        );
+            assert_eq!(
+                resolved.len(),
+                1,
+                "expected exactly one resolved service, got {resolved:?}"
+            );
+            assert_eq!(resolved[0].name, launcher::services::COLLAB_SERVICE);
+            assert!(
+                resolved[0].host_fd() >= 0,
+                "the launcher must hand the app a real connected descriptor"
+            );
 
-        drop(broker);
-    }
+            drop(broker);
+        }
+        // Phase `a_second_session_refuses_to_take_a_live_collab_socket`.
+        // A live socket is not taken away from the session that owns it. Two
+        // compositors against one `XDG_RUNTIME_DIR` is what a second login (or
+        // stray test) produces, and the broker unlinks before binding — without
+        // the liveness probe, the newcomer would silently strand the first session's apps. Refusing loudly is correct, and must reach the chrome.
+        {
+            let runtime = tempfile::tempdir().expect("tempdir");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", runtime.path());
 
-    /// A live socket is not taken away from the session that owns it. Two
-    /// compositors against one `XDG_RUNTIME_DIR` is what a second login (or
-    /// stray test) produces, and the broker unlinks before binding — without
-    /// the liveness probe, the newcomer would silently strand the first session's apps. Refusing loudly is correct, and must reach the chrome.
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn a_second_session_refuses_to_take_a_live_collab_socket() {
-        let runtime = tempfile::tempdir().expect("tempdir");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_RUNTIME_DIR", runtime.path());
+            let first_fb = FrameBuilder::new((800, 600));
+            let first_chrome = first_fb.chrome_handle();
+            let first =
+                spawn_session_collab_broker(&first_chrome, None).expect("first broker binds");
 
-        let first_fb = FrameBuilder::new((800, 600));
-        let first_chrome = first_fb.chrome_handle();
-        let first = spawn_session_collab_broker(&first_chrome, None).expect("first broker binds");
+            let second_fb = FrameBuilder::new((800, 600));
+            let second_chrome = second_fb.chrome_handle();
+            let second = spawn_session_collab_broker(&second_chrome, None);
 
-        let second_fb = FrameBuilder::new((800, 600));
-        let second_chrome = second_fb.chrome_handle();
-        let second = spawn_session_collab_broker(&second_chrome, None);
+            assert!(
+                second.is_none(),
+                "a second session must not bind over a live collab socket"
+            );
+            assert!(
+                !second_chrome.borrow().collab_available(),
+                "the refused session must report collaboration as unavailable"
+            );
+            assert!(
+                first_chrome.borrow().collab_available(),
+                "the session that owns the socket must be left working"
+            );
+            // And the first broker still answers — the point of refusing.
+            assert!(
+                collab_socket_is_live(&launcher::services::collab_socket()),
+                "the original broker must still be listening after the refusal"
+            );
 
-        assert!(
-            second.is_none(),
-            "a second session must not bind over a live collab socket"
-        );
-        assert!(
-            !second_chrome.borrow().collab_available(),
-            "the refused session must report collaboration as unavailable"
-        );
-        assert!(
-            first_chrome.borrow().collab_available(),
-            "the session that owns the socket must be left working"
-        );
-        // And the first broker still answers — the point of refusing.
-        assert!(
-            collab_socket_is_live(&launcher::services::collab_socket()),
-            "the original broker must still be listening after the refusal"
-        );
-
-        drop(second);
-        drop(first);
+            drop(second);
+            drop(first);
+        }
     }
 
     // developer surfaces are absent from a shipped build
 
     #[test]
-    fn shipped_build_never_binds_a_test_control_socket() {
+    fn test_control_surfaces_exist_only_in_dev_builds() {
+        // Phase `shipped_build_never_binds_a_test_control_socket`.
         assert_eq!(
             test_control_path(false, Some(std::ffi::OsString::from("/tmp/ctl.sock"))),
             None,
             "a release compositor must not open a remote-control socket"
         );
-    }
-
-    #[test]
-    fn dev_build_binds_the_test_control_socket_the_harness_asks_for() {
+        // Phase `dev_build_binds_the_test_control_socket_the_harness_asks_for`.
         assert_eq!(
             test_control_path(true, Some(std::ffi::OsString::from("/tmp/ctl.sock"))),
             Some(PathBuf::from("/tmp/ctl.sock")),
         );
         assert_eq!(test_control_path(true, None), None);
+        // Phase `shipped_build_never_dumps_its_workspace_tree`.
+        assert_eq!(
+            test_state_dump_path(false, Some(std::ffi::OsString::from("/tmp/tree.json"))),
+            None,
+        );
+        assert_eq!(
+            test_state_dump_path(true, Some(std::ffi::OsString::from("/tmp/tree.json"))),
+            Some(std::ffi::OsString::from("/tmp/tree.json")),
+        );
+        // Phase `the_gate_the_compositor_actually_uses_is_the_build_profile`.
+        // The two functions above are only meaningful if `run` passes the real
+        // constant — tied here so flipping the production call site to a literal `true` fails.
+        assert_eq!(
+            crate::compositor::dev_env::DEV_ENV_OVERRIDES,
+            cfg!(debug_assertions) || cfg!(feature = "dev-overrides")
+        );
     }
 
     fn socket_response(reader: &mut BufReader<UnixStream>) -> test_control::Response {
@@ -10073,508 +10216,567 @@ mod tests {
     }
 
     #[test]
-    #[expect(
+    #[allow(
         clippy::too_many_lines,
-        reason = "an end-to-end test scenario that reads top to bottom"
+        reason = "each phase keeps one former test's body verbatim"
     )]
-    fn socket_dispatch_retains_real_directory_admission_and_request_order() {
-        use std::io::Write as _;
+    fn socket_dispatch_preserves_directory_admission_and_request_order() {
+        // Phase `socket_dispatch_retains_real_directory_admission_and_request_order`.
+        {
+            use std::io::Write as _;
 
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        tokio::task::LocalSet::new().block_on(&runtime, async {
-            let tree = directory_test_tree();
-            let mut directory =
-                crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
-                    tree.clone(),
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            tokio::task::LocalSet::new().block_on(&runtime, async {
+                let tree = directory_test_tree();
+                let mut directory =
+                    crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
+                        tree.clone(),
+                    );
+                let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
+                frame_builder
+                    .host_mut()
+                    .attach_app_action_broker(directory.broker.clone());
+                let mut ctx = TestControlCtx::new();
+                let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+                let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+                let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+                let display: Display<State> = Display::new().expect("display");
+                let mut state = State::new(event_loop.handle(), display.handle());
+
+                let (server, client) = UnixStream::pair().expect("socket pair");
+                let mut writer = client.try_clone().expect("client writer");
+                let mut reader = BufReader::new(client);
+                reader
+                    .get_mut()
+                    .set_nonblocking(true)
+                    .expect("nonblocking client");
+                let mut conn = TestControlConn::new(server).expect("server connection");
+
+                writer
+                    .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
+                    .expect("queue cold directory query");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
                 );
-            let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
-            frame_builder
-                .host_mut()
-                .attach_app_action_broker(directory.broker.clone());
-            let mut ctx = TestControlCtx::new();
-            let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
-            let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
-            let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
-            let display: Display<State> = Display::new().expect("display");
-            let mut state = State::new(event_loop.handle(), display.handle());
+                let _cold = socket_response(&mut reader);
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
 
-            let (server, client) = UnixStream::pair().expect("socket pair");
-            let mut writer = client.try_clone().expect("client writer");
-            let mut reader = BufReader::new(client);
-            reader
-                .get_mut()
-                .set_nonblocking(true)
-                .expect("nonblocking client");
-            let mut conn = TestControlConn::new(server).expect("server connection");
-
-            writer
-                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
-                .expect("queue cold directory query");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let _cold = socket_response(&mut reader);
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-
-            writer
-                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
-                .expect("queue warm directory query");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let warm = socket_response(&mut reader);
-            let test_control::Response::Answer(rows) = warm else {
-                panic!("warm directory query must enumerate the action");
-            };
-            let action_id = rows["actions"]
-                .as_array()
-                .expect("enumeration array")
-                .iter()
-                .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
-                .and_then(|row| row["id"].as_str())
-                .expect("directory action id")
-                .to_string();
-
-            let invoke = serde_json::json!({
-                "op": "actions_invoke",
-                "provider": "app-actions",
-                "id": action_id,
-            });
-            let later = serde_json::json!({"op": "actions_enumerate", "query": "settings"});
-            writer
-                .write_all(format!("{invoke}\n{later}\n").as_bytes())
-                .expect("pipeline invoke and later request");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            assert_socket_pending(&mut reader);
-
-            let (other_server, other_client) = UnixStream::pair().expect("second socket pair");
-            let mut other_writer = other_client.try_clone().expect("second writer");
-            let mut other_reader = BufReader::new(other_client);
-            other_reader
-                .get_mut()
-                .set_nonblocking(true)
-                .expect("nonblocking second client");
-            let mut other_conn = TestControlConn::new(other_server).expect("second connection");
-            other_writer
-                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"settings\"}\n")
-                .expect("second connection request");
-            pump_test_control_conn(
-                &mut other_conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            assert!(matches!(
-                socket_response(&mut other_reader),
-                test_control::Response::Answer(_)
-            ));
-
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let test_control::Response::Answer(admitted) = socket_response(&mut reader) else {
-                panic!("broker admission must be returned first");
-            };
-            let broker_id = admitted["receipt"]["broker_invocation_id"]
-                .as_u64()
-                .expect("real broker invocation id");
-            assert_ne!(broker_id, 0);
-            assert!(matches!(
-                socket_response(&mut reader),
-                test_control::Response::Answer(_)
-            ));
-            assert_eq!(
-                directory.resolve_count(),
-                1,
-                "one socket command starts admission once"
-            );
-            assert!(
-                directory.take_invocation_actor().is_some(),
-                "the real application stream receives the invocation"
-            );
-
-            // The deliberately pipelined later query replaced the provider's
-            // one retained search page. Rediscover the opaque address before
-            // testing authority revocation; a stale address must fail as
-            // unknown, while this phase is specifically proving that a
-            // currently disclosed address is re-resolved by the broker.
-            writer
-                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
-                .expect("refresh directory query after pipelined request");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let _ = socket_response(&mut reader);
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            writer
-                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
-                .expect("read refreshed directory query");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let test_control::Response::Answer(refreshed) = socket_response(&mut reader) else {
-                panic!("refreshed directory query must enumerate the action");
-            };
-            assert!(
-                refreshed["actions"]
+                writer
+                    .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
+                    .expect("queue warm directory query");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let warm = socket_response(&mut reader);
+                let test_control::Response::Answer(rows) = warm else {
+                    panic!("warm directory query must enumerate the action");
+                };
+                let action_id = rows["actions"]
                     .as_array()
-                    .expect("refreshed enumeration array")
+                    .expect("enumeration array")
                     .iter()
-                    .any(|row| row["provider"] == "app-actions" && row["id"] == action_id)
-            );
+                    .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
+                    .and_then(|row| row["id"].as_str())
+                    .expect("directory action id")
+                    .to_string();
 
-            directory.set_resolve_mode(
-                crate::shell::collab_broker_capnp::tests::DirectoryResolveMode::NotFound,
-            );
-            writer
-                .write_all(format!("{invoke}\n").as_bytes())
-                .expect("queue revoked invocation");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let rejection = socket_response(&mut reader);
-            assert!(
-                matches!(
-                    rejection,
-                    test_control::Response::Err { ref code, ref message }
-                        if code == "action_failed" && message.contains("no such action is offered")
-                ),
-                "unexpected revoked-action response: {rejection:?}"
-            );
-            assert_eq!(directory.resolve_count(), 2);
-            assert!(
-                directory.take_invocation_actor().is_none(),
-                "revoked authority must not reach the application"
-            );
-        });
-    }
-
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "an end-to-end test scenario that reads top to bottom"
-    )]
-    fn socket_write_half_close_still_receives_real_directory_admission() {
-        use std::io::Write as _;
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        tokio::task::LocalSet::new().block_on(&runtime, async {
-            let tree = directory_test_tree();
-            let mut directory =
-                crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
-                    tree.clone(),
+                let invoke = serde_json::json!({
+                    "op": "actions_invoke",
+                    "provider": "app-actions",
+                    "id": action_id,
+                });
+                let later = serde_json::json!({"op": "actions_enumerate", "query": "settings"});
+                writer
+                    .write_all(format!("{invoke}\n{later}\n").as_bytes())
+                    .expect("pipeline invoke and later request");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
                 );
-            let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
-            frame_builder
-                .host_mut()
-                .attach_app_action_broker(directory.broker.clone());
-            let mut ctx = TestControlCtx::new();
-            let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
-            let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
-            let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
-            let display: Display<State> = Display::new().expect("display");
-            let mut state = State::new(event_loop.handle(), display.handle());
+                assert_socket_pending(&mut reader);
 
-            let (server, client) = UnixStream::pair().expect("socket pair");
-            let mut writer = client.try_clone().expect("client writer");
-            let mut reader = BufReader::new(client);
-            reader
-                .get_mut()
-                .set_nonblocking(true)
-                .expect("nonblocking client");
-            let mut conn = TestControlConn::new(server).expect("server connection");
-            let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
-            writer.write_all(enumerate).expect("cold directory query");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let _ = socket_response(&mut reader);
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            writer.write_all(enumerate).expect("warm directory query");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let test_control::Response::Answer(rows) = socket_response(&mut reader) else {
-                panic!("warm query must enumerate the directory action");
-            };
-            let action_id = rows["actions"]
-                .as_array()
-                .expect("actions array")
-                .iter()
-                .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
-                .and_then(|row| row["id"].as_str())
-                .expect("directory action id");
-            let invoke = serde_json::json!({
-                "op": "actions_invoke",
-                "provider": "app-actions",
-                "id": action_id,
-            });
-            writer
-                .write_all(format!("{invoke}\n").as_bytes())
-                .expect("queue invocation");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            assert_socket_pending(&mut reader);
+                let (other_server, other_client) = UnixStream::pair().expect("second socket pair");
+                let mut other_writer = other_client.try_clone().expect("second writer");
+                let mut other_reader = BufReader::new(other_client);
+                other_reader
+                    .get_mut()
+                    .set_nonblocking(true)
+                    .expect("nonblocking second client");
+                let mut other_conn = TestControlConn::new(other_server).expect("second connection");
+                other_writer
+                    .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"settings\"}\n")
+                    .expect("second connection request");
+                pump_test_control_conn(
+                    &mut other_conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                assert!(matches!(
+                    socket_response(&mut other_reader),
+                    test_control::Response::Answer(_)
+                ));
 
-            writer
-                .shutdown(std::net::Shutdown::Write)
-                .expect("client finishes its request stream");
-            assert_eq!(
-                pump_pending_test_control_conn(&mut conn),
-                PendingConnectionProgress::Waiting,
-                "write-side EOF must not discard a response the client can still read"
-            );
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            assert_eq!(
-                pump_pending_test_control_conn(&mut conn),
-                PendingConnectionProgress::WroteResponse
-            );
-            let test_control::Response::Answer(admitted) = socket_response(&mut reader) else {
-                panic!("half-closed client must receive the broker admission receipt");
-            };
-            assert_ne!(
-                admitted["receipt"]["broker_invocation_id"]
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let test_control::Response::Answer(admitted) = socket_response(&mut reader) else {
+                    panic!("broker admission must be returned first");
+                };
+                let broker_id = admitted["receipt"]["broker_invocation_id"]
                     .as_u64()
-                    .expect("real broker invocation id"),
-                0
-            );
-            assert!(directory.take_invocation_actor().is_some());
-        });
+                    .expect("real broker invocation id");
+                assert_ne!(broker_id, 0);
+                assert!(matches!(
+                    socket_response(&mut reader),
+                    test_control::Response::Answer(_)
+                ));
+                assert_eq!(
+                    directory.resolve_count(),
+                    1,
+                    "one socket command starts admission once"
+                );
+                assert!(
+                    directory.take_invocation_actor().is_some(),
+                    "the real application stream receives the invocation"
+                );
+
+                // The deliberately pipelined later query replaced the provider's
+                // one retained search page. Rediscover the opaque address before
+                // testing authority revocation; a stale address must fail as
+                // unknown, while this phase is specifically proving that a
+                // currently disclosed address is re-resolved by the broker.
+                writer
+                    .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
+                    .expect("refresh directory query after pipelined request");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let _ = socket_response(&mut reader);
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                writer
+                    .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
+                    .expect("read refreshed directory query");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let test_control::Response::Answer(refreshed) = socket_response(&mut reader) else {
+                    panic!("refreshed directory query must enumerate the action");
+                };
+                assert!(
+                    refreshed["actions"]
+                        .as_array()
+                        .expect("refreshed enumeration array")
+                        .iter()
+                        .any(|row| row["provider"] == "app-actions" && row["id"] == action_id)
+                );
+
+                directory.set_resolve_mode(
+                    crate::shell::collab_broker_capnp::tests::DirectoryResolveMode::NotFound,
+                );
+                writer
+                    .write_all(format!("{invoke}\n").as_bytes())
+                    .expect("queue revoked invocation");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let rejection = socket_response(&mut reader);
+                assert!(
+                    matches!(
+                        rejection,
+                        test_control::Response::Err { ref code, ref message }
+                            if code == "action_failed" && message.contains("no such action is offered")
+                    ),
+                    "unexpected revoked-action response: {rejection:?}"
+                );
+                assert_eq!(directory.resolve_count(), 2);
+                assert!(
+                    directory.take_invocation_actor().is_none(),
+                    "revoked authority must not reach the application"
+                );
+            });
+        }
+        // Phase `socket_write_half_close_still_receives_real_directory_admission`.
+        {
+            use std::io::Write as _;
+
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            tokio::task::LocalSet::new().block_on(&runtime, async {
+                let tree = directory_test_tree();
+                let mut directory =
+                    crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
+                        tree.clone(),
+                    );
+                let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
+                frame_builder
+                    .host_mut()
+                    .attach_app_action_broker(directory.broker.clone());
+                let mut ctx = TestControlCtx::new();
+                let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+                let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+                let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+                let display: Display<State> = Display::new().expect("display");
+                let mut state = State::new(event_loop.handle(), display.handle());
+
+                let (server, client) = UnixStream::pair().expect("socket pair");
+                let mut writer = client.try_clone().expect("client writer");
+                let mut reader = BufReader::new(client);
+                reader
+                    .get_mut()
+                    .set_nonblocking(true)
+                    .expect("nonblocking client");
+                let mut conn = TestControlConn::new(server).expect("server connection");
+                let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
+                writer.write_all(enumerate).expect("cold directory query");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let _ = socket_response(&mut reader);
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                writer.write_all(enumerate).expect("warm directory query");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let test_control::Response::Answer(rows) = socket_response(&mut reader) else {
+                    panic!("warm query must enumerate the directory action");
+                };
+                let action_id = rows["actions"]
+                    .as_array()
+                    .expect("actions array")
+                    .iter()
+                    .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
+                    .and_then(|row| row["id"].as_str())
+                    .expect("directory action id");
+                let invoke = serde_json::json!({
+                    "op": "actions_invoke",
+                    "provider": "app-actions",
+                    "id": action_id,
+                });
+                writer
+                    .write_all(format!("{invoke}\n").as_bytes())
+                    .expect("queue invocation");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                assert_socket_pending(&mut reader);
+
+                writer
+                    .shutdown(std::net::Shutdown::Write)
+                    .expect("client finishes its request stream");
+                assert_eq!(
+                    pump_pending_test_control_conn(&mut conn),
+                    PendingConnectionProgress::Waiting,
+                    "write-side EOF must not discard a response the client can still read"
+                );
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                assert_eq!(
+                    pump_pending_test_control_conn(&mut conn),
+                    PendingConnectionProgress::WroteResponse
+                );
+                let test_control::Response::Answer(admitted) = socket_response(&mut reader) else {
+                    panic!("half-closed client must receive the broker admission receipt");
+                };
+                assert_ne!(
+                    admitted["receipt"]["broker_invocation_id"]
+                        .as_u64()
+                        .expect("real broker invocation id"),
+                    0
+                );
+                assert!(directory.take_invocation_actor().is_some());
+            });
+        }
     }
 
     #[test]
-    #[expect(
+    #[allow(
         clippy::too_many_lines,
-        reason = "an end-to-end test scenario that reads top to bottom"
+        reason = "each phase keeps one former test's body verbatim"
     )]
-    fn socket_directory_admission_times_out_and_disconnects_without_restart() {
-        use std::io::Write as _;
+    fn socket_admission_times_out_and_partial_responses_are_retained() {
+        // Phase `socket_directory_admission_times_out_and_disconnects_without_restart`.
+        {
+            use std::io::Write as _;
 
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        tokio::task::LocalSet::new().block_on(&runtime, async {
-            let tree = directory_test_tree();
-            let mut directory =
-                crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
-                    tree.clone(),
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            tokio::task::LocalSet::new().block_on(&runtime, async {
+                let tree = directory_test_tree();
+                let mut directory =
+                    crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
+                        tree.clone(),
+                    );
+                let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
+                frame_builder
+                    .host_mut()
+                    .attach_app_action_broker(directory.broker.clone());
+                let mut ctx = TestControlCtx::new();
+                let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+                let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+                let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+                let display: Display<State> = Display::new().expect("display");
+                let mut state = State::new(event_loop.handle(), display.handle());
+                let (server, client) = UnixStream::pair().expect("socket pair");
+                let mut writer = client.try_clone().expect("client writer");
+                let mut reader = BufReader::new(client);
+                reader
+                    .get_mut()
+                    .set_nonblocking(true)
+                    .expect("nonblocking client");
+                let mut conn = TestControlConn::new(server).expect("server connection");
+
+                let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
+                writer.write_all(enumerate).expect("cold directory query");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
                 );
-            let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
-            frame_builder
-                .host_mut()
-                .attach_app_action_broker(directory.broker.clone());
-            let mut ctx = TestControlCtx::new();
-            let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
-            let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
-            let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
-            let display: Display<State> = Display::new().expect("display");
-            let mut state = State::new(event_loop.handle(), display.handle());
-            let (server, client) = UnixStream::pair().expect("socket pair");
-            let mut writer = client.try_clone().expect("client writer");
-            let mut reader = BufReader::new(client);
-            reader
-                .get_mut()
-                .set_nonblocking(true)
-                .expect("nonblocking client");
-            let mut conn = TestControlConn::new(server).expect("server connection");
+                let _ = socket_response(&mut reader);
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                writer.write_all(enumerate).expect("warm directory query");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let test_control::Response::Answer(rows) = socket_response(&mut reader) else {
+                    panic!("warm query must enumerate the directory action");
+                };
+                let action_id = rows["actions"]
+                    .as_array()
+                    .expect("actions array")
+                    .iter()
+                    .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
+                    .and_then(|row| row["id"].as_str())
+                    .expect("directory action id")
+                    .to_string();
+                let invoke = serde_json::json!({
+                    "op": "actions_invoke",
+                    "provider": "app-actions",
+                    "id": action_id,
+                });
 
-            let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
-            writer.write_all(enumerate).expect("cold directory query");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let _ = socket_response(&mut reader);
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            writer.write_all(enumerate).expect("warm directory query");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let test_control::Response::Answer(rows) = socket_response(&mut reader) else {
-                panic!("warm query must enumerate the directory action");
-            };
-            let action_id = rows["actions"]
-                .as_array()
-                .expect("actions array")
-                .iter()
-                .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
-                .and_then(|row| row["id"].as_str())
-                .expect("directory action id")
-                .to_string();
-            let invoke = serde_json::json!({
-                "op": "actions_invoke",
-                "provider": "app-actions",
-                "id": action_id,
+                crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
+                    Some(Duration::ZERO),
+                );
+                writer
+                    .write_all(format!("{invoke}\n").as_bytes())
+                    .expect("queue timeout invocation");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let timeout_response = socket_response(&mut reader);
+                assert!(
+                    matches!(
+                        timeout_response,
+                    test_control::Response::Err { ref code, ref message }
+                        if code == "action_failed" && message.contains("timed out")
+                    ),
+                    "unexpected timeout response: {timeout_response:?}"
+                );
+                crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
+                    None,
+                );
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                assert!(directory.take_invocation_actor().is_none());
+
+                writer
+                    .write_all(enumerate)
+                    .expect("refresh invalidated directory page");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let _ = socket_response(&mut reader);
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                writer
+                    .write_all(enumerate)
+                    .expect("read refreshed directory page");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let _ = socket_response(&mut reader);
+
+                writer
+                    .write_all(format!("{invoke}\n").as_bytes())
+                    .expect("queue invocation before disconnect");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                assert_socket_pending(&mut reader);
+                drop(reader);
+                drop(writer);
+                assert_eq!(
+                    pump_pending_test_control_conn(&mut conn),
+                    PendingConnectionProgress::Closed
+                );
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                assert!(directory.take_invocation_actor().is_none());
             });
-
-            crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
-                Some(Duration::ZERO),
-            );
-            writer
-                .write_all(format!("{invoke}\n").as_bytes())
-                .expect("queue timeout invocation");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let timeout_response = socket_response(&mut reader);
-            assert!(
-                matches!(
-                    timeout_response,
-                test_control::Response::Err { ref code, ref message }
-                    if code == "action_failed" && message.contains("timed out")
-                ),
-                "unexpected timeout response: {timeout_response:?}"
-            );
             crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
                 None,
             );
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            assert!(directory.take_invocation_actor().is_none());
+        }
+        // Phase `nonblocking_socket_retains_a_partial_response_until_the_frame_is_complete`.
+        {
+            use std::io::Read as _;
 
-            writer
-                .write_all(enumerate)
-                .expect("refresh invalidated directory page");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let _ = socket_response(&mut reader);
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            writer
-                .write_all(enumerate)
-                .expect("read refreshed directory page");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let _ = socket_response(&mut reader);
+            let (server, mut client) = UnixStream::pair().expect("socket pair");
+            client.set_nonblocking(true).expect("nonblocking client");
+            let mut conn = TestControlConn::new(server).expect("server connection");
+            let response = test_control::Response::Answer(serde_json::json!({
+                "blob": "x".repeat(8 * 1024 * 1024),
+            }));
+            let mut expected = serialise_response(&response).into_bytes();
+            expected.push(b'\n');
 
-            writer
-                .write_all(format!("{invoke}\n").as_bytes())
-                .expect("queue invocation before disconnect");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            assert_socket_pending(&mut reader);
-            drop(reader);
-            drop(writer);
             assert_eq!(
-                pump_pending_test_control_conn(&mut conn),
-                PendingConnectionProgress::Closed
+                queue_test_control_response(&mut conn, &response),
+                PendingConnectionProgress::OutputPending,
+                "a payload larger than the Unix receive buffer must exercise WouldBlock"
             );
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            assert!(directory.take_invocation_actor().is_none());
-        });
-        crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
-            None,
-        );
+            assert!(
+                conn.output_offset > 0,
+                "the first write must be a real short write"
+            );
+            assert!(conn.output_offset < conn.output.len());
+
+            let mut received = Vec::with_capacity(expected.len());
+            let mut chunk = vec![0_u8; 64 * 1024];
+            for _ in 0..1024 {
+                loop {
+                    match client.read(&mut chunk) {
+                        Ok(0) => panic!("socket closed before the retained frame completed"),
+                        Ok(read) => received.extend_from_slice(&chunk[..read]),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(error) => panic!("read retained response: {error}"),
+                    }
+                }
+                match flush_test_control_output(&mut conn) {
+                    PendingConnectionProgress::OutputPending => {}
+                    PendingConnectionProgress::WroteResponse => break,
+                    progress => panic!("unexpected output progress: {progress:?}"),
+                }
+            }
+            loop {
+                match client.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => received.extend_from_slice(&chunk[..read]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("read final retained response: {error}"),
+                }
+            }
+            assert!(
+                conn.output.is_empty(),
+                "the entire queued frame was flushed"
+            );
+            assert_eq!(
+                received, expected,
+                "backpressure must not truncate or duplicate JSON bytes"
+            );
+        }
     }
 
     /// A driver's request often lands after its connection was accepted and
@@ -10615,160 +10817,45 @@ mod tests {
         );
     }
 
-    #[test]
-    fn nonblocking_socket_retains_a_partial_response_until_the_frame_is_complete() {
-        use std::io::Read as _;
-
-        let (server, mut client) = UnixStream::pair().expect("socket pair");
-        client.set_nonblocking(true).expect("nonblocking client");
-        let mut conn = TestControlConn::new(server).expect("server connection");
-        let response = test_control::Response::Answer(serde_json::json!({
-            "blob": "x".repeat(8 * 1024 * 1024),
-        }));
-        let mut expected = serialise_response(&response).into_bytes();
-        expected.push(b'\n');
-
-        assert_eq!(
-            queue_test_control_response(&mut conn, &response),
-            PendingConnectionProgress::OutputPending,
-            "a payload larger than the Unix receive buffer must exercise WouldBlock"
-        );
-        assert!(
-            conn.output_offset > 0,
-            "the first write must be a real short write"
-        );
-        assert!(conn.output_offset < conn.output.len());
-
-        let mut received = Vec::with_capacity(expected.len());
-        let mut chunk = vec![0_u8; 64 * 1024];
-        for _ in 0..1024 {
-            loop {
-                match client.read(&mut chunk) {
-                    Ok(0) => panic!("socket closed before the retained frame completed"),
-                    Ok(read) => received.extend_from_slice(&chunk[..read]),
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(error) => panic!("read retained response: {error}"),
-                }
-            }
-            match flush_test_control_output(&mut conn) {
-                PendingConnectionProgress::OutputPending => {}
-                PendingConnectionProgress::WroteResponse => break,
-                progress => panic!("unexpected output progress: {progress:?}"),
-            }
-        }
-        loop {
-            match client.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(read) => received.extend_from_slice(&chunk[..read]),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(error) => panic!("read final retained response: {error}"),
-            }
-        }
-        assert!(
-            conn.output.is_empty(),
-            "the entire queued frame was flushed"
-        );
-        assert_eq!(
-            received, expected,
-            "backpressure must not truncate or duplicate JSON bytes"
-        );
-    }
-
-    #[test]
-    fn shipped_build_never_dumps_its_workspace_tree() {
-        assert_eq!(
-            test_state_dump_path(false, Some(std::ffi::OsString::from("/tmp/tree.json"))),
-            None,
-        );
-        assert_eq!(
-            test_state_dump_path(true, Some(std::ffi::OsString::from("/tmp/tree.json"))),
-            Some(std::ffi::OsString::from("/tmp/tree.json")),
-        );
-    }
-
-    #[test]
-    fn the_gate_the_compositor_actually_uses_is_the_build_profile() {
-        // The two functions above are only meaningful if `run` passes the real
-        // constant — tied here so flipping the production call site to a literal `true` fails.
-        assert_eq!(
-            crate::compositor::dev_env::DEV_ENV_OVERRIDES,
-            cfg!(debug_assertions) || cfg!(feature = "dev-overrides")
-        );
-    }
-
     // publishing the socket name for the nested dev loop
 
     #[test]
-    fn public_socket_attribution_reads_kernel_peer_pid() {
-        let runtime = tempfile::tempdir().unwrap();
-        let path = runtime.path().join("peer.sock");
-        let listener = UnixListener::bind(path.clone()).unwrap();
-        let client = UnixStream::connect(path).unwrap();
-        let (server, _) = listener.accept().unwrap();
-        assert_eq!(
-            wayland_peer_credentials(&server).map(|credentials| credentials.pid),
-            i32::try_from(std::process::id()).ok()
-        );
-        assert!(
-            public_client_state(&server)
-                .expect("same-namespace host clients remain compatible")
-                .package_id
-                .is_none()
-        );
-        drop(client);
-    }
-
-    #[test]
-    fn unattributed_public_clients_fail_closed_outside_host_namespaces() {
-        // SAFETY: `geteuid` has no failure mode.
-        let uid = unsafe { libc::geteuid() };
-        assert!(unattributed_host_client_allowed(uid, true));
-        assert!(!unattributed_host_client_allowed(uid, false));
-        assert!(!unattributed_host_client_allowed(
-            uid.saturating_add(1),
-            true
-        ));
-    }
-
-    #[test]
-    fn display_path_lands_under_the_runtime_dir() {
+    fn display_file_is_published_under_the_runtime_dir() {
+        // Phase `display_path_lands_under_the_runtime_dir`.
         assert_eq!(
             session_display_path(Some(std::ffi::OsString::from("/run/user/1000"))),
             Some(PathBuf::from("/run/user/1000/tilo-session/wayland-display")),
         );
-    }
-
-    #[test]
-    fn display_path_declines_an_unset_or_relative_runtime_dir() {
+        // Phase `display_path_declines_an_unset_or_relative_runtime_dir`.
         assert_eq!(session_display_path(None), None);
         assert_eq!(
             session_display_path(Some(std::ffi::OsString::from("relative/dir"))),
             None,
             "a session-scoped file must not be placed by a relative path"
         );
-    }
+        // Phase `published_display_file_is_exactly_the_socket_name`.
+        {
+            use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn published_display_file_is_exactly_the_socket_name() {
-        use std::os::unix::fs::PermissionsExt;
+            // Round-trip through the real writer: what lands on disk must be usable as
+            // `WAYLAND_DISPLAY=$(cat …)` — no trailing newline, no quoting.
+            let dir =
+                std::env::temp_dir().join(format!("tilo-display-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create temp runtime dir");
+            let path = session_display_path(Some(dir.clone().into_os_string()))
+                .expect("absolute temp dir yields a path");
+            std::fs::create_dir_all(path.parent().unwrap()).expect("create tilo-session dir");
+            atomic_file::write_with_mode(&path, b"wayland-7", 0o600).expect("write display file");
 
-        // Round-trip through the real writer: what lands on disk must be usable as
-        // `WAYLAND_DISPLAY=$(cat …)` — no trailing newline, no quoting.
-        let dir = std::env::temp_dir().join(format!("tilo-display-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create temp runtime dir");
-        let path = session_display_path(Some(dir.clone().into_os_string()))
-            .expect("absolute temp dir yields a path");
-        std::fs::create_dir_all(path.parent().unwrap()).expect("create tilo-session dir");
-        atomic_file::write_with_mode(&path, b"wayland-7", 0o600).expect("write display file");
+            let read = std::fs::read_to_string(&path).expect("read back");
+            assert_eq!(read, "wayland-7");
 
-        let read = std::fs::read_to_string(&path).expect("read back");
-        assert_eq!(read, "wayland-7");
+            let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "session file must not be readable by others");
 
-        let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "session file must not be readable by others");
-
-        let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// These unit tests exercise the *chrome* half of the executor with no
@@ -10781,207 +10868,230 @@ mod tests {
         super::execute_planned_action(action, fb, ctx, None);
     }
 
-    /// Sanity: `CursorMoved` updates the cached cursor and dispatches without
-    /// panicking — matters because `MouseInput` (no position on winit) hit-tests against `last_cursor` inside the host.
     #[test]
-    fn cursor_moved_action_updates_ctx_cursor() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mut ctx = TestControlCtx::new();
-        execute_planned_action(
-            &PlannedAction::CursorMoved { x: 250.0, y: 75.0 },
-            &mut fb,
-            &mut ctx,
-        );
-        assert_eq!(ctx.cursor.x, 250.0);
-        assert_eq!(ctx.cursor.y, 75.0);
-    }
-
-    /// The full click sequence (`CursorMoved` + down + up) dispatches all
-    /// three without panicking — `click_at` returns them, and all three must reach `ShellOverlayHost::handle_event`.
-    #[test]
-    fn full_click_sequence_dispatches_without_panic() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mut ctx = TestControlCtx::new();
-        let actions = vec![
-            PlannedAction::CursorMoved { x: 800.0, y: 450.0 },
-            PlannedAction::MouseLeftButton { pressed: true },
-            PlannedAction::MouseLeftButton { pressed: false },
-        ];
-        for action in &actions {
-            execute_planned_action(action, &mut fb, &mut ctx);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn test_control_input_actions_drive_the_frame_context() {
+        // Phase `cursor_moved_action_updates_ctx_cursor`.
+        // Sanity: `CursorMoved` updates the cached cursor and dispatches without
+        // panicking — matters because `MouseInput` (no position on winit) hit-tests against `last_cursor` inside the host.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut ctx = TestControlCtx::new();
+            execute_planned_action(
+                &PlannedAction::CursorMoved { x: 250.0, y: 75.0 },
+                &mut fb,
+                &mut ctx,
+            );
+            assert_eq!(ctx.cursor.x, 250.0);
+            assert_eq!(ctx.cursor.y, 75.0);
         }
-        // No panic + relayout still works = wire intact.
-        fb.relayout();
-        let scene = fb.paint();
-        assert!(!scene.encoding().is_empty());
-    }
-
-    /// Click sequence at the wheel-disc's plus slot mutates chrome state —
-    /// proves planned actions reach the host's click handlers, not a void.
-    ///
-    /// The bootstrap tree seeds three demo workspaces; the plus slot calls
-    /// `chrome.add_workspace("Untitled")`, growing the count to four —
-    /// asserting on the count is more robust than internal widget state, since chrome is the contract every consumer sees.
-    #[test]
-    fn click_on_wheel_plus_slot_grows_workspace_count() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        // Paint once so the wheel-disc populates its plus_rect (the press handler
-        // hit-tests against it; it's `Rect::ZERO` until the first draw pass).
-        let _ = fb.paint();
-        // Find the wheel disc rect by its opt-in `test_id`, then search it for the
-        // affordance rather than re-deriving where `draw` puts it — scanning the whole footprint keeps the test layout-agnostic.
-        let registry = fb.widget_registry();
-        let wheel_rect = registry
-            .get("wheel_disc")
-            .copied()
-            .expect("wheel_disc test_id resolves on bootstrap tree");
-
-        let initial_count = fb.chrome().tree().desktop.workspaces.len();
-
-        // Sweep the footprint bottom-up in 4px rows until one click lands on
-        // the affordance; misses are harmless (rim press drags back, row press switches workspace).
-        let mut ctx = TestControlCtx::new();
-        let mut found = false;
-        // Integer-counted sweep (not a float-terminated `while`): the `if`
-        // breaks below reproduce the original `y > y0` / `x < x1` bounds
-        // exactly, so a generously wide static loop cap is safe — it never
-        // runs anywhere near it before hitting one of them.
-        'sweep: for row in 0..10_000u32 {
-            let y = wheel_rect.y1 - 4.0 - f64::from(row) * 4.0;
-            if y <= wheel_rect.y0 {
-                break;
+        // Phase `full_click_sequence_dispatches_without_panic`.
+        // The full click sequence (`CursorMoved` + down + up) dispatches all
+        // three without panicking — `click_at` returns them, and all three must reach `ShellOverlayHost::handle_event`.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut ctx = TestControlCtx::new();
+            let actions = vec![
+                PlannedAction::CursorMoved { x: 800.0, y: 450.0 },
+                PlannedAction::MouseLeftButton { pressed: true },
+                PlannedAction::MouseLeftButton { pressed: false },
+            ];
+            for action in &actions {
+                execute_planned_action(action, &mut fb, &mut ctx);
             }
-            for col in 0..10_000u32 {
-                let x = wheel_rect.x0 + 4.0 + f64::from(col) * 8.0;
-                if x >= wheel_rect.x1 {
+            // No panic + relayout still works = wire intact.
+            fb.relayout();
+            let scene = fb.paint();
+            assert!(!scene.encoding().is_empty());
+        }
+        // Phase `click_on_wheel_plus_slot_grows_workspace_count`.
+        // Click sequence at the wheel-disc's plus slot mutates chrome state —
+        // proves planned actions reach the host's click handlers, not a void.
+        //
+        // The bootstrap tree seeds three demo workspaces; the plus slot calls
+        // `chrome.add_workspace("Untitled")`, growing the count to four —
+        // asserting on the count is more robust than internal widget state, since chrome is the contract every consumer sees.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            // Paint once so the wheel-disc populates its plus_rect (the press handler
+            // hit-tests against it; it's `Rect::ZERO` until the first draw pass).
+            let _ = fb.paint();
+            // Find the wheel disc rect by its opt-in `test_id`, then search it for the
+            // affordance rather than re-deriving where `draw` puts it — scanning the whole footprint keeps the test layout-agnostic.
+            let registry = fb.widget_registry();
+            let wheel_rect = registry
+                .get("wheel_disc")
+                .copied()
+                .expect("wheel_disc test_id resolves on bootstrap tree");
+
+            let initial_count = fb.chrome().tree().desktop.workspaces.len();
+
+            // Sweep the footprint bottom-up in 4px rows until one click lands on
+            // the affordance; misses are harmless (rim press drags back, row press switches workspace).
+            let mut ctx = TestControlCtx::new();
+            let mut found = false;
+            // Integer-counted sweep (not a float-terminated `while`): the `if`
+            // breaks below reproduce the original `y > y0` / `x < x1` bounds
+            // exactly, so a generously wide static loop cap is safe — it never
+            // runs anywhere near it before hitting one of them.
+            'sweep: for row in 0..10_000u32 {
+                let y = wheel_rect.y1 - 4.0 - f64::from(row) * 4.0;
+                if y <= wheel_rect.y0 {
                     break;
                 }
-                execute_planned_action(&PlannedAction::CursorMoved { x, y }, &mut fb, &mut ctx);
-                execute_planned_action(
-                    &PlannedAction::MouseLeftButton { pressed: true },
-                    &mut fb,
-                    &mut ctx,
-                );
-                execute_planned_action(
-                    &PlannedAction::MouseLeftButton { pressed: false },
-                    &mut fb,
-                    &mut ctx,
-                );
-                if fb.chrome().tree().desktop.workspaces.len() > initial_count {
-                    found = true;
-                    break 'sweep;
+                for col in 0..10_000u32 {
+                    let x = wheel_rect.x0 + 4.0 + f64::from(col) * 8.0;
+                    if x >= wheel_rect.x1 {
+                        break;
+                    }
+                    execute_planned_action(&PlannedAction::CursorMoved { x, y }, &mut fb, &mut ctx);
+                    execute_planned_action(
+                        &PlannedAction::MouseLeftButton { pressed: true },
+                        &mut fb,
+                        &mut ctx,
+                    );
+                    execute_planned_action(
+                        &PlannedAction::MouseLeftButton { pressed: false },
+                        &mut fb,
+                        &mut ctx,
+                    );
+                    if fb.chrome().tree().desktop.workspaces.len() > initial_count {
+                        found = true;
+                        break 'sweep;
+                    }
                 }
             }
+            assert!(
+                found,
+                "sweep of clicks across the wheel disc's footprint should hit the \
+                 add-workspace affordance and grow the workspace count from \
+                 {initial_count}"
+            );
         }
-        assert!(
-            found,
-            "sweep of clicks across the wheel disc's footprint should hit the \
-             add-workspace affordance and grow the workspace count from \
-             {initial_count}"
-        );
-    }
-
-    // drag / key / type / modifiers executor coverage
-
-    /// `SetModifiers` mutates `ctx.modifiers` directly; the host reads the
-    /// snapshot on the next chord, so this is what chord injection (Ctrl+K, …) depends on.
-    #[test]
-    fn set_modifiers_action_updates_ctx_mask() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mut ctx = TestControlCtx::new();
-        execute_planned_action(
-            &PlannedAction::SetModifiers {
-                ctrl: true,
-                shift: false,
-                alt: false,
-                logo: true,
-            },
-            &mut fb,
-            &mut ctx,
-        );
-        assert!(ctx.modifiers.state().control_key());
-        assert!(ctx.modifiers.state().super_key());
-        assert!(!ctx.modifiers.state().shift_key());
-        assert!(!ctx.modifiers.state().alt_key());
-    }
-
-    /// A keyboard press+release pair dispatches without panicking — same bar
-    /// as `full_click_sequence_dispatches_without_panic`, for both press and release.
-    #[test]
-    fn keyboard_key_press_release_dispatches_without_panic() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mut ctx = TestControlCtx::new();
-        for pressed in [true, false] {
+        // Phase `set_modifiers_action_updates_ctx_mask`.
+        // `SetModifiers` mutates `ctx.modifiers` directly; the host reads the
+        // snapshot on the next chord, so this is what chord injection (Ctrl+K, …) depends on.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut ctx = TestControlCtx::new();
             execute_planned_action(
-                &PlannedAction::KeyboardKey {
-                    key: KeyTag::Named(NamedKeyTag::Escape),
-                    pressed,
+                &PlannedAction::SetModifiers {
+                    ctrl: true,
+                    shift: false,
+                    alt: false,
+                    logo: true,
                 },
                 &mut fb,
                 &mut ctx,
             );
+            assert!(ctx.modifiers.state().control_key());
+            assert!(ctx.modifiers.state().super_key());
+            assert!(!ctx.modifiers.state().shift_key());
+            assert!(!ctx.modifiers.state().alt_key());
         }
-        fb.relayout();
-        let _ = fb.paint();
+        // Phase `keyboard_key_press_release_dispatches_without_panic`.
+        // A keyboard press+release pair dispatches without panicking — same bar
+        // as `full_click_sequence_dispatches_without_panic`, for both press and release.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut ctx = TestControlCtx::new();
+            for pressed in [true, false] {
+                execute_planned_action(
+                    &PlannedAction::KeyboardKey {
+                        key: KeyTag::Named(NamedKeyTag::Escape),
+                        pressed,
+                    },
+                    &mut fb,
+                    &mut ctx,
+                );
+            }
+            fb.relayout();
+            let _ = fb.paint();
+        }
+        // Phase `cmd_tab_chord_via_test_control_opens_overview`.
+        // Cmd+Tab via `test_control` opens the overview overlay — proves
+        // modifiers + named-key chords reach the host's chord handler, like `ShellDriver::press_key` in-process.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint();
+            assert!(
+                !fb.chrome().overlays.overview,
+                "bootstrap layout starts with overview closed"
+            );
+            let mut ctx = TestControlCtx::new();
+            // Plant the Super modifier, then dispatch Tab press+release.
+            execute_planned_action(
+                &PlannedAction::SetModifiers {
+                    ctrl: false,
+                    shift: false,
+                    alt: false,
+                    logo: true,
+                },
+                &mut fb,
+                &mut ctx,
+            );
+            execute_planned_action(
+                &PlannedAction::KeyboardKey {
+                    key: KeyTag::Named(NamedKeyTag::Tab),
+                    pressed: true,
+                },
+                &mut fb,
+                &mut ctx,
+            );
+            execute_planned_action(
+                &PlannedAction::KeyboardKey {
+                    key: KeyTag::Named(NamedKeyTag::Tab),
+                    pressed: false,
+                },
+                &mut fb,
+                &mut ctx,
+            );
+            assert!(
+                fb.chrome().overlays.overview,
+                "Super+Tab via test_control should toggle overview on"
+            );
+        }
     }
+
+    // drag / key / type / modifiers executor coverage
 
     // snapshot executor coverage
 
-    /// Sanity: `Snapshot` against a fresh `FrameBuilder` writes a real PNG,
-    /// asserting the magic bytes and a non-trivial byte count (a
-    /// corrupted/truncated PNG would pass the magic check but be tiny).
-    ///
-    /// Skipped without a wgpu adapter (CI without llvmpipe), where the
-    /// executor logs and returns with no file. Serialised with the other [`SNAPSHOT_RENDERER`] tests, now a shared process-wide cache.
     #[test]
     #[serial_test::serial(snapshot_renderer)]
-    fn execute_snapshot_writes_a_png_at_path() {
-        let tmpdir = tempfile::tempdir().expect("create tempdir for snapshot test");
-        let path = tmpdir.path().join("test.png");
-        let mut fb = FrameBuilder::new((640, 360));
-        let mut ctx = TestControlCtx::new();
-        execute_planned_action(
-            &PlannedAction::Snapshot { path: path.clone() },
-            &mut fb,
-            &mut ctx,
-        );
-        // If the renderer wasn't available the executor logged + returned with no
-        // file — treat as a soft skip, mirrors `sidebar_wheel_disc_snapshot.rs::try_new_renderer`.
-        if !path.exists() {
-            eprintln!(
-                "execute_snapshot_writes_a_png_at_path: no wgpu adapter, \
-                 skipping pixel assertions"
+    fn snapshot_renderer_writes_pngs_and_survives_its_builder_thread() {
+        // Phase `execute_snapshot_with_bogus_dir_does_not_crash`.
+        // Hostile path inputs — the executor must log and return without
+        // panicking: the dispatcher's `Ok` is already on the wire, so a client typo must not kill the compositor.
+        fn execute_snapshot_with_bogus_dir_does_not_crash() {
+            let mut fb = FrameBuilder::new((640, 360));
+            let mut ctx = TestControlCtx::new();
+            // Path under a nonexistent parent — File::create fails ENOENT; the executor must log and return.
+            execute_planned_action(
+                &PlannedAction::Snapshot {
+                    path: std::path::PathBuf::from("/nonexistent/dir/x.png"),
+                },
+                &mut fb,
+                &mut ctx,
             );
-            return;
+            // No panic == pass; sanity-check the FrameBuilder is still usable after
+            // the failed snapshot (not left half-painted).
+            fb.relayout();
+            let _ = fb.paint();
         }
-        let bytes = std::fs::read(&path).expect("read snapshot PNG");
-        // PNG magic: \x89PNG\r\n\x1a\n.
-        assert_eq!(
-            &bytes[..8],
-            &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
-            "expected PNG magic at start of {path:?}"
-        );
-        assert!(
-            bytes.len() > 1024,
-            "expected non-trivial PNG output (>1KB); got {} bytes",
-            bytes.len()
-        );
-    }
-
-    /// The snapshot renderer must outlive the thread that built it — see
-    /// [`SNAPSHOT_RENDERER`] for why a per-thread cache aborts the process. An
-    /// abort can't be observed from inside the binary it kills, so this
-    /// asserts the preventing property instead: a snapshot on a thread that
-    /// then exits must leave its renderer behind, so the next snapshot at the
-    /// same viewport builds nothing new. A per-thread cache fails this on the count, before it can abort anything.
-    #[test]
-    #[serial_test::serial(snapshot_renderer)]
-    fn snapshot_renderer_outlives_the_thread_that_built_it() {
-        use std::sync::atomic::Ordering;
-
-        fn take_snapshot() -> bool {
+        // Phase `execute_snapshot_writes_a_png_at_path`.
+        // Sanity: `Snapshot` against a fresh `FrameBuilder` writes a real PNG,
+        // asserting the magic bytes and a non-trivial byte count (a
+        // corrupted/truncated PNG would pass the magic check but be tiny).
+        //
+        // Skipped without a wgpu adapter (CI without llvmpipe), where the
+        // executor logs and returns with no file. Serialised with the other [`SNAPSHOT_RENDERER`] tests, now a shared process-wide cache.
+        fn execute_snapshot_writes_a_png_at_path() {
             let tmpdir = tempfile::tempdir().expect("create tempdir for snapshot test");
-            let path = tmpdir.path().join("shot.png");
+            let path = tmpdir.path().join("test.png");
             let mut fb = FrameBuilder::new((640, 360));
             let mut ctx = TestControlCtx::new();
             execute_planned_action(
@@ -10989,84 +11099,476 @@ mod tests {
                 &mut fb,
                 &mut ctx,
             );
-            path.exists()
-        }
-
-        // Warm the cache on a thread that then exits — with a per-thread cache, this join is where the process died.
-        let warmed = std::thread::spawn(take_snapshot)
-            .join()
-            .expect("the snapshot thread should not panic");
-        if !warmed {
-            eprintln!(
-                "snapshot_renderer_outlives_the_thread_that_built_it: \
-                 no wgpu adapter, skipping"
+            // If the renderer wasn't available the executor logged + returned with no
+            // file — treat as a soft skip, mirrors `sidebar_wheel_disc_snapshot.rs::try_new_renderer`.
+            if !path.exists() {
+                eprintln!(
+                    "execute_snapshot_writes_a_png_at_path: no wgpu adapter, \
+                     skipping pixel assertions"
+                );
+                return;
+            }
+            let bytes = std::fs::read(&path).expect("read snapshot PNG");
+            // PNG magic: \x89PNG\r\n\x1a\n.
+            assert_eq!(
+                &bytes[..8],
+                &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+                "expected PNG magic at start of {path:?}"
             );
-            return;
+            assert!(
+                bytes.len() > 1024,
+                "expected non-trivial PNG output (>1KB); got {} bytes",
+                bytes.len()
+            );
         }
+        // Phase `snapshot_renderer_outlives_the_thread_that_built_it`.
+        // The snapshot renderer must outlive the thread that built it — see
+        // [`SNAPSHOT_RENDERER`] for why a per-thread cache aborts the process. An
+        // abort can't be observed from inside the binary it kills, so this
+        // asserts the preventing property instead: a snapshot on a thread that
+        // then exits must leave its renderer behind, so the next snapshot at the
+        // same viewport builds nothing new. A per-thread cache fails this on the count, before it can abort anything.
+        fn snapshot_renderer_outlives_the_thread_that_built_it() {
+            use std::sync::atomic::Ordering;
 
-        let built = SNAPSHOT_RENDERERS_BUILT.load(Ordering::Relaxed);
-        assert!(
-            take_snapshot(),
-            "a snapshot on this thread should still write a PNG"
-        );
-        assert_eq!(
-            SNAPSHOT_RENDERERS_BUILT.load(Ordering::Relaxed),
-            built,
-            "the renderer built on the now-dead thread must be reused, not \
-             rebuilt — a per-thread cache is what aborts the suite"
-        );
-    }
+            fn take_snapshot() -> bool {
+                let tmpdir = tempfile::tempdir().expect("create tempdir for snapshot test");
+                let path = tmpdir.path().join("shot.png");
+                let mut fb = FrameBuilder::new((640, 360));
+                let mut ctx = TestControlCtx::new();
+                execute_planned_action(
+                    &PlannedAction::Snapshot { path: path.clone() },
+                    &mut fb,
+                    &mut ctx,
+                );
+                path.exists()
+            }
 
-    /// Hostile path inputs — the executor must log and return without
-    /// panicking: the dispatcher's `Ok` is already on the wire, so a client typo must not kill the compositor.
-    #[test]
-    #[serial_test::serial(snapshot_renderer)]
-    fn execute_snapshot_with_bogus_dir_does_not_crash() {
-        let mut fb = FrameBuilder::new((640, 360));
-        let mut ctx = TestControlCtx::new();
-        // Path under a nonexistent parent — File::create fails ENOENT; the executor must log and return.
-        execute_planned_action(
-            &PlannedAction::Snapshot {
-                path: std::path::PathBuf::from("/nonexistent/dir/x.png"),
-            },
-            &mut fb,
-            &mut ctx,
-        );
-        // No panic == pass; sanity-check the FrameBuilder is still usable after
-        // the failed snapshot (not left half-painted).
-        fb.relayout();
-        let _ = fb.paint();
+            // Warm the cache on a thread that then exits — with a per-thread cache, this join is where the process died.
+            let warmed = std::thread::spawn(take_snapshot)
+                .join()
+                .expect("the snapshot thread should not panic");
+            if !warmed {
+                eprintln!(
+                    "snapshot_renderer_outlives_the_thread_that_built_it: \
+                     no wgpu adapter, skipping"
+                );
+                return;
+            }
+
+            let built = SNAPSHOT_RENDERERS_BUILT.load(Ordering::Relaxed);
+            assert!(
+                take_snapshot(),
+                "a snapshot on this thread should still write a PNG"
+            );
+            assert_eq!(
+                SNAPSHOT_RENDERERS_BUILT.load(Ordering::Relaxed),
+                built,
+                "the renderer built on the now-dead thread must be reused, not \
+                 rebuilt — a per-thread cache is what aborts the suite"
+            );
+        }
+        // Phase `execute_snapshot_writes_a_png_at_path` (defined above).
+        execute_snapshot_writes_a_png_at_path();
+        // Phase `snapshot_renderer_outlives_the_thread_that_built_it` (defined above).
+        snapshot_renderer_outlives_the_thread_that_built_it();
+        // Phase `execute_snapshot_with_bogus_dir_does_not_crash` (defined above).
+        execute_snapshot_with_bogus_dir_does_not_crash();
     }
 
     // state_dump
 
-    /// `chrome_state_json` returns an object with an `overlays` key carrying
-    /// the four flags — matches what `tilo-control state-dump` queries, so a regression here silently breaks the CLI.
     #[test]
-    fn state_dump_chrome_includes_overlays_field() {
-        let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
-        };
-        let chrome = state.chrome_state_json();
-        let overlays = chrome
-            .get("overlays")
-            .expect("chrome_state_json should carry `overlays` key");
-        // The four bool flags should be reachable through the `overlays`
-        // sub-object — addressing by string mirrors how the CLI/harness reads them.
-        for key in ["overview", "quick_settings", "ws_settings", "collaborators"] {
-            assert!(
-                overlays
-                    .get(key)
-                    .and_then(serde_json::Value::as_bool)
-                    .is_some(),
-                "overlays should carry boolean `{key}`; got {overlays:?}"
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn state_dump_and_action_enumeration_describe_chrome_and_workspaces() {
+        // Phase `state_dump_chrome_includes_overlays_field`.
+        // `chrome_state_json` returns an object with an `overlays` key carrying
+        // the four flags — matches what `tilo-control state-dump` queries, so a regression here silently breaks the CLI.
+        {
+            let fb = FrameBuilder::new((1600, 900));
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            };
+            let chrome = state.chrome_state_json();
+            let overlays = chrome
+                .get("overlays")
+                .expect("chrome_state_json should carry `overlays` key");
+            // The four bool flags should be reachable through the `overlays`
+            // sub-object — addressing by string mirrors how the CLI/harness reads them.
+            for key in ["overview", "quick_settings", "ws_settings", "collaborators"] {
+                assert!(
+                    overlays
+                        .get(key)
+                        .and_then(serde_json::Value::as_bool)
+                        .is_some(),
+                    "overlays should carry boolean `{key}`; got {overlays:?}"
+                );
+            }
+        }
+        // Phase `state_dump_identifies_the_exact_nested_search_resource`.
+        {
+            let fb = FrameBuilder::new((1600, 900));
+            fb.chrome_handle().borrow_mut().search_resource_scope =
+                Some(crate::shell::chrome_state::SearchResourceScope {
+                    peer_id: 0x42,
+                    cluster_id: "room:design".into(),
+                    app_id: "so.tilo.reader".into(),
+                    resource: "book:architecture/chapter:7".into(),
+                    label: "Rendering and state".into(),
+                    kind: String::new(),
+                });
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            };
+
+            let scope = &state.chrome_state_json()["search_resource_scope"];
+            assert_eq!(scope["peer_id"], 0x42);
+            assert_eq!(scope["cluster_id"], "room:design");
+            assert_eq!(scope["app_id"], "so.tilo.reader");
+            assert_eq!(scope["resource"], "book:architecture/chapter:7");
+            assert_eq!(scope["label"], "Rendering and state");
+        }
+        // Phase `action_enumeration_preserves_directory_resource_hierarchy`.
+        {
+            use crate::shell::collab_broker_capnp::{ActionDirectoryRoot, CapnpBrokerState};
+            use crate::shell::search::providers::live_app_actions::fixture_with_directory_page;
+
+            let mut fb = FrameBuilder::new((800, 600));
+            let (room, actor) = {
+                let chrome = fb.chrome();
+                let room = chrome.tree().desktop.active_workspace().unwrap().room;
+                (room.to_string(), chrome.local_user_for_room(&room))
+            };
+            fb.chrome()
+                .tree_handle()
+                .write()
+                .desktop
+                .active_workspace_mut()
+                .unwrap()
+                .owner = Some(actor.clone());
+            let broker = CapnpBrokerState::test_broker_with_membership(fb.chrome().tree_handle());
+            broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+                peer_id: 4096,
+                app_id: "dev.tilo.calculator".into(),
+                cluster_id: room.clone(),
+                record_id: "calculator-document".into(),
+            }]);
+            let page = tilo_actions::remote::CataloguePage {
+                revision: "revision-3".into(),
+                rows: vec![tilo_actions::remote::CatalogueRow {
+                    provider: "4096".into(),
+                    app_id: "dev.tilo.calculator".into(),
+                    parent_resource: String::new(),
+                    resource: tilo_actions::remote::CatalogueResource {
+                        id: "calculator.graph:curve2d:stable-17".into(),
+                        kind: "calculator.graph".into(),
+                        label: "A presentation label without routing metadata".into(),
+                        presentation: None,
+                    },
+                    action: Some(tilo_actions::ActionDescriptor {
+                        address: tilo_actions::ActionAddress::new(
+                            "calculator.graph:curve2d:stable-17",
+                            "toggle-visibility",
+                        ),
+                        resource_kind: "calculator.graph".into(),
+                        resource_label: "A presentation label without routing metadata".into(),
+                        action_label: "Hide".into(),
+                        description: Some("Do not infer identity from this text".into()),
+                        locus: tilo_actions::ExecutionLocus::default(),
+                        kind: tilo_actions::OperationKind::View,
+                        contract: tilo_actions::ActionContract::view(),
+                        input: tilo_actions::InputSpec::None,
+                        params: Vec::new(),
+                        view: None,
+                    }),
+                    has_children: false,
+                    visibility: None,
+                }],
+                exhausted: true,
+                ..tilo_actions::remote::CataloguePage::default()
+            };
+            let provider = fixture_with_directory_page(broker, 4096, actor, page);
+            crate::shell::overlay_host::install_fixture_search_provider(fb.host_mut(), provider);
+            let doc = AutoCommit::new();
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: Some((&doc, &automerge::ROOT)),
+                shares: None,
+                lock: None,
+            };
+            let answer = state.enumerate_actions("").expect("enumerated actions");
+            let row = answer["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["provider"] == "app-actions" && row["title"] == "Hide")
+                .expect("real directory action must be visible");
+            assert_eq!(row["application"], "dev.tilo.calculator");
+            assert_eq!(row["room"], room);
+            assert_eq!(row["record"], "calculator-document");
+            assert_eq!(row["resource"], "calculator.graph:curve2d:stable-17");
+            assert_eq!(row["operation"], "toggle-visibility");
+            assert_eq!(
+                row["id"],
+                "directory\u{1f}4096\u{1f}revision-3\u{1f}calculator.graph:curve2d:stable-17\u{1f}toggle-visibility"
             );
         }
+        // Phase `state_dump_workspace_tree_includes_workspaces_array`.
+        // `workspace_tree_json` exposes a `workspaces` array on the bootstrap
+        // layout — the CLI's `state-dump` smoke depends on it as the consumer's entrypoint to the workspace list.
+        {
+            let fb = FrameBuilder::new((1600, 900));
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            };
+            let tree = state.workspace_tree_json();
+            let workspaces = tree
+                .get("workspaces")
+                .and_then(|v| v.as_array())
+                .expect("workspace_tree_json should carry `workspaces` array");
+            // `FrameBuilder::new` uses the demo tree, matching the `bootstrap_demo`
+            // assertions in `shell/state.rs`.
+            assert!(
+                !workspaces.is_empty(),
+                "bootstrap workspace tree should not be empty"
+            );
+        }
+        // Phase `dispatch_state_dump_against_frame_builder_returns_state`.
+        // Dispatching `Command::StateDump` returns `Response::State` with no
+        // actions. Integration round-trip lives in `tests/control_socket_test.rs`; this smoke catches regressions needing no spawned compositor.
+        {
+            let fb = FrameBuilder::new((1600, 900));
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            };
+            let (resp, actions) =
+                test_control::dispatch_command(&test_control::Command::StateDump, &state);
+            assert!(actions.is_empty());
+            let test_control::Response::State {
+                workspace_tree,
+                chrome,
+                peers: _,
+                sharing: _,
+            } = resp
+            else {
+                panic!("expected Response::State; got something else");
+            };
+            // Sanity: both blobs are non-null and shaped like objects.
+            assert!(
+                workspace_tree.is_object(),
+                "workspace_tree should be an object"
+            );
+            assert!(chrome.is_object(), "chrome should be an object");
+        }
     }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn state_dump_exposes_privacy_relevant_state_without_secrets() {
+        // Phase `state_dump_carries_the_roster_it_is_asked_about`.
+        // The state dump has to carry the roster — how a harness observes who
+        // the shell believes is present. `Workspace::collaborators` is
+        // `#[serde(skip_deserializing)]` (a restarted shell must not paint gone
+        // sessions), but write stays open: closing it with a plain `skip` would silently empty the roster from the socket, looking like agreement.
+        fn state_dump_carries_the_roster_it_is_asked_about() {
+            let fb = FrameBuilder::new((1600, 900));
+            {
+                let chrome = fb.chrome();
+                // Drop the `ChromeState` borrow before locking the tree — nothing
+                // here needs it once the handle is cloned out.
+                let tree_handle = chrome.tree_handle();
+                drop(chrome);
+                let mut tree = tree_handle.write();
+                let room = tree
+                    .desktop
+                    .active_workspace()
+                    .expect("active workspace")
+                    .room;
+                let noted = tree.note_peer_present(room, 0x51, "alice");
+                drop(tree);
+                assert!(noted);
+            }
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            };
+            let tree = state.workspace_tree_json();
+            let found = tree
+                .get("workspaces")
+                .and_then(|v| v.as_array())
+                .expect("workspaces array")
+                .iter()
+                .filter_map(|w| w.get("collaborators")?.as_array())
+                .flatten()
+                .filter_map(|c| c.get("id")?.as_str())
+                .any(|id| id == "alice");
+            assert!(
+                found,
+                "a peer the shell has admitted must appear in the control \
+                 socket's state dump; without it a harness cannot tell an \
+                 empty roster from an unreported one. Got: {tree}"
+            );
+        }
+        // Phase `state_dump_exposes_retry_ready_lock_auth_without_password_contents`.
+        {
+            let fb = FrameBuilder::new((1600, 900));
+            let mut lock = LockController::new(
+                std::sync::Arc::new(crate::compositor::lock_auth::FixedVerifier::new("correct")),
+                "alice",
+            );
+            lock.push_str("secret-value");
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: Some(&lock),
+            };
+            let chrome = state.chrome_state_json();
+            let auth = chrome
+                .get("lock_auth")
+                .expect("native state dump must expose lock authentication status");
+            assert_eq!(auth.get("verifying"), Some(&serde_json::Value::Bool(false)));
+            assert_eq!(
+                auth.get("password_len").and_then(serde_json::Value::as_u64),
+                Some(12)
+            );
+            assert_eq!(auth.get("error"), Some(&serde_json::Value::Null));
+            assert!(
+                !chrome.to_string().contains("secret-value"),
+                "state dump must never disclose the password buffer"
+            );
+        }
+        // Phase `state_dump_exposes_own_presence_privacy_and_follow_state`.
+        {
+            let fb = FrameBuilder::new((1600, 900));
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            };
+
+            let presence = &state.chrome_state_json()["presence"];
+            assert!(
+                matches!(
+                    presence["status_sharing"].as_str(),
+                    Some("off" | "manual" | "automatic")
+                ),
+                "presence privacy must be an explicit wire value: {presence}"
+            );
+            assert!(
+                presence["own_status"].is_null() || presence["own_status"].is_string(),
+                "manual status must remain inspectable: {presence}"
+            );
+            assert!(presence["following"].is_null());
+        }
+        // Phase `state_dump_carries_the_roster_it_is_asked_about` (defined above).
+        state_dump_carries_the_roster_it_is_asked_about();
+        // Phase `state_dump_attributes_agent_screen_exposure_to_its_exact_target`.
+        // Agents and automation use the same semantic inspection surface as
+        // accessibility tooling. Screen exposure therefore has to retain the
+        // viewer's principal kind, exact target, and control authority rather
+        // than degrading to an anonymous "sharing" boolean.
+        {
+            use crate::compositor::tab_binding::{self, Placement};
+            use crate::network::streaming::{ShareRegistry, StreamingShare};
+            use crate::shell::state::{CapOverride, Subject, Verb};
+
+            const AGENT_PEER: u64 = 0xA9;
+            const SURFACE: u64 = 71_900;
+
+            let fb = FrameBuilder::new((1600, 900));
+            {
+                let chrome = fb.chrome();
+                let tree_handle = chrome.tree_handle();
+                drop(chrome);
+                let mut tree = tree_handle.write();
+                let workspace = tree
+                    .desktop
+                    .active_workspace_mut()
+                    .expect("active workspace");
+                workspace.owner = Some("owner".to_string());
+                let room = workspace.id.raw().to_string();
+                workspace
+                    .grant_as(
+                        &"owner".to_string(),
+                        CapOverride::membership(Subject::agent("release-notes"), room, Verb::Write),
+                    )
+                    .expect("owner admits agent");
+                workspace.collaborators.push(
+                    crate::shell::state::Collaborator::new("release-notes", "Release Notes Agent")
+                        .with_session(AGENT_PEER),
+                );
+                tab_binding::adopt_toplevel_at(
+                    &mut tree,
+                    SURFACE,
+                    Some("org.libreoffice.Writer".into()),
+                    Placement::NewGroup,
+                );
+                let tab = tree
+                    .desktop
+                    .active_workspace_mut()
+                    .into_iter()
+                    .flat_map(|workspace| &mut workspace.strips)
+                    .flat_map(|strip| &mut strip.window_groups)
+                    .flat_map(|group| &mut group.tabs)
+                    .find(|tab| {
+                        matches!(
+                            tab.tile,
+                            crate::shell::state::TileContent::Foreign { surface_id, .. }
+                                if surface_id == SURFACE
+                        )
+                    })
+                    .expect("adopted foreign tab");
+                tab.title = "Quarterly Plan".to_string();
+                drop(tree);
+            }
+
+            let mut shares = ShareRegistry::new();
+            shares.insert(AGENT_PEER, SURFACE, StreamingShare::new());
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: Some(&shares),
+                lock: None,
+            };
+            let rows = state
+                .sharing_json()
+                .get("exposures")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .expect("state dump exposure rows");
+            assert_eq!(rows.len(), 1);
+            let row = &rows[0];
+            assert_eq!(row["name"], "Release Notes Agent");
+            assert_eq!(row["kind"], "agent");
+            assert_eq!(row["target"], "Quarterly Plan");
+            assert_eq!(row["can_see"], true);
+            assert_eq!(row["can_control"], true);
+        }
+    }
+
+    // session lock chord / unlock detection
 
     /// A window that set its own icon reports it as its tab's artwork.
     #[test]
@@ -11114,476 +11616,6 @@ mod tests {
                 .is_some_and(|key| key.starts_with(&format!("toplevel:{surface}:"))),
             "{row}"
         );
-    }
-
-    #[test]
-    fn state_dump_exposes_retry_ready_lock_auth_without_password_contents() {
-        let fb = FrameBuilder::new((1600, 900));
-        let mut lock = LockController::new(
-            std::sync::Arc::new(crate::compositor::lock_auth::FixedVerifier::new("correct")),
-            "alice",
-        );
-        lock.push_str("secret-value");
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: Some(&lock),
-        };
-        let chrome = state.chrome_state_json();
-        let auth = chrome
-            .get("lock_auth")
-            .expect("native state dump must expose lock authentication status");
-        assert_eq!(auth.get("verifying"), Some(&serde_json::Value::Bool(false)));
-        assert_eq!(
-            auth.get("password_len").and_then(serde_json::Value::as_u64),
-            Some(12)
-        );
-        assert_eq!(auth.get("error"), Some(&serde_json::Value::Null));
-        assert!(
-            !chrome.to_string().contains("secret-value"),
-            "state dump must never disclose the password buffer"
-        );
-    }
-
-    #[test]
-    fn state_dump_identifies_the_exact_nested_search_resource() {
-        let fb = FrameBuilder::new((1600, 900));
-        fb.chrome_handle().borrow_mut().search_resource_scope =
-            Some(crate::shell::chrome_state::SearchResourceScope {
-                peer_id: 0x42,
-                cluster_id: "room:design".into(),
-                app_id: "so.tilo.reader".into(),
-                resource: "book:architecture/chapter:7".into(),
-                label: "Rendering and state".into(),
-                kind: String::new(),
-            });
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
-        };
-
-        let scope = &state.chrome_state_json()["search_resource_scope"];
-        assert_eq!(scope["peer_id"], 0x42);
-        assert_eq!(scope["cluster_id"], "room:design");
-        assert_eq!(scope["app_id"], "so.tilo.reader");
-        assert_eq!(scope["resource"], "book:architecture/chapter:7");
-        assert_eq!(scope["label"], "Rendering and state");
-    }
-
-    #[test]
-    fn state_dump_exposes_own_presence_privacy_and_follow_state() {
-        let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
-        };
-
-        let presence = &state.chrome_state_json()["presence"];
-        assert!(
-            matches!(
-                presence["status_sharing"].as_str(),
-                Some("off" | "manual" | "automatic")
-            ),
-            "presence privacy must be an explicit wire value: {presence}"
-        );
-        assert!(
-            presence["own_status"].is_null() || presence["own_status"].is_string(),
-            "manual status must remain inspectable: {presence}"
-        );
-        assert!(presence["following"].is_null());
-    }
-
-    #[test]
-    fn action_enumeration_preserves_directory_resource_hierarchy() {
-        use crate::shell::collab_broker_capnp::{ActionDirectoryRoot, CapnpBrokerState};
-        use crate::shell::search::providers::live_app_actions::fixture_with_directory_page;
-
-        let mut fb = FrameBuilder::new((800, 600));
-        let (room, actor) = {
-            let chrome = fb.chrome();
-            let room = chrome.tree().desktop.active_workspace().unwrap().room;
-            (room.to_string(), chrome.local_user_for_room(&room))
-        };
-        fb.chrome()
-            .tree_handle()
-            .write()
-            .desktop
-            .active_workspace_mut()
-            .unwrap()
-            .owner = Some(actor.clone());
-        let broker = CapnpBrokerState::test_broker_with_membership(fb.chrome().tree_handle());
-        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
-            peer_id: 4096,
-            app_id: "dev.tilo.calculator".into(),
-            cluster_id: room.clone(),
-            record_id: "calculator-document".into(),
-        }]);
-        let page = tilo_actions::remote::CataloguePage {
-            revision: "revision-3".into(),
-            rows: vec![tilo_actions::remote::CatalogueRow {
-                provider: "4096".into(),
-                app_id: "dev.tilo.calculator".into(),
-                parent_resource: String::new(),
-                resource: tilo_actions::remote::CatalogueResource {
-                    id: "calculator.graph:curve2d:stable-17".into(),
-                    kind: "calculator.graph".into(),
-                    label: "A presentation label without routing metadata".into(),
-                    presentation: None,
-                },
-                action: Some(tilo_actions::ActionDescriptor {
-                    address: tilo_actions::ActionAddress::new(
-                        "calculator.graph:curve2d:stable-17",
-                        "toggle-visibility",
-                    ),
-                    resource_kind: "calculator.graph".into(),
-                    resource_label: "A presentation label without routing metadata".into(),
-                    action_label: "Hide".into(),
-                    description: Some("Do not infer identity from this text".into()),
-                    locus: tilo_actions::ExecutionLocus::default(),
-                    kind: tilo_actions::OperationKind::View,
-                    contract: tilo_actions::ActionContract::view(),
-                    input: tilo_actions::InputSpec::None,
-                    params: Vec::new(),
-                    view: None,
-                }),
-                has_children: false,
-                visibility: None,
-            }],
-            exhausted: true,
-            ..tilo_actions::remote::CataloguePage::default()
-        };
-        let provider = fixture_with_directory_page(broker, 4096, actor, page);
-        crate::shell::overlay_host::install_fixture_search_provider(fb.host_mut(), provider);
-        let doc = AutoCommit::new();
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: Some((&doc, &automerge::ROOT)),
-            shares: None,
-            lock: None,
-        };
-        let answer = state.enumerate_actions("").expect("enumerated actions");
-        let row = answer["actions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["provider"] == "app-actions" && row["title"] == "Hide")
-            .expect("real directory action must be visible");
-        assert_eq!(row["application"], "dev.tilo.calculator");
-        assert_eq!(row["room"], room);
-        assert_eq!(row["record"], "calculator-document");
-        assert_eq!(row["resource"], "calculator.graph:curve2d:stable-17");
-        assert_eq!(row["operation"], "toggle-visibility");
-        assert_eq!(
-            row["id"],
-            "directory\u{1f}4096\u{1f}revision-3\u{1f}calculator.graph:curve2d:stable-17\u{1f}toggle-visibility"
-        );
-    }
-
-    /// `workspace_tree_json` exposes a `workspaces` array on the bootstrap
-    /// layout — the CLI's `state-dump` smoke depends on it as the consumer's entrypoint to the workspace list.
-    #[test]
-    fn state_dump_workspace_tree_includes_workspaces_array() {
-        let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
-        };
-        let tree = state.workspace_tree_json();
-        let workspaces = tree
-            .get("workspaces")
-            .and_then(|v| v.as_array())
-            .expect("workspace_tree_json should carry `workspaces` array");
-        // `FrameBuilder::new` uses the demo tree, matching the `bootstrap_demo`
-        // assertions in `shell/state.rs`.
-        assert!(
-            !workspaces.is_empty(),
-            "bootstrap workspace tree should not be empty"
-        );
-    }
-
-    /// The state dump has to carry the roster — how a harness observes who
-    /// the shell believes is present. `Workspace::collaborators` is
-    /// `#[serde(skip_deserializing)]` (a restarted shell must not paint gone
-    /// sessions), but write stays open: closing it with a plain `skip` would silently empty the roster from the socket, looking like agreement.
-    #[test]
-    fn state_dump_carries_the_roster_it_is_asked_about() {
-        let fb = FrameBuilder::new((1600, 900));
-        {
-            let chrome = fb.chrome();
-            // Drop the `ChromeState` borrow before locking the tree — nothing
-            // here needs it once the handle is cloned out.
-            let tree_handle = chrome.tree_handle();
-            drop(chrome);
-            let mut tree = tree_handle.write();
-            let room = tree
-                .desktop
-                .active_workspace()
-                .expect("active workspace")
-                .room;
-            let noted = tree.note_peer_present(room, 0x51, "alice");
-            drop(tree);
-            assert!(noted);
-        }
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
-        };
-        let tree = state.workspace_tree_json();
-        let found = tree
-            .get("workspaces")
-            .and_then(|v| v.as_array())
-            .expect("workspaces array")
-            .iter()
-            .filter_map(|w| w.get("collaborators")?.as_array())
-            .flatten()
-            .filter_map(|c| c.get("id")?.as_str())
-            .any(|id| id == "alice");
-        assert!(
-            found,
-            "a peer the shell has admitted must appear in the control \
-             socket's state dump; without it a harness cannot tell an \
-             empty roster from an unreported one. Got: {tree}"
-        );
-    }
-
-    /// Agents and automation use the same semantic inspection surface as
-    /// accessibility tooling. Screen exposure therefore has to retain the
-    /// viewer's principal kind, exact target, and control authority rather
-    /// than degrading to an anonymous "sharing" boolean.
-    #[test]
-    fn state_dump_attributes_agent_screen_exposure_to_its_exact_target() {
-        use crate::compositor::tab_binding::{self, Placement};
-        use crate::network::streaming::{ShareRegistry, StreamingShare};
-        use crate::shell::state::{CapOverride, Subject, Verb};
-
-        const AGENT_PEER: u64 = 0xA9;
-        const SURFACE: u64 = 71_900;
-
-        let fb = FrameBuilder::new((1600, 900));
-        {
-            let chrome = fb.chrome();
-            let tree_handle = chrome.tree_handle();
-            drop(chrome);
-            let mut tree = tree_handle.write();
-            let workspace = tree
-                .desktop
-                .active_workspace_mut()
-                .expect("active workspace");
-            workspace.owner = Some("owner".to_string());
-            let room = workspace.id.raw().to_string();
-            workspace
-                .grant_as(
-                    &"owner".to_string(),
-                    CapOverride::membership(Subject::agent("release-notes"), room, Verb::Write),
-                )
-                .expect("owner admits agent");
-            workspace.collaborators.push(
-                crate::shell::state::Collaborator::new("release-notes", "Release Notes Agent")
-                    .with_session(AGENT_PEER),
-            );
-            tab_binding::adopt_toplevel_at(
-                &mut tree,
-                SURFACE,
-                Some("org.libreoffice.Writer".into()),
-                Placement::NewGroup,
-            );
-            let tab = tree
-                .desktop
-                .active_workspace_mut()
-                .into_iter()
-                .flat_map(|workspace| &mut workspace.strips)
-                .flat_map(|strip| &mut strip.window_groups)
-                .flat_map(|group| &mut group.tabs)
-                .find(|tab| {
-                    matches!(
-                        tab.tile,
-                        crate::shell::state::TileContent::Foreign { surface_id, .. }
-                            if surface_id == SURFACE
-                    )
-                })
-                .expect("adopted foreign tab");
-            tab.title = "Quarterly Plan".to_string();
-            drop(tree);
-        }
-
-        let mut shares = ShareRegistry::new();
-        shares.insert(AGENT_PEER, SURFACE, StreamingShare::new());
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: Some(&shares),
-            lock: None,
-        };
-        let rows = state
-            .sharing_json()
-            .get("exposures")
-            .and_then(serde_json::Value::as_array)
-            .cloned()
-            .expect("state dump exposure rows");
-        assert_eq!(rows.len(), 1);
-        let row = &rows[0];
-        assert_eq!(row["name"], "Release Notes Agent");
-        assert_eq!(row["kind"], "agent");
-        assert_eq!(row["target"], "Quarterly Plan");
-        assert_eq!(row["can_see"], true);
-        assert_eq!(row["can_control"], true);
-    }
-
-    /// Dispatching `Command::StateDump` returns `Response::State` with no
-    /// actions. Integration round-trip lives in `tests/control_socket_test.rs`; this smoke catches regressions needing no spawned compositor.
-    #[test]
-    fn dispatch_state_dump_against_frame_builder_returns_state() {
-        let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
-        };
-        let (resp, actions) =
-            test_control::dispatch_command(&test_control::Command::StateDump, &state);
-        assert!(actions.is_empty());
-        let test_control::Response::State {
-            workspace_tree,
-            chrome,
-            peers: _,
-            sharing: _,
-        } = resp
-        else {
-            panic!("expected Response::State; got something else");
-        };
-        // Sanity: both blobs are non-null and shaped like objects.
-        assert!(
-            workspace_tree.is_object(),
-            "workspace_tree should be an object"
-        );
-        assert!(chrome.is_object(), "chrome should be an object");
-    }
-
-    /// Cmd+Tab via `test_control` opens the overview overlay — proves
-    /// modifiers + named-key chords reach the host's chord handler, like `ShellDriver::press_key` in-process.
-    #[test]
-    fn cmd_tab_chord_via_test_control_opens_overview() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint();
-        assert!(
-            !fb.chrome().overlays.overview,
-            "bootstrap layout starts with overview closed"
-        );
-        let mut ctx = TestControlCtx::new();
-        // Plant the Super modifier, then dispatch Tab press+release.
-        execute_planned_action(
-            &PlannedAction::SetModifiers {
-                ctrl: false,
-                shift: false,
-                alt: false,
-                logo: true,
-            },
-            &mut fb,
-            &mut ctx,
-        );
-        execute_planned_action(
-            &PlannedAction::KeyboardKey {
-                key: KeyTag::Named(NamedKeyTag::Tab),
-                pressed: true,
-            },
-            &mut fb,
-            &mut ctx,
-        );
-        execute_planned_action(
-            &PlannedAction::KeyboardKey {
-                key: KeyTag::Named(NamedKeyTag::Tab),
-                pressed: false,
-            },
-            &mut fb,
-            &mut ctx,
-        );
-        assert!(
-            fb.chrome().overlays.overview,
-            "Super+Tab via test_control should toggle overview on"
-        );
-    }
-
-    /// Dropping an `UnlinkOnDrop` removes the file at its path — `run` holds
-    /// one around the test-control socket so it unlinks on clean exit + panic-unwind.
-    #[test]
-    fn unlink_on_drop_removes_socket_file_on_drop() {
-        let tmpdir = tempfile::tempdir().expect("tempdir");
-        let path = tmpdir.path().join("tilo-test-control.sock");
-        // Use an arbitrary regular-file stand-in — the guard removes anything
-        // `remove_file` accepts, no real unix socket needed to exercise the contract.
-        std::fs::write(&path, b"").expect("create stand-in file");
-        assert!(path.exists(), "test setup: file should exist after write");
-        let guard = UnlinkOnDrop(path.clone());
-        drop(guard);
-        assert!(
-            !path.exists(),
-            "UnlinkOnDrop must remove the file at its path on drop \
-             (D-3); got lingering file at {path:?}"
-        );
-    }
-
-    // session lock chord / unlock detection
-
-    /// `apply_session_transition` maps Blanked/Woke to `set_dpms`;
-    /// Locked/Unlocked are pure state and touch no backend — asserted via a spy backend recording `set_dpms` calls.
-    #[test]
-    fn apply_transition_drives_backend_dpms() {
-        use crate::compositor::backend::{Backend, BackendEvent, Output};
-        use vello::Scene;
-
-        #[derive(Default)]
-        struct SpyBackend {
-            dpms_calls: Vec<bool>,
-            outputs: Vec<Output>,
-        }
-        impl Backend for SpyBackend {
-            fn submit_frame(&mut self, _scene: &Scene, _output: OutputId) {}
-            fn poll_events(&mut self, _cb: &mut dyn FnMut(BackendEvent)) {}
-            fn outputs(&self) -> &[Output] {
-                &self.outputs
-            }
-            fn set_dpms(&mut self, on: bool) {
-                self.dpms_calls.push(on);
-            }
-        }
-
-        struct NoBacklight;
-        impl crate::compositor::screen_dim::Backlight for NoBacklight {
-            fn brightness(&self) -> Option<f32> {
-                None
-            }
-            fn set_brightness(&self, _fraction: f32) -> bool {
-                false
-            }
-        }
-
-        let mut backend = SpyBackend::default();
-        let mut dimmer = ScreenDimmer::new(NoBacklight);
-        for t in [
-            SessionTransition::Dimmed,
-            SessionTransition::Blanked,
-            SessionTransition::Woke,
-            SessionTransition::Locked,
-            SessionTransition::Unlocked,
-        ] {
-            apply_session_transition(t, &mut backend, None, &mut dimmer);
-        }
-        // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
-        assert_eq!(backend.dpms_calls, vec![false, true]);
-        // Without a backlight the dim falls back to the paint overlay, lifted by Undimmed.
-        assert!(dimmer.overlay_alpha().is_some());
-        apply_session_transition(SessionTransition::Undimmed, &mut backend, None, &mut dimmer);
-        assert_eq!(dimmer.overlay_alpha(), None);
     }
 }
 
@@ -11863,25 +11895,25 @@ mod vt_chord_tests {
     }
 
     #[test]
-    fn ctrl_alt_f_maps_to_the_matching_vt() {
-        let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
-        assert_eq!(
-            vt_switch_chord(&key(NamedKey::F1, ElementState::Pressed), m),
-            Some(1)
-        );
-        assert_eq!(
-            vt_switch_chord(&key(NamedKey::F3, ElementState::Pressed), m),
-            Some(3),
-            "Ctrl+Alt+F3 is the one the seat diagnosis tells people to use"
-        );
-        assert_eq!(
-            vt_switch_chord(&key(NamedKey::F12, ElementState::Pressed), m),
-            Some(12)
-        );
-    }
-
-    #[test]
-    fn either_modifier_alone_is_not_the_chord() {
+    fn ctrl_alt_f_press_alone_is_the_vt_switch_chord() {
+        // Phase `ctrl_alt_f_maps_to_the_matching_vt`.
+        {
+            let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
+            assert_eq!(
+                vt_switch_chord(&key(NamedKey::F1, ElementState::Pressed), m),
+                Some(1)
+            );
+            assert_eq!(
+                vt_switch_chord(&key(NamedKey::F3, ElementState::Pressed), m),
+                Some(3),
+                "Ctrl+Alt+F3 is the one the seat diagnosis tells people to use"
+            );
+            assert_eq!(
+                vt_switch_chord(&key(NamedKey::F12, ElementState::Pressed), m),
+                Some(12)
+            );
+        }
+        // Phase `either_modifier_alone_is_not_the_chord`.
         // Alt+F4 closes a window on every desktop; claiming it as a VT switch would be a spectacular regression.
         assert_eq!(
             vt_switch_chord(
@@ -11904,29 +11936,27 @@ mod vt_chord_tests {
             ),
             None
         );
-    }
-
-    #[test]
-    fn only_the_press_switches() {
-        // Acting on the release too would switch twice per chord.
-        let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
-        assert_eq!(
-            vt_switch_chord(&key(NamedKey::F2, ElementState::Released), m),
-            None
-        );
-    }
-
-    #[test]
-    fn other_keys_with_the_modifiers_held_are_not_vt_switches() {
-        let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
-        assert_eq!(
-            vt_switch_chord(&key(NamedKey::Delete, ElementState::Pressed), m),
-            None
-        );
-        assert_eq!(
-            vt_switch_chord(&key(NamedKey::Tab, ElementState::Pressed), m),
-            None
-        );
+        // Phase `only_the_press_switches`.
+        {
+            // Acting on the release too would switch twice per chord.
+            let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
+            assert_eq!(
+                vt_switch_chord(&key(NamedKey::F2, ElementState::Released), m),
+                None
+            );
+        }
+        // Phase `other_keys_with_the_modifiers_held_are_not_vt_switches`.
+        {
+            let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
+            assert_eq!(
+                vt_switch_chord(&key(NamedKey::Delete, ElementState::Pressed), m),
+                None
+            );
+            assert_eq!(
+                vt_switch_chord(&key(NamedKey::Tab, ElementState::Pressed), m),
+                None
+            );
+        }
     }
 
     fn character(c: &str) -> WindowEvent {
@@ -12066,102 +12096,107 @@ mod gesture_wireup_tests {
     }
 
     #[test]
-    fn a_swipe_up_switches_the_workspace_the_chrome_is_on() {
-        let mut fb = builder();
-        // A second workspace to switch to — a one-workspace tree has nowhere to
-        // go, so the assertion would pass vacuously. The new one is active, appended last, so "up" is where we came from.
-        fb.with_chrome(|st| {
-            st.add_workspace("second");
-        });
-        let before = fb.chrome().tree().desktop.active;
-        // What a three-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
-        apply_shell_gesture(&mut fb, GestureAction::SwitchWorkspace(-1));
-        let after = fb.chrome().tree().desktop.active;
-        assert_ne!(
-            before, after,
-            "a three-finger swipe must move the active workspace, not just resolve to an intent"
-        );
-    }
-
-    #[test]
-    fn a_four_finger_swipe_opens_and_closes_the_overview() {
-        let mut fb = builder();
-        assert!(!fb.chrome().overlays.overview);
-        apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
-        assert!(fb.chrome().overlays.overview);
-        apply_shell_gesture(&mut fb, GestureAction::HideOverview);
-        assert!(!fb.chrome().overlays.overview);
-    }
-
-    #[test]
-    fn showing_an_already_open_overview_is_a_no_op() {
-        // The gesture fires once per swipe; a second swipe in the same direction must not bump the revision for nothing.
-        let mut fb = builder();
-        apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
-        let revision = fb.chrome().revision;
-        apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
-        assert_eq!(fb.chrome().revision, revision);
-    }
-
-    #[test]
-    fn a_backend_with_no_display_advertises_no_refresh_rate() {
-        // The headless backend has no display, so `wl_output` falls back to the conventional rate rather than zero.
-        let backend = HeadlessBackend::new(800, 600).expect("headless backend");
-        assert_eq!(refresh_mhz_of(&backend as &dyn Backend), None);
-    }
-
-    #[test]
-    fn a_refresh_interval_becomes_millihertz() {
-        struct Paced(std::time::Duration);
-        impl Backend for Paced {
-            fn submit_frame(&mut self, _s: &vello::Scene, _o: OutputId) {}
-            fn poll_events(&mut self, _cb: &mut dyn FnMut(BackendEvent)) {}
-            fn outputs(&self) -> &[Output] {
-                &[]
-            }
-            fn refresh_interval(&self) -> Option<std::time::Duration> {
-                Some(self.0)
-            }
+    fn gestures_drive_workspace_switch_and_overview() {
+        // Phase `a_swipe_up_switches_the_workspace_the_chrome_is_on`.
+        {
+            let mut fb = builder();
+            // A second workspace to switch to — a one-workspace tree has nowhere to
+            // go, so the assertion would pass vacuously. The new one is active, appended last, so "up" is where we came from.
+            fb.with_chrome(|st| {
+                st.add_workspace("second");
+            });
+            let before = fb.chrome().tree().desktop.active;
+            // What a three-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
+            apply_shell_gesture(&mut fb, GestureAction::SwitchWorkspace(-1));
+            let after = fb.chrome().tree().desktop.active;
+            assert_ne!(
+                before, after,
+                "a three-finger swipe must move the active workspace, not just resolve to an intent"
+            );
         }
-        let sixty = Paced(std::time::Duration::from_nanos(16_666_667));
-        assert_eq!(refresh_mhz_of(&sixty as &dyn Backend), Some(60_000));
-        // 59.94 Hz must not round to 60 000 — the whole reason DRM derives its interval from raw mode timing.
-        let ntsc = Paced(std::time::Duration::from_nanos(16_683_333));
-        assert_eq!(refresh_mhz_of(&ntsc as &dyn Backend), Some(59_940));
+        // Phase `a_four_finger_swipe_opens_and_closes_the_overview`.
+        {
+            let mut fb = builder();
+            assert!(!fb.chrome().overlays.overview);
+            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            assert!(fb.chrome().overlays.overview);
+            apply_shell_gesture(&mut fb, GestureAction::HideOverview);
+            assert!(!fb.chrome().overlays.overview);
+        }
+        // Phase `showing_an_already_open_overview_is_a_no_op`.
+        {
+            // The gesture fires once per swipe; a second swipe in the same direction must not bump the revision for nothing.
+            let mut fb = builder();
+            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            let revision = fb.chrome().revision;
+            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            assert_eq!(fb.chrome().revision, revision);
+        }
     }
 
     #[test]
-    fn drm_nested_loop_readiness_is_coalesced_to_one_outer_wake() {
-        let source = include_str!("native.rs");
-        assert!(
-            backend_nested_loop_uses_edge_wake(source),
-            "the nested DRM calloop fd is only a wake token; level readiness can spin the outer loop thousands of times after the inner source was drained"
-        );
+    fn backend_refresh_rate_is_advertised_in_millihertz() {
+        // Phase `a_backend_with_no_display_advertises_no_refresh_rate`.
+        {
+            // The headless backend has no display, so `wl_output` falls back to the conventional rate rather than zero.
+            let backend = HeadlessBackend::new(800, 600).expect("headless backend");
+            assert_eq!(refresh_mhz_of(&backend as &dyn Backend), None);
+        }
+        // Phase `a_refresh_interval_becomes_millihertz`.
+        {
+            struct Paced(std::time::Duration);
+            impl Backend for Paced {
+                fn submit_frame(&mut self, _s: &vello::Scene, _o: OutputId) {}
+                fn poll_events(&mut self, _cb: &mut dyn FnMut(BackendEvent)) {}
+                fn outputs(&self) -> &[Output] {
+                    &[]
+                }
+                fn refresh_interval(&self) -> Option<std::time::Duration> {
+                    Some(self.0)
+                }
+            }
+            let sixty = Paced(std::time::Duration::from_nanos(16_666_667));
+            assert_eq!(refresh_mhz_of(&sixty as &dyn Backend), Some(60_000));
+            // 59.94 Hz must not round to 60 000 — the whole reason DRM derives its interval from raw mode timing.
+            let ntsc = Paced(std::time::Duration::from_nanos(16_683_333));
+            assert_eq!(refresh_mhz_of(&ntsc as &dyn Backend), Some(59_940));
+        }
     }
 
-    /// A normal logout must unwind the backend, event loop and libseat
-    /// handles. Unlinking the public sockets is not enough: terminating the
-    /// process from inside `run` skips those destructors and can leave the
-    /// display manager unable to acquire the physical seat.
     #[test]
-    fn ordinary_logout_returns_from_run_instead_of_exiting_the_process() {
-        let source = include_str!("native.rs");
-        let run = source
-            .split_once("pub fn run() {")
-            .expect("native run entry point")
-            .1
-            .split_once("/// Session-owned ambient-light loop")
-            .expect("end of native run entry point")
-            .0;
+    fn session_loop_wakes_once_per_readiness_and_exits_cleanly() {
+        // Phase `drm_nested_loop_readiness_is_coalesced_to_one_outer_wake`.
+        {
+            let source = include_str!("native.rs");
+            assert!(
+                backend_nested_loop_uses_edge_wake(source),
+                "the nested DRM calloop fd is only a wake token; level readiness can spin the outer loop thousands of times after the inner source was drained"
+            );
+        }
+        // Phase `ordinary_logout_returns_from_run_instead_of_exiting_the_process`.
+        // A normal logout must unwind the backend, event loop and libseat
+        // handles. Unlinking the public sockets is not enough: terminating the
+        // process from inside `run` skips those destructors and can leave the
+        // display manager unable to acquire the physical seat.
+        {
+            let source = include_str!("native.rs");
+            let run = source
+                .split_once("pub fn run() {")
+                .expect("native run entry point")
+                .1
+                .split_once("/// Session-owned ambient-light loop")
+                .expect("end of native run entry point")
+                .0;
 
-        assert!(
-            !run.contains("std::process::exit(0)"),
-            "ordinary logout must return so DRM/libseat resources unwind"
-        );
-        assert!(
-            run.contains("drop(display);") && run.contains("drop(notif_handle);"),
-            "service endpoints must still be torn down before returning"
-        );
+            assert!(
+                !run.contains("std::process::exit(0)"),
+                "ordinary logout must return so DRM/libseat resources unwind"
+            );
+            assert!(
+                run.contains("drop(display);") && run.contains("drop(notif_handle);"),
+                "service endpoints must still be torn down before returning"
+            );
+        }
     }
 }
 
@@ -12233,86 +12268,92 @@ mod output_geometry_tests {
         );
     }
 
-    /// A single monitor maps to one display at the origin — the case every screenshot and test runs in.
     #[test]
-    fn single_output_maps_to_one_display() {
-        let outs = [Output::new(OutputId(0), (3840, 2160), 1.0)];
-        let geo = output_geometry(&outs);
-        assert_eq!(geo.len(), 1);
-        assert_eq!(
-            (geo[0].x, geo[0].width, geo[0].height),
-            (0.0, 3840.0, 2160.0)
-        );
-    }
-
-    /// Two monitors side by side stay two displays, each with its own width —
-    /// what stops a full-width window spanning both (combined geometry here is 3520px, neither display is that wide).
-    #[test]
-    fn side_by_side_outputs_stay_separate_displays() {
-        let outs = [
-            Output::new(OutputId(0), (1600, 900), 1.0),
-            Output {
-                id: OutputId(1),
-                position: (1600, 0),
-                size: (1920, 1080),
-                scale: 1.0,
-                transform: settings_store::hardware::OutputTransform::Normal,
-                color_profile: None,
-                refresh_mhz: None,
-                logical_position: (1600, 0),
-                identity: crate::compositor::backend::OutputIdentity::default(),
-            },
-        ];
-        let geo = output_geometry(&outs);
-        assert_eq!(geo.len(), 2);
-        assert_eq!((geo[0].x, geo[0].width), (0.0, 1600.0));
-        assert_eq!((geo[1].x, geo[1].width), (1600.0, 1920.0));
-    }
-
-    /// A connector mid-modeset reports 0x0; a strip can't place a window on it, so it must not appear as a display.
-    #[test]
-    fn zero_sized_outputs_are_dropped() {
-        let outs = [
-            Output::new(OutputId(0), (1600, 900), 1.0),
-            Output::new(OutputId(1), (0, 0), 1.0),
-        ];
-        assert_eq!(output_geometry(&outs).len(), 1);
-    }
-
-    #[test]
-    fn fullscreen_prefers_requested_output_then_rehomes_after_hotplug() {
-        let outputs = [
-            Output::new(OutputId(0), (1600, 900), 1.0),
-            Output {
-                id: OutputId(1),
-                position: (1600, 0),
-                size: (1920, 1080),
-                scale: 1.0,
-                transform: settings_store::hardware::OutputTransform::Normal,
-                color_profile: None,
-                refresh_mhz: None,
-                logical_position: (1600, 0),
-                identity: crate::compositor::backend::OutputIdentity::default(),
-            },
-        ];
-        let centre = vello::kurbo::Point::new(2000.0, 400.0);
-        assert_eq!(
-            select_fullscreen_output(Some(OutputId(1)), Some(centre), &outputs).map(|out| out.id),
-            Some(OutputId(1)),
-            "requested wl_output wins over the old tiled placement"
-        );
-        let remaining = &outputs[..1];
-        assert_eq!(
-            select_fullscreen_output(Some(OutputId(1)), Some(centre), remaining).map(|out| out.id),
-            Some(OutputId(0)),
-            "removed requested output deterministically rehomes fullscreen"
-        );
-        assert_eq!(
-            select_fullscreen_output(None, Some(vello::kurbo::Point::new(300.0, 400.0)), &outputs)
+    fn output_geometry_maps_outputs_to_displays_and_rehomes_fullscreen() {
+        // Phase `single_output_maps_to_one_display`.
+        // A single monitor maps to one display at the origin — the case every screenshot and test runs in.
+        {
+            let outs = [Output::new(OutputId(0), (3840, 2160), 1.0)];
+            let geo = output_geometry(&outs);
+            assert_eq!(geo.len(), 1);
+            assert_eq!(
+                (geo[0].x, geo[0].width, geo[0].height),
+                (0.0, 3840.0, 2160.0)
+            );
+        }
+        // Phase `side_by_side_outputs_stay_separate_displays`.
+        // Two monitors side by side stay two displays, each with its own width —
+        // what stops a full-width window spanning both (combined geometry here is 3520px, neither display is that wide).
+        {
+            let outs = [
+                Output::new(OutputId(0), (1600, 900), 1.0),
+                Output {
+                    id: OutputId(1),
+                    position: (1600, 0),
+                    size: (1920, 1080),
+                    scale: 1.0,
+                    transform: settings_store::hardware::OutputTransform::Normal,
+                    color_profile: None,
+                    refresh_mhz: None,
+                    logical_position: (1600, 0),
+                    identity: crate::compositor::backend::OutputIdentity::default(),
+                },
+            ];
+            let geo = output_geometry(&outs);
+            assert_eq!(geo.len(), 2);
+            assert_eq!((geo[0].x, geo[0].width), (0.0, 1600.0));
+            assert_eq!((geo[1].x, geo[1].width), (1600.0, 1920.0));
+        }
+        // Phase `zero_sized_outputs_are_dropped`.
+        // A connector mid-modeset reports 0x0; a strip can't place a window on it, so it must not appear as a display.
+        {
+            let outs = [
+                Output::new(OutputId(0), (1600, 900), 1.0),
+                Output::new(OutputId(1), (0, 0), 1.0),
+            ];
+            assert_eq!(output_geometry(&outs).len(), 1);
+        }
+        // Phase `fullscreen_prefers_requested_output_then_rehomes_after_hotplug`.
+        {
+            let outputs = [
+                Output::new(OutputId(0), (1600, 900), 1.0),
+                Output {
+                    id: OutputId(1),
+                    position: (1600, 0),
+                    size: (1920, 1080),
+                    scale: 1.0,
+                    transform: settings_store::hardware::OutputTransform::Normal,
+                    color_profile: None,
+                    refresh_mhz: None,
+                    logical_position: (1600, 0),
+                    identity: crate::compositor::backend::OutputIdentity::default(),
+                },
+            ];
+            let centre = vello::kurbo::Point::new(2000.0, 400.0);
+            assert_eq!(
+                select_fullscreen_output(Some(OutputId(1)), Some(centre), &outputs)
+                    .map(|out| out.id),
+                Some(OutputId(1)),
+                "requested wl_output wins over the old tiled placement"
+            );
+            let remaining = &outputs[..1];
+            assert_eq!(
+                select_fullscreen_output(Some(OutputId(1)), Some(centre), remaining)
+                    .map(|out| out.id),
+                Some(OutputId(0)),
+                "removed requested output deterministically rehomes fullscreen"
+            );
+            assert_eq!(
+                select_fullscreen_output(
+                    None,
+                    Some(vello::kurbo::Point::new(300.0, 400.0)),
+                    &outputs
+                )
                 .map(|out| out.id),
-            Some(OutputId(0)),
-            "no requested output uses the window's owning display"
-        );
+                Some(OutputId(0)),
+                "no requested output uses the window's owning display"
+            );
+        }
     }
 }
 
@@ -12343,206 +12384,220 @@ mod external_floating_security_tests {
     }
 
     #[test]
-    fn authenticated_app_region_is_translated_and_clipped_to_its_surface() {
-        let app = Rect::new(300.0, 80.0, 1100.0, 680.0);
-        let source = FloatingSource::AppRegion {
-            app_id: "so.tilo.chat".into(),
-            region: Rect::new(720.0, 20.0, 880.0, 220.0),
-        };
-        let translated = translate_external_source(source, "so.tilo.chat", app).unwrap();
-        let FloatingSource::AppRegion { region, .. } = translated else {
-            panic!("app region must remain an app region");
-        };
-        assert_eq!(region, Rect::new(1020.0, 100.0, 1100.0, 300.0));
+    fn external_floating_identity_is_authenticated_and_unspoofable() {
+        // Phase `authenticated_app_region_is_translated_and_clipped_to_its_surface`.
+        {
+            let app = Rect::new(300.0, 80.0, 1100.0, 680.0);
+            let source = FloatingSource::AppRegion {
+                app_id: "so.tilo.chat".into(),
+                region: Rect::new(720.0, 20.0, 880.0, 220.0),
+            };
+            let translated = translate_external_source(source, "so.tilo.chat", app).unwrap();
+            let FloatingSource::AppRegion { region, .. } = translated else {
+                panic!("app region must remain an app region");
+            };
+            assert_eq!(region, Rect::new(1020.0, 100.0, 1100.0, 300.0));
 
-        let semantic = FloatingSource::AppElement {
-            app_id: "so.tilo.chat".into(),
-            element_id: "call:shared-screen".into(),
-            region: Rect::new(40.0, 30.0, 440.0, 280.0),
-        };
-        let translated = translate_external_source(semantic, "so.tilo.chat", app).unwrap();
-        let FloatingSource::AppElement {
-            app_id,
-            element_id,
-            region,
-        } = translated
-        else {
-            panic!("semantic app element must retain its identity");
-        };
-        assert_eq!(app_id, "so.tilo.chat");
-        assert_eq!(element_id, "call:shared-screen");
-        assert_eq!(region, Rect::new(340.0, 110.0, 740.0, 360.0));
-    }
-
-    #[test]
-    fn external_mirror_identity_round_trips_connection_and_public_id() {
-        let internal = external_floating_id(42, "browser.media-pip:main");
-        assert_eq!(
-            external_floating_parts(&internal),
-            Some((42, "browser.media-pip:main"))
-        );
-        assert!(external_floating_parts("capture-mirror:7").is_none());
-    }
-
-    #[test]
-    fn external_client_cannot_spoof_another_app_or_surface_id() {
-        let app = Rect::new(300.0, 80.0, 1100.0, 680.0);
-        assert!(
-            translate_external_source(
-                FloatingSource::AppRegion {
-                    app_id: "so.tilo.mail".into(),
-                    region: Rect::new(0.0, 0.0, 200.0, 120.0),
-                },
-                "so.tilo.chat",
-                app,
-            )
-            .is_err()
-        );
-        assert!(
-            translate_external_source(
-                FloatingSource::Surface { surface_id: 42 },
-                "so.tilo.chat",
-                app,
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn app_owned_native_surface_accepts_local_source_but_not_spoofed_identity() {
-        let source = FloatingSource::AppRegion {
-            app_id: "so.tilo.chat".into(),
-            region: Rect::new(420.0, 80.0, 780.0, 300.0),
-        };
-        assert!(validate_app_owned_source(&source, "so.tilo.chat").is_ok());
-        assert_eq!(
-            app_owned_source_region(
-                &source,
-                "so.tilo.chat",
-                vello::kurbo::Size::new(1_000.0, 700.0)
-            ),
-            Some(Rect::new(420.0, 80.0, 780.0, 300.0))
-        );
-        assert!(validate_app_owned_source(&source, "so.tilo.maps").is_err());
-        assert!(
-            validate_app_owned_source(&FloatingSource::Surface { surface_id: 42 }, "so.tilo.chat")
+            let semantic = FloatingSource::AppElement {
+                app_id: "so.tilo.chat".into(),
+                element_id: "call:shared-screen".into(),
+                region: Rect::new(40.0, 30.0, 440.0, 280.0),
+            };
+            let translated = translate_external_source(semantic, "so.tilo.chat", app).unwrap();
+            let FloatingSource::AppElement {
+                app_id,
+                element_id,
+                region,
+            } = translated
+            else {
+                panic!("semantic app element must retain its identity");
+            };
+            assert_eq!(app_id, "so.tilo.chat");
+            assert_eq!(element_id, "call:shared-screen");
+            assert_eq!(region, Rect::new(340.0, 110.0, 740.0, 360.0));
+        }
+        // Phase `external_mirror_identity_round_trips_connection_and_public_id`.
+        {
+            let internal = external_floating_id(42, "browser.media-pip:main");
+            assert_eq!(
+                external_floating_parts(&internal),
+                Some((42, "browser.media-pip:main"))
+            );
+            assert!(external_floating_parts("capture-mirror:7").is_none());
+        }
+        // Phase `external_client_cannot_spoof_another_app_or_surface_id`.
+        {
+            let app = Rect::new(300.0, 80.0, 1100.0, 680.0);
+            assert!(
+                translate_external_source(
+                    FloatingSource::AppRegion {
+                        app_id: "so.tilo.mail".into(),
+                        region: Rect::new(0.0, 0.0, 200.0, 120.0),
+                    },
+                    "so.tilo.chat",
+                    app,
+                )
                 .is_err()
-        );
+            );
+            assert!(
+                translate_external_source(
+                    FloatingSource::Surface { surface_id: 42 },
+                    "so.tilo.chat",
+                    app,
+                )
+                .is_err()
+            );
+        }
+        // Phase `app_owned_native_surface_accepts_local_source_but_not_spoofed_identity`.
+        {
+            let source = FloatingSource::AppRegion {
+                app_id: "so.tilo.chat".into(),
+                region: Rect::new(420.0, 80.0, 780.0, 300.0),
+            };
+            assert!(validate_app_owned_source(&source, "so.tilo.chat").is_ok());
+            assert_eq!(
+                app_owned_source_region(
+                    &source,
+                    "so.tilo.chat",
+                    vello::kurbo::Size::new(1_000.0, 700.0)
+                ),
+                Some(Rect::new(420.0, 80.0, 780.0, 300.0))
+            );
+            assert!(validate_app_owned_source(&source, "so.tilo.maps").is_err());
+            assert!(
+                validate_app_owned_source(
+                    &FloatingSource::Surface { surface_id: 42 },
+                    "so.tilo.chat"
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]
-    fn app_owned_transfer_keeps_visible_soft_chrome_at_the_parent_edge() {
-        let source = FloatingSource::AppElement {
-            app_id: "so.tilo.chat".into(),
-            element_id: "active-call".into(),
-            // A live drag has already carried most of the content beyond the
-            // primary window. Its final visible strip is still a valid source
-            // and must not make the transfer proxy disappear altogether.
-            region: Rect::new(1_180.0, 80.0, 1_420.0, 260.0),
-        };
-        let presentation = Rect::new(1_156.0, 32.0, 1_444.0, 352.0);
-        let visible = app_owned_transfer_region(
-            &source,
-            Some(presentation),
-            "so.tilo.chat",
-            vello::kurbo::Size::new(1_200.0, 700.0),
-        )
-        .expect("the visible decorated edge becomes the warm-up proxy");
-        assert_eq!(visible, Rect::new(1_156.0, 32.0, 1_200.0, 352.0));
-    }
-
-    #[test]
-    fn app_owned_transfer_prefers_decoration_over_content_only_source() {
-        let source = FloatingSource::AppRegion {
-            app_id: "so.tilo.maps".into(),
-            region: Rect::new(720.0, 120.0, 1_080.0, 276.0),
-        };
-        let window = Rect::new(712.0, 112.0, 1_088.0, 284.0);
-        assert_eq!(
-            app_owned_transfer_region(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn floating_handoff_geometry_moves_chrome_and_content_as_one_shape() {
+        // Phase `app_owned_transfer_keeps_visible_soft_chrome_at_the_parent_edge`.
+        {
+            let source = FloatingSource::AppElement {
+                app_id: "so.tilo.chat".into(),
+                element_id: "active-call".into(),
+                // A live drag has already carried most of the content beyond the
+                // primary window. Its final visible strip is still a valid source
+                // and must not make the transfer proxy disappear altogether.
+                region: Rect::new(1_180.0, 80.0, 1_420.0, 260.0),
+            };
+            let presentation = Rect::new(1_156.0, 32.0, 1_444.0, 352.0);
+            let visible = app_owned_transfer_region(
                 &source,
+                Some(presentation),
+                "so.tilo.chat",
+                vello::kurbo::Size::new(1_200.0, 700.0),
+            )
+            .expect("the visible decorated edge becomes the warm-up proxy");
+            assert_eq!(visible, Rect::new(1_156.0, 32.0, 1_200.0, 352.0));
+        }
+        // Phase `app_owned_transfer_prefers_decoration_over_content_only_source`.
+        {
+            let source = FloatingSource::AppRegion {
+                app_id: "so.tilo.maps".into(),
+                region: Rect::new(720.0, 120.0, 1_080.0, 276.0),
+            };
+            let window = Rect::new(712.0, 112.0, 1_088.0, 284.0);
+            assert_eq!(
+                app_owned_transfer_region(
+                    &source,
+                    Some(window),
+                    "so.tilo.maps",
+                    vello::kurbo::Size::new(1_280.0, 720.0),
+                ),
                 Some(window),
-                "so.tilo.maps",
-                vello::kurbo::Size::new(1_280.0, 720.0),
-            ),
-            Some(window),
-            "title, controls, silhouette and shadow must not vanish during adoption"
-        );
-    }
-
-    #[test]
-    fn app_owned_handoff_translates_content_and_soft_window_without_a_jump() {
-        let app = Rect::new(262.0, 124.0, 1_572.0, 892.0);
-        let local_content = Rect::new(938.0, 56.0, 1_266.0, 233.0);
-        let local_window = Rect::new(918.0, 8.0, 1_286.0, 397.0);
-        let desktop_content = app_local_to_desktop(local_content, app);
-        let desktop_window = app_local_to_desktop(local_window, app);
-        assert_eq!(
-            desktop_content.origin(),
-            vello::kurbo::Point::new(1_200.0, 180.0)
-        );
-        assert_eq!(
-            desktop_window.origin(),
-            vello::kurbo::Point::new(1_180.0, 132.0)
-        );
-        assert_eq!(desktop_content.size(), local_content.size());
-        assert_eq!(desktop_window.size(), local_window.size());
-    }
-
-    #[test]
-    fn clamping_moves_soft_window_and_interactive_content_as_one_shape() {
-        let desktop = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        let window = Rect::new(1_700.0, 40.0, 2_092.0, 292.0);
-        let content = Rect::new(1_708.0, 48.0, 2_084.0, 284.0);
-        let (clamped_window, clamped_content) =
-            clamp_external_floating_geometry(window, content, desktop);
-        assert_eq!(
-            clamped_window.origin() - window.origin(),
-            clamped_content.origin() - content.origin()
-        );
-        assert_eq!(
-            clamped_content - clamped_window.origin().to_vec2(),
-            Rect::new(8.0, 8.0, 384.0, 244.0)
-        );
-        assert_eq!(clamped_window.x0, desktop.x1 - 64.0);
-    }
-
-    #[test]
-    fn touching_outputs_remain_one_continuous_drag_surface() {
-        let outputs = [
-            output(0, (0, 0), (1_920, 1_080), 2.0),
-            output(1, (1_920, 0), (2_560, 1_440), 1.0),
-        ];
-        let window = Rect::new(1_760.0, 220.0, 2_160.0, 480.0);
-        let content = Rect::new(1_768.0, 228.0, 2_152.0, 472.0);
-        assert_eq!(
-            clamp_external_floating_geometry_to_outputs(window, content, &outputs, (4_480, 1_440),),
-            (window, content),
-            "crossing a real shared edge must not magnetise the float to either display"
-        );
-    }
-
-    #[test]
-    fn l_shaped_desktop_gap_cannot_swallow_a_floating_surface() {
-        let outputs = [
-            output(0, (0, 0), (1_920, 1_080), 2.0),
-            output(1, (1_920, 400), (2_560, 1_440), 1.0),
-        ];
-        let window = Rect::new(2_050.0, 100.0, 2_450.0, 280.0);
-        let content = Rect::new(2_058.0, 108.0, 2_442.0, 272.0);
-        let (clamped_window, clamped_content) =
-            clamp_external_floating_geometry_to_outputs(window, content, &outputs, (4_480, 1_840));
-        assert_eq!(clamped_window.y1, 464.0);
-        assert_eq!(
-            clamped_window
-                .intersect(Rect::new(1_920.0, 400.0, 4_480.0, 1_840.0))
-                .height(),
-            64.0
-        );
-        assert_eq!(
-            clamped_window.origin() - window.origin(),
-            clamped_content.origin() - content.origin(),
-            "soft chrome and its interactive content must re-home as one shape"
-        );
+                "title, controls, silhouette and shadow must not vanish during adoption"
+            );
+        }
+        // Phase `app_owned_handoff_translates_content_and_soft_window_without_a_jump`.
+        {
+            let app = Rect::new(262.0, 124.0, 1_572.0, 892.0);
+            let local_content = Rect::new(938.0, 56.0, 1_266.0, 233.0);
+            let local_window = Rect::new(918.0, 8.0, 1_286.0, 397.0);
+            let desktop_content = app_local_to_desktop(local_content, app);
+            let desktop_window = app_local_to_desktop(local_window, app);
+            assert_eq!(
+                desktop_content.origin(),
+                vello::kurbo::Point::new(1_200.0, 180.0)
+            );
+            assert_eq!(
+                desktop_window.origin(),
+                vello::kurbo::Point::new(1_180.0, 132.0)
+            );
+            assert_eq!(desktop_content.size(), local_content.size());
+            assert_eq!(desktop_window.size(), local_window.size());
+        }
+        // Phase `clamping_moves_soft_window_and_interactive_content_as_one_shape`.
+        {
+            let desktop = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+            let window = Rect::new(1_700.0, 40.0, 2_092.0, 292.0);
+            let content = Rect::new(1_708.0, 48.0, 2_084.0, 284.0);
+            let (clamped_window, clamped_content) =
+                clamp_external_floating_geometry(window, content, desktop);
+            assert_eq!(
+                clamped_window.origin() - window.origin(),
+                clamped_content.origin() - content.origin()
+            );
+            assert_eq!(
+                clamped_content - clamped_window.origin().to_vec2(),
+                Rect::new(8.0, 8.0, 384.0, 244.0)
+            );
+            assert_eq!(clamped_window.x0, desktop.x1 - 64.0);
+        }
+        // Phase `touching_outputs_remain_one_continuous_drag_surface`.
+        {
+            let outputs = [
+                output(0, (0, 0), (1_920, 1_080), 2.0),
+                output(1, (1_920, 0), (2_560, 1_440), 1.0),
+            ];
+            let window = Rect::new(1_760.0, 220.0, 2_160.0, 480.0);
+            let content = Rect::new(1_768.0, 228.0, 2_152.0, 472.0);
+            assert_eq!(
+                clamp_external_floating_geometry_to_outputs(
+                    window,
+                    content,
+                    &outputs,
+                    (4_480, 1_440),
+                ),
+                (window, content),
+                "crossing a real shared edge must not magnetise the float to either display"
+            );
+        }
+        // Phase `l_shaped_desktop_gap_cannot_swallow_a_floating_surface`.
+        {
+            let outputs = [
+                output(0, (0, 0), (1_920, 1_080), 2.0),
+                output(1, (1_920, 400), (2_560, 1_440), 1.0),
+            ];
+            let window = Rect::new(2_050.0, 100.0, 2_450.0, 280.0);
+            let content = Rect::new(2_058.0, 108.0, 2_442.0, 272.0);
+            let (clamped_window, clamped_content) = clamp_external_floating_geometry_to_outputs(
+                window,
+                content,
+                &outputs,
+                (4_480, 1_840),
+            );
+            assert_eq!(clamped_window.y1, 464.0);
+            assert_eq!(
+                clamped_window
+                    .intersect(Rect::new(1_920.0, 400.0, 4_480.0, 1_840.0))
+                    .height(),
+                64.0
+            );
+            assert_eq!(
+                clamped_window.origin() - window.origin(),
+                clamped_content.origin() - content.origin(),
+                "soft chrome and its interactive content must re-home as one shape"
+            );
+        }
     }
 }

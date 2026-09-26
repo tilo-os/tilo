@@ -204,70 +204,73 @@ mod tests {
     }
 
     #[test]
-    fn surviving_key_moves_between_old_and_new_geometry() {
-        let now = crate::time::now();
-        let mut set = KeyedTransitionSet::new();
-        set.reconcile(
-            &[row(1, 0.0)],
-            &[row(1, 40.0)],
-            now,
-            Duration::from_millis(200),
-            Curve::Linear,
-            false,
-        );
-        let visual = set.visual(
-            &1,
-            RowGeometry::new(40.0, 20.0),
-            now + Duration::from_millis(100),
-        );
-        assert_eq!(visual.geometry.top, 20.0);
-        assert_eq!(visual.opacity, 1.0);
-    }
+    fn collection_transitions_move_fade_and_honour_reduced_motion() {
+        // Case `surviving_key_moves_between_old_and_new_geometry`.
+        {
+            let now = crate::time::now();
+            let mut set = KeyedTransitionSet::new();
+            set.reconcile(
+                &[row(1, 0.0)],
+                &[row(1, 40.0)],
+                now,
+                Duration::from_millis(200),
+                Curve::Linear,
+                false,
+            );
+            let visual = set.visual(
+                &1,
+                RowGeometry::new(40.0, 20.0),
+                now + Duration::from_millis(100),
+            );
+            assert_eq!(visual.geometry.top, 20.0);
+            assert_eq!(visual.opacity, 1.0);
+        }
 
-    #[test]
-    fn arrivals_fade_in_and_departures_retain_payload() {
-        let now = crate::time::now();
-        let mut set = KeyedTransitionSet::new();
-        set.reconcile(
-            &[row(1, 0.0)],
-            &[row(2, 0.0)],
-            now,
-            Duration::from_millis(200),
-            Curve::Linear,
-            false,
-        );
-        let middle = now + Duration::from_millis(100);
-        assert_eq!(
-            set.visual(&2, RowGeometry::new(0.0, 20.0), middle).opacity,
-            0.5
-        );
-        let ghosts = set.exiting(middle).collect::<Vec<_>>();
-        assert_eq!(ghosts.len(), 1);
-        assert_eq!(*ghosts[0].0, 1);
-        assert_eq!(*ghosts[0].1, "row");
-        assert_eq!(ghosts[0].2.opacity, 0.5);
-    }
+        // Case `arrivals_fade_in_and_departures_retain_payload`.
+        {
+            let now = crate::time::now();
+            let mut set = KeyedTransitionSet::new();
+            set.reconcile(
+                &[row(1, 0.0)],
+                &[row(2, 0.0)],
+                now,
+                Duration::from_millis(200),
+                Curve::Linear,
+                false,
+            );
+            let middle = now + Duration::from_millis(100);
+            assert_eq!(
+                set.visual(&2, RowGeometry::new(0.0, 20.0), middle).opacity,
+                0.5
+            );
+            let ghosts = set.exiting(middle).collect::<Vec<_>>();
+            assert_eq!(ghosts.len(), 1);
+            assert_eq!(*ghosts[0].0, 1);
+            assert_eq!(*ghosts[0].1, "row");
+            assert_eq!(ghosts[0].2.opacity, 0.5);
+        }
 
-    #[test]
-    fn reduced_motion_has_no_active_or_ghost_state() {
-        let now = crate::time::now();
-        let mut set = KeyedTransitionSet::new();
-        set.reconcile(
-            &[row(1, 0.0)],
-            &[row(2, 0.0)],
-            now,
-            Duration::from_millis(200),
-            Curve::Linear,
-            true,
-        );
-        assert!(!set.is_active(now));
-        assert_eq!(set.exiting(now).count(), 0);
-        assert_eq!(
-            set.visual(&2, RowGeometry::new(0.0, 20.0), now),
-            TransitionVisual {
-                geometry: RowGeometry::new(0.0, 20.0),
-                opacity: 1.0,
-            }
-        );
+        // Case `reduced_motion_has_no_active_or_ghost_state`.
+        {
+            let now = crate::time::now();
+            let mut set = KeyedTransitionSet::new();
+            set.reconcile(
+                &[row(1, 0.0)],
+                &[row(2, 0.0)],
+                now,
+                Duration::from_millis(200),
+                Curve::Linear,
+                true,
+            );
+            assert!(!set.is_active(now));
+            assert_eq!(set.exiting(now).count(), 0);
+            assert_eq!(
+                set.visual(&2, RowGeometry::new(0.0, 20.0), now),
+                TransitionVisual {
+                    geometry: RowGeometry::new(0.0, 20.0),
+                    opacity: 1.0,
+                }
+            );
+        }
     }
 }

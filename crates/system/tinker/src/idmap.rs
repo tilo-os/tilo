@@ -112,36 +112,36 @@ mod tests {
     }
 
     #[test]
-    fn range_is_read_by_name() {
-        let f = subuid_file("other:100000:65536\nada:524288:65536\n");
-        let path = f.path().to_str().unwrap();
-        assert_eq!(
-            subordinate_range(path, "ada", 1000),
-            Some((524_288, 65_536))
-        );
-        assert_eq!(subordinate_range(path, "nobody", 65534), None);
-    }
-
-    #[test]
-    fn range_is_also_read_by_numeric_owner() {
-        let f = subuid_file("1000:524288:65536\n");
-        assert_eq!(
-            subordinate_range(f.path().to_str().unwrap(), "someone", 1000),
-            Some((524_288, 65_536))
-        );
-    }
-
-    #[test]
-    fn a_missing_file_is_not_an_error() {
-        assert_eq!(subordinate_range("/nonexistent/subuid", "x", 0), None);
-    }
-
-    #[test]
-    fn malformed_lines_are_skipped_not_fatal() {
-        let f = subuid_file("garbage\nx:notanumber:1\nada:5:6\n");
-        assert_eq!(
-            subordinate_range(f.path().to_str().unwrap(), "ada", 1000),
-            Some((5, 6))
-        );
+    fn subordinate_id_ranges_are_read_by_name_or_owner_and_tolerate_damage() {
+        // Phase `range_is_read_by_name`.
+        {
+            let f = subuid_file("other:100000:65536\nada:524288:65536\n");
+            let path = f.path().to_str().unwrap();
+            assert_eq!(
+                subordinate_range(path, "ada", 1000),
+                Some((524_288, 65_536))
+            );
+            assert_eq!(subordinate_range(path, "nobody", 65534), None);
+        }
+        // Phase `range_is_also_read_by_numeric_owner`.
+        {
+            let f = subuid_file("1000:524288:65536\n");
+            assert_eq!(
+                subordinate_range(f.path().to_str().unwrap(), "someone", 1000),
+                Some((524_288, 65_536))
+            );
+        }
+        // Phase `a_missing_file_is_not_an_error`.
+        {
+            assert_eq!(subordinate_range("/nonexistent/subuid", "x", 0), None);
+        }
+        // Phase `malformed_lines_are_skipped_not_fatal`.
+        {
+            let f = subuid_file("garbage\nx:notanumber:1\nada:5:6\n");
+            assert_eq!(
+                subordinate_range(f.path().to_str().unwrap(), "ada", 1000),
+                Some((5, 6))
+            );
+        }
     }
 }

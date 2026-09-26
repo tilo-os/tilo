@@ -702,180 +702,188 @@ mod tests {
     use crate::model::{ElementKind, seed_deck};
     use tilo_automerge::ApplyIncoming;
 
+    /// Deck round-trips, bounded text writes, positions and titles persist.
     #[test]
-    fn write_text_append_one_char_is_bounded() {
-        // `write_text` is the production text-write path for every deck string
-        // (title / notes / element text). Appending one char must splice only
-        // the new char, not rewrite the whole value.
-        let mut doc = AutoCommit::new();
-        let obj = doc.put_object(&ROOT, "scratch", ObjType::Map).unwrap();
-        let long = "t".repeat(300);
-        SlidesDoc::write_text(&mut doc, &obj, "notes", &long);
-        let before = doc.save().len();
-        let mut longer = long.clone();
-        longer.push('!');
-        SlidesDoc::write_text(&mut doc, &obj, "notes", &longer);
-        let grew = doc.save().len() - before;
-        let Ok(Some((Value::Object(ObjType::Text), tid))) = doc.get(&obj, "notes") else {
-            panic!("notes text missing")
-        };
-        assert_eq!(doc.text(&tid).unwrap(), longer, "value round-trips");
-        assert!(grew < 40, "one-char text edit grew doc by {grew} bytes");
-    }
-
-    #[test]
-    fn write_text_repeated_store_keeps_doc_bounded() {
-        let mut doc = AutoCommit::new();
-        let obj = doc.put_object(&ROOT, "scratch", ObjType::Map).unwrap();
-        let long = "s".repeat(300);
-        SlidesDoc::write_text(&mut doc, &obj, "notes", &long);
-        let a = doc.save().len();
-        for _ in 0..50 {
+    fn deck_doc_round_trips_and_writes_bounded_text() {
+        // Case `write_text_append_one_char_is_bounded`.
+        {
+            // `write_text` is the production text-write path for every deck string
+            // (title / notes / element text). Appending one char must splice only
+            // the new char, not rewrite the whole value.
+            let mut doc = AutoCommit::new();
+            let obj = doc.put_object(&ROOT, "scratch", ObjType::Map).unwrap();
+            let long = "t".repeat(300);
             SlidesDoc::write_text(&mut doc, &obj, "notes", &long);
+            let before = doc.save().len();
+            let mut longer = long.clone();
+            longer.push('!');
+            SlidesDoc::write_text(&mut doc, &obj, "notes", &longer);
+            let grew = doc.save().len() - before;
+            let Ok(Some((Value::Object(ObjType::Text), tid))) = doc.get(&obj, "notes") else {
+                panic!("notes text missing")
+            };
+            assert_eq!(doc.text(&tid).unwrap(), longer, "value round-trips");
+            assert!(grew < 40, "one-char text edit grew doc by {grew} bytes");
         }
-        let b = doc.save().len();
-        assert_eq!(
-            a, b,
-            "re-storing the same text grew the document {a} -> {b}"
-        );
+
+        // Case `write_text_repeated_store_keeps_doc_bounded`.
+        {
+            let mut doc = AutoCommit::new();
+            let obj = doc.put_object(&ROOT, "scratch", ObjType::Map).unwrap();
+            let long = "s".repeat(300);
+            SlidesDoc::write_text(&mut doc, &obj, "notes", &long);
+            let a = doc.save().len();
+            for _ in 0..50 {
+                SlidesDoc::write_text(&mut doc, &obj, "notes", &long);
+            }
+            let b = doc.save().len();
+            assert_eq!(
+                a, b,
+                "re-storing the same text grew the document {a} -> {b}"
+            );
+        }
+
+        // Case `deck_round_trips_through_crdt`.
+        {
+            let mut doc = AutoCommit::new();
+            let deck = seed_deck();
+            SlidesDoc::seed(&mut doc, &deck);
+            let loaded = SlidesDoc::load(&doc).expect("deck loads");
+            assert_eq!(loaded.slides.len(), deck.slides.len());
+            assert_eq!(loaded.title, deck.title);
+            assert_eq!(loaded.palette, deck.palette);
+            // First slide first element survives with its kind + geometry.
+            let a = &deck.slides[0].elements[0];
+            let b = &loaded.slides[0].elements[0];
+            assert_eq!(a.kind, b.kind);
+            assert!((a.x - b.x).abs() < 0.001);
+        }
+
+        // Case `live_pos_edit_persists`.
+        {
+            let mut doc = AutoCommit::new();
+            let deck = seed_deck();
+            SlidesDoc::seed(&mut doc, &deck);
+            let eid = deck.slides[1].elements[0].id.clone();
+            SlidesDoc::set_element_pos(&mut doc, 1, &eid, 11.0, 22.0);
+            let loaded = SlidesDoc::load(&doc).unwrap();
+            let el = loaded.slides[1].element(&eid).unwrap();
+            assert!((el.x - 11.0).abs() < 0.001);
+            assert!((el.y - 22.0).abs() < 0.001);
+        }
+
+        // Case `set_title_and_splice_title_persist`.
+        {
+            let mut doc = AutoCommit::new();
+            SlidesDoc::seed(&mut doc, &seed_deck());
+            // Full replace via set_title.
+            SlidesDoc::set_title(&mut doc, "Quarterly review");
+            assert_eq!(SlidesDoc::load(&doc).unwrap().title, "Quarterly review");
+            // Char-level splice (the inline-rename path): insert " 2026" at the end.
+            let at = "Quarterly review".chars().count();
+            SlidesDoc::splice_title(&mut doc, at, 0, " 2026");
+            assert_eq!(
+                SlidesDoc::load(&doc).unwrap().title,
+                "Quarterly review 2026"
+            );
+            // Delete the first char.
+            SlidesDoc::splice_title(&mut doc, 0, 1, "");
+            assert_eq!(SlidesDoc::load(&doc).unwrap().title, "uarterly review 2026");
+        }
     }
 
+    /// Element/slide insert-remove, moves and reorder with concurrent text edits.
     #[test]
-    fn deck_round_trips_through_crdt() {
-        let mut doc = AutoCommit::new();
-        let deck = seed_deck();
-        SlidesDoc::seed(&mut doc, &deck);
-        let loaded = SlidesDoc::load(&doc).expect("deck loads");
-        assert_eq!(loaded.slides.len(), deck.slides.len());
-        assert_eq!(loaded.title, deck.title);
-        assert_eq!(loaded.palette, deck.palette);
-        // First slide first element survives with its kind + geometry.
-        let a = &deck.slides[0].elements[0];
-        let b = &loaded.slides[0].elements[0];
-        assert_eq!(a.kind, b.kind);
-        assert!((a.x - b.x).abs() < 0.001);
-    }
+    fn deck_structure_edits_persist_and_survive_concurrency() {
+        // Case `add_and_remove_element`.
+        {
+            let mut doc = AutoCommit::new();
+            SlidesDoc::seed(&mut doc, &seed_deck());
+            let before = SlidesDoc::load(&doc).unwrap().slides[0].elements.len();
+            let el = Element::shape(ElementKind::Ellipse, 10.0, 10.0, 50.0, 50.0);
+            let id = el.id.clone();
+            SlidesDoc::add_element(&mut doc, 0, &el);
+            assert_eq!(
+                SlidesDoc::load(&doc).unwrap().slides[0].elements.len(),
+                before + 1
+            );
+            SlidesDoc::remove_element(&mut doc, 0, &id);
+            assert_eq!(
+                SlidesDoc::load(&doc).unwrap().slides[0].elements.len(),
+                before
+            );
+        }
 
-    #[test]
-    fn live_pos_edit_persists() {
-        let mut doc = AutoCommit::new();
-        let deck = seed_deck();
-        SlidesDoc::seed(&mut doc, &deck);
-        let eid = deck.slides[1].elements[0].id.clone();
-        SlidesDoc::set_element_pos(&mut doc, 1, &eid, 11.0, 22.0);
-        let loaded = SlidesDoc::load(&doc).unwrap();
-        let el = loaded.slides[1].element(&eid).unwrap();
-        assert!((el.x - 11.0).abs() < 0.001);
-        assert!((el.y - 22.0).abs() < 0.001);
-    }
+        // Case `insert_and_remove_slide`.
+        {
+            let mut doc = AutoCommit::new();
+            SlidesDoc::seed(&mut doc, &seed_deck());
+            let n = SlidesDoc::load(&doc).unwrap().slides.len();
+            SlidesDoc::insert_slide(&mut doc, 1, &Slide::new(Layout::Blank));
+            assert_eq!(SlidesDoc::load(&doc).unwrap().slides.len(), n + 1);
+            SlidesDoc::remove_slide(&mut doc, 1);
+            assert_eq!(SlidesDoc::load(&doc).unwrap().slides.len(), n);
+        }
 
-    #[test]
-    fn add_and_remove_element() {
-        let mut doc = AutoCommit::new();
-        SlidesDoc::seed(&mut doc, &seed_deck());
-        let before = SlidesDoc::load(&doc).unwrap().slides[0].elements.len();
-        let el = Element::shape(ElementKind::Ellipse, 10.0, 10.0, 50.0, 50.0);
-        let id = el.id.clone();
-        SlidesDoc::add_element(&mut doc, 0, &el);
-        assert_eq!(
-            SlidesDoc::load(&doc).unwrap().slides[0].elements.len(),
-            before + 1
-        );
-        SlidesDoc::remove_element(&mut doc, 0, &id);
-        assert_eq!(
-            SlidesDoc::load(&doc).unwrap().slides[0].elements.len(),
-            before
-        );
-    }
+        // Case `move_slide_reorders`.
+        {
+            let mut doc = AutoCommit::new();
+            SlidesDoc::seed(&mut doc, &seed_deck());
+            let deck = SlidesDoc::load(&doc).unwrap();
+            let first = deck.slides[0].id.clone();
+            let unaffected_object = SlidesDoc::slide_obj(&doc, 1).expect("second slide object");
+            SlidesDoc::move_slide(&mut doc, 0, 2);
+            let after = SlidesDoc::load(&doc).unwrap();
+            assert_eq!(after.slides[2].id, first);
+            assert_eq!(
+                SlidesDoc::slide_obj(&doc, 0),
+                Some(unaffected_object),
+                "moving one slide leaves every unrelated CRDT slide object live"
+            );
+        }
 
-    #[test]
-    fn insert_and_remove_slide() {
-        let mut doc = AutoCommit::new();
-        SlidesDoc::seed(&mut doc, &seed_deck());
-        let n = SlidesDoc::load(&doc).unwrap().slides.len();
-        SlidesDoc::insert_slide(&mut doc, 1, &Slide::new(Layout::Blank));
-        assert_eq!(SlidesDoc::load(&doc).unwrap().slides.len(), n + 1);
-        SlidesDoc::remove_slide(&mut doc, 1);
-        assert_eq!(SlidesDoc::load(&doc).unwrap().slides.len(), n);
-    }
+        // Case `reorder_and_concurrent_text_edit_preserve_the_same_slide_object`.
+        {
+            let mut a = AutoCommit::new();
+            SlidesDoc::seed(&mut a, &seed_deck());
+            a.commit();
+            let bytes = a.save();
+            let mut b = AutoCommit::load(&bytes).expect("replica loads");
 
-    #[test]
-    fn set_title_and_splice_title_persist() {
-        let mut doc = AutoCommit::new();
-        SlidesDoc::seed(&mut doc, &seed_deck());
-        // Full replace via set_title.
-        SlidesDoc::set_title(&mut doc, "Quarterly review");
-        assert_eq!(SlidesDoc::load(&doc).unwrap().title, "Quarterly review");
-        // Char-level splice (the inline-rename path): insert " 2026" at the end.
-        let at = "Quarterly review".chars().count();
-        SlidesDoc::splice_title(&mut doc, at, 0, " 2026");
-        assert_eq!(
-            SlidesDoc::load(&doc).unwrap().title,
-            "Quarterly review 2026"
-        );
-        // Delete the first char.
-        SlidesDoc::splice_title(&mut doc, 0, 1, "");
-        assert_eq!(SlidesDoc::load(&doc).unwrap().title, "uarterly review 2026");
-    }
+            let before = SlidesDoc::load(&a).expect("seeded deck");
+            let moved_slide = before.slides[1].id.clone();
+            let element = before.slides[1].elements[0].id.clone();
+            let original = before.slides[1].elements[0].text.clone();
 
-    #[test]
-    fn move_slide_reorders() {
-        let mut doc = AutoCommit::new();
-        SlidesDoc::seed(&mut doc, &seed_deck());
-        let deck = SlidesDoc::load(&doc).unwrap();
-        let first = deck.slides[0].id.clone();
-        let unaffected_object = SlidesDoc::slide_obj(&doc, 1).expect("second slide object");
-        SlidesDoc::move_slide(&mut doc, 0, 2);
-        let after = SlidesDoc::load(&doc).unwrap();
-        assert_eq!(after.slides[2].id, first);
-        assert_eq!(
-            SlidesDoc::slide_obj(&doc, 0),
-            Some(unaffected_object),
-            "moving one slide leaves every unrelated CRDT slide object live"
-        );
-    }
+            SlidesDoc::move_slide(&mut a, 1, 3);
+            SlidesDoc::splice_element_text(
+                &mut b,
+                1,
+                &element,
+                original.chars().count(),
+                0,
+                " + collaboration",
+            );
+            a.merge_incoming(&mut b).expect("merge into a");
+            b.merge_incoming(&mut a).expect("merge into b");
 
-    #[test]
-    fn reorder_and_concurrent_text_edit_preserve_the_same_slide_object() {
-        let mut a = AutoCommit::new();
-        SlidesDoc::seed(&mut a, &seed_deck());
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).expect("replica loads");
-
-        let before = SlidesDoc::load(&a).expect("seeded deck");
-        let moved_slide = before.slides[1].id.clone();
-        let element = before.slides[1].elements[0].id.clone();
-        let original = before.slides[1].elements[0].text.clone();
-
-        SlidesDoc::move_slide(&mut a, 1, 3);
-        SlidesDoc::splice_element_text(
-            &mut b,
-            1,
-            &element,
-            original.chars().count(),
-            0,
-            " + collaboration",
-        );
-        a.merge_incoming(&mut b).expect("merge into a");
-        b.merge_incoming(&mut a).expect("merge into b");
-
-        let left = SlidesDoc::load(&a).expect("merged deck");
-        let right = SlidesDoc::load(&b).expect("merged deck");
-        assert_eq!(left, right, "both merge directions converge");
-        let index = left
-            .slides
-            .iter()
-            .position(|slide| slide.id == moved_slide)
-            .expect("moved slide remains live");
-        assert_eq!(index, 3, "rank metadata preserved the reorder");
-        assert_eq!(
-            left.slides[index]
-                .element(&element)
-                .expect("same element")
-                .text,
-            original + " + collaboration",
-            "the concurrent text splice survived the reorder"
-        );
+            let left = SlidesDoc::load(&a).expect("merged deck");
+            let right = SlidesDoc::load(&b).expect("merged deck");
+            assert_eq!(left, right, "both merge directions converge");
+            let index = left
+                .slides
+                .iter()
+                .position(|slide| slide.id == moved_slide)
+                .expect("moved slide remains live");
+            assert_eq!(index, 3, "rank metadata preserved the reorder");
+            assert_eq!(
+                left.slides[index]
+                    .element(&element)
+                    .expect("same element")
+                    .text,
+                original + " + collaboration",
+                "the concurrent text splice survived the reorder"
+            );
+        }
     }
 }

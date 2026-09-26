@@ -601,85 +601,143 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
+    /// How a case's result is compared: `Exact` for small integers that are
+    /// exact in f64 (an approximate compare would stop proving e.g. operator
+    /// precedence or that 5! is exactly 120), `Near(tol)` otherwise.
+    #[derive(Clone, Copy)]
+    enum Cmp {
+        Exact,
+        Near(f64),
+    }
+
     #[allow(
         clippy::float_cmp,
-        reason = "these results are small integers, exact in f64 — an approximate\n                  compare here would stop proving the operator precedence"
+        reason = "Exact cases are small integers, exact in f64 — an approximate\n                  compare would stop proving what they prove"
     )]
-    fn arithmetic_precedence() {
-        assert_eq!(ev("1+2*3"), 7.0);
-        assert_eq!(ev("(1+2)*3"), 9.0);
-        assert_eq!(ev("2^3^2"), 512.0); // right assoc
-        assert_eq!(ev("-2^2"), -4.0); // unary looser than power
-        assert!((ev("10/4") - 2.5).abs() < 1e-12);
+    fn check(case: &str, got: f64, want: f64, cmp: Cmp) {
+        match cmp {
+            Cmp::Exact => assert_eq!(got, want, "case {case}"),
+            Cmp::Near(tol) => assert!(
+                (got - want).abs() < tol,
+                "case {case}: got {got}, want {want} (tol {tol})"
+            ),
+        }
     }
 
+    /// Evaluation (radians and degrees) and compiled sampling produce the
+    /// expected values: precedence, implicit multiplication, functions and
+    /// constants, angle modes, factorial and percent.
     #[test]
-    #[allow(
-        clippy::float_cmp,
-        reason = "these results are small integers, exact in f64 — an approximate\n                  compare here would stop proving implicit multiplication"
-    )]
-    fn implicit_multiplication() {
-        assert!((ev("2pi") - 2.0 * PI).abs() < 1e-9);
-        assert_eq!(ev("3(1+1)"), 6.0);
-    }
+    fn evaluation_and_compiled_sampling_produce_expected_values() {
+        use Cmp::{Exact, Near};
+        // (group, source, degrees?, expected, comparison)
+        let cases: &[(&str, &str, bool, f64, Cmp)] = &[
+            // arithmetic_precedence
+            ("arithmetic_precedence", "1+2*3", false, 7.0, Exact),
+            ("arithmetic_precedence", "(1+2)*3", false, 9.0, Exact),
+            ("arithmetic_precedence", "2^3^2", false, 512.0, Exact), // right assoc
+            ("arithmetic_precedence", "-2^2", false, -4.0, Exact),   // unary looser than power
+            ("arithmetic_precedence", "10/4", false, 2.5, Near(1e-12)),
+            // implicit_multiplication
+            (
+                "implicit_multiplication",
+                "2pi",
+                false,
+                2.0 * PI,
+                Near(1e-9),
+            ),
+            ("implicit_multiplication", "3(1+1)", false, 6.0, Exact),
+            // functions_and_constants
+            (
+                "functions_and_constants",
+                "sqrt(16)",
+                false,
+                4.0,
+                Near(1e-12),
+            ),
+            ("functions_and_constants", "ln(e)", false, 1.0, Near(1e-12)),
+            (
+                "functions_and_constants",
+                "log(2,8)",
+                false,
+                3.0,
+                Near(1e-12),
+            ),
+            (
+                "functions_and_constants",
+                "max(1,7,3)",
+                false,
+                7.0,
+                Near(1e-12),
+            ),
+            (
+                "functions_and_constants",
+                "mod(7,3)",
+                false,
+                1.0,
+                Near(1e-12),
+            ),
+            // degrees_vs_radians
+            ("degrees_vs_radians", "sin(90)", true, 1.0, Near(1e-9)),
+            ("degrees_vs_radians", "sin(pi/2)", false, 1.0, Near(1e-9)),
+            ("degrees_vs_radians", "asin(1)", true, 90.0, Near(1e-9)),
+            // factorial_and_percent
+            ("factorial_and_percent", "5!", false, 120.0, Exact),
+            ("factorial_and_percent", "50%", false, 0.5, Near(1e-12)),
+            (
+                "factorial_and_percent",
+                "200*50%",
+                false,
+                100.0,
+                Near(1e-12),
+            ),
+        ];
+        for &(group, src, deg, want, cmp) in cases {
+            let got = if deg { evd(src) } else { ev(src) };
+            check(&format!("{group}: {src} (deg={deg})"), got, want, cmp);
+        }
 
-    #[test]
-    fn functions_and_constants() {
-        assert!((ev("sqrt(16)") - 4.0).abs() < 1e-12);
-        assert!((ev("ln(e)") - 1.0).abs() < 1e-12);
-        assert!((ev("log(2,8)") - 3.0).abs() < 1e-12);
-        assert!((ev("max(1,7,3)") - 7.0).abs() < 1e-12);
-        assert!((ev("mod(7,3)") - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn degrees_vs_radians() {
-        assert!((evd("sin(90)") - 1.0).abs() < 1e-9);
-        assert!((ev("sin(pi/2)") - 1.0).abs() < 1e-9);
-        assert!((evd("asin(1)") - 90.0).abs() < 1e-9);
-    }
-
-    #[test]
-    #[allow(
-        clippy::float_cmp,
-        reason = "these results are small integers, exact in f64 — an approximate\n                  compare here would stop proving that 5! is exactly 120"
-    )]
-    fn factorial_and_percent() {
-        assert_eq!(ev("5!"), 120.0);
-        assert!((ev("50%") - 0.5).abs() < 1e-12);
-        assert!((ev("200*50%") - 100.0).abs() < 1e-12);
-    }
-
-    #[test]
-    #[allow(
-        clippy::float_cmp,
-        reason = "these results are small integers, exact in f64 — an approximate\n                  compare here would stop proving that x^2 samples exactly"
-    )]
-    fn compiled_sampling() {
+        // compiled_sampling
         let c = compile("x^2", false, false).unwrap();
-        assert_eq!(c.eval1(3.0), 9.0);
+        check("compiled_sampling: x^2 at 3", c.eval1(3.0), 9.0, Exact);
         let s = compile("sin(sqrt(x^2+y^2))", false, true).unwrap();
-        assert!(s.eval2(0.0, 0.0).abs() < 1e-12);
+        assert!(
+            s.eval2(0.0, 0.0).abs() < 1e-12,
+            "compiled_sampling: surface at origin"
+        );
     }
 
+    /// What the result line shows a person: error messages and rejections for
+    /// malformed input, and the display formatting of numbers.
     #[test]
-    fn errors_are_reported() {
+    fn errors_and_number_formatting_render_user_facing_results() {
+        // errors_are_reported
         assert_eq!(
             evaluate("sqrt(", &Ctx::default()),
             Err("enter a value".into()),
             "the live result line tells a person what to do next"
         );
-        assert!(evaluate("1+", &Ctx::default()).is_err());
-        assert!(evaluate("frobnicate(2)", &Ctx::default()).is_err());
-        assert!(compile("z+1", false, false).is_err());
-    }
+        assert!(
+            evaluate("1+", &Ctx::default()).is_err(),
+            "errors: dangling operator"
+        );
+        assert!(
+            evaluate("frobnicate(2)", &Ctx::default()).is_err(),
+            "errors: unknown function"
+        );
+        assert!(
+            compile("z+1", false, false).is_err(),
+            "errors: unknown variable in compile"
+        );
 
-    #[test]
-    fn formatting() {
-        assert_eq!(format_number(2.0), "2");
-        assert_eq!(format_number(0.5), "0.5");
-        assert_eq!(format_number(0.1 + 0.2), "0.3");
-        assert_eq!(format_number(f64::NAN), "Error");
+        // formatting
+        for (x, want) in [
+            (2.0, "2"),
+            (0.5, "0.5"),
+            (0.1 + 0.2, "0.3"),
+            (f64::NAN, "Error"),
+        ] {
+            assert_eq!(format_number(x), want, "formatting case {x}");
+        }
     }
 }

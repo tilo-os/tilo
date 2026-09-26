@@ -9121,185 +9121,465 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn realtime_capture_ipc_requires_exact_complete_one_shot_authorizations() {
-        let now = std::time::Instant::now();
-        let app = capture_test_app("work");
-        let wrong_app = capture_test_app("personal");
-        let session = "0123456789abcdef0123456789abcdef";
-        let target =
-            crate::shell::personal_continuity::DeviceId::new("target-local").expect("target");
-        let wrong_target =
-            crate::shell::personal_continuity::DeviceId::new("target-other").expect("wrong target");
-        let capture = capture_test_broker();
-        let binding =
-            crate::portal::CaptureSessionBinding::from_verified(&app, session, target.as_str())
-                .expect("capture binding");
-        let wrong_binding = crate::portal::CaptureSessionBinding::from_verified(
-            &wrong_app,
-            session,
-            target.as_str(),
-        )
-        .expect("wrong binding");
-        let (microphone, camera) = {
-            let mut broker = capture.lock().expect("capture broker");
-            (
-                broker
-                    .authorize(&binding, "mic", crate::portal::CaptureKind::Microphone, now)
-                    .expect("microphone authorization")
-                    .to_opaque(),
-                broker
-                    .authorize(&binding, "camera", crate::portal::CaptureKind::Camera, now)
-                    .expect("camera authorization")
-                    .to_opaque(),
-            )
-        };
-        let required = [
-            crate::portal::CaptureKind::Microphone,
-            crate::portal::CaptureKind::Camera,
-        ];
-
-        assert!(
-            acquire_realtime_capture_leases(
-                &capture,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn realtime_capture_ipc_authorizations_are_exact_one_shot_and_torn_down() {
+        fn realtime_capture_ipc_requires_exact_complete_one_shot_authorizations() {
+            let now = std::time::Instant::now();
+            let app = capture_test_app("work");
+            let wrong_app = capture_test_app("personal");
+            let session = "0123456789abcdef0123456789abcdef";
+            let target =
+                crate::shell::personal_continuity::DeviceId::new("target-local").expect("target");
+            let wrong_target = crate::shell::personal_continuity::DeviceId::new("target-other")
+                .expect("wrong target");
+            let capture = capture_test_broker();
+            let binding =
+                crate::portal::CaptureSessionBinding::from_verified(&app, session, target.as_str())
+                    .expect("capture binding");
+            let wrong_binding = crate::portal::CaptureSessionBinding::from_verified(
                 &wrong_app,
                 session,
+                target.as_str(),
+            )
+            .expect("wrong binding");
+            let (microphone, camera) = {
+                let mut broker = capture.lock().expect("capture broker");
+                (
+                    broker
+                        .authorize(&binding, "mic", crate::portal::CaptureKind::Microphone, now)
+                        .expect("microphone authorization")
+                        .to_opaque(),
+                    broker
+                        .authorize(&binding, "camera", crate::portal::CaptureKind::Camera, now)
+                        .expect("camera authorization")
+                        .to_opaque(),
+                )
+            };
+            let required = [
+                crate::portal::CaptureKind::Microphone,
+                crate::portal::CaptureKind::Camera,
+            ];
+
+            assert!(
+                acquire_realtime_capture_leases(
+                    &capture,
+                    &wrong_app,
+                    session,
+                    &target,
+                    &[microphone.clone(), camera.clone()],
+                    &required,
+                    now,
+                )
+                .is_err()
+            );
+            assert!(
+                capture
+                    .lock()
+                    .expect("capture broker")
+                    .take_privacy_events()
+                    .is_empty()
+            );
+            assert_eq!(wrong_binding.workspace_id(), "personal");
+            assert!(
+                acquire_realtime_capture_leases(
+                    &capture,
+                    &app,
+                    session,
+                    &wrong_target,
+                    &[microphone.clone(), camera.clone()],
+                    &required,
+                    now,
+                )
+                .is_err()
+            );
+
+            let leases = acquire_realtime_capture_leases(
+                &capture,
+                &app,
+                session,
                 &target,
                 &[microphone.clone(), camera.clone()],
                 &required,
                 now,
             )
-            .is_err()
-        );
-        assert!(
-            capture
+            .expect("exact authorization set");
+            realtime_capture_leases_ready(&capture, &app, session, &target, &leases, now)
+                .expect("leases ready");
+            assert!(
+                acquire_realtime_capture_leases(
+                    &capture,
+                    &app,
+                    session,
+                    &target,
+                    &[microphone, camera],
+                    &required,
+                    now,
+                )
+                .is_err()
+            );
+
+            release_realtime_capture_session(&capture, &app, session, &target);
+            assert!(
+                realtime_capture_leases_ready(&capture, &app, session, &target, &leases, now)
+                    .is_err()
+            );
+        }
+
+        fn realtime_capture_ipc_rejects_expiry_and_lock_teardown_before_cutover() {
+            let now = std::time::Instant::now();
+            let app = capture_test_app("work");
+            let session = "fedcba9876543210fedcba9876543210";
+            let target =
+                crate::shell::personal_continuity::DeviceId::new("target-local").expect("target");
+            let capture = capture_test_broker();
+            let binding =
+                crate::portal::CaptureSessionBinding::from_verified(&app, session, target.as_str())
+                    .expect("capture binding");
+            let expired = capture
                 .lock()
                 .expect("capture broker")
-                .take_privacy_events()
-                .is_empty()
-        );
-        assert_eq!(wrong_binding.workspace_id(), "personal");
-        assert!(
-            acquire_realtime_capture_leases(
-                &capture,
-                &app,
-                session,
-                &wrong_target,
-                &[microphone.clone(), camera.clone()],
-                &required,
-                now,
-            )
-            .is_err()
-        );
+                .authorize(&binding, "mic", crate::portal::CaptureKind::Microphone, now)
+                .expect("authorization")
+                .to_opaque();
+            assert!(
+                acquire_realtime_capture_leases(
+                    &capture,
+                    &app,
+                    session,
+                    &target,
+                    &[expired],
+                    &[crate::portal::CaptureKind::Microphone],
+                    now + crate::portal::capture_broker::CAPTURE_AUTHORIZATION_TTL
+                        + std::time::Duration::from_millis(1),
+                )
+                .is_err()
+            );
 
-        let leases = acquire_realtime_capture_leases(
-            &capture,
-            &app,
-            session,
-            &target,
-            &[microphone.clone(), camera.clone()],
-            &required,
-            now,
-        )
-        .expect("exact authorization set");
-        realtime_capture_leases_ready(&capture, &app, session, &target, &leases, now)
-            .expect("leases ready");
-        assert!(
-            acquire_realtime_capture_leases(
+            let fresh = capture
+                .lock()
+                .expect("capture broker")
+                .authorize(&binding, "mic", crate::portal::CaptureKind::Microphone, now)
+                .expect("fresh authorization")
+                .to_opaque();
+            let leases = acquire_realtime_capture_leases(
                 &capture,
                 &app,
                 session,
                 &target,
-                &[microphone, camera],
-                &required,
-                now,
-            )
-            .is_err()
-        );
-
-        release_realtime_capture_session(&capture, &app, session, &target);
-        assert!(
-            realtime_capture_leases_ready(&capture, &app, session, &target, &leases, now).is_err()
-        );
-    }
-
-    #[test]
-    fn realtime_capture_ipc_rejects_expiry_and_lock_teardown_before_cutover() {
-        let now = std::time::Instant::now();
-        let app = capture_test_app("work");
-        let session = "fedcba9876543210fedcba9876543210";
-        let target =
-            crate::shell::personal_continuity::DeviceId::new("target-local").expect("target");
-        let capture = capture_test_broker();
-        let binding =
-            crate::portal::CaptureSessionBinding::from_verified(&app, session, target.as_str())
-                .expect("capture binding");
-        let expired = capture
-            .lock()
-            .expect("capture broker")
-            .authorize(&binding, "mic", crate::portal::CaptureKind::Microphone, now)
-            .expect("authorization")
-            .to_opaque();
-        assert!(
-            acquire_realtime_capture_leases(
-                &capture,
-                &app,
-                session,
-                &target,
-                &[expired],
+                &[fresh],
                 &[crate::portal::CaptureKind::Microphone],
-                now + crate::portal::capture_broker::CAPTURE_AUTHORIZATION_TTL
-                    + std::time::Duration::from_millis(1),
+                now,
             )
-            .is_err()
-        );
+            .expect("fresh lease");
+            capture.lock().expect("capture broker").screen_locked();
+            assert!(
+                realtime_capture_leases_ready(&capture, &app, session, &target, &leases, now)
+                    .is_err()
+            );
+        }
 
-        let fresh = capture
-            .lock()
-            .expect("capture broker")
-            .authorize(&binding, "mic", crate::portal::CaptureKind::Microphone, now)
-            .expect("fresh authorization")
-            .to_opaque();
-        let leases = acquire_realtime_capture_leases(
-            &capture,
-            &app,
-            session,
-            &target,
-            &[fresh],
-            &[crate::portal::CaptureKind::Microphone],
-            now,
-        )
-        .expect("fresh lease");
-        capture.lock().expect("capture broker").screen_locked();
-        assert!(
-            realtime_capture_leases_ready(&capture, &app, session, &target, &leases, now).is_err()
-        );
+        realtime_capture_ipc_requires_exact_complete_one_shot_authorizations();
+        realtime_capture_ipc_rejects_expiry_and_lock_teardown_before_cutover();
     }
 
     #[test]
-    fn late_join_snapshot_request_selects_exactly_one_existing_holder() {
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = CapnpBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            None,
-            None,
-        );
-        let channel = "so.tilo.notes#room:test#record:daily";
-        let mut first = state.subscribe_context(channel, 7);
-        let mut second = state.subscribe_context(channel, 9);
-        let _requester = state.subscribe_context(channel, 12);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn realtime_consent_and_snapshots_bind_exact_holders_and_revoke_on_teardown() {
+        fn late_join_snapshot_request_selects_exactly_one_existing_holder() {
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge_rx) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                None,
+                None,
+            );
+            let channel = "so.tilo.notes#room:test#record:daily";
+            let mut first = state.subscribe_context(channel, 7);
+            let mut second = state.subscribe_context(channel, 9);
+            let _requester = state.subscribe_context(channel, 12);
 
-        assert!(state.request_document_snapshot(channel, 12));
-        assert!(matches!(
-            first.try_recv(),
-            Ok(ContextEnvelope::SnapshotRequested)
-        ));
-        assert!(second.try_recv().is_err(), "only one holder may respond");
-        assert!(
-            !state.request_document_snapshot("missing", 12),
-            "a route without a holder is retryable, not falsely acknowledged"
-        );
+            assert!(state.request_document_snapshot(channel, 12));
+            assert!(matches!(
+                first.try_recv(),
+                Ok(ContextEnvelope::SnapshotRequested)
+            ));
+            assert!(second.try_recv().is_err(), "only one holder may respond");
+            assert!(
+                !state.request_document_snapshot("missing", 12),
+                "a route without a holder is retryable, not falsely acknowledged"
+            );
+        }
+
+        fn realtime_consent_reserves_once_and_revokes_minted_batch_after_disconnect() {
+            use crate::shell::realtime_session::{
+                BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
+                RealtimeMediaFacet, RealtimeMediaSet, RealtimeResumeIntent, RealtimeSessionBroker,
+                SemanticRoomLocator, VerifiedAppRegistration,
+            };
+
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                None,
+                None,
+            );
+            let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+            let target_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
+                Arc::clone(&target_broker),
+                |_| true,
+            ));
+            let (subscriber, _events) = mpsc::unbounded_channel();
+            let app = VerifiedAppRegistration::new_verified("so.tilo.calls", "work")
+                .expect("verified app");
+            {
+                let mut realtime = state.realtime.lock().expect("target bridge");
+                realtime.broker = Arc::clone(&target_broker);
+                realtime.fabric = Arc::clone(&target_fabric);
+                realtime.subscribers.insert(
+                    9,
+                    RealtimeSubscriber {
+                        app: app.clone(),
+                        tx: subscriber,
+                    },
+                );
+            }
+
+            let now = std::time::Instant::now();
+            let source =
+                crate::shell::personal_continuity::DeviceId::new("laptop").expect("source device");
+            let target =
+                crate::shell::personal_continuity::DeviceId::new("tablet").expect("target device");
+            let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+            let source_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
+                Arc::clone(&source_broker),
+                |_| true,
+            ));
+            let intent = RealtimeResumeIntent {
+                room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
+                semantic_position: None,
+                media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
+                controls: crate::shell::realtime_session::RealtimeControlState::default(),
+            };
+            let id = source_broker
+                .lock()
+                .expect("source broker")
+                .register(&app, source.clone(), intent, now)
+                .expect("register source");
+            source_broker
+                .lock()
+                .expect("source broker")
+                .propose_target(&app, id, &source, target.clone(), now)
+                .expect("propose target");
+            source_fabric
+                .offer_to(id, &target, 20_000)
+                .expect("queue offer");
+            let offer = source_fabric.drain_egress().pop().expect("offer egress");
+            let RealtimeFabricSignal::Offer(offer) = offer.signal else {
+                panic!("expected offer");
+            };
+            assert!(target_fabric.receive_authenticated(
+                &source,
+                &target,
+                RealtimeFabricSignal::Offer(offer),
+                now,
+                10_000,
+            ));
+            state.pump_realtime_fabric_app_events();
+            let session = {
+                let realtime = state.realtime.lock().expect("target bridge");
+                realtime
+                    .sessions
+                    .keys()
+                    .next()
+                    .expect("imported session")
+                    .clone()
+            };
+
+            // Pause after minting but before the exact binding is revalidated. A
+            // duplicate must fail immediately, and removing the imported binding
+            // while paused must revoke the whole just-minted batch.
+            let (minted_tx, minted_rx) = std::sync::mpsc::sync_channel(1);
+            let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+            *realtime_consent_mint_hook().lock().expect("consent hook") =
+                Some(RealtimeConsentMintHook {
+                    minted: minted_tx,
+                    resume: resume_rx,
+                });
+            let worker_bridge = RealtimeFabricAppBridge::from_state(Arc::clone(&state));
+            let worker_session = session.clone();
+            let worker = std::thread::spawn(move || {
+                worker_bridge.resolve_consent_with_policy(&worker_session, true, || true)
+            });
+            minted_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("consent worker reached post-mint checkpoint");
+            assert!(
+                state
+                    .realtime
+                    .lock()
+                    .expect("target bridge")
+                    .consent_capabilities_issued
+                    .contains(&session),
+                "worker must reserve consent before capture minting"
+            );
+            assert!(
+                RealtimeFabricAppBridge::from_state(Arc::clone(&state))
+                    .resolve_consent_with_policy(&session, true, || true)
+                    .is_err(),
+                "a concurrent duplicate may not mint another batch"
+            );
+            state
+                .realtime
+                .lock()
+                .expect("target bridge")
+                .sessions
+                .remove(&session);
+            resume_tx.send(()).expect("resume consent worker");
+            assert!(
+                worker.join().expect("consent worker").is_err(),
+                "disconnect must invalidate consent before delivery"
+            );
+            let realtime = state.realtime.lock().expect("target bridge");
+            assert!(!realtime.consent_capabilities_issued.contains(&session));
+            assert_eq!(
+                realtime
+                    .capture
+                    .lock()
+                    .expect("capture broker")
+                    .pending_authorization_count(),
+                0,
+                "stale consent must revoke every minted capability"
+            );
+            drop(realtime);
+        }
+
+        fn realtime_policy_disable_tears_down_exact_pending_consent() {
+            use crate::shell::realtime_session::{
+                BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
+                RealtimeMediaFacet, RealtimeMediaSet, RealtimeResumeIntent, RealtimeSessionBroker,
+                SemanticRoomLocator, VerifiedAppRegistration,
+            };
+
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                None,
+                None,
+            );
+            let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+            let target_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
+                Arc::clone(&target_broker),
+                |_| true,
+            ));
+            let (subscriber, mut events) = mpsc::unbounded_channel();
+            let app = VerifiedAppRegistration::new_verified("so.tilo.calls", "work")
+                .expect("verified app");
+            {
+                let mut realtime = state.realtime.lock().expect("target bridge");
+                realtime.broker = Arc::clone(&target_broker);
+                realtime.fabric = Arc::clone(&target_fabric);
+                realtime.subscribers.insert(
+                    9,
+                    RealtimeSubscriber {
+                        app: app.clone(),
+                        tx: subscriber,
+                    },
+                );
+            }
+
+            let now = std::time::Instant::now();
+            let source =
+                crate::shell::personal_continuity::DeviceId::new("laptop").expect("source device");
+            let target =
+                crate::shell::personal_continuity::DeviceId::new("tablet").expect("target device");
+            let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+            let source_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
+                Arc::clone(&source_broker),
+                |_| true,
+            ));
+            let intent = RealtimeResumeIntent {
+                room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
+                semantic_position: None,
+                media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
+                controls: crate::shell::realtime_session::RealtimeControlState::default(),
+            };
+            let id = source_broker
+                .lock()
+                .expect("source broker")
+                .register(&app, source.clone(), intent, now)
+                .expect("register source");
+            source_broker
+                .lock()
+                .expect("source broker")
+                .propose_target(&app, id, &source, target.clone(), now)
+                .expect("propose target");
+            source_fabric
+                .offer_to(id, &target, 20_000)
+                .expect("queue offer");
+            let egress = source_fabric.drain_egress().pop().expect("offer egress");
+            let RealtimeFabricSignal::Offer(offer) = egress.signal else {
+                panic!("expected offer");
+            };
+            let fabric_id = offer.session_id;
+            assert!(target_fabric.receive_authenticated(
+                &source,
+                &target,
+                RealtimeFabricSignal::Offer(offer),
+                now,
+                10_000,
+            ));
+            state.pump_realtime_fabric_app_events();
+            let offered: ui::realtime_continuity::RealtimeEvent =
+                serde_json::from_slice(&events.try_recv().expect("target app offer"))
+                    .expect("offer event");
+            let ui::realtime_continuity::RealtimeEvent::Offer { session, .. } = offered else {
+                panic!("expected app offer");
+            };
+
+            assert!(
+                RealtimeFabricAppBridge::from_state(Arc::clone(&state))
+                    .resolve_consent_with_policy(&session, true, || false)
+                    .is_err()
+            );
+            let ended: ui::realtime_continuity::RealtimeEvent =
+                serde_json::from_slice(&events.try_recv().expect("target app teardown"))
+                    .expect("ended event");
+            assert_eq!(
+                ended,
+                ui::realtime_continuity::RealtimeEvent::Ended {
+                    session: session.clone(),
+                }
+            );
+            let realtime = state.realtime.lock().expect("target bridge");
+            assert!(!realtime.sessions.contains_key(&session));
+            assert!(!realtime.consent_capabilities_issued.contains(&session));
+            drop(realtime);
+            assert!(
+                target_broker
+                    .lock()
+                    .expect("target broker")
+                    .session(fabric_id.into_broker_id())
+                    .is_none()
+            );
+            let cancel = target_fabric.drain_egress().pop().expect("cancel egress");
+            assert_eq!(cancel.target, source);
+            assert_eq!(cancel.signal, RealtimeFabricSignal::Cancel(fabric_id));
+        }
+
+        late_join_snapshot_request_selects_exactly_one_existing_holder();
+        realtime_consent_reserves_once_and_revokes_minted_batch_after_disconnect();
+        realtime_policy_disable_tears_down_exact_pending_consent();
     }
 
     #[test]
@@ -9488,276 +9768,6 @@ pub(crate) mod tests {
         assert!(session.len() <= ui::realtime_continuity::MAX_REALTIME_TOKEN_BYTES);
     }
 
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "an end-to-end test scenario that reads top to bottom"
-    )]
-    fn realtime_consent_reserves_once_and_revokes_minted_batch_after_disconnect() {
-        use crate::shell::realtime_session::{
-            BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
-            RealtimeMediaFacet, RealtimeMediaSet, RealtimeResumeIntent, RealtimeSessionBroker,
-            SemanticRoomLocator, VerifiedAppRegistration,
-        };
-
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _) = CapnpBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            None,
-            None,
-        );
-        let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
-        let target_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
-            Arc::clone(&target_broker),
-            |_| true,
-        ));
-        let (subscriber, _events) = mpsc::unbounded_channel();
-        let app =
-            VerifiedAppRegistration::new_verified("so.tilo.calls", "work").expect("verified app");
-        {
-            let mut realtime = state.realtime.lock().expect("target bridge");
-            realtime.broker = Arc::clone(&target_broker);
-            realtime.fabric = Arc::clone(&target_fabric);
-            realtime.subscribers.insert(
-                9,
-                RealtimeSubscriber {
-                    app: app.clone(),
-                    tx: subscriber,
-                },
-            );
-        }
-
-        let now = std::time::Instant::now();
-        let source =
-            crate::shell::personal_continuity::DeviceId::new("laptop").expect("source device");
-        let target =
-            crate::shell::personal_continuity::DeviceId::new("tablet").expect("target device");
-        let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
-        let source_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
-            Arc::clone(&source_broker),
-            |_| true,
-        ));
-        let intent = RealtimeResumeIntent {
-            room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
-            semantic_position: None,
-            media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
-            controls: crate::shell::realtime_session::RealtimeControlState::default(),
-        };
-        let id = source_broker
-            .lock()
-            .expect("source broker")
-            .register(&app, source.clone(), intent, now)
-            .expect("register source");
-        source_broker
-            .lock()
-            .expect("source broker")
-            .propose_target(&app, id, &source, target.clone(), now)
-            .expect("propose target");
-        source_fabric
-            .offer_to(id, &target, 20_000)
-            .expect("queue offer");
-        let offer = source_fabric.drain_egress().pop().expect("offer egress");
-        let RealtimeFabricSignal::Offer(offer) = offer.signal else {
-            panic!("expected offer");
-        };
-        assert!(target_fabric.receive_authenticated(
-            &source,
-            &target,
-            RealtimeFabricSignal::Offer(offer),
-            now,
-            10_000,
-        ));
-        state.pump_realtime_fabric_app_events();
-        let session = {
-            let realtime = state.realtime.lock().expect("target bridge");
-            realtime
-                .sessions
-                .keys()
-                .next()
-                .expect("imported session")
-                .clone()
-        };
-
-        // Pause after minting but before the exact binding is revalidated. A
-        // duplicate must fail immediately, and removing the imported binding
-        // while paused must revoke the whole just-minted batch.
-        let (minted_tx, minted_rx) = std::sync::mpsc::sync_channel(1);
-        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
-        *realtime_consent_mint_hook().lock().expect("consent hook") =
-            Some(RealtimeConsentMintHook {
-                minted: minted_tx,
-                resume: resume_rx,
-            });
-        let worker_bridge = RealtimeFabricAppBridge::from_state(Arc::clone(&state));
-        let worker_session = session.clone();
-        let worker = std::thread::spawn(move || {
-            worker_bridge.resolve_consent_with_policy(&worker_session, true, || true)
-        });
-        minted_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("consent worker reached post-mint checkpoint");
-        assert!(
-            state
-                .realtime
-                .lock()
-                .expect("target bridge")
-                .consent_capabilities_issued
-                .contains(&session),
-            "worker must reserve consent before capture minting"
-        );
-        assert!(
-            RealtimeFabricAppBridge::from_state(Arc::clone(&state))
-                .resolve_consent_with_policy(&session, true, || true)
-                .is_err(),
-            "a concurrent duplicate may not mint another batch"
-        );
-        state
-            .realtime
-            .lock()
-            .expect("target bridge")
-            .sessions
-            .remove(&session);
-        resume_tx.send(()).expect("resume consent worker");
-        assert!(
-            worker.join().expect("consent worker").is_err(),
-            "disconnect must invalidate consent before delivery"
-        );
-        let realtime = state.realtime.lock().expect("target bridge");
-        assert!(!realtime.consent_capabilities_issued.contains(&session));
-        assert_eq!(
-            realtime
-                .capture
-                .lock()
-                .expect("capture broker")
-                .pending_authorization_count(),
-            0,
-            "stale consent must revoke every minted capability"
-        );
-        drop(realtime);
-    }
-
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "an end-to-end test scenario that reads top to bottom"
-    )]
-    fn realtime_policy_disable_tears_down_exact_pending_consent() {
-        use crate::shell::realtime_session::{
-            BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
-            RealtimeMediaFacet, RealtimeMediaSet, RealtimeResumeIntent, RealtimeSessionBroker,
-            SemanticRoomLocator, VerifiedAppRegistration,
-        };
-
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _) = CapnpBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            None,
-            None,
-        );
-        let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
-        let target_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
-            Arc::clone(&target_broker),
-            |_| true,
-        ));
-        let (subscriber, mut events) = mpsc::unbounded_channel();
-        let app =
-            VerifiedAppRegistration::new_verified("so.tilo.calls", "work").expect("verified app");
-        {
-            let mut realtime = state.realtime.lock().expect("target bridge");
-            realtime.broker = Arc::clone(&target_broker);
-            realtime.fabric = Arc::clone(&target_fabric);
-            realtime.subscribers.insert(
-                9,
-                RealtimeSubscriber {
-                    app: app.clone(),
-                    tx: subscriber,
-                },
-            );
-        }
-
-        let now = std::time::Instant::now();
-        let source =
-            crate::shell::personal_continuity::DeviceId::new("laptop").expect("source device");
-        let target =
-            crate::shell::personal_continuity::DeviceId::new("tablet").expect("target device");
-        let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
-        let source_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
-            Arc::clone(&source_broker),
-            |_| true,
-        ));
-        let intent = RealtimeResumeIntent {
-            room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
-            semantic_position: None,
-            media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
-            controls: crate::shell::realtime_session::RealtimeControlState::default(),
-        };
-        let id = source_broker
-            .lock()
-            .expect("source broker")
-            .register(&app, source.clone(), intent, now)
-            .expect("register source");
-        source_broker
-            .lock()
-            .expect("source broker")
-            .propose_target(&app, id, &source, target.clone(), now)
-            .expect("propose target");
-        source_fabric
-            .offer_to(id, &target, 20_000)
-            .expect("queue offer");
-        let egress = source_fabric.drain_egress().pop().expect("offer egress");
-        let RealtimeFabricSignal::Offer(offer) = egress.signal else {
-            panic!("expected offer");
-        };
-        let fabric_id = offer.session_id;
-        assert!(target_fabric.receive_authenticated(
-            &source,
-            &target,
-            RealtimeFabricSignal::Offer(offer),
-            now,
-            10_000,
-        ));
-        state.pump_realtime_fabric_app_events();
-        let offered: ui::realtime_continuity::RealtimeEvent =
-            serde_json::from_slice(&events.try_recv().expect("target app offer"))
-                .expect("offer event");
-        let ui::realtime_continuity::RealtimeEvent::Offer { session, .. } = offered else {
-            panic!("expected app offer");
-        };
-
-        assert!(
-            RealtimeFabricAppBridge::from_state(Arc::clone(&state))
-                .resolve_consent_with_policy(&session, true, || false)
-                .is_err()
-        );
-        let ended: ui::realtime_continuity::RealtimeEvent =
-            serde_json::from_slice(&events.try_recv().expect("target app teardown"))
-                .expect("ended event");
-        assert_eq!(
-            ended,
-            ui::realtime_continuity::RealtimeEvent::Ended {
-                session: session.clone(),
-            }
-        );
-        let realtime = state.realtime.lock().expect("target bridge");
-        assert!(!realtime.sessions.contains_key(&session));
-        assert!(!realtime.consent_capabilities_issued.contains(&session));
-        drop(realtime);
-        assert!(
-            target_broker
-                .lock()
-                .expect("target broker")
-                .session(fabric_id.into_broker_id())
-                .is_none()
-        );
-        let cancel = target_fabric.drain_egress().pop().expect("cancel egress");
-        assert_eq!(cancel.target, source);
-        assert_eq!(cancel.signal, RealtimeFabricSignal::Cancel(fabric_id));
-    }
-
     /// Content keyed by `(room, hash)`, standing in for the content store's
     /// room-scoped reads.
     #[derive(Default)]
@@ -9807,121 +9817,130 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn launch_content_rejects_bad_or_missing_hash_and_keeps_plain_launch_empty() {
-        let content = std::sync::Arc::new(ScopedContent::default());
-        let photos = caller("so.tilo.photos", "room-1");
-        assert_eq!(
-            stage("", Some(&photos), &content).expect("plain launch"),
-            None
-        );
-        assert!(stage("not-a-hash", Some(&photos), &content).is_err());
-        assert!(stage(&"a".repeat(64), Some(&photos), &content).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
     #[serial_test::serial(process_env)]
-    fn launch_content_is_in_place_when_staging_resolves_and_granted_after() {
-        let runtime = tempfile::tempdir().expect("runtime directory");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_RUNTIME_DIR", runtime.path());
-        let (content, hash) = ScopedContent::with("room-1", b"staged launch fixture");
-        let content = std::sync::Arc::new(content);
-        let photos = caller("so.tilo.photos", "room-1");
-        let staged = stage(&hash, Some(&photos), &content)
-            .expect("staged")
-            .expect("content present");
-        // The file is complete by the time the stage resolves, which is when
-        // the launch that awaits it runs.
-        assert_eq!(
-            std::fs::read(&staged.path).expect("staged file"),
-            b"staged launch fixture"
-        );
-        assert_eq!(staged.dir, runtime.path().join("tilo-opened"));
-
-        let mut workspace = crate::shell::state::Workspace::new(
-            crate::shell::state::WorkspaceId::new(),
-            "launcher test",
-        );
-        let expected_dir = staged.dir.clone();
-        assert!(workspace.app_capabilities("so.tilo.photos").is_empty());
-        let document = staged.grant_to(&mut workspace, "so.tilo.photos");
-        assert!(document.starts_with(&expected_dir));
-        assert!(
-            !workspace.app_capabilities("so.tilo.photos").is_empty(),
-            "the app is granted the staging directory"
-        );
-
-        // Staging the same content again reuses the verified copy.
-        let again = stage(&hash, Some(&photos), &content)
-            .expect("restaged")
-            .expect("content present");
-        assert_eq!(again.path, document);
-    }
-
-    /// The shell stages content through the scope of the application that
-    /// asked, never its own authority: a caller in another room holding the
-    /// hash, or a connection the launcher did not authenticate, stages nothing.
-    #[cfg(unix)]
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn launch_content_is_read_through_the_calling_applications_scope() {
-        let runtime = tempfile::tempdir().expect("runtime directory");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_RUNTIME_DIR", runtime.path());
-        let (content, hash) = ScopedContent::with("room-1", b"a photograph");
-        let content = std::sync::Arc::new(content);
-
-        let staged = stage(&hash, Some(&caller("so.tilo.photos", "room-1")), &content)
-            .expect("the owning app's content stages")
-            .expect("a staged path");
-        assert_eq!(
-            std::fs::read(&staged.path).expect("staged bytes"),
-            b"a photograph"
-        );
-        assert_eq!(
-            content
-                .reads
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .last(),
-            Some(&("room-1".to_owned(), "so.tilo.photos".to_owned()))
-        );
-
-        for other in [
-            caller("so.tilo.chat", "room-2"),
-            caller("so.tilo.photos", "room-2"),
-        ] {
-            assert!(
-                stage(&hash, Some(&other), &content).is_err(),
-                "{other:?} holds the hash but not the content"
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn launch_content_is_hash_checked_scoped_and_refuses_unsafe_staging() {
+        fn launch_content_rejects_bad_or_missing_hash_and_keeps_plain_launch_empty() {
+            let content = std::sync::Arc::new(ScopedContent::default());
+            let photos = caller("so.tilo.photos", "room-1");
+            assert_eq!(
+                stage("", Some(&photos), &content).expect("plain launch"),
+                None
             );
+            assert!(stage("not-a-hash", Some(&photos), &content).is_err());
+            assert!(stage(&"a".repeat(64), Some(&photos), &content).is_err());
         }
-        assert!(stage(&hash, None, &content).is_err());
-    }
 
-    #[cfg(unix)]
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn launch_content_refuses_corrupt_or_symlinked_staging_targets() {
-        let runtime = tempfile::tempdir().expect("runtime directory");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_RUNTIME_DIR", runtime.path());
-        let (content, hash) = ScopedContent::with("room-1", b"verified launch fixture");
-        let content = std::sync::Arc::new(content);
-        let photos = caller("so.tilo.photos", "room-1");
-        let staged = runtime
-            .path()
-            .join("tilo-opened")
-            .join(format!("{hash}.bin"));
-        std::fs::create_dir_all(staged.parent().expect("staging parent")).expect("staging dir");
-        std::fs::write(&staged, b"corrupt").expect("corrupt fixture");
-        assert!(stage(&hash, Some(&photos), &content).is_err());
-        std::fs::remove_file(&staged).expect("remove corrupt fixture");
-        let target = runtime.path().join("outside");
-        std::fs::write(&target, b"outside").expect("outside fixture");
-        std::os::unix::fs::symlink(&target, &staged).expect("symlink fixture");
-        assert!(stage(&hash, Some(&photos), &content).is_err());
+        #[cfg(unix)]
+        fn launch_content_is_in_place_when_staging_resolves_and_granted_after() {
+            let runtime = tempfile::tempdir().expect("runtime directory");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", runtime.path());
+            let (content, hash) = ScopedContent::with("room-1", b"staged launch fixture");
+            let content = std::sync::Arc::new(content);
+            let photos = caller("so.tilo.photos", "room-1");
+            let staged = stage(&hash, Some(&photos), &content)
+                .expect("staged")
+                .expect("content present");
+            // The file is complete by the time the stage resolves, which is when
+            // the launch that awaits it runs.
+            assert_eq!(
+                std::fs::read(&staged.path).expect("staged file"),
+                b"staged launch fixture"
+            );
+            assert_eq!(staged.dir, runtime.path().join("tilo-opened"));
+
+            let mut workspace = crate::shell::state::Workspace::new(
+                crate::shell::state::WorkspaceId::new(),
+                "launcher test",
+            );
+            let expected_dir = staged.dir.clone();
+            assert!(workspace.app_capabilities("so.tilo.photos").is_empty());
+            let document = staged.grant_to(&mut workspace, "so.tilo.photos");
+            assert!(document.starts_with(&expected_dir));
+            assert!(
+                !workspace.app_capabilities("so.tilo.photos").is_empty(),
+                "the app is granted the staging directory"
+            );
+
+            // Staging the same content again reuses the verified copy.
+            let again = stage(&hash, Some(&photos), &content)
+                .expect("restaged")
+                .expect("content present");
+            assert_eq!(again.path, document);
+        }
+
+        /// The shell stages content through the scope of the application that
+        /// asked, never its own authority: a caller in another room holding the
+        /// hash, or a connection the launcher did not authenticate, stages nothing.
+        #[cfg(unix)]
+        fn launch_content_is_read_through_the_calling_applications_scope() {
+            let runtime = tempfile::tempdir().expect("runtime directory");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", runtime.path());
+            let (content, hash) = ScopedContent::with("room-1", b"a photograph");
+            let content = std::sync::Arc::new(content);
+
+            let staged = stage(&hash, Some(&caller("so.tilo.photos", "room-1")), &content)
+                .expect("the owning app's content stages")
+                .expect("a staged path");
+            assert_eq!(
+                std::fs::read(&staged.path).expect("staged bytes"),
+                b"a photograph"
+            );
+            assert_eq!(
+                content
+                    .reads
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .last(),
+                Some(&("room-1".to_owned(), "so.tilo.photos".to_owned()))
+            );
+
+            for other in [
+                caller("so.tilo.chat", "room-2"),
+                caller("so.tilo.photos", "room-2"),
+            ] {
+                assert!(
+                    stage(&hash, Some(&other), &content).is_err(),
+                    "{other:?} holds the hash but not the content"
+                );
+            }
+            assert!(stage(&hash, None, &content).is_err());
+        }
+
+        #[cfg(unix)]
+        fn launch_content_refuses_corrupt_or_symlinked_staging_targets() {
+            let runtime = tempfile::tempdir().expect("runtime directory");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", runtime.path());
+            let (content, hash) = ScopedContent::with("room-1", b"verified launch fixture");
+            let content = std::sync::Arc::new(content);
+            let photos = caller("so.tilo.photos", "room-1");
+            let staged = runtime
+                .path()
+                .join("tilo-opened")
+                .join(format!("{hash}.bin"));
+            std::fs::create_dir_all(staged.parent().expect("staging parent")).expect("staging dir");
+            std::fs::write(&staged, b"corrupt").expect("corrupt fixture");
+            assert!(stage(&hash, Some(&photos), &content).is_err());
+            std::fs::remove_file(&staged).expect("remove corrupt fixture");
+            let target = runtime.path().join("outside");
+            std::fs::write(&target, b"outside").expect("outside fixture");
+            std::os::unix::fs::symlink(&target, &staged).expect("symlink fixture");
+            assert!(stage(&hash, Some(&photos), &content).is_err());
+        }
+
+        launch_content_rejects_bad_or_missing_hash_and_keeps_plain_launch_empty();
+        #[cfg(unix)]
+        launch_content_is_in_place_when_staging_resolves_and_granted_after();
+        #[cfg(unix)]
+        launch_content_is_read_through_the_calling_applications_scope();
+        #[cfg(unix)]
+        launch_content_refuses_corrupt_or_symlinked_staging_targets();
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10361,167 +10380,176 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn directory_queue_refuses_oversized_query_text_and_cursor_before_contacting_the_app() {
-        let fixture = local_directory_fixture();
-        let queue = fixture.state.action_directory_request_queue();
-        let mut oversized_text = runtime_collab::ActionDirectoryQuery {
-            peer_id: fixture.peer_id,
-            revision: String::new(),
-            cursor: Vec::new(),
-            needle: "x".repeat(DIRECTORY_MAX_QUERY_NEEDLE_BYTES.saturating_add(1)),
-            parent_resource: String::new(),
-            max_results: 1,
-            max_bytes: 1,
-            max_work: 1,
-            max_depth: 1,
-        };
-        assert!(matches!(
-            queue.try_query(
-                BrokerActor::person("actor-a"),
-                &fixture.cluster_id,
-                oversized_text.clone()
-            ),
-            Err(ActionDirectoryBridgeError::InvalidRequest)
-        ));
-        oversized_text.needle.clear();
-        oversized_text.cursor = vec![0; DIRECTORY_MAX_CURSOR_BYTES.saturating_add(1)];
-        assert!(matches!(
-            queue.try_query(
-                BrokerActor::person("actor-a"),
-                &fixture.cluster_id,
-                oversized_text
-            ),
-            Err(ActionDirectoryBridgeError::InvalidRequest)
-        ));
-        assert!(matches!(
-            queue.try_resolve(
-                BrokerActor::person("actor-a"),
-                "x".repeat(DIRECTORY_MAX_IDENTIFIER_BYTES.saturating_add(1)),
-                fixture.peer_id,
-                "directory-r1",
-                "workspace:atlas",
-                "open",
-            ),
-            Err(ActionDirectoryBridgeError::InvalidRequest)
-        ));
-        let mut oversized_argument =
-            crate::shell::remote_actions::BrokerActionHost::new(fixture.broker.clone()).invoke(
-                &tilo_actions::remote::Caller::local_person("actor-a").in_room(&fixture.cluster_id),
-                tilo_actions::remote::InvokeRequest {
-                    invocation: tilo_actions::InvocationId::new(),
-                    target: tilo_actions::remote::RemoteActionTarget {
-                        provider: fixture.peer_id.to_string(),
-                        address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
-                    },
-                    argument: tilo_actions::remote::InvokeArgument::Text(
-                        "x".repeat(DIRECTORY_MAX_PARAMS_BYTES.saturating_add(1)),
-                    ),
-                    context: None,
-                    confirmation: None,
-                    revision: Some("directory-r1".into()),
-                },
-            );
-        assert!(matches!(
-            oversized_argument.poll_ready(),
-            tilo_actions::remote::PendingPoll::Ready(Err(
-                tilo_actions::remote::ActionHostError::InvalidRequest { .. }
-            ))
-        ));
-        assert_eq!(
-            fixture.directory_state.borrow().query_count,
-            0,
-            "invalid local requests are rejected before a directory capability is contacted"
-        );
-    }
-
-    #[test]
-    fn directory_wire_rows_refuse_untrusted_presentation_and_control_framing() {
-        let fixture = local_directory_fixture();
-        let mut row = fixture.directory_state.borrow().row();
-        row.resource = "workspace:atlas\u{1f}admin".into();
-        assert!(
-            permits_directory_row(
-                &fixture.state,
-                &fixture.cluster_id,
-                &BrokerActor::person("actor-a"),
-                &fixture.route.app_id,
-                &row,
-            )
-            .is_err(),
-            "a resource cannot inject the shell result-id separator"
-        );
-        let mut row = fixture.directory_state.borrow().row();
-        row.action = Some("open\nadmin".into());
-        assert!(
-            permits_directory_row(
-                &fixture.state,
-                &fixture.cluster_id,
-                &BrokerActor::person("actor-a"),
-                &fixture.route.app_id,
-                &row,
-            )
-            .is_err(),
-            "control characters cannot turn one wire action into several shell fields"
-        );
-        let mut row = fixture.directory_state.borrow().row();
-        row.action = None;
-        row.descriptor = None;
-        row.resource_presentation_json = serde_json::json!({
-            "detail": "x".repeat(tilo_actions::ResourcePresentation::MAX_DETAIL_BYTES + 1)
-        })
-        .to_string();
-        assert!(
-            permits_directory_row(
-                &fixture.state,
-                &fixture.cluster_id,
-                &BrokerActor::person("actor-a"),
-                &fixture.route.app_id,
-                &row,
-            )
-            .is_err(),
-            "oversized app metadata cannot reach shell chrome"
-        );
-    }
-
-    #[test]
-    fn retained_directory_root_pages_reach_exact_bound_and_tail_without_query_sorting() {
-        let fixture = local_directory_fixture();
-        {
-            let mut roots = fixture
-                .state
-                .action_directory_roots
-                .lock()
-                .expect("directory roots");
-            for peer_id in 1..=129_u64 {
-                roots.insert(
-                    peer_id,
-                    ActionDirectoryRoot {
-                        peer_id,
-                        app_id: "so.tilo.test".into(),
-                        cluster_id: fixture.cluster_id.clone(),
-                        record_id: format!("root-{peer_id}"),
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn directory_queries_and_rows_are_bounded_and_untrusted_framing_refused() {
+        fn directory_queue_refuses_oversized_query_text_and_cursor_before_contacting_the_app() {
+            let fixture = local_directory_fixture();
+            let queue = fixture.state.action_directory_request_queue();
+            let mut oversized_text = runtime_collab::ActionDirectoryQuery {
+                peer_id: fixture.peer_id,
+                revision: String::new(),
+                cursor: Vec::new(),
+                needle: "x".repeat(DIRECTORY_MAX_QUERY_NEEDLE_BYTES.saturating_add(1)),
+                parent_resource: String::new(),
+                max_results: 1,
+                max_bytes: 1,
+                max_work: 1,
+                max_depth: 1,
+            };
+            assert!(matches!(
+                queue.try_query(
+                    BrokerActor::person("actor-a"),
+                    &fixture.cluster_id,
+                    oversized_text.clone()
+                ),
+                Err(ActionDirectoryBridgeError::InvalidRequest)
+            ));
+            oversized_text.needle.clear();
+            oversized_text.cursor = vec![0; DIRECTORY_MAX_CURSOR_BYTES.saturating_add(1)];
+            assert!(matches!(
+                queue.try_query(
+                    BrokerActor::person("actor-a"),
+                    &fixture.cluster_id,
+                    oversized_text
+                ),
+                Err(ActionDirectoryBridgeError::InvalidRequest)
+            ));
+            assert!(matches!(
+                queue.try_resolve(
+                    BrokerActor::person("actor-a"),
+                    "x".repeat(DIRECTORY_MAX_IDENTIFIER_BYTES.saturating_add(1)),
+                    fixture.peer_id,
+                    "directory-r1",
+                    "workspace:atlas",
+                    "open",
+                ),
+                Err(ActionDirectoryBridgeError::InvalidRequest)
+            ));
+            let mut oversized_argument =
+                crate::shell::remote_actions::BrokerActionHost::new(fixture.broker.clone()).invoke(
+                    &tilo_actions::remote::Caller::local_person("actor-a")
+                        .in_room(&fixture.cluster_id),
+                    tilo_actions::remote::InvokeRequest {
+                        invocation: tilo_actions::InvocationId::new(),
+                        target: tilo_actions::remote::RemoteActionTarget {
+                            provider: fixture.peer_id.to_string(),
+                            address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                        },
+                        argument: tilo_actions::remote::InvokeArgument::Text(
+                            "x".repeat(DIRECTORY_MAX_PARAMS_BYTES.saturating_add(1)),
+                        ),
+                        context: None,
+                        confirmation: None,
+                        revision: Some("directory-r1".into()),
                     },
                 );
-            }
-            drop(roots);
+            assert!(matches!(
+                oversized_argument.poll_ready(),
+                tilo_actions::remote::PendingPoll::Ready(Err(
+                    tilo_actions::remote::ActionHostError::InvalidRequest { .. }
+                ))
+            ));
+            assert_eq!(
+                fixture.directory_state.borrow().query_count,
+                0,
+                "invalid local requests are rejected before a directory capability is contacted"
+            );
         }
-        fixture.state.refresh_action_directory_root_snapshot();
-        let first = fixture.state.action_directory_root_page(None, 128);
-        assert_eq!(first.roots.len(), 128);
-        assert_eq!(first.next_after_peer, Some(128));
-        let second = fixture
-            .state
-            .action_directory_root_page(first.next_after_peer, 128);
-        assert_eq!(second.roots.len(), 1);
-        assert_eq!(second.roots[0].peer_id, 129);
-        assert_eq!(second.next_after_peer, None);
-        let repeat = fixture.state.action_directory_root_page(None, 1);
-        assert_eq!(repeat.roots[0].peer_id, 1);
-        assert_eq!(repeat.generation, second.generation);
-        fixture.state.remove_connection(129);
-        let after_disconnect = fixture.state.action_directory_root_page(Some(128), 1);
-        assert!(after_disconnect.roots.is_empty());
-        assert!(after_disconnect.generation > second.generation);
+
+        fn directory_wire_rows_refuse_untrusted_presentation_and_control_framing() {
+            let fixture = local_directory_fixture();
+            let mut row = fixture.directory_state.borrow().row();
+            row.resource = "workspace:atlas\u{1f}admin".into();
+            assert!(
+                permits_directory_row(
+                    &fixture.state,
+                    &fixture.cluster_id,
+                    &BrokerActor::person("actor-a"),
+                    &fixture.route.app_id,
+                    &row,
+                )
+                .is_err(),
+                "a resource cannot inject the shell result-id separator"
+            );
+            let mut row = fixture.directory_state.borrow().row();
+            row.action = Some("open\nadmin".into());
+            assert!(
+                permits_directory_row(
+                    &fixture.state,
+                    &fixture.cluster_id,
+                    &BrokerActor::person("actor-a"),
+                    &fixture.route.app_id,
+                    &row,
+                )
+                .is_err(),
+                "control characters cannot turn one wire action into several shell fields"
+            );
+            let mut row = fixture.directory_state.borrow().row();
+            row.action = None;
+            row.descriptor = None;
+            row.resource_presentation_json = serde_json::json!({
+                "detail": "x".repeat(tilo_actions::ResourcePresentation::MAX_DETAIL_BYTES + 1)
+            })
+            .to_string();
+            assert!(
+                permits_directory_row(
+                    &fixture.state,
+                    &fixture.cluster_id,
+                    &BrokerActor::person("actor-a"),
+                    &fixture.route.app_id,
+                    &row,
+                )
+                .is_err(),
+                "oversized app metadata cannot reach shell chrome"
+            );
+        }
+
+        fn retained_directory_root_pages_reach_exact_bound_and_tail_without_query_sorting() {
+            let fixture = local_directory_fixture();
+            {
+                let mut roots = fixture
+                    .state
+                    .action_directory_roots
+                    .lock()
+                    .expect("directory roots");
+                for peer_id in 1..=129_u64 {
+                    roots.insert(
+                        peer_id,
+                        ActionDirectoryRoot {
+                            peer_id,
+                            app_id: "so.tilo.test".into(),
+                            cluster_id: fixture.cluster_id.clone(),
+                            record_id: format!("root-{peer_id}"),
+                        },
+                    );
+                }
+                drop(roots);
+            }
+            fixture.state.refresh_action_directory_root_snapshot();
+            let first = fixture.state.action_directory_root_page(None, 128);
+            assert_eq!(first.roots.len(), 128);
+            assert_eq!(first.next_after_peer, Some(128));
+            let second = fixture
+                .state
+                .action_directory_root_page(first.next_after_peer, 128);
+            assert_eq!(second.roots.len(), 1);
+            assert_eq!(second.roots[0].peer_id, 129);
+            assert_eq!(second.next_after_peer, None);
+            let repeat = fixture.state.action_directory_root_page(None, 1);
+            assert_eq!(repeat.roots[0].peer_id, 1);
+            assert_eq!(repeat.generation, second.generation);
+            fixture.state.remove_connection(129);
+            let after_disconnect = fixture.state.action_directory_root_page(Some(128), 1);
+            assert!(after_disconnect.roots.is_empty());
+            assert!(after_disconnect.generation > second.generation);
+        }
+
+        directory_queue_refuses_oversized_query_text_and_cursor_before_contacting_the_app();
+        directory_wire_rows_refuse_untrusted_presentation_and_control_framing();
+        retained_directory_root_pages_reach_exact_bound_and_tail_without_query_sorting();
     }
 
     #[test]
@@ -10738,42 +10766,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn certified_join_verifies_root_device_and_workspace_chain() {
-        let root = SigningKey::from_bytes(&[1; 32]);
-        let device = SigningKey::from_bytes(&[2; 32]);
-        let route = CrdtRoute::cluster("workspace-a");
-        let presentation = certified_join("workspace-a", &root, &device);
-        let verified = verify_join_presentation(
-            &route,
-            &presentation,
-            &root.verifying_key().to_bytes(),
-            2,
-            false,
-            true,
-        )
-        .expect("valid certified join");
-        assert_eq!(verified.user_public_key, root.verifying_key().to_bytes());
-        assert_eq!(
-            verified.device_public_key,
-            device.verifying_key().to_bytes()
-        );
-    }
-
-    #[test]
-    fn certified_join_rejects_unknown_proof_signer_and_tampered_cert() {
-        let root = SigningKey::from_bytes(&[3; 32]);
-        let device = SigningKey::from_bytes(&[4; 32]);
-        let stranger = SigningKey::from_bytes(&[5; 32]);
-        let route = CrdtRoute::cluster("workspace-a");
-        let mut presentation = certified_join("workspace-a", &root, &device);
-        presentation.proof = stranger
-            .sign(&runtime_identity::collaboration_join_signing_bytes(
-                "workspace-a",
-            ))
-            .to_bytes()
-            .to_vec();
-        assert!(
-            verify_join_presentation(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn certified_join_verifies_the_chain_and_admits_by_live_membership() {
+        fn certified_join_verifies_root_device_and_workspace_chain() {
+            let root = SigningKey::from_bytes(&[1; 32]);
+            let device = SigningKey::from_bytes(&[2; 32]);
+            let route = CrdtRoute::cluster("workspace-a");
+            let presentation = certified_join("workspace-a", &root, &device);
+            let verified = verify_join_presentation(
                 &route,
                 &presentation,
                 &root.verifying_key().to_bytes(),
@@ -10781,93 +10784,559 @@ pub(crate) mod tests {
                 false,
                 true,
             )
-            .is_err()
-        );
+            .expect("valid certified join");
+            assert_eq!(verified.user_public_key, root.verifying_key().to_bytes());
+            assert_eq!(
+                verified.device_public_key,
+                device.verifying_key().to_bytes()
+            );
+        }
 
-        let mut presentation = certified_join("workspace-a", &root, &device);
-        let mut cert: tilo_user_identity::DeviceCert =
-            serde_json::from_slice(&presentation.device_certificate).expect("certificate");
-        cert.device_label.push_str(" (tampered)");
-        presentation.device_certificate = serde_json::to_vec(&cert).expect("certificate JSON");
-        assert!(
-            verify_join_presentation(
-                &route,
-                &presentation,
-                &root.verifying_key().to_bytes(),
-                2,
-                false,
-                true,
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn certified_join_rejects_other_workspace_revoked_and_unenrolled_device() {
-        let root = SigningKey::from_bytes(&[6; 32]);
-        let device = SigningKey::from_bytes(&[7; 32]);
-        let presentation = certified_join("workspace-b", &root, &device);
-        let expected_root = root.verifying_key().to_bytes();
-        assert!(
-            verify_join_presentation(
-                &CrdtRoute::cluster("workspace-a"),
-                &presentation,
-                &expected_root,
-                2,
-                false,
-                true,
-            )
-            .is_err()
-        );
-        let route = CrdtRoute::cluster("workspace-b");
-        let other_root = SigningKey::from_bytes(&[8; 32]);
-        assert!(
-            verify_join_presentation(
-                &route,
-                &presentation,
-                &other_root.verifying_key().to_bytes(),
-                2,
-                false,
-                true,
-            )
-            .is_err(),
-            "a certificate selected for another workspace identity is rejected"
-        );
-        assert!(
-            verify_join_presentation(&route, &presentation, &expected_root, 2, true, true).is_err()
-        );
-        assert!(
-            verify_join_presentation(&route, &presentation, &expected_root, 2, false, false)
+        fn certified_join_rejects_unknown_proof_signer_and_tampered_cert() {
+            let root = SigningKey::from_bytes(&[3; 32]);
+            let device = SigningKey::from_bytes(&[4; 32]);
+            let stranger = SigningKey::from_bytes(&[5; 32]);
+            let route = CrdtRoute::cluster("workspace-a");
+            let mut presentation = certified_join("workspace-a", &root, &device);
+            presentation.proof = stranger
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    "workspace-a",
+                ))
+                .to_bytes()
+                .to_vec();
+            assert!(
+                verify_join_presentation(
+                    &route,
+                    &presentation,
+                    &root.verifying_key().to_bytes(),
+                    2,
+                    false,
+                    true,
+                )
                 .is_err()
-        );
+            );
+
+            let mut presentation = certified_join("workspace-a", &root, &device);
+            let mut cert: tilo_user_identity::DeviceCert =
+                serde_json::from_slice(&presentation.device_certificate).expect("certificate");
+            cert.device_label.push_str(" (tampered)");
+            presentation.device_certificate = serde_json::to_vec(&cert).expect("certificate JSON");
+            assert!(
+                verify_join_presentation(
+                    &route,
+                    &presentation,
+                    &root.verifying_key().to_bytes(),
+                    2,
+                    false,
+                    true,
+                )
+                .is_err()
+            );
+        }
+
+        fn certified_join_rejects_other_workspace_revoked_and_unenrolled_device() {
+            let root = SigningKey::from_bytes(&[6; 32]);
+            let device = SigningKey::from_bytes(&[7; 32]);
+            let presentation = certified_join("workspace-b", &root, &device);
+            let expected_root = root.verifying_key().to_bytes();
+            assert!(
+                verify_join_presentation(
+                    &CrdtRoute::cluster("workspace-a"),
+                    &presentation,
+                    &expected_root,
+                    2,
+                    false,
+                    true,
+                )
+                .is_err()
+            );
+            let route = CrdtRoute::cluster("workspace-b");
+            let other_root = SigningKey::from_bytes(&[8; 32]);
+            assert!(
+                verify_join_presentation(
+                    &route,
+                    &presentation,
+                    &other_root.verifying_key().to_bytes(),
+                    2,
+                    false,
+                    true,
+                )
+                .is_err(),
+                "a certificate selected for another workspace identity is rejected"
+            );
+            assert!(
+                verify_join_presentation(&route, &presentation, &expected_root, 2, true, true)
+                    .is_err()
+            );
+            assert!(
+                verify_join_presentation(&route, &presentation, &expected_root, 2, false, false)
+                    .is_err()
+            );
+        }
+
+        fn certified_join_admission_uses_workspace_membership_and_role() {
+            let root = SigningKey::from_bytes(&[20; 32]);
+            let principal = principal_id_for_root(root.verifying_key().to_bytes());
+            let mut workspace = crate::shell::state::Workspace::new(
+                crate::shell::state::WorkspaceId(1),
+                "Member room",
+            );
+            let route = CrdtRoute::cluster(workspace.room.to_string());
+            workspace.grant_capability(crate::shell::state::CapOverride::membership(
+                crate::shell::state::Subject::person(&principal),
+                workspace.room.to_string(),
+                crate::shell::state::Verb::Write,
+            ));
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(workspace);
+
+            let admitted = admit_verified_join(&tree, &route, verified_device(&root))
+                .expect("a certified editor is admitted");
+            assert_eq!(admitted.principal_id, principal);
+            assert_eq!(admitted.role, CapRole::Editor);
+            assert!(
+                verify_session_author(
+                    &admitted,
+                    collab_types::Ed25519PublicKey::from_bytes([42; 32]),
+                )
+                .is_ok(),
+                "signed ops are device-authored under the certificate's device key"
+            );
+            assert!(
+                verify_session_author(
+                    &admitted,
+                    collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+                )
+                .is_err(),
+                "the user root certifies the device but does not author this device's ops"
+            );
+            assert!(
+                verify_session_author(
+                    &admitted,
+                    collab_types::Ed25519PublicKey::from_bytes([43; 32]),
+                )
+                .is_err(),
+                "a member cannot submit another device's envelope through this session"
+            );
+        }
+
+        fn certified_join_admission_rejects_wrong_or_removed_root() {
+            let member = SigningKey::from_bytes(&[21; 32]);
+            let stranger = SigningKey::from_bytes(&[22; 32]);
+            let member_id = principal_id_for_root(member.verifying_key().to_bytes());
+            let mut workspace = crate::shell::state::Workspace::new(
+                crate::shell::state::WorkspaceId(2),
+                "Revocation room",
+            );
+            let route = CrdtRoute::cluster(workspace.room.to_string());
+            let membership =
+                workspace.grant_capability(crate::shell::state::CapOverride::membership(
+                    crate::shell::state::Subject::person(&member_id),
+                    workspace.room.to_string(),
+                    crate::shell::state::Verb::Read,
+                ));
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(workspace);
+
+            assert!(admit_verified_join(&tree, &route, verified_device(&stranger)).is_err());
+            let admitted = admit_verified_join(&tree, &route, verified_device(&member))
+                .expect("member starts admitted");
+            let membership_tree = tree.shared();
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge_rx) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(Arc::clone(&membership_tree)),
+                None,
+            );
+            assert!(membership_tree.write().desktop.workspaces[0].revoke_capability(&membership));
+            assert!(
+                state.revalidate_admission(&route, &admitted).is_err(),
+                "removing membership rejects the certified session's next operation"
+            );
+        }
+
+        fn certified_join_admission_rejects_cross_workspace_replay() {
+            let root = SigningKey::from_bytes(&[23; 32]);
+            let principal = principal_id_for_root(root.verifying_key().to_bytes());
+            let mut member_workspace = crate::shell::state::Workspace::new(
+                crate::shell::state::WorkspaceId(3),
+                "Member room",
+            );
+            member_workspace.set_owner(&principal);
+            let other_workspace = crate::shell::state::Workspace::new(
+                crate::shell::state::WorkspaceId(4),
+                "Other room",
+            );
+            let replay_route = CrdtRoute::cluster(other_workspace.room.to_string());
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(member_workspace);
+            tree.desktop.workspaces.push(other_workspace);
+
+            assert!(admit_verified_join(&tree, &replay_route, verified_device(&root)).is_err());
+        }
+
+        certified_join_verifies_root_device_and_workspace_chain();
+        certified_join_rejects_unknown_proof_signer_and_tampered_cert();
+        certified_join_rejects_other_workspace_revoked_and_unenrolled_device();
+        certified_join_admission_uses_workspace_membership_and_role();
+        certified_join_admission_rejects_wrong_or_removed_root();
+        certified_join_admission_rejects_cross_workspace_replay();
     }
 
     #[test]
-    fn workspace_control_requires_editor_authority() {
-        assert!(workspace_control_role_allowed(Role::Owner));
-        assert!(workspace_control_role_allowed(Role::Editor));
-        assert!(!workspace_control_role_allowed(Role::Commenter));
-        assert!(!workspace_control_role_allowed(Role::Viewer));
-        assert!(!workspace_control_role_allowed(Role::Denied));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn workspace_control_and_live_actions_require_fresh_directed_authority() {
+        fn workspace_control_requires_editor_authority() {
+            assert!(workspace_control_role_allowed(Role::Owner));
+            assert!(workspace_control_role_allowed(Role::Editor));
+            assert!(!workspace_control_role_allowed(Role::Commenter));
+            assert!(!workspace_control_role_allowed(Role::Viewer));
+            assert!(!workspace_control_role_allowed(Role::Denied));
+        }
+
+        fn closed_workspace_control_session_is_terminal_for_rpc_readers() {
+            let target = iroh::SecretKey::generate().public();
+            let mut session = crate::network::WorkspaceControlSession::new(
+                7,
+                11,
+                target,
+                crate::network::WorkspaceControlRoute::Direct { target },
+            );
+            assert!(closed_workspace_control_event(&session).is_none());
+            session.disconnect();
+            assert_eq!(
+                closed_workspace_control_event(&session),
+                Some(runtime_collab::WorkspaceControlEvent::Closed(
+                    runtime_collab::WorkspaceControlCloseReason::LocalDisconnect,
+                ))
+            );
+        }
+
+        #[allow(
+            clippy::too_many_lines,
+            clippy::arithmetic_side_effects,
+            clippy::unchecked_time_subtraction,
+            reason = "the directed-action test keeps capability setup, delivery, and denial assertions in one scenario"
+        )]
+        fn live_action_invocation_is_fresh_directed_and_permission_checked() {
+            let mut workspace = crate::shell::state::Workspace::new(
+                crate::shell::state::WorkspaceId(31),
+                "Action room",
+            );
+            workspace.set_owner("owner");
+            let route = CrdtRoute::app("so.tilo.files", workspace.room.to_string());
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(workspace);
+            let membership = tree.shared();
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge_rx) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(membership),
+                None,
+            );
+            state.surfaces.lock().expect("surfaces").insert(
+                7,
+                PublishedSurface {
+                    peer_id: 7,
+                    app_id: "so.tilo.files".into(),
+                    route,
+                    actions: vec![
+                        PublishedAction {
+                            resource: "files.entry:/tmp/report".into(),
+                            action: "reveal".into(),
+                            resource_kind: "files.entry".into(),
+                            resource_label: "report".into(),
+                            action_label: "Reveal".into(),
+                            description: None,
+                            operation_kind: tilo_actions::OperationKind::View,
+                            params: Vec::new(),
+                            contract: tilo_actions::ActionContract::view(),
+                            view: None,
+                            input: PublishedInput::None,
+                        },
+                        PublishedAction {
+                            resource: "files.entry:/tmp/report".into(),
+                            action: "erase".into(),
+                            resource_kind: "files.entry".into(),
+                            resource_label: "report".into(),
+                            action_label: "Erase".into(),
+                            description: None,
+                            operation_kind: tilo_actions::OperationKind::Effect,
+                            params: Vec::new(),
+                            contract: tilo_actions::ActionContract {
+                                risk: tilo_actions::RiskLevel::Destructive,
+                                confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                                ..tilo_actions::ActionContract::default()
+                            },
+                            view: None,
+                            input: PublishedInput::None,
+                        },
+                        PublishedAction {
+                            resource: "files.entry:/tmp/report".into(),
+                            action: "refresh".into(),
+                            resource_kind: "files.entry".into(),
+                            resource_label: "report".into(),
+                            action_label: "Refresh".into(),
+                            description: None,
+                            operation_kind: tilo_actions::OperationKind::Effect,
+                            params: Vec::new(),
+                            contract: tilo_actions::ActionContract {
+                                execution: tilo_actions::ExecutionMode::Background {
+                                    cancellable: true,
+                                },
+                                result: tilo_actions::ResultSpec::Job,
+                                ..tilo_actions::ActionContract::default()
+                            },
+                            view: None,
+                            input: PublishedInput::None,
+                        },
+                    ],
+                    live: true,
+                },
+            );
+            let (tx, mut invocations) = mpsc::unbounded_channel();
+            state
+                .invocation_subscribers
+                .lock()
+                .expect("subscribers")
+                .insert(7, tx);
+
+            let action_cluster = state
+                .surfaces
+                .lock()
+                .expect("surfaces")
+                .get(&7)
+                .expect("surface")
+                .route
+                .cluster_id
+                .clone();
+            let owner_catalogue = catalogue_text(
+                &state,
+                &tilo_actions::remote::Caller::local_person("owner").in_room(&action_cluster),
+            );
+            assert!(owner_catalogue.contains("files.entry:/tmp/report"));
+            let denied_catalogue = catalogue_text(
+                &state,
+                &tilo_actions::remote::Caller::local_person("stranger").in_room(&action_cluster),
+            );
+            assert!(
+                !denied_catalogue.contains("files.entry:/tmp/report"),
+                "denied actions must be absent from discovery, not merely refused later"
+            );
+
+            let completion = state
+                .invoke(7, "files.entry:/tmp/report", "reveal", None, "owner")
+                .expect("owner can invoke current offer");
+            let invocation = invocations.try_recv().expect("directed invocation");
+            assert_eq!(invocation.resource, "files.entry:/tmp/report");
+            assert!(
+                state
+                    .start_invocation(7, "files.entry:/tmp/report", "erase", None, "owner")
+                    .is_err(),
+                "a consequential action cannot bypass the confirmation protocol"
+            );
+            let token = state
+                .prepare_confirmation(7, "files.entry:/tmp/report", "erase", None, "owner", None)
+                .expect("confirmation grant");
+            let erased = state
+                .start_invocation_confirmed(
+                    7,
+                    "files.entry:/tmp/report",
+                    "erase",
+                    None,
+                    "owner",
+                    Some(&token),
+                )
+                .expect("matching one-use grant");
+            assert!(
+                state
+                    .start_invocation_confirmed(
+                        7,
+                        "files.entry:/tmp/report",
+                        "erase",
+                        None,
+                        "owner",
+                        Some(&token),
+                    )
+                    .is_err(),
+                "confirmation grants are single use"
+            );
+            let erase_invocation = invocations.try_recv().expect("confirmed invocation");
+            assert_eq!(erase_invocation.id, erased.id);
+
+            let refresh = state
+                .start_invocation(7, "files.entry:/tmp/report", "refresh", None, "owner")
+                .expect("cancellable job");
+            let refresh_invocation = invocations.try_recv().expect("job invocation");
+            assert_eq!(refresh_invocation.id, refresh.id);
+            assert!(state.request_cancellation(refresh.id, "stranger").is_err());
+            state
+                .request_cancellation(refresh.id, "owner")
+                .expect("owner can request cooperative cancellation");
+            assert!(
+                state
+                    .cancellation_requests
+                    .lock()
+                    .expect("cancellation registry")
+                    .contains(&refresh.id)
+            );
+            let now = std::time::Instant::now();
+            {
+                let mut pending = state.pending_invocations.lock().expect("pending");
+                pending
+                    .get_mut(&refresh.id)
+                    .expect("refresh remains pending")
+                    .cancellation_requested_at = Some(now - std::time::Duration::from_secs(2));
+                pending
+                    .get_mut(&erased.id)
+                    .expect("erase remains pending")
+                    .last_activity = now - std::time::Duration::from_secs(2);
+            }
+            state.expire_stale_invocations_at(
+                now,
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(1),
+            );
+            assert!(matches!(
+                state.invocation_status(refresh.id),
+                Some(tilo_actions::InvocationUpdate::Failed { error, .. })
+                    if error.code == "action_cancellation_timeout"
+            ));
+            assert_eq!(
+                refresh
+                    .completion
+                    .recv()
+                    .expect("cancel timeout completion")
+                    .code,
+                "action_cancellation_timeout"
+            );
+            assert!(matches!(
+                state.invocation_status(erased.id),
+                Some(tilo_actions::InvocationUpdate::Failed { error, .. })
+                    if error.code == "action_timeout"
+            ));
+            assert_eq!(
+                erased
+                    .completion
+                    .recv()
+                    .expect("idle timeout completion")
+                    .code,
+                "action_timeout"
+            );
+            assert!(
+                state
+                    .invoke(7, "files.entry:/tmp/report", "gone", None, "owner")
+                    .is_err(),
+                "an address absent from the current level-triggered surface is stale"
+            );
+            assert!(
+                state
+                    .invoke(7, "files.entry:/tmp/report", "reveal", None, "stranger")
+                    .is_err(),
+                "broker authorization is checked again at delivery time"
+            );
+            let pending = state
+                .pending_invocations
+                .lock()
+                .expect("pending")
+                .remove(&invocation.id)
+                .expect("completion slot");
+            pending
+                .tx
+                .send(InvocationCompletion {
+                    code: String::new(),
+                    message: String::new(),
+                })
+                .expect("caller still waiting");
+            assert_eq!(
+                completion.recv().expect("completion"),
+                InvocationCompletion {
+                    code: String::new(),
+                    message: String::new(),
+                }
+            );
+
+            let launchable = PublishedSurface {
+                peer_id: 99,
+                app_id: "so.tilo.files".into(),
+                route: CrdtRoute::app(
+                    "so.tilo.files",
+                    state
+                        .surfaces
+                        .lock()
+                        .expect("surfaces")
+                        .get(&7)
+                        .expect("live surface")
+                        .route
+                        .cluster_id
+                        .clone(),
+                ),
+                actions: vec![PublishedAction {
+                    resource: "files.app".into(),
+                    action: "new-window".into(),
+                    resource_kind: "files.app".into(),
+                    resource_label: "Files".into(),
+                    action_label: "New window".into(),
+                    description: None,
+                    operation_kind: tilo_actions::OperationKind::View,
+                    params: Vec::new(),
+                    contract: tilo_actions::ActionContract {
+                        discovery: tilo_actions::DiscoveryScope::Launchable,
+                        ..tilo_actions::ActionContract::view()
+                    },
+                    view: None,
+                    input: PublishedInput::None,
+                }],
+                live: false,
+            };
+            state.launchable.retain(&launchable);
+            state.surfaces.lock().expect("surfaces").remove(&7);
+            let archived = state.published_surfaces();
+            assert_eq!(archived.len(), 1);
+            assert!(!archived[0].live);
+            assert_eq!(archived[0].actions[0].action, "new-window");
+            let offered = catalogue_text(
+                &state,
+                &tilo_actions::remote::Caller::local_person("owner")
+                    .in_room(&archived[0].route.cluster_id),
+            );
+            assert!(
+                offered.contains("new-window")
+                    && offered.contains(&launchable::launchable_provider(&archived[0])),
+                "a closed app's launchable action is offered under a provider that launches it"
+            );
+            assert!(
+                !catalogue_text(
+                    &state,
+                    &tilo_actions::remote::Caller::local_person("stranger")
+                        .in_room(&archived[0].route.cluster_id),
+                )
+                .contains("new-window"),
+                "a caller who may not launch the app is not offered its launchable actions"
+            );
+        }
+
+        workspace_control_requires_editor_authority();
+        closed_workspace_control_session_is_terminal_for_rpc_readers();
+        live_action_invocation_is_fresh_directed_and_permission_checked();
     }
 
     #[test]
-    fn closed_workspace_control_session_is_terminal_for_rpc_readers() {
-        let target = iroh::SecretKey::generate().public();
-        let mut session = crate::network::WorkspaceControlSession::new(
-            7,
-            11,
-            target,
-            crate::network::WorkspaceControlRoute::Direct { target },
-        );
-        assert!(closed_workspace_control_event(&session).is_none());
-        session.disconnect();
-        assert_eq!(
-            closed_workspace_control_event(&session),
-            Some(runtime_collab::WorkspaceControlEvent::Closed(
-                runtime_collab::WorkspaceControlCloseReason::LocalDisconnect,
-            ))
-        );
+    fn permission_verb_maps_every_requirement_once() {
+        use tilo_actions::PermissionRequirement as Requirement;
+        assert_eq!(permission_verb(Requirement::None), None);
+        assert_eq!(permission_verb(Requirement::Read), Some(Verb::Read));
+        assert_eq!(permission_verb(Requirement::Comment), Some(Verb::Comment));
+        assert_eq!(permission_verb(Requirement::Write), Some(Verb::Write));
+        assert_eq!(permission_verb(Requirement::Invite), Some(Verb::Invite));
+        assert_eq!(permission_verb(Requirement::Admin), Some(Verb::Admin));
     }
 
     fn verified_device(root: &SigningKey) -> VerifiedJoinIdentity {
@@ -10891,174 +11360,294 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn certified_join_admission_uses_workspace_membership_and_role() {
-        let root = SigningKey::from_bytes(&[20; 32]);
-        let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut workspace =
-            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Member room");
-        let route = CrdtRoute::cluster(workspace.room.to_string());
-        workspace.grant_capability(crate::shell::state::CapOverride::membership(
-            crate::shell::state::Subject::person(&principal),
-            workspace.room.to_string(),
-            crate::shell::state::Verb::Write,
-        ));
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(workspace);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn agent_principals_delegation_profiles_and_receipts_are_owner_bound() {
+        fn agent_delegation_uses_agent_caps_and_is_revoked_live() {
+            let root = SigningKey::from_bytes(&[44; 32]);
+            let principal = principal_id_for_root(root.verifying_key().to_bytes());
+            let mut workspace = crate::shell::state::Workspace::new(
+                crate::shell::state::WorkspaceId(44),
+                "Agent room",
+            );
+            workspace.owner = Some(principal);
+            let route = CrdtRoute::cluster(workspace.room.to_string());
+            let agent_membership = workspace.grant_capability(CapOverride::membership(
+                Subject::agent("scribe"),
+                workspace.room.to_string(),
+                Verb::Comment,
+            ));
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(workspace);
 
-        let admitted = admit_verified_join(&tree, &route, verified_device(&root))
-            .expect("a certified editor is admitted");
-        assert_eq!(admitted.principal_id, principal);
-        assert_eq!(admitted.role, CapRole::Editor);
-        assert!(
-            verify_session_author(
-                &admitted,
-                collab_types::Ed25519PublicKey::from_bytes([42; 32]),
-            )
-            .is_ok(),
-            "signed ops are device-authored under the certificate's device key"
-        );
-        assert!(
-            verify_session_author(
-                &admitted,
-                collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-            )
-            .is_err(),
-            "the user root certifies the device but does not author this device's ops"
-        );
-        assert!(
-            verify_session_author(
-                &admitted,
-                collab_types::Ed25519PublicKey::from_bytes([43; 32]),
-            )
-            .is_err(),
-            "a member cannot submit another device's envelope through this session"
-        );
-    }
+            let mut admitted = admit_verified_join(&tree, &route, verified_device(&root))
+                .expect("the owner is admitted before delegation");
+            admit_agent_delegation(&tree, &route, &mut admitted, "scribe")
+                .expect("the owner may operate an admitted agent");
+            assert_eq!(admitted.broker_actor().id, "agent:scribe");
+            assert!(admitted.broker_actor().is_agent);
+            assert_eq!(admitted.role, CapRole::Commenter);
+            assert!(
+                admitted
+                    .policy_actor(&route.cluster_id)
+                    .principals
+                    .contains(&Principal::Agent("scribe".into()))
+            );
 
-    #[test]
-    fn agent_delegation_uses_agent_caps_and_is_revoked_live() {
-        let root = SigningKey::from_bytes(&[44; 32]);
-        let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut workspace =
-            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(44), "Agent room");
-        workspace.owner = Some(principal);
-        let route = CrdtRoute::cluster(workspace.room.to_string());
-        let agent_membership = workspace.grant_capability(CapOverride::membership(
-            Subject::agent("scribe"),
-            workspace.room.to_string(),
-            Verb::Comment,
-        ));
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(workspace);
+            let membership = tree.shared();
+            assert!(membership.write().desktop.workspaces[0].revoke_capability(&agent_membership));
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge_rx) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(membership),
+                None,
+            );
+            assert!(
+                state.revalidate_admission(&route, &admitted).is_err(),
+                "revoking agent membership invalidates an already-open agent channel"
+            );
+        }
 
-        let mut admitted = admit_verified_join(&tree, &route, verified_device(&root))
-            .expect("the owner is admitted before delegation");
-        admit_agent_delegation(&tree, &route, &mut admitted, "scribe")
-            .expect("the owner may operate an admitted agent");
-        assert_eq!(admitted.broker_actor().id, "agent:scribe");
-        assert!(admitted.broker_actor().is_agent);
-        assert_eq!(admitted.role, CapRole::Commenter);
-        assert!(
-            admitted
-                .policy_actor(&route.cluster_id)
-                .principals
-                .contains(&Principal::Agent("scribe".into()))
-        );
+        fn non_owner_cannot_claim_an_agent_principal() {
+            let member = SigningKey::from_bytes(&[45; 32]);
+            let member_id = principal_id_for_root(member.verifying_key().to_bytes());
+            let mut workspace = crate::shell::state::Workspace::new(
+                crate::shell::state::WorkspaceId(45),
+                "Delegation room",
+            );
+            let route = CrdtRoute::cluster(workspace.room.to_string());
+            workspace.grant_capability(CapOverride::membership(
+                Subject::person(&member_id),
+                workspace.room.to_string(),
+                Verb::Write,
+            ));
+            workspace.grant_capability(CapOverride::membership(
+                Subject::agent("operator"),
+                workspace.room.to_string(),
+                Verb::Write,
+            ));
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(workspace);
+            let mut admitted = admit_verified_join(&tree, &route, verified_device(&member))
+                .expect("the person is a member");
+            assert!(admit_agent_delegation(&tree, &route, &mut admitted, "operator").is_err());
+        }
 
-        let membership = tree.shared();
-        assert!(membership.write().desktop.workspaces[0].revoke_capability(&agent_membership));
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = CapnpBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(membership),
-            None,
-        );
-        assert!(
-            state.revalidate_admission(&route, &admitted).is_err(),
-            "revoking agent membership invalidates an already-open agent channel"
-        );
-    }
+        fn broker_catalogue_agent_can_create_and_assign_a_permission_profile() {
+            let workspace = profile_governed_workspace("architect");
+            let cluster = workspace.room.to_string();
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(workspace);
+            let membership = tree.shared();
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge_rx) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(membership.clone()),
+                None,
+            );
+            let actor = BrokerActor {
+                id: "agent:architect".into(),
+                is_agent: true,
+            };
+            let catalogue = catalogue_text(
+                &state,
+                &tilo_actions::remote::Caller::local_agent("architect").in_room(&cluster),
+            );
+            assert!(catalogue.contains(crate::shell::state::PROFILE_SAVE_ACTION_ID));
+            assert!(catalogue.contains(crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID));
 
-    #[test]
-    fn non_owner_cannot_claim_an_agent_principal() {
-        let member = SigningKey::from_bytes(&[45; 32]);
-        let member_id = principal_id_for_root(member.verifying_key().to_bytes());
-        let mut workspace = crate::shell::state::Workspace::new(
-            crate::shell::state::WorkspaceId(45),
-            "Delegation room",
-        );
-        let route = CrdtRoute::cluster(workspace.room.to_string());
-        workspace.grant_capability(CapOverride::membership(
-            Subject::person(&member_id),
-            workspace.room.to_string(),
-            Verb::Write,
-        ));
-        workspace.grant_capability(CapOverride::membership(
-            Subject::agent("operator"),
-            workspace.room.to_string(),
-            Verb::Write,
-        ));
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(workspace);
-        let mut admitted = admit_verified_join(&tree, &route, verified_device(&member))
-            .expect("the person is a member");
-        assert!(admit_agent_delegation(&tree, &route, &mut admitted, "operator").is_err());
-    }
+            let rules = serde_json::to_value(vec![collab_types::PermissionProfileRule::grant(
+                collab_types::Scope::Action {
+                    app: "so.tilo.notes".into(),
+                    action: "note.open".into(),
+                },
+                collab_types::Verb::Read,
+            )])
+            .unwrap();
+            let save_arguments = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({
+                    "name": "Notes reader",
+                    "description": "Read one Notes action",
+                    "rules": rules,
+                })
+            );
+            let root_id = format!("workspace.permissions:{cluster}");
+            let (_, saved) = state
+                .invoke_workspace_profile_action(
+                    &cluster,
+                    &actor,
+                    &root_id,
+                    crate::shell::state::PROFILE_SAVE_ACTION_ID,
+                    Some(&save_arguments),
+                    &serde_json::json!({"confirm": true}),
+                )
+                .expect("broker-owned save succeeds");
+            assert!(matches!(
+                saved,
+                tilo_actions::InvocationUpdate::Succeeded { .. }
+            ));
 
-    #[test]
-    fn certified_join_admission_rejects_wrong_or_removed_root() {
-        let member = SigningKey::from_bytes(&[21; 32]);
-        let stranger = SigningKey::from_bytes(&[22; 32]);
-        let member_id = principal_id_for_root(member.verifying_key().to_bytes());
-        let mut workspace = crate::shell::state::Workspace::new(
-            crate::shell::state::WorkspaceId(2),
-            "Revocation room",
-        );
-        let route = CrdtRoute::cluster(workspace.room.to_string());
-        let membership = workspace.grant_capability(crate::shell::state::CapOverride::membership(
-            crate::shell::state::Subject::person(&member_id),
-            workspace.room.to_string(),
-            crate::shell::state::Verb::Read,
-        ));
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(workspace);
+            let assign_arguments = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({
+                    "profile": "Notes reader",
+                    "subject": "alice",
+                    "subject_kind": "person",
+                })
+            );
+            state
+                .invoke_workspace_profile_action(
+                    &cluster,
+                    &actor,
+                    &root_id,
+                    crate::shell::state::PROFILE_ASSIGN_ACTION_ID,
+                    Some(&assign_arguments),
+                    &serde_json::json!({"confirm": true}),
+                )
+                .expect("broker-owned assignment succeeds");
 
-        assert!(admit_verified_join(&tree, &route, verified_device(&stranger)).is_err());
-        let admitted = admit_verified_join(&tree, &route, verified_device(&member))
-            .expect("member starts admitted");
-        let membership_tree = tree.shared();
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = CapnpBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(Arc::clone(&membership_tree)),
-            None,
-        );
-        assert!(membership_tree.write().desktop.workspaces[0].revoke_capability(&membership));
-        assert!(
-            state.revalidate_admission(&route, &admitted).is_err(),
-            "removing membership rejects the certified session's next operation"
-        );
-    }
+            let tree = membership.read();
+            let workspace = &tree.desktop.workspaces[0];
+            assert!(workspace.allows(
+                &workspace.actor_for_person(&"alice".into()),
+                &collab_types::ResourceRef::Action {
+                    app: "so.tilo.notes".into(),
+                    action: "note.open".into(),
+                },
+                collab_types::Verb::Read,
+            ));
+            assert_eq!(workspace.effect_receipts.len(), 2);
+            drop(tree);
+        }
 
-    #[test]
-    fn certified_join_admission_rejects_cross_workspace_replay() {
-        let root = SigningKey::from_bytes(&[23; 32]);
-        let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut member_workspace =
-            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(3), "Member room");
-        member_workspace.set_owner(&principal);
-        let other_workspace =
-            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(4), "Other room");
-        let replay_route = CrdtRoute::cluster(other_workspace.room.to_string());
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(member_workspace);
-        tree.desktop.workspaces.push(other_workspace);
+        #[allow(
+            clippy::significant_drop_tightening,
+            clippy::too_many_lines,
+            reason = "the receipt assertions retain the read guard for the complete consistency snapshot"
+        )]
+        fn remote_agent_effect_terminals_become_redacted_workspace_receipts() {
+            let mut workspace = crate::shell::state::Workspace::new(
+                crate::shell::state::WorkspaceId(32),
+                "Agent effect room",
+            );
+            workspace.set_owner("owner");
+            let cluster_id = workspace.room.to_string();
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(workspace);
+            let membership = tree.shared();
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge_rx) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(Arc::clone(&membership)),
+                None,
+            );
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let invocation = tilo_actions::InvocationId::new();
+            let pending = PendingInvocation {
+                peer_id: 7,
+                tx,
+                update: tilo_actions::InvocationUpdate::Accepted { invocation },
+                last_sequence: 0,
+                actor: "agent:Scribe".into(),
+                cancellable: false,
+                retryable_on_disconnect: false,
+                execution: tilo_actions::ExecutionMode::Immediate,
+                result: tilo_actions::ResultSpec::None,
+                operation_kind: tilo_actions::OperationKind::Effect,
+                cluster_id,
+                context: tilo_actions::ActionContext::for_resource(
+                    "Publish",
+                    "document:brief",
+                    "document",
+                    "Release brief",
+                )
+                .with_app("org.tilo.Writer", "Writer")
+                .with_group("task:release", "Release", "task"),
+                last_activity: std::time::Instant::now(),
+                cancellation_requested_at: None,
+            };
+            let update = tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "publish_denied".into(),
+                    message: "authorization=secret-value".into(),
+                    details: Some(serde_json::json!({"body": "private draft"})),
+                    retryable: false,
+                },
+            };
 
-        assert!(admit_verified_join(&tree, &replay_route, verified_device(&root)).is_err());
+            state.record_effect_receipt(&pending, &update);
+            state.record_effect_receipt(&pending, &update);
+
+            let succeeded_invocation = tilo_actions::InvocationId::new();
+            let mut succeeded_pending = pending;
+            succeeded_pending.update = tilo_actions::InvocationUpdate::Accepted {
+                invocation: succeeded_invocation,
+            };
+            state.record_effect_receipt(
+                &succeeded_pending,
+                &tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: succeeded_invocation,
+                    output: tilo_actions::ActionOutput {
+                        value: Some(serde_json::json!({"token": "output-secret"})),
+                        resources: vec!["files.entry:/private/export".into()],
+                    },
+                },
+            );
+            let mut private_view = succeeded_pending;
+            private_view.operation_kind = tilo_actions::OperationKind::View;
+            let view_invocation = tilo_actions::InvocationId::new();
+            state.record_effect_receipt(
+                &private_view,
+                &tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: view_invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+            );
+
+            let tree = membership.read();
+            let receipts = &tree.desktop.workspaces[0].effect_receipts;
+            assert_eq!(
+                receipts.len(),
+                2,
+                "invocation identity deduplicates retry delivery"
+            );
+            assert_eq!(receipts[0].actor, "agent:Scribe");
+            assert_eq!(
+                receipts[0]
+                    .context
+                    .group
+                    .as_ref()
+                    .map(|group| group.id.as_str()),
+                Some("task:release")
+            );
+            let durable = serde_json::to_string(receipts).expect("serialize receipts");
+            assert!(!durable.contains("secret-value"));
+            assert!(!durable.contains("private draft"));
+            assert!(!durable.contains("output-secret"));
+            assert!(!durable.contains("private/export"));
+            assert!(durable.contains("publish_denied"));
+            assert!(receipts.iter().any(|receipt| {
+                receipt.invocation == succeeded_invocation
+                    && receipt.status == tilo_actions::EffectReceiptStatus::Succeeded
+            }));
+        }
+
+        agent_delegation_uses_agent_caps_and_is_revoked_live();
+        non_owner_cannot_claim_an_agent_principal();
+        broker_catalogue_agent_can_create_and_assign_a_permission_profile();
+        remote_agent_effect_terminals_become_redacted_workspace_receipts();
     }
 
     fn assert_replay_and_forgery_are_audited(
@@ -11134,524 +11723,252 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "the typed document publication test retains its full authorization and payload assertions as one scenario"
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    #[test]
-    fn certified_document_send_uses_live_route_role_and_typed_snapshot() {
-        let root = SigningKey::from_bytes(&[24; 32]);
-        let device = SigningKey::from_bytes(&[25; 32]);
-        let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut workspace = crate::shell::state::Workspace::new(
-            crate::shell::state::WorkspaceId(5),
-            "Typed document room",
-        );
-        workspace.set_owner(&principal);
-        let route = CrdtRoute::record("so.tilo.notes", workspace.room.to_string(), "meeting-notes");
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(workspace);
-        let membership = tree.shared();
-        let admitted = admit_verified_join(
-            &membership.read(),
-            &route,
-            VerifiedJoinIdentity {
-                user_public_key: root.verifying_key().to_bytes(),
-                device_public_key: device.verifying_key().to_bytes(),
-            },
-        )
-        .expect("owner is admitted");
+    fn certified_documents_and_resource_views_reach_only_bound_subscribers() {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "the typed document publication test retains its full authorization and payload assertions as one scenario"
+        )]
+        fn certified_document_send_uses_live_route_role_and_typed_snapshot() {
+            let root = SigningKey::from_bytes(&[24; 32]);
+            let device = SigningKey::from_bytes(&[25; 32]);
+            let principal = principal_id_for_root(root.verifying_key().to_bytes());
+            let mut workspace = crate::shell::state::Workspace::new(
+                crate::shell::state::WorkspaceId(5),
+                "Typed document room",
+            );
+            workspace.set_owner(&principal);
+            let route =
+                CrdtRoute::record("so.tilo.notes", workspace.room.to_string(), "meeting-notes");
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(workspace);
+            let membership = tree.shared();
+            let admitted = admit_verified_join(
+                &membership.read(),
+                &route,
+                VerifiedJoinIdentity {
+                    user_public_key: root.verifying_key().to_bytes(),
+                    device_public_key: device.verifying_key().to_bytes(),
+                },
+            )
+            .expect("owner is admitted");
 
-        let fanout = Arc::new(FanoutState::new());
-        let broker_channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        let sink = Arc::new(RecordingSink::default());
-        let publisher = PeerPublisher::new(
-            sink.clone() as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>
-        );
-        let (state, _bridge_rx) = CapnpBrokerState::new(
-            &fanout,
-            Arc::clone(&broker_channels),
-            publisher,
-            Some(Arc::clone(&membership)),
-            None,
-        );
-        fanout.attach_capnp(Arc::clone(&state));
-        state.ensure_channel(&route.channel_key());
-        let mut received = state.subscribe_ops(&route.channel_key(), 2);
+            let fanout = Arc::new(FanoutState::new());
+            let broker_channels = Arc::new(Mutex::new(BrokerChannels::default()));
+            let sink = Arc::new(RecordingSink::default());
+            let publisher = PeerPublisher::new(
+                sink.clone() as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>
+            );
+            let (state, _bridge_rx) = CapnpBrokerState::new(
+                &fanout,
+                Arc::clone(&broker_channels),
+                publisher,
+                Some(Arc::clone(&membership)),
+                None,
+            );
+            fanout.attach_capnp(Arc::clone(&state));
+            state.ensure_channel(&route.channel_key());
+            let mut received = state.subscribe_ops(&route.channel_key(), 2);
 
-        let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
-        let mut op = SignedOp::new_unsigned(
-            DocumentMutation::Snapshot(b"automerge snapshot".to_vec())
-                .encode()
-                .expect("typed snapshot"),
-            artifact,
-            Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
-            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-            collab_types::OpClass::Splice,
-            SystemTime::now(),
-            1,
-        );
-        sign_op(&mut op, &device).expect("device signs document op");
-        state
-            .authorize_certified_document(&route, &admitted, &op)
-            .expect("live owner may edit the joined document");
-        handle_signed_op_send(&state, 1, &route, &admitted, op.clone());
-
-        let delivered = received.try_recv().expect("snapshot fanout");
-        assert_eq!(delivered.kind, OpKind::Signed);
-        assert_eq!(
-            postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("signed envelope"),
-            op
-        );
-        assert_eq!(
-            broker_channels
-                .lock()
-                .expect("broker channels")
-                .state_for(artifact)
-                .op_log
-                .len(),
-            1,
-            "the admitted validator records the certified op without a role attestation"
-        );
-        assert_published_snapshot(&sink, &route);
-
-        let expected_channel =
-            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
-        let mut encrypted = SignedOp::new_unsigned_with_encryption(
-            b"opaque MLS application frame".to_vec(),
-            artifact,
-            Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
-            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-            collab_types::OpClass::Splice,
-            SystemTime::now(),
-            2,
-            collab_types::EncryptionMetadata::mls_application(7, expected_channel),
-        );
-        sign_op(&mut encrypted, &device).expect("device signs opaque MLS envelope");
-        assert!(matches!(
+            let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+            let mut op = SignedOp::new_unsigned(
+                DocumentMutation::Snapshot(b"automerge snapshot".to_vec())
+                    .encode()
+                    .expect("typed snapshot"),
+                artifact,
+                Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+                document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+                collab_types::OpClass::Splice,
+                SystemTime::now(),
+                1,
+            );
+            sign_op(&mut op, &device).expect("device signs document op");
             state
-                .authorize_certified_document(&route, &admitted, &encrypted)
-                .expect("broker authorizes signed clear metadata without decrypting"),
-            collab_types::RoutedDocumentPayload::Encrypted { channel, epoch: 7 }
-                if channel == expected_channel
-        ));
-        handle_signed_op_send(&state, 1, &route, &admitted, encrypted.clone());
-        let delivered = received.try_recv().expect("opaque MLS fanout");
-        assert_eq!(
-            postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("opaque envelope"),
-            encrypted,
-            "broker must relay ciphertext byte-for-byte"
-        );
+                .authorize_certified_document(&route, &admitted, &op)
+                .expect("live owner may edit the joined document");
+            handle_signed_op_send(&state, 1, &route, &admitted, op.clone());
 
-        let mut wrong_channel = encrypted.clone();
-        wrong_channel.encryption.as_mut().expect("metadata").channel =
-            collab_types::ChannelId::new();
-        sign_op(&mut wrong_channel, &device).expect("re-sign adversarial envelope");
-        assert!(
-            state
-                .authorize_certified_document(&route, &admitted, &wrong_channel)
-                .is_err(),
-            "validly signed ciphertext for another MLS channel must not be routed"
-        );
+            let delivered = received.try_recv().expect("snapshot fanout");
+            assert_eq!(delivered.kind, OpKind::Signed);
+            assert_eq!(
+                postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("signed envelope"),
+                op
+            );
+            assert_eq!(
+                broker_channels
+                    .lock()
+                    .expect("broker channels")
+                    .state_for(artifact)
+                    .op_log
+                    .len(),
+                1,
+                "the admitted validator records the certified op without a role attestation"
+            );
+            assert_published_snapshot(&sink, &route);
 
-        assert_replay_and_forgery_are_audited(&state, &broker_channels, &route, &admitted, &op);
+            let expected_channel = collab_types::document_channel_id(
+                &route.app_id,
+                &route.cluster_id,
+                &route.record_id,
+            );
+            let mut encrypted = SignedOp::new_unsigned_with_encryption(
+                b"opaque MLS application frame".to_vec(),
+                artifact,
+                Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+                document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+                collab_types::OpClass::Splice,
+                SystemTime::now(),
+                2,
+                collab_types::EncryptionMetadata::mls_application(7, expected_channel),
+            );
+            sign_op(&mut encrypted, &device).expect("device signs opaque MLS envelope");
+            assert!(matches!(
+                state
+                    .authorize_certified_document(&route, &admitted, &encrypted)
+                    .expect("broker authorizes signed clear metadata without decrypting"),
+                collab_types::RoutedDocumentPayload::Encrypted { channel, epoch: 7 }
+                    if channel == expected_channel
+            ));
+            handle_signed_op_send(&state, 1, &route, &admitted, encrypted.clone());
+            let delivered = received.try_recv().expect("opaque MLS fanout");
+            assert_eq!(
+                postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("opaque envelope"),
+                encrypted,
+                "broker must relay ciphertext byte-for-byte"
+            );
 
-        downgrade_member_to_viewer(&membership, &principal, &route.cluster_id);
-        let viewer = state
-            .revalidate_admission(&route, &admitted)
-            .expect("member still admitted");
-        assert_eq!(viewer.role, Role::Viewer);
-        assert!(
-            state
-                .authorize_certified_document(&route, &viewer, &op)
-                .is_err(),
-            "a live downgrade must take effect before the next send"
-        );
-        let other_record =
-            CrdtRoute::record(route.app_id.clone(), route.cluster_id, "other-record");
-        assert!(
-            state
-                .authorize_certified_document(&other_record, &admitted, &op)
-                .is_err(),
-            "a signed envelope cannot be replayed through another record route"
-        );
-    }
-
-    #[test]
-    fn record_scoped_document_fanout_reaches_only_its_targeted_subscriber() {
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = CapnpBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            None,
-            None,
-        );
-        fanout.attach_capnp(Arc::clone(&state));
-
-        let target = CrdtRoute::record("so.tilo.notes", "room-1", "note-a");
-        let other_record = CrdtRoute::record("so.tilo.notes", "room-1", "note-b");
-        let other_app = CrdtRoute::record("so.tilo.files", "room-1", "note-a");
-        let other_room = CrdtRoute::record("so.tilo.notes", "room-2", "note-a");
-        let mut target_rx = state.subscribe_ops(&target.channel_key(), 2);
-        let mut other_record_rx = state.subscribe_ops(&other_record.channel_key(), 3);
-        let mut other_app_rx = state.subscribe_ops(&other_app.channel_key(), 4);
-        let mut other_room_rx = state.subscribe_ops(&other_room.channel_key(), 5);
-
-        let (_signing, author) = collab_types::generate_keypair();
-        let envelope = SignedOp::new_unsigned(
-            DocumentMutation::Incremental(vec![7, 9])
-                .encode()
-                .expect("typed incremental mutation"),
-            document_artifact_id(&target.app_id, &target.cluster_id, &target.record_id),
-            author,
-            document_attestation_id(&target.app_id, &target.cluster_id, &target.record_id),
-            collab_types::OpClass::Splice,
-            SystemTime::now(),
-            1,
-        );
-        state.fanout_to_route(
-            &CollabEvent::Document {
-                envelope: Box::new(envelope),
-                from_user_id: "peer@42".into(),
-                decrypted_payload: None,
-            },
-            1,
-            &target,
-        );
-
-        assert!(
-            target_rx.try_recv().is_ok(),
-            "the addressed record receives the op"
-        );
-        for (label, received) in [
-            ("another record", other_record_rx.try_recv()),
-            ("another app", other_app_rx.try_recv()),
-            ("another room", other_room_rx.try_recv()),
-        ] {
+            let mut wrong_channel = encrypted.clone();
+            wrong_channel.encryption.as_mut().expect("metadata").channel =
+                collab_types::ChannelId::new();
+            sign_op(&mut wrong_channel, &device).expect("re-sign adversarial envelope");
             assert!(
-                matches!(received, Err(tokio::sync::mpsc::error::TryRecvError::Empty)),
-                "{label} must not receive a record-directed document",
+                state
+                    .authorize_certified_document(&route, &admitted, &wrong_channel)
+                    .is_err(),
+                "validly signed ciphertext for another MLS channel must not be routed"
+            );
+
+            assert_replay_and_forgery_are_audited(&state, &broker_channels, &route, &admitted, &op);
+
+            downgrade_member_to_viewer(&membership, &principal, &route.cluster_id);
+            let viewer = state
+                .revalidate_admission(&route, &admitted)
+                .expect("member still admitted");
+            assert_eq!(viewer.role, Role::Viewer);
+            assert!(
+                state
+                    .authorize_certified_document(&route, &viewer, &op)
+                    .is_err(),
+                "a live downgrade must take effect before the next send"
+            );
+            let other_record =
+                CrdtRoute::record(route.app_id.clone(), route.cluster_id, "other-record");
+            assert!(
+                state
+                    .authorize_certified_document(&other_record, &admitted, &op)
+                    .is_err(),
+                "a signed envelope cannot be replayed through another record route"
             );
         }
-    }
 
-    #[allow(
-        clippy::too_many_lines,
-        clippy::arithmetic_side_effects,
-        clippy::unchecked_time_subtraction,
-        reason = "the directed-action test keeps capability setup, delivery, and denial assertions in one scenario"
-    )]
-    #[test]
-    fn live_action_invocation_is_fresh_directed_and_permission_checked() {
-        let mut workspace = crate::shell::state::Workspace::new(
-            crate::shell::state::WorkspaceId(31),
-            "Action room",
-        );
-        workspace.set_owner("owner");
-        let route = CrdtRoute::app("so.tilo.files", workspace.room.to_string());
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(workspace);
-        let membership = tree.shared();
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = CapnpBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(membership),
-            None,
-        );
-        state.surfaces.lock().expect("surfaces").insert(
-            7,
-            PublishedSurface {
-                peer_id: 7,
-                app_id: "so.tilo.files".into(),
-                route,
-                actions: vec![
-                    PublishedAction {
-                        resource: "files.entry:/tmp/report".into(),
-                        action: "reveal".into(),
-                        resource_kind: "files.entry".into(),
-                        resource_label: "report".into(),
-                        action_label: "Reveal".into(),
-                        description: None,
-                        operation_kind: tilo_actions::OperationKind::View,
-                        params: Vec::new(),
-                        contract: tilo_actions::ActionContract::view(),
-                        view: None,
-                        input: PublishedInput::None,
-                    },
-                    PublishedAction {
-                        resource: "files.entry:/tmp/report".into(),
-                        action: "erase".into(),
-                        resource_kind: "files.entry".into(),
-                        resource_label: "report".into(),
-                        action_label: "Erase".into(),
-                        description: None,
-                        operation_kind: tilo_actions::OperationKind::Effect,
-                        params: Vec::new(),
-                        contract: tilo_actions::ActionContract {
-                            risk: tilo_actions::RiskLevel::Destructive,
-                            confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-                            ..tilo_actions::ActionContract::default()
-                        },
-                        view: None,
-                        input: PublishedInput::None,
-                    },
-                    PublishedAction {
-                        resource: "files.entry:/tmp/report".into(),
-                        action: "refresh".into(),
-                        resource_kind: "files.entry".into(),
-                        resource_label: "report".into(),
-                        action_label: "Refresh".into(),
-                        description: None,
-                        operation_kind: tilo_actions::OperationKind::Effect,
-                        params: Vec::new(),
-                        contract: tilo_actions::ActionContract {
-                            execution: tilo_actions::ExecutionMode::Background {
-                                cancellable: true,
-                            },
-                            result: tilo_actions::ResultSpec::Job,
-                            ..tilo_actions::ActionContract::default()
-                        },
-                        view: None,
-                        input: PublishedInput::None,
-                    },
-                ],
-                live: true,
-            },
-        );
-        let (tx, mut invocations) = mpsc::unbounded_channel();
-        state
-            .invocation_subscribers
-            .lock()
-            .expect("subscribers")
-            .insert(7, tx);
-
-        let action_cluster = state
-            .surfaces
-            .lock()
-            .expect("surfaces")
-            .get(&7)
-            .expect("surface")
-            .route
-            .cluster_id
-            .clone();
-        let owner_catalogue = catalogue_text(
-            &state,
-            &tilo_actions::remote::Caller::local_person("owner").in_room(&action_cluster),
-        );
-        assert!(owner_catalogue.contains("files.entry:/tmp/report"));
-        let denied_catalogue = catalogue_text(
-            &state,
-            &tilo_actions::remote::Caller::local_person("stranger").in_room(&action_cluster),
-        );
-        assert!(
-            !denied_catalogue.contains("files.entry:/tmp/report"),
-            "denied actions must be absent from discovery, not merely refused later"
-        );
-
-        let completion = state
-            .invoke(7, "files.entry:/tmp/report", "reveal", None, "owner")
-            .expect("owner can invoke current offer");
-        let invocation = invocations.try_recv().expect("directed invocation");
-        assert_eq!(invocation.resource, "files.entry:/tmp/report");
-        assert!(
-            state
-                .start_invocation(7, "files.entry:/tmp/report", "erase", None, "owner")
-                .is_err(),
-            "a consequential action cannot bypass the confirmation protocol"
-        );
-        let token = state
-            .prepare_confirmation(7, "files.entry:/tmp/report", "erase", None, "owner", None)
-            .expect("confirmation grant");
-        let erased = state
-            .start_invocation_confirmed(
-                7,
-                "files.entry:/tmp/report",
-                "erase",
+        fn record_scoped_document_fanout_reaches_only_its_targeted_subscriber() {
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge_rx) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
                 None,
-                "owner",
-                Some(&token),
-            )
-            .expect("matching one-use grant");
-        assert!(
-            state
-                .start_invocation_confirmed(
-                    7,
-                    "files.entry:/tmp/report",
-                    "erase",
-                    None,
-                    "owner",
-                    Some(&token),
-                )
-                .is_err(),
-            "confirmation grants are single use"
-        );
-        let erase_invocation = invocations.try_recv().expect("confirmed invocation");
-        assert_eq!(erase_invocation.id, erased.id);
+                None,
+            );
+            fanout.attach_capnp(Arc::clone(&state));
 
-        let refresh = state
-            .start_invocation(7, "files.entry:/tmp/report", "refresh", None, "owner")
-            .expect("cancellable job");
-        let refresh_invocation = invocations.try_recv().expect("job invocation");
-        assert_eq!(refresh_invocation.id, refresh.id);
-        assert!(state.request_cancellation(refresh.id, "stranger").is_err());
-        state
-            .request_cancellation(refresh.id, "owner")
-            .expect("owner can request cooperative cancellation");
-        assert!(
-            state
-                .cancellation_requests
-                .lock()
-                .expect("cancellation registry")
-                .contains(&refresh.id)
-        );
-        let now = std::time::Instant::now();
-        {
-            let mut pending = state.pending_invocations.lock().expect("pending");
-            pending
-                .get_mut(&refresh.id)
-                .expect("refresh remains pending")
-                .cancellation_requested_at = Some(now - std::time::Duration::from_secs(2));
-            pending
-                .get_mut(&erased.id)
-                .expect("erase remains pending")
-                .last_activity = now - std::time::Duration::from_secs(2);
-        }
-        state.expire_stale_invocations_at(
-            now,
-            std::time::Duration::from_secs(1),
-            std::time::Duration::from_secs(1),
-        );
-        assert!(matches!(
-            state.invocation_status(refresh.id),
-            Some(tilo_actions::InvocationUpdate::Failed { error, .. })
-                if error.code == "action_cancellation_timeout"
-        ));
-        assert_eq!(
-            refresh
-                .completion
-                .recv()
-                .expect("cancel timeout completion")
-                .code,
-            "action_cancellation_timeout"
-        );
-        assert!(matches!(
-            state.invocation_status(erased.id),
-            Some(tilo_actions::InvocationUpdate::Failed { error, .. })
-                if error.code == "action_timeout"
-        ));
-        assert_eq!(
-            erased
-                .completion
-                .recv()
-                .expect("idle timeout completion")
-                .code,
-            "action_timeout"
-        );
-        assert!(
-            state
-                .invoke(7, "files.entry:/tmp/report", "gone", None, "owner")
-                .is_err(),
-            "an address absent from the current level-triggered surface is stale"
-        );
-        assert!(
-            state
-                .invoke(7, "files.entry:/tmp/report", "reveal", None, "stranger")
-                .is_err(),
-            "broker authorization is checked again at delivery time"
-        );
-        let pending = state
-            .pending_invocations
-            .lock()
-            .expect("pending")
-            .remove(&invocation.id)
-            .expect("completion slot");
-        pending
-            .tx
-            .send(InvocationCompletion {
-                code: String::new(),
-                message: String::new(),
-            })
-            .expect("caller still waiting");
-        assert_eq!(
-            completion.recv().expect("completion"),
-            InvocationCompletion {
-                code: String::new(),
-                message: String::new(),
-            }
-        );
+            let target = CrdtRoute::record("so.tilo.notes", "room-1", "note-a");
+            let other_record = CrdtRoute::record("so.tilo.notes", "room-1", "note-b");
+            let other_app = CrdtRoute::record("so.tilo.files", "room-1", "note-a");
+            let other_room = CrdtRoute::record("so.tilo.notes", "room-2", "note-a");
+            let mut target_rx = state.subscribe_ops(&target.channel_key(), 2);
+            let mut other_record_rx = state.subscribe_ops(&other_record.channel_key(), 3);
+            let mut other_app_rx = state.subscribe_ops(&other_app.channel_key(), 4);
+            let mut other_room_rx = state.subscribe_ops(&other_room.channel_key(), 5);
 
-        let launchable = PublishedSurface {
-            peer_id: 99,
-            app_id: "so.tilo.files".into(),
-            route: CrdtRoute::app(
-                "so.tilo.files",
-                state
-                    .surfaces
-                    .lock()
-                    .expect("surfaces")
-                    .get(&7)
-                    .expect("live surface")
-                    .route
-                    .cluster_id
-                    .clone(),
-            ),
-            actions: vec![PublishedAction {
-                resource: "files.app".into(),
-                action: "new-window".into(),
-                resource_kind: "files.app".into(),
-                resource_label: "Files".into(),
-                action_label: "New window".into(),
-                description: None,
-                operation_kind: tilo_actions::OperationKind::View,
-                params: Vec::new(),
-                contract: tilo_actions::ActionContract {
-                    discovery: tilo_actions::DiscoveryScope::Launchable,
-                    ..tilo_actions::ActionContract::view()
+            let (_signing, author) = collab_types::generate_keypair();
+            let envelope = SignedOp::new_unsigned(
+                DocumentMutation::Incremental(vec![7, 9])
+                    .encode()
+                    .expect("typed incremental mutation"),
+                document_artifact_id(&target.app_id, &target.cluster_id, &target.record_id),
+                author,
+                document_attestation_id(&target.app_id, &target.cluster_id, &target.record_id),
+                collab_types::OpClass::Splice,
+                SystemTime::now(),
+                1,
+            );
+            state.fanout_to_route(
+                &CollabEvent::Document {
+                    envelope: Box::new(envelope),
+                    from_user_id: "peer@42".into(),
+                    decrypted_payload: None,
                 },
-                view: None,
-                input: PublishedInput::None,
-            }],
-            live: false,
-        };
-        state.launchable.retain(&launchable);
-        state.surfaces.lock().expect("surfaces").remove(&7);
-        let archived = state.published_surfaces();
-        assert_eq!(archived.len(), 1);
-        assert!(!archived[0].live);
-        assert_eq!(archived[0].actions[0].action, "new-window");
-        let offered = catalogue_text(
-            &state,
-            &tilo_actions::remote::Caller::local_person("owner")
-                .in_room(&archived[0].route.cluster_id),
-        );
-        assert!(
-            offered.contains("new-window")
-                && offered.contains(&launchable::launchable_provider(&archived[0])),
-            "a closed app's launchable action is offered under a provider that launches it"
-        );
-        assert!(
-            !catalogue_text(
-                &state,
-                &tilo_actions::remote::Caller::local_person("stranger")
-                    .in_room(&archived[0].route.cluster_id),
-            )
-            .contains("new-window"),
-            "a caller who may not launch the app is not offered its launchable actions"
-        );
-    }
+                1,
+                &target,
+            );
 
-    #[test]
-    fn permission_verb_maps_every_requirement_once() {
-        use tilo_actions::PermissionRequirement as Requirement;
-        assert_eq!(permission_verb(Requirement::None), None);
-        assert_eq!(permission_verb(Requirement::Read), Some(Verb::Read));
-        assert_eq!(permission_verb(Requirement::Comment), Some(Verb::Comment));
-        assert_eq!(permission_verb(Requirement::Write), Some(Verb::Write));
-        assert_eq!(permission_verb(Requirement::Invite), Some(Verb::Invite));
-        assert_eq!(permission_verb(Requirement::Admin), Some(Verb::Admin));
+            assert!(
+                target_rx.try_recv().is_ok(),
+                "the addressed record receives the op"
+            );
+            for (label, received) in [
+                ("another record", other_record_rx.try_recv()),
+                ("another app", other_app_rx.try_recv()),
+                ("another room", other_room_rx.try_recv()),
+            ] {
+                assert!(
+                    matches!(received, Err(tokio::sync::mpsc::error::TryRecvError::Empty)),
+                    "{label} must not receive a record-directed document",
+                );
+            }
+        }
+
+        fn published_resource_views_validate_bindings_and_resource_cardinality() {
+            let editor = test_published_view("open", "editor", true);
+            assert!(validate_resource_view_descriptors(std::slice::from_ref(&editor)).is_ok());
+
+            let mut wrong_owner = editor.clone();
+            wrong_owner.view.as_mut().unwrap().open_action = "preview".into();
+            assert!(
+                validate_resource_view_descriptors(std::slice::from_ref(&wrong_owner)).is_err()
+            );
+
+            let mut unsafe_open = editor.clone();
+            unsafe_open.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+            assert!(
+                validate_resource_view_descriptors(std::slice::from_ref(&unsafe_open)).is_err()
+            );
+
+            let mut invalid_mount = editor.clone();
+            invalid_mount
+                .view
+                .as_mut()
+                .unwrap()
+                .mount
+                .as_mut()
+                .unwrap()
+                .view_param = "slot_capability".into();
+            assert!(
+                validate_resource_view_descriptors(std::slice::from_ref(&invalid_mount)).is_err()
+            );
+
+            let reader = test_published_view("read", "reader", true);
+            assert!(validate_resource_view_descriptors(&[editor, reader]).is_err());
+        }
+
+        certified_document_send_uses_live_route_role_and_typed_snapshot();
+        record_scoped_document_fanout_reaches_only_its_targeted_subscriber();
+        published_resource_views_validate_bindings_and_resource_cardinality();
     }
 
     /// The catalogue `caller` is offered, as searchable text.
@@ -11696,408 +12013,222 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn broker_catalogue_agent_can_create_and_assign_a_permission_profile() {
-        let workspace = profile_governed_workspace("architect");
-        let cluster = workspace.room.to_string();
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(workspace);
-        let membership = tree.shared();
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = CapnpBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(membership.clone()),
-            None,
-        );
-        let actor = BrokerActor {
-            id: "agent:architect".into(),
-            is_agent: true,
-        };
-        let catalogue = catalogue_text(
-            &state,
-            &tilo_actions::remote::Caller::local_agent("architect").in_room(&cluster),
-        );
-        assert!(catalogue.contains(crate::shell::state::PROFILE_SAVE_ACTION_ID));
-        assert!(catalogue.contains(crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID));
-
-        let rules = serde_json::to_value(vec![collab_types::PermissionProfileRule::grant(
-            collab_types::Scope::Action {
-                app: "so.tilo.notes".into(),
-                action: "note.open".into(),
-            },
-            collab_types::Verb::Read,
-        )])
-        .unwrap();
-        let save_arguments = format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::json!({
-                "name": "Notes reader",
-                "description": "Read one Notes action",
-                "rules": rules,
-            })
-        );
-        let root_id = format!("workspace.permissions:{cluster}");
-        let (_, saved) = state
-            .invoke_workspace_profile_action(
-                &cluster,
-                &actor,
-                &root_id,
-                crate::shell::state::PROFILE_SAVE_ACTION_ID,
-                Some(&save_arguments),
-                &serde_json::json!({"confirm": true}),
-            )
-            .expect("broker-owned save succeeds");
-        assert!(matches!(
-            saved,
-            tilo_actions::InvocationUpdate::Succeeded { .. }
-        ));
-
-        let assign_arguments = format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::json!({
-                "profile": "Notes reader",
-                "subject": "alice",
-                "subject_kind": "person",
-            })
-        );
-        state
-            .invoke_workspace_profile_action(
-                &cluster,
-                &actor,
-                &root_id,
-                crate::shell::state::PROFILE_ASSIGN_ACTION_ID,
-                Some(&assign_arguments),
-                &serde_json::json!({"confirm": true}),
-            )
-            .expect("broker-owned assignment succeeds");
-
-        let tree = membership.read();
-        let workspace = &tree.desktop.workspaces[0];
-        assert!(workspace.allows(
-            &workspace.actor_for_person(&"alice".into()),
-            &collab_types::ResourceRef::Action {
-                app: "so.tilo.notes".into(),
-                action: "note.open".into(),
-            },
-            collab_types::Verb::Read,
-        ));
-        assert_eq!(workspace.effect_receipts.len(), 2);
-        drop(tree);
-    }
-
     #[allow(
-        clippy::significant_drop_tightening,
         clippy::too_many_lines,
-        reason = "the receipt assertions retain the read guard for the complete consistency snapshot"
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    #[test]
-    fn remote_agent_effect_terminals_become_redacted_workspace_receipts() {
-        let mut workspace = crate::shell::state::Workspace::new(
-            crate::shell::state::WorkspaceId(32),
-            "Agent effect room",
-        );
-        workspace.set_owner("owner");
-        let cluster_id = workspace.room.to_string();
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces.push(workspace);
-        let membership = tree.shared();
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = CapnpBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(Arc::clone(&membership)),
-            None,
-        );
-        let (tx, _rx) = std::sync::mpsc::channel();
-        let invocation = tilo_actions::InvocationId::new();
-        let pending = PendingInvocation {
-            peer_id: 7,
-            tx,
-            update: tilo_actions::InvocationUpdate::Accepted { invocation },
-            last_sequence: 0,
-            actor: "agent:Scribe".into(),
-            cancellable: false,
-            retryable_on_disconnect: false,
-            execution: tilo_actions::ExecutionMode::Immediate,
-            result: tilo_actions::ResultSpec::None,
-            operation_kind: tilo_actions::OperationKind::Effect,
-            cluster_id,
-            context: tilo_actions::ActionContext::for_resource(
-                "Publish",
-                "document:brief",
-                "document",
-                "Release brief",
-            )
-            .with_app("org.tilo.Writer", "Writer")
-            .with_group("task:release", "Release", "task"),
-            last_activity: std::time::Instant::now(),
-            cancellation_requested_at: None,
-        };
-        let update = tilo_actions::InvocationUpdate::Failed {
-            invocation,
-            error: tilo_actions::ActionFailure {
-                code: "publish_denied".into(),
-                message: "authorization=secret-value".into(),
-                details: Some(serde_json::json!({"body": "private draft"})),
-                retryable: false,
-            },
-        };
+    fn nearby_handles_are_route_bound_expiring_and_policy_gated() {
+        fn nearby_target_handles_reject_spoofed_routes_and_expiry() {
+            let route = CrdtRoute::app(FILES_APP_ID, "room-a");
+            let other_route = CrdtRoute::app(FILES_APP_ID, "room-b");
+            let target = crate::shell::personal_continuity::DeviceId::new("certified-device")
+                .expect("valid device");
+            let now = Instant::now();
+            let mut registry = NearbyTargetRegistry::default();
+            let handle = registry.issue(41, &route, target.clone(), now);
 
-        state.record_effect_receipt(&pending, &update);
-        state.record_effect_receipt(&pending, &update);
+            assert!(registry.consume(handle, 42, &route, now).is_none());
+            assert!(registry.consume(handle, 41, &other_route, now).is_none());
+            assert_eq!(registry.consume(handle, 41, &route, now), Some(target));
+            assert!(registry.consume(handle, 41, &route, now).is_none());
 
-        let succeeded_invocation = tilo_actions::InvocationId::new();
-        let mut succeeded_pending = pending;
-        succeeded_pending.update = tilo_actions::InvocationUpdate::Accepted {
-            invocation: succeeded_invocation,
-        };
-        state.record_effect_receipt(
-            &succeeded_pending,
-            &tilo_actions::InvocationUpdate::Succeeded {
-                invocation: succeeded_invocation,
-                output: tilo_actions::ActionOutput {
-                    value: Some(serde_json::json!({"token": "output-secret"})),
-                    resources: vec!["files.entry:/private/export".into()],
-                },
-            },
-        );
-        let mut private_view = succeeded_pending;
-        private_view.operation_kind = tilo_actions::OperationKind::View;
-        let view_invocation = tilo_actions::InvocationId::new();
-        state.record_effect_receipt(
-            &private_view,
-            &tilo_actions::InvocationUpdate::Succeeded {
-                invocation: view_invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-        );
-
-        let tree = membership.read();
-        let receipts = &tree.desktop.workspaces[0].effect_receipts;
-        assert_eq!(
-            receipts.len(),
-            2,
-            "invocation identity deduplicates retry delivery"
-        );
-        assert_eq!(receipts[0].actor, "agent:Scribe");
-        assert_eq!(
-            receipts[0]
-                .context
-                .group
-                .as_ref()
-                .map(|group| group.id.as_str()),
-            Some("task:release")
-        );
-        let durable = serde_json::to_string(receipts).expect("serialize receipts");
-        assert!(!durable.contains("secret-value"));
-        assert!(!durable.contains("private draft"));
-        assert!(!durable.contains("output-secret"));
-        assert!(!durable.contains("private/export"));
-        assert!(durable.contains("publish_denied"));
-        assert!(receipts.iter().any(|receipt| {
-            receipt.invocation == succeeded_invocation
-                && receipt.status == tilo_actions::EffectReceiptStatus::Succeeded
-        }));
-    }
-
-    #[test]
-    fn nearby_target_handles_reject_spoofed_routes_and_expiry() {
-        let route = CrdtRoute::app(FILES_APP_ID, "room-a");
-        let other_route = CrdtRoute::app(FILES_APP_ID, "room-b");
-        let target = crate::shell::personal_continuity::DeviceId::new("certified-device")
-            .expect("valid device");
-        let now = Instant::now();
-        let mut registry = NearbyTargetRegistry::default();
-        let handle = registry.issue(41, &route, target.clone(), now);
-
-        assert!(registry.consume(handle, 42, &route, now).is_none());
-        assert!(registry.consume(handle, 41, &other_route, now).is_none());
-        assert_eq!(registry.consume(handle, 41, &route, now), Some(target));
-        assert!(registry.consume(handle, 41, &route, now).is_none());
-
-        let stale = registry.issue(
-            41,
-            &route,
-            crate::shell::personal_continuity::DeviceId::new("stale-device").expect("valid device"),
-            now,
-        );
-        assert!(
-            registry
-                .consume(
-                    stale,
-                    41,
-                    &route,
-                    now + NEARBY_TARGET_HANDLE_TTL + Duration::from_millis(1),
-                )
-                .is_none()
-        );
-
-        let retained_target = crate::shell::personal_continuity::DeviceId::new("retained-device")
-            .expect("valid device");
-        let retained = registry.issue(41, &route, retained_target.clone(), now);
-        registry.begin_snapshot(41, &route, std::slice::from_ref(&retained_target), now);
-        let refreshed = registry.issue(41, &route, retained_target, now);
-        assert_eq!(retained, refreshed);
-        assert_eq!(registry.bindings.len(), 1);
-        registry.begin_snapshot(41, &route, &[], now);
-        assert!(registry.consume(retained, 41, &route, now).is_none());
-        assert!(registry.bindings.is_empty());
-    }
-
-    #[test]
-    fn nearby_transfer_handles_reject_cross_workspace_actions_and_disconnect() {
-        let route = CrdtRoute::app(FILES_APP_ID, "room-a");
-        let other_route = CrdtRoute::app(FILES_APP_ID, "room-b");
-        let transfer_id = [7_u8; 16];
-        let now = Instant::now();
-        let mut registry = NearbyTransferRegistry::default();
-        let handle = registry
-            .issue(
+            let stale = registry.issue(
                 41,
                 &route,
-                transfer_id,
-                runtime_collab::NearbyTransferDirection::Receiving,
-                true,
+                crate::shell::personal_continuity::DeviceId::new("stale-device")
+                    .expect("valid device"),
                 now,
-            )
-            .expect("owner receives opaque handle");
-        assert!(
-            registry
-                .resolve(
-                    handle,
-                    42,
-                    &route,
-                    runtime_collab::NearbyTransferDirection::Receiving,
-                    now,
-                )
-                .is_none()
-        );
-        assert!(
-            registry
-                .resolve(
-                    handle,
-                    41,
-                    &other_route,
-                    runtime_collab::NearbyTransferDirection::Receiving,
-                    now,
-                )
-                .is_none()
-        );
-        assert!(
-            registry
+            );
+            assert!(
+                registry
+                    .consume(
+                        stale,
+                        41,
+                        &route,
+                        now + NEARBY_TARGET_HANDLE_TTL + Duration::from_millis(1),
+                    )
+                    .is_none()
+            );
+
+            let retained_target =
+                crate::shell::personal_continuity::DeviceId::new("retained-device")
+                    .expect("valid device");
+            let retained = registry.issue(41, &route, retained_target.clone(), now);
+            registry.begin_snapshot(41, &route, std::slice::from_ref(&retained_target), now);
+            let refreshed = registry.issue(41, &route, retained_target, now);
+            assert_eq!(retained, refreshed);
+            assert_eq!(registry.bindings.len(), 1);
+            registry.begin_snapshot(41, &route, &[], now);
+            assert!(registry.consume(retained, 41, &route, now).is_none());
+            assert!(registry.bindings.is_empty());
+        }
+
+        fn nearby_transfer_handles_reject_cross_workspace_actions_and_disconnect() {
+            let route = CrdtRoute::app(FILES_APP_ID, "room-a");
+            let other_route = CrdtRoute::app(FILES_APP_ID, "room-b");
+            let transfer_id = [7_u8; 16];
+            let now = Instant::now();
+            let mut registry = NearbyTransferRegistry::default();
+            let handle = registry
                 .issue(
-                    42,
-                    &other_route,
+                    41,
+                    &route,
                     transfer_id,
                     runtime_collab::NearbyTransferDirection::Receiving,
                     true,
                     now,
                 )
-                .is_none()
-        );
-        registry.remove_peer(41);
-        assert!(
-            registry
-                .resolve(
-                    handle,
-                    41,
-                    &route,
-                    runtime_collab::NearbyTransferDirection::Receiving,
-                    now,
+                .expect("owner receives opaque handle");
+            assert!(
+                registry
+                    .resolve(
+                        handle,
+                        42,
+                        &route,
+                        runtime_collab::NearbyTransferDirection::Receiving,
+                        now,
+                    )
+                    .is_none()
+            );
+            assert!(
+                registry
+                    .resolve(
+                        handle,
+                        41,
+                        &other_route,
+                        runtime_collab::NearbyTransferDirection::Receiving,
+                        now,
+                    )
+                    .is_none()
+            );
+            assert!(
+                registry
+                    .issue(
+                        42,
+                        &other_route,
+                        transfer_id,
+                        runtime_collab::NearbyTransferDirection::Receiving,
+                        true,
+                        now,
+                    )
+                    .is_none()
+            );
+            registry.remove_peer(41);
+            assert!(
+                registry
+                    .resolve(
+                        handle,
+                        41,
+                        &route,
+                        runtime_collab::NearbyTransferDirection::Receiving,
+                        now,
+                    )
+                    .is_none()
+            );
+        }
+
+        fn nearby_destination_handles_are_route_bound_and_session_remembered() {
+            let root = tempfile::tempdir().expect("destination root");
+            let route = CrdtRoute::app(FILES_APP_ID, "room-a");
+            let other_route = CrdtRoute::app(FILES_APP_ID, "room-b");
+            let now = Instant::now();
+            let mut registry = NearbyDestinationRegistry::default();
+            let destination = registry.issue(
+                41,
+                &route,
+                root.path().to_path_buf(),
+                "Workspace files".into(),
+                now,
+            );
+            assert!(
+                registry
+                    .resolve(destination.handle, 42, &route, false, now)
+                    .is_none()
+            );
+            assert!(
+                registry
+                    .resolve(destination.handle, 41, &other_route, false, now)
+                    .is_none()
+            );
+            assert!(
+                registry
+                    .resolve(destination.handle, 41, &route, true, now)
+                    .is_some()
+            );
+            let refreshed = registry.issue(
+                41,
+                &route,
+                root.path().to_path_buf(),
+                "Workspace files".into(),
+                now,
+            );
+            assert_eq!(refreshed.handle, destination.handle);
+            assert!(refreshed.remembered_for_session);
+            registry.remove_peer(41);
+            assert!(
+                registry
+                    .resolve(destination.handle, 41, &route, false, now)
+                    .is_none()
+            );
+        }
+
+        fn nearby_handle_expiry_adds_ttl_and_fails_closed_on_overflow() {
+            let now = Instant::now();
+            assert_eq!(
+                Some(nearby_handle_expiry(now, NEARBY_TARGET_HANDLE_TTL)),
+                now.checked_add(NEARBY_TARGET_HANDLE_TTL)
+            );
+            assert_eq!(nearby_handle_expiry(now, Duration::ZERO), now);
+            assert_eq!(nearby_handle_expiry(now, Duration::MAX), now);
+        }
+
+        fn nearby_source_is_canonical_and_confined_to_live_files_grants() {
+            use std::os::unix::fs::symlink;
+
+            let root = tempfile::tempdir().expect("temp grant root");
+            let source = root.path().join("report.txt");
+            std::fs::write(&source, b"report").expect("write source");
+            let grants = vec![Capability::Filesystem {
+                path: root.path().to_path_buf(),
+                mode: FsMode::Read,
+                scope: GRANT_SESSION,
+            }];
+            let opened = nearby_source_from_grants(source.as_os_str().as_encoded_bytes(), &grants)
+                .expect("granted source");
+            assert_eq!(opened.name(), "report.txt");
+            assert_eq!(opened.metadata().expect("source metadata").len(), 6);
+            assert!(nearby_source_from_grants(b"/etc/passwd", &grants).is_err());
+
+            let escape = root.path().join("escape");
+            symlink("/etc/passwd", &escape).expect("create escape symlink");
+            assert!(
+                nearby_source_from_grants(escape.as_os_str().as_encoded_bytes(), &grants).is_err()
+            );
+        }
+
+        fn nearby_rpc_policy_requires_master_and_file_transfer_switches() {
+            let policy = |enabled, file_transfer| {
+                let document = serde_json::json!({
+                    "continuity": {
+                        "enabled": enabled,
+                        "file_transfer": file_transfer,
+                    }
+                });
+                crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
+                    document.as_object().expect("policy object"),
                 )
-                .is_none()
-        );
-    }
+            };
+            assert!(!nearby_policy_enabled(policy(false, true)));
+            assert!(!nearby_policy_enabled(policy(true, false)));
+            assert!(nearby_policy_enabled(policy(true, true)));
+        }
 
-    #[test]
-    fn nearby_destination_handles_are_route_bound_and_session_remembered() {
-        let root = tempfile::tempdir().expect("destination root");
-        let route = CrdtRoute::app(FILES_APP_ID, "room-a");
-        let other_route = CrdtRoute::app(FILES_APP_ID, "room-b");
-        let now = Instant::now();
-        let mut registry = NearbyDestinationRegistry::default();
-        let destination = registry.issue(
-            41,
-            &route,
-            root.path().to_path_buf(),
-            "Workspace files".into(),
-            now,
-        );
-        assert!(
-            registry
-                .resolve(destination.handle, 42, &route, false, now)
-                .is_none()
-        );
-        assert!(
-            registry
-                .resolve(destination.handle, 41, &other_route, false, now)
-                .is_none()
-        );
-        assert!(
-            registry
-                .resolve(destination.handle, 41, &route, true, now)
-                .is_some()
-        );
-        let refreshed = registry.issue(
-            41,
-            &route,
-            root.path().to_path_buf(),
-            "Workspace files".into(),
-            now,
-        );
-        assert_eq!(refreshed.handle, destination.handle);
-        assert!(refreshed.remembered_for_session);
-        registry.remove_peer(41);
-        assert!(
-            registry
-                .resolve(destination.handle, 41, &route, false, now)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn nearby_source_is_canonical_and_confined_to_live_files_grants() {
-        use std::os::unix::fs::symlink;
-
-        let root = tempfile::tempdir().expect("temp grant root");
-        let source = root.path().join("report.txt");
-        std::fs::write(&source, b"report").expect("write source");
-        let grants = vec![Capability::Filesystem {
-            path: root.path().to_path_buf(),
-            mode: FsMode::Read,
-            scope: GRANT_SESSION,
-        }];
-        let opened = nearby_source_from_grants(source.as_os_str().as_encoded_bytes(), &grants)
-            .expect("granted source");
-        assert_eq!(opened.name(), "report.txt");
-        assert_eq!(opened.metadata().expect("source metadata").len(), 6);
-        assert!(nearby_source_from_grants(b"/etc/passwd", &grants).is_err());
-
-        let escape = root.path().join("escape");
-        symlink("/etc/passwd", &escape).expect("create escape symlink");
-        assert!(nearby_source_from_grants(escape.as_os_str().as_encoded_bytes(), &grants).is_err());
-    }
-
-    #[test]
-    fn nearby_rpc_policy_requires_master_and_file_transfer_switches() {
-        let policy = |enabled, file_transfer| {
-            let document = serde_json::json!({
-                "continuity": {
-                    "enabled": enabled,
-                    "file_transfer": file_transfer,
-                }
-            });
-            crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
-                document.as_object().expect("policy object"),
-            )
-        };
-        assert!(!nearby_policy_enabled(policy(false, true)));
-        assert!(!nearby_policy_enabled(policy(true, false)));
-        assert!(nearby_policy_enabled(policy(true, true)));
+        nearby_target_handles_reject_spoofed_routes_and_expiry();
+        nearby_transfer_handles_reject_cross_workspace_actions_and_disconnect();
+        nearby_destination_handles_are_route_bound_and_session_remembered();
+        nearby_handle_expiry_adds_ttl_and_fails_closed_on_overflow();
+        nearby_source_is_canonical_and_confined_to_live_files_grants();
+        nearby_rpc_policy_requires_master_and_file_transfer_switches();
     }
 
     fn continuation_policy(
@@ -12134,89 +12265,93 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn disabled_app_continuation_report_never_enters_registry() {
-        let room = crate::shell::state::RoomId::new();
-        let route = continuation_route_for(room, 11);
-        let metadata = continuation_metadata("https://disabled.test");
-        let mut reports =
-            crate::shell::personal_continuity_registry::ContinuationRegistry::default();
+    fn app_continuations_obey_the_toggle_and_clear_only_the_exact_route() {
+        fn disabled_app_continuation_report_never_enters_registry() {
+            let room = crate::shell::state::RoomId::new();
+            let route = continuation_route_for(room, 11);
+            let metadata = continuation_metadata("https://disabled.test");
+            let mut reports =
+                crate::shell::personal_continuity_registry::ContinuationRegistry::default();
 
-        let result = report_continuation_for_route(
-            &mut reports,
-            continuation_policy(false),
-            &route,
-            "so.tilo.browser",
-            metadata.schema_version,
-            metadata.bytes,
-        );
-
-        assert_eq!(result, Err("app continuation is disabled".into()));
-        assert!(
-            reports
-                .resume_for(
-                    room,
-                    "so.tilo.browser",
-                    crate::shell::personal_continuity::AppInstanceId(11),
-                )
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn clear_continuation_affects_only_the_exact_authenticated_route() {
-        let room = crate::shell::state::RoomId::new();
-        let first = continuation_route_for(room, 11);
-        let second = continuation_route_for(room, 22);
-        let mut reports =
-            crate::shell::personal_continuity_registry::ContinuationRegistry::default();
-        for (route, url) in [
-            (&first, "https://first.test"),
-            (&second, "https://second.test"),
-        ] {
-            let metadata = continuation_metadata(url);
-            report_continuation_for_route(
+            let result = report_continuation_for_route(
                 &mut reports,
-                continuation_policy(true),
-                route,
+                continuation_policy(false),
+                &route,
                 "so.tilo.browser",
                 metadata.schema_version,
                 metadata.bytes,
-            )
-            .expect("enabled exact route report");
+            );
+
+            assert_eq!(result, Err("app continuation is disabled".into()));
+            assert!(
+                reports
+                    .resume_for(
+                        room,
+                        "so.tilo.browser",
+                        crate::shell::personal_continuity::AppInstanceId(11),
+                    )
+                    .is_none()
+            );
         }
 
-        assert!(
-            clear_continuation_for_route(&mut reports, &first, "so.tilo.browser")
-                .expect("exact clear")
-        );
-        assert!(
-            reports
-                .resume_for(
-                    room,
+        fn clear_continuation_affects_only_the_exact_authenticated_route() {
+            let room = crate::shell::state::RoomId::new();
+            let first = continuation_route_for(room, 11);
+            let second = continuation_route_for(room, 22);
+            let mut reports =
+                crate::shell::personal_continuity_registry::ContinuationRegistry::default();
+            for (route, url) in [
+                (&first, "https://first.test"),
+                (&second, "https://second.test"),
+            ] {
+                let metadata = continuation_metadata(url);
+                report_continuation_for_route(
+                    &mut reports,
+                    continuation_policy(true),
+                    route,
                     "so.tilo.browser",
-                    crate::shell::personal_continuity::AppInstanceId(11),
+                    metadata.schema_version,
+                    metadata.bytes,
                 )
-                .is_none()
-        );
-        assert!(
-            reports
-                .resume_for(
-                    room,
-                    "so.tilo.browser",
-                    crate::shell::personal_continuity::AppInstanceId(22),
-                )
-                .is_some()
-        );
-        assert!(clear_continuation_for_route(&mut reports, &second, "so.tilo.editor").is_err());
-        assert!(
-            reports
-                .resume_for(
-                    room,
-                    "so.tilo.browser",
-                    crate::shell::personal_continuity::AppInstanceId(22),
-                )
-                .is_some()
-        );
+                .expect("enabled exact route report");
+            }
+
+            assert!(
+                clear_continuation_for_route(&mut reports, &first, "so.tilo.browser")
+                    .expect("exact clear")
+            );
+            assert!(
+                reports
+                    .resume_for(
+                        room,
+                        "so.tilo.browser",
+                        crate::shell::personal_continuity::AppInstanceId(11),
+                    )
+                    .is_none()
+            );
+            assert!(
+                reports
+                    .resume_for(
+                        room,
+                        "so.tilo.browser",
+                        crate::shell::personal_continuity::AppInstanceId(22),
+                    )
+                    .is_some()
+            );
+            assert!(clear_continuation_for_route(&mut reports, &second, "so.tilo.editor").is_err());
+            assert!(
+                reports
+                    .resume_for(
+                        room,
+                        "so.tilo.browser",
+                        crate::shell::personal_continuity::AppInstanceId(22),
+                    )
+                    .is_some()
+            );
+        }
+
+        disabled_app_continuation_report_never_enters_registry();
+        clear_continuation_affects_only_the_exact_authenticated_route();
     }
 
     fn test_published_view(action: &str, view_id: &str, primary: bool) -> PublishedAction {
@@ -12255,44 +12390,5 @@ pub(crate) mod tests {
             }),
             input: PublishedInput::None,
         }
-    }
-
-    #[test]
-    fn published_resource_views_validate_bindings_and_resource_cardinality() {
-        let editor = test_published_view("open", "editor", true);
-        assert!(validate_resource_view_descriptors(std::slice::from_ref(&editor)).is_ok());
-
-        let mut wrong_owner = editor.clone();
-        wrong_owner.view.as_mut().unwrap().open_action = "preview".into();
-        assert!(validate_resource_view_descriptors(std::slice::from_ref(&wrong_owner)).is_err());
-
-        let mut unsafe_open = editor.clone();
-        unsafe_open.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
-        assert!(validate_resource_view_descriptors(std::slice::from_ref(&unsafe_open)).is_err());
-
-        let mut invalid_mount = editor.clone();
-        invalid_mount
-            .view
-            .as_mut()
-            .unwrap()
-            .mount
-            .as_mut()
-            .unwrap()
-            .view_param = "slot_capability".into();
-        assert!(validate_resource_view_descriptors(std::slice::from_ref(&invalid_mount)).is_err());
-
-        let reader = test_published_view("read", "reader", true);
-        assert!(validate_resource_view_descriptors(&[editor, reader]).is_err());
-    }
-
-    #[test]
-    fn nearby_handle_expiry_adds_ttl_and_fails_closed_on_overflow() {
-        let now = Instant::now();
-        assert_eq!(
-            Some(nearby_handle_expiry(now, NEARBY_TARGET_HANDLE_TTL)),
-            now.checked_add(NEARBY_TARGET_HANDLE_TTL)
-        );
-        assert_eq!(nearby_handle_expiry(now, Duration::ZERO), now);
-        assert_eq!(nearby_handle_expiry(now, Duration::MAX), now);
     }
 }

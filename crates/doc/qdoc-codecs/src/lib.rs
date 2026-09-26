@@ -235,86 +235,88 @@ mod tests {
     }
 
     #[test]
-    fn registry_resolves_builtin_codecs() {
-        let r = builtin_registry();
-        assert_eq!(
-            r.provider_for_ext("odt").unwrap().schema_id(),
-            qdoc::schema::SCHEMA_ID
-        );
-        assert_eq!(
-            r.provider_for_ext("docx").unwrap().schema_id(),
-            qdoc::schema::SCHEMA_ID
-        );
-        assert!(r.provider_for_ext("md").is_some());
-        assert!(
-            r.provider_for_ext("MD").is_some(),
-            "extension lookup is case-insensitive"
-        );
-        assert!(r.provider_for_ext("markdown").is_some());
-        assert!(
-            r.provider_for_ext("DOCX").is_some(),
-            "extension lookup is case-insensitive"
-        );
-        assert!(
-            r.provider_for_ext("rtf").is_some(),
-            "RTF import is now a built-in codec"
-        );
-        assert!(
-            r.provider_for_ext("RTF").is_some(),
-            "extension lookup is case-insensitive"
-        );
-        assert!(
-            r.provider_for_ext("html").is_some(),
-            "HTML import is now a built-in codec"
-        );
-        assert!(
-            r.provider_for_ext("htm").is_some(),
-            "the .htm alias is registered too"
-        );
-        assert!(
-            r.provider_for_ext("HTML").is_some(),
-            "extension lookup is case-insensitive"
-        );
-        assert!(
-            r.provider_for_ext("xyz").is_none(),
-            "unregistered type resolves to None"
-        );
-    }
-
-    #[test]
-    fn supported_extensions_match_the_full_registry() {
-        let exts = supported_extensions();
-        let mut registered = builtin_registry().extensions();
-        registered.sort();
-        let mut declared = exts.clone();
-        declared.sort();
-        assert_eq!(
-            registered, declared,
-            "with every format enabled, the registry is exactly DOCUMENT_EXTENSIONS"
-        );
-        for want in ["md", "markdown", "odt", "docx", "rtf", "html", "htm"] {
+    fn builtin_codec_registry_covers_every_supported_extension() {
+        // Phase `registry_resolves_builtin_codecs`.
+        {
+            let r = builtin_registry();
+            assert_eq!(
+                r.provider_for_ext("odt").unwrap().schema_id(),
+                qdoc::schema::SCHEMA_ID
+            );
+            assert_eq!(
+                r.provider_for_ext("docx").unwrap().schema_id(),
+                qdoc::schema::SCHEMA_ID
+            );
+            assert!(r.provider_for_ext("md").is_some());
             assert!(
-                exts.iter().any(|e| e == want),
-                "{want} should be a supported document format"
+                r.provider_for_ext("MD").is_some(),
+                "extension lookup is case-insensitive"
+            );
+            assert!(r.provider_for_ext("markdown").is_some());
+            assert!(
+                r.provider_for_ext("DOCX").is_some(),
+                "extension lookup is case-insensitive"
+            );
+            assert!(
+                r.provider_for_ext("rtf").is_some(),
+                "RTF import is now a built-in codec"
+            );
+            assert!(
+                r.provider_for_ext("RTF").is_some(),
+                "extension lookup is case-insensitive"
+            );
+            assert!(
+                r.provider_for_ext("html").is_some(),
+                "HTML import is now a built-in codec"
+            );
+            assert!(
+                r.provider_for_ext("htm").is_some(),
+                "the .htm alias is registered too"
+            );
+            assert!(
+                r.provider_for_ext("HTML").is_some(),
+                "extension lookup is case-insensitive"
+            );
+            assert!(
+                r.provider_for_ext("xyz").is_none(),
+                "unregistered type resolves to None"
             );
         }
-        assert!(is_supported_ext("ODT"), "case-insensitive");
-        assert!(
-            is_supported_ext("RTF"),
-            "RTF import is now supported (case-insensitive)"
-        );
-        assert!(
-            is_supported_ext("HTML"),
-            "HTML import is now supported (case-insensitive)"
-        );
-        assert!(
-            is_supported_ext("HTM"),
-            "the .htm alias is supported (case-insensitive)"
-        );
-        assert!(
-            !is_supported_ext("xyz"),
-            "an unregistered extension is not supported"
-        );
+        // Phase `supported_extensions_match_the_full_registry`.
+        {
+            let exts = supported_extensions();
+            let mut registered = builtin_registry().extensions();
+            registered.sort();
+            let mut declared = exts.clone();
+            declared.sort();
+            assert_eq!(
+                registered, declared,
+                "with every format enabled, the registry is exactly DOCUMENT_EXTENSIONS"
+            );
+            for want in ["md", "markdown", "odt", "docx", "rtf", "html", "htm"] {
+                assert!(
+                    exts.iter().any(|e| e == want),
+                    "{want} should be a supported document format"
+                );
+            }
+            assert!(is_supported_ext("ODT"), "case-insensitive");
+            assert!(
+                is_supported_ext("RTF"),
+                "RTF import is now supported (case-insensitive)"
+            );
+            assert!(
+                is_supported_ext("HTML"),
+                "HTML import is now supported (case-insensitive)"
+            );
+            assert!(
+                is_supported_ext("HTM"),
+                "the .htm alias is supported (case-insensitive)"
+            );
+            assert!(
+                !is_supported_ext("xyz"),
+                "an unregistered extension is not supported"
+            );
+        }
     }
 
     use proptest::prelude::*;

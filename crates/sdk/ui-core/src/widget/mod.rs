@@ -2563,8 +2563,8 @@ pub use resize_handle::{
 };
 mod group_row;
 pub use group_row::{
-    CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, TabDropTarget,
-    WheelJumpAccum, wheel_jump_detents,
+    CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, Pan, StripLane,
+    TabDropTarget, WheelJumpAccum, wheel_jump_detents,
 };
 mod strip_view;
 pub use strip_view::{STRIP_COOLDOWN_MS, StripView};
@@ -2886,163 +2886,171 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_window_close_defaults_to_immediate_exit() {
-        let mut spacer = Spacer::new();
-        assert_eq!(
-            spacer.on_window_close_requested(),
-            WindowCloseAdmission::Allow
-        );
-        assert!(!spacer.take_window_close_intent());
-    }
-
-    #[test]
-    fn native_input_snapshot_defaults_to_none() {
-        let state = crate::State::new();
-        assert!(
-            Spacer::new()
-                .native_input_snapshot(&state.doc, &state.root)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn native_input_snapshot_root_fallback_and_explicit_probe_precedence() {
-        struct Observed(std::rc::Rc<std::cell::Cell<usize>>);
-        impl Widget for Observed {
-            fn native_input_snapshot(
-                &self,
-                doc: &AutoCommit,
-                path: &ObjId,
-            ) -> Option<serde_json::Value> {
-                use automerge::ReadDoc;
-                self.0.set(self.0.get() + 1);
-                Some(serde_json::json!({"keys": doc.keys(path).collect::<Vec<_>>() }))
-            }
-            fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
-            fn build_layout(
-                &mut self,
-                _: &mut TaffyTree<()>,
-                _: &Theme,
-                _: &mut HashMap<NodeId, *mut dyn Widget>,
-            ) -> NodeId {
-                unreachable!()
-            }
-            fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {
-                unreachable!()
-            }
-            fn draw(
-                &mut self,
-                _: &mut Scene,
-                _: vello::kurbo::Affine,
-                _: &mut TextRenderer,
-                _: &Theme,
-                _: &PresenceCtx,
-            ) {
-                unreachable!()
-            }
-            fn handle_event(
-                &mut self,
-                _: &WindowEvent,
-                _: f64,
-                _: &winit::event::Modifiers,
-                _: &mut AutoCommit,
-                _: &ObjId,
-                _: &mut bool,
-                _: &mut Option<NodeId>,
-                _: NodeId,
-                _: &TaffyTree<()>,
-            ) {
-                unreachable!()
-            }
-            fn name(&self) -> &str {
-                "Observed"
-            }
-            fn get_rect(&self) -> vello::kurbo::Rect {
-                vello::kurbo::Rect::ZERO
-            }
+    fn widget_trait_defaults_and_native_input_probe_precedence() {
+        fn ordinary_window_close_defaults_to_immediate_exit() {
+            let mut spacer = Spacer::new();
+            assert_eq!(
+                spacer.on_window_close_requested(),
+                WindowCloseAdmission::Allow
+            );
+            assert!(!spacer.take_window_close_intent());
         }
-        use automerge::transaction::Transactable;
-        let mut state = crate::State::new();
-        state
-            .doc
-            .put(&state.root, "fixture", "actual state")
-            .unwrap();
-        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-        let mut app = crate::App::new(state, Box::new(Observed(calls.clone())));
-        assert_eq!(
-            app.native_input_snapshot().unwrap()["keys"],
-            serde_json::json!(["fixture"])
-        );
-        assert_eq!(calls.get(), 1);
-        app.set_native_input_probe(|| serde_json::json!({"explicit": true}));
-        assert_eq!(
-            app.native_input_snapshot().unwrap(),
-            serde_json::json!({"explicit": true})
-        );
-        assert_eq!(
-            calls.get(),
-            1,
-            "explicit probe must suppress root observation"
-        );
-    }
 
-    /// Pinned so a future edit that removes the default blanket-breaks
-    /// every widget impl that hasn't opted into a stable test id.
-    #[test]
-    fn widget_test_id_default_is_none() {
-        let s = Spacer::new();
-        assert!(
-            Widget::test_id(&s).is_none(),
-            "default Widget::test_id should be None"
-        );
-    }
-
-    #[test]
-    fn collaboration_capabilities_are_discovered_through_the_widget_tree() {
-        let events = Rc::new(Cell::new(0));
-        let child = CollabProbe {
-            events: Rc::clone(&events),
-            child: None,
-        };
-        let mut root = CollabProbe {
-            events: Rc::clone(&events),
-            child: Some(Box::new(child)),
-        };
-
-        assert_eq!(take_collab_requests(&mut root).len(), 2);
-        handle_collab_event(
-            &mut root,
-            &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
-        );
-        assert_eq!(events.get(), 2);
-    }
-
-    #[test]
-    fn audience_presentation_capability_forwards_through_dyn_widget() {
-        let events = Rc::new(Cell::new(0));
-        let mut widget: Box<dyn Widget> = Box::new(CollabProbe {
-            events: Rc::clone(&events),
-            child: None,
-        });
-
-        widget.on_audience_presentation_changed(true);
-        assert_eq!(events.get(), 1);
-    }
-
-    #[test]
-    fn action_emitter_backlog_is_bounded_and_keeps_the_newest_intent() {
-        let mut emitter = ActionEmitter::new(test_bool_action_binding());
-        for _ in 0..ACTION_EMITTER_QUEUE_LIMIT.saturating_add(1) {
-            emitter.emit(false).expect("valid boolean intent");
+        fn native_input_snapshot_defaults_to_none() {
+            let state = crate::State::new();
+            assert!(
+                Spacer::new()
+                    .native_input_snapshot(&state.doc, &state.root)
+                    .is_none()
+            );
         }
-        emitter.emit(true).expect("valid boolean intent");
-        assert_eq!(emitter.pending.len(), ACTION_EMITTER_QUEUE_LIMIT);
 
-        let mut last = None;
-        while let Some(invocation) = emitter.take() {
-            last = invocation.arguments.get("value").cloned();
+        fn native_input_snapshot_root_fallback_and_explicit_probe_precedence() {
+            struct Observed(std::rc::Rc<std::cell::Cell<usize>>);
+            impl Widget for Observed {
+                fn native_input_snapshot(
+                    &self,
+                    doc: &AutoCommit,
+                    path: &ObjId,
+                ) -> Option<serde_json::Value> {
+                    use automerge::ReadDoc;
+                    self.0.set(self.0.get() + 1);
+                    Some(serde_json::json!({"keys": doc.keys(path).collect::<Vec<_>>() }))
+                }
+                fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+                fn build_layout(
+                    &mut self,
+                    _: &mut TaffyTree<()>,
+                    _: &Theme,
+                    _: &mut HashMap<NodeId, *mut dyn Widget>,
+                ) -> NodeId {
+                    unreachable!()
+                }
+                fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {
+                    unreachable!()
+                }
+                fn draw(
+                    &mut self,
+                    _: &mut Scene,
+                    _: vello::kurbo::Affine,
+                    _: &mut TextRenderer,
+                    _: &Theme,
+                    _: &PresenceCtx,
+                ) {
+                    unreachable!()
+                }
+                fn handle_event(
+                    &mut self,
+                    _: &WindowEvent,
+                    _: f64,
+                    _: &winit::event::Modifiers,
+                    _: &mut AutoCommit,
+                    _: &ObjId,
+                    _: &mut bool,
+                    _: &mut Option<NodeId>,
+                    _: NodeId,
+                    _: &TaffyTree<()>,
+                ) {
+                    unreachable!()
+                }
+                fn name(&self) -> &str {
+                    "Observed"
+                }
+                fn get_rect(&self) -> vello::kurbo::Rect {
+                    vello::kurbo::Rect::ZERO
+                }
+            }
+            use automerge::transaction::Transactable;
+            let mut state = crate::State::new();
+            state
+                .doc
+                .put(&state.root, "fixture", "actual state")
+                .unwrap();
+            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+            let mut app = crate::App::new(state, Box::new(Observed(calls.clone())));
+            assert_eq!(
+                app.native_input_snapshot().unwrap()["keys"],
+                serde_json::json!(["fixture"])
+            );
+            assert_eq!(calls.get(), 1);
+            app.set_native_input_probe(|| serde_json::json!({"explicit": true}));
+            assert_eq!(
+                app.native_input_snapshot().unwrap(),
+                serde_json::json!({"explicit": true})
+            );
+            assert_eq!(
+                calls.get(),
+                1,
+                "explicit probe must suppress root observation"
+            );
         }
-        assert_eq!(last, Some(serde_json::Value::Bool(true)));
+
+        /// Pinned so a future edit that removes the default blanket-breaks
+        /// every widget impl that hasn't opted into a stable test id.
+        fn widget_test_id_default_is_none() {
+            let s = Spacer::new();
+            assert!(
+                Widget::test_id(&s).is_none(),
+                "default Widget::test_id should be None"
+            );
+        }
+
+        ordinary_window_close_defaults_to_immediate_exit();
+        native_input_snapshot_defaults_to_none();
+        native_input_snapshot_root_fallback_and_explicit_probe_precedence();
+        widget_test_id_default_is_none();
+    }
+
+    #[test]
+    fn widget_capabilities_forward_through_the_tree_and_emitters_stay_bounded() {
+        fn collaboration_capabilities_are_discovered_through_the_widget_tree() {
+            let events = Rc::new(Cell::new(0));
+            let child = CollabProbe {
+                events: Rc::clone(&events),
+                child: None,
+            };
+            let mut root = CollabProbe {
+                events: Rc::clone(&events),
+                child: Some(Box::new(child)),
+            };
+
+            assert_eq!(take_collab_requests(&mut root).len(), 2);
+            handle_collab_event(
+                &mut root,
+                &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
+            );
+            assert_eq!(events.get(), 2);
+        }
+
+        fn audience_presentation_capability_forwards_through_dyn_widget() {
+            let events = Rc::new(Cell::new(0));
+            let mut widget: Box<dyn Widget> = Box::new(CollabProbe {
+                events: Rc::clone(&events),
+                child: None,
+            });
+
+            widget.on_audience_presentation_changed(true);
+            assert_eq!(events.get(), 1);
+        }
+
+        fn action_emitter_backlog_is_bounded_and_keeps_the_newest_intent() {
+            let mut emitter = ActionEmitter::new(test_bool_action_binding());
+            for _ in 0..ACTION_EMITTER_QUEUE_LIMIT.saturating_add(1) {
+                emitter.emit(false).expect("valid boolean intent");
+            }
+            emitter.emit(true).expect("valid boolean intent");
+            assert_eq!(emitter.pending.len(), ACTION_EMITTER_QUEUE_LIMIT);
+
+            let mut last = None;
+            while let Some(invocation) = emitter.take() {
+                last = invocation.arguments.get("value").cloned();
+            }
+            assert_eq!(last, Some(serde_json::Value::Bool(true)));
+        }
+
+        collaboration_capabilities_are_discovered_through_the_widget_tree();
+        audience_presentation_capability_forwards_through_dyn_widget();
+        action_emitter_backlog_is_bounded_and_keeps_the_newest_intent();
     }
 }
 

@@ -734,135 +734,154 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn an_absolute_variable_wins_over_the_home_default() {
-        let vars = [
-            ("XDG_DATA_HOME", "/data"),
-            ("XDG_CONFIG_HOME", "/config"),
-            ("XDG_STATE_HOME", "/state"),
-            ("XDG_CACHE_HOME", "/cache"),
-            ("XDG_RUNTIME_DIR", "/run/user/1000"),
-        ];
-        let var = env(&vars);
-        for (base, expected) in [
-            (Base::Data, "/data"),
-            (Base::Config, "/config"),
-            (Base::State, "/state"),
-            (Base::Cache, "/cache"),
-            (Base::Runtime, "/run/user/1000"),
-        ] {
-            assert_eq!(
-                base.resolve(&var, home_is("/home/u")),
-                Some(PathBuf::from(expected))
-            );
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unset_variables_fall_back_to_the_spec_defaults_under_home() {
-        let var = env(&[]);
-        for (base, expected) in [
-            (Base::Data, Some("/home/u/.local/share")),
-            (Base::Config, Some("/home/u/.config")),
-            (Base::State, Some("/home/u/.local/state")),
-            (Base::Cache, Some("/home/u/.cache")),
-            (Base::Runtime, None),
-        ] {
-            assert_eq!(
-                base.resolve(&var, home_is("/home/u")),
-                expected.map(PathBuf::from),
-                "{base:?}"
-            );
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn relative_and_empty_variables_are_ignored() {
-        // A relative value would resolve against whatever directory the
-        // process happened to start in; the spec says to ignore it.
-        for value in ["relative/data", "", "./data", "~/data"] {
-            let vars = [("XDG_DATA_HOME", value), ("XDG_RUNTIME_DIR", value)];
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn base_directories_follow_absolute_variables_or_home_defaults() {
+        // Phase `an_absolute_variable_wins_over_the_home_default`.
+        {
+            let vars = [
+                ("XDG_DATA_HOME", "/data"),
+                ("XDG_CONFIG_HOME", "/config"),
+                ("XDG_STATE_HOME", "/state"),
+                ("XDG_CACHE_HOME", "/cache"),
+                ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ];
             let var = env(&vars);
+            for (base, expected) in [
+                (Base::Data, "/data"),
+                (Base::Config, "/config"),
+                (Base::State, "/state"),
+                (Base::Cache, "/cache"),
+                (Base::Runtime, "/run/user/1000"),
+            ] {
+                assert_eq!(
+                    base.resolve(&var, home_is("/home/u")),
+                    Some(PathBuf::from(expected))
+                );
+            }
+        }
+        // Phase `unset_variables_fall_back_to_the_spec_defaults_under_home`.
+        {
+            let var = env(&[]);
+            for (base, expected) in [
+                (Base::Data, Some("/home/u/.local/share")),
+                (Base::Config, Some("/home/u/.config")),
+                (Base::State, Some("/home/u/.local/state")),
+                (Base::Cache, Some("/home/u/.cache")),
+                (Base::Runtime, None),
+            ] {
+                assert_eq!(
+                    base.resolve(&var, home_is("/home/u")),
+                    expected.map(PathBuf::from),
+                    "{base:?}"
+                );
+            }
+        }
+        // Phase `relative_and_empty_variables_are_ignored`.
+        {
+            // A relative value would resolve against whatever directory the
+            // process happened to start in; the spec says to ignore it.
+            for value in ["relative/data", "", "./data", "~/data"] {
+                let vars = [("XDG_DATA_HOME", value), ("XDG_RUNTIME_DIR", value)];
+                let var = env(&vars);
+                assert_eq!(
+                    Base::Data.resolve(&var, home_is("/home/u")),
+                    Some(PathBuf::from("/home/u/.local/share")),
+                    "{value:?}"
+                );
+                assert_eq!(
+                    Base::Runtime.resolve(&var, home_is("/home/u")),
+                    None,
+                    "{value:?}"
+                );
+            }
+        }
+        // Phase `explicit_values_follow_the_same_rules`.
+        {
+            let home = Some(OsStr::new("/home/u"));
             assert_eq!(
-                Base::Data.resolve(&var, home_is("/home/u")),
-                Some(PathBuf::from("/home/u/.local/share")),
-                "{value:?}"
+                Base::State.resolve_from(Some(OsStr::new("/state")), home),
+                Some(PathBuf::from("/state"))
+            );
+            for invalid in [None, Some(OsStr::new("")), Some(OsStr::new("rel"))] {
+                assert_eq!(
+                    Base::State.resolve_from(invalid, home),
+                    Some(PathBuf::from("/home/u/.local/state"))
+                );
+            }
+            assert_eq!(Base::State.resolve_from(None, Some(OsStr::new(""))), None);
+            assert_eq!(Base::Runtime.resolve_from(None, home), None);
+            assert_eq!(Base::Config.env_var(), "XDG_CONFIG_HOME");
+        }
+        // Phase `home_prefers_the_variable_and_rejects_an_empty_one`.
+        {
+            let account = || Some(PathBuf::from("/var/home/account"));
+            assert_eq!(
+                home_from(&env(&[("HOME", "/home/u")]), account),
+                Some(PathBuf::from("/home/u"))
+            );
+            assert_eq!(home_from(&env(&[("HOME", "")]), account), None);
+            assert_eq!(
+                home_from(&env(&[]), account),
+                Some(PathBuf::from("/var/home/account"))
+            );
+            assert_eq!(home_from(&env(&[]), || Some(PathBuf::new())), None);
+        }
+        // Phase `search_paths_drop_invalid_entries_and_default_when_nothing_is_left`.
+        {
+            let defaults = ["/usr/local/share", "/usr/share"];
+            let expected_defaults: Vec<PathBuf> = defaults.iter().map(PathBuf::from).collect();
+            assert_eq!(search_path(None, &defaults), expected_defaults);
+            assert_eq!(
+                search_path(Some(OsStr::new("")), &defaults),
+                expected_defaults
             );
             assert_eq!(
-                Base::Runtime.resolve(&var, home_is("/home/u")),
-                None,
-                "{value:?}"
+                search_path(Some(OsStr::new("relative:also/relative")), &defaults),
+                expected_defaults
+            );
+            assert_eq!(
+                search_path(
+                    Some(OsStr::new("/opt/share::relative:/usr/share")),
+                    &defaults
+                ),
+                vec![PathBuf::from("/opt/share"), PathBuf::from("/usr/share")]
             );
         }
     }
 
     #[test]
-    fn without_a_home_only_an_explicit_variable_resolves() {
-        assert_eq!(Base::Config.resolve(&env(&[]), || None), None);
-        #[cfg(unix)]
-        assert_eq!(
-            Base::Config.resolve(&env(&[("XDG_CONFIG_HOME", "/cfg")]), || None),
-            Some(PathBuf::from("/cfg"))
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn explicit_values_follow_the_same_rules() {
-        let home = Some(OsStr::new("/home/u"));
-        assert_eq!(
-            Base::State.resolve_from(Some(OsStr::new("/state")), home),
-            Some(PathBuf::from("/state"))
-        );
-        for invalid in [None, Some(OsStr::new("")), Some(OsStr::new("rel"))] {
+    fn app_and_user_dir_names_follow_the_spec_without_a_home() {
+        // Phase `without_a_home_only_an_explicit_variable_resolves`.
+        {
+            assert_eq!(Base::Config.resolve(&env(&[]), || None), None);
+            #[cfg(unix)]
             assert_eq!(
-                Base::State.resolve_from(invalid, home),
-                Some(PathBuf::from("/home/u/.local/state"))
+                Base::Config.resolve(&env(&[("XDG_CONFIG_HOME", "/cfg")]), || None),
+                Some(PathBuf::from("/cfg"))
             );
         }
-        assert_eq!(Base::State.resolve_from(None, Some(OsStr::new(""))), None);
-        assert_eq!(Base::Runtime.resolve_from(None, home), None);
-        assert_eq!(Base::Config.env_var(), "XDG_CONFIG_HOME");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn home_prefers_the_variable_and_rejects_an_empty_one() {
-        let account = || Some(PathBuf::from("/var/home/account"));
-        assert_eq!(
-            home_from(&env(&[("HOME", "/home/u")]), account),
-            Some(PathBuf::from("/home/u"))
-        );
-        assert_eq!(home_from(&env(&[("HOME", "")]), account), None);
-        assert_eq!(
-            home_from(&env(&[]), account),
-            Some(PathBuf::from("/var/home/account"))
-        );
-        assert_eq!(home_from(&env(&[]), || Some(PathBuf::new())), None);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn search_paths_drop_invalid_entries_and_default_when_nothing_is_left() {
-        let defaults = ["/usr/local/share", "/usr/share"];
-        let expected_defaults: Vec<PathBuf> = defaults.iter().map(PathBuf::from).collect();
-        assert_eq!(search_path(None, &defaults), expected_defaults);
-        assert_eq!(
-            search_path(Some(OsStr::new("")), &defaults),
-            expected_defaults
-        );
-        assert_eq!(
-            search_path(Some(OsStr::new("relative:also/relative")), &defaults),
-            expected_defaults
-        );
-        assert_eq!(
-            search_path(
-                Some(OsStr::new("/opt/share::relative:/usr/share")),
-                &defaults
-            ),
-            vec![PathBuf::from("/opt/share"), PathBuf::from("/usr/share")]
-        );
+        // Phase `user_dir_names_match_the_spec_keys`.
+        {
+            assert_eq!(UserDir::Download.env_var(), "XDG_DOWNLOAD_DIR");
+            assert_eq!(UserDir::PublicShare.env_var(), "XDG_PUBLICSHARE_DIR");
+            assert_eq!(UserDir::Download.conventional_name(), "Downloads");
+        }
+        // Phase `app_dirs_join_the_app_name_onto_each_base`.
+        {
+            let app = AppDirs::new("tilo-example");
+            for (joined, base) in [
+                (app.data(), data_dir()),
+                (app.config(), config_dir()),
+                (app.state(), state_dir()),
+                (app.cache(), cache_dir()),
+                (app.runtime(), runtime_dir()),
+            ] {
+                assert_eq!(joined, base.map(|base| base.join("tilo-example")));
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -878,91 +897,71 @@ XDG_PUBLICSHARE_DIR=\"$HOME/My \\\"Public\\\" \\$hare\"\n";
 
     #[cfg(unix)]
     #[test]
-    fn user_dirs_file_entries_resolve_below_home_or_as_written() {
-        let home = std::path::Path::new("/home/u");
-        let resolve = |dir: UserDir| dir.resolve_from(None, Some(USER_DIRS), home);
-        assert_eq!(
-            resolve(UserDir::Desktop),
-            Some(PathBuf::from("/home/u/Schreibtisch"))
-        );
-        assert_eq!(
-            resolve(UserDir::Download),
-            Some(PathBuf::from("/home/u/Downloads"))
-        );
-        assert_eq!(
-            resolve(UserDir::Documents),
-            Some(PathBuf::from("/home/u/Dokumente")),
-            "blanks around the key and value are not part of either"
-        );
-        assert_eq!(resolve(UserDir::Music), Some(PathBuf::from("/srv/music")));
-        assert_eq!(
-            resolve(UserDir::PublicShare),
-            Some(PathBuf::from("/home/u/My \"Public\" $hare")),
-            "double-quote escapes are undone"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn disabled_unquoted_relative_and_missing_entries_are_absent() {
-        let home = std::path::Path::new("/home/u");
-        for dir in [UserDir::Pictures, UserDir::Videos, UserDir::Templates] {
+    fn user_dirs_files_resolve_below_home_and_yield_to_variables() {
+        // Phase `user_dirs_file_entries_resolve_below_home_or_as_written`.
+        {
+            let home = std::path::Path::new("/home/u");
+            let resolve = |dir: UserDir| dir.resolve_from(None, Some(USER_DIRS), home);
             assert_eq!(
-                dir.resolve_from(None, Some(USER_DIRS), home),
-                None,
-                "{dir:?}"
+                resolve(UserDir::Desktop),
+                Some(PathBuf::from("/home/u/Schreibtisch"))
+            );
+            assert_eq!(
+                resolve(UserDir::Download),
+                Some(PathBuf::from("/home/u/Downloads"))
+            );
+            assert_eq!(
+                resolve(UserDir::Documents),
+                Some(PathBuf::from("/home/u/Dokumente")),
+                "blanks around the key and value are not part of either"
+            );
+            assert_eq!(resolve(UserDir::Music), Some(PathBuf::from("/srv/music")));
+            assert_eq!(
+                resolve(UserDir::PublicShare),
+                Some(PathBuf::from("/home/u/My \"Public\" $hare")),
+                "double-quote escapes are undone"
             );
         }
-        assert_eq!(UserDir::Desktop.resolve_from(None, None, home), None);
-        assert_eq!(UserDir::Desktop.resolve_from(None, Some(b""), home), None);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn an_absolute_variable_overrides_the_user_dirs_file() {
-        let home = std::path::Path::new("/home/u");
-        assert_eq!(
-            UserDir::Download.resolve_from(Some(OsStr::new("/data/dl")), Some(USER_DIRS), home),
-            Some(PathBuf::from("/data/dl"))
-        );
-        for ignored in ["", "relative/dl"] {
-            assert_eq!(
-                UserDir::Download.resolve_from(Some(OsStr::new(ignored)), Some(USER_DIRS), home),
-                Some(PathBuf::from("/home/u/Downloads")),
-                "{ignored:?}"
-            );
+        // Phase `disabled_unquoted_relative_and_missing_entries_are_absent`.
+        {
+            let home = std::path::Path::new("/home/u");
+            for dir in [UserDir::Pictures, UserDir::Videos, UserDir::Templates] {
+                assert_eq!(
+                    dir.resolve_from(None, Some(USER_DIRS), home),
+                    None,
+                    "{dir:?}"
+                );
+            }
+            assert_eq!(UserDir::Desktop.resolve_from(None, None, home), None);
+            assert_eq!(UserDir::Desktop.resolve_from(None, Some(b""), home), None);
         }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_last_matching_line_wins() {
-        let home = std::path::Path::new("/home/u");
-        let file = b"XDG_DESKTOP_DIR=\"$HOME/One\"\nXDG_DESKTOP_DIR=\"$HOME/Two\"\n";
-        assert_eq!(
-            UserDir::Desktop.resolve_from(None, Some(file), home),
-            Some(PathBuf::from("/home/u/Two"))
-        );
-    }
-
-    #[test]
-    fn user_dir_names_match_the_spec_keys() {
-        assert_eq!(UserDir::Download.env_var(), "XDG_DOWNLOAD_DIR");
-        assert_eq!(UserDir::PublicShare.env_var(), "XDG_PUBLICSHARE_DIR");
-        assert_eq!(UserDir::Download.conventional_name(), "Downloads");
-    }
-
-    #[test]
-    fn app_dirs_join_the_app_name_onto_each_base() {
-        let app = AppDirs::new("tilo-example");
-        for (joined, base) in [
-            (app.data(), data_dir()),
-            (app.config(), config_dir()),
-            (app.state(), state_dir()),
-            (app.cache(), cache_dir()),
-            (app.runtime(), runtime_dir()),
-        ] {
-            assert_eq!(joined, base.map(|base| base.join("tilo-example")));
+        // Phase `an_absolute_variable_overrides_the_user_dirs_file`.
+        {
+            let home = std::path::Path::new("/home/u");
+            assert_eq!(
+                UserDir::Download.resolve_from(Some(OsStr::new("/data/dl")), Some(USER_DIRS), home),
+                Some(PathBuf::from("/data/dl"))
+            );
+            for ignored in ["", "relative/dl"] {
+                assert_eq!(
+                    UserDir::Download.resolve_from(
+                        Some(OsStr::new(ignored)),
+                        Some(USER_DIRS),
+                        home
+                    ),
+                    Some(PathBuf::from("/home/u/Downloads")),
+                    "{ignored:?}"
+                );
+            }
+        }
+        // Phase `the_last_matching_line_wins`.
+        {
+            let home = std::path::Path::new("/home/u");
+            let file = b"XDG_DESKTOP_DIR=\"$HOME/One\"\nXDG_DESKTOP_DIR=\"$HOME/Two\"\n";
+            assert_eq!(
+                UserDir::Desktop.resolve_from(None, Some(file), home),
+                Some(PathBuf::from("/home/u/Two"))
+            );
         }
     }
 }

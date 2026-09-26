@@ -714,45 +714,151 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
 
     #[test]
-    fn seed_then_load_round_trips_library() {
-        let mut doc = AutoCommit::new();
-        let lib = seed::sample_library();
-        let pb = seed::sample_playback(&lib);
-        assert!(!is_seeded(&doc));
-        seed(&mut doc, &lib, &pb);
-        assert!(is_seeded(&doc));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn library_seed_and_live_upserts_round_trip_without_device_state() {
+        // Phase `seed_then_load_round_trips_library`.
+        {
+            let mut doc = AutoCommit::new();
+            let lib = seed::sample_library();
+            let pb = seed::sample_playback(&lib);
+            assert!(!is_seeded(&doc));
+            seed(&mut doc, &lib, &pb);
+            assert!(is_seeded(&doc));
 
-        let loaded = load_library(&doc);
-        assert_eq!(loaded.artists.len(), lib.artists.len());
-        assert_eq!(loaded.albums.len(), lib.albums.len());
-        assert_eq!(loaded.tracks.len(), lib.tracks.len());
-        assert_eq!(loaded.playlists.len(), lib.playlists.len());
-        // A specific track round-trips intact.
-        let g1 = loaded.track("tk_g1").unwrap();
-        assert_eq!(g1.title, "Glasslight");
-        assert_eq!(g1.duration_s, 215);
+            let loaded = load_library(&doc);
+            assert_eq!(loaded.artists.len(), lib.artists.len());
+            assert_eq!(loaded.albums.len(), lib.albums.len());
+            assert_eq!(loaded.tracks.len(), lib.tracks.len());
+            assert_eq!(loaded.playlists.len(), lib.playlists.len());
+            // A specific track round-trips intact.
+            let g1 = loaded.track("tk_g1").unwrap();
+            assert_eq!(g1.title, "Glasslight");
+            assert_eq!(g1.duration_s, 215);
+        }
+
+        // Phase `seeding_contains_no_device_effect_maps`.
+        {
+            let mut doc = AutoCommit::new();
+            let lib = seed::sample_library();
+            let pb = seed::sample_playback(&lib);
+            seed(&mut doc, &lib, &pb);
+            assert!(get_map(&doc, &ROOT, "playback").is_none());
+            assert!(get_map(&doc, &ROOT, "cache").is_none());
+        }
+
+        // Phase `upsert_live_track_merges_and_is_idempotent`.
+        {
+            let mut doc = seeded_doc();
+            let before = load_library(&doc).total_tracks();
+            let lt = LiveTrack {
+                track_id: "yt:abc123".into(),
+                title: "Runaway".into(),
+                artist_id: "ytc_aurora".into(),
+                artist_name: "AURORA".into(),
+                album_id: "ytal_allmy".into(),
+                album_title: "All My Demons".into(),
+                duration_s: 245,
+                yt_id: "abc123".into(),
+            };
+            upsert_live_track(&mut doc, &lt);
+            upsert_live_track(&mut doc, &lt); // idempotent
+            let lib = load_library(&doc);
+            assert_eq!(
+                lib.total_tracks(),
+                before + 1,
+                "one live track added, no dupes"
+            );
+            let t = lib.track("yt:abc123").expect("live track present");
+            assert_eq!(t.title, "Runaway");
+            assert_eq!(t.yt_id, "abc123", "real video id preserved for streaming");
+            assert_eq!(lib.artist_name("ytc_aurora"), "AURORA");
+            assert_eq!(lib.album_title("ytal_allmy"), "All My Demons");
+        }
     }
 
     #[test]
-    fn seeding_contains_no_device_effect_maps() {
-        let mut doc = AutoCommit::new();
-        let lib = seed::sample_library();
-        let pb = seed::sample_playback(&lib);
-        seed(&mut doc, &lib, &pb);
-        assert!(get_map(&doc, &ROOT, "playback").is_none());
-        assert!(get_map(&doc, &ROOT, "cache").is_none());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn playlist_edits_round_trip_merge_and_migrate() {
+        // Phase `add_track_to_playlist_appends_once`.
+        {
+            let mut doc = AutoCommit::new();
+            let lib = seed::sample_library();
+            seed(&mut doc, &lib, &seed::sample_playback(&lib));
+            add_track_to_playlist(&mut doc, "pl_morning", "tk_h1", 9_000_000);
+            add_track_to_playlist(&mut doc, "pl_morning", "tk_h1", 9_000_000); // dedup
+            let loaded = load_library(&doc);
+            let pl = loaded.playlist("pl_morning").unwrap();
+            assert_eq!(pl.track_ids.iter().filter(|t| *t == "tk_h1").count(), 1);
+        }
 
-    #[test]
-    fn add_track_to_playlist_appends_once() {
-        let mut doc = AutoCommit::new();
-        let lib = seed::sample_library();
-        seed(&mut doc, &lib, &seed::sample_playback(&lib));
-        add_track_to_playlist(&mut doc, "pl_morning", "tk_h1", 9_000_000);
-        add_track_to_playlist(&mut doc, "pl_morning", "tk_h1", 9_000_000); // dedup
-        let loaded = load_library(&doc);
-        let pl = loaded.playlist("pl_morning").unwrap();
-        assert_eq!(pl.track_ids.iter().filter(|t| *t == "tk_h1").count(), 1);
+        // Phase `remove_and_reorder_playlist_tracks`.
+        {
+            let mut doc = seeded_doc();
+            // pl_morning seeds [tk_p1, tk_r1, tk_g2, tk_r3].
+            remove_track_from_playlist(&mut doc, "pl_morning", "tk_g2");
+            let pl = load_library(&doc).playlist("pl_morning").unwrap().clone();
+            assert_eq!(pl.track_ids, vec!["tk_p1", "tk_r1", "tk_r3"]);
+            // Move the first track to the end.
+            let playlist = load_library(&doc).playlist("pl_morning").unwrap().clone();
+            let rank = playlist.rank_for_move("tk_p1", 2).unwrap();
+            set_track_rank(&mut doc, "pl_morning", "tk_p1", rank);
+            let pl = load_library(&doc).playlist("pl_morning").unwrap().clone();
+            assert_eq!(pl.track_ids, vec!["tk_r1", "tk_r3", "tk_p1"]);
+        }
+
+        // Phase `rename_and_delete_playlist`.
+        {
+            let mut doc = seeded_doc();
+            rename_playlist(&mut doc, "pl_focus", "Concentration");
+            assert_eq!(
+                load_library(&doc).playlist("pl_focus").unwrap().name,
+                "Concentration"
+            );
+            let before = load_library(&doc).playlists.len();
+            delete_playlist(&mut doc, "pl_focus");
+            let after = load_library(&doc);
+            assert_eq!(after.playlists.len(), before - 1);
+            assert!(after.playlist("pl_focus").is_none());
+        }
+
+        // Phase `deleted_playlist_stays_hidden_after_an_old_replica_merges`.
+        {
+            let mut deleted = seeded_doc();
+            deleted.commit();
+            let mut stale = AutoCommit::load(&deleted.save()).unwrap();
+            delete_playlist(&mut deleted, "pl_focus");
+            // The stale device makes a valid edit to the pre-delete object.
+            rename_playlist(&mut stale, "pl_focus", "Should not revive");
+            let mut stale_changes = AutoCommit::load(&stale.save()).unwrap();
+            deleted.merge_incoming(&mut stale_changes).unwrap();
+            assert!(playlist_is_tombstoned(&deleted, "pl_focus"));
+            assert!(!has_playlist(&deleted, "pl_focus"));
+            assert!(
+                load_library(&deleted)
+                    .playlists
+                    .iter()
+                    .all(|playlist| playlist.id != "pl_focus")
+            );
+        }
+
+        // Phase `first_absolute_set_migrates_legacy_list_without_losing_members`.
+        {
+            let mut doc = seeded_doc();
+            let legacy = doc.put_object(&ROOT, "liked", ObjType::List).unwrap();
+            doc.insert(&legacy, 0, "tk_g1").unwrap();
+            doc.insert(&legacy, 1, "tk_p1").unwrap();
+            set_liked(&mut doc, "tk_v2", true);
+            let liked = load_library(&doc).liked;
+            assert!(liked.contains("tk_g1"));
+            assert!(liked.contains("tk_p1"));
+            assert!(liked.contains("tk_v2"));
+        }
     }
 
     fn seeded_doc() -> AutoCommit {
@@ -763,126 +869,41 @@ mod tests {
     }
 
     #[test]
-    fn remove_and_reorder_playlist_tracks() {
-        let mut doc = seeded_doc();
-        // pl_morning seeds [tk_p1, tk_r1, tk_g2, tk_r3].
-        remove_track_from_playlist(&mut doc, "pl_morning", "tk_g2");
-        let pl = load_library(&doc).playlist("pl_morning").unwrap().clone();
-        assert_eq!(pl.track_ids, vec!["tk_p1", "tk_r1", "tk_r3"]);
-        // Move the first track to the end.
-        let playlist = load_library(&doc).playlist("pl_morning").unwrap().clone();
-        let rank = playlist.rank_for_move("tk_p1", 2).unwrap();
-        set_track_rank(&mut doc, "pl_morning", "tk_p1", rank);
-        let pl = load_library(&doc).playlist("pl_morning").unwrap().clone();
-        assert_eq!(pl.track_ids, vec!["tk_r1", "tk_r3", "tk_p1"]);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn liked_and_saved_sets_round_trip_and_replicate() {
+        // Phase `toggle_liked_round_trips_through_doc`.
+        {
+            let mut doc = seeded_doc();
+            assert!(!load_library(&doc).is_liked("tk_g2"));
+            assert!(toggle_liked(&mut doc, "tk_g2"));
+            assert!(load_library(&doc).is_liked("tk_g2"));
+            assert!(!toggle_liked(&mut doc, "tk_g2"));
+            assert!(!load_library(&doc).is_liked("tk_g2"));
+        }
 
-    #[test]
-    fn rename_and_delete_playlist() {
-        let mut doc = seeded_doc();
-        rename_playlist(&mut doc, "pl_focus", "Concentration");
-        assert_eq!(
-            load_library(&doc).playlist("pl_focus").unwrap().name,
-            "Concentration"
-        );
-        let before = load_library(&doc).playlists.len();
-        delete_playlist(&mut doc, "pl_focus");
-        let after = load_library(&doc);
-        assert_eq!(after.playlists.len(), before - 1);
-        assert!(after.playlist("pl_focus").is_none());
-    }
+        // Phase `toggle_saved_album_round_trips`.
+        {
+            let mut doc = seeded_doc();
+            // al_glasslight is seeded saved; al_strata is not.
+            assert!(load_library(&doc).is_album_saved("al_glasslight"));
+            assert!(toggle_saved_album(&mut doc, "al_strata"));
+            assert!(load_library(&doc).is_album_saved("al_strata"));
+            assert!(!toggle_saved_album(&mut doc, "al_strata"));
+            assert!(!load_library(&doc).is_album_saved("al_strata"));
+        }
 
-    #[test]
-    fn deleted_playlist_stays_hidden_after_an_old_replica_merges() {
-        let mut deleted = seeded_doc();
-        deleted.commit();
-        let mut stale = AutoCommit::load(&deleted.save()).unwrap();
-        delete_playlist(&mut deleted, "pl_focus");
-        // The stale device makes a valid edit to the pre-delete object.
-        rename_playlist(&mut stale, "pl_focus", "Should not revive");
-        let mut stale_changes = AutoCommit::load(&stale.save()).unwrap();
-        deleted.merge_incoming(&mut stale_changes).unwrap();
-        assert!(playlist_is_tombstoned(&deleted, "pl_focus"));
-        assert!(!has_playlist(&deleted, "pl_focus"));
-        assert!(
-            load_library(&deleted)
-                .playlists
-                .iter()
-                .all(|playlist| playlist.id != "pl_focus")
-        );
-    }
-
-    #[test]
-    fn upsert_live_track_merges_and_is_idempotent() {
-        let mut doc = seeded_doc();
-        let before = load_library(&doc).total_tracks();
-        let lt = LiveTrack {
-            track_id: "yt:abc123".into(),
-            title: "Runaway".into(),
-            artist_id: "ytc_aurora".into(),
-            artist_name: "AURORA".into(),
-            album_id: "ytal_allmy".into(),
-            album_title: "All My Demons".into(),
-            duration_s: 245,
-            yt_id: "abc123".into(),
-        };
-        upsert_live_track(&mut doc, &lt);
-        upsert_live_track(&mut doc, &lt); // idempotent
-        let lib = load_library(&doc);
-        assert_eq!(
-            lib.total_tracks(),
-            before + 1,
-            "one live track added, no dupes"
-        );
-        let t = lib.track("yt:abc123").expect("live track present");
-        assert_eq!(t.title, "Runaway");
-        assert_eq!(t.yt_id, "abc123", "real video id preserved for streaming");
-        assert_eq!(lib.artist_name("ytc_aurora"), "AURORA");
-        assert_eq!(lib.album_title("ytal_allmy"), "All My Demons");
-    }
-
-    #[test]
-    fn toggle_liked_round_trips_through_doc() {
-        let mut doc = seeded_doc();
-        assert!(!load_library(&doc).is_liked("tk_g2"));
-        assert!(toggle_liked(&mut doc, "tk_g2"));
-        assert!(load_library(&doc).is_liked("tk_g2"));
-        assert!(!toggle_liked(&mut doc, "tk_g2"));
-        assert!(!load_library(&doc).is_liked("tk_g2"));
-    }
-
-    #[test]
-    fn first_absolute_set_migrates_legacy_list_without_losing_members() {
-        let mut doc = seeded_doc();
-        let legacy = doc.put_object(&ROOT, "liked", ObjType::List).unwrap();
-        doc.insert(&legacy, 0, "tk_g1").unwrap();
-        doc.insert(&legacy, 1, "tk_p1").unwrap();
-        set_liked(&mut doc, "tk_v2", true);
-        let liked = load_library(&doc).liked;
-        assert!(liked.contains("tk_g1"));
-        assert!(liked.contains("tk_p1"));
-        assert!(liked.contains("tk_v2"));
-    }
-
-    #[test]
-    fn toggle_saved_album_round_trips() {
-        let mut doc = seeded_doc();
-        // al_glasslight is seeded saved; al_strata is not.
-        assert!(load_library(&doc).is_album_saved("al_glasslight"));
-        assert!(toggle_saved_album(&mut doc, "al_strata"));
-        assert!(load_library(&doc).is_album_saved("al_strata"));
-        assert!(!toggle_saved_album(&mut doc, "al_strata"));
-        assert!(!load_library(&doc).is_album_saved("al_strata"));
-    }
-
-    #[test]
-    fn liked_set_replicates_between_devices() {
-        // Device A seeds, B loads, B likes a track, A merges and converges.
-        let mut a = seeded_doc();
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        set_liked(&mut b, "tk_v2", true);
-        let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b_loaded).unwrap();
-        assert!(load_library(&a).is_liked("tk_v2"));
+        // Phase `liked_set_replicates_between_devices`.
+        {
+            // Device A seeds, B loads, B likes a track, A merges and converges.
+            let mut a = seeded_doc();
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            set_liked(&mut b, "tk_v2", true);
+            let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b_loaded).unwrap();
+            assert!(load_library(&a).is_liked("tk_v2"));
+        }
     }
 }

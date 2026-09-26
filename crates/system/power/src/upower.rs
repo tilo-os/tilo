@@ -244,46 +244,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reads_a_coherent_battery_snapshot() {
-        let Some(m) = monitor_or_skip("snapshot").await else {
-            return;
-        };
-        let snap = m.battery_snapshot().await.expect("battery_snapshot");
-        // Percentage is always in range; a present battery has a real state.
-        assert!(snap.percent <= 100, "percent in range: {snap:?}");
-        if snap.present {
-            assert_ne!(
-                snap.state,
-                BatteryState::Unknown,
-                "a present battery reports a concrete UPower state"
-            );
+    async fn upower_snapshots_lid_and_history_are_coherent() {
+        // Phase `reads_a_coherent_battery_snapshot`.
+        async fn reads_a_coherent_battery_snapshot() {
+            let Some(m) = monitor_or_skip("snapshot").await else {
+                return;
+            };
+            let snap = m.battery_snapshot().await.expect("battery_snapshot");
+            // Percentage is always in range; a present battery has a real state.
+            assert!(snap.percent <= 100, "percent in range: {snap:?}");
+            if snap.present {
+                assert_ne!(
+                    snap.state,
+                    BatteryState::Unknown,
+                    "a present battery reports a concrete UPower state"
+                );
+            }
         }
-    }
-
-    #[tokio::test]
-    async fn lid_query_is_consistent() {
-        let Some(m) = monitor_or_skip("lid").await else {
-            return;
-        };
-        let present = m.lid_is_present().await.expect("LidIsPresent");
-        let closed = m.lid_is_closed().await.expect("LidIsClosed");
-        // A machine with no lid can never report the lid closed.
-        if !present {
-            assert!(!closed, "no lid ⇒ not closed");
+        // Phase `lid_query_is_consistent`.
+        async fn lid_query_is_consistent() {
+            let Some(m) = monitor_or_skip("lid").await else {
+                return;
+            };
+            let present = m.lid_is_present().await.expect("LidIsPresent");
+            let closed = m.lid_is_closed().await.expect("LidIsClosed");
+            // A machine with no lid can never report the lid closed.
+            if !present {
+                assert!(!closed, "no lid ⇒ not closed");
+            }
+            // OnBattery is a plain bool either way.
+            let _ = m.on_battery().await.expect("OnBattery");
         }
-        // OnBattery is a plain bool either way.
-        let _ = m.on_battery().await.expect("OnBattery");
-    }
-
-    #[tokio::test]
-    async fn history_samples_are_anonymous_and_in_range() {
-        let Some(monitor) = monitor_or_skip("history samples").await else {
-            return;
-        };
-        let samples = monitor.history_samples().await.expect("history samples");
-        for sample in samples {
-            assert!(sample.capacity <= 100);
-            assert!(sample.health.is_none_or(|health| health <= 100));
+        // Phase `history_samples_are_anonymous_and_in_range`.
+        async fn history_samples_are_anonymous_and_in_range() {
+            let Some(monitor) = monitor_or_skip("history samples").await else {
+                return;
+            };
+            let samples = monitor.history_samples().await.expect("history samples");
+            for sample in samples {
+                assert!(sample.capacity <= 100);
+                assert!(sample.health.is_none_or(|health| health <= 100));
+            }
         }
+        // Phase `reads_a_coherent_battery_snapshot` (defined above).
+        reads_a_coherent_battery_snapshot().await;
+        // Phase `lid_query_is_consistent` (defined above).
+        lid_query_is_consistent().await;
+        // Phase `history_samples_are_anonymous_and_in_range` (defined above).
+        history_samples_are_anonymous_and_in_range().await;
     }
 }

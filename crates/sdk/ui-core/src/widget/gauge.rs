@@ -768,167 +768,171 @@ mod tests {
             .count()
     }
 
-    /// Threshold colour resolution: below `warning` → success, in the
-    /// `[warning, danger)` band → warning, at/above `danger` → danger.
     #[test]
-    fn thresholds_pick_semantic_bands() {
-        let theme = Theme::dark();
-        let t = GaugeThresholds::default(); // warning 0.6, danger 0.85
-        let s = &theme.tokens.colors.semantic;
-        assert_eq!(t.color(&theme, 0.10), s.success);
-        assert_eq!(t.color(&theme, 0.59), s.success);
-        assert_eq!(t.color(&theme, 0.60), s.warning, "boundary is inclusive");
-        assert_eq!(t.color(&theme, 0.84), s.warning);
-        assert_eq!(t.color(&theme, 0.85), s.danger, "boundary is inclusive");
-        assert_eq!(t.color(&theme, 1.0), s.danger);
-    }
+    fn gauge_ring_and_bar_paint_tracks_labels_and_threshold_bands() {
+        /// Threshold colour resolution: below `warning` → success, in the
+        /// `[warning, danger)` band → warning, at/above `danger` → danger.
+        fn thresholds_pick_semantic_bands() {
+            let theme = Theme::dark();
+            let t = GaugeThresholds::default(); // warning 0.6, danger 0.85
+            let s = &theme.tokens.colors.semantic;
+            assert_eq!(t.color(&theme, 0.10), s.success);
+            assert_eq!(t.color(&theme, 0.59), s.success);
+            assert_eq!(t.color(&theme, 0.60), s.warning, "boundary is inclusive");
+            assert_eq!(t.color(&theme, 0.84), s.warning);
+            assert_eq!(t.color(&theme, 0.85), s.danger, "boundary is inclusive");
+            assert_eq!(t.color(&theme, 1.0), s.danger);
+        }
 
-    /// A ring at fraction 0 paints only the track; a non-zero fraction
-    /// paints the track *and* the arc (one more stroke).
-    #[test]
-    fn ring_zero_paints_track_only() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
+        /// A ring at fraction 0 paints only the track; a non-zero fraction
+        /// paints the track *and* the arc (one more stroke).
+        fn ring_zero_paints_track_only() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
 
-        let mut zero = Scene::new();
-        RingGauge::draw_at(
-            &mut zero,
-            Affine::IDENTITY,
-            &mut tr,
-            Point::new(50.0, 50.0),
-            40.0,
-            6.0,
-            0.0,
-            theme.accent_primary,
-            &theme,
-            "",
-            "",
-        );
-        let mut half = Scene::new();
-        RingGauge::draw_at(
-            &mut half,
-            Affine::IDENTITY,
-            &mut tr,
-            Point::new(50.0, 50.0),
-            40.0,
-            6.0,
-            0.5,
-            theme.accent_primary,
-            &theme,
-            "",
-            "",
-        );
-        assert!(
-            count_color_tags(&half) > count_color_tags(&zero),
-            "non-zero fraction must paint the arc on top of the track",
-        );
-    }
+            let mut zero = Scene::new();
+            RingGauge::draw_at(
+                &mut zero,
+                Affine::IDENTITY,
+                &mut tr,
+                Point::new(50.0, 50.0),
+                40.0,
+                6.0,
+                0.0,
+                theme.accent_primary,
+                &theme,
+                "",
+                "",
+            );
+            let mut half = Scene::new();
+            RingGauge::draw_at(
+                &mut half,
+                Affine::IDENTITY,
+                &mut tr,
+                Point::new(50.0, 50.0),
+                40.0,
+                6.0,
+                0.5,
+                theme.accent_primary,
+                &theme,
+                "",
+                "",
+            );
+            assert!(
+                count_color_tags(&half) > count_color_tags(&zero),
+                "non-zero fraction must paint the arc on top of the track",
+            );
+        }
 
-    /// The ring's centred label paints a glyph run when supplied.
-    #[test]
-    fn ring_label_paints_glyphs() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        RingGauge::draw_at(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            Point::new(50.0, 50.0),
-            40.0,
-            6.0,
-            0.7,
-            theme.accent_primary,
-            &theme,
-            "70%",
-            "cpu",
-        );
-        assert!(
-            !scene.encoding().resources.glyph_runs.is_empty(),
-            "ring with a label must paint glyph runs",
-        );
-    }
+        /// The ring's centred label paints a glyph run when supplied.
+        fn ring_label_paints_glyphs() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            RingGauge::draw_at(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                Point::new(50.0, 50.0),
+                40.0,
+                6.0,
+                0.7,
+                theme.accent_primary,
+                &theme,
+                "70%",
+                "cpu",
+            );
+            assert!(
+                !scene.encoding().resources.glyph_runs.is_empty(),
+                "ring with a label must paint glyph runs",
+            );
+        }
 
-    /// A ring gauge widget resolves its fill via thresholds: a 0.9 value
-    /// is danger, a 0.3 value is success.
-    #[test]
-    fn ring_widget_uses_thresholds() {
-        let theme = Theme::dark();
-        let hot = RingGauge::new(0.9);
-        assert_eq!(
-            hot.resolve_color(&theme),
-            theme.tokens.colors.semantic.danger
-        );
-        let cool = RingGauge::new(0.3);
-        assert_eq!(
-            cool.resolve_color(&theme),
-            theme.tokens.colors.semantic.success
-        );
-        // Fixed colour overrides thresholds.
-        let fixed = RingGauge::new(0.9).with_color(Color::from_rgb8(1, 2, 3));
-        assert_eq!(fixed.resolve_color(&theme), Color::from_rgb8(1, 2, 3));
-    }
+        /// A ring gauge widget resolves its fill via thresholds: a 0.9 value
+        /// is danger, a 0.3 value is success.
+        fn ring_widget_uses_thresholds() {
+            let theme = Theme::dark();
+            let hot = RingGauge::new(0.9);
+            assert_eq!(
+                hot.resolve_color(&theme),
+                theme.tokens.colors.semantic.danger
+            );
+            let cool = RingGauge::new(0.3);
+            assert_eq!(
+                cool.resolve_color(&theme),
+                theme.tokens.colors.semantic.success
+            );
+            // Fixed colour overrides thresholds.
+            let fixed = RingGauge::new(0.9).with_color(Color::from_rgb8(1, 2, 3));
+            assert_eq!(fixed.resolve_color(&theme), Color::from_rgb8(1, 2, 3));
+        }
 
-    /// The bar gauge fills proportionally: a 0-fraction bar paints just the
-    /// track, a non-zero fraction adds the fill rect.
-    #[test]
-    fn bar_zero_paints_track_only() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let rect = Rect::new(0.0, 0.0, 200.0, 32.0);
+        /// The bar gauge fills proportionally: a 0-fraction bar paints just the
+        /// track, a non-zero fraction adds the fill rect.
+        fn bar_zero_paints_track_only() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let rect = Rect::new(0.0, 0.0, 200.0, 32.0);
 
-        let mut zero = Scene::new();
-        BarGauge::draw_at(
-            &mut zero,
-            Affine::IDENTITY,
-            &mut tr,
-            rect,
-            &theme,
-            0.0,
-            theme.accent_primary,
-            "",
-            "",
-        );
-        let mut filled = Scene::new();
-        BarGauge::draw_at(
-            &mut filled,
-            Affine::IDENTITY,
-            &mut tr,
-            rect,
-            &theme,
-            0.5,
-            theme.accent_primary,
-            "",
-            "",
-        );
-        assert_eq!(count_color_tags(&zero), 1, "track only at frac 0");
-        assert!(
-            count_color_tags(&filled) > count_color_tags(&zero),
-            "fill adds a rect"
-        );
-    }
+            let mut zero = Scene::new();
+            BarGauge::draw_at(
+                &mut zero,
+                Affine::IDENTITY,
+                &mut tr,
+                rect,
+                &theme,
+                0.0,
+                theme.accent_primary,
+                "",
+                "",
+            );
+            let mut filled = Scene::new();
+            BarGauge::draw_at(
+                &mut filled,
+                Affine::IDENTITY,
+                &mut tr,
+                rect,
+                &theme,
+                0.5,
+                theme.accent_primary,
+                "",
+                "",
+            );
+            assert_eq!(count_color_tags(&zero), 1, "track only at frac 0");
+            assert!(
+                count_color_tags(&filled) > count_color_tags(&zero),
+                "fill adds a rect"
+            );
+        }
 
-    /// A bar gauge with a label + value paints two glyph runs.
-    #[test]
-    fn bar_label_and_value_paint() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        BarGauge::draw_at(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            Rect::new(0.0, 0.0, 200.0, 32.0),
-            &theme,
-            0.4,
-            theme.accent_primary,
-            "Memory",
-            "4.2 GB",
-        );
-        assert!(
-            !scene.encoding().resources.glyph_runs.is_empty(),
-            "label/value must paint glyph runs",
-        );
+        /// A bar gauge with a label + value paints two glyph runs.
+        fn bar_label_and_value_paint() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            BarGauge::draw_at(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                Rect::new(0.0, 0.0, 200.0, 32.0),
+                &theme,
+                0.4,
+                theme.accent_primary,
+                "Memory",
+                "4.2 GB",
+            );
+            assert!(
+                !scene.encoding().resources.glyph_runs.is_empty(),
+                "label/value must paint glyph runs",
+            );
+        }
+
+        thresholds_pick_semantic_bands();
+        ring_zero_paints_track_only();
+        ring_label_paints_glyphs();
+        ring_widget_uses_thresholds();
+        bar_zero_paints_track_only();
+        bar_label_and_value_paint();
     }
 
     /// A span paints its track and its fill even when empty (a dot), and

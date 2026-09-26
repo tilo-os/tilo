@@ -67,38 +67,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn between_is_strictly_ordered_and_never_ends_in_zero() {
-        let cases = [
-            (None, None),
-            (Some("a"), None),
-            (None, Some("a")),
-            (Some("a"), Some("b")),
-            (Some("a"), Some("a1")),
-            (Some("zz"), None),
-            (Some("0001"), Some("0002")),
-        ];
-        for (low, high) in cases {
-            let key = between(low, high);
-            assert!(!key.ends_with('0'), "{key}");
-            if let Some(low) = low {
-                assert!(key.as_str() > low, "{low:?} < {key}");
-            }
-            if let Some(high) = high {
-                assert!(key.as_str() < high, "{key} < {high:?}");
+    fn fractional_order_keys_stay_strictly_ordered() {
+        // phase: between_is_strictly_ordered_and_never_ends_in_zero
+        {
+            let cases = [
+                (None, None),
+                (Some("a"), None),
+                (None, Some("a")),
+                (Some("a"), Some("b")),
+                (Some("a"), Some("a1")),
+                (Some("zz"), None),
+                (Some("0001"), Some("0002")),
+            ];
+            for (low, high) in cases {
+                let key = between(low, high);
+                assert!(!key.ends_with('0'), "{key}");
+                if let Some(low) = low {
+                    assert!(key.as_str() > low, "{low:?} < {key}");
+                }
+                if let Some(high) = high {
+                    assert!(key.as_str() < high, "{key} < {high:?}");
+                }
             }
         }
-    }
-
-    #[test]
-    fn repeated_insertion_at_one_point_stays_ordered() {
-        let mut low = between(None, None);
-        let high = between(Some(&low), None);
-        for _ in 0..200 {
-            let key = between(Some(&low), Some(&high));
-            assert!(key > low && key < high);
-            low = key;
+        // phase: repeated_insertion_at_one_point_stays_ordered
+        {
+            let mut low = between(None, None);
+            let high = between(Some(&low), None);
+            for _ in 0..200 {
+                let key = between(Some(&low), Some(&high));
+                assert!(key > low && key < high);
+                low = key;
+            }
+            let keys = sequence(Some("a"), Some("b"), 50);
+            assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
         }
-        let keys = sequence(Some("a"), Some("b"), 50);
-        assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
     }
 }

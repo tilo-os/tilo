@@ -366,157 +366,173 @@ mod tests {
     }
 
     #[test]
-    fn nv12_neutral_chroma_converts_to_grey_not_a_colour_cast() {
-        // Y=128, Cb=Cr=128 is mid grey. A wrong matrix or a missed -0.5
-        // chroma bias shows up immediately as a colour cast here.
-        let img = nv12(4, 4, 128, 128, 128, ColorRange::Full);
-        let rgba = planar_to_rgba(&img, 4, 4);
-        assert_eq!(rgba.len(), 4 * 4 * 4);
-        for px in rgba.chunks_exact(4) {
-            assert_near(px[0], px[1], 2, "r vs g on neutral chroma");
-            assert_near(px[1], px[2], 2, "g vs b on neutral chroma");
-            assert_eq!(px[3], 255, "opaque");
-            assert_near(px[0], 128, 2, "mid grey");
+    fn yuv_conversion_is_colour_correct_and_honours_stride() {
+        // Phase `nv12_neutral_chroma_converts_to_grey_not_a_colour_cast`.
+        {
+            // Y=128, Cb=Cr=128 is mid grey. A wrong matrix or a missed -0.5
+            // chroma bias shows up immediately as a colour cast here.
+            let img = nv12(4, 4, 128, 128, 128, ColorRange::Full);
+            let rgba = planar_to_rgba(&img, 4, 4);
+            assert_eq!(rgba.len(), 4 * 4 * 4);
+            for px in rgba.chunks_exact(4) {
+                assert_near(px[0], px[1], 2, "r vs g on neutral chroma");
+                assert_near(px[1], px[2], 2, "g vs b on neutral chroma");
+                assert_eq!(px[3], 255, "opaque");
+                assert_near(px[0], 128, 2, "mid grey");
+            }
         }
-    }
+        // Phase `limited_range_black_and_white_expand_to_the_full_scale`.
+        {
+            // Y=16 limited is video black; Y=235 is video white. Failing to expand
+            // the range yields washed-out 16/235 instead of 0/255.
+            let black = planar_to_rgba(&nv12(2, 2, 16, 128, 128, ColorRange::Limited), 2, 2);
+            assert_near(black[0], 0, 2, "limited-range 16 is full black");
+            let white = planar_to_rgba(&nv12(2, 2, 235, 128, 128, ColorRange::Limited), 2, 2);
+            assert_near(white[0], 255, 2, "limited-range 235 is full white");
 
-    #[test]
-    fn limited_range_black_and_white_expand_to_the_full_scale() {
-        // Y=16 limited is video black; Y=235 is video white. Failing to expand
-        // the range yields washed-out 16/235 instead of 0/255.
-        let black = planar_to_rgba(&nv12(2, 2, 16, 128, 128, ColorRange::Limited), 2, 2);
-        assert_near(black[0], 0, 2, "limited-range 16 is full black");
-        let white = planar_to_rgba(&nv12(2, 2, 235, 128, 128, ColorRange::Limited), 2, 2);
-        assert_near(white[0], 255, 2, "limited-range 235 is full white");
-
-        // Without the range expansion these would come back as 16 and 235 —
-        // a washed-out picture. Prove the gap really is the full scale.
-        assert!(
-            i32::from(white[0]) - i32::from(black[0]) >= 250,
-            "limited range must expand to the full scale, got {} .. {}",
-            black[0],
-            white[0]
-        );
-    }
-
-    #[test]
-    fn chroma_offset_drives_the_expected_channel() {
-        // Cr above neutral must push red up and leave blue below it; Cb above
-        // neutral must do the reverse. This catches a Cb/Cr swap, which a
-        // grey-only test cannot see.
-        let reddish = planar_to_rgba(&nv12(2, 2, 128, 128, 200, ColorRange::Full), 2, 2);
-        assert!(reddish[0] > reddish[2], "high Cr → red exceeds blue");
-        let blueish = planar_to_rgba(&nv12(2, 2, 128, 200, 128, ColorRange::Full), 2, 2);
-        assert!(blueish[2] > blueish[0], "high Cb → blue exceeds red");
-    }
-
-    #[test]
-    fn stride_padding_is_honoured_rather_than_read_as_pixels() {
-        // A decoder pads rows; reading stride as width shears the picture.
-        let width = 4u32;
-        let height = 2u32;
-        let stride = 8u32; // 4 bytes of padding per row
-        let mut luma = vec![0u8; (stride * height) as usize];
-        // Row 0 real pixels bright, its padding black; row 1 real pixels dark.
-        for x in 0..width as usize {
-            luma[x] = 235;
-            luma[stride as usize + x] = 16;
-        }
-        let img = PlanarImage {
-            format: PlanarFormat::Nv12,
-            planes: vec![
-                PlaneData {
-                    bytes: Arc::new(luma),
-                    stride,
-                    width,
-                    height,
-                },
-                PlaneData {
-                    bytes: Arc::new(vec![128u8; (stride * height / 2) as usize]),
-                    stride,
-                    width: width / 2,
-                    height: height / 2,
-                },
-            ],
-            colorimetry: Colorimetry {
-                matrix: YuvMatrix::Bt709,
-                range: ColorRange::Limited,
-            },
-        };
-        let rgba = planar_to_rgba(&img, width, height);
-        // Every pixel of row 0 is white, every pixel of row 1 is black. If the
-        // stride were ignored, row 0's tail would pick up the padding zeros.
-        for x in 0..width as usize {
-            assert_near(rgba[x * 4], 255, 2, &format!("row 0 col {x} is white"));
-            assert_near(
-                rgba[(width as usize + x) * 4],
-                0,
-                2,
-                &format!("row 1 col {x} is black"),
+            // Without the range expansion these would come back as 16 and 235 —
+            // a washed-out picture. Prove the gap really is the full scale.
+            assert!(
+                i32::from(white[0]) - i32::from(black[0]) >= 250,
+                "limited range must expand to the full scale, got {} .. {}",
+                black[0],
+                white[0]
             );
         }
-    }
-
-    #[test]
-    fn degenerate_geometry_converts_to_nothing_rather_than_panicking() {
-        // A decoder renegotiating mid-stream, or a container whose header
-        // disagrees with its frames, hands over dimensions that describe no
-        // picture. The converter has to answer "no pixels", because every
-        // alternative here is a panic on somebody's footage.
-        let img = nv12(4, 4, 128, 128, 128, ColorRange::Full);
-        assert!(planar_to_rgba(&img, 0, 4).is_empty(), "zero width");
-        assert!(planar_to_rgba(&img, 4, 0).is_empty(), "zero height");
-        assert!(planar_to_rgba(&img, 0, 0).is_empty(), "zero both");
-        // A byte count that cannot fit in `usize`: 2^31 x 2^31 pixels is 2^64
-        // bytes of RGBA.
-        assert!(
-            planar_to_rgba(&img, 1 << 31, 1 << 31).is_empty(),
-            "a picture too large to describe is not a picture"
-        );
-    }
-
-    #[test]
-    fn a_plane_shorter_than_its_geometry_claims_reads_as_black_not_a_panic() {
-        // The stride says 64 bytes a row; the buffer holds one row. Every
-        // sample past it must fall through to black rather than index out.
-        let img = PlanarImage {
-            format: PlanarFormat::Nv12,
-            planes: vec![
-                PlaneData {
-                    bytes: Arc::new(vec![235u8; 64]),
-                    stride: 64,
-                    width: 64,
-                    height: 8,
+        // Phase `chroma_offset_drives_the_expected_channel`.
+        {
+            // Cr above neutral must push red up and leave blue below it; Cb above
+            // neutral must do the reverse. This catches a Cb/Cr swap, which a
+            // grey-only test cannot see.
+            let reddish = planar_to_rgba(&nv12(2, 2, 128, 128, 200, ColorRange::Full), 2, 2);
+            assert!(reddish[0] > reddish[2], "high Cr → red exceeds blue");
+            let blueish = planar_to_rgba(&nv12(2, 2, 128, 200, 128, ColorRange::Full), 2, 2);
+            assert!(blueish[2] > blueish[0], "high Cb → blue exceeds red");
+        }
+        // Phase `stride_padding_is_honoured_rather_than_read_as_pixels`.
+        {
+            // A decoder pads rows; reading stride as width shears the picture.
+            let width = 4u32;
+            let height = 2u32;
+            let stride = 8u32; // 4 bytes of padding per row
+            let mut luma = vec![0u8; (stride * height) as usize];
+            // Row 0 real pixels bright, its padding black; row 1 real pixels dark.
+            for x in 0..width as usize {
+                luma[x] = 235;
+                luma[stride as usize + x] = 16;
+            }
+            let img = PlanarImage {
+                format: PlanarFormat::Nv12,
+                planes: vec![
+                    PlaneData {
+                        bytes: Arc::new(luma),
+                        stride,
+                        width,
+                        height,
+                    },
+                    PlaneData {
+                        bytes: Arc::new(vec![128u8; (stride * height / 2) as usize]),
+                        stride,
+                        width: width / 2,
+                        height: height / 2,
+                    },
+                ],
+                colorimetry: Colorimetry {
+                    matrix: YuvMatrix::Bt709,
+                    range: ColorRange::Limited,
                 },
-                PlaneData {
-                    bytes: Arc::new(vec![128u8; 8]),
-                    stride: 64,
-                    width: 32,
-                    height: 4,
-                },
-            ],
-            colorimetry: Colorimetry {
-                matrix: YuvMatrix::Bt709,
-                range: ColorRange::Limited,
-            },
-        };
-        let rgba = planar_to_rgba(&img, 64, 8);
-        assert_eq!(rgba.len(), 64 * 8 * 4, "full picture, short plane");
-        assert_near(rgba[0], 255, 2, "the one row that exists is white");
-        // Row 1 onwards is past the end of the buffer.
-        assert_near(rgba[64 * 4], 0, 2, "a missing row is black");
+            };
+            let rgba = planar_to_rgba(&img, width, height);
+            // Every pixel of row 0 is white, every pixel of row 1 is black. If the
+            // stride were ignored, row 0's tail would pick up the padding zeros.
+            for x in 0..width as usize {
+                assert_near(rgba[x * 4], 255, 2, &format!("row 0 col {x} is white"));
+                assert_near(
+                    rgba[(width as usize + x) * 4],
+                    0,
+                    2,
+                    &format!("row 1 col {x} is black"),
+                );
+            }
+        }
     }
 
     #[test]
-    fn a_single_plane_image_is_not_read_as_nv12() {
-        // NV12 and P010 are two-plane. One plane is a different format the
-        // caller has mislabelled, and guessing at the chroma would invent
-        // colour that is not in the stream.
-        let mut img = nv12(4, 4, 128, 128, 128, ColorRange::Full);
-        img.planes.truncate(1);
-        let rgba = planar_to_rgba(&img, 4, 4);
-        assert_eq!(rgba.len(), 4 * 4 * 4, "still a full-size buffer");
-        assert!(rgba.iter().all(|b| *b == 0), "and it is blank");
+    fn malformed_or_non_nv12_frames_convert_safely_without_copies() {
+        // Phase `degenerate_geometry_converts_to_nothing_rather_than_panicking`.
+        {
+            // A decoder renegotiating mid-stream, or a container whose header
+            // disagrees with its frames, hands over dimensions that describe no
+            // picture. The converter has to answer "no pixels", because every
+            // alternative here is a panic on somebody's footage.
+            let img = nv12(4, 4, 128, 128, 128, ColorRange::Full);
+            assert!(planar_to_rgba(&img, 0, 4).is_empty(), "zero width");
+            assert!(planar_to_rgba(&img, 4, 0).is_empty(), "zero height");
+            assert!(planar_to_rgba(&img, 0, 0).is_empty(), "zero both");
+            // A byte count that cannot fit in `usize`: 2^31 x 2^31 pixels is 2^64
+            // bytes of RGBA.
+            assert!(
+                planar_to_rgba(&img, 1 << 31, 1 << 31).is_empty(),
+                "a picture too large to describe is not a picture"
+            );
+        }
+        // Phase `a_plane_shorter_than_its_geometry_claims_reads_as_black_not_a_panic`.
+        {
+            // The stride says 64 bytes a row; the buffer holds one row. Every
+            // sample past it must fall through to black rather than index out.
+            let img = PlanarImage {
+                format: PlanarFormat::Nv12,
+                planes: vec![
+                    PlaneData {
+                        bytes: Arc::new(vec![235u8; 64]),
+                        stride: 64,
+                        width: 64,
+                        height: 8,
+                    },
+                    PlaneData {
+                        bytes: Arc::new(vec![128u8; 8]),
+                        stride: 64,
+                        width: 32,
+                        height: 4,
+                    },
+                ],
+                colorimetry: Colorimetry {
+                    matrix: YuvMatrix::Bt709,
+                    range: ColorRange::Limited,
+                },
+            };
+            let rgba = planar_to_rgba(&img, 64, 8);
+            assert_eq!(rgba.len(), 64 * 8 * 4, "full picture, short plane");
+            assert_near(rgba[0], 255, 2, "the one row that exists is white");
+            // Row 1 onwards is past the end of the buffer.
+            assert_near(rgba[64 * 4], 0, 2, "a missing row is black");
+        }
+        // Phase `a_single_plane_image_is_not_read_as_nv12`.
+        {
+            // NV12 and P010 are two-plane. One plane is a different format the
+            // caller has mislabelled, and guessing at the chroma would invent
+            // colour that is not in the stream.
+            let mut img = nv12(4, 4, 128, 128, 128, ColorRange::Full);
+            img.planes.truncate(1);
+            let rgba = planar_to_rgba(&img, 4, 4);
+            assert_eq!(rgba.len(), 4 * 4 * 4, "still a full-size buffer");
+            assert!(rgba.iter().all(|b| *b == 0), "and it is blank");
+        }
+        // Phase `an_rgba_frame_hands_back_the_same_buffer_without_re_copying`.
+        {
+            let bytes = Arc::new(vec![7u8; 8 * 8 * 4]);
+            let frame = Frame {
+                width: 8,
+                height: 8,
+                pts_ms: 42,
+                payload: FramePayload::Rgba(bytes.clone()),
+            };
+            let got = frame.to_rgba().unwrap();
+            assert!(Arc::ptr_eq(&got, &bytes), "same allocation, not a copy");
+            let vf = frame.to_video_frame().unwrap();
+            assert_eq!(vf.pts_ms, 42);
+            assert_eq!(vf.width, 8);
+        }
     }
 
     #[test]
@@ -539,21 +555,5 @@ mod tests {
         assert!(frame.to_rgba().is_none(), "no hidden GPU→CPU readback");
         assert!(frame.to_video_frame().is_none());
         assert!(frame.dmabuf().is_some(), "the importer can still reach it");
-    }
-
-    #[test]
-    fn an_rgba_frame_hands_back_the_same_buffer_without_re_copying() {
-        let bytes = Arc::new(vec![7u8; 8 * 8 * 4]);
-        let frame = Frame {
-            width: 8,
-            height: 8,
-            pts_ms: 42,
-            payload: FramePayload::Rgba(bytes.clone()),
-        };
-        let got = frame.to_rgba().unwrap();
-        assert!(Arc::ptr_eq(&got, &bytes), "same allocation, not a copy");
-        let vf = frame.to_video_frame().unwrap();
-        assert_eq!(vf.pts_ms, 42);
-        assert_eq!(vf.width, 8);
     }
 }

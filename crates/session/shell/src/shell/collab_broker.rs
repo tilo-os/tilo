@@ -1496,259 +1496,279 @@ mod tests {
     use super::*;
 
     #[test]
-    fn allocated_application_peers_skip_reserved_ids_and_preserve_connection_counts() {
-        let table = FanoutState::new();
-        assert_eq!(table.connections_seen(), 0);
-        assert_eq!(table.next_peer_id(), 1);
-        assert_eq!(table.connections_seen(), 1);
-        assert_eq!(table.next_peer_id(), 2);
-        assert_eq!(table.connections_seen(), 2);
-    }
+    fn application_peer_ids_skip_reserved_values_and_never_wrap() {
+        fn allocated_application_peers_skip_reserved_ids_and_preserve_connection_counts() {
+            let table = FanoutState::new();
+            assert_eq!(table.connections_seen(), 0);
+            assert_eq!(table.next_peer_id(), 1);
+            assert_eq!(table.connections_seen(), 1);
+            assert_eq!(table.next_peer_id(), 2);
+            assert_eq!(table.connections_seen(), 2);
+        }
 
-    #[test]
-    fn exhausted_application_peer_ids_do_not_wrap_or_issue_the_current_connection_sentinel() {
-        let table = FanoutState::new();
-        table.peer_id_counter.store(u64::MAX - 2, Ordering::Relaxed);
-        assert_eq!(table.next_peer_id(), u64::MAX - 1);
-        assert!(
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| table.next_peer_id()))
-                .is_err()
-        );
-        assert_eq!(table.connections_seen(), u64::MAX - 1);
+        fn exhausted_application_peer_ids_do_not_wrap_or_issue_the_current_connection_sentinel() {
+            let table = FanoutState::new();
+            table.peer_id_counter.store(u64::MAX - 2, Ordering::Relaxed);
+            assert_eq!(table.next_peer_id(), u64::MAX - 1);
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| table.next_peer_id()))
+                    .is_err()
+            );
+            assert_eq!(table.connections_seen(), u64::MAX - 1);
+        }
+
+        allocated_application_peers_skip_reserved_ids_and_preserve_connection_counts();
+        exhausted_application_peer_ids_do_not_wrap_or_issue_the_current_connection_sentinel();
     }
 
     /// A digest-shaped peer id, as presence frames carry it.
     const PEER: &str = "peer@5537458103208628978";
 
     #[test]
-    fn document_routes_stay_with_their_app_and_record() {
-        let document = CrdtRoute::record("so.tilo.notes", "room-1", "note-1");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn document_routes_stay_bound_to_their_app_record_and_signed_channel() {
+        fn document_routes_stay_with_their_app_and_record() {
+            let document = CrdtRoute::record("so.tilo.notes", "room-1", "note-1");
 
-        assert!(document.delivers_to(&document));
-        assert!(document.delivers_to(&CrdtRoute::cluster("room-1")));
-        assert!(!document.delivers_to(&CrdtRoute::record("so.tilo.files", "room-1", "note-1",)));
-        assert!(!document.delivers_to(&CrdtRoute::record("so.tilo.notes", "room-1", "note-2",)));
-        assert!(!document.delivers_to(&CrdtRoute::record("so.tilo.notes", "room-2", "note-1",)));
+            assert!(document.delivers_to(&document));
+            assert!(document.delivers_to(&CrdtRoute::cluster("room-1")));
+            assert!(
+                !document.delivers_to(&CrdtRoute::record("so.tilo.files", "room-1", "note-1",))
+            );
+            assert!(
+                !document.delivers_to(&CrdtRoute::record("so.tilo.notes", "room-1", "note-2",))
+            );
+            assert!(
+                !document.delivers_to(&CrdtRoute::record("so.tilo.notes", "room-2", "note-1",))
+            );
+        }
+
+        fn remote_document_route_preserves_signed_kind_and_rejects_relabeling() {
+            let route = CrdtRoute::record("so.tilo.notes", "room-1", "record-1");
+            let (signing, author) = collab_types::generate_keypair();
+            let mut envelope = collab_types::SignedOp::new_unsigned(
+                DocumentMutation::Snapshot(b"whole document".to_vec())
+                    .encode()
+                    .expect("typed snapshot"),
+                document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+                author,
+                document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+                OpClass::Splice,
+                std::time::SystemTime::now(),
+                1,
+            );
+            collab_types::sign_op(&mut envelope, &signing).expect("signed snapshot");
+
+            assert!(matches!(
+                validate_document_route(&route, &envelope),
+                Ok(collab_types::RoutedDocumentPayload::Cleartext(DocumentMutation::Snapshot(data)))
+                    if data == b"whole document"
+            ));
+            assert_eq!(
+                validate_document_route(
+                    &CrdtRoute::record("so.tilo.notes", "room-1", "record-2"),
+                    &envelope,
+                ),
+                Err(ValidationError::DocumentRouteMismatch),
+                "an envelope signed for one record cannot be replayed as another",
+            );
+            envelope.payload = b"untyped bytes".to_vec();
+            assert_eq!(
+                validate_document_route(&route, &envelope),
+                Err(ValidationError::DocumentRouteMismatch),
+            );
+        }
+
+        fn remote_document_broker_routes_opaque_mls_only_for_bound_channel() {
+            let route = CrdtRoute::record("so.tilo.notes", "room-1", "record-1");
+            let expected_channel = collab_types::document_channel_id(
+                &route.app_id,
+                &route.cluster_id,
+                &route.record_id,
+            );
+            let (_, author) = collab_types::generate_keypair();
+            let mut envelope = collab_types::SignedOp::new_unsigned_with_encryption(
+                b"opaque-not-a-document-mutation".to_vec(),
+                document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+                author,
+                document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+                OpClass::Splice,
+                std::time::SystemTime::now(),
+                1,
+                collab_types::EncryptionMetadata::mls_application(9, expected_channel),
+            );
+            assert_eq!(
+                validate_document_route(&route, &envelope),
+                Ok(collab_types::RoutedDocumentPayload::Encrypted {
+                    channel: expected_channel,
+                    epoch: 9,
+                })
+            );
+            envelope.encryption.as_mut().expect("metadata").channel =
+                collab_types::ChannelId::new();
+            assert_eq!(
+                validate_document_route(&route, &envelope),
+                Err(ValidationError::DocumentRouteMismatch)
+            );
+        }
+
+        fn follow_dispatcher_is_local_and_room_scoped() {
+            let table = Arc::new(super::FanoutState::new());
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink_seen = Arc::clone(&seen);
+            let _sub = table.subscribe_rooms(
+                vec!["room-1".to_string()],
+                Box::new(move |event, _route| {
+                    if let CollabEvent::FollowChanged { peer_id } = event
+                        && let Ok(mut rows) = sink_seen.lock()
+                    {
+                        rows.push(peer_id.clone());
+                    }
+                }),
+            );
+            let dispatcher = super::SessionFollowDispatcher {
+                fanout: Arc::clone(&table),
+            };
+            dispatcher.set("room-2", Some("peer@wrong".into()));
+            dispatcher.set("room-1", Some("peer@7".into()));
+            dispatcher.set("room-1", None);
+            assert_eq!(
+                seen.lock().unwrap().as_slice(),
+                &[Some("peer@7".to_string()), None]
+            );
+        }
+
+        document_routes_stay_with_their_app_and_record();
+        remote_document_route_preserves_signed_kind_and_rejects_relabeling();
+        remote_document_broker_routes_opaque_mls_only_for_bound_channel();
+        follow_dispatcher_is_local_and_room_scoped();
     }
 
     #[test]
-    fn remote_document_route_preserves_signed_kind_and_rejects_relabeling() {
-        let route = CrdtRoute::record("so.tilo.notes", "room-1", "record-1");
-        let (signing, author) = collab_types::generate_keypair();
-        let mut envelope = collab_types::SignedOp::new_unsigned(
-            DocumentMutation::Snapshot(b"whole document".to_vec())
-                .encode()
-                .expect("typed snapshot"),
-            document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
-            author,
-            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-            OpClass::Splice,
-            std::time::SystemTime::now(),
-            1,
-        );
-        collab_types::sign_op(&mut envelope, &signing).expect("signed snapshot");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn peer_names_are_announced_once_per_app_and_revert_when_revoked() {
+        fn a_named_peer_is_announced_and_then_left_alone() {
+            assert_eq!(
+                super::roster_announcement(None, Some("bob"), PEER),
+                Some("bob".to_string()),
+            );
+            assert_eq!(
+                super::roster_announcement(Some("bob"), Some("bob"), PEER),
+                None
+            );
+        }
 
-        assert!(matches!(
-            validate_document_route(&route, &envelope),
-            Ok(collab_types::RoutedDocumentPayload::Cleartext(DocumentMutation::Snapshot(data)))
-                if data == b"whole document"
-        ));
-        assert_eq!(
-            validate_document_route(
-                &CrdtRoute::record("so.tilo.notes", "room-1", "record-2"),
-                &envelope,
-            ),
-            Err(ValidationError::DocumentRouteMismatch),
-            "an envelope signed for one record cannot be replayed as another",
-        );
-        envelope.payload = b"untyped bytes".to_vec();
-        assert_eq!(
-            validate_document_route(&route, &envelope),
-            Err(ValidationError::DocumentRouteMismatch),
-        );
-    }
+        fn an_unnamed_peer_is_not_announced() {
+            assert_eq!(super::roster_announcement(None, None, PEER), None);
+        }
 
-    #[test]
-    fn remote_document_broker_routes_opaque_mls_only_for_bound_channel() {
-        let route = CrdtRoute::record("so.tilo.notes", "room-1", "record-1");
-        let expected_channel =
-            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
-        let (_, author) = collab_types::generate_keypair();
-        let mut envelope = collab_types::SignedOp::new_unsigned_with_encryption(
-            b"opaque-not-a-document-mutation".to_vec(),
-            document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
-            author,
-            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-            OpClass::Splice,
-            std::time::SystemTime::now(),
-            1,
-            collab_types::EncryptionMetadata::mls_application(9, expected_channel),
-        );
-        assert_eq!(
-            validate_document_route(&route, &envelope),
-            Ok(collab_types::RoutedDocumentPayload::Encrypted {
-                channel: expected_channel,
-                epoch: 9,
-            })
-        );
-        envelope.encryption.as_mut().expect("metadata").channel = collab_types::ChannelId::new();
-        assert_eq!(
-            validate_document_route(&route, &envelope),
-            Err(ValidationError::DocumentRouteMismatch)
-        );
-    }
+        fn a_revoked_name_reverts_the_peer_to_its_id() {
+            assert_eq!(
+                super::roster_announcement(Some("bob"), None, PEER),
+                Some(PEER.to_string()),
+            );
+            assert_eq!(super::roster_announcement(Some(PEER), None, PEER), None);
+        }
 
-    #[test]
-    fn a_named_peer_is_announced_and_then_left_alone() {
-        assert_eq!(
-            super::roster_announcement(None, Some("bob"), PEER),
-            Some("bob".to_string()),
-        );
-        assert_eq!(
-            super::roster_announcement(Some("bob"), Some("bob"), PEER),
-            None
-        );
-    }
+        /// An app that starts after the name was said still learns it —
+        /// "changes" is measured against what was said, not against who heard it.
+        fn a_name_already_announced_is_said_again_for_an_app_that_missed_it() {
+            const HANDLE: u64 = 4_242_424_242;
 
-    #[test]
-    fn an_unnamed_peer_is_not_announced() {
-        assert_eq!(super::roster_announcement(None, None, PEER), None);
-    }
-
-    #[test]
-    fn a_revoked_name_reverts_the_peer_to_its_id() {
-        assert_eq!(
-            super::roster_announcement(Some("bob"), None, PEER),
-            Some(PEER.to_string()),
-        );
-        assert_eq!(super::roster_announcement(Some(PEER), None, PEER), None);
-    }
-
-    #[test]
-    fn a_remote_peer_is_one_id_across_presence_and_deltas() {
-        const HANDLE: u64 = 721_275_257_761_426_039;
-
-        let table = Arc::new(super::FanoutState::new());
-        let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink_seen = Arc::clone(&seen);
-        let _sub = table.subscribe_rooms(
-            vec!["room-1".to_string()],
-            Box::new(move |event, _route| {
-                if let CollabEvent::Context { collaborators, .. } = event {
-                    for c in collaborators {
-                        if let Ok(mut g) = sink_seen.lock() {
-                            g.push((c.id.clone(), c.name.clone()));
+            let table = Arc::new(super::FanoutState::new());
+            let heard: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&heard);
+            let _sub = table.subscribe_rooms(
+                vec!["room-1".to_string()],
+                Box::new(move |event, _route| {
+                    if let CollabEvent::Context { collaborators, .. } = event {
+                        for c in collaborators {
+                            if let Ok(mut g) = sink.lock() {
+                                g.push(c.name.clone());
+                            }
                         }
                     }
-                }
-            }),
-        );
+                }),
+            );
 
-        let room = |_c: &str| {
-            let mut m = PeerLabels::new();
-            m.insert(HANDLE, "bob".to_string());
-            m
-        };
-        let mut labels = HashMap::new();
-        let mut announced = HashMap::new();
+            let room = |_c: &str| {
+                let mut m = PeerLabels::new();
+                m.insert(HANDLE, "bob".to_string());
+                m
+            };
+            let mut labels = HashMap::new();
+            let mut announced = HashMap::new();
+            let mut say = || {
+                super::remote_participant_id(
+                    "room-1",
+                    HANDLE,
+                    &room,
+                    &table,
+                    &mut labels,
+                    &mut announced,
+                );
+            };
 
-        // Pointer first, then the delta the caret is drawn from.
-        let from_presence = super::remote_participant_id(
-            "room-1",
-            HANDLE,
-            &room,
-            &table,
-            &mut labels,
-            &mut announced,
-        );
-        let from_delta = super::remote_participant_id(
-            "room-1",
-            HANDLE,
-            &room,
-            &table,
-            &mut labels,
-            &mut announced,
-        );
+            say();
+            say();
+            assert_eq!(
+                heard.lock().unwrap().clone(),
+                vec!["bob".to_string()],
+                "a name that has not changed is not re-broadcast per frame",
+            );
 
-        assert_eq!(
-            from_presence, from_delta,
-            "one peer, one id — a delta attributed differently from the \
-             pointer beside it is the same person drawn twice",
-        );
-        assert_eq!(
-            from_presence,
-            format!("peer@{HANDLE}"),
-            "and the id stays the peer handle once a name is known: a \
-             roster entry names a participant, it does not recolour one",
-        );
+            let _ = table.next_peer_id();
+            say();
+            assert_eq!(
+                heard.lock().unwrap().clone(),
+                vec!["bob".to_string(), "bob".to_string()],
+                "the app that just connected was not in the audience for the \
+                 first announcement, so the name has to be said again",
+            );
 
-        let announcements = seen.lock().unwrap().clone();
-        assert_eq!(
-            announcements,
-            vec![(format!("peer@{HANDLE}"), "bob".to_string())],
-            "the room's name is announced exactly once, against the id \
-             both frames arrived under",
-        );
-    }
+            say();
+            assert_eq!(
+                heard.lock().unwrap().len(),
+                2,
+                "once everyone connected has heard it, it stops being said",
+            );
+        }
 
-    #[test]
-    fn follow_dispatcher_is_local_and_room_scoped() {
-        let table = Arc::new(super::FanoutState::new());
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let sink_seen = Arc::clone(&seen);
-        let _sub = table.subscribe_rooms(
-            vec!["room-1".to_string()],
-            Box::new(move |event, _route| {
-                if let CollabEvent::FollowChanged { peer_id } = event
-                    && let Ok(mut rows) = sink_seen.lock()
-                {
-                    rows.push(peer_id.clone());
-                }
-            }),
-        );
-        let dispatcher = super::SessionFollowDispatcher {
-            fanout: Arc::clone(&table),
-        };
-        dispatcher.set("room-2", Some("peer@wrong".into()));
-        dispatcher.set("room-1", Some("peer@7".into()));
-        dispatcher.set("room-1", None);
-        assert_eq!(
-            seen.lock().unwrap().as_slice(),
-            &[Some("peer@7".to_string()), None]
-        );
-    }
+        fn a_remote_peer_is_one_id_across_presence_and_deltas() {
+            const HANDLE: u64 = 721_275_257_761_426_039;
 
-    /// An app that starts after the name was said still learns it —
-    /// "changes" is measured against what was said, not against who heard it.
-    #[test]
-    fn a_name_already_announced_is_said_again_for_an_app_that_missed_it() {
-        const HANDLE: u64 = 4_242_424_242;
-
-        let table = Arc::new(super::FanoutState::new());
-        let heard: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&heard);
-        let _sub = table.subscribe_rooms(
-            vec!["room-1".to_string()],
-            Box::new(move |event, _route| {
-                if let CollabEvent::Context { collaborators, .. } = event {
-                    for c in collaborators {
-                        if let Ok(mut g) = sink.lock() {
-                            g.push(c.name.clone());
+            let table = Arc::new(super::FanoutState::new());
+            let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+            let sink_seen = Arc::clone(&seen);
+            let _sub = table.subscribe_rooms(
+                vec!["room-1".to_string()],
+                Box::new(move |event, _route| {
+                    if let CollabEvent::Context { collaborators, .. } = event {
+                        for c in collaborators {
+                            if let Ok(mut g) = sink_seen.lock() {
+                                g.push((c.id.clone(), c.name.clone()));
+                            }
                         }
                     }
-                }
-            }),
-        );
+                }),
+            );
 
-        let room = |_c: &str| {
-            let mut m = PeerLabels::new();
-            m.insert(HANDLE, "bob".to_string());
-            m
-        };
-        let mut labels = HashMap::new();
-        let mut announced = HashMap::new();
-        let mut say = || {
-            super::remote_participant_id(
+            let room = |_c: &str| {
+                let mut m = PeerLabels::new();
+                m.insert(HANDLE, "bob".to_string());
+                m
+            };
+            let mut labels = HashMap::new();
+            let mut announced = HashMap::new();
+
+            // Pointer first, then the delta the caret is drawn from.
+            let from_presence = super::remote_participant_id(
                 "room-1",
                 HANDLE,
                 &room,
@@ -1756,30 +1776,40 @@ mod tests {
                 &mut labels,
                 &mut announced,
             );
-        };
+            let from_delta = super::remote_participant_id(
+                "room-1",
+                HANDLE,
+                &room,
+                &table,
+                &mut labels,
+                &mut announced,
+            );
 
-        say();
-        say();
-        assert_eq!(
-            heard.lock().unwrap().clone(),
-            vec!["bob".to_string()],
-            "a name that has not changed is not re-broadcast per frame",
-        );
+            assert_eq!(
+                from_presence, from_delta,
+                "one peer, one id — a delta attributed differently from the \
+                 pointer beside it is the same person drawn twice",
+            );
+            assert_eq!(
+                from_presence,
+                format!("peer@{HANDLE}"),
+                "and the id stays the peer handle once a name is known: a \
+                 roster entry names a participant, it does not recolour one",
+            );
 
-        let _ = table.next_peer_id();
-        say();
-        assert_eq!(
-            heard.lock().unwrap().clone(),
-            vec!["bob".to_string(), "bob".to_string()],
-            "the app that just connected was not in the audience for the \
-             first announcement, so the name has to be said again",
-        );
+            let announcements = seen.lock().unwrap().clone();
+            assert_eq!(
+                announcements,
+                vec![(format!("peer@{HANDLE}"), "bob".to_string())],
+                "the room's name is announced exactly once, against the id \
+                 both frames arrived under",
+            );
+        }
 
-        say();
-        assert_eq!(
-            heard.lock().unwrap().len(),
-            2,
-            "once everyone connected has heard it, it stops being said",
-        );
+        a_named_peer_is_announced_and_then_left_alone();
+        an_unnamed_peer_is_not_announced();
+        a_revoked_name_reverts_the_peer_to_its_id();
+        a_name_already_announced_is_said_again_for_an_app_that_missed_it();
+        a_remote_peer_is_one_id_across_presence_and_deltas();
     }
 }

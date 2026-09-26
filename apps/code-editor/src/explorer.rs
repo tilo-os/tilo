@@ -244,58 +244,61 @@ mod tests {
     }
 
     #[test]
-    fn folders_sort_before_files_then_by_name() {
-        let project = sample();
-        let tree = ProjectTree::from_project(&project);
-        let labels: Vec<_> = (0..tree.child_count(tree.root_id()))
-            .filter_map(|index| tree.child_id(tree.root_id(), index))
-            .filter_map(|id| tree.label(id))
-            .collect();
-        assert_eq!(labels, ["assets", "src", "README.md"]);
-    }
+    fn project_tree_orders_rows_hides_root_and_assigns_icons() {
+        // Folders sort before files, then by name.
+        {
+            let project = sample();
+            let tree = ProjectTree::from_project(&project);
+            let labels: Vec<_> = (0..tree.child_count(tree.root_id()))
+                .filter_map(|index| tree.child_id(tree.root_id(), index))
+                .filter_map(|id| tree.label(id))
+                .collect();
+            assert_eq!(labels, ["assets", "src", "README.md"]);
+        }
 
-    #[test]
-    fn the_root_is_hidden_and_expansion_comes_from_the_project() {
-        let mut project = sample();
-        let src = project
-            .nodes
-            .values()
-            .find(|node| node.name == "src")
-            .map(|node| node.id)
-            .unwrap();
-        project.toggle_folder(src);
-        let events = ExplorerEvents::default();
-        let view = explorer(&project, &events);
-        let rows: Vec<_> = view
-            .visible_rows()
-            .into_iter()
-            .map(|(_, label, depth)| (label.to_owned(), depth))
-            .collect();
-        assert_eq!(
-            rows,
-            [
-                ("assets".to_owned(), 0),
-                ("src".to_owned(), 0),
-                ("main.rs".to_owned(), 1),
-                ("README.md".to_owned(), 0),
-            ]
-        );
-    }
-
-    #[test]
-    fn file_rows_get_their_type_icon() {
-        let project = sample();
-        let tree = ProjectTree::from_project(&project);
-        let find = |name: &str| {
-            project
+        // The root is hidden and expansion comes from the project.
+        {
+            let mut project = sample();
+            let src = project
                 .nodes
                 .values()
-                .find(|node| node.name == name)
-                .map(|node| node_key(node.id))
-                .unwrap()
-        };
-        assert_eq!(tree.icon(find("README.md"), false), Icon::FileText);
-        assert_eq!(tree.icon(find("src"), false), Icon::Folder);
-        assert_eq!(tree.icon(find("src"), true), Icon::FolderOpen);
+                .find(|node| node.name == "src")
+                .map(|node| node.id)
+                .unwrap();
+            project.toggle_folder(src);
+            let events = ExplorerEvents::default();
+            let view = explorer(&project, &events);
+            let rows: Vec<_> = view
+                .visible_rows()
+                .into_iter()
+                .map(|(_, label, depth)| (label.to_owned(), depth))
+                .collect();
+            assert_eq!(
+                rows,
+                [
+                    ("assets".to_owned(), 0),
+                    ("src".to_owned(), 0),
+                    ("main.rs".to_owned(), 1),
+                    ("README.md".to_owned(), 0),
+                ]
+            );
+        }
+
+        // File rows get their type icon.
+        {
+            let project = sample();
+            let tree = ProjectTree::from_project(&project);
+            let find = |name: &str| {
+                project
+                    .nodes
+                    .values()
+                    .find(|node| node.name == name)
+                    .map(|node| node_key(node.id))
+                    .unwrap()
+            };
+            assert_eq!(tree.icon(find("README.md"), false), Icon::FileText);
+            assert_eq!(tree.icon(find("src"), false), Icon::Folder);
+            assert_eq!(tree.icon(find("src"), true), Icon::FolderOpen);
+        }
     }
 }

@@ -220,28 +220,32 @@ fn label(
 mod tests {
     use super::*;
 
+    /// A hidden bubble has no navigation target; visible chevrons emit the matching navigation action.
     #[test]
-    fn hidden_bubble_has_no_navigation_target() {
-        let bubble = ReaderBubble::default();
-        assert_eq!(bubble.hit_test(Point::ZERO), None);
-        assert_eq!(bubble.action_center(ReaderBubbleAction::NextPage), None);
-    }
+    fn reader_bubble_navigation_targets_follow_visibility() {
+        // --- phase: hidden_bubble_has_no_navigation_target ---
+        {
+            let bubble = ReaderBubble::default();
+            assert_eq!(bubble.hit_test(Point::ZERO), None);
+            assert_eq!(bubble.action_center(ReaderBubbleAction::NextPage), None);
+        }
 
-    #[test]
-    fn visible_chevrons_emit_the_matching_navigation_action() {
-        let bubble = ReaderBubble {
-            previous_rect: Rect::new(10.0, 10.0, 30.0, 30.0),
-            next_rect: Rect::new(50.0, 10.0, 70.0, 30.0),
-            ..ReaderBubble::default()
-        };
-        assert_eq!(
-            bubble.hit_test(Point::new(20.0, 20.0)),
-            Some(ReaderBubbleAction::PreviousPage)
-        );
-        assert_eq!(
-            bubble.hit_test(Point::new(60.0, 20.0)),
-            Some(ReaderBubbleAction::NextPage)
-        );
-        assert_eq!(bubble.hit_test(Point::new(40.0, 20.0)), None);
+        // --- phase: visible_chevrons_emit_the_matching_navigation_action ---
+        {
+            let bubble = ReaderBubble {
+                previous_rect: Rect::new(10.0, 10.0, 30.0, 30.0),
+                next_rect: Rect::new(50.0, 10.0, 70.0, 30.0),
+                ..ReaderBubble::default()
+            };
+            assert_eq!(
+                bubble.hit_test(Point::new(20.0, 20.0)),
+                Some(ReaderBubbleAction::PreviousPage)
+            );
+            assert_eq!(
+                bubble.hit_test(Point::new(60.0, 20.0)),
+                Some(ReaderBubbleAction::NextPage)
+            );
+            assert_eq!(bubble.hit_test(Point::new(40.0, 20.0)), None);
+        }
     }
 }

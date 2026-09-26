@@ -381,38 +381,48 @@ mod tests {
     }
 
     #[test]
-    fn published_delete_declares_destructive_confirmation() {
-        let vault = crate::model::sample_vault();
-        let resources = provide_resources(&vault);
-        let delete = resources[0].children[0]
-            .actions
-            .iter()
-            .find(|action| action.id == "delete")
-            .expect("saved connection exports delete");
-        assert_eq!(delete.contract.risk, RiskLevel::Destructive);
-        assert_eq!(delete.contract.confirmation, ConfirmationPolicy::Confirm);
-    }
-
-    #[test]
-    fn setup_resource_carries_exact_profile_id_and_protocol() {
-        let vault = crate::model::sample_vault();
-        let profile = &vault.connections[0];
-        let resources = provide_resources(&vault);
-        let resource = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == format!("vpn.connection:{}", profile.id))
-            .expect("profile resource");
-        let action = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "provision-local")
-            .expect("exact setup action");
-        let encoded = spec_encoding(action, None);
-        assert_eq!(encoded.type_id, VPN_PROVISION_TYPE);
-        let (id, kind): (String, String) = serde_json::from_slice(&encoded.payload).unwrap();
-        assert_eq!(id, profile.id.to_string());
-        assert_eq!(kind, profile.kind.as_str());
+    fn vpn_profile_effects_declare_exact_privileged_contracts() {
+        // Case `published_delete_declares_destructive_confirmation`.
+        {
+            let vault = crate::model::sample_vault();
+            let resources = provide_resources(&vault);
+            let delete = resources[0].children[0]
+                .actions
+                .iter()
+                .find(|action| action.id == "delete")
+                .expect("saved connection exports delete");
+            assert_eq!(delete.contract.risk, RiskLevel::Destructive);
+            assert_eq!(delete.contract.confirmation, ConfirmationPolicy::Confirm);
+        }
+        // Case `setup_resource_carries_exact_profile_id_and_protocol`.
+        {
+            let vault = crate::model::sample_vault();
+            let profile = &vault.connections[0];
+            let resources = provide_resources(&vault);
+            let resource = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == format!("vpn.connection:{}", profile.id))
+                .expect("profile resource");
+            let action = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "provision-local")
+                .expect("exact setup action");
+            let encoded = spec_encoding(action, None);
+            assert_eq!(encoded.type_id, VPN_PROVISION_TYPE);
+            let (id, kind): (String, String) = serde_json::from_slice(&encoded.payload).unwrap();
+            assert_eq!(id, profile.id.to_string());
+            assert_eq!(kind, profile.kind.as_str());
+        }
+        // Case `delete_spec_is_the_privileged_profile_effect`:
+        // Profile removal is a privileged OS effect, not a document action.
+        {
+            let (app, doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let (_, delete_spec) = find_spec(&resources, "vpn.connection", "delete");
+            assert_eq!(spec_encoding(delete_spec, None).type_id, VPN_DELETE_TYPE);
+        }
     }
 
     /// The demo (sample-seeded) VPN app synced into a fresh document, plus the
@@ -438,51 +448,105 @@ mod tests {
             .expect("a uuid connection id")
     }
 
-    /// Ctrl+K on the VPN client yields the tree: the vault (add-per-protocol +
-    /// global Tor) and a `vpn.connection` child per saved connection exporting
-    /// rename / toggle-Tor / delete. Drives the real resource hook and the real
-    /// palette.
     #[test]
-    fn ctrl_k_publishes_the_vpn_tree() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one vault root");
-        let root = &resources[0];
-        assert_eq!(root.kind, "vpn.vault");
+    fn vpn_palette_publishes_tree_and_dispatches_actions() {
+        // Case `ctrl_k_publishes_the_vpn_tree`:
+        // Ctrl+K on the VPN client yields the tree: the vault (add-per-protocol +
+        // global Tor) and a `vpn.connection` child per saved connection exporting
+        // rename / toggle-Tor / delete. Drives the real resource hook and the real
+        // palette.
+        {
+            let (app, doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            assert_eq!(resources.len(), 1, "one vault root");
+            let root = &resources[0];
+            assert_eq!(root.kind, "vpn.vault");
 
-        let root_actions: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(
-            root_actions.contains(&"toggle-tor-global"),
-            "{root_actions:?}"
-        );
-        assert!(
-            root_actions.contains(&"import-wireguard"),
-            "{root_actions:?}"
-        );
-        assert!(root_actions.contains(&"import-openvpn"), "{root_actions:?}");
-        assert!(
-            !root.children.is_empty(),
-            "the sample connections are published"
-        );
+            let root_actions: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(
+                root_actions.contains(&"toggle-tor-global"),
+                "{root_actions:?}"
+            );
+            assert!(
+                root_actions.contains(&"import-wireguard"),
+                "{root_actions:?}"
+            );
+            assert!(root_actions.contains(&"import-openvpn"), "{root_actions:?}");
+            assert!(
+                !root.children.is_empty(),
+                "the sample connections are published"
+            );
 
-        let home = root
-            .children
-            .iter()
-            .find(|r| r.label.starts_with("Home"))
-            .expect("a Home connection resource");
-        assert_eq!(home.kind, "vpn.connection");
-        let h_actions: Vec<&str> = home.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(h_actions.contains(&"toggle-tor"), "{h_actions:?}");
-        assert!(h_actions.contains(&"delete"), "{h_actions:?}");
+            let home = root
+                .children
+                .iter()
+                .find(|r| r.label.starts_with("Home"))
+                .expect("a Home connection resource");
+            assert_eq!(home.kind, "vpn.connection");
+            let h_actions: Vec<&str> = home.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(h_actions.contains(&"toggle-tor"), "{h_actions:?}");
+            assert!(h_actions.contains(&"delete"), "{h_actions:?}");
 
-        // The flattened tree exports every action, including the per-connection
-        // operations that sort after the vault-level ones.
-        let flat: Vec<&str> = tilo_actions::flatten(&resources)
-            .iter()
-            .map(|f| f.action.label.as_str())
-            .collect();
-        assert!(flat.contains(&"Delete connection"), "{flat:?}");
-        assert!(flat.contains(&"Import WireGuard profile"), "{flat:?}");
+            // The flattened tree exports every action, including the per-connection
+            // operations that sort after the vault-level ones.
+            let flat: Vec<&str> = tilo_actions::flatten(&resources)
+                .iter()
+                .map(|f| f.action.label.as_str())
+                .collect();
+            assert!(flat.contains(&"Delete connection"), "{flat:?}");
+            assert!(flat.contains(&"Import WireGuard profile"), "{flat:?}");
+        }
+        // Case `out_of_range_action_is_a_no_op`:
+        // A malformed / out-of-range payload is a no-op, not an error: deleting a
+        // connection id that isn't there leaves the document (its heads) untouched.
+        {
+            let (_app, mut doc) = seeded();
+            let before = doc.get_heads();
+            let action = remove_connection_action(Uuid::from_u128(0xDEAD_BEEF));
+            let encoded = encode(&action);
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+            assert_eq!(
+                doc.get_heads(),
+                before,
+                "a delete of an absent connection changed nothing"
+            );
+        }
+        // Case `tor_toggle_button_dispatches_the_palette_action`:
+        // Single source of truth on the *real* affordance path: the on-screen
+        // per-connection Tor toggle (`toggle_conn_tor`) dispatches the byte-identical
+        // action the palette's `toggle-tor` spec exports.
+        {
+            let (mut app, mut doc) = seeded();
+
+            // Read the palette spec for Home's toggle-Tor, capturing the owned
+            // encoded action before we mutate the app.
+            let (id, spec_encoded) = {
+                let resources = Widget::resources(&app, &doc);
+                let root = &resources[0];
+                let id = home_id(root);
+                let home = root
+                    .children
+                    .iter()
+                    .find(|r| r.label.starts_with("Home"))
+                    .unwrap();
+                let spec = home.actions.iter().find(|a| a.id == "toggle-tor").unwrap();
+                (id, spec_encoding(spec, None))
+            };
+
+            // Drive the real on-screen affordance.
+            app.toggle_conn_tor(&mut doc, id);
+
+            let dispatched = app
+                .last_dispatched()
+                .expect("the real toggle dispatched an action");
+            assert_eq!(dispatched.type_id, spec_encoded.type_id);
+            assert_eq!(
+                dispatched.payload, spec_encoded.payload,
+                "the button and the palette are one action"
+            );
+        }
     }
 
     fn first_conn(doc: &AutoCommit) -> Connection {
@@ -542,67 +606,5 @@ mod tests {
                 encode(&set_conn_tor_action(id, !on))
             }),
         ],
-    }
-
-    /// A malformed / out-of-range payload is a no-op, not an error: deleting a
-    /// connection id that isn't there leaves the document (its heads) untouched.
-    #[test]
-    fn out_of_range_action_is_a_no_op() {
-        let (_app, mut doc) = seeded();
-        let before = doc.get_heads();
-        let action = remove_connection_action(Uuid::from_u128(0xDEAD_BEEF));
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        assert_eq!(
-            doc.get_heads(),
-            before,
-            "a delete of an absent connection changed nothing"
-        );
-    }
-
-    /// Profile removal is a privileged OS effect, not a document action.
-    #[test]
-    fn delete_spec_is_the_privileged_profile_effect() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let (_, delete_spec) = find_spec(&resources, "vpn.connection", "delete");
-        assert_eq!(spec_encoding(delete_spec, None).type_id, VPN_DELETE_TYPE);
-    }
-
-    /// Single source of truth on the *real* affordance path: the on-screen
-    /// per-connection Tor toggle (`toggle_conn_tor`) dispatches the byte-identical
-    /// action the palette's `toggle-tor` spec exports.
-    #[test]
-    fn tor_toggle_button_dispatches_the_palette_action() {
-        let (mut app, mut doc) = seeded();
-
-        // Read the palette spec for Home's toggle-Tor, capturing the owned
-        // encoded action before we mutate the app.
-        let (id, spec_encoded) = {
-            let resources = Widget::resources(&app, &doc);
-            let root = &resources[0];
-            let id = home_id(root);
-            let home = root
-                .children
-                .iter()
-                .find(|r| r.label.starts_with("Home"))
-                .unwrap();
-            let spec = home.actions.iter().find(|a| a.id == "toggle-tor").unwrap();
-            (id, spec_encoding(spec, None))
-        };
-
-        // Drive the real on-screen affordance.
-        app.toggle_conn_tor(&mut doc, id);
-
-        let dispatched = app
-            .last_dispatched()
-            .expect("the real toggle dispatched an action");
-        assert_eq!(dispatched.type_id, spec_encoded.type_id);
-        assert_eq!(
-            dispatched.payload, spec_encoded.payload,
-            "the button and the palette are one action"
-        );
     }
 }

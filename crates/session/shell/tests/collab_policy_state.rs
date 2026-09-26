@@ -141,46 +141,123 @@ fn threshold_sign(
 #[allow(
     clippy::similar_names,
     reason = "sk/pk (secret key/public key) is the standard cryptography naming pair; \
-              renaming either away from it would hurt readability, not help it"
+renaming either away from it would hurt readability, not help it"
 )]
 #[allow(
     clippy::significant_drop_tightening,
     reason = "state borrows out of guard and is used through the end of the test, \
-              including the compliance-record recheck after compaction, so the guard \
-              must stay held for the whole function"
+including the compliance-record recheck after compaction, so the guard \
+must stay held for the whole function"
 )]
-fn signed_ops_accept_valid_reject_invalid_and_replay() {
-    let mut f = fixture();
-    let valid = signed_op(
-        &f.editor_sk,
-        f.editor_pk,
-        f.artifact,
-        f.editor_att,
-        OpClass::Splice,
-        b"valid".to_vec(),
-        1,
-    );
-    assert_eq!(validate_inbound_op(&valid, &mut f.state), Ok(()));
-    f.state.record_validated_op(valid.clone());
-    assert!(matches!(
-        validate_inbound_op(&valid, &mut f.state),
-        Err(ValidationError::ReplaySeq { .. })
-    ));
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn signed_and_mls_ops_validate_replay_and_redact_without_decryption() {
+    // Phase `signed_ops_accept_valid_reject_invalid_and_replay`.
+    {
+        let mut f = fixture();
+        let valid = signed_op(
+            &f.editor_sk,
+            f.editor_pk,
+            f.artifact,
+            f.editor_att,
+            OpClass::Splice,
+            b"valid".to_vec(),
+            1,
+        );
+        assert_eq!(validate_inbound_op(&valid, &mut f.state), Ok(()));
+        f.state.record_validated_op(valid.clone());
+        assert!(matches!(
+            validate_inbound_op(&valid, &mut f.state),
+            Err(ValidationError::ReplaySeq { .. })
+        ));
 
-    let (outsider_sk, outsider_pk) = generate_keypair();
-    let invalid = signed_op(
-        &outsider_sk,
-        outsider_pk,
-        f.artifact,
-        AttestationId::new(),
-        OpClass::Splice,
-        b"forged".to_vec(),
-        1,
-    );
-    assert!(matches!(
-        validate_inbound_op(&invalid, &mut f.state),
-        Err(ValidationError::UnknownAttestation(_))
-    ));
+        let (outsider_sk, outsider_pk) = generate_keypair();
+        let invalid = signed_op(
+            &outsider_sk,
+            outsider_pk,
+            f.artifact,
+            AttestationId::new(),
+            OpClass::Splice,
+            b"forged".to_vec(),
+            1,
+        );
+        assert!(matches!(
+            validate_inbound_op(&invalid, &mut f.state),
+            Err(ValidationError::UnknownAttestation(_))
+        ));
+    }
+
+    // Phase `threshold_mls_validation_and_compaction_compose`.
+    {
+        let (owner_sk, owner_pk) = generate_keypair();
+        let (threshold_a, threshold_b) = threshold_pair();
+        let threshold_pk = *threshold_a.group_public_key();
+        let channel = ChannelId::new();
+        let artifact = ArtifactId::new();
+        let editor = role_attestation(&owner_sk, owner_pk, threshold_pk, channel, Role::Editor);
+        let owner = role_attestation(&owner_sk, owner_pk, owner_pk, channel, Role::Owner);
+        let editor_att = editor.attestation.id;
+        let mut state = ChannelState::default();
+        state.authorised_signers.push(owner_pk);
+        state.artifacts.insert(artifact, ArtifactKind::Note);
+        state.register_attestation(editor);
+        state.register_attestation(owner);
+        let alice_key = MemberKey::generate("alice").unwrap();
+        let bob_key = MemberKey::generate("bob").unwrap();
+        let bob_package = bob_key.fresh_key_package().unwrap();
+        let mut alice = ChannelGroup::create(channel, alice_key).unwrap();
+        let welcome = alice.add_member(bob_package).unwrap();
+        let mut bob = ChannelGroup::process_welcome(channel, &welcome, bob_key).unwrap();
+
+        let ciphertext = alice.encrypt(b"composed edit").unwrap();
+        let mut op = SignedOp::new_unsigned_with_encryption(
+            ciphertext,
+            artifact,
+            threshold_pk,
+            editor_att,
+            OpClass::Splice,
+            SystemTime::now(),
+            1,
+            EncryptionMetadata::mls_application(alice.epoch(), channel),
+        );
+        op.signature = threshold_sign(&threshold_a, &threshold_b, &op.signing_bytes().unwrap());
+        validate_inbound_op(&op, &mut state).unwrap();
+        assert_eq!(bob.decrypt(&op.payload).unwrap(), b"composed edit");
+        state.record_validated_op(op.clone());
+
+        let checkpoint = CompactionCheckpoint {
+            artifact,
+            up_to_seq: 1,
+            prefix_hash: hash_op_prefix(&[op]).unwrap(),
+        };
+        assert_eq!(state.apply_compaction(&checkpoint).unwrap(), 1);
+        assert!(state.scrollback_for(artifact, 2, 10).1);
+    }
+
+    // Phase `mls_ciphertext_can_be_redacted_without_decryption`.
+    {
+        let mut f = fixture();
+        let target = signed_op_encrypted(
+            &f.editor_sk,
+            f.editor_pk,
+            f.artifact,
+            f.editor_att,
+            OpClass::Splice,
+            b"opaque MLS ciphertext".to_vec(),
+            1,
+            EncryptionMetadata::mls_application(7, ChannelId::new()),
+        );
+        validate_inbound_op(&target, &mut f.state).unwrap();
+        f.state.record_validated_op(target.clone());
+        let op = redact(&f, &target, Role::Owner, 1);
+        validate_inbound_op(&op, &mut f.state).unwrap();
+        f.state
+            .apply_redaction(&collab_types::parse_redact_payload(&op).unwrap())
+            .unwrap();
+        assert!(f.state.is_redacted(OpId::from_op(&target)));
+    }
 }
 
 #[test]
@@ -212,248 +289,180 @@ fn participant_names_use_room_then_handle_then_local_id_without_raw_peer_ids() {
 #[allow(
     clippy::significant_drop_tightening,
     reason = "guard borrows out `state` and `records`, used through the compliance-record \
-              recheck after compaction at the end of the test, so the guard must stay held \
-              for the whole function"
+recheck after compaction at the end of the test, so the guard must stay held \
+for the whole function"
 )]
-fn redaction_authorization_markers_filtering_and_persistence_are_one_policy() {
-    let mut f = fixture();
-    let target = signed_op(
-        &f.editor_sk,
-        f.editor_pk,
-        f.artifact,
-        f.editor_att,
-        OpClass::Splice,
-        b"secret".to_vec(),
-        1,
-    );
-    validate_inbound_op(&target, &mut f.state).unwrap();
-    f.state.record_validated_op(target.clone());
-
-    let denied = redact(&f, &target, Role::Editor, 2);
-    assert!(matches!(
-        validate_inbound_op(&denied, &mut f.state),
-        Err(ValidationError::RoleForbidsOpClass)
-    ));
-
-    let accepted = redact(&f, &target, Role::Owner, 10);
-    validate_inbound_op(&accepted, &mut f.state).unwrap();
-    f.state.record_validated_op(accepted.clone());
-    let recursive = redact(&f, &accepted, Role::Owner, 11);
-    let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-    channels
-        .lock()
-        .unwrap()
-        .register_channel_state(f.artifact, f.state);
-    apply_redaction_from_envelope(&accepted, f.artifact, &channels);
-
-    let mut guard = channels.lock().unwrap();
-    let records = guard.redactions.for_artifact(f.artifact);
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].reason, "retention policy");
-    assert_eq!(records[0].redactor_pk, f.owner_pk);
-    let state = guard.state_for(f.artifact);
-    let (visible, _) = state.scrollback_for(f.artifact, u64::MAX, 20);
-    let rewritten = visible.iter().find(|op| op.seq == 1).unwrap().clone();
-    assert_eq!(
-        postcard::from_bytes::<RedactedMarker>(&rewritten.payload).unwrap(),
-        RedactedMarker::v1()
-    );
-
-    // Recursive redaction is forbidden, and an original arriving only after
-    // its redaction is remembered is suppressed by the same state.
-    assert!(matches!(
-        validate_inbound_op(&recursive, state),
-        Err(ValidationError::RecursiveRedaction { .. })
-    ));
-
-    let checkpoint = CompactionCheckpoint {
-        artifact: f.artifact,
-        up_to_seq: 1,
-        prefix_hash: hash_op_prefix(&[rewritten]).unwrap(),
-    };
-    state.apply_compaction(&checkpoint).unwrap();
-    assert_eq!(
-        guard.redactions.for_artifact(f.artifact).len(),
-        1,
-        "the compliance record must outlive op-log compaction"
-    );
-}
-
-#[test]
-fn a_redaction_received_before_its_target_suppresses_the_late_op() {
-    let mut f = fixture();
-    let late = signed_op(
-        &f.editor_sk,
-        f.editor_pk,
-        f.artifact,
-        f.editor_att,
-        OpClass::Splice,
-        b"arrives later".to_vec(),
-        100,
-    );
-    let redaction = redact(&f, &late, Role::Owner, 1);
-    validate_inbound_op(&redaction, &mut f.state).unwrap();
-    f.state.record_validated_op(redaction.clone());
-    f.state
-        .apply_redaction(&collab_types::parse_redact_payload(&redaction).unwrap())
-        .unwrap();
-    assert!(matches!(
-        validate_inbound_op(&late, &mut f.state),
-        Err(ValidationError::OpAlreadyRedacted { .. })
-    ));
-}
-
-#[test]
-fn mls_ciphertext_can_be_redacted_without_decryption() {
-    let mut f = fixture();
-    let target = signed_op_encrypted(
-        &f.editor_sk,
-        f.editor_pk,
-        f.artifact,
-        f.editor_att,
-        OpClass::Splice,
-        b"opaque MLS ciphertext".to_vec(),
-        1,
-        EncryptionMetadata::mls_application(7, ChannelId::new()),
-    );
-    validate_inbound_op(&target, &mut f.state).unwrap();
-    f.state.record_validated_op(target.clone());
-    let op = redact(&f, &target, Role::Owner, 1);
-    validate_inbound_op(&op, &mut f.state).unwrap();
-    f.state
-        .apply_redaction(&collab_types::parse_redact_payload(&op).unwrap())
-        .unwrap();
-    assert!(f.state.is_redacted(OpId::from_op(&target)));
-}
-
-#[test]
-fn scrollback_recent_empty_paging_compaction_and_authorization_compose() {
-    let mut f = fixture();
-    let mut ops = Vec::new();
-    for seq in 1..=5 {
-        let op = signed_op(
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn redaction_scrollback_and_compaction_compose_under_one_policy() {
+    // Phase `redaction_authorization_markers_filtering_and_persistence_are_one_policy`.
+    {
+        let mut f = fixture();
+        let target = signed_op(
             &f.editor_sk,
             f.editor_pk,
             f.artifact,
             f.editor_att,
             OpClass::Splice,
-            format!("op-{seq}").into_bytes(),
-            seq,
+            b"secret".to_vec(),
+            1,
         );
-        validate_inbound_op(&op, &mut f.state).unwrap();
-        f.state.record_validated_op(op.clone());
-        ops.push(op);
+        validate_inbound_op(&target, &mut f.state).unwrap();
+        f.state.record_validated_op(target.clone());
+
+        let denied = redact(&f, &target, Role::Editor, 2);
+        assert!(matches!(
+            validate_inbound_op(&denied, &mut f.state),
+            Err(ValidationError::RoleForbidsOpClass)
+        ));
+
+        let accepted = redact(&f, &target, Role::Owner, 10);
+        validate_inbound_op(&accepted, &mut f.state).unwrap();
+        f.state.record_validated_op(accepted.clone());
+        let recursive = redact(&f, &accepted, Role::Owner, 11);
+        let channels = Arc::new(Mutex::new(BrokerChannels::default()));
+        channels
+            .lock()
+            .unwrap()
+            .register_channel_state(f.artifact, f.state);
+        apply_redaction_from_envelope(&accepted, f.artifact, &channels);
+
+        let mut guard = channels.lock().unwrap();
+        let records = guard.redactions.for_artifact(f.artifact);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].reason, "retention policy");
+        assert_eq!(records[0].redactor_pk, f.owner_pk);
+        let state = guard.state_for(f.artifact);
+        let (visible, _) = state.scrollback_for(f.artifact, u64::MAX, 20);
+        let rewritten = visible.iter().find(|op| op.seq == 1).unwrap().clone();
+        assert_eq!(
+            postcard::from_bytes::<RedactedMarker>(&rewritten.payload).unwrap(),
+            RedactedMarker::v1()
+        );
+
+        // Recursive redaction is forbidden, and an original arriving only after
+        // its redaction is remembered is suppressed by the same state.
+        assert!(matches!(
+            validate_inbound_op(&recursive, state),
+            Err(ValidationError::RecursiveRedaction { .. })
+        ));
+
+        let checkpoint = CompactionCheckpoint {
+            artifact: f.artifact,
+            up_to_seq: 1,
+            prefix_hash: hash_op_prefix(&[rewritten]).unwrap(),
+        };
+        state.apply_compaction(&checkpoint).unwrap();
+        assert_eq!(
+            guard.redactions.for_artifact(f.artifact).len(),
+            1,
+            "the compliance record must outlive op-log compaction"
+        );
     }
-    let (recent, exhausted) = f.state.scrollback_for(f.artifact, u64::MAX, 2);
-    assert_eq!(recent.iter().map(|o| o.seq).collect::<Vec<_>>(), [4, 5]);
-    assert!(!exhausted);
-    let (first_page, exhausted) = f.state.scrollback_for(f.artifact, 4, 10);
-    assert_eq!(
-        first_page.iter().map(|o| o.seq).collect::<Vec<_>>(),
-        [1, 2, 3]
-    );
-    assert!(exhausted);
-    assert_eq!(
-        f.state.scrollback_for(ArtifactId::new(), u64::MAX, 10),
-        (vec![], true)
-    );
 
-    let checkpoint = CompactionCheckpoint {
-        artifact: f.artifact,
-        up_to_seq: 3,
-        prefix_hash: hash_op_prefix(&ops[..3]).unwrap(),
-    };
-    let payload = encode_compaction_payload(&checkpoint).unwrap();
-    let editor_compaction = signed_op(
-        &f.editor_sk,
-        f.editor_pk,
-        f.artifact,
-        f.editor_att,
-        OpClass::Compaction,
-        payload.clone(),
-        10,
-    );
-    assert!(matches!(
-        validate_inbound_op(&editor_compaction, &mut f.state),
-        Err(ValidationError::RoleForbidsOpClass)
-    ));
-    let owner_compaction = signed_op(
-        &f.owner_sk,
-        f.owner_pk,
-        f.artifact,
-        f.owner_att,
-        OpClass::Compaction,
-        payload,
-        100,
-    );
-    validate_inbound_op(&owner_compaction, &mut f.state).unwrap();
-    f.state.record_validated_op(owner_compaction.clone());
-    assert_eq!(
+    // Phase `a_redaction_received_before_its_target_suppresses_the_late_op`.
+    {
+        let mut f = fixture();
+        let late = signed_op(
+            &f.editor_sk,
+            f.editor_pk,
+            f.artifact,
+            f.editor_att,
+            OpClass::Splice,
+            b"arrives later".to_vec(),
+            100,
+        );
+        let redaction = redact(&f, &late, Role::Owner, 1);
+        validate_inbound_op(&redaction, &mut f.state).unwrap();
+        f.state.record_validated_op(redaction.clone());
         f.state
-            .apply_compaction(&parse_compaction_payload(&owner_compaction).unwrap())
-            .unwrap(),
-        3
-    );
-    assert_eq!(f.state.scrollback_for(f.artifact, 4, 10), (vec![], true));
-    assert_eq!(
-        f.state
-            .scrollback_for(f.artifact, u64::MAX, 10)
-            .0
-            .iter()
-            .map(|o| o.seq)
-            .collect::<Vec<_>>(),
-        [4, 5, 100]
-    );
-}
+            .apply_redaction(&collab_types::parse_redact_payload(&redaction).unwrap())
+            .unwrap();
+        assert!(matches!(
+            validate_inbound_op(&late, &mut f.state),
+            Err(ValidationError::OpAlreadyRedacted { .. })
+        ));
+    }
 
-#[test]
-#[allow(
-    clippy::similar_names,
-    reason = "sk/pk (secret key/public key) is the standard cryptography naming pair; \
-              renaming either away from it would hurt readability, not help it"
-)]
-fn threshold_mls_validation_and_compaction_compose() {
-    let (owner_sk, owner_pk) = generate_keypair();
-    let (threshold_a, threshold_b) = threshold_pair();
-    let threshold_pk = *threshold_a.group_public_key();
-    let channel = ChannelId::new();
-    let artifact = ArtifactId::new();
-    let editor = role_attestation(&owner_sk, owner_pk, threshold_pk, channel, Role::Editor);
-    let owner = role_attestation(&owner_sk, owner_pk, owner_pk, channel, Role::Owner);
-    let editor_att = editor.attestation.id;
-    let mut state = ChannelState::default();
-    state.authorised_signers.push(owner_pk);
-    state.artifacts.insert(artifact, ArtifactKind::Note);
-    state.register_attestation(editor);
-    state.register_attestation(owner);
-    let alice_key = MemberKey::generate("alice").unwrap();
-    let bob_key = MemberKey::generate("bob").unwrap();
-    let bob_package = bob_key.fresh_key_package().unwrap();
-    let mut alice = ChannelGroup::create(channel, alice_key).unwrap();
-    let welcome = alice.add_member(bob_package).unwrap();
-    let mut bob = ChannelGroup::process_welcome(channel, &welcome, bob_key).unwrap();
+    // Phase `scrollback_recent_empty_paging_compaction_and_authorization_compose`.
+    {
+        let mut f = fixture();
+        let mut ops = Vec::new();
+        for seq in 1..=5 {
+            let op = signed_op(
+                &f.editor_sk,
+                f.editor_pk,
+                f.artifact,
+                f.editor_att,
+                OpClass::Splice,
+                format!("op-{seq}").into_bytes(),
+                seq,
+            );
+            validate_inbound_op(&op, &mut f.state).unwrap();
+            f.state.record_validated_op(op.clone());
+            ops.push(op);
+        }
+        let (recent, exhausted) = f.state.scrollback_for(f.artifact, u64::MAX, 2);
+        assert_eq!(recent.iter().map(|o| o.seq).collect::<Vec<_>>(), [4, 5]);
+        assert!(!exhausted);
+        let (first_page, exhausted) = f.state.scrollback_for(f.artifact, 4, 10);
+        assert_eq!(
+            first_page.iter().map(|o| o.seq).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert!(exhausted);
+        assert_eq!(
+            f.state.scrollback_for(ArtifactId::new(), u64::MAX, 10),
+            (vec![], true)
+        );
 
-    let ciphertext = alice.encrypt(b"composed edit").unwrap();
-    let mut op = SignedOp::new_unsigned_with_encryption(
-        ciphertext,
-        artifact,
-        threshold_pk,
-        editor_att,
-        OpClass::Splice,
-        SystemTime::now(),
-        1,
-        EncryptionMetadata::mls_application(alice.epoch(), channel),
-    );
-    op.signature = threshold_sign(&threshold_a, &threshold_b, &op.signing_bytes().unwrap());
-    validate_inbound_op(&op, &mut state).unwrap();
-    assert_eq!(bob.decrypt(&op.payload).unwrap(), b"composed edit");
-    state.record_validated_op(op.clone());
-
-    let checkpoint = CompactionCheckpoint {
-        artifact,
-        up_to_seq: 1,
-        prefix_hash: hash_op_prefix(&[op]).unwrap(),
-    };
-    assert_eq!(state.apply_compaction(&checkpoint).unwrap(), 1);
-    assert!(state.scrollback_for(artifact, 2, 10).1);
+        let checkpoint = CompactionCheckpoint {
+            artifact: f.artifact,
+            up_to_seq: 3,
+            prefix_hash: hash_op_prefix(&ops[..3]).unwrap(),
+        };
+        let payload = encode_compaction_payload(&checkpoint).unwrap();
+        let editor_compaction = signed_op(
+            &f.editor_sk,
+            f.editor_pk,
+            f.artifact,
+            f.editor_att,
+            OpClass::Compaction,
+            payload.clone(),
+            10,
+        );
+        assert!(matches!(
+            validate_inbound_op(&editor_compaction, &mut f.state),
+            Err(ValidationError::RoleForbidsOpClass)
+        ));
+        let owner_compaction = signed_op(
+            &f.owner_sk,
+            f.owner_pk,
+            f.artifact,
+            f.owner_att,
+            OpClass::Compaction,
+            payload,
+            100,
+        );
+        validate_inbound_op(&owner_compaction, &mut f.state).unwrap();
+        f.state.record_validated_op(owner_compaction.clone());
+        assert_eq!(
+            f.state
+                .apply_compaction(&parse_compaction_payload(&owner_compaction).unwrap())
+                .unwrap(),
+            3
+        );
+        assert_eq!(f.state.scrollback_for(f.artifact, 4, 10), (vec![], true));
+        assert_eq!(
+            f.state
+                .scrollback_for(f.artifact, u64::MAX, 10)
+                .0
+                .iter()
+                .map(|o| o.seq)
+                .collect::<Vec<_>>(),
+            [4, 5, 100]
+        );
+    }
 }

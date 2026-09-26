@@ -202,168 +202,169 @@ mod tests {
     }
 
     #[test]
-    fn empty_registry_returns_nothing() {
-        let reg = SearchRegistry::new();
-        assert!(reg.query("anything").is_empty());
-        assert_eq!(reg.provider_count(), 0);
-    }
-
-    #[test]
-    fn merges_results_from_multiple_providers() {
-        let mut reg = SearchRegistry::new();
-        reg.register_fn("Contacts", |_q| vec![r("Contacts", "Alice", "c:1")]);
-        reg.register_fn("Files", |_q| vec![r("Files", "alice.txt", "f:1")]);
-        assert_eq!(reg.provider_count(), 2);
-        let out = reg.query("alice");
-        assert_eq!(out.len(), 2, "both providers contribute");
-        let titles: Vec<&str> = out.iter().map(|r| r.title.as_str()).collect();
-        assert!(titles.contains(&"Alice"));
-        assert!(titles.contains(&"alice.txt"));
-    }
-
-    #[test]
-    fn ranks_stronger_title_match_first_across_providers() {
-        let mut reg = SearchRegistry::new();
-        // A weak match from the first-registered provider, an exact-prefix match from the second.
-        reg.register_fn("Files", |_q| vec![r("Files", "critical-log.txt", "f:1")]);
-        reg.register_fn("Apps", |_q| vec![r("Apps", "Calculator", "a:1")]);
-        let out = reg.query("cal");
-        assert_eq!(
-            out[0].title, "Calculator",
-            "prefix match outranks scattered, across providers"
-        );
-    }
-
-    #[test]
-    fn provider_bias_floats_pinned_results() {
-        let mut reg = SearchRegistry::new();
-        reg.register_fn("Contacts", |_q| {
-            vec![
-                r("Contacts", "Zed Zimmer", "c:z").with_score(10), // pinned/favourite
-                r("Contacts", "Zed Zephyr", "c:y"),                // same query strength
-            ]
-        });
-        let out = reg.query("zed");
-        assert_eq!(out[0].action_id, "c:z", "the biased result leads");
-    }
-
-    #[test]
-    fn exact_title_beats_provider_bias_and_subtitle_only_matches() {
-        let mut reg = SearchRegistry::new();
-        reg.register_fn("Files", |_q| {
-            vec![
-                r("Files", "Draft", "f:1")
-                    .with_subtitle("Quarterly calculator notes")
-                    .with_score(20),
-                r("Apps", "Calculator", "a:1"),
-            ]
-        });
-        assert_eq!(reg.query("calculator")[0].title, "Calculator");
-    }
-
-    #[test]
-    fn canonical_action_aliases_collapse_across_providers() {
-        let address = tilo_actions::ActionAddress::new("notes.note:1", "open");
-        let mut reg = SearchRegistry::new();
-        let first = SearchResult::for_action("Notes", "Launch brief", &address);
-        let second = SearchResult::for_action("Recent", "Launch brief", &address);
-        reg.register_fn("Notes", move |_q| vec![first.clone()]);
-        reg.register_fn("Recent", move |_q| vec![second.clone()]);
-        let results = reg.query("launch");
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].action_address(), Some(address));
-    }
-
-    #[test]
-    fn limited_query_pushes_a_materialisation_budget_into_each_provider() {
-        use std::cell::Cell;
-        use std::rc::Rc;
-
-        struct Bounded {
-            observed: Rc<Cell<usize>>,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn the_registry_merges_ranks_and_budgets_provider_results() {
+        // phase: empty_registry_returns_nothing
+        {
+            let reg = SearchRegistry::new();
+            assert!(reg.query("anything").is_empty());
+            assert_eq!(reg.provider_count(), 0);
         }
-        impl SearchProvider for Bounded {
-            fn name(&self) -> &'static str {
-                "Bounded"
+        // phase: merges_results_from_multiple_providers
+        {
+            let mut reg = SearchRegistry::new();
+            reg.register_fn("Contacts", |_q| vec![r("Contacts", "Alice", "c:1")]);
+            reg.register_fn("Files", |_q| vec![r("Files", "alice.txt", "f:1")]);
+            assert_eq!(reg.provider_count(), 2);
+            let out = reg.query("alice");
+            assert_eq!(out.len(), 2, "both providers contribute");
+            let titles: Vec<&str> = out.iter().map(|r| r.title.as_str()).collect();
+            assert!(titles.contains(&"Alice"));
+            assert!(titles.contains(&"alice.txt"));
+        }
+        // phase: ranks_stronger_title_match_first_across_providers
+        {
+            let mut reg = SearchRegistry::new();
+            // A weak match from the first-registered provider, an exact-prefix match from the second.
+            reg.register_fn("Files", |_q| vec![r("Files", "critical-log.txt", "f:1")]);
+            reg.register_fn("Apps", |_q| vec![r("Apps", "Calculator", "a:1")]);
+            let out = reg.query("cal");
+            assert_eq!(
+                out[0].title, "Calculator",
+                "prefix match outranks scattered, across providers"
+            );
+        }
+        // phase: provider_bias_floats_pinned_results
+        {
+            let mut reg = SearchRegistry::new();
+            reg.register_fn("Contacts", |_q| {
+                vec![
+                    r("Contacts", "Zed Zimmer", "c:z").with_score(10), // pinned/favourite
+                    r("Contacts", "Zed Zephyr", "c:y"),                // same query strength
+                ]
+            });
+            let out = reg.query("zed");
+            assert_eq!(out[0].action_id, "c:z", "the biased result leads");
+        }
+        // phase: exact_title_beats_provider_bias_and_subtitle_only_matches
+        {
+            let mut reg = SearchRegistry::new();
+            reg.register_fn("Files", |_q| {
+                vec![
+                    r("Files", "Draft", "f:1")
+                        .with_subtitle("Quarterly calculator notes")
+                        .with_score(20),
+                    r("Apps", "Calculator", "a:1"),
+                ]
+            });
+            assert_eq!(reg.query("calculator")[0].title, "Calculator");
+        }
+        // phase: canonical_action_aliases_collapse_across_providers
+        {
+            let address = tilo_actions::ActionAddress::new("notes.note:1", "open");
+            let mut reg = SearchRegistry::new();
+            let first = SearchResult::for_action("Notes", "Launch brief", &address);
+            let second = SearchResult::for_action("Recent", "Launch brief", &address);
+            reg.register_fn("Notes", move |_q| vec![first.clone()]);
+            reg.register_fn("Recent", move |_q| vec![second.clone()]);
+            let results = reg.query("launch");
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].action_address(), Some(address));
+        }
+        // phase: limited_query_pushes_a_materialisation_budget_into_each_provider
+        {
+            use std::cell::Cell;
+            use std::rc::Rc;
+
+            struct Bounded {
+                observed: Rc<Cell<usize>>,
             }
-            fn search(&self, _query: &str) -> Vec<SearchResult> {
-                panic!("interactive bounded merge must not call unbounded search")
+            impl SearchProvider for Bounded {
+                fn name(&self) -> &'static str {
+                    "Bounded"
+                }
+                fn search(&self, _query: &str) -> Vec<SearchResult> {
+                    panic!("interactive bounded merge must not call unbounded search")
+                }
+                fn search_limited(&self, _query: &str, limit: usize) -> Vec<SearchResult> {
+                    self.observed.set(limit);
+                    (0..limit)
+                        .map(|index| r("Rows", &format!("row {index}"), &format!("row:{index}")))
+                        .collect()
+                }
             }
-            fn search_limited(&self, _query: &str, limit: usize) -> Vec<SearchResult> {
-                self.observed.set(limit);
-                (0..limit)
-                    .map(|index| r("Rows", &format!("row {index}"), &format!("row:{index}")))
+
+            let observed = Rc::new(Cell::new(0));
+            let mut reg = SearchRegistry::new();
+            reg.register(Box::new(Bounded {
+                observed: observed.clone(),
+            }));
+            assert_eq!(reg.query_limited("row", 3).len(), 3);
+            assert_eq!(observed.get(), 12);
+        }
+        // phase: struct_provider_registers_and_queries
+        {
+            struct Fixed;
+            impl SearchProvider for Fixed {
+                fn name(&self) -> &'static str {
+                    "Fixed"
+                }
+                fn search(&self, _q: &str) -> Vec<SearchResult> {
+                    vec![r("Fixed", "one", "1")]
+                }
+            }
+            let mut reg = SearchRegistry::new();
+            reg.register(Box::new(Fixed));
+            assert_eq!(reg.provider_names(), vec!["Fixed"]);
+            assert_eq!(reg.query("o")[0].title, "one");
+        }
+    }
+
+    #[test]
+    fn grouping_orders_groups_by_best_result_and_caps_floods() {
+        // phase: grouping_orders_groups_by_best_result
+        {
+            let mut reg = SearchRegistry::new();
+            // Files only weakly matches ("cal" scattered through the name); Apps
+            // has the strong prefix hit.
+            reg.register_fn("Files", |_q| vec![r("Files", "technical-notes.md", "f:1")]);
+            reg.register_fn("Apps", |_q| vec![r("Apps", "Calculator", "a:1")]);
+            let groups = reg.query_grouped("cal");
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[0].kind, "Apps", "the group with the best hit leads");
+            assert_eq!(groups[1].kind, "Files");
+        }
+        // phase: grouping_keeps_ranked_order_within_a_group
+        {
+            let mut reg = SearchRegistry::new();
+            reg.register_fn("Apps", |_q| {
+                vec![
+                    r("Apps", "Terminal Calculator", "a:2"), // scattered
+                    r("Apps", "Calculator", "a:1"),          // prefix
+                ]
+            });
+            let groups = reg.query_grouped("cal");
+            assert_eq!(groups.len(), 1);
+            assert_eq!(
+                groups[0].results[0].title, "Calculator",
+                "best-in-group first"
+            );
+            assert_eq!(groups[0].results[1].title, "Terminal Calculator");
+        }
+        // phase: per_group_cap_limits_flood
+        {
+            let mut reg = SearchRegistry::new();
+            reg.register_fn("Files", |_q| {
+                (0..20)
+                    .map(|i| r("Files", &format!("file{i}.txt"), &format!("f:{i}")))
                     .collect()
-            }
+            });
+            let groups = reg.query_grouped_capped("file", 5);
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].results.len(), 5, "group capped to 5");
         }
-
-        let observed = Rc::new(Cell::new(0));
-        let mut reg = SearchRegistry::new();
-        reg.register(Box::new(Bounded {
-            observed: observed.clone(),
-        }));
-        assert_eq!(reg.query_limited("row", 3).len(), 3);
-        assert_eq!(observed.get(), 12);
-    }
-
-    #[test]
-    fn grouping_orders_groups_by_best_result() {
-        let mut reg = SearchRegistry::new();
-        // Files only weakly matches ("cal" scattered through the name); Apps
-        // has the strong prefix hit.
-        reg.register_fn("Files", |_q| vec![r("Files", "technical-notes.md", "f:1")]);
-        reg.register_fn("Apps", |_q| vec![r("Apps", "Calculator", "a:1")]);
-        let groups = reg.query_grouped("cal");
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].kind, "Apps", "the group with the best hit leads");
-        assert_eq!(groups[1].kind, "Files");
-    }
-
-    #[test]
-    fn grouping_keeps_ranked_order_within_a_group() {
-        let mut reg = SearchRegistry::new();
-        reg.register_fn("Apps", |_q| {
-            vec![
-                r("Apps", "Terminal Calculator", "a:2"), // scattered
-                r("Apps", "Calculator", "a:1"),          // prefix
-            ]
-        });
-        let groups = reg.query_grouped("cal");
-        assert_eq!(groups.len(), 1);
-        assert_eq!(
-            groups[0].results[0].title, "Calculator",
-            "best-in-group first"
-        );
-        assert_eq!(groups[0].results[1].title, "Terminal Calculator");
-    }
-
-    #[test]
-    fn per_group_cap_limits_flood() {
-        let mut reg = SearchRegistry::new();
-        reg.register_fn("Files", |_q| {
-            (0..20)
-                .map(|i| r("Files", &format!("file{i}.txt"), &format!("f:{i}")))
-                .collect()
-        });
-        let groups = reg.query_grouped_capped("file", 5);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].results.len(), 5, "group capped to 5");
-    }
-
-    #[test]
-    fn struct_provider_registers_and_queries() {
-        struct Fixed;
-        impl SearchProvider for Fixed {
-            fn name(&self) -> &'static str {
-                "Fixed"
-            }
-            fn search(&self, _q: &str) -> Vec<SearchResult> {
-                vec![r("Fixed", "one", "1")]
-            }
-        }
-        let mut reg = SearchRegistry::new();
-        reg.register(Box::new(Fixed));
-        assert_eq!(reg.provider_names(), vec!["Fixed"]);
-        assert_eq!(reg.query("o")[0].title, "one");
     }
 }

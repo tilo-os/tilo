@@ -232,7 +232,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn column_roundtrip() {
+    fn a1_references_round_trip_and_reject_malformed_input() {
         for (letters, idx) in [
             ("A", 1u32),
             ("Z", 26),
@@ -245,10 +245,6 @@ mod tests {
             assert_eq!(col_to_index(letters), Some(idx), "{letters} → {idx}");
             assert_eq!(index_to_col(idx), letters, "{idx} → {letters}");
         }
-    }
-
-    #[test]
-    fn ref_roundtrip() {
         for (r, col, row) in [
             ("A1", 1u32, 1u32),
             ("B2", 2, 2),
@@ -258,20 +254,18 @@ mod tests {
             assert_eq!(parse_ref(r), Some((col, row)), "{r}");
             assert_eq!(make_ref(col, row), r, "({col},{row})");
         }
-    }
-
-    #[test]
-    fn absolute_markers_ignored() {
+        // Absolute markers are ignored.
         assert_eq!(parse_ref("$B$3"), Some((2, 3)));
-    }
-
-    #[test]
-    fn rejects_malformed_and_out_of_range() {
-        assert_eq!(parse_ref(""), None);
-        assert_eq!(parse_ref("1"), None, "no column letters");
-        assert_eq!(parse_ref("A"), None, "no row digits");
-        assert_eq!(parse_ref("A0"), None, "row must be >= 1");
-        assert_eq!(parse_ref("A2000000"), None, "row over the bound");
+        // Malformed and out-of-range input.
+        for (r, why) in [
+            ("", "empty"),
+            ("1", "no column letters"),
+            ("A", "no row digits"),
+            ("A0", "row must be >= 1"),
+            ("A2000000", "row over the bound"),
+        ] {
+            assert_eq!(parse_ref(r), None, "{why}");
+        }
         assert_eq!(col_to_index("AAAA"), None, "over 3 letters");
         assert_eq!(col_to_index("A1"), None, "non-letter");
     }

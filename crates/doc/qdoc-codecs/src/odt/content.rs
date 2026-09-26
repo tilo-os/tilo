@@ -1514,375 +1514,502 @@ mod tests {
     use qdoc::{AttrVal, Document};
 
     #[test]
-    fn imports_headings_paragraphs_lists() {
-        let body = concat!(
-            r#"<text:h text:outline-level="2">Title</text:h>"#,
-            r#"<text:p>Hello</text:p>"#,
-            r#"<text:list><text:list-item><text:p>one</text:p></text:list-item>"#,
-            r#"<text:list-item><text:p>two</text:p></text:list-item></text:list>"#,
-        );
-        let odt = minimal_odt(body);
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn imports_block_structure_lists_tables_and_fidelity_atoms() {
+        // Phase `imports_headings_paragraphs_lists`.
+        {
+            let body = concat!(
+                r#"<text:h text:outline-level="2">Title</text:h>"#,
+                r#"<text:p>Hello</text:p>"#,
+                r#"<text:list><text:list-item><text:p>one</text:p></text:list-item>"#,
+                r#"<text:list-item><text:p>two</text:p></text:list-item></text:list>"#,
+            );
+            let odt = minimal_odt(body);
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &odt,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
 
-        assert_eq!(snap.blocks[0].kind, "heading");
-        assert_eq!(snap.blocks[0].text, "Title");
-        assert_eq!(snap.blocks[0].attrs.get("level"), Some(&AttrVal::Int(2)));
-        assert_eq!(snap.blocks[1].kind, "paragraph");
-        assert_eq!(snap.blocks[1].text, "Hello");
-        assert_eq!(
-            snap.blocks.iter().filter(|b| b.kind == "list_item").count(),
-            2
-        );
-        assert_eq!(snap.blocks[2].text, "one");
-        assert_eq!(snap.blocks[3].text, "two");
-    }
+            assert_eq!(snap.blocks[0].kind, "heading");
+            assert_eq!(snap.blocks[0].text, "Title");
+            assert_eq!(snap.blocks[0].attrs.get("level"), Some(&AttrVal::Int(2)));
+            assert_eq!(snap.blocks[1].kind, "paragraph");
+            assert_eq!(snap.blocks[1].text, "Hello");
+            assert_eq!(
+                snap.blocks.iter().filter(|b| b.kind == "list_item").count(),
+                2
+            );
+            assert_eq!(snap.blocks[2].text, "one");
+            assert_eq!(snap.blocks[3].text, "two");
+        }
+        // Phase `imports_named_heading_style_whitespace_and_ordered_list`.
+        {
+            let styles = concat!(
+                r#"<style:style style:name="Heading_20_1" style:display-name="Heading 1" style:family="paragraph" style:default-outline-level="1"/>"#,
+                r#"<style:style style:name="MySub" style:family="paragraph" style:parent-style-name="Heading_20_1"/>"#,
+                r#"<text:list-style style:name="L1"><text:list-level-style-number text:level="1"/></text:list-style>"#,
+            );
+            let body = concat!(
+                r#"<text:p text:style-name="Heading_20_1">My Title</text:p>"#,
+                r#"<text:p text:style-name="MySub">A Subtitle</text:p>"#,
+                r#"<text:p>Line one<text:line-break/>line two<text:tab/>after a tab and<text:s text:c="3"/>spaces.</text:p>"#,
+                r#"<text:list text:style-name="L1"><text:list-item><text:p>first</text:p></text:list-item><text:list-item><text:p>second</text:p></text:list-item></text:list>"#,
+            );
+            let odt = minimal_odt_styled(styles, body);
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &odt,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
 
-    #[test]
-    fn imports_spans_as_marks() {
-        let styles = concat!(
-            r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#,
-            r#"<style:style style:name="T2" style:family="text"><style:text-properties fo:font-style="italic"/></style:style>"#,
-        );
-        let body = concat!(
-            r#"<text:p>a <text:span text:style-name="T1">bold</text:span>"#,
-            r#" and <text:span text:style-name="T2">em</text:span></text:p>"#,
-        );
-        let odt = minimal_odt_styled(styles, body);
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-        let p = &snap.blocks[0];
-        assert_eq!(p.text, "a bold and em");
-        assert!(
-            p.marks
+            assert_eq!(
+                snap.blocks[0].kind, "heading",
+                "named paragraph style → heading: {snap:?}"
+            );
+            assert_eq!(snap.blocks[0].text, "My Title");
+            assert_eq!(snap.blocks[0].attrs.get("level"), Some(&AttrVal::Int(1)));
+            assert_eq!(
+                snap.blocks[1].kind, "heading",
+                "heading via inherited parent style"
+            );
+            assert!(
+                snap.blocks[2].text.contains('\n'),
+                "line-break: {:?}",
+                snap.blocks[2].text
+            );
+            assert!(
+                snap.blocks[2].text.contains('\t'),
+                "tab: {:?}",
+                snap.blocks[2].text
+            );
+            assert!(
+                snap.blocks[2].text.contains("and   spaces"),
+                "text:s spaces: {:?}",
+                snap.blocks[2].text
+            );
+            let items: Vec<_> = snap
+                .blocks
                 .iter()
-                .any(|m| m.name == "strong" && m.start == 2 && m.end == 6),
-            "strong over 'bold', got {:?}",
-            p.marks
-        );
-        assert!(
-            p.marks
+                .filter(|b| b.kind == "list_item")
+                .collect();
+            assert_eq!(items.len(), 2);
+            assert_eq!(
+                items[0].attrs.get("ordered"),
+                Some(&AttrVal::Bool(true)),
+                "numbered list-style → ordered"
+            );
+        }
+        // Phase `table_roundtrips_as_editable_cells`.
+        {
+            let body = concat!(
+                r#"<table:table table:name="T1">"#,
+                r#"<table:table-row><table:table-cell><text:p>a</text:p></table:table-cell>"#,
+                r#"<table:table-cell><text:p>b</text:p></table:table-cell></table:table-row>"#,
+                r#"<table:table-row><table:table-cell><text:p>c</text:p></table:table-cell>"#,
+                r#"<table:table-cell><text:p>d</text:p></table:table-cell></table:table-row>"#,
+                r#"</table:table>"#,
+            );
+            let odt = minimal_odt_styled("", body);
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &odt,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
+            let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
+            assert_eq!(cells.len(), 4, "2x2 cells: {snap:?}");
+            assert_eq!(
+                cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+                vec!["a", "b", "c", "d"]
+            );
+            assert_eq!(
+                cells[0].attrs.get("table"),
+                Some(&AttrVal::Str("T1".into()))
+            );
+            assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
+            assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
+
+            let exported = OdtCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap();
+            let mut d2 = Document::new();
+            OdtCodec
+                .import(
+                    &exported,
+                    &mut d2.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let cells2: Vec<_> = d2
+                .materialize()
+                .blocks
                 .iter()
-                .any(|m| m.name == "em" && m.start == 11 && m.end == 13),
-            "em over 'em', got {:?}",
-            p.marks
-        );
-    }
+                .filter(|b| b.kind == "cell")
+                .map(|b| b.text.clone())
+                .collect();
+            assert_eq!(
+                cells2,
+                vec!["a", "b", "c", "d"],
+                "table survives export+import"
+            );
+        }
+        // Phase `cell_alignment_roundtrips`.
+        {
+            // A centred table cell: alignment lives on the inner paragraph in ODF.
+            let styles = r#"<style:style style:name="Pc" style:family="paragraph"><style:paragraph-properties fo:text-align="center"/></style:style>"#;
+            let body = concat!(
+                r#"<table:table table:name="T1"><table:table-row>"#,
+                r#"<table:table-cell><text:p text:style-name="Pc">mid</text:p></table:table-cell>"#,
+                r#"<table:table-cell><text:p>plain</text:p></table:table-cell>"#,
+                r#"</table:table-row></table:table>"#,
+            );
+            let odt = minimal_odt_styled(styles, body);
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &odt,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let cells: Vec<_> = d
+                .materialize()
+                .blocks
+                .into_iter()
+                .filter(|b| b.kind == "cell")
+                .collect();
+            assert_eq!(cells.len(), 2);
+            assert_eq!(
+                cells[0].attrs.get("align"),
+                Some(&AttrVal::Str("center".into())),
+                "centred cell: {:?}",
+                cells[0].attrs
+            );
+            assert_eq!(cells[1].attrs.get("align"), None, "plain cell has no align");
 
-    #[test]
-    fn imports_paragraph_align_and_inline_font() {
-        use qdoc::document::MarkValue;
-        let styles = concat!(
-            r#"<style:style style:name="P2" style:family="paragraph"><style:paragraph-properties fo:text-align="center"/></style:style>"#,
-            r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-size="20pt" style:font-name="Liberation Serif"/></style:style>"#,
-        );
-        let body = r#"<text:p text:style-name="P2"><text:span text:style-name="T1">big</text:span></text:p>"#;
-        let odt = minimal_odt_styled(styles, body);
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let b = &d.materialize().blocks[0];
-        assert_eq!(b.text, "big");
-        assert_eq!(
-            b.attrs.get("align"),
-            Some(&AttrVal::Str("center".into())),
-            "{:?}",
-            b.attrs
-        );
-        assert!(
-            b.marks
+            let exported = OdtCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap();
+            let mut d2 = Document::new();
+            OdtCodec
+                .import(
+                    &exported,
+                    &mut d2.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let aligns: Vec<_> = d2
+                .materialize()
+                .blocks
                 .iter()
-                .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)),
-            "{:?}",
-            b.marks
-        );
-        assert!(
-            b.marks
+                .filter(|b| b.kind == "cell")
+                .map(|b| b.attrs.get("align").cloned())
+                .collect();
+            assert_eq!(
+                aligns,
+                vec![Some(AttrVal::Str("center".into())), None],
+                "cell alignment round-trips"
+            );
+        }
+        // Phase `nested_list_items_capture_level`.
+        {
+            let body = concat!(
+                r#"<text:list><text:list-item><text:p>a</text:p></text:list-item>"#,
+                r#"<text:list-item><text:p>b</text:p>"#,
+                r#"<text:list><text:list-item><text:p>nested</text:p></text:list-item></text:list>"#,
+                r#"</text:list-item></text:list>"#,
+            );
+            let odt = minimal_odt(body);
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &odt,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
+            let items: Vec<_> = snap
+                .blocks
                 .iter()
-                .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
-            "{:?}",
-            b.marks
-        );
-    }
-
-    #[test]
-    fn imports_named_heading_style_whitespace_and_ordered_list() {
-        let styles = concat!(
-            r#"<style:style style:name="Heading_20_1" style:display-name="Heading 1" style:family="paragraph" style:default-outline-level="1"/>"#,
-            r#"<style:style style:name="MySub" style:family="paragraph" style:parent-style-name="Heading_20_1"/>"#,
-            r#"<text:list-style style:name="L1"><text:list-level-style-number text:level="1"/></text:list-style>"#,
-        );
-        let body = concat!(
-            r#"<text:p text:style-name="Heading_20_1">My Title</text:p>"#,
-            r#"<text:p text:style-name="MySub">A Subtitle</text:p>"#,
-            r#"<text:p>Line one<text:line-break/>line two<text:tab/>after a tab and<text:s text:c="3"/>spaces.</text:p>"#,
-            r#"<text:list text:style-name="L1"><text:list-item><text:p>first</text:p></text:list-item><text:list-item><text:p>second</text:p></text:list-item></text:list>"#,
-        );
-        let odt = minimal_odt_styled(styles, body);
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-
-        assert_eq!(
-            snap.blocks[0].kind, "heading",
-            "named paragraph style → heading: {snap:?}"
-        );
-        assert_eq!(snap.blocks[0].text, "My Title");
-        assert_eq!(snap.blocks[0].attrs.get("level"), Some(&AttrVal::Int(1)));
-        assert_eq!(
-            snap.blocks[1].kind, "heading",
-            "heading via inherited parent style"
-        );
-        assert!(
-            snap.blocks[2].text.contains('\n'),
-            "line-break: {:?}",
-            snap.blocks[2].text
-        );
-        assert!(
-            snap.blocks[2].text.contains('\t'),
-            "tab: {:?}",
-            snap.blocks[2].text
-        );
-        assert!(
-            snap.blocks[2].text.contains("and   spaces"),
-            "text:s spaces: {:?}",
-            snap.blocks[2].text
-        );
-        let items: Vec<_> = snap
-            .blocks
-            .iter()
-            .filter(|b| b.kind == "list_item")
-            .collect();
-        assert_eq!(items.len(), 2);
-        assert_eq!(
-            items[0].attrs.get("ordered"),
-            Some(&AttrVal::Bool(true)),
-            "numbered list-style → ordered"
-        );
-    }
-
-    #[test]
-    fn table_roundtrips_as_editable_cells() {
-        let body = concat!(
-            r#"<table:table table:name="T1">"#,
-            r#"<table:table-row><table:table-cell><text:p>a</text:p></table:table-cell>"#,
-            r#"<table:table-cell><text:p>b</text:p></table:table-cell></table:table-row>"#,
-            r#"<table:table-row><table:table-cell><text:p>c</text:p></table:table-cell>"#,
-            r#"<table:table-cell><text:p>d</text:p></table:table-cell></table:table-row>"#,
-            r#"</table:table>"#,
-        );
-        let odt = minimal_odt_styled("", body);
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-        let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
-        assert_eq!(cells.len(), 4, "2x2 cells: {snap:?}");
-        assert_eq!(
-            cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
-            vec!["a", "b", "c", "d"]
-        );
-        assert_eq!(
-            cells[0].attrs.get("table"),
-            Some(&AttrVal::Str("T1".into()))
-        );
-        assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
-        assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
-
-        let exported = OdtCodec
-            .export(d.as_ref(), &tilo_content::NoContent)
-            .unwrap();
-        let mut d2 = Document::new();
-        OdtCodec
-            .import(
-                &exported,
-                &mut d2.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let cells2: Vec<_> = d2
-            .materialize()
-            .blocks
-            .iter()
-            .filter(|b| b.kind == "cell")
-            .map(|b| b.text.clone())
-            .collect();
-        assert_eq!(
-            cells2,
-            vec!["a", "b", "c", "d"],
-            "table survives export+import"
-        );
-    }
-
-    #[test]
-    fn imports_hyperlink_as_link_mark() {
-        use qdoc::document::MarkValue;
-        // A `text:a` becomes an inline `link` mark carrying the href, so it merges with concurrent text edits instead of being atomized.
-        let body = r#"<text:p>see <text:a xlink:href="https://tilo.so/x">here</text:a>!</text:p>"#;
-        let odt = minimal_odt(body);
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let b = &d.materialize().blocks[0];
-        assert_eq!(b.text, "see here!");
-        let link = b
-            .marks
-            .iter()
-            .find(|m| m.name == "link")
-            .expect("link mark present");
-        assert_eq!(
-            (link.start, link.end),
-            (4, 8),
-            "link over 'here': {:?}",
-            b.marks
-        );
-        assert_eq!(link.value, MarkValue::Str("https://tilo.so/x".into()));
-    }
-
-    #[test]
-    fn imports_link_wrapping_styled_span() {
-        use qdoc::document::MarkValue;
-        let styles = r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#;
-        let body = r#"<text:p><text:a xlink:href="http://x/"><text:span text:style-name="T1">bold</text:span></text:a></text:p>"#;
-        let odt = minimal_odt_styled(styles, body);
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let b = &d.materialize().blocks[0];
-        assert_eq!(b.text, "bold");
-        assert!(
-            b.marks
+                .filter(|b| b.kind == "list_item")
+                .collect();
+            let level = |b: &qdoc::snapshot::BlockView| match b.attrs.get("level") {
+                Some(AttrVal::Int(n)) => *n,
+                _ => 0,
+            };
+            assert_eq!(
+                items
+                    .iter()
+                    .map(|b| (b.text.clone(), level(b)))
+                    .collect::<Vec<_>>(),
+                vec![("a".into(), 0i64), ("b".into(), 0), ("nested".into(), 1)],
+                "nesting depth captured: {items:?}"
+            );
+            assert_eq!(
+                items[0].attrs.get("level"),
+                None,
+                "top-level item has no level attr"
+            );
+        }
+        // Phase `list_items_import_tight_without_layout_whitespace`.
+        {
+            let body = "<text:list>\n  <text:list-item>\n    <text:p>a</text:p>\n  </text:list-item>\n  <text:list-item>\n    <text:p>b</text:p>\n  </text:list-item>\n</text:list>";
+            let odt = minimal_odt(body);
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &odt,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
+            let items: Vec<_> = snap
+                .blocks
                 .iter()
-                .any(|m| m.name == "link" && m.value == MarkValue::Str("http://x/".into())),
-            "{:?}",
-            b.marks
-        );
-        assert!(b.marks.iter().any(|m| m.name == "strong"), "{:?}", b.marks);
+                .filter(|b| b.kind == "list_item")
+                .map(|b| b.text.clone())
+                .collect();
+            assert_eq!(
+                items,
+                vec!["a", "b"],
+                "no indentation whitespace in item text: {items:?}"
+            );
+        }
+        // Phase `preserves_unmodeled_body_element_as_fidelity_atom`.
+        {
+            let body = concat!(
+                r#"<text:p>before</text:p>"#,
+                r#"<draw:frame draw:name="F"><draw:image xlink:href="pic.png"/></draw:frame>"#,
+                r#"<text:p>after</text:p>"#,
+            );
+            let odt = minimal_odt_styled("", body);
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &odt,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
+
+            assert_eq!(snap.blocks.len(), 3, "before / fidelity / after: {snap:?}");
+            assert_eq!(snap.blocks[0].kind, "paragraph");
+            assert_eq!(snap.blocks[0].text, "before");
+            assert_eq!(snap.blocks[1].kind, "fidelity");
+            assert_eq!(snap.blocks[2].text, "after");
+            let raw1 = match snap.blocks[1].attrs.get("xml") {
+                Some(AttrVal::Str(x)) => x.clone(),
+                other => panic!("fidelity atom missing xml attr: {other:?}"),
+            };
+            assert!(
+                raw1.starts_with("<draw:frame")
+                    && raw1.contains("pic.png")
+                    && raw1.ends_with("</draw:frame>"),
+                "captured raw: {raw1}"
+            );
+
+            let exported = OdtCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap();
+            let mut d2 = Document::new();
+            OdtCodec
+                .import(
+                    &exported,
+                    &mut d2.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap2 = d2.materialize();
+            assert_eq!(snap2.blocks.len(), 3);
+            let raw2 = match snap2.blocks[1].attrs.get("xml") {
+                Some(AttrVal::Str(x)) => x.clone(),
+                other => panic!("fidelity atom missing after round-trip: {other:?}"),
+            };
+            assert_eq!(raw1, raw2, "fidelity atom round-trips verbatim");
+        }
     }
 
     #[test]
-    fn imports_text_color_as_mark() {
-        use qdoc::document::MarkValue;
-        let styles = r##"<style:style style:name="C1" style:family="text"><style:text-properties fo:color="#FF0000"/></style:style>"##;
-        let body = r#"<text:p>a <text:span text:style-name="C1">red</text:span></text:p>"#;
-        let odt = minimal_odt_styled(styles, body);
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let b = &d.materialize().blocks[0];
-        assert_eq!(b.text, "a red");
-        assert!(
-            b.marks.iter().any(|m| m.name == "color"
-                && m.start == 2
-                && m.end == 5
-                && m.value == MarkValue::Str("#ff0000".into())),
-            "color mark normalized + ranged: {:?}",
-            b.marks
-        );
-    }
-
-    #[test]
-    fn cell_alignment_roundtrips() {
-        // A centred table cell: alignment lives on the inner paragraph in ODF.
-        let styles = r#"<style:style style:name="Pc" style:family="paragraph"><style:paragraph-properties fo:text-align="center"/></style:style>"#;
-        let body = concat!(
-            r#"<table:table table:name="T1"><table:table-row>"#,
-            r#"<table:table-cell><text:p text:style-name="Pc">mid</text:p></table:table-cell>"#,
-            r#"<table:table-cell><text:p>plain</text:p></table:table-cell>"#,
-            r#"</table:table-row></table:table>"#,
-        );
-        let odt = minimal_odt_styled(styles, body);
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let cells: Vec<_> = d
-            .materialize()
-            .blocks
-            .into_iter()
-            .filter(|b| b.kind == "cell")
-            .collect();
-        assert_eq!(cells.len(), 2);
-        assert_eq!(
-            cells[0].attrs.get("align"),
-            Some(&AttrVal::Str("center".into())),
-            "centred cell: {:?}",
-            cells[0].attrs
-        );
-        assert_eq!(cells[1].attrs.get("align"), None, "plain cell has no align");
-
-        let exported = OdtCodec
-            .export(d.as_ref(), &tilo_content::NoContent)
-            .unwrap();
-        let mut d2 = Document::new();
-        OdtCodec
-            .import(
-                &exported,
-                &mut d2.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let aligns: Vec<_> = d2
-            .materialize()
-            .blocks
-            .iter()
-            .filter(|b| b.kind == "cell")
-            .map(|b| b.attrs.get("align").cloned())
-            .collect();
-        assert_eq!(
-            aligns,
-            vec![Some(AttrVal::Str("center".into())), None],
-            "cell alignment round-trips"
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn imports_spans_links_and_colors_as_marks() {
+        // Phase `imports_spans_as_marks`.
+        {
+            let styles = concat!(
+                r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#,
+                r#"<style:style style:name="T2" style:family="text"><style:text-properties fo:font-style="italic"/></style:style>"#,
+            );
+            let body = concat!(
+                r#"<text:p>a <text:span text:style-name="T1">bold</text:span>"#,
+                r#" and <text:span text:style-name="T2">em</text:span></text:p>"#,
+            );
+            let odt = minimal_odt_styled(styles, body);
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &odt,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "a bold and em");
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "strong" && m.start == 2 && m.end == 6),
+                "strong over 'bold', got {:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "em" && m.start == 11 && m.end == 13),
+                "em over 'em', got {:?}",
+                p.marks
+            );
+        }
+        // Phase `imports_paragraph_align_and_inline_font`.
+        {
+            use qdoc::document::MarkValue;
+            let styles = concat!(
+                r#"<style:style style:name="P2" style:family="paragraph"><style:paragraph-properties fo:text-align="center"/></style:style>"#,
+                r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-size="20pt" style:font-name="Liberation Serif"/></style:style>"#,
+            );
+            let body = r#"<text:p text:style-name="P2"><text:span text:style-name="T1">big</text:span></text:p>"#;
+            let odt = minimal_odt_styled(styles, body);
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &odt,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let b = &d.materialize().blocks[0];
+            assert_eq!(b.text, "big");
+            assert_eq!(
+                b.attrs.get("align"),
+                Some(&AttrVal::Str("center".into())),
+                "{:?}",
+                b.attrs
+            );
+            assert!(
+                b.marks
+                    .iter()
+                    .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)),
+                "{:?}",
+                b.marks
+            );
+            assert!(
+                b.marks
+                    .iter()
+                    .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
+                "{:?}",
+                b.marks
+            );
+        }
+        // Phase `imports_hyperlink_as_link_mark`.
+        {
+            use qdoc::document::MarkValue;
+            // A `text:a` becomes an inline `link` mark carrying the href, so it merges with concurrent text edits instead of being atomized.
+            let body =
+                r#"<text:p>see <text:a xlink:href="https://tilo.so/x">here</text:a>!</text:p>"#;
+            let odt = minimal_odt(body);
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &odt,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let b = &d.materialize().blocks[0];
+            assert_eq!(b.text, "see here!");
+            let link = b
+                .marks
+                .iter()
+                .find(|m| m.name == "link")
+                .expect("link mark present");
+            assert_eq!(
+                (link.start, link.end),
+                (4, 8),
+                "link over 'here': {:?}",
+                b.marks
+            );
+            assert_eq!(link.value, MarkValue::Str("https://tilo.so/x".into()));
+        }
+        // Phase `imports_link_wrapping_styled_span`.
+        {
+            use qdoc::document::MarkValue;
+            let styles = r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#;
+            let body = r#"<text:p><text:a xlink:href="http://x/"><text:span text:style-name="T1">bold</text:span></text:a></text:p>"#;
+            let odt = minimal_odt_styled(styles, body);
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &odt,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let b = &d.materialize().blocks[0];
+            assert_eq!(b.text, "bold");
+            assert!(
+                b.marks
+                    .iter()
+                    .any(|m| m.name == "link" && m.value == MarkValue::Str("http://x/".into())),
+                "{:?}",
+                b.marks
+            );
+            assert!(b.marks.iter().any(|m| m.name == "strong"), "{:?}", b.marks);
+        }
+        // Phase `imports_text_color_as_mark`.
+        {
+            use qdoc::document::MarkValue;
+            let styles = r##"<style:style style:name="C1" style:family="text"><style:text-properties fo:color="#FF0000"/></style:style>"##;
+            let body = r#"<text:p>a <text:span text:style-name="C1">red</text:span></text:p>"#;
+            let odt = minimal_odt_styled(styles, body);
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &odt,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let b = &d.materialize().blocks[0];
+            assert_eq!(b.text, "a red");
+            assert!(
+                b.marks.iter().any(|m| m.name == "color"
+                    && m.start == 2
+                    && m.end == 5
+                    && m.value == MarkValue::Str("#ff0000".into())),
+                "color mark normalized + ranged: {:?}",
+                b.marks
+            );
+        }
     }
 
     /// A valid 1x1 truecolor PNG so the in-paragraph image resolves to a real `image` block (a missing picture would fall back to a fidelity atom).
@@ -1895,168 +2022,171 @@ mod tests {
     ];
 
     #[test]
-    fn imports_image_nested_in_paragraph() {
-        use super::super::container::OdtContainer;
-        let body = concat!(
-            r#"<text:p>before</text:p>"#,
-            r#"<text:p text:style-name="Fig">"#,
-            r#"<draw:frame svg:width="200pt" svg:height="110pt"><draw:image xlink:href="Pictures/0.png"/></draw:frame>"#,
-            r#"</text:p>"#,
-            r#"<text:p>after</text:p>"#,
-        );
-        let base = minimal_odt_styled("", body);
-        let mut c = OdtContainer::read(&base).unwrap();
-        c.set("Pictures/0.png", TINY_PNG.to_vec());
-        let odt = c.write().unwrap();
+    fn imports_inline_images_with_alt_text_and_surrounding_text() {
+        // Phase `imports_image_nested_in_paragraph`.
+        {
+            use super::super::container::OdtContainer;
+            let body = concat!(
+                r#"<text:p>before</text:p>"#,
+                r#"<text:p text:style-name="Fig">"#,
+                r#"<draw:frame svg:width="200pt" svg:height="110pt"><draw:image xlink:href="Pictures/0.png"/></draw:frame>"#,
+                r#"</text:p>"#,
+                r#"<text:p>after</text:p>"#,
+            );
+            let base = minimal_odt_styled("", body);
+            let mut c = OdtContainer::read(&base).unwrap();
+            c.set("Pictures/0.png", TINY_PNG.to_vec());
+            let odt = c.write().unwrap();
 
-        let mut d = Document::new();
-        let mut inputs = tilo_content::ContentInputs::new();
-        OdtCodec.import(&odt, &mut d.as_mut(), &mut inputs).unwrap();
-        let snap = d.materialize();
+            let mut d = Document::new();
+            let mut inputs = tilo_content::ContentInputs::new();
+            OdtCodec.import(&odt, &mut d.as_mut(), &mut inputs).unwrap();
+            let snap = d.materialize();
 
-        assert_eq!(
-            snap.blocks
-                .iter()
-                .map(|b| b.kind.as_str())
-                .collect::<Vec<_>>(),
-            vec!["paragraph", "image", "paragraph"],
-            "image-only wrapper paragraph dropped: {snap:?}"
-        );
-        assert_eq!(snap.blocks[0].text, "before");
-        assert_eq!(snap.blocks[2].text, "after");
-        let img = &snap.blocks[1];
-        let hash = match img.attrs.get("blob") {
-            Some(AttrVal::Str(h)) => h.clone(),
-            other => panic!("image missing blob attr: {other:?}"),
-        };
-        assert_eq!(
-            inputs.get(&hash),
-            Some(&TINY_PNG[..]),
-            "image bytes handed to the caller"
-        );
-        // svg:width="200pt" → 200*96/72 ≈ 267px.
-        assert_eq!(
-            img.attrs.get("width"),
-            Some(&AttrVal::Int(267)),
-            "{:?}",
-            img.attrs
-        );
+            assert_eq!(
+                snap.blocks
+                    .iter()
+                    .map(|b| b.kind.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["paragraph", "image", "paragraph"],
+                "image-only wrapper paragraph dropped: {snap:?}"
+            );
+            assert_eq!(snap.blocks[0].text, "before");
+            assert_eq!(snap.blocks[2].text, "after");
+            let img = &snap.blocks[1];
+            let hash = match img.attrs.get("blob") {
+                Some(AttrVal::Str(h)) => h.clone(),
+                other => panic!("image missing blob attr: {other:?}"),
+            };
+            assert_eq!(
+                inputs.get(&hash),
+                Some(&TINY_PNG[..]),
+                "image bytes handed to the caller"
+            );
+            // svg:width="200pt" → 200*96/72 ≈ 267px.
+            assert_eq!(
+                img.attrs.get("width"),
+                Some(&AttrVal::Int(267)),
+                "{:?}",
+                img.attrs
+            );
+        }
+        // Phase `image_alt_text_keeps_entity_references`.
+        {
+            use super::super::container::OdtContainer;
+            let body = concat!(
+                r#"<text:p><draw:frame><draw:image xlink:href="Pictures/0.png"/>"#,
+                "<svg:title>R&amp;D &lt;chart&gt; &#x1F600;</svg:title></draw:frame></text:p>",
+            );
+            let mut c = OdtContainer::read(&minimal_odt_styled("", body)).unwrap();
+            c.set("Pictures/0.png", TINY_PNG.to_vec());
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &c.write().unwrap(),
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
+            let img = snap.blocks.iter().find(|b| b.kind == "image").unwrap();
+            assert_eq!(
+                img.attrs.get("alt"),
+                Some(&AttrVal::Str("R&D <chart> \u{1F600}".into()))
+            );
+        }
+        // Phase `keeps_paragraph_text_before_inline_image`.
+        {
+            use super::super::container::OdtContainer;
+            let body = "<text:p>see <draw:frame><draw:image xlink:href=\"Pictures/0.png\"/></draw:frame></text:p>";
+            let base = minimal_odt_styled("", body);
+            let mut c = OdtContainer::read(&base).unwrap();
+            c.set("Pictures/0.png", TINY_PNG.to_vec());
+            let odt = c.write().unwrap();
+
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &odt,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
+            assert_eq!(snap.blocks[0].kind, "paragraph");
+            assert_eq!(snap.blocks[0].text, "see ", "leading text kept: {snap:?}");
+            assert_eq!(snap.blocks[1].kind, "image");
+        }
     }
 
     #[test]
-    fn image_alt_text_keeps_entity_references() {
-        use super::super::container::OdtContainer;
-        let body = concat!(
-            r#"<text:p><draw:frame><draw:image xlink:href="Pictures/0.png"/>"#,
-            "<svg:title>R&amp;D &lt;chart&gt; &#x1F600;</svg:title></draw:frame></text:p>",
-        );
-        let mut c = OdtContainer::read(&minimal_odt_styled("", body)).unwrap();
-        c.set("Pictures/0.png", TINY_PNG.to_vec());
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &c.write().unwrap(),
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-        let img = snap.blocks.iter().find(|b| b.kind == "image").unwrap();
-        assert_eq!(
-            img.attrs.get("alt"),
-            Some(&AttrVal::Str("R&D <chart> \u{1F600}".into()))
-        );
-    }
+    fn imports_and_roundtrips_document_and_run_language() {
+        // Phase `imports_run_language_as_mark`.
+        {
+            use qdoc::document::MarkValue;
+            // A text style carrying `fo:language` + `fo:country` → a `lang` run mark with the reassembled BCP-47 tag.
+            let styles = r#"<style:style style:name="Lf" style:family="text"><style:text-properties fo:language="fr" fo:country="FR"/></style:style>"#;
+            let body = r#"<text:p>a <text:span text:style-name="Lf">bonjour</text:span></text:p>"#;
+            let odt = minimal_odt_styled(styles, body);
+            let mut d = Document::new();
+            OdtCodec
+                .import(
+                    &odt,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let b = &d.materialize().blocks[0];
+            assert_eq!(b.text, "a bonjour");
+            assert!(
+                b.marks.iter().any(|m| m.name == "lang"
+                    && m.start == 2
+                    && m.end == 9
+                    && m.value == MarkValue::Str("fr-FR".into())),
+                "lang mark reassembled from fo:language+fo:country, ranged: {:?}",
+                b.marks
+            );
+        }
+        // Phase `document_and_run_language_roundtrip`.
+        {
+            use qdoc::document::MarkValue;
+            // Author a document with a `de-DE` default language and a `fr`-marked run, export to `.odt`, re-import: both survive with BCP-47 reassembled from `fo:language`+`fo:country`.
+            let mut d = Document::new();
+            d.set_language("de-DE");
+            let id = d.insert_block(None, "paragraph");
+            d.splice_text(&id, 0, 0, "bonjour monde");
+            d.add_mark(&id, 0, 7, "lang", "fr");
 
-    #[test]
-    fn keeps_paragraph_text_before_inline_image() {
-        use super::super::container::OdtContainer;
-        let body = "<text:p>see <draw:frame><draw:image xlink:href=\"Pictures/0.png\"/></draw:frame></text:p>";
-        let base = minimal_odt_styled("", body);
-        let mut c = OdtContainer::read(&base).unwrap();
-        c.set("Pictures/0.png", TINY_PNG.to_vec());
-        let odt = c.write().unwrap();
+            let exported = OdtCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap();
+            let mut d2 = Document::new();
+            OdtCodec
+                .import(
+                    &exported,
+                    &mut d2.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d2.materialize();
 
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-        assert_eq!(snap.blocks[0].kind, "paragraph");
-        assert_eq!(snap.blocks[0].text, "see ", "leading text kept: {snap:?}");
-        assert_eq!(snap.blocks[1].kind, "image");
-    }
-
-    #[test]
-    fn nested_list_items_capture_level() {
-        let body = concat!(
-            r#"<text:list><text:list-item><text:p>a</text:p></text:list-item>"#,
-            r#"<text:list-item><text:p>b</text:p>"#,
-            r#"<text:list><text:list-item><text:p>nested</text:p></text:list-item></text:list>"#,
-            r#"</text:list-item></text:list>"#,
-        );
-        let odt = minimal_odt(body);
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-        let items: Vec<_> = snap
-            .blocks
-            .iter()
-            .filter(|b| b.kind == "list_item")
-            .collect();
-        let level = |b: &qdoc::snapshot::BlockView| match b.attrs.get("level") {
-            Some(AttrVal::Int(n)) => *n,
-            _ => 0,
-        };
-        assert_eq!(
-            items
-                .iter()
-                .map(|b| (b.text.clone(), level(b)))
-                .collect::<Vec<_>>(),
-            vec![("a".into(), 0i64), ("b".into(), 0), ("nested".into(), 1)],
-            "nesting depth captured: {items:?}"
-        );
-        assert_eq!(
-            items[0].attrs.get("level"),
-            None,
-            "top-level item has no level attr"
-        );
-    }
-
-    #[test]
-    fn list_items_import_tight_without_layout_whitespace() {
-        let body = "<text:list>\n  <text:list-item>\n    <text:p>a</text:p>\n  </text:list-item>\n  <text:list-item>\n    <text:p>b</text:p>\n  </text:list-item>\n</text:list>";
-        let odt = minimal_odt(body);
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-        let items: Vec<_> = snap
-            .blocks
-            .iter()
-            .filter(|b| b.kind == "list_item")
-            .map(|b| b.text.clone())
-            .collect();
-        assert_eq!(
-            items,
-            vec!["a", "b"],
-            "no indentation whitespace in item text: {items:?}"
-        );
+            assert_eq!(
+                snap.language.as_deref(),
+                Some("de-DE"),
+                "document default language survives: {:?}",
+                snap.language
+            );
+            let b = &snap.blocks[0];
+            assert_eq!(b.text, "bonjour monde");
+            assert!(
+                b.marks.iter().any(|m| m.name == "lang"
+                    && m.start == 0
+                    && m.end == 7
+                    && m.value == MarkValue::Str("fr".into())),
+                "run lang mark `fr` survives over 'bonjour': {:?}",
+                b.marks
+            );
+        }
     }
 
     #[test]
@@ -2136,128 +2266,6 @@ mod tests {
         assert!(
             !xml.contains("text:page-number") && xml.contains("Page 4 of"),
             "{xml}"
-        );
-    }
-
-    #[test]
-    fn preserves_unmodeled_body_element_as_fidelity_atom() {
-        let body = concat!(
-            r#"<text:p>before</text:p>"#,
-            r#"<draw:frame draw:name="F"><draw:image xlink:href="pic.png"/></draw:frame>"#,
-            r#"<text:p>after</text:p>"#,
-        );
-        let odt = minimal_odt_styled("", body);
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-
-        assert_eq!(snap.blocks.len(), 3, "before / fidelity / after: {snap:?}");
-        assert_eq!(snap.blocks[0].kind, "paragraph");
-        assert_eq!(snap.blocks[0].text, "before");
-        assert_eq!(snap.blocks[1].kind, "fidelity");
-        assert_eq!(snap.blocks[2].text, "after");
-        let raw1 = match snap.blocks[1].attrs.get("xml") {
-            Some(AttrVal::Str(x)) => x.clone(),
-            other => panic!("fidelity atom missing xml attr: {other:?}"),
-        };
-        assert!(
-            raw1.starts_with("<draw:frame")
-                && raw1.contains("pic.png")
-                && raw1.ends_with("</draw:frame>"),
-            "captured raw: {raw1}"
-        );
-
-        let exported = OdtCodec
-            .export(d.as_ref(), &tilo_content::NoContent)
-            .unwrap();
-        let mut d2 = Document::new();
-        OdtCodec
-            .import(
-                &exported,
-                &mut d2.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap2 = d2.materialize();
-        assert_eq!(snap2.blocks.len(), 3);
-        let raw2 = match snap2.blocks[1].attrs.get("xml") {
-            Some(AttrVal::Str(x)) => x.clone(),
-            other => panic!("fidelity atom missing after round-trip: {other:?}"),
-        };
-        assert_eq!(raw1, raw2, "fidelity atom round-trips verbatim");
-    }
-
-    #[test]
-    fn imports_run_language_as_mark() {
-        use qdoc::document::MarkValue;
-        // A text style carrying `fo:language` + `fo:country` → a `lang` run mark with the reassembled BCP-47 tag.
-        let styles = r#"<style:style style:name="Lf" style:family="text"><style:text-properties fo:language="fr" fo:country="FR"/></style:style>"#;
-        let body = r#"<text:p>a <text:span text:style-name="Lf">bonjour</text:span></text:p>"#;
-        let odt = minimal_odt_styled(styles, body);
-        let mut d = Document::new();
-        OdtCodec
-            .import(
-                &odt,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let b = &d.materialize().blocks[0];
-        assert_eq!(b.text, "a bonjour");
-        assert!(
-            b.marks.iter().any(|m| m.name == "lang"
-                && m.start == 2
-                && m.end == 9
-                && m.value == MarkValue::Str("fr-FR".into())),
-            "lang mark reassembled from fo:language+fo:country, ranged: {:?}",
-            b.marks
-        );
-    }
-
-    #[test]
-    fn document_and_run_language_roundtrip() {
-        use qdoc::document::MarkValue;
-        // Author a document with a `de-DE` default language and a `fr`-marked run, export to `.odt`, re-import: both survive with BCP-47 reassembled from `fo:language`+`fo:country`.
-        let mut d = Document::new();
-        d.set_language("de-DE");
-        let id = d.insert_block(None, "paragraph");
-        d.splice_text(&id, 0, 0, "bonjour monde");
-        d.add_mark(&id, 0, 7, "lang", "fr");
-
-        let exported = OdtCodec
-            .export(d.as_ref(), &tilo_content::NoContent)
-            .unwrap();
-        let mut d2 = Document::new();
-        OdtCodec
-            .import(
-                &exported,
-                &mut d2.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d2.materialize();
-
-        assert_eq!(
-            snap.language.as_deref(),
-            Some("de-DE"),
-            "document default language survives: {:?}",
-            snap.language
-        );
-        let b = &snap.blocks[0];
-        assert_eq!(b.text, "bonjour monde");
-        assert!(
-            b.marks.iter().any(|m| m.name == "lang"
-                && m.start == 0
-                && m.end == 7
-                && m.value == MarkValue::Str("fr".into())),
-            "run lang mark `fr` survives over 'bonjour': {:?}",
-            b.marks
         );
     }
 }

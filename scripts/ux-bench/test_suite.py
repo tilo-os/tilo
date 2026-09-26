@@ -33,40 +33,39 @@ class SuiteTests(unittest.TestCase):
                                 self.assertTrue(0 <= sample[0] < case["viewport"][0])
                                 self.assertTrue(0 <= sample[1] < case["viewport"][1])
 
-    def test_missing_evidence_is_an_error_even_when_process_succeeds(self):
-        spec = importlib.util.spec_from_file_location("suite", Path(__file__).with_name("run-suite.py"))
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        with tempfile.TemporaryDirectory() as directory:
-            result = module.read_result(Path(directory), 0, "successful process")
-            self.assertEqual(result["status"], "error")
-
-    def test_success_without_inspection_or_resource_evidence_is_an_error(self):
-        spec = importlib.util.spec_from_file_location("suite", Path(__file__).with_name("run-suite.py"))
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        with tempfile.TemporaryDirectory() as directory:
-            out = Path(directory)
-            (out / "report.json").write_text(json.dumps({"passed": True, "failures": [], "counts": {}, "frames": [{"name": "result", "screenshot": "result.png"}]}))
-            (out / "index.html").write_text("report")
-            (out / "result.png").write_bytes(b"evidence")
-            self.assertEqual(module.read_result(out, 0, "")["status"], "error")
-            (out / "result.inspection.json").write_text("{}")
-            self.assertEqual(module.read_result(out, 0, "")["status"], "error")
-            (out / "result.resources.json").write_text("[]")
-            self.assertEqual(module.read_result(out, 0, "")["status"], "pass")
-
-    def test_ux_failures_are_retained_separately_from_execution_errors(self):
-        spec = importlib.util.spec_from_file_location("suite", Path(__file__).with_name("run-suite.py"))
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        with tempfile.TemporaryDirectory() as directory:
-            out = Path(directory)
-            (out / "report.json").write_text(json.dumps({"passed": False, "failures": ["click budget exceeded"], "counts": {"clicks": 4}}))
-            (out / "index.html").write_text("report")
-            result = module.read_result(out, 1, "")
-            self.assertEqual(result["status"], "fail")
-            self.assertEqual(result["failures"], ["click budget exceeded"])
+    def test_read_result_requires_evidence_and_keeps_ux_failures_separate(self):
+        with self.subTest(phase='missing evidence is an error even when process succeeds'):
+            spec = importlib.util.spec_from_file_location("suite", Path(__file__).with_name("run-suite.py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            with tempfile.TemporaryDirectory() as directory:
+                result = module.read_result(Path(directory), 0, "successful process")
+                self.assertEqual(result["status"], "error")
+        with self.subTest(phase='success without inspection or resource evidence is an error'):
+            spec = importlib.util.spec_from_file_location("suite", Path(__file__).with_name("run-suite.py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            with tempfile.TemporaryDirectory() as directory:
+                out = Path(directory)
+                (out / "report.json").write_text(json.dumps({"passed": True, "failures": [], "counts": {}, "frames": [{"name": "result", "screenshot": "result.png"}]}))
+                (out / "index.html").write_text("report")
+                (out / "result.png").write_bytes(b"evidence")
+                self.assertEqual(module.read_result(out, 0, "")["status"], "error")
+                (out / "result.inspection.json").write_text("{}")
+                self.assertEqual(module.read_result(out, 0, "")["status"], "error")
+                (out / "result.resources.json").write_text("[]")
+                self.assertEqual(module.read_result(out, 0, "")["status"], "pass")
+        with self.subTest(phase='ux failures are retained separately from execution errors'):
+            spec = importlib.util.spec_from_file_location("suite", Path(__file__).with_name("run-suite.py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            with tempfile.TemporaryDirectory() as directory:
+                out = Path(directory)
+                (out / "report.json").write_text(json.dumps({"passed": False, "failures": ["click budget exceeded"], "counts": {"clicks": 4}}))
+                (out / "index.html").write_text("report")
+                result = module.read_result(out, 1, "")
+                self.assertEqual(result["status"], "fail")
+                self.assertEqual(result["failures"], ["click budget exceeded"])
 
 
 if __name__ == "__main__":

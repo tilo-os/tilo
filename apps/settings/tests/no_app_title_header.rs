@@ -94,44 +94,48 @@ fn rendered_names(app: &SettingsApp) -> Vec<String> {
     out
 }
 
+/// The title is exposed through the app widget and no pane draws it.
 #[test]
-fn app_title_is_exposed_only_through_app_widget() {
-    let config = crate::support::ScratchConfig::new();
-    // The sanctioned channel: the OS pill reads this. Present and correct.
-    let app = config.app();
-    assert_eq!(app.app_title(), "Personal Settings");
-    assert!(matches!(app.app_icon(), IconDescriptor::Glyph(_)));
-}
+fn app_title_lives_only_in_the_window_chrome() {
+    // Case `app_title_is_exposed_only_through_app_widget`.
+    {
+        let config = crate::support::ScratchConfig::new();
+        // The sanctioned channel: the OS pill reads this. Present and correct.
+        let app = config.app();
+        assert_eq!(app.app_title(), "Personal Settings");
+        assert!(matches!(app.app_icon(), IconDescriptor::Glyph(_)));
+    }
 
-#[test]
-fn no_pane_draws_the_app_name_but_each_page_names_its_destination() {
-    let config = crate::support::ScratchConfig::new();
-    // Across a representative set of categories, the app must never paint its
-    // own name. It must paint the selected destination and its explanatory
-    // subtitle so the detail pane stands on its own outside the sidebar.
-    for &cat in &[
-        Category::Network,
-        Category::ExternalAccounts,
-        Category::RegionFormats,
-        Category::About,
-    ] {
-        let mut app = config.app().with_category(cat);
-        lay_out(&mut app);
-        let names = rendered_names(&app);
+    // Case `no_pane_draws_the_app_name_but_each_page_names_its_destination`.
+    {
+        let config = crate::support::ScratchConfig::new();
+        // Across a representative set of categories, the app must never paint its
+        // own name. It must paint the selected destination and its explanatory
+        // subtitle so the detail pane stands on its own outside the sidebar.
+        for &cat in &[
+            Category::Network,
+            Category::ExternalAccounts,
+            Category::RegionFormats,
+            Category::About,
+        ] {
+            let mut app = config.app().with_category(cat);
+            lay_out(&mut app);
+            let names = rendered_names(&app);
 
-        assert!(
-            !names.iter().any(|n| n == "Personal Settings"),
-            "{cat:?}: the app must not draw its own \"Personal Settings\" app-name header \
+            assert!(
+                !names.iter().any(|n| n == "Personal Settings"),
+                "{cat:?}: the app must not draw its own \"Personal Settings\" app-name header \
              (the OS pill carries it); rendered names were {names:?}"
-        );
-        assert!(
-            names.iter().any(|n| n == cat.label()),
-            "{cat:?}: the selected settings destination needs an in-content heading; \
+            );
+            assert!(
+                names.iter().any(|n| n == cat.label()),
+                "{cat:?}: the selected settings destination needs an in-content heading; \
              rendered names were {names:?}"
-        );
-        assert!(
-            names.iter().any(|n| n == cat.subtitle()),
-            "{cat:?}: the heading needs its explanatory subtitle; rendered names were {names:?}"
-        );
+            );
+            assert!(
+                names.iter().any(|n| n == cat.subtitle()),
+                "{cat:?}: the heading needs its explanatory subtitle; rendered names were {names:?}"
+            );
+        }
     }
 }

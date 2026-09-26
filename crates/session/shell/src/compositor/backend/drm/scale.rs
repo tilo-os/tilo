@@ -126,40 +126,34 @@ mod tests {
     const LAPTOP_14IN_4K: ((u32, u32), (u32, u32)) = ((3840, 2160), (309, 174));
 
     #[test]
-    fn dpi_is_none_without_a_physical_size() {
+    fn output_scale_derives_from_panel_dpi_snaps_and_honours_the_setting() {
+        // Phase `dpi_is_none_without_a_physical_size`.
         // virtio-gpu reports 0×0 mm; there is nothing to derive from.
         assert_eq!(dpi_from_physical((1920, 1080), (0, 0)), None);
         assert_eq!(dpi_from_physical((0, 0), (300, 200)), None);
-    }
-
-    #[test]
-    fn dpi_matches_the_panel_spec() {
-        let dpi = dpi_from_physical(DESKTOP_24IN_1080P.0, DESKTOP_24IN_1080P.1)
-            .expect("a 24in 1080p panel has a physical size");
-        assert!(
-            (90.0..95.0).contains(&dpi),
-            "24in 1080p is ~92 dpi, computed {dpi}"
-        );
-        let dpi = dpi_from_physical(LAPTOP_13IN_1080P.0, LAPTOP_13IN_1080P.1)
-            .expect("a 13in 1080p panel has a physical size");
-        assert!(
-            (160.0..172.0).contains(&dpi),
-            "13.3in 1080p is ~166 dpi, computed {dpi}"
-        );
-    }
-
-    #[test]
-    fn a_desktop_monitor_stays_at_one() {
+        // Phase `dpi_matches_the_panel_spec`.
+        {
+            let dpi = dpi_from_physical(DESKTOP_24IN_1080P.0, DESKTOP_24IN_1080P.1)
+                .expect("a 24in 1080p panel has a physical size");
+            assert!(
+                (90.0..95.0).contains(&dpi),
+                "24in 1080p is ~92 dpi, computed {dpi}"
+            );
+            let dpi = dpi_from_physical(LAPTOP_13IN_1080P.0, LAPTOP_13IN_1080P.1)
+                .expect("a 13in 1080p panel has a physical size");
+            assert!(
+                (160.0..172.0).contains(&dpi),
+                "13.3in 1080p is ~166 dpi, computed {dpi}"
+            );
+        }
+        // Phase `a_desktop_monitor_stays_at_one`.
         // The regression that matters most: adding scale derivation must
         // not silently zoom every existing single-monitor desktop.
         assert_eq!(
             derive_scale(DESKTOP_24IN_1080P.0, Some(DESKTOP_24IN_1080P.1)),
             1.0
         );
-    }
-
-    #[test]
-    fn a_hidpi_laptop_panel_scales_up() {
+        // Phase `a_hidpi_laptop_panel_scales_up`.
         assert_eq!(
             derive_scale(LAPTOP_13IN_1080P.0, Some(LAPTOP_13IN_1080P.1)),
             1.5,
@@ -170,10 +164,7 @@ mod tests {
             1.25,
             "a 15.6in 1080p panel needs 125%"
         );
-    }
-
-    #[test]
-    fn four_k_panels_land_on_sensible_steps() {
+        // Phase `four_k_panels_land_on_sensible_steps`.
         assert_eq!(
             derive_scale(DESKTOP_27IN_4K.0, Some(DESKTOP_27IN_4K.1)),
             1.5,
@@ -184,38 +175,28 @@ mod tests {
             2.0,
             "a 14in 4K panel is clamped to the 200% the settings control offers"
         );
-    }
-
-    #[test]
-    fn an_unknown_physical_size_falls_back_to_one() {
+        // Phase `an_unknown_physical_size_falls_back_to_one`.
         assert_eq!(derive_scale((1920, 1080), None), 1.0);
         assert_eq!(derive_scale((1920, 1080), Some((0, 0))), 1.0);
-    }
-
-    #[test]
-    fn the_scale_never_leaves_a_desktop_narrower_than_a_window() {
-        // A very dense small panel must still clear the logical-width floor.
-        let tiny_dense = ((1600, 1200), (120u32, 90u32)); // ~339 dpi, 5.9in
-        let scale = derive_scale(tiny_dense.0, Some(tiny_dense.1));
-        assert!(
-            (f64::from(tiny_dense.0.0) / scale) >= MIN_LOGICAL_WIDTH,
-            "scale {scale} leaves a {}px logical desktop, below the floor",
-            f64::from(tiny_dense.0.0) / scale
-        );
-    }
-
-    #[test]
-    fn snapping_lands_on_quarter_steps_and_clamps() {
+        // Phase `the_scale_never_leaves_a_desktop_narrower_than_a_window`.
+        {
+            // A very dense small panel must still clear the logical-width floor.
+            let tiny_dense = ((1600, 1200), (120u32, 90u32)); // ~339 dpi, 5.9in
+            let scale = derive_scale(tiny_dense.0, Some(tiny_dense.1));
+            assert!(
+                (f64::from(tiny_dense.0.0) / scale) >= MIN_LOGICAL_WIDTH,
+                "scale {scale} leaves a {}px logical desktop, below the floor",
+                f64::from(tiny_dense.0.0) / scale
+            );
+        }
+        // Phase `snapping_lands_on_quarter_steps_and_clamps`.
         assert_eq!(snap_scale(0.4), 1.0, "below 1.0 clamps up");
         assert_eq!(snap_scale(1.1), 1.0);
         assert_eq!(snap_scale(1.2), 1.25);
         assert_eq!(snap_scale(1.6), 1.5);
         assert_eq!(snap_scale(1.9), 2.0);
         assert_eq!(snap_scale(4.0), 2.0, "above the ceiling clamps down");
-    }
-
-    #[test]
-    fn a_user_setting_overrides_the_derivation() {
+        // Phase `a_user_setting_overrides_the_derivation`.
         // Someone who set 125% on a 4K panel gets 125%, not the 150% the
         // physical size argues for.
         assert_eq!(
@@ -235,33 +216,32 @@ mod tests {
     }
 
     #[test]
-    fn a_surface_gets_the_scale_of_the_output_it_is_on() {
-        // The laptop panel at 1.5 on the left, an external 1080p monitor
-        // at 1.0 to its right. Dragging a window across must change the
-        // preferred scale it is told to render at.
-        let outputs = [
-            ((0, 0), (1920u32, 1080u32), 1.5),
-            ((1920, 0), (1920u32, 1080u32), 1.0),
-        ];
-        assert_eq!(preferred_scale_at(&outputs, 10.0, 10.0), 1.5);
-        assert_eq!(preferred_scale_at(&outputs, 1919.0, 500.0), 1.5);
-        assert_eq!(preferred_scale_at(&outputs, 1920.0, 500.0), 1.0);
-        assert_eq!(preferred_scale_at(&outputs, 3000.0, 500.0), 1.0);
-    }
-
-    #[test]
-    fn a_surface_off_every_output_gets_the_sharpest_scale() {
-        // Mismatched heights leave a gap. A surface there is about to land
-        // somewhere; too sharp costs bandwidth, too soft is visible.
-        let outputs = [
-            ((0, 0), (1920u32, 1080u32), 1.0),
-            ((1920, 0), (1280u32, 720u32), 2.0),
-        ];
-        assert_eq!(preferred_scale_at(&outputs, 2000.0, 900.0), 2.0);
-    }
-
-    #[test]
-    fn with_no_outputs_at_all_the_scale_is_one() {
+    fn surface_scale_follows_the_output_it_is_on() {
+        // Phase `a_surface_gets_the_scale_of_the_output_it_is_on`.
+        {
+            // The laptop panel at 1.5 on the left, an external 1080p monitor
+            // at 1.0 to its right. Dragging a window across must change the
+            // preferred scale it is told to render at.
+            let outputs = [
+                ((0, 0), (1920u32, 1080u32), 1.5),
+                ((1920, 0), (1920u32, 1080u32), 1.0),
+            ];
+            assert_eq!(preferred_scale_at(&outputs, 10.0, 10.0), 1.5);
+            assert_eq!(preferred_scale_at(&outputs, 1919.0, 500.0), 1.5);
+            assert_eq!(preferred_scale_at(&outputs, 1920.0, 500.0), 1.0);
+            assert_eq!(preferred_scale_at(&outputs, 3000.0, 500.0), 1.0);
+        }
+        // Phase `a_surface_off_every_output_gets_the_sharpest_scale`.
+        {
+            // Mismatched heights leave a gap. A surface there is about to land
+            // somewhere; too sharp costs bandwidth, too soft is visible.
+            let outputs = [
+                ((0, 0), (1920u32, 1080u32), 1.0),
+                ((1920, 0), (1280u32, 720u32), 2.0),
+            ];
+            assert_eq!(preferred_scale_at(&outputs, 2000.0, 900.0), 2.0);
+        }
+        // Phase `with_no_outputs_at_all_the_scale_is_one`.
         // Before the first modeset there is nothing to ask; 1.0 is the
         // only answer that cannot be wrong by a factor.
         assert_eq!(preferred_scale_at(&[], 0.0, 0.0), 1.0);

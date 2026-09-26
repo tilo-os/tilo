@@ -68,26 +68,24 @@ async fn a_publishes_two_offline_deltas(
             })
             .unwrap();
     }
-    // Give the relay a beat to persist.
-    tokio::time::sleep(Duration::from_millis(150)).await;
-
-    let mut queued = std::fs::read_dir(pending_dir)
-        .unwrap()
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-        .count();
-    // Retry a couple of times: with iroh transport the write may
-    // land asynchronously.
-    for _ in 0..20 {
-        if queued >= 2 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        queued = std::fs::read_dir(pending_dir)
-            .unwrap()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-            .count();
+    // The relay persists asynchronously (with iroh transport the write may
+    // land later): poll until both deltas are on disk, within the same
+    // overall bound the fixed wait plus retries allowed (150 ms + 20 × 50 ms).
+    // The pending directory itself only appears once the first delta lands.
+    let count_queued = || {
+        std::fs::read_dir(pending_dir).map_or(0, |dir| {
+            dir.flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
+                .count()
+        })
+    };
+    let deadline = tokio::time::Instant::now()
+        .checked_add(Duration::from_millis(1150))
+        .unwrap();
+    let mut queued = count_queued();
+    while queued < 2 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        queued = count_queued();
     }
     assert_eq!(queued, 2, "both deltas should be queued to disk for B");
 }

@@ -166,13 +166,21 @@ mod tests {
     use super::*;
     use crate::encoder::VideoEncoder;
 
+    /// Empty input yields no frame, an encoded frame decodes to its dimensions, and remote
+    /// dimensions are checked.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn the_decoder_yields_frames_only_for_real_input_of_checked_dimensions() {
+        empty_input_yields_no_frame();
+        encode_then_decode_round_trips_dimensions();
+        remote_dimensions_are_checked();
+    }
+
     fn empty_input_yields_no_frame() {
         let mut dec = VideoDecoder::new(StreamCodec::Vp9);
         assert!(dec.decode(&[]).is_none());
     }
 
-    #[test]
     fn encode_then_decode_round_trips_dimensions() {
         const W: u32 = 64;
         const H: u32 = 48;
@@ -186,7 +194,6 @@ mod tests {
         assert_eq!(frame.rgba.len(), (W * H * 4) as usize);
     }
 
-    #[test]
     fn remote_dimensions_are_checked() {
         assert_eq!(
             decoded_rgba_len(MAX_DECODED_WIDTH, MAX_DECODED_HEIGHT),

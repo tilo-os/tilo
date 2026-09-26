@@ -27,6 +27,13 @@ fn check_sequence(sequence: &[(Language, &str)]) {
 }
 
 #[test]
+fn incremental_highlights_match_a_fresh_parse_across_edit_sequences() {
+    // Each phase starts from an empty cache and checks every step against the full-fresh oracle.
+    prefix_suffix_insert_delete_and_undo_style_reverts_match_fresh();
+    comment_string_and_scope_changes_reparse_until_state_converges();
+    unicode_newline_and_language_switches_match_fresh();
+}
+
 fn prefix_suffix_insert_delete_and_undo_style_reverts_match_fresh() {
     check_sequence(&[
         (Language::Rust, "fn main() {\n    let n = 1;\n}\n"),
@@ -44,7 +51,6 @@ fn prefix_suffix_insert_delete_and_undo_style_reverts_match_fresh() {
     ]);
 }
 
-#[test]
 fn comment_string_and_scope_changes_reparse_until_state_converges() {
     check_sequence(&[
         (
@@ -91,7 +97,6 @@ fn comment_string_and_scope_changes_reparse_until_state_converges() {
     ]);
 }
 
-#[test]
 fn unicode_newline_and_language_switches_match_fresh() {
     let rust = "fn café() {\n    let s = \"日本語 🦀\";\n}\n";
     check_sequence(&[
@@ -111,6 +116,13 @@ fn unicode_newline_and_language_switches_match_fresh() {
 }
 
 #[test]
+fn incremental_highlights_reparse_only_until_grammar_state_converges() {
+    // Each phase builds a fresh cache and bounds the number of tokenized lines.
+    same_text_is_free_but_language_change_reparses_every_line();
+    unchanged_suffix_text_is_not_sufficient_when_multiline_state_changes();
+    representative_fixture_prepend_and_revert_reuse_the_unaffected_functions();
+}
+
 fn same_text_is_free_but_language_change_reparses_every_line() {
     let source = lines("fn main() {\nlet x = 1;\n}\n");
     let mut cache = IncrementalHighlights::default();
@@ -130,7 +142,6 @@ fn same_text_is_free_but_language_change_reparses_every_line() {
     assert_eq!(spans, fresh(Language::PlainText, &source));
 }
 
-#[test]
 fn unchanged_suffix_text_is_not_sufficient_when_multiline_state_changes() {
     let original = lines("/*\ninside\n*/\nlet x = 1;");
     let changed = lines("//\ninside\n*/\nlet x = 1;");
@@ -145,7 +156,6 @@ fn unchanged_suffix_text_is_not_sufficient_when_multiline_state_changes() {
     assert_eq!(spans, fresh(Language::Rust, &changed));
 }
 
-#[test]
 fn representative_fixture_prepend_and_revert_reuse_the_unaffected_functions() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("fixture.rs");

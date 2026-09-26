@@ -372,44 +372,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn layout_switches_between_inline_flap_and_phone_drawer() {
-        let mut sidebar = Sidebar::new();
-        assert_eq!(sidebar.layout(Rect::new(0.0, 0.0, 1280.0, 800.0)), WIDTH);
-        assert_eq!(sidebar.mode(), Mode::Persistent);
-        assert_eq!(sidebar.rect().width(), WIDTH);
+    fn layout_mode_and_visibility_follow_width_text_scale_and_toggles() {
+        // Case `layout_switches_between_inline_flap_and_phone_drawer`.
+        {
+            let mut sidebar = Sidebar::new();
+            assert_eq!(sidebar.layout(Rect::new(0.0, 0.0, 1280.0, 800.0)), WIDTH);
+            assert_eq!(sidebar.mode(), Mode::Persistent);
+            assert_eq!(sidebar.rect().width(), WIDTH);
 
-        assert_eq!(sidebar.layout(Rect::new(0.0, 0.0, 700.0, 800.0)), 0.0);
-        assert_eq!(sidebar.mode(), Mode::Overlay);
-        assert_eq!(sidebar.rect().width(), WIDTH);
+            assert_eq!(sidebar.layout(Rect::new(0.0, 0.0, 700.0, 800.0)), 0.0);
+            assert_eq!(sidebar.mode(), Mode::Overlay);
+            assert_eq!(sidebar.rect().width(), WIDTH);
 
-        sidebar.layout(Rect::new(0.0, 0.0, 420.0, 800.0));
-        assert_eq!(sidebar.rect().width(), 420.0);
-    }
+            sidebar.layout(Rect::new(0.0, 0.0, 420.0, 800.0));
+            assert_eq!(sidebar.rect().width(), 420.0);
+        }
+        // Case `visibility_obeys_the_active_presentation`.
+        {
+            let mut sidebar = Sidebar::new();
+            sidebar.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            assert!(sidebar.visible());
+            sidebar.toggle_collapsed();
+            assert!(!sidebar.visible());
 
-    #[test]
-    fn visibility_obeys_the_active_presentation() {
-        let mut sidebar = Sidebar::new();
-        sidebar.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        assert!(sidebar.visible());
-        sidebar.toggle_collapsed();
-        assert!(!sidebar.visible());
-
-        sidebar.layout(Rect::new(0.0, 0.0, 700.0, 800.0));
-        assert!(!sidebar.visible());
-        sidebar.toggle_open();
-        assert!(sidebar.visible());
-    }
-
-    #[test]
-    fn large_text_uses_a_full_width_drawer_even_on_desktop() {
-        let mut sidebar = Sidebar::new();
-        sidebar.set_text_scale(2.0);
-        assert_eq!(sidebar.layout(Rect::new(0.0, 0.0, 1200.0, 900.0)), 0.0);
-        assert_eq!(sidebar.mode(), Mode::Overlay);
-        assert_eq!(sidebar.rect().width(), 1200.0);
-        assert!(
-            !sidebar.visible(),
-            "drawer stays behind the menu until opened"
-        );
+            sidebar.layout(Rect::new(0.0, 0.0, 700.0, 800.0));
+            assert!(!sidebar.visible());
+            sidebar.toggle_open();
+            assert!(sidebar.visible());
+        }
+        // Case `large_text_uses_a_full_width_drawer_even_on_desktop`.
+        {
+            let mut sidebar = Sidebar::new();
+            sidebar.set_text_scale(2.0);
+            assert_eq!(sidebar.layout(Rect::new(0.0, 0.0, 1200.0, 900.0)), 0.0);
+            assert_eq!(sidebar.mode(), Mode::Overlay);
+            assert_eq!(sidebar.rect().width(), 1200.0);
+            assert!(
+                !sidebar.visible(),
+                "drawer stays behind the menu until opened"
+            );
+        }
     }
 }

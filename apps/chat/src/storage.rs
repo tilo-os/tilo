@@ -61,37 +61,40 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// The module's whole remaining job: point `open_migrating` at the file
+    /// older releases wrote, read it, and never write it again.
     #[test]
-    fn load_returns_none_when_missing() {
+    fn legacy_workspace_file_is_read_from_its_historic_path_and_never_written() {
+        // Missing: no legacy document means `None`, not an error.
         let tmp = TempDir::new().unwrap();
-        assert!(load_bytes(tmp.path()).unwrap().is_none());
-    }
+        assert!(
+            load_bytes(tmp.path()).unwrap().is_none(),
+            "case missing: load returns None"
+        );
 
-    #[test]
-    fn the_legacy_document_is_readable_from_its_directory() {
-        // This is the whole remaining job: hand `open_migrating` a path it
-        // can read an older release's Automerge save from.
+        // Readable: hand `open_migrating` a path it can read an older
+        // release's Automerge save from.
         let tmp = TempDir::new().unwrap();
         let bytes = b"automerge-save-bytes".to_vec();
         std::fs::write(workspace_path(tmp.path()), &bytes).unwrap();
-        assert_eq!(load_bytes(tmp.path()).unwrap().unwrap(), bytes);
-    }
+        assert_eq!(
+            load_bytes(tmp.path()).unwrap().unwrap(),
+            bytes,
+            "case readable: the legacy document is readable from its directory"
+        );
 
-    #[test]
-    fn the_workspace_file_name_is_the_one_older_releases_wrote() {
-        // Changing this silently orphans every existing user's history.
+        // File name: changing this silently orphans every existing user's history.
         let p = workspace_path(Path::new("/data/tilo-chat"));
-        assert_eq!(p, Path::new("/data/tilo-chat/workspace.automerge"));
-    }
+        assert_eq!(
+            p,
+            Path::new("/data/tilo-chat/workspace.automerge"),
+            "case file name: the one older releases wrote"
+        );
 
-    #[test]
-    fn this_module_no_longer_writes() {
-        // A guard against the dual-write coming back: the only reason this
-        // module still exists is to point `open_migrating` at the legacy
-        // file. The needles are assembled at runtime so this assertion does
-        // not match itself.
-        // Only the production half — the tests below legitimately write a
-        // legacy file to have something for `open_migrating` to import.
+        // No writes: a guard against the dual-write coming back. The needles
+        // are assembled at runtime so this assertion does not match itself.
+        // Only the production half — the tests legitimately write a legacy
+        // file to have something for `open_migrating` to import.
         let src = include_str!("storage.rs");
         let production = src
             .split(["#[cfg", "(test)]"].concat().as_str())

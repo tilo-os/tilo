@@ -416,43 +416,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recorder_ingress_keeps_only_the_newest_frame() {
-        let mut control = RecordingControl {
-            start: false,
-            finish: None,
-            latest: None,
-        };
-        control.replace_latest(crate::frame::viewfinder(1, 32, 24));
-        control.replace_latest(crate::frame::viewfinder(2, 48, 36));
+    fn recorder_control_coalesces_the_newest_frame_and_orders_start_then_finish() {
+        // Phase `recorder_ingress_keeps_only_the_newest_frame`.
+        {
+            let mut control = RecordingControl {
+                start: false,
+                finish: None,
+                latest: None,
+            };
+            control.replace_latest(crate::frame::viewfinder(1, 32, 24));
+            control.replace_latest(crate::frame::viewfinder(2, 48, 36));
 
-        let newest = control.latest.as_ref().expect("latest frame");
-        assert_eq!((newest.w, newest.h), (48, 36));
-        assert_eq!(control.latest.iter().count(), 1, "one-slot backpressure");
-    }
+            let newest = control.latest.as_ref().expect("latest frame");
+            assert_eq!((newest.w, newest.h), (48, 36));
+            assert_eq!(control.latest.iter().count(), 1, "one-slot backpressure");
+        }
+        // Phase `recorder_control_orders_start_newest_frame_then_finish`.
+        {
+            let mut control = RecordingControl {
+                start: true,
+                finish: Some(VideoJob {
+                    invocation: None,
+                    generation: 7,
+                    dir: None,
+                    facing: Facing::Back,
+                }),
+                latest: None,
+            };
+            control.replace_latest(crate::frame::viewfinder(1, 32, 24));
+            control.replace_latest(crate::frame::viewfinder(2, 48, 36));
 
-    #[test]
-    fn recorder_control_orders_start_newest_frame_then_finish() {
-        let mut control = RecordingControl {
-            start: true,
-            finish: Some(VideoJob {
-                invocation: None,
-                generation: 7,
-                dir: None,
-                facing: Facing::Back,
-            }),
-            latest: None,
-        };
-        control.replace_latest(crate::frame::viewfinder(1, 32, 24));
-        control.replace_latest(crate::frame::viewfinder(2, 48, 36));
-
-        let (start, frame, finish) = control.take_pending();
-        assert!(start, "worker creates Recorder before consuming frame");
-        assert_eq!(
-            frame.map(|frame| (frame.w, frame.h)),
-            Some((48, 36)),
-            "finish consumes the coalesced newest frame"
-        );
-        assert_eq!(finish.map(|job| job.generation), Some(7));
-        assert!(control.latest.is_none() && control.finish.is_none() && !control.start);
+            let (start, frame, finish) = control.take_pending();
+            assert!(start, "worker creates Recorder before consuming frame");
+            assert_eq!(
+                frame.map(|frame| (frame.w, frame.h)),
+                Some((48, 36)),
+                "finish consumes the coalesced newest frame"
+            );
+            assert_eq!(finish.map(|job| job.generation), Some(7));
+            assert!(control.latest.is_none() && control.finish.is_none() && !control.start);
+        }
     }
 }

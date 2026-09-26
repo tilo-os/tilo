@@ -128,7 +128,16 @@ mod tests {
         catalog
     }
 
+    /// A late recovery point is found with bounded query work and resolves to
+    /// its resource, and a catalog refresh invalidates prior cursors; each case
+    /// builds its own index.
     #[test]
+    fn snapshot_search_is_bounded_and_invalidated_by_catalog_refresh() {
+        late_recovery_point_is_found_with_bounded_query_work();
+        catalog_refresh_invalidates_existing_search_cursors();
+    }
+
+    /// Case of `snapshot_search_is_bounded_and_invalidated_by_catalog_refresh`.
     fn late_recovery_point_is_found_with_bounded_query_work() {
         let mut loaded = None;
         let (provider, hit) = assert_late_hit_reachable(
@@ -168,7 +177,7 @@ mod tests {
         assert!(page.next.is_some(), "the complete history remains pageable");
     }
 
-    #[test]
+    /// Case of `snapshot_search_is_bounded_and_invalidated_by_catalog_refresh`.
     fn catalog_refresh_invalidates_existing_search_cursors() {
         let catalog = Catalog::sample();
         let index = BackupsSearchIndex::new(&catalog);

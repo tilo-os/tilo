@@ -436,74 +436,93 @@ mod tests {
     }
 
     #[test]
-    fn decodes_quick() {
-        let (layout, geom) = qwerty_geom();
-        let model = GeometricSwipeModel::english();
-        let path = path_through("quick", &geom, &layout);
-        let cands = model.decode_top(&path, &geom, &layout, 8);
-        assert!(!cands.is_empty(), "swipe produced candidates");
-        let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
-        assert!(
-            words.contains(&"quick"),
-            "expected 'quick' in top-8, got {words:?}"
-        );
+    fn swipe_decoder_recovers_common_words() {
+        eprintln!("phase decodes_quick");
+        {
+            let (layout, geom) = qwerty_geom();
+            let model = GeometricSwipeModel::english();
+            let path = path_through("quick", &geom, &layout);
+            let cands = model.decode_top(&path, &geom, &layout, 8);
+            assert!(!cands.is_empty(), "swipe produced candidates");
+            let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
+            assert!(
+                words.contains(&"quick"),
+                "expected 'quick' in top-8, got {words:?}"
+            );
+        }
+
+        eprintln!("phase decodes_hello");
+        {
+            let (layout, geom) = qwerty_geom();
+            let model = GeometricSwipeModel::english();
+            let path = path_through("hello", &geom, &layout);
+            let cands = model.decode_top(&path, &geom, &layout, 8);
+            let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
+            assert!(
+                words.contains(&"hello"),
+                "expected 'hello' in top-8, got {words:?}"
+            );
+        }
+
+        eprintln!("phase decodes_the");
+        {
+            let (layout, geom) = qwerty_geom();
+            let model = GeometricSwipeModel::english();
+            let path = path_through("the", &geom, &layout);
+            let cands = model.decode_top(&path, &geom, &layout, 8);
+            let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
+            // "the" is by far the most common word; it should rank at the very top
+            // for a path through t-h-e.
+            assert_eq!(cands[0].word, "the", "got {words:?}");
+        }
     }
 
     #[test]
-    fn decodes_hello() {
-        let (layout, geom) = qwerty_geom();
-        let model = GeometricSwipeModel::english();
-        let path = path_through("hello", &geom, &layout);
-        let cands = model.decode_top(&path, &geom, &layout, 8);
-        let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
-        assert!(
-            words.contains(&"hello"),
-            "expected 'hello' in top-8, got {words:?}"
-        );
-    }
+    fn swipe_paths_resample_and_distinguish_taps_from_drags() {
+        eprintln!("phase empty_or_trivial_path_yields_nothing");
+        {
+            let (layout, geom) = qwerty_geom();
+            let model = GeometricSwipeModel::english();
+            assert!(model.decode_top(&[], &geom, &layout, 8).is_empty());
+            assert!(
+                model
+                    .decode_top(&[Point::new(1.0, 1.0)], &geom, &layout, 8)
+                    .is_empty()
+            );
+        }
 
-    #[test]
-    fn decodes_the() {
-        let (layout, geom) = qwerty_geom();
-        let model = GeometricSwipeModel::english();
-        let path = path_through("the", &geom, &layout);
-        let cands = model.decode_top(&path, &geom, &layout, 8);
-        let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
-        // "the" is by far the most common word; it should rank at the very top
-        // for a path through t-h-e.
-        assert_eq!(cands[0].word, "the", "got {words:?}");
-    }
+        eprintln!("phase is_swipe_distinguishes_tap_from_drag");
+        {
+            let (_layout, geom) = qwerty_geom();
+            let scale = avg_key_size(&geom);
+            // A tap: a few samples all in the same spot.
+            let tap = vec![
+                Point::new(100.0, 100.0),
+                Point::new(101.0, 100.5),
+                Point::new(100.5, 101.0),
+            ];
+            assert!(!is_swipe(&tap, scale), "tiny jitter is not a swipe");
+            // A drag across several keys.
+            let drag = vec![
+                Point::new(0.0, 100.0),
+                Point::new(200.0, 100.0),
+                Point::new(400.0, 100.0),
+            ];
+            assert!(is_swipe(&drag, scale), "long drag is a swipe");
+        }
 
-    #[test]
-    fn empty_or_trivial_path_yields_nothing() {
-        let (layout, geom) = qwerty_geom();
-        let model = GeometricSwipeModel::english();
-        assert!(model.decode_top(&[], &geom, &layout, 8).is_empty());
-        assert!(
-            model
-                .decode_top(&[Point::new(1.0, 1.0)], &geom, &layout, 8)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn is_swipe_distinguishes_tap_from_drag() {
-        let (_layout, geom) = qwerty_geom();
-        let scale = avg_key_size(&geom);
-        // A tap: a few samples all in the same spot.
-        let tap = vec![
-            Point::new(100.0, 100.0),
-            Point::new(101.0, 100.5),
-            Point::new(100.5, 101.0),
-        ];
-        assert!(!is_swipe(&tap, scale), "tiny jitter is not a swipe");
-        // A drag across several keys.
-        let drag = vec![
-            Point::new(0.0, 100.0),
-            Point::new(200.0, 100.0),
-            Point::new(400.0, 100.0),
-        ];
-        assert!(is_swipe(&drag, scale), "long drag is a swipe");
+        eprintln!("phase resample_produces_exact_count_and_endpoints");
+        {
+            let path = vec![
+                Point::new(0.0, 0.0),
+                Point::new(10.0, 0.0),
+                Point::new(10.0, 10.0),
+            ];
+            let rs = resample(&path, 16);
+            assert_eq!(rs.len(), 16);
+            assert_eq!(rs[0], Point::new(0.0, 0.0));
+            assert_eq!(*rs.last().unwrap(), Point::new(10.0, 10.0));
+        }
     }
 
     #[test]
@@ -525,18 +544,5 @@ mod tests {
         let _ = model.decode_top(&path, &geom, &layout, 8);
         let dt = t0.elapsed();
         assert!(dt.as_millis() < 200, "decode took {dt:?} (budget headroom)");
-    }
-
-    #[test]
-    fn resample_produces_exact_count_and_endpoints() {
-        let path = vec![
-            Point::new(0.0, 0.0),
-            Point::new(10.0, 0.0),
-            Point::new(10.0, 10.0),
-        ];
-        let rs = resample(&path, 16);
-        assert_eq!(rs.len(), 16);
-        assert_eq!(rs[0], Point::new(0.0, 0.0));
-        assert_eq!(*rs.last().unwrap(), Point::new(10.0, 10.0));
     }
 }

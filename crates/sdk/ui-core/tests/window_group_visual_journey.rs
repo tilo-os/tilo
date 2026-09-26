@@ -173,131 +173,141 @@ fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
     eprintln!("wrote {} to {}", name, path.display());
 }
 
-/// If any two states hash the same, either a paint branch (focus ring,
-/// maximized floating controls, tab-close path) regressed, or a state
-/// change silently stopped affecting output.
+#[allow(
+    clippy::too_many_lines,
+    reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
+)]
 #[test]
-fn window_group_visual_journey_distinguishes_all_states() {
-    let (w, h) = (620u32, 200u32);
-    let mut renderer = try_new_renderer(w, h)
-        .expect("the window-group journey needs a wgpu adapter to observe its subject");
+fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes() {
+    // Case `window_group_visual_journey_distinguishes_all_states`.
+    // If any two states hash the same, either a paint branch (focus ring,
+    // maximized floating controls, tab-close path) regressed, or a state
+    // change silently stopped affecting output.
+    {
+        let (w, h) = (620u32, 200u32);
+        let mut renderer = try_new_renderer(w, h)
+            .expect("the window-group journey needs a wgpu adapter to observe its subject");
 
-    let mut group = make_window_group();
-    let fresh = render_group(&mut renderer, &mut group);
-    let fresh_hash = pixel_hash(&fresh);
-    maybe_write_png(&fresh, w, h, "window_group_fresh");
+        let mut group = make_window_group();
+        let fresh = render_group(&mut renderer, &mut group);
+        let fresh_hash = pixel_hash(&fresh);
+        maybe_write_png(&fresh, w, h, "window_group_fresh");
 
-    // Should paint the indigo ring/glow pair around the whole card.
-    group.search_active = true;
-    let search = render_group(&mut renderer, &mut group);
-    let search_hash = pixel_hash(&search);
-    maybe_write_png(&search, w, h, "window_group_search");
-    assert_ne!(
-        fresh_hash, search_hash,
-        "search_active must change the rendered output (focus ring + glow)",
-    );
+        // Should paint the indigo ring/glow pair around the whole card.
+        group.search_active = true;
+        let search = render_group(&mut renderer, &mut group);
+        let search_hash = pixel_hash(&search);
+        maybe_write_png(&search, w, h, "window_group_search");
+        assert_ne!(
+            fresh_hash, search_hash,
+            "search_active must change the rendered output (focus ring + glow)",
+        );
 
-    // search_active stays on — both can coexist. Adds the 2px outline +
-    // floating title pill + Restore + × pills.
-    group.maximized = true;
-    let maximized = render_group(&mut renderer, &mut group);
-    let maximized_hash = pixel_hash(&maximized);
-    maybe_write_png(&maximized, w, h, "window_group_maximized");
-    assert_ne!(
-        fresh_hash, maximized_hash,
-        "maximized must change the rendered output (outline + floating pills)",
-    );
-    assert_ne!(
-        search_hash, maximized_hash,
-        "maximized on top of search_active must paint additional chrome",
-    );
+        // search_active stays on — both can coexist. Adds the 2px outline +
+        // floating title pill + Restore + × pills.
+        group.maximized = true;
+        let maximized = render_group(&mut renderer, &mut group);
+        let maximized_hash = pixel_hash(&maximized);
+        maybe_write_png(&maximized, w, h, "window_group_maximized");
+        assert_ne!(
+            fresh_hash, maximized_hash,
+            "maximized must change the rendered output (outline + floating pills)",
+        );
+        assert_ne!(
+            search_hash, maximized_hash,
+            "maximized on top of search_active must paint additional chrome",
+        );
 
-    // Turn overlays back off and remove the active tab — exercises the
-    // close path's layout-spring start and the `remove_tab` branch.
-    group.maximized = false;
-    group.search_active = false;
-    let detached = group.detach_tab(1);
-    assert!(detached.is_some(), "detach_tab(1) must succeed");
-    let post_close = render_group(&mut renderer, &mut group);
-    let post_close_hash = pixel_hash(&post_close);
-    maybe_write_png(&post_close, w, h, "window_group_post_close");
-    assert_ne!(
-        fresh_hash, post_close_hash,
-        "removing a tab must change the rendered output (one fewer pill)",
-    );
-}
+        // Turn overlays back off and remove the active tab — exercises the
+        // close path's layout-spring start and the `remove_tab` branch.
+        group.maximized = false;
+        group.search_active = false;
+        let detached = group.detach_tab(1);
+        assert!(detached.is_some(), "detach_tab(1) must succeed");
+        let post_close = render_group(&mut renderer, &mut group);
+        let post_close_hash = pixel_hash(&post_close);
+        maybe_write_png(&post_close, w, h, "window_group_post_close");
+        assert_ne!(
+            fresh_hash, post_close_hash,
+            "removing a tab must change the rendered output (one fewer pill)",
+        );
+    }
 
-/// The same journey on the **light** preset. The maximized chrome's chips
-/// are the one live consumer of `surface::chip_colors` / `surface::pill`,
-/// whose quiet edge is now derived from the chip fill; a light-theme frame
-/// is where a declared or literal-white edge used to vanish, so the four
-/// states must stay distinct there too. Writes `window_group_<state>_light.png`
-/// under `QUICK_UI_SCREENSHOT_DIR` for by-eye inspection beside the dark set.
-#[test]
-fn window_group_visual_journey_distinguishes_all_states_in_light() {
-    let (w, h) = (620u32, 200u32);
-    let mut renderer = try_new_renderer(w, h)
-        .expect("the light window-group journey needs a wgpu adapter to observe its subject");
-    let theme = Theme::light();
+    // Case `window_group_visual_journey_distinguishes_all_states_in_light`.
+    // The same journey on the **light** preset. The maximized chrome's chips
+    // are the one live consumer of `surface::chip_colors` / `surface::pill`,
+    // whose quiet edge is now derived from the chip fill; a light-theme frame
+    // is where a declared or literal-white edge used to vanish, so the four
+    // states must stay distinct there too. Writes `window_group_<state>_light.png`
+    // under `QUICK_UI_SCREENSHOT_DIR` for by-eye inspection beside the dark set.
+    {
+        let (w, h) = (620u32, 200u32);
+        let mut renderer = try_new_renderer(w, h)
+            .expect("the light window-group journey needs a wgpu adapter to observe its subject");
+        let theme = Theme::light();
 
-    let mut group = make_window_group();
-    let fresh = render_group_themed(&mut renderer, &mut group, &theme);
-    let fresh_hash = pixel_hash(&fresh);
-    maybe_write_png(&fresh, w, h, "window_group_fresh_light");
+        let mut group = make_window_group();
+        let fresh = render_group_themed(&mut renderer, &mut group, &theme);
+        let fresh_hash = pixel_hash(&fresh);
+        maybe_write_png(&fresh, w, h, "window_group_fresh_light");
 
-    group.search_active = true;
-    let search = render_group_themed(&mut renderer, &mut group, &theme);
-    let search_hash = pixel_hash(&search);
-    maybe_write_png(&search, w, h, "window_group_search_light");
-    assert_ne!(
-        fresh_hash, search_hash,
-        "light: search_active must change the rendered output",
-    );
+        group.search_active = true;
+        let search = render_group_themed(&mut renderer, &mut group, &theme);
+        let search_hash = pixel_hash(&search);
+        maybe_write_png(&search, w, h, "window_group_search_light");
+        assert_ne!(
+            fresh_hash, search_hash,
+            "light: search_active must change the rendered output",
+        );
 
-    group.maximized = true;
-    let maximized = render_group_themed(&mut renderer, &mut group, &theme);
-    let maximized_hash = pixel_hash(&maximized);
-    maybe_write_png(&maximized, w, h, "window_group_maximized_light");
-    assert_ne!(
-        fresh_hash, maximized_hash,
-        "light: maximized must change the rendered output (floating pills)",
-    );
-    assert_ne!(
-        search_hash, maximized_hash,
-        "light: maximized on top of search_active must paint additional chrome",
-    );
+        group.maximized = true;
+        let maximized = render_group_themed(&mut renderer, &mut group, &theme);
+        let maximized_hash = pixel_hash(&maximized);
+        maybe_write_png(&maximized, w, h, "window_group_maximized_light");
+        assert_ne!(
+            fresh_hash, maximized_hash,
+            "light: maximized must change the rendered output (floating pills)",
+        );
+        assert_ne!(
+            search_hash, maximized_hash,
+            "light: maximized on top of search_active must paint additional chrome",
+        );
 
-    group.maximized = false;
-    group.search_active = false;
-    assert!(group.detach_tab(1).is_some(), "detach_tab(1) must succeed");
-    let post_close = render_group_themed(&mut renderer, &mut group, &theme);
-    let post_close_hash = pixel_hash(&post_close);
-    maybe_write_png(&post_close, w, h, "window_group_post_close_light");
-    assert_ne!(
-        fresh_hash, post_close_hash,
-        "light: removing a tab must change the rendered output",
-    );
-}
+        group.maximized = false;
+        group.search_active = false;
+        assert!(group.detach_tab(1).is_some(), "detach_tab(1) must succeed");
+        let post_close = render_group_themed(&mut renderer, &mut group, &theme);
+        let post_close_hash = pixel_hash(&post_close);
+        maybe_write_png(&post_close, w, h, "window_group_post_close_light");
+        assert_ne!(
+            fresh_hash, post_close_hash,
+            "light: removing a tab must change the rendered output",
+        );
+    }
 
-/// This is the invariant the journey test relies on — without it, its
-/// pixel-hash comparisons are meaningless. Compared with
-/// [`OffscreenRenderer::pixels_differing_beyond_aa`], not byte equality:
-/// see the `tilo_ui::offscreen` module docs for why GPU rasterisation isn't
-/// bit-identical between runs.
-#[test]
-fn window_group_fresh_render_is_deterministic() {
-    let (w, h) = (400u32, 120u32);
-    let Some(mut renderer) = try_new_renderer(w, h) else {
-        eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
-        return;
-    };
-    let mut g1 = make_window_group();
-    let mut g2 = make_window_group();
-    let a = render_group(&mut renderer, &mut g1);
-    let b = render_group(&mut renderer, &mut g2);
-    assert_eq!(
-        OffscreenRenderer::pixels_differing_beyond_aa(&a, &b),
-        0,
-        "two fresh WindowGroup renders must produce the same image",
-    );
+    // Case `window_group_fresh_render_is_deterministic`.
+    // This is the invariant the journey test relies on — without it, its
+    // pixel-hash comparisons are meaningless. Compared with
+    // [`OffscreenRenderer::pixels_differing_beyond_aa`], not byte equality:
+    // see the `tilo_ui::offscreen` module docs for why GPU rasterisation isn't
+    // bit-identical between runs.
+    {
+        fn window_group_fresh_render_is_deterministic() {
+            let (w, h) = (400u32, 120u32);
+            let Some(mut renderer) = try_new_renderer(w, h) else {
+                eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
+                return;
+            };
+            let mut g1 = make_window_group();
+            let mut g2 = make_window_group();
+            let a = render_group(&mut renderer, &mut g1);
+            let b = render_group(&mut renderer, &mut g2);
+            assert_eq!(
+                OffscreenRenderer::pixels_differing_beyond_aa(&a, &b),
+                0,
+                "two fresh WindowGroup renders must produce the same image",
+            );
+        }
+        window_group_fresh_render_is_deterministic();
+    }
 }

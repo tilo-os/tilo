@@ -439,231 +439,236 @@ mod tests {
     use crate::WorkspaceAcl;
     use crate::namespace::ROOT_INO;
 
-    /// Two apps open the same document over the socket and both edit it — each sees the other's edit (collaborative editing via the FS).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn two_clients_edit_one_document() {
-        let namespace = Arc::new(Mutex::new(Namespace::new("server").unwrap()));
-        let bid = {
-            let mut ns = namespace.lock().unwrap();
-            let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
-            let b = ns.document_insert_block(ino, None, "paragraph").unwrap();
-            ns.document_splice(ino, &b, 0, 0, "Hello");
-            b
-        };
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    async fn the_control_socket_shares_edits_but_respects_the_view_and_roles() {
+        // Phase `two_clients_edit_one_document`.
+        // Two apps open the same document over the socket and both edit it — each sees the other's edit (collaborative editing via the FS).
+        {
+            let namespace = Arc::new(Mutex::new(Namespace::new("server").unwrap()));
+            let bid = {
+                let mut ns = namespace.lock().unwrap();
+                let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
+                let b = ns.document_insert_block(ino, None, "paragraph").unwrap();
+                ns.document_splice(ino, &b, 0, 0, "Hello");
+                b
+            };
 
-        let dir = tempfile::tempdir().unwrap();
-        let sock = dir.path().join("ctl.sock");
-        let listener = UnixListener::bind(&sock).unwrap();
-        tokio::spawn(serve(listener, namespace.clone(), None, None));
+            let dir = tempfile::tempdir().unwrap();
+            let sock = dir.path().join("ctl.sock");
+            let listener = UnixListener::bind(&sock).unwrap();
+            tokio::spawn(serve(listener, namespace.clone(), None, None));
 
-        let mut a = Client::connect(&sock).await.unwrap();
-        let mut b = Client::connect(&sock).await.unwrap();
+            let mut a = Client::connect(&sock).await.unwrap();
+            let mut b = Client::connect(&sock).await.unwrap();
 
-        let ino = a.open("doc.md").await.unwrap().expect("document opened");
-        b.open("doc.md").await.unwrap();
+            let ino = a.open("doc.md").await.unwrap().expect("document opened");
+            b.open("doc.md").await.unwrap();
 
-        a.splice(ino, &bid, 5, 0, " A").await.unwrap();
-        b.splice(ino, &bid, 7, 0, " B").await.unwrap();
+            a.splice(ino, &bid, 5, 0, " A").await.unwrap();
+            b.splice(ino, &bid, 7, 0, " B").await.unwrap();
 
-        let snap = b.snapshot(ino).await.unwrap().expect("snapshot");
-        let text: String = snap.blocks.iter().map(|bl| bl.text.clone()).collect();
-        assert!(text.contains("Hello"), "base text present: {text}");
-        assert!(text.contains(" A"), "A's edit visible to B: {text}");
-        assert!(text.contains(" B"), "B's edit visible: {text}");
-    }
+            let snap = b.snapshot(ino).await.unwrap().expect("snapshot");
+            let text: String = snap.blocks.iter().map(|bl| bl.text.clone()).collect();
+            assert!(text.contains("Hello"), "base text present: {text}");
+            assert!(text.contains(" A"), "A's edit visible to B: {text}");
+            assert!(text.contains(" B"), "B's edit visible: {text}");
+        }
+        // Phase `the_control_socket_is_not_a_way_around_the_view`.
+        // A document outside the view can't be opened, and can't be told apart from one that doesn't exist (`Open` answers `NotFound` either way).
+        {
+            use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
 
-    /// A document outside the view can't be opened, and can't be told apart from one that doesn't exist (`Open` answers `NotFound` either way).
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_control_socket_is_not_a_way_around_the_view() {
-        use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+            const ALICE: IdentityKey = [0xA1; 32];
 
-        const ALICE: IdentityKey = [0xA1; 32];
+            let namespace = Arc::new(Mutex::new(Namespace::new("server").unwrap()));
+            let hidden_block = {
+                let mut ns = namespace.lock().unwrap();
+                let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
+                let visible = ns.create_document(shared, "notes.md", "md", 1).unwrap();
+                let b = ns
+                    .document_insert_block(visible, None, "paragraph")
+                    .unwrap();
+                ns.document_splice(visible, &b, 0, 0, "Shared");
+                let secret_dir = ns.create_dir(ROOT_INO, "secret", 1).unwrap();
+                let secret = ns.create_document(secret_dir, "plan.md", "md", 1).unwrap();
+                let sb = ns.document_insert_block(secret, None, "paragraph").unwrap();
+                ns.document_splice(secret, &sb, 0, 0, "Confidential");
+                sb
+            };
 
-        let namespace = Arc::new(Mutex::new(Namespace::new("server").unwrap()));
-        let hidden_block = {
-            let mut ns = namespace.lock().unwrap();
-            let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
-            let visible = ns.create_document(shared, "notes.md", "md", 1).unwrap();
-            let b = ns
-                .document_insert_block(visible, None, "paragraph")
-                .unwrap();
-            ns.document_splice(visible, &b, 0, 0, "Shared");
-            let secret_dir = ns.create_dir(ROOT_INO, "secret", 1).unwrap();
-            let secret = ns.create_document(secret_dir, "plan.md", "md", 1).unwrap();
-            let sb = ns.document_insert_block(secret, None, "paragraph").unwrap();
-            ns.document_splice(secret, &sb, 0, 0, "Confidential");
-            sb
-        };
+            let acl = WorkspaceAcl::from_capabilities(
+                ALICE,
+                &[CapOverride::new(
+                    Subject::User(Ed25519PublicKey(ALICE)),
+                    Scope::FsPath("/shared".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                )],
+                &[],
+                None,
+            );
 
-        let acl = WorkspaceAcl::from_capabilities(
-            ALICE,
-            &[CapOverride::new(
+            let dir = tempfile::tempdir().unwrap();
+            let sock = dir.path().join("ctl.sock");
+            let listener = UnixListener::bind(&sock).unwrap();
+            tokio::spawn(serve(
+                listener,
+                namespace.clone(),
+                None,
+                Some((acl.into(), ALICE)),
+            ));
+            let mut c = Client::connect(&sock).await.unwrap();
+
+            let visible = c
+                .open("/shared/notes.md")
+                .await
+                .unwrap()
+                .expect("a granted document opens");
+            let snap = c.snapshot(visible).await.unwrap().expect("and reads");
+            assert!(snap.blocks.iter().any(|b| b.text.contains("Shared")));
+
+            // The one outside the view does not — answers exactly as a path that was never created.
+            assert_eq!(
+                c.open("/secret/plan.md").await.unwrap(),
+                None,
+                "a document outside the view must not open"
+            );
+            assert_eq!(
+                c.open("/never/existed.md").await.unwrap(),
+                None,
+                "and a path that never existed answers the same way"
+            );
+
+            // Nor is the handle reachable by guessing an inode: a real-but-hidden handle replies the same as a nonsense one.
+            let secret_ino = namespace
+                .lock()
+                .unwrap()
+                .resolve_path_ino("/secret/plan.md")
+                .expect("the fixture really has it");
+            assert!(
+                c.snapshot(secret_ino).await.unwrap().is_none(),
+                "a snapshot of a hidden document must be refused"
+            );
+            assert!(
+                c.snapshot(9_999_999).await.unwrap().is_none(),
+                "and a handle that names nothing is refused identically"
+            );
+
+            // Editing it must change nothing: a read participant has no authoring
+            // capability.
+            let heads = namespace.lock().unwrap().heads();
+            assert!(
+                c.splice(secret_ino, &hidden_block, 0, 0, "TAMPERED")
+                    .await
+                    .is_err()
+                    || namespace.lock().unwrap().heads() == heads,
+                "an edit to a hidden document must not reach the CRDT"
+            );
+            assert_eq!(
+                namespace.lock().unwrap().heads(),
+                heads,
+                "the change graph must not have advanced"
+            );
+            let text: String = namespace
+                .lock()
+                .unwrap()
+                .document_snapshot(secret_ino)
+                .expect("still there")
+                .blocks
+                .iter()
+                .map(|b| b.text.clone())
+                .collect();
+            assert_eq!(
+                text, "Confidential",
+                "the hidden document is byte-for-byte as it was"
+            );
+        }
+        // Phase `a_read_participant_cannot_author_over_the_socket`.
+        // A read participant sees the document but cannot author it.
+        {
+            use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+
+            const ALICE: IdentityKey = [0xA1; 32];
+
+            let namespace = Arc::new(Mutex::new(Namespace::new("server").unwrap()));
+            let block = {
+                let mut ns = namespace.lock().unwrap();
+                let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
+                let ino = ns.create_document(shared, "notes.md", "md", 1).unwrap();
+                let b = ns.document_insert_block(ino, None, "paragraph").unwrap();
+                ns.document_splice(ino, &b, 0, 0, "Shared paragraph");
+                b
+            };
+
+            let read_cap = CapOverride::new(
                 Subject::User(Ed25519PublicKey(ALICE)),
                 Scope::FsPath("/shared".into()),
                 Effect::Grant,
                 Verb::Read,
-            )],
-            &[],
-            None,
-        );
+            );
+            let acl = WorkspaceAcl::from_capabilities(ALICE, &[read_cap], &[], None);
 
-        let dir = tempfile::tempdir().unwrap();
-        let sock = dir.path().join("ctl.sock");
-        let listener = UnixListener::bind(&sock).unwrap();
-        tokio::spawn(serve(
-            listener,
-            namespace.clone(),
-            None,
-            Some((acl.into(), ALICE)),
-        ));
-        let mut c = Client::connect(&sock).await.unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let sock = dir.path().join("ro.sock");
+            let listener = UnixListener::bind(&sock).unwrap();
+            tokio::spawn(serve(
+                listener,
+                namespace.clone(),
+                None,
+                Some((acl.into(), ALICE)),
+            ));
+            let mut c = Client::connect(&sock).await.unwrap();
 
-        let visible = c
-            .open("/shared/notes.md")
-            .await
-            .unwrap()
-            .expect("a granted document opens");
-        let snap = c.snapshot(visible).await.unwrap().expect("and reads");
-        assert!(snap.blocks.iter().any(|b| b.text.contains("Shared")));
+            let ino = c.open("/shared/notes.md").await.unwrap().expect("opens");
+            let snap = c.snapshot(ino).await.unwrap().expect("reads");
+            assert!(
+                snap.blocks
+                    .iter()
+                    .any(|b| b.text.contains("Shared paragraph")),
+                "read participation is participation: the real content is served"
+            );
 
-        // The one outside the view does not — answers exactly as a path that was never created.
-        assert_eq!(
-            c.open("/secret/plan.md").await.unwrap(),
-            None,
-            "a document outside the view must not open"
-        );
-        assert_eq!(
-            c.open("/never/existed.md").await.unwrap(),
-            None,
-            "and a path that never existed answers the same way"
-        );
+            let heads = namespace.lock().unwrap().heads();
+            assert!(c.splice(ino, &block, 0, 0, "MINE").await.is_err());
+            assert!(c.insert_block(ino, None, "paragraph").await.is_err());
+            assert!(c.remove_block(ino, &block).await.is_err());
+            assert_eq!(
+                namespace.lock().unwrap().heads(),
+                heads,
+                "no authoring op may advance the change graph"
+            );
 
-        // Nor is the handle reachable by guessing an inode: a real-but-hidden handle replies the same as a nonsense one.
-        let secret_ino = namespace
-            .lock()
-            .unwrap()
-            .resolve_path_ino("/secret/plan.md")
-            .expect("the fixture really has it");
-        assert!(
-            c.snapshot(secret_ino).await.unwrap().is_none(),
-            "a snapshot of a hidden document must be refused"
-        );
-        assert!(
-            c.snapshot(9_999_999).await.unwrap().is_none(),
-            "and a handle that names nothing is refused identically"
-        );
-
-        // Editing it must change nothing: a read participant has no authoring
-        // capability.
-        let heads = namespace.lock().unwrap().heads();
-        assert!(
-            c.splice(secret_ino, &hidden_block, 0, 0, "TAMPERED")
+            // The same document with a write grant does accept the edit, so the refusals above are the capability, not a broken fixture.
+            let write_cap = CapOverride::new(
+                Subject::User(Ed25519PublicKey(ALICE)),
+                Scope::FsPath("/shared".into()),
+                Effect::Grant,
+                Verb::Write,
+            );
+            let rw = WorkspaceAcl::from_capabilities(ALICE, &[write_cap], &[], None);
+            let sock2 = dir.path().join("rw.sock");
+            let listener2 = UnixListener::bind(&sock2).unwrap();
+            tokio::spawn(serve(
+                listener2,
+                namespace.clone(),
+                None,
+                Some((rw.into(), ALICE)),
+            ));
+            let mut w = Client::connect(&sock2).await.unwrap();
+            let ino = w.open("/shared/notes.md").await.unwrap().expect("opens");
+            w.splice(ino, &block, 0, 0, "OURS ")
                 .await
-                .is_err()
-                || namespace.lock().unwrap().heads() == heads,
-            "an edit to a hidden document must not reach the CRDT"
-        );
-        assert_eq!(
-            namespace.lock().unwrap().heads(),
-            heads,
-            "the change graph must not have advanced"
-        );
-        let text: String = namespace
-            .lock()
-            .unwrap()
-            .document_snapshot(secret_ino)
-            .expect("still there")
-            .blocks
-            .iter()
-            .map(|b| b.text.clone())
-            .collect();
-        assert_eq!(
-            text, "Confidential",
-            "the hidden document is byte-for-byte as it was"
-        );
-    }
-
-    /// A read participant sees the document but cannot author it.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_read_participant_cannot_author_over_the_socket() {
-        use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
-
-        const ALICE: IdentityKey = [0xA1; 32];
-
-        let namespace = Arc::new(Mutex::new(Namespace::new("server").unwrap()));
-        let block = {
-            let mut ns = namespace.lock().unwrap();
-            let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
-            let ino = ns.create_document(shared, "notes.md", "md", 1).unwrap();
-            let b = ns.document_insert_block(ino, None, "paragraph").unwrap();
-            ns.document_splice(ino, &b, 0, 0, "Shared paragraph");
-            b
-        };
-
-        let read_cap = CapOverride::new(
-            Subject::User(Ed25519PublicKey(ALICE)),
-            Scope::FsPath("/shared".into()),
-            Effect::Grant,
-            Verb::Read,
-        );
-        let acl = WorkspaceAcl::from_capabilities(ALICE, &[read_cap], &[], None);
-
-        let dir = tempfile::tempdir().unwrap();
-        let sock = dir.path().join("ro.sock");
-        let listener = UnixListener::bind(&sock).unwrap();
-        tokio::spawn(serve(
-            listener,
-            namespace.clone(),
-            None,
-            Some((acl.into(), ALICE)),
-        ));
-        let mut c = Client::connect(&sock).await.unwrap();
-
-        let ino = c.open("/shared/notes.md").await.unwrap().expect("opens");
-        let snap = c.snapshot(ino).await.unwrap().expect("reads");
-        assert!(
-            snap.blocks
-                .iter()
-                .any(|b| b.text.contains("Shared paragraph")),
-            "read participation is participation: the real content is served"
-        );
-
-        let heads = namespace.lock().unwrap().heads();
-        assert!(c.splice(ino, &block, 0, 0, "MINE").await.is_err());
-        assert!(c.insert_block(ino, None, "paragraph").await.is_err());
-        assert!(c.remove_block(ino, &block).await.is_err());
-        assert_eq!(
-            namespace.lock().unwrap().heads(),
-            heads,
-            "no authoring op may advance the change graph"
-        );
-
-        // The same document with a write grant does accept the edit, so the refusals above are the capability, not a broken fixture.
-        let write_cap = CapOverride::new(
-            Subject::User(Ed25519PublicKey(ALICE)),
-            Scope::FsPath("/shared".into()),
-            Effect::Grant,
-            Verb::Write,
-        );
-        let rw = WorkspaceAcl::from_capabilities(ALICE, &[write_cap], &[], None);
-        let sock2 = dir.path().join("rw.sock");
-        let listener2 = UnixListener::bind(&sock2).unwrap();
-        tokio::spawn(serve(
-            listener2,
-            namespace.clone(),
-            None,
-            Some((rw.into(), ALICE)),
-        ));
-        let mut w = Client::connect(&sock2).await.unwrap();
-        let ino = w.open("/shared/notes.md").await.unwrap().expect("opens");
-        w.splice(ino, &block, 0, 0, "OURS ")
-            .await
-            .expect("an authoring participant may edit");
-        assert_ne!(
-            namespace.lock().unwrap().heads(),
-            heads,
-            "an authored edit must advance the change graph"
-        );
+                .expect("an authoring participant may edit");
+            assert_ne!(
+                namespace.lock().unwrap().heads(),
+                heads,
+                "an authored edit must advance the change graph"
+            );
+        }
     }
 
     /// The full story: an editor on peer A edits through the control socket; it propagates over P2P; an editor on peer B sees it.

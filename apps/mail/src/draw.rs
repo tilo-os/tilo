@@ -309,19 +309,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn md5_matches_known_vectors() {
-        assert_eq!(md5_hex(b""), "d41d8cd98f00b204e9800998ecf8427e");
-        assert_eq!(md5_hex(b"abc"), "900150983cd24fb0d6963f7d28e17f72");
-        assert_eq!(
-            md5_hex(b"The quick brown fox jumps over the lazy dog"),
-            "9e107d9d372bb6826bd81d3542a419d6"
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn gravatar_urls_hash_the_normalised_address() {
+        // Phase `md5_matches_known_vectors`.
+        {
+            assert_eq!(md5_hex(b""), "d41d8cd98f00b204e9800998ecf8427e");
+            assert_eq!(md5_hex(b"abc"), "900150983cd24fb0d6963f7d28e17f72");
+            assert_eq!(
+                md5_hex(b"The quick brown fox jumps over the lazy dog"),
+                "9e107d9d372bb6826bd81d3542a419d6"
+            );
+        }
 
-    #[test]
-    fn gravatar_url_lowercases_and_trims() {
-        // Canonical Gravatar example hash for "MyEmailAddress@example.com".
-        let u = gravatar_url("  MyEmailAddress@example.com ");
-        assert!(u.contains("0bc83cb571cd1c50ba6f3e8a78ef1346"), "{u}");
+        // Phase `gravatar_url_lowercases_and_trims`.
+        {
+            // Canonical Gravatar example hash for "MyEmailAddress@example.com".
+            let u = gravatar_url("  MyEmailAddress@example.com ");
+            assert!(u.contains("0bc83cb571cd1c50ba6f3e8a78ef1346"), "{u}");
+        }
     }
 }

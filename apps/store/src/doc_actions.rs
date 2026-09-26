@@ -152,70 +152,74 @@ mod tests {
         ],
     }
 
+    /// Report drafts and notes are replayable document resources that converge without interleaving.
     #[test]
-    fn report_draft_is_a_replayable_document_resource() {
-        let mut doc = Doc::new();
-        StoreDocumentAction::CreateReportDraft {
-            app_id: "so.tilo.notes".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        assert!(
-            doc.get(&ROOT, "store.report_resource.so.tilo.notes")
-                .unwrap()
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn absolute_report_note_is_bounded_and_replayable() {
-        let action = StoreDocumentAction::SetReportNote {
-            app_id: "so.tilo.notes".into(),
-            note: "The listing omits a network dependency.".into(),
-        };
-        let mut doc = Doc::new();
-        action.apply(&mut doc).unwrap();
-        assert_eq!(note(&doc), "The listing omits a network dependency.");
-        action.apply(&mut doc).unwrap();
-        assert_eq!(note(&doc), "The listing omits a network dependency.");
-        assert!(
-            StoreDocumentAction::SetReportNote {
+    fn report_drafts_are_bounded_replayable_and_converge() {
+        // Case `report_draft_is_a_replayable_document_resource`.
+        {
+            let mut doc = Doc::new();
+            StoreDocumentAction::CreateReportDraft {
                 app_id: "so.tilo.notes".into(),
-                note: "x".repeat(4_097),
             }
-            .apply(&mut Doc::new())
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn divergent_absolute_report_notes_converge_without_sentence_interleaving() {
-        let mut seed = Doc::new();
-        StoreDocumentAction::CreateReportDraft {
-            app_id: "so.tilo.notes".into(),
-        }
-        .apply(&mut seed)
-        .unwrap();
-        let bytes = seed.save();
-        let mut left = Doc::load(&bytes).unwrap();
-        let mut right = Doc::load(&bytes).unwrap();
-        for (doc, value) in [(&mut left, "left evidence"), (&mut right, "right evidence")] {
-            StoreDocumentAction::SetReportNote {
-                app_id: "so.tilo.notes".into(),
-                note: value.into(),
-            }
-            .apply(doc)
+            .apply(&mut doc)
             .unwrap();
+            assert!(
+                doc.get(&ROOT, "store.report_resource.so.tilo.notes")
+                    .unwrap()
+                    .is_some()
+            );
         }
-        let mut left_then_right = left.clone();
-        left_then_right.merge_incoming(&mut right.clone()).unwrap();
-        let mut right_then_left = right;
-        right_then_left.merge_incoming(&mut left).unwrap();
-        let resolved = note(&left_then_right);
-        assert_eq!(resolved, note(&right_then_left));
-        assert!(matches!(
-            resolved.as_str(),
-            "left evidence" | "right evidence"
-        ));
+
+        // Case `absolute_report_note_is_bounded_and_replayable`.
+        {
+            let action = StoreDocumentAction::SetReportNote {
+                app_id: "so.tilo.notes".into(),
+                note: "The listing omits a network dependency.".into(),
+            };
+            let mut doc = Doc::new();
+            action.apply(&mut doc).unwrap();
+            assert_eq!(note(&doc), "The listing omits a network dependency.");
+            action.apply(&mut doc).unwrap();
+            assert_eq!(note(&doc), "The listing omits a network dependency.");
+            assert!(
+                StoreDocumentAction::SetReportNote {
+                    app_id: "so.tilo.notes".into(),
+                    note: "x".repeat(4_097),
+                }
+                .apply(&mut Doc::new())
+                .is_err()
+            );
+        }
+
+        // Case `divergent_absolute_report_notes_converge_without_sentence_interleaving`.
+        {
+            let mut seed = Doc::new();
+            StoreDocumentAction::CreateReportDraft {
+                app_id: "so.tilo.notes".into(),
+            }
+            .apply(&mut seed)
+            .unwrap();
+            let bytes = seed.save();
+            let mut left = Doc::load(&bytes).unwrap();
+            let mut right = Doc::load(&bytes).unwrap();
+            for (doc, value) in [(&mut left, "left evidence"), (&mut right, "right evidence")] {
+                StoreDocumentAction::SetReportNote {
+                    app_id: "so.tilo.notes".into(),
+                    note: value.into(),
+                }
+                .apply(doc)
+                .unwrap();
+            }
+            let mut left_then_right = left.clone();
+            left_then_right.merge_incoming(&mut right.clone()).unwrap();
+            let mut right_then_left = right;
+            right_then_left.merge_incoming(&mut left).unwrap();
+            let resolved = note(&left_then_right);
+            assert_eq!(resolved, note(&right_then_left));
+            assert!(matches!(
+                resolved.as_str(),
+                "left evidence" | "right evidence"
+            ));
+        }
     }
 }
