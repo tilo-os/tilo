@@ -144,22 +144,27 @@ mod availability_tests {
     use super::QsActionAvailability;
 
     #[test]
-    fn mechanisms_are_probed_independently_before_discovery() {
-        let found =
-            QsActionAvailability::from_probe(|command| matches!(command, "wpctl" | "nmcli"));
-        assert!(!found.brightness);
-        assert!(found.volume);
-        assert!(found.wifi);
-        assert!(!found.power_profile);
-        assert!(found.vpn);
-    }
+    fn quick_settings_mechanisms_are_probed_independently_and_absent_when_unsupported() {
+        fn mechanisms_are_probed_independently_before_discovery() {
+            let found =
+                QsActionAvailability::from_probe(|command| matches!(command, "wpctl" | "nmcli"));
+            assert!(!found.brightness);
+            assert!(found.volume);
+            assert!(found.wifi);
+            assert!(!found.power_profile);
+            assert!(found.vpn);
+        }
 
-    #[cfg(not(target_os = "linux"))]
-    #[test]
-    fn unsupported_host_advertises_no_quick_settings_mechanism() {
-        assert_eq!(
-            QsActionAvailability::detect(),
-            QsActionAvailability::default()
-        );
+        #[cfg(not(target_os = "linux"))]
+        fn unsupported_host_advertises_no_quick_settings_mechanism() {
+            assert_eq!(
+                QsActionAvailability::detect(),
+                QsActionAvailability::default()
+            );
+        }
+
+        mechanisms_are_probed_independently_before_discovery();
+        #[cfg(not(target_os = "linux"))]
+        unsupported_host_advertises_no_quick_settings_mechanism();
     }
 }

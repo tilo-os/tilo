@@ -1179,123 +1179,137 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plain_round_trips_into_blocks() {
-        let ed = Wysiwyg::from_plain("First line\nSecond line");
-        assert_eq!(ed.blocks.len(), 2);
-        assert_eq!(ed.blocks[0].text(), "First line");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn editor_blocks_round_trip_plain_text_and_wrap_graphemes() {
+        // Phase `plain_round_trips_into_blocks`.
+        {
+            let ed = Wysiwyg::from_plain("First line\nSecond line");
+            assert_eq!(ed.blocks.len(), 2);
+            assert_eq!(ed.blocks[0].text(), "First line");
+        }
+
+        // Phase `backspace_deletes_one_extended_grapheme`.
+        {
+            let mut editor = Wysiwyg::new();
+            editor.set_focus(true);
+            for character in "A👩‍👩‍👧‍👦".chars() {
+                editor.insert_char(character);
+            }
+            editor.backspace();
+            assert_eq!(editor.to_plain(), "A");
+        }
+
+        // Phase `proportional_mail_body_wraps_with_shared_layout`.
+        {
+            let mut editor = Wysiwyg::from_plain(
+                "A deliberately long proportional paragraph with ligatures affinity office and wrapping.",
+            );
+            editor.apply_layout(Rect::new(0.0, 0.0, 180.0, 300.0));
+            let mut scene = Scene::new();
+            let mut renderer = TextRenderer::new();
+            let theme = Theme::light();
+            editor.draw(&mut scene, Affine::IDENTITY, &mut renderer, &theme);
+            let body = theme.tokens.typography.style(TextRole::Body);
+            assert!(editor.block_layouts[0].height() > body.line_height_px());
+        }
     }
 
     #[test]
-    fn backspace_deletes_one_extended_grapheme() {
-        let mut editor = Wysiwyg::new();
-        editor.set_focus(true);
-        for character in "A👩‍👩‍👧‍👦".chars() {
-            editor.insert_char(character);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn editor_serialises_rich_text_to_escaped_html_and_plain() {
+        // Phase `typing_then_bold_serialises_to_html`.
+        {
+            let mut ed = Wysiwyg::new();
+            ed.set_focus(true);
+            for ch in "Hello".chars() {
+                ed.insert_char(ch);
+            }
+            // Select "Hello" and bold it.
+            ed.select_all();
+            ed.toggle_inline(InlineMark::Bold);
+            let html = ed.to_html();
+            assert!(html.contains("<b>Hello</b>"), "got: {html}");
+            assert!(html.starts_with("<p>"));
         }
-        editor.backspace();
-        assert_eq!(editor.to_plain(), "A");
-    }
 
-    #[test]
-    fn proportional_mail_body_wraps_with_shared_layout() {
-        let mut editor = Wysiwyg::from_plain(
-            "A deliberately long proportional paragraph with ligatures affinity office and wrapping.",
-        );
-        editor.apply_layout(Rect::new(0.0, 0.0, 180.0, 300.0));
-        let mut scene = Scene::new();
-        let mut renderer = TextRenderer::new();
-        let theme = Theme::light();
-        editor.draw(&mut scene, Affine::IDENTITY, &mut renderer, &theme);
-        let body = theme.tokens.typography.style(TextRole::Body);
-        assert!(editor.block_layouts[0].height() > body.line_height_px());
-    }
+        // Phase `heading_and_list_serialise`.
+        {
+            let mut ed = Wysiwyg::new();
+            ed.set_focus(true);
+            for ch in "Title".chars() {
+                ed.insert_char(ch);
+            }
+            ed.set_block_kind(BlockKind::Heading(1));
+            ed.split_block();
+            for ch in "Item".chars() {
+                ed.insert_char(ch);
+            }
+            ed.set_block_kind(BlockKind::Bullet);
+            let html = ed.to_html();
+            assert!(html.contains("<h1>Title</h1>"), "got: {html}");
+            assert!(html.contains("<ul><li>Item</li></ul>"), "got: {html}");
+        }
 
-    #[test]
-    fn typing_then_bold_serialises_to_html() {
-        let mut ed = Wysiwyg::new();
-        ed.set_focus(true);
-        for ch in "Hello".chars() {
-            ed.insert_char(ch);
+        // Phase `adjacent_list_items_share_one_list`.
+        {
+            let mut ed = Wysiwyg::new();
+            ed.set_focus(true);
+            for ch in "One".chars() {
+                ed.insert_char(ch);
+            }
+            ed.set_block_kind(BlockKind::Bullet);
+            ed.split_block();
+            for ch in "Two".chars() {
+                ed.insert_char(ch);
+            }
+            // split_block continues the bullet list
+            let html = ed.to_html();
+            assert_eq!(html.matches("<ul>").count(), 1, "got: {html}");
+            assert_eq!(html.matches("<li>").count(), 2, "got: {html}");
         }
-        // Select "Hello" and bold it.
-        ed.select_all();
-        ed.toggle_inline(InlineMark::Bold);
-        let html = ed.to_html();
-        assert!(html.contains("<b>Hello</b>"), "got: {html}");
-        assert!(html.starts_with("<p>"));
-    }
 
-    #[test]
-    fn heading_and_list_serialise() {
-        let mut ed = Wysiwyg::new();
-        ed.set_focus(true);
-        for ch in "Title".chars() {
-            ed.insert_char(ch);
+        // Phase `html_escapes_special_chars`.
+        {
+            let mut ed = Wysiwyg::new();
+            ed.set_focus(true);
+            for ch in "a < b & c".chars() {
+                ed.insert_char(ch);
+            }
+            let html = ed.to_html();
+            assert!(html.contains("a &lt; b &amp; c"), "got: {html}");
         }
-        ed.set_block_kind(BlockKind::Heading(1));
-        ed.split_block();
-        for ch in "Item".chars() {
-            ed.insert_char(ch);
-        }
-        ed.set_block_kind(BlockKind::Bullet);
-        let html = ed.to_html();
-        assert!(html.contains("<h1>Title</h1>"), "got: {html}");
-        assert!(html.contains("<ul><li>Item</li></ul>"), "got: {html}");
-    }
 
-    #[test]
-    fn adjacent_list_items_share_one_list() {
-        let mut ed = Wysiwyg::new();
-        ed.set_focus(true);
-        for ch in "One".chars() {
-            ed.insert_char(ch);
+        // Phase `link_wraps_selection_in_anchor`.
+        {
+            let mut ed = Wysiwyg::new();
+            ed.set_focus(true);
+            for ch in "site".chars() {
+                ed.insert_char(ch);
+            }
+            ed.select_all();
+            ed.set_link("https://example.test");
+            let html = ed.to_html();
+            assert!(
+                html.contains("<a href=\"https://example.test\">"),
+                "got: {html}"
+            );
         }
-        ed.set_block_kind(BlockKind::Bullet);
-        ed.split_block();
-        for ch in "Two".chars() {
-            ed.insert_char(ch);
-        }
-        // split_block continues the bullet list
-        let html = ed.to_html();
-        assert_eq!(html.matches("<ul>").count(), 1, "got: {html}");
-        assert_eq!(html.matches("<li>").count(), 2, "got: {html}");
-    }
 
-    #[test]
-    fn html_escapes_special_chars() {
-        let mut ed = Wysiwyg::new();
-        ed.set_focus(true);
-        for ch in "a < b & c".chars() {
-            ed.insert_char(ch);
+        // Phase `plain_export_keeps_list_markers`.
+        {
+            let mut ed = Wysiwyg::new();
+            ed.set_focus(true);
+            for ch in "task".chars() {
+                ed.insert_char(ch);
+            }
+            ed.set_block_kind(BlockKind::Bullet);
+            assert_eq!(ed.to_plain(), "• task");
         }
-        let html = ed.to_html();
-        assert!(html.contains("a &lt; b &amp; c"), "got: {html}");
-    }
-
-    #[test]
-    fn plain_export_keeps_list_markers() {
-        let mut ed = Wysiwyg::new();
-        ed.set_focus(true);
-        for ch in "task".chars() {
-            ed.insert_char(ch);
-        }
-        ed.set_block_kind(BlockKind::Bullet);
-        assert_eq!(ed.to_plain(), "• task");
-    }
-
-    #[test]
-    fn link_wraps_selection_in_anchor() {
-        let mut ed = Wysiwyg::new();
-        ed.set_focus(true);
-        for ch in "site".chars() {
-            ed.insert_char(ch);
-        }
-        ed.select_all();
-        ed.set_link("https://example.test");
-        let html = ed.to_html();
-        assert!(
-            html.contains("<a href=\"https://example.test\">"),
-            "got: {html}"
-        );
     }
 }

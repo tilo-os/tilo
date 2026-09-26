@@ -599,34 +599,38 @@ fn marker_order(a: &(String, f64, f64), b: &(String, f64, f64)) -> std::cmp::Ord
 mod tests {
     use super::*;
 
+    /// A hidden overlay never routes stale hits and the topmost review hit wins.
     #[test]
-    fn hidden_overlay_never_routes_stale_hits() {
-        let mut overlay = ReviewOverlay::default();
-        overlay.hits.push((
-            Rect::new(0.0, 0.0, 20.0, 20.0),
-            ReviewAction::AcceptChange("change".into()),
-        ));
-        overlay.toggle();
-        overlay.clear_hits();
+    fn review_overlay_hits_are_topmost_and_never_stale() {
+        // Phase: hidden_overlay_never_routes_stale_hits.
+        {
+            let mut overlay = ReviewOverlay::default();
+            overlay.hits.push((
+                Rect::new(0.0, 0.0, 20.0, 20.0),
+                ReviewAction::AcceptChange("change".into()),
+            ));
+            overlay.toggle();
+            overlay.clear_hits();
 
-        assert!(!overlay.is_visible());
-        assert_eq!(overlay.action_at(Point::new(10.0, 10.0)), None);
-    }
+            assert!(!overlay.is_visible());
+            assert_eq!(overlay.action_at(Point::new(10.0, 10.0)), None);
+        }
 
-    #[test]
-    fn topmost_review_hit_wins() {
-        let mut overlay = ReviewOverlay::default();
-        let rect = Rect::new(0.0, 0.0, 20.0, 20.0);
-        overlay
-            .hits
-            .push((rect, ReviewAction::AcceptChange("under".into())));
-        overlay
-            .hits
-            .push((rect, ReviewAction::RejectChange("over".into())));
+        // Phase: topmost_review_hit_wins.
+        {
+            let mut overlay = ReviewOverlay::default();
+            let rect = Rect::new(0.0, 0.0, 20.0, 20.0);
+            overlay
+                .hits
+                .push((rect, ReviewAction::AcceptChange("under".into())));
+            overlay
+                .hits
+                .push((rect, ReviewAction::RejectChange("over".into())));
 
-        assert_eq!(
-            overlay.action_at(Point::new(10.0, 10.0)),
-            Some(ReviewAction::RejectChange("over".into()))
-        );
+            assert_eq!(
+                overlay.action_at(Point::new(10.0, 10.0)),
+                Some(ReviewAction::RejectChange("over".into()))
+            );
+        }
     }
 }

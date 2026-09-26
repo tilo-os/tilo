@@ -145,7 +145,15 @@ pub fn evaluate_at(project: &Project, node: &str) -> Result<RgbaImage, EvalError
 mod tests {
     use super::*;
     use image::Rgba;
+    /// Graph evaluation: upstream changes keep later steps, intermediate previews are
+    /// the named step, and oversized inputs are rejected before allocation.
     #[test]
+    fn evaluation_follows_the_graph_and_bounds_inputs() {
+        changing_upstream_preserves_later_steps();
+        intermediate_preview_is_the_named_step_not_the_final_output();
+        oversized_dimensions_are_rejected_before_editor_allocation();
+    }
+
     fn changing_upstream_preserves_later_steps() {
         let d = tempfile::tempdir().unwrap();
         let src = d.path().join("in.png");
@@ -165,7 +173,6 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(b.get_pixel(0, 0)[0], b.get_pixel(0, 0)[1]);
     }
-    #[test]
     fn intermediate_preview_is_the_named_step_not_the_final_output() {
         let d = tempfile::tempdir().unwrap();
         let src = d.path().join("in.png");
@@ -188,7 +195,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn oversized_dimensions_are_rejected_before_editor_allocation() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("too-wide.png");

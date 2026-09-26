@@ -165,76 +165,77 @@ mod tests {
     }
 
     #[test]
-    fn the_command_joins_the_session_namespace_as_the_slot_user() {
-        let command = in_session(
-            4242,
-            "tds-a",
-            &["sha256sum".into(), "/usr/bin/shell".into()],
-        );
-        let args: Vec<String> = command
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(command.get_program(), "nsenter");
-        assert_eq!(
-            args,
-            [
-                "--target=4242",
-                "--mount",
-                "--",
-                "runuser",
-                "-u",
+    fn exec_runs_in_the_session_as_the_slot_user_bounded_and_streamed() {
+        // Phase `the_command_joins_the_session_namespace_as_the_slot_user`.
+        {
+            let command = in_session(
+                4242,
                 "tds-a",
-                "--",
-                "sha256sum",
-                "/usr/bin/shell"
-            ]
-        );
-    }
+                &["sha256sum".into(), "/usr/bin/shell".into()],
+            );
+            let args: Vec<String> = command
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(command.get_program(), "nsenter");
+            assert_eq!(
+                args,
+                [
+                    "--target=4242",
+                    "--mount",
+                    "--",
+                    "runuser",
+                    "-u",
+                    "tds-a",
+                    "--",
+                    "sha256sum",
+                    "/usr/bin/shell"
+                ]
+            );
+        }
+        // Phase `output_streams_and_the_exit_status_passes_through`.
+        {
+            let (out, err) = (Sink::default(), Sink::default());
+            let ended = run_bounded(
+                sh("echo out; echo err >&2; exit 3"),
+                Duration::from_secs(10),
+                1 << 20,
+                out.clone(),
+                err.clone(),
+            )
+            .unwrap();
+            assert_eq!(ended, Ended::Exited(3));
+            assert_eq!(ended.code(), 3);
+            assert_eq!(out.0.lock().unwrap().as_slice(), b"out\n");
+            assert_eq!(err.0.lock().unwrap().as_slice(), b"err\n");
+        }
+        // Phase `runs_are_bounded_in_time_and_output`.
+        {
+            let out = Sink::default();
+            let ended = run_bounded(
+                sh("while :; do echo yyyyyyyy; done"),
+                Duration::from_secs(10),
+                1000,
+                out.clone(),
+                Sink::default(),
+            )
+            .unwrap();
+            assert_eq!(ended, Ended::TooMuchOutput);
+            assert_eq!(ended.code(), 125);
+            assert_eq!(out.0.lock().unwrap().len(), 1000);
 
-    #[test]
-    fn output_streams_and_the_exit_status_passes_through() {
-        let (out, err) = (Sink::default(), Sink::default());
-        let ended = run_bounded(
-            sh("echo out; echo err >&2; exit 3"),
-            Duration::from_secs(10),
-            1 << 20,
-            out.clone(),
-            err.clone(),
-        )
-        .unwrap();
-        assert_eq!(ended, Ended::Exited(3));
-        assert_eq!(ended.code(), 3);
-        assert_eq!(out.0.lock().unwrap().as_slice(), b"out\n");
-        assert_eq!(err.0.lock().unwrap().as_slice(), b"err\n");
-    }
-
-    #[test]
-    fn runs_are_bounded_in_time_and_output() {
-        let out = Sink::default();
-        let ended = run_bounded(
-            sh("while :; do echo yyyyyyyy; done"),
-            Duration::from_secs(10),
-            1000,
-            out.clone(),
-            Sink::default(),
-        )
-        .unwrap();
-        assert_eq!(ended, Ended::TooMuchOutput);
-        assert_eq!(ended.code(), 125);
-        assert_eq!(out.0.lock().unwrap().len(), 1000);
-
-        let started = Instant::now();
-        let ended = run_bounded(
-            sh("exec sleep 30"),
-            Duration::from_millis(300),
-            1000,
-            Sink::default(),
-            Sink::default(),
-        )
-        .unwrap();
-        assert_eq!(ended, Ended::TimedOut);
-        assert_eq!(ended.code(), 124);
-        assert!(started.elapsed() < Duration::from_secs(10));
+            let started = Instant::now();
+            let ended = run_bounded(
+                sh("exec sleep 30"),
+                Duration::from_millis(300),
+                1000,
+                Sink::default(),
+                Sink::default(),
+            )
+            .unwrap();
+            assert_eq!(ended, Ended::TimedOut);
+            assert_eq!(ended.code(), 124);
+            assert!(started.elapsed() < Duration::from_secs(10));
+        }
     }
 }

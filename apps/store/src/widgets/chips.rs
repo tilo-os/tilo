@@ -44,18 +44,22 @@ pub fn filter_chip_row(active: SourceFilter) -> ToggleGroup {
 mod tests {
     use super::*;
 
+    /// Segment indices round-trip and out-of-range falls back to All.
     #[test]
-    fn segment_index_round_trips_through_the_enum() {
-        for (i, want) in SourceFilter::ALL.iter().enumerate() {
-            assert_eq!(FilterChipSelection::from_segment_index(i).0, *want);
+    fn segment_index_round_trips_and_falls_back_to_all() {
+        // Case `segment_index_round_trips_through_the_enum`.
+        {
+            for (i, want) in SourceFilter::ALL.iter().enumerate() {
+                assert_eq!(FilterChipSelection::from_segment_index(i).0, *want);
+            }
         }
-    }
 
-    #[test]
-    fn out_of_range_segment_index_falls_back_to_all() {
-        assert_eq!(
-            FilterChipSelection::from_segment_index(99).0,
-            SourceFilter::All
-        );
+        // Case `out_of_range_segment_index_falls_back_to_all`.
+        {
+            assert_eq!(
+                FilterChipSelection::from_segment_index(99).0,
+                SourceFilter::All
+            );
+        }
     }
 }

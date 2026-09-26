@@ -36,93 +36,140 @@ fn cli_screenshot_accepts_shared_viewport_and_text_scale() {
 }
 
 #[test]
-fn large_text_theme_reflows_the_real_editor_layout() {
-    let normal_dir = tempfile::tempdir().unwrap();
-    let large_dir = tempfile::tempdir().unwrap();
-    let mut normal = open(normal_dir.path());
-    let mut large = open(large_dir.path());
-    large
-        .harness()
-        .set_theme(ui::Theme::dark().with_text_scale(2.0));
+fn editor_layout_uses_available_width_and_reflows_for_large_text() {
+    eprintln!("phase large_text_theme_reflows_the_real_editor_layout");
+    {
+        let normal_dir = tempfile::tempdir().unwrap();
+        let large_dir = tempfile::tempdir().unwrap();
+        let mut normal = open(normal_dir.path());
+        let mut large = open(large_dir.path());
+        large
+            .harness()
+            .set_theme(ui::Theme::dark().with_text_scale(2.0));
 
-    let normal_editor = normal.harness().targets()["note-editor"];
-    let large_editor = large.harness().targets()["note-editor"];
-    assert!(
-        large_editor.y0 > normal_editor.y0,
-        "large text must reflow retained content, not only change theme metadata: {normal_editor:?} -> {large_editor:?}"
-    );
-}
+        let normal_editor = normal.harness().targets()["note-editor"];
+        let large_editor = large.harness().targets()["note-editor"];
+        assert!(
+            large_editor.y0 > normal_editor.y0,
+            "large text must reflow retained content, not only change theme metadata: {normal_editor:?} -> {large_editor:?}"
+        );
+    }
 
-#[test]
-fn editor_uses_the_available_width_and_keeps_status_visible() {
-    for viewport in [(480, 600), (1000, 700)] {
-        let directory = tempfile::tempdir().unwrap();
-        let mut app = open(directory.path());
-        app.harness().resize(viewport).unwrap();
-        let targets = app.harness().targets();
-        let editor = targets.get("note-editor").unwrap();
-        let status = targets.get("save-status").unwrap();
-        assert!(editor.width() > f64::from(viewport.0) - 100.0, "{editor:?}");
-        assert!(status.y1 < f64::from(viewport.1));
+    eprintln!("phase editor_uses_the_available_width_and_keeps_status_visible");
+    {
+        for viewport in [(480, 600), (1000, 700)] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = open(directory.path());
+            app.harness().resize(viewport).unwrap();
+            let targets = app.harness().targets();
+            let editor = targets.get("note-editor").unwrap();
+            let status = targets.get("save-status").unwrap();
+            assert!(editor.width() > f64::from(viewport.0) - 100.0, "{editor:?}");
+            assert!(status.y1 < f64::from(viewport.1));
+        }
     }
 }
 
 #[test]
-fn typed_note_survives_close_and_reopen_without_a_save_step() {
-    let directory = tempfile::tempdir().unwrap();
+fn saved_note_persists_and_is_protected_from_overwrite_and_corruption() {
+    eprintln!("phase typed_note_survives_close_and_reopen_without_a_save_step");
     {
-        let mut app = open(directory.path());
-        app.harness().click_named("note-editor").unwrap();
-        app.harness().type_text("Hello macOS — café 日本語");
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let mut app = open(directory.path());
+            app.harness().click_named("note-editor").unwrap();
+            app.harness().type_text("Hello macOS — café 日本語");
+            assert_eq!(app.state().body, "Hello macOS — café 日本語");
+        }
+        let app = open(directory.path());
         assert_eq!(app.state().body, "Hello macOS — café 日本語");
     }
-    let app = open(directory.path());
-    assert_eq!(app.state().body, "Hello macOS — café 日本語");
-}
 
-#[test]
-fn typing_is_undoable_and_recorded_in_history() {
-    let directory = tempfile::tempdir().unwrap();
-    let mut app = open(directory.path());
-    app.invoke(Note::EDIT.with("first thought".into())).unwrap();
-    app.invoke(Note::EDIT.with("second thought".into()))
-        .unwrap();
-    let last = app.versions().pop().unwrap();
-    assert_eq!(last.summary().as_deref(), Some("Edit note · Note"));
-    assert!(app.undo());
-    assert_eq!(app.state().body, "first thought");
-    assert!(app.redo());
-    assert_eq!(app.state().body, "second thought");
-}
-
-#[test]
-fn a_viewer_cannot_edit_the_note() {
-    let mut app = HeadlessApp::<Scratchpad>::with_role(ui::Role::Viewer).unwrap();
-    assert!(app.invoke(Note::EDIT.with("not mine".into())).is_err());
-    assert_eq!(app.state().body, "");
-}
-
-#[test]
-fn edits_replay_to_identical_document_heads() {
-    let mut origin = Replica::<Note>::new();
-    let mut peer = origin.fork();
-    origin
-        .apply(Note::EDIT.with("Same note, on another replica.".into()))
-        .unwrap();
-    for envelope in origin.log().to_vec() {
-        peer.replay(&envelope).unwrap();
+    eprintln!("phase a_second_instance_cannot_overwrite_the_open_note");
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let first = open(directory.path());
+        assert!(HeadlessApp::<Scratchpad>::open_data_dir(directory.path()).is_err());
+        drop(first);
+        assert!(HeadlessApp::<Scratchpad>::open_data_dir(directory.path()).is_ok());
     }
-    assert_eq!(origin.heads(), peer.heads());
-    assert_eq!(peer.state().unwrap().body, "Same note, on another replica.");
+
+    eprintln!("phase corrupt_saved_content_is_not_replaced_with_an_empty_note");
+    {
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let mut app = open(directory.path());
+            app.invoke(Note::EDIT.with("precious".into())).unwrap();
+        }
+        let documents = stored_documents(directory.path());
+        assert_eq!(documents.len(), 1, "{documents:?}");
+        let document = documents.first().unwrap();
+        std::fs::write(document, b"not an automerge document").unwrap();
+        assert!(HeadlessApp::<Scratchpad>::open_data_dir(directory.path()).is_err());
+        assert_eq!(
+            std::fs::read(document).unwrap(),
+            b"not an automerge document"
+        );
+    }
 }
 
 #[test]
-fn a_second_instance_cannot_overwrite_the_open_note() {
-    let directory = tempfile::tempdir().unwrap();
-    let first = open(directory.path());
-    assert!(HeadlessApp::<Scratchpad>::open_data_dir(directory.path()).is_err());
-    drop(first);
-    assert!(HeadlessApp::<Scratchpad>::open_data_dir(directory.path()).is_ok());
+fn edits_are_undoable_permissioned_and_merge_to_identical_heads() {
+    eprintln!("phase typing_is_undoable_and_recorded_in_history");
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = open(directory.path());
+        app.invoke(Note::EDIT.with("first thought".into())).unwrap();
+        app.invoke(Note::EDIT.with("second thought".into()))
+            .unwrap();
+        let last = app.versions().pop().unwrap();
+        assert_eq!(last.summary().as_deref(), Some("Edit note · Note"));
+        assert!(app.undo());
+        assert_eq!(app.state().body, "first thought");
+        assert!(app.redo());
+        assert_eq!(app.state().body, "second thought");
+    }
+
+    eprintln!("phase a_viewer_cannot_edit_the_note");
+    {
+        let mut app = HeadlessApp::<Scratchpad>::with_role(ui::Role::Viewer).unwrap();
+        assert!(app.invoke(Note::EDIT.with("not mine".into())).is_err());
+        assert_eq!(app.state().body, "");
+    }
+
+    eprintln!("phase edits_replay_to_identical_document_heads");
+    {
+        let mut origin = Replica::<Note>::new();
+        let mut peer = origin.fork();
+        origin
+            .apply(Note::EDIT.with("Same note, on another replica.".into()))
+            .unwrap();
+        for envelope in origin.log().to_vec() {
+            peer.replay(&envelope).unwrap();
+        }
+        assert_eq!(origin.heads(), peer.heads());
+        assert_eq!(peer.state().unwrap().body, "Same note, on another replica.");
+    }
+
+    eprintln!("phase independent_edits_merge_without_replacing_the_text_object");
+    {
+        use ui::automerge::{ROOT, ReadDoc};
+        let body = |replica: &Replica<Note>| replica.doc().get(ROOT, "body").unwrap().unwrap().1;
+        let mut original = Replica::<Note>::new();
+        original
+            .apply(Note::EDIT.with("hello world".into()))
+            .unwrap();
+        let object = body(&original);
+        let mut left = original.fork();
+        let mut right = original.fork();
+        left.apply(Note::EDIT.with("hello brave world".into()))
+            .unwrap();
+        right.apply(Note::EDIT.with("hello world!".into())).unwrap();
+        left.sync_with(&mut right).unwrap();
+        assert_eq!(body(&left), object);
+        assert_eq!(left.state().unwrap().body, "hello brave world!");
+        assert_eq!(right.state().unwrap().body, "hello brave world!");
+    }
 }
 
 fn stored_documents(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -142,42 +189,4 @@ fn stored_documents(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
         }
     }
     found
-}
-
-#[test]
-fn corrupt_saved_content_is_not_replaced_with_an_empty_note() {
-    let directory = tempfile::tempdir().unwrap();
-    {
-        let mut app = open(directory.path());
-        app.invoke(Note::EDIT.with("precious".into())).unwrap();
-    }
-    let documents = stored_documents(directory.path());
-    assert_eq!(documents.len(), 1, "{documents:?}");
-    let document = documents.first().unwrap();
-    std::fs::write(document, b"not an automerge document").unwrap();
-    assert!(HeadlessApp::<Scratchpad>::open_data_dir(directory.path()).is_err());
-    assert_eq!(
-        std::fs::read(document).unwrap(),
-        b"not an automerge document"
-    );
-}
-
-#[test]
-fn independent_edits_merge_without_replacing_the_text_object() {
-    use ui::automerge::{ROOT, ReadDoc};
-    let body = |replica: &Replica<Note>| replica.doc().get(ROOT, "body").unwrap().unwrap().1;
-    let mut original = Replica::<Note>::new();
-    original
-        .apply(Note::EDIT.with("hello world".into()))
-        .unwrap();
-    let object = body(&original);
-    let mut left = original.fork();
-    let mut right = original.fork();
-    left.apply(Note::EDIT.with("hello brave world".into()))
-        .unwrap();
-    right.apply(Note::EDIT.with("hello world!".into())).unwrap();
-    left.sync_with(&mut right).unwrap();
-    assert_eq!(body(&left), object);
-    assert_eq!(left.state().unwrap().body, "hello brave world!");
-    assert_eq!(right.state().unwrap().body, "hello brave world!");
 }

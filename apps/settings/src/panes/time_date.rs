@@ -1099,164 +1099,172 @@ mod tests {
         )
     }
 
+    /// tzdata parsing, map projection, keyboard access and non-empty timezones.
     #[test]
-    fn tzdata_coordinates_are_parsed_and_filtered_by_timedated_ids() {
-        let points = fixture_points();
-        assert_eq!(
-            points
-                .iter()
-                .map(|point| point.id.as_str())
-                .collect::<Vec<_>>(),
-            ["America/New_York", "Europe/Amsterdam", "Europe/Berlin"]
-        );
-        let new_york = &points[0];
-        assert_eq!(new_york.latitude_e6, 40_714_167);
-        assert_eq!(new_york.longitude_e6, -74_006_389);
-        assert!(
-            points.iter().all(|point| point.id != "Europe/London"),
-            "a coordinate-table entry not accepted by timedated must not enter the map"
-        );
-        assert_eq!(parse_iso6709_coordinate("+9001+00000"), None);
-        assert_eq!(parse_iso6709_coordinate("garbage"), None);
-    }
+    fn timezone_map_parses_projects_and_commits_known_zones() {
+        // Case `tzdata_coordinates_are_parsed_and_filtered_by_timedated_ids`.
+        {
+            let points = fixture_points();
+            assert_eq!(
+                points
+                    .iter()
+                    .map(|point| point.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["America/New_York", "Europe/Amsterdam", "Europe/Berlin"]
+            );
+            let new_york = &points[0];
+            assert_eq!(new_york.latitude_e6, 40_714_167);
+            assert_eq!(new_york.longitude_e6, -74_006_389);
+            assert!(
+                points.iter().all(|point| point.id != "Europe/London"),
+                "a coordinate-table entry not accepted by timedated must not enter the map"
+            );
+            assert_eq!(parse_iso6709_coordinate("+9001+00000"), None);
+            assert_eq!(parse_iso6709_coordinate("garbage"), None);
+        }
 
-    #[test]
-    fn map_projects_points_inside_normal_and_narrow_layouts() {
-        for width in [280.0, 720.0] {
-            let mut map = TimeZoneMap::new(fixture_points(), "Europe/Amsterdam");
-            let theme = Theme::dark();
-            let mut taffy = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = map.build_layout(&mut taffy, &theme, &mut node_map);
-            let root = taffy
-                .new_with_children(
-                    Style {
-                        size: Size {
-                            width: Dimension::length(width),
-                            height: Dimension::auto(),
+        // Case `map_projects_points_inside_normal_and_narrow_layouts`.
+        {
+            for width in [280.0, 720.0] {
+                let mut map = TimeZoneMap::new(fixture_points(), "Europe/Amsterdam");
+                let theme = Theme::dark();
+                let mut taffy = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = map.build_layout(&mut taffy, &theme, &mut node_map);
+                let root = taffy
+                    .new_with_children(
+                        Style {
+                            size: Size {
+                                width: Dimension::length(width),
+                                height: Dimension::auto(),
+                            },
+                            ..Default::default()
                         },
-                        ..Default::default()
-                    },
-                    &[node],
-                )
-                .unwrap();
-            taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
-            map.apply_layout(&taffy, node, Point::ZERO);
+                        &[node],
+                    )
+                    .unwrap();
+                taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+                map.apply_layout(&taffy, node, Point::ZERO);
 
-            assert!((map.rect.width() - f64::from(width)).abs() < 0.1);
-            assert!((map.rect.height() - f64::from(MAP_HEIGHT)).abs() < 0.1);
-            for index in 0..map.points.len() {
-                assert!(map.plot_rect().contains(map.projected(index)));
+                assert!((map.rect.width() - f64::from(width)).abs() < 0.1);
+                assert!((map.rect.height() - f64::from(MAP_HEIGHT)).abs() < 0.1);
+                for index in 0..map.points.len() {
+                    assert!(map.plot_rect().contains(map.projected(index)));
+                }
             }
+        }
+
+        // Case `map_is_keyboard_accessible_and_only_commits_known_zone`.
+        {
+            let mut map = TimeZoneMap::new(fixture_points(), "Europe/Amsterdam");
+            map.set_focus(true);
+            let access = map.accessibility().expect("map semantics");
+            assert_eq!(access.role, ui::a11y::Role::Canvas);
+            assert!(access.state.focusable);
+            assert!(access.state.focused);
+
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            assert!(map.perform_action(
+                &ui::a11y::Action::SetValue("Europe/Berlin".to_string()),
+                &mut doc,
+                &root,
+            ));
+            assert_eq!(
+                read_str_or_text(&doc, &root, draft_key(TIMEZONE_KEY)).as_deref(),
+                Some("Europe/Berlin")
+            );
+            assert!(map.needs_commit(), "a real timezone choice is durable");
+            map.on_commit();
+            assert!(!map.needs_commit());
+            assert!(!map.perform_action(
+                &ui::a11y::Action::SetValue("Mars/Olympus_Mons".to_string()),
+                &mut doc,
+                &root,
+            ));
+        }
+
+        // Case `timezone_is_never_empty`.
+        {
+            assert!(!timezone().is_empty());
         }
     }
 
+    /// Document timezone, NTP and 24h edits stay local; the pane lays out.
     #[test]
-    fn map_is_keyboard_accessible_and_only_commits_known_zone() {
-        let mut map = TimeZoneMap::new(fixture_points(), "Europe/Amsterdam");
-        map.set_focus(true);
-        let access = map.accessibility().expect("map semantics");
-        assert_eq!(access.role, ui::a11y::Role::Canvas);
-        assert!(access.state.focusable);
-        assert!(access.state.focused);
+    fn document_time_edits_never_reach_the_local_authority() {
+        // Case `document_timezone_edits_do_not_reach_the_local_authority`.
+        {
+            let ntp = Arc::new(RecordingNtp::default());
+            let mut pane = TimeDatePane::with_ntp(ntp.clone(), true);
+            pane.timezones.push("Etc/UTC".to_string());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
 
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        assert!(map.perform_action(
-            &ui::a11y::Action::SetValue("Europe/Berlin".to_string()),
-            &mut doc,
-            &root,
-        ));
-        assert_eq!(
-            read_str_or_text(&doc, &root, draft_key(TIMEZONE_KEY)).as_deref(),
-            Some("Europe/Berlin")
-        );
-        assert!(map.needs_commit(), "a real timezone choice is durable");
-        map.on_commit();
-        assert!(!map.needs_commit());
-        assert!(!map.perform_action(
-            &ui::a11y::Action::SetValue("Mars/Olympus_Mons".to_string()),
-            &mut doc,
-            &root,
-        ));
-    }
+            // This is the representation `Dropdown::commit_value` uses.
+            let text = doc.put_object(&root, TIMEZONE_KEY, ObjType::Text).unwrap();
+            doc.splice_text(&text, 0, 0, "Etc/UTC").unwrap();
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root);
+            assert!(ntp.zones.lock().unwrap().is_empty());
+        }
 
-    #[test]
-    fn document_timezone_edits_do_not_reach_the_local_authority() {
-        let ntp = Arc::new(RecordingNtp::default());
-        let mut pane = TimeDatePane::with_ntp(ntp.clone(), true);
-        pane.timezones.push("Etc/UTC".to_string());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
+        // Case `document_auto_time_toggle_does_not_invoke_set_ntp`.
+        // Toggling "Set time automatically" forwards to `set_ntp` exactly once
+        // per change, with the new value — the real dispatch path.
+        {
+            let ntp = Arc::new(RecordingNtp::default());
+            // Start with auto=true (the seed), then flip off.
+            let mut pane = TimeDatePane::with_ntp(ntp.clone(), true);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert!(
+                ntp.calls.lock().unwrap().is_empty(),
+                "seed must not dispatch"
+            );
+            let _ = doc.put(&root, AUTO_TIME_KEY, automerge::ScalarValue::Boolean(false));
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root); // idempotent at rest
+            assert!(ntp.calls.lock().unwrap().is_empty());
+            // Flip back on.
+            let _ = doc.put(&root, AUTO_TIME_KEY, automerge::ScalarValue::Boolean(true));
+            pane.sync(&mut doc, &root);
+            assert!(ntp.calls.lock().unwrap().is_empty());
+        }
 
-        // This is the representation `Dropdown::commit_value` uses.
-        let text = doc.put_object(&root, TIMEZONE_KEY, ObjType::Text).unwrap();
-        doc.splice_text(&text, 0, 0, "Etc/UTC").unwrap();
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root);
-        assert!(ntp.zones.lock().unwrap().is_empty());
-    }
+        // Case `builds_layout`.
+        {
+            let mut pane = build();
+            let theme = Theme::dark();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        }
 
-    /// Toggling "Set time automatically" forwards to `set_ntp` exactly once
-    /// per change, with the new value — the real dispatch path.
-    #[test]
-    fn document_auto_time_toggle_does_not_invoke_set_ntp() {
-        let ntp = Arc::new(RecordingNtp::default());
-        // Start with auto=true (the seed), then flip off.
-        let mut pane = TimeDatePane::with_ntp(ntp.clone(), true);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert!(
-            ntp.calls.lock().unwrap().is_empty(),
-            "seed must not dispatch"
-        );
-        let _ = doc.put(&root, AUTO_TIME_KEY, automerge::ScalarValue::Boolean(false));
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root); // idempotent at rest
-        assert!(ntp.calls.lock().unwrap().is_empty());
-        // Flip back on.
-        let _ = doc.put(&root, AUTO_TIME_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        assert!(ntp.calls.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn builds_layout() {
-        let mut pane = build();
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
-    }
-
-    #[test]
-    fn timezone_is_never_empty() {
-        assert!(!timezone().is_empty());
-    }
-
-    /// Flipping the 24-hour key re-renders the clock (structure dirty), updates
-    /// the pane's format flag, and forwards the new value to the format sink —
-    /// proof the toggle is live and drives the persistence path (asserted
-    /// against disk in the `prefs_persistence` integration test).
-    #[test]
-    fn document_h24_toggle_does_not_persist_or_reformat_clock() {
-        let sunk: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink_calls = sunk.clone();
-        // Build the hermetic test pane (24h start, no disk) but swap in a
-        // recording format sink so we can prove the toggle drives persistence.
-        let mut pane = TimeDatePane::with_ntp(Arc::new(RecordingNtp::default()), true);
-        pane.persist_format = Arc::new(move |b| sink_calls.lock().unwrap().push(b));
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert!(sunk.lock().unwrap().is_empty(), "seed must not persist");
-        // Seed wrote h24=true; flip to false.
-        let _ = doc.put(&root, H24_KEY, automerge::ScalarValue::Boolean(false));
-        pane.sync(&mut doc, &root);
-        assert!(pane.h24, "the pane ignores a collaborative clock value");
-        assert!(!pane.take_structure_dirty());
-        assert!(sunk.lock().unwrap().is_empty());
+        // Case `document_h24_toggle_does_not_persist_or_reformat_clock`.
+        // Flipping the 24-hour key re-renders the clock (structure dirty), updates
+        // the pane's format flag, and forwards the new value to the format sink —
+        // proof the toggle is live and drives the persistence path (asserted
+        // against disk in the `prefs_persistence` integration test).
+        {
+            let sunk: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+            let sink_calls = sunk.clone();
+            // Build the hermetic test pane (24h start, no disk) but swap in a
+            // recording format sink so we can prove the toggle drives persistence.
+            let mut pane = TimeDatePane::with_ntp(Arc::new(RecordingNtp::default()), true);
+            pane.persist_format = Arc::new(move |b| sink_calls.lock().unwrap().push(b));
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert!(sunk.lock().unwrap().is_empty(), "seed must not persist");
+            // Seed wrote h24=true; flip to false.
+            let _ = doc.put(&root, H24_KEY, automerge::ScalarValue::Boolean(false));
+            pane.sync(&mut doc, &root);
+            assert!(pane.h24, "the pane ignores a collaborative clock value");
+            assert!(!pane.take_structure_dirty());
+            assert!(sunk.lock().unwrap().is_empty());
+        }
     }
 }

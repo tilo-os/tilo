@@ -43,74 +43,10 @@ fn all_op_classes() -> [OpClass; 9] {
     ]
 }
 
-#[test]
-fn matrix_owner() {
-    for kind in all_artifact_kinds() {
-        for op in all_op_classes() {
-            assert!(
-                role_permits(Role::Owner, kind, op),
-                "Owner must permit {op:?} on {kind:?}",
-            );
-        }
-    }
-}
-
-#[test]
-fn matrix_editor() {
-    for kind in all_artifact_kinds() {
-        // Editor permits everything except Govern + Compaction.
-        assert!(role_permits(Role::Editor, kind, OpClass::Splice));
-        assert!(role_permits(Role::Editor, kind, OpClass::Move));
-        assert!(role_permits(Role::Editor, kind, OpClass::EditMeta));
-        assert!(role_permits(Role::Editor, kind, OpClass::Comment));
-        assert!(role_permits(Role::Editor, kind, OpClass::Tombstone));
-        assert!(role_permits(Role::Editor, kind, OpClass::Restore));
-        assert!(!role_permits(Role::Editor, kind, OpClass::Govern));
-        assert!(!role_permits(Role::Editor, kind, OpClass::Compaction));
-        assert!(!role_permits(Role::Editor, kind, OpClass::Redact));
-    }
-}
-
-#[test]
-fn matrix_commenter() {
-    for kind in all_artifact_kinds() {
-        // Commenter permits only Comment.
-        assert!(!role_permits(Role::Commenter, kind, OpClass::Splice));
-        assert!(!role_permits(Role::Commenter, kind, OpClass::Move));
-        assert!(!role_permits(Role::Commenter, kind, OpClass::EditMeta));
-        assert!(role_permits(Role::Commenter, kind, OpClass::Comment));
-        assert!(!role_permits(Role::Commenter, kind, OpClass::Tombstone));
-        assert!(!role_permits(Role::Commenter, kind, OpClass::Restore));
-        assert!(!role_permits(Role::Commenter, kind, OpClass::Govern));
-        assert!(!role_permits(Role::Commenter, kind, OpClass::Compaction));
-        assert!(!role_permits(Role::Commenter, kind, OpClass::Redact));
-    }
-}
-
-#[test]
-fn matrix_viewer() {
-    for kind in all_artifact_kinds() {
-        for op in all_op_classes() {
-            assert!(
-                !role_permits(Role::Viewer, kind, op),
-                "Viewer must not permit {op:?} on {kind:?}",
-            );
-        }
-    }
-}
-
-#[test]
-fn matrix_denied() {
-    for kind in all_artifact_kinds() {
-        for op in all_op_classes() {
-            assert!(
-                !role_permits(Role::Denied, kind, op),
-                "Denied must not permit {op:?} on {kind:?}",
-            );
-        }
-    }
-}
-
+// The per-role matrix tests (`matrix_owner`, `matrix_editor`,
+// `matrix_commenter`, `matrix_viewer`, `matrix_denied`) here and the
+// per-role unit tests formerly in `src/role.rs` asserted a subset of the
+// rows of this table over the same kinds, so they were folded into it.
 #[test]
 fn full_matrix_table_driven() {
     // Exhaustive table: every triple's expected outcome, listed
@@ -134,7 +70,13 @@ fn full_matrix_table_driven() {
         (Role::Editor, OpClass::Tombstone, true),
         (Role::Editor, OpClass::Restore, true),
         (Role::Editor, OpClass::Govern, false),
+        // Only the channel owner may emit a Compaction checkpoint — an
+        // Editor with full mutate permissions still does NOT get to evict
+        // channel history.
         (Role::Editor, OpClass::Compaction, false),
+        // Redaction is a governance act: an Editor can tombstone (the
+        // soft-delete "I changed my mind" primitive) but cannot redact — the
+        // role table pins Redact to the channel owner.
         (Role::Editor, OpClass::Redact, false),
         // Commenter -> Comment only
         (Role::Commenter, OpClass::Splice, false),
@@ -167,6 +109,22 @@ fn full_matrix_table_driven() {
         (Role::Denied, OpClass::Compaction, false),
         (Role::Denied, OpClass::Redact, false),
     ];
+    // The table is exhaustive: every role lists every op class exactly once.
+    for role in [
+        Role::Owner,
+        Role::Editor,
+        Role::Commenter,
+        Role::Viewer,
+        Role::Denied,
+    ] {
+        for op in all_op_classes() {
+            let rows = cases
+                .iter()
+                .filter(|(r, o, _)| *r == role && *o == op)
+                .count();
+            assert_eq!(rows, 1, "table must list ({role:?}, {op:?}) exactly once");
+        }
+    }
     for kind in all_artifact_kinds() {
         for (role, op, expected) in cases.iter().copied() {
             assert_eq!(

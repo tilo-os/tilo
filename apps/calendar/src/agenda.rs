@@ -630,125 +630,127 @@ mod tests {
     }
 
     #[test]
-    fn content_extent_matches_headers_and_rows() {
-        let anchor = date(1);
-        let model = Model {
-            events: vec![event(1, None)],
-            tasks: vec![Task {
-                id: Uuid::new_v4(),
-                title: "Task".into(),
-                done: false,
-                due: Some(anchor),
-                priority: Priority::None,
-                project: None,
-                parent: None,
-            }],
-            ..Model::default()
-        };
-        let m = AgendaMetrics::new(&Spacing::default(), 1.0);
-        // 18 top pad + 26 heading + 2 × 32 rows + 12 section gap + 8 bottom.
-        assert_eq!(
-            content_height(&model, anchor, &HashSet::new(), None, &m),
-            128.0
-        );
-    }
-
-    #[test]
-    fn hidden_remote_calendars_do_not_expand_the_scroll_extent() {
-        let anchor = date(1);
-        let model = Model {
-            events: vec![event(1, Some("hidden"))],
-            ..Model::default()
-        };
-        let hidden = HashSet::from(["hidden".to_string()]);
-        let m = AgendaMetrics::new(&Spacing::default(), 1.0);
-        assert_eq!(content_height(&model, anchor, &hidden, None, &m), 26.0);
-        assert_eq!(
-            content_height(&model, anchor, &HashSet::new(), None, &m),
-            96.0
-        );
-    }
-
-    #[test]
-    fn one_x_metrics_reproduce_the_authored_rows() {
-        let m = AgendaMetrics::new(&Spacing::default(), 1.0);
-        // The authored rows win at 1×: 18.75 + `s1` and 16.25 + `s3` both
-        // fit inside 26 and 30, so nothing drifts off whole pixels.
-        assert_eq!(m.heading_h, 26.0);
-        assert_eq!(m.row_h, 30.0);
-        assert_eq!(m.row_pitch, 32.0);
-        assert_eq!(m.title_x, 90.0);
-        assert_eq!(m.check_size, 16.0);
-        let sp = Spacing::default();
-        assert_eq!(m.side_pad, f64::from(sp.s6));
-        assert_eq!(m.bottom_pad, f64::from(sp.s2));
-    }
-
-    /// Scaled rows are whole pixels too: a 2× row is the authored row plus
-    /// its line's growth, snapped up, never a fraction.
-    #[test]
-    fn scaled_rows_land_on_whole_pixels() {
-        let m = AgendaMetrics::new(&Spacing::default(), 2.0);
-        for value in [m.heading_h, m.row_h, m.row_pitch] {
-            assert_eq!(value.fract(), 0.0, "{value} is not a whole pixel");
+    fn content_extent_and_visible_events_respect_hidden_and_selected_calendars() {
+        // Case `content_extent_matches_headers_and_rows`.
+        {
+            let anchor = date(1);
+            let model = Model {
+                events: vec![event(1, None)],
+                tasks: vec![Task {
+                    id: Uuid::new_v4(),
+                    title: "Task".into(),
+                    done: false,
+                    due: Some(anchor),
+                    priority: Priority::None,
+                    project: None,
+                    parent: None,
+                }],
+                ..Model::default()
+            };
+            let m = AgendaMetrics::new(&Spacing::default(), 1.0);
+            // 18 top pad + 26 heading + 2 × 32 rows + 12 section gap + 8 bottom.
+            assert_eq!(
+                content_height(&model, anchor, &HashSet::new(), None, &m),
+                128.0
+            );
         }
-        // Each row is its scaled line plus the same theme pad the painter
-        // leaves, rounded up — never a fraction short of it.
-        let sp = Spacing::default();
-        assert_eq!(m.row_h, (m.row_text_h + f64::from(sp.s3)).ceil());
-        assert_eq!(m.heading_h, (m.heading_text_h + f64::from(sp.s1)).ceil());
+        // Case `hidden_remote_calendars_do_not_expand_the_scroll_extent`.
+        {
+            let anchor = date(1);
+            let model = Model {
+                events: vec![event(1, Some("hidden"))],
+                ..Model::default()
+            };
+            let hidden = HashSet::from(["hidden".to_string()]);
+            let m = AgendaMetrics::new(&Spacing::default(), 1.0);
+            assert_eq!(content_height(&model, anchor, &hidden, None, &m), 26.0);
+            assert_eq!(
+                content_height(&model, anchor, &HashSet::new(), None, &m),
+                96.0
+            );
+        }
+        // Case `selected_calendar_filters_events_without_overriding_visibility`.
+        {
+            let anchor = date(1);
+            let model = Model {
+                events: vec![
+                    event(1, None),
+                    event(1, Some("work")),
+                    event(1, Some("home")),
+                ],
+                ..Model::default()
+            };
+            assert_eq!(
+                visible_events_on(&model, anchor, &HashSet::new(), Some("work")).len(),
+                1
+            );
+            assert!(
+                visible_events_on(
+                    &model,
+                    anchor,
+                    &HashSet::from(["work".to_string()]),
+                    Some("work")
+                )
+                .is_empty()
+            );
+            assert_eq!(
+                visible_events_on(&model, anchor, &HashSet::new(), Some("local")).len(),
+                1
+            );
+        }
     }
 
     #[test]
-    fn scaled_rows_hold_their_text_and_grow_the_scroll_extent() {
-        let m1 = AgendaMetrics::new(&Spacing::default(), 1.0);
-        let m2 = AgendaMetrics::new(&Spacing::default(), 2.0);
-        // A 2× row must hold a 2× line with the same padding a 1× row has.
-        assert!(m2.row_h >= m2.row_text_h + 12.0);
-        assert!(m2.heading_h >= m2.heading_text_h + 4.0);
-        assert!(m2.row_h > m1.row_h && m2.heading_h > m1.heading_h);
-        assert!(m2.check_size > m1.check_size);
+    fn metrics_reproduce_authored_rows_at_one_x_and_grow_on_whole_pixels() {
+        // Case `one_x_metrics_reproduce_the_authored_rows`.
+        {
+            let m = AgendaMetrics::new(&Spacing::default(), 1.0);
+            // The authored rows win at 1×: 18.75 + `s1` and 16.25 + `s3` both
+            // fit inside 26 and 30, so nothing drifts off whole pixels.
+            assert_eq!(m.heading_h, 26.0);
+            assert_eq!(m.row_h, 30.0);
+            assert_eq!(m.row_pitch, 32.0);
+            assert_eq!(m.title_x, 90.0);
+            assert_eq!(m.check_size, 16.0);
+            let sp = Spacing::default();
+            assert_eq!(m.side_pad, f64::from(sp.s6));
+            assert_eq!(m.bottom_pad, f64::from(sp.s2));
+        }
+        // Case `scaled_rows_land_on_whole_pixels`:
+        // Scaled rows are whole pixels too: a 2× row is the authored row plus
+        // its line's growth, snapped up, never a fraction.
+        {
+            let m = AgendaMetrics::new(&Spacing::default(), 2.0);
+            for value in [m.heading_h, m.row_h, m.row_pitch] {
+                assert_eq!(value.fract(), 0.0, "{value} is not a whole pixel");
+            }
+            // Each row is its scaled line plus the same theme pad the painter
+            // leaves, rounded up — never a fraction short of it.
+            let sp = Spacing::default();
+            assert_eq!(m.row_h, (m.row_text_h + f64::from(sp.s3)).ceil());
+            assert_eq!(m.heading_h, (m.heading_text_h + f64::from(sp.s1)).ceil());
+        }
+        // Case `scaled_rows_hold_their_text_and_grow_the_scroll_extent`.
+        {
+            let m1 = AgendaMetrics::new(&Spacing::default(), 1.0);
+            let m2 = AgendaMetrics::new(&Spacing::default(), 2.0);
+            // A 2× row must hold a 2× line with the same padding a 1× row has.
+            assert!(m2.row_h >= m2.row_text_h + 12.0);
+            assert!(m2.heading_h >= m2.heading_text_h + 4.0);
+            assert!(m2.row_h > m1.row_h && m2.heading_h > m1.heading_h);
+            assert!(m2.check_size > m1.check_size);
 
-        let anchor = date(1);
-        let model = Model {
-            events: vec![event(1, None)],
-            ..Model::default()
-        };
-        let one = content_height(&model, anchor, &HashSet::new(), None, &m1);
-        let two = content_height(&model, anchor, &HashSet::new(), None, &m2);
-        assert_eq!(
-            two - one,
-            (m2.heading_h - m1.heading_h) + (m2.row_pitch - m1.row_pitch)
-        );
-    }
-
-    #[test]
-    fn selected_calendar_filters_events_without_overriding_visibility() {
-        let anchor = date(1);
-        let model = Model {
-            events: vec![
-                event(1, None),
-                event(1, Some("work")),
-                event(1, Some("home")),
-            ],
-            ..Model::default()
-        };
-        assert_eq!(
-            visible_events_on(&model, anchor, &HashSet::new(), Some("work")).len(),
-            1
-        );
-        assert!(
-            visible_events_on(
-                &model,
-                anchor,
-                &HashSet::from(["work".to_string()]),
-                Some("work")
-            )
-            .is_empty()
-        );
-        assert_eq!(
-            visible_events_on(&model, anchor, &HashSet::new(), Some("local")).len(),
-            1
-        );
+            let anchor = date(1);
+            let model = Model {
+                events: vec![event(1, None)],
+                ..Model::default()
+            };
+            let one = content_height(&model, anchor, &HashSet::new(), None, &m1);
+            let two = content_height(&model, anchor, &HashSet::new(), None, &m2);
+            assert_eq!(
+                two - one,
+                (m2.heading_h - m1.heading_h) + (m2.row_pitch - m1.row_pitch)
+            );
+        }
     }
 }

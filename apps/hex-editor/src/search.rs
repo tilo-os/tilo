@@ -133,55 +133,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_hex_handles_separators() {
-        assert_eq!(
-            parse_hex_query("de ad be ef"),
-            Some(vec![0xDE, 0xAD, 0xBE, 0xEF])
-        );
-        assert_eq!(parse_hex_query("DEAD"), Some(vec![0xDE, 0xAD]));
-        assert_eq!(parse_hex_query("de-ad:be"), Some(vec![0xDE, 0xAD, 0xBE]));
+    fn parse_hex_query_accepts_separators_and_rejects_odd_or_garbage() {
+        let cases: &[(&str, Option<Vec<u8>>)] = &[
+            ("de ad be ef", Some(vec![0xDE, 0xAD, 0xBE, 0xEF])),
+            ("DEAD", Some(vec![0xDE, 0xAD])),
+            ("de-ad:be", Some(vec![0xDE, 0xAD, 0xBE])),
+            ("abc", None), // odd digit count
+            ("zz", None),  // not hex
+            ("", None),
+        ];
+        for (query, want) in cases {
+            assert_eq!(&parse_hex_query(query), want, "case {query:?}");
+        }
     }
 
     #[test]
-    fn parse_hex_rejects_odd_and_garbage() {
-        assert_eq!(parse_hex_query("abc"), None); // odd digit count
-        assert_eq!(parse_hex_query("zz"), None); // not hex
-        assert_eq!(parse_hex_query(""), None);
-    }
-
-    #[test]
-    fn find_all_overlapping() {
+    fn find_helpers_overlap_bound_and_wrap() {
+        // find_all reports overlapping matches.
         let hay = b"aaaa";
         assert_eq!(find_all(hay, b"aa"), vec![0, 1, 2]);
-    }
 
-    #[test]
-    fn bounded_find_reports_more_hits_without_retaining_them() {
+        // Bounded find reports more hits without retaining them.
         let (hits, truncated) = find_all_bounded(b"aaaa", b"a", 2);
         assert_eq!(hits, vec![0, 1]);
         assert!(truncated);
-    }
 
-    #[test]
-    fn find_next_wraps() {
+        // find_next wraps.
         let hay = b"\x00\xFF\x00\xFF";
         let needle = b"\xFF";
         assert_eq!(find_next(hay, needle, 0), Some(1));
         assert_eq!(find_next(hay, needle, 2), Some(3));
         // Past the last match wraps to the first.
         assert_eq!(find_next(hay, needle, 4), Some(1));
-    }
 
-    #[test]
-    fn find_prev_wraps() {
-        let hay = b"\x00\xFF\x00\xFF";
-        let needle = b"\xFF";
+        // find_prev wraps.
         assert_eq!(find_prev(hay, needle, 3), Some(1));
         assert_eq!(find_prev(hay, needle, 1), Some(3)); // wraps to end
-    }
 
-    #[test]
-    fn navigation_does_not_depend_on_retaining_all_hits() {
+        // Navigation does not depend on retaining all hits.
         let hay = vec![0_u8; MAX_RETAINED_MATCHES + 12];
         assert_eq!(
             find_next(&hay, &[0], MAX_RETAINED_MATCHES + 5),
@@ -194,15 +183,11 @@ mod tests {
     }
 
     #[test]
-    fn text_needle_is_utf8_bytes() {
+    fn needle_encodes_text_as_utf8_and_hex_as_bytes() {
         assert_eq!(
             needle("PNG", SearchKind::Text),
             Some(vec![0x50, 0x4E, 0x47])
         );
-    }
-
-    #[test]
-    fn hex_signature_matches_in_png() {
         // The PNG magic bytes.
         let hay = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
         let n = needle("50 4e 47", SearchKind::Hex).unwrap();

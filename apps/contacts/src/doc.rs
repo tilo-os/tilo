@@ -805,140 +805,148 @@ mod tests {
     use crate::model::sample_contacts;
     use tilo_automerge::ApplyIncoming;
 
+    /// Records upsert in place, list, delete, and legacy rows get deterministic ids before migrating to persisted maps.
     #[test]
-    fn upsert_then_list_round_trips() {
-        let mut doc = AutoCommit::new();
-        let c = sample_contacts().into_iter().next().unwrap();
-        ContactsDoc::upsert_contact(&mut doc, &c);
-        let back = ContactsDoc::list_contacts(&doc);
-        assert_eq!(back.len(), 1);
-        let r = &back[0];
-        assert_eq!(r.id, c.id);
-        assert_eq!(r.first, c.first);
-        assert_eq!(r.last, c.last);
-        assert_eq!(r.org, c.org);
-        assert_eq!(r.phones, c.phones);
-        assert_eq!(r.emails, c.emails);
-        assert_eq!(r.addresses, c.addresses);
-        assert_eq!(r.groups, c.groups);
-        assert_eq!(r.favorite, c.favorite);
-        assert_eq!(r.birthday, c.birthday);
-    }
-
-    #[test]
-    fn upsert_updates_in_place_no_duplicates() {
-        let mut doc = AutoCommit::new();
-        let mut c = sample_contacts().into_iter().next().unwrap();
-        ContactsDoc::upsert_contact(&mut doc, &c);
-        c.title = "Updated Title".into();
-        c.phones.push(Labeled::new("home", "+1 555 0000"));
-        ContactsDoc::upsert_contact(&mut doc, &c);
-        let back = ContactsDoc::list_contacts(&doc);
-        assert_eq!(back.len(), 1, "update must not create a second record");
-        assert_eq!(back[0].title, "Updated Title");
-        assert_eq!(back[0].phones.len(), c.phones.len());
-    }
-
-    #[test]
-    fn delete_removes_record() {
-        let mut doc = AutoCommit::new();
-        let c = sample_contacts().into_iter().next().unwrap();
-        ContactsDoc::upsert_contact(&mut doc, &c);
-        ContactsDoc::delete_contact(&mut doc, c.id);
-        assert!(ContactsDoc::list_contacts(&doc).is_empty());
-    }
-
-    #[test]
-    fn two_docs_merge_contacts() {
-        // Peer A seeds; peer B joins from A's state, both add a contact,
-        // and the merged document carries both.
-        let mut a = AutoCommit::new();
-        let ca = sample_contacts().into_iter().next().unwrap();
-        ContactsDoc::upsert_contact(&mut a, &ca);
-
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let mut cb = Contact::new();
-        cb.first = "Grace".into();
-        cb.last = "Hopper".into();
-        ContactsDoc::upsert_contact(&mut b, &cb);
-
-        let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b_loaded).unwrap();
-
-        let names: Vec<String> = ContactsDoc::list_contacts(&a)
-            .into_iter()
-            .map(|c| c.display_name())
-            .collect();
-        assert!(names.iter().any(|n| n.contains("Ada")), "{names:?}");
-        assert!(names.iter().any(|n| n.contains("Grace")), "{names:?}");
-    }
-
-    #[test]
-    fn sync_text_append_one_char_is_bounded() {
-        // Anti-churn on the collaborative text fields: appending one char to a
-        // long field must splice only the new char, not rewrite the value.
-        let mut doc = AutoCommit::new();
-        let long = "a".repeat(300);
-        sync_text(&mut doc, &ROOT, "notes", &long);
-        let before = doc.save().len();
-        let mut longer = long.clone();
-        longer.push('!');
-        sync_text(&mut doc, &ROOT, "notes", &longer);
-        let grew = doc.save().len() - before;
-        assert_eq!(
-            read_str_or_text(&doc, &ROOT, "notes").unwrap_or_default(),
-            longer,
-            "value round-trips"
-        );
-        assert!(grew < 40, "one-char text edit grew doc by {grew} bytes");
-    }
-
-    #[test]
-    fn repeated_upsert_keeps_doc_bounded() {
-        // Full store-path idempotency: with diff-spliced text, guarded scalar
-        // puts, and change-gated list rebuilds, re-upserting an unchanged
-        // contact must not grow the document at all.
-        let mut doc = AutoCommit::new();
-        let c = sample_contacts().into_iter().next().unwrap();
-        ContactsDoc::upsert_contact(&mut doc, &c);
-        let a = doc.save().len();
-        for _ in 0..50 {
+    fn contact_records_round_trip_and_migrate() {
+        // --- phase: upsert_then_list_round_trips ---
+        {
+            let mut doc = AutoCommit::new();
+            let c = sample_contacts().into_iter().next().unwrap();
             ContactsDoc::upsert_contact(&mut doc, &c);
+            let back = ContactsDoc::list_contacts(&doc);
+            assert_eq!(back.len(), 1);
+            let r = &back[0];
+            assert_eq!(r.id, c.id);
+            assert_eq!(r.first, c.first);
+            assert_eq!(r.last, c.last);
+            assert_eq!(r.org, c.org);
+            assert_eq!(r.phones, c.phones);
+            assert_eq!(r.emails, c.emails);
+            assert_eq!(r.addresses, c.addresses);
+            assert_eq!(r.groups, c.groups);
+            assert_eq!(r.favorite, c.favorite);
+            assert_eq!(r.birthday, c.birthday);
         }
-        let b = doc.save().len();
-        assert_eq!(
-            a, b,
-            "re-upserting an unchanged contact grew the document {a} -> {b}"
-        );
+
+        // --- phase: upsert_updates_in_place_no_duplicates ---
+        {
+            let mut doc = AutoCommit::new();
+            let mut c = sample_contacts().into_iter().next().unwrap();
+            ContactsDoc::upsert_contact(&mut doc, &c);
+            c.title = "Updated Title".into();
+            c.phones.push(Labeled::new("home", "+1 555 0000"));
+            ContactsDoc::upsert_contact(&mut doc, &c);
+            let back = ContactsDoc::list_contacts(&doc);
+            assert_eq!(back.len(), 1, "update must not create a second record");
+            assert_eq!(back[0].title, "Updated Title");
+            assert_eq!(back[0].phones.len(), c.phones.len());
+        }
+
+        // --- phase: delete_removes_record ---
+        {
+            let mut doc = AutoCommit::new();
+            let c = sample_contacts().into_iter().next().unwrap();
+            ContactsDoc::upsert_contact(&mut doc, &c);
+            ContactsDoc::delete_contact(&mut doc, c.id);
+            assert!(ContactsDoc::list_contacts(&doc).is_empty());
+        }
+
+        // --- phase: legacy_rows_get_deterministic_ids_then_migrate_to_persisted_maps ---
+        {
+            let mut doc = AutoCommit::new();
+            let mut contact = Contact::new();
+            contact.first = "Legacy".into();
+            ContactsDoc::upsert_contact(&mut doc, &contact);
+
+            let contacts = doc.get(&ROOT, "contacts").unwrap().unwrap().1;
+            let row = doc
+                .get(&contacts, contact.id.to_string().as_str())
+                .unwrap()
+                .unwrap()
+                .1;
+            let groups = doc.put_object(&row, "groups", ObjType::List).unwrap();
+            doc.insert(&groups, 0, "Work").unwrap();
+
+            let first_read = ContactsDoc::list_contacts(&doc).remove(0);
+            let mut peer = AutoCommit::load(&doc.save()).unwrap();
+            let second_read = ContactsDoc::list_contacts(&peer).remove(0);
+            assert_eq!(first_read.groups[0].id, second_read.groups[0].id);
+            assert_eq!(first_read.groups[0].value, "Work");
+
+            ContactsDoc::upsert_contact(&mut peer, &second_read);
+            let persisted_list = peer.get(&row, "groups").unwrap().unwrap().1;
+            let persisted_row = peer.get(&persisted_list, 0).unwrap().unwrap();
+            assert!(matches!(persisted_row.0, Value::Object(ObjType::Map)));
+            let persisted_id = read_str(&peer, &persisted_row.1, "id").unwrap_or_default();
+            assert_eq!(persisted_id, second_read.groups[0].id.to_string());
+        }
     }
 
+    /// Two documents merge contacts, and text sync and repeated upserts keep the document bounded.
     #[test]
-    fn legacy_rows_get_deterministic_ids_then_migrate_to_persisted_maps() {
-        let mut doc = AutoCommit::new();
-        let mut contact = Contact::new();
-        contact.first = "Legacy".into();
-        ContactsDoc::upsert_contact(&mut doc, &contact);
+    fn contact_doc_merges_and_stays_bounded() {
+        // --- phase: two_docs_merge_contacts ---
+        {
+            // Peer A seeds; peer B joins from A's state, both add a contact,
+            // and the merged document carries both.
+            let mut a = AutoCommit::new();
+            let ca = sample_contacts().into_iter().next().unwrap();
+            ContactsDoc::upsert_contact(&mut a, &ca);
 
-        let contacts = doc.get(&ROOT, "contacts").unwrap().unwrap().1;
-        let row = doc
-            .get(&contacts, contact.id.to_string().as_str())
-            .unwrap()
-            .unwrap()
-            .1;
-        let groups = doc.put_object(&row, "groups", ObjType::List).unwrap();
-        doc.insert(&groups, 0, "Work").unwrap();
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let mut cb = Contact::new();
+            cb.first = "Grace".into();
+            cb.last = "Hopper".into();
+            ContactsDoc::upsert_contact(&mut b, &cb);
 
-        let first_read = ContactsDoc::list_contacts(&doc).remove(0);
-        let mut peer = AutoCommit::load(&doc.save()).unwrap();
-        let second_read = ContactsDoc::list_contacts(&peer).remove(0);
-        assert_eq!(first_read.groups[0].id, second_read.groups[0].id);
-        assert_eq!(first_read.groups[0].value, "Work");
+            let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b_loaded).unwrap();
 
-        ContactsDoc::upsert_contact(&mut peer, &second_read);
-        let persisted_list = peer.get(&row, "groups").unwrap().unwrap().1;
-        let persisted_row = peer.get(&persisted_list, 0).unwrap().unwrap();
-        assert!(matches!(persisted_row.0, Value::Object(ObjType::Map)));
-        let persisted_id = read_str(&peer, &persisted_row.1, "id").unwrap_or_default();
-        assert_eq!(persisted_id, second_read.groups[0].id.to_string());
+            let names: Vec<String> = ContactsDoc::list_contacts(&a)
+                .into_iter()
+                .map(|c| c.display_name())
+                .collect();
+            assert!(names.iter().any(|n| n.contains("Ada")), "{names:?}");
+            assert!(names.iter().any(|n| n.contains("Grace")), "{names:?}");
+        }
+
+        // --- phase: sync_text_append_one_char_is_bounded ---
+        {
+            // Anti-churn on the collaborative text fields: appending one char to a
+            // long field must splice only the new char, not rewrite the value.
+            let mut doc = AutoCommit::new();
+            let long = "a".repeat(300);
+            sync_text(&mut doc, &ROOT, "notes", &long);
+            let before = doc.save().len();
+            let mut longer = long.clone();
+            longer.push('!');
+            sync_text(&mut doc, &ROOT, "notes", &longer);
+            let grew = doc.save().len() - before;
+            assert_eq!(
+                read_str_or_text(&doc, &ROOT, "notes").unwrap_or_default(),
+                longer,
+                "value round-trips"
+            );
+            assert!(grew < 40, "one-char text edit grew doc by {grew} bytes");
+        }
+
+        // --- phase: repeated_upsert_keeps_doc_bounded ---
+        {
+            // Full store-path idempotency: with diff-spliced text, guarded scalar
+            // puts, and change-gated list rebuilds, re-upserting an unchanged
+            // contact must not grow the document at all.
+            let mut doc = AutoCommit::new();
+            let c = sample_contacts().into_iter().next().unwrap();
+            ContactsDoc::upsert_contact(&mut doc, &c);
+            let a = doc.save().len();
+            for _ in 0..50 {
+                ContactsDoc::upsert_contact(&mut doc, &c);
+            }
+            let b = doc.save().len();
+            assert_eq!(
+                a, b,
+                "re-upserting an unchanged contact grew the document {a} -> {b}"
+            );
+        }
     }
 }

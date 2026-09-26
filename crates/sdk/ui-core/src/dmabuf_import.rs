@@ -799,151 +799,157 @@ mod tests {
     }
 
     #[test]
-    fn a_tiled_modifier_is_refused_rather_than_sampled_as_pixels() {
-        // The AMD GFX9 tiled modifier a VA-API decoder exports. Importing it
-        // as linear would read the tiling pattern as picture content.
-        assert!(!is_linear(0x0200_0000_1040_1b04));
-        assert!(is_linear(DRM_FORMAT_MOD_LINEAR));
-        assert!(
-            is_linear(DRM_FORMAT_MOD_INVALID),
-            "unstated is treated as linear"
-        );
+    fn render_target_contract_accepts_only_exact_linear_xrgb() {
+        // Case `a_tiled_modifier_is_refused_rather_than_sampled_as_pixels`.
+        {
+            // The AMD GFX9 tiled modifier a VA-API decoder exports. Importing it
+            // as linear would read the tiling pattern as picture content.
+            assert!(!is_linear(0x0200_0000_1040_1b04));
+            assert!(is_linear(DRM_FORMAT_MOD_LINEAR));
+            assert!(
+                is_linear(DRM_FORMAT_MOD_INVALID),
+                "unstated is treated as linear"
+            );
+        }
+
+        // Case `scanout_target_contract_accepts_only_exact_linear_xrgb`.
+        {
+            let file = tempfile::tempfile().expect("temporary descriptor");
+            let planes = one_plane(&file, 0, 256);
+            let valid = DmabufRef {
+                planes: &planes,
+                fourcc: DRM_FORMAT_XRGB8888,
+                modifier: DRM_FORMAT_MOD_LINEAR,
+                width: 64,
+                height: 32,
+                colorimetry: Colorimetry::default(),
+            };
+            assert_eq!(validate_render_target(&valid), Ok(()));
+
+            let wrong_format = DmabufRef {
+                fourcc: DRM_FORMAT_XBGR8888,
+                ..valid
+            };
+            assert_eq!(
+                validate_render_target(&wrong_format),
+                Err(ImportError::UnsupportedFormat {
+                    fourcc: DRM_FORMAT_XBGR8888
+                })
+            );
+
+            let tiled = DmabufRef {
+                modifier: 0x0200_0000_1040_1b04,
+                ..valid
+            };
+            assert!(matches!(
+                validate_render_target(&tiled),
+                Err(ImportError::UnsupportedModifier { .. })
+            ));
+        }
+
+        // Case `scanout_target_contract_rejects_offset_and_short_stride`.
+        {
+            let file = tempfile::tempfile().expect("temporary descriptor");
+            let offset_planes = one_plane(&file, 4, 256);
+            let offset = DmabufRef {
+                planes: &offset_planes,
+                fourcc: DRM_FORMAT_XRGB8888,
+                modifier: DRM_FORMAT_MOD_LINEAR,
+                width: 64,
+                height: 32,
+                colorimetry: Colorimetry::default(),
+            };
+            assert!(matches!(
+                validate_render_target(&offset),
+                Err(ImportError::Vulkan(message)) if message.contains("offset must be zero")
+            ));
+
+            let short_planes = one_plane(&file, 0, 64 * 4 - 1);
+            let short = DmabufRef {
+                planes: &short_planes,
+                ..offset
+            };
+            assert_eq!(
+                validate_render_target(&short),
+                Err(ImportError::StrideMismatch {
+                    plane: 0,
+                    producer: 255,
+                    driver: 256,
+                })
+            );
+        }
     }
 
     #[test]
-    fn scanout_target_contract_accepts_only_exact_linear_xrgb() {
-        let file = tempfile::tempfile().expect("temporary descriptor");
-        let planes = one_plane(&file, 0, 256);
-        let valid = DmabufRef {
-            planes: &planes,
-            fourcc: DRM_FORMAT_XRGB8888,
-            modifier: DRM_FORMAT_MOD_LINEAR,
-            width: 64,
-            height: 32,
-            colorimetry: Colorimetry::default(),
-        };
-        assert_eq!(validate_render_target(&valid), Ok(()));
+    fn plane_specs_map_each_fourcc_to_its_texture_layout_or_refuse_it() {
+        // Case `nv12_maps_to_a_luma_and_a_half_resolution_chroma_plane`.
+        {
+            let (layout, specs) = plane_specs(DRM_FORMAT_NV12, 1920, 1080).unwrap();
+            assert_eq!(layout, PlaneLayout::BiPlanarYuv);
+            assert_eq!(specs.len(), 2);
+            assert_eq!((specs[0].width, specs[0].height), (1920, 1080));
+            assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::R8Unorm);
+            assert_eq!(
+                (specs[1].width, specs[1].height),
+                (960, 540),
+                "chroma is half in both axes"
+            );
+            assert_eq!(
+                specs[1].wgpu_format,
+                wgpu::TextureFormat::Rg8Unorm,
+                "NV12 chroma is interleaved Cb,Cr — two components in one plane"
+            );
+        }
 
-        let wrong_format = DmabufRef {
-            fourcc: DRM_FORMAT_XBGR8888,
-            ..valid
-        };
-        assert_eq!(
-            validate_render_target(&wrong_format),
-            Err(ImportError::UnsupportedFormat {
-                fourcc: DRM_FORMAT_XBGR8888
-            })
-        );
+        // Case `p010_uses_sixteen_bit_planes_for_its_ten_bit_samples`.
+        {
+            let (layout, specs) = plane_specs(DRM_FORMAT_P010, 3840, 2160).unwrap();
+            assert_eq!(layout, PlaneLayout::BiPlanarYuv);
+            assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::R16Unorm);
+            assert_eq!(specs[1].wgpu_format, wgpu::TextureFormat::Rg16Unorm);
+            assert_eq!(specs[0].texel_bytes, 2);
+            assert_eq!(specs[1].texel_bytes, 4);
+        }
 
-        let tiled = DmabufRef {
-            modifier: 0x0200_0000_1040_1b04,
-            ..valid
-        };
-        assert!(matches!(
-            validate_render_target(&tiled),
-            Err(ImportError::UnsupportedModifier { .. })
-        ));
-    }
+        // Case `odd_dimensions_keep_a_whole_chroma_sample_for_the_last_row_and_column`.
+        {
+            // Rounding down would drop the right column and bottom row of chroma,
+            // tinting the edges of an odd-sized picture.
+            let (_, specs) = plane_specs(DRM_FORMAT_NV12, 1919, 1079).unwrap();
+            assert_eq!((specs[1].width, specs[1].height), (960, 540));
+        }
 
-    #[test]
-    fn scanout_target_contract_rejects_offset_and_short_stride() {
-        let file = tempfile::tempfile().expect("temporary descriptor");
-        let offset_planes = one_plane(&file, 4, 256);
-        let offset = DmabufRef {
-            planes: &offset_planes,
-            fourcc: DRM_FORMAT_XRGB8888,
-            modifier: DRM_FORMAT_MOD_LINEAR,
-            width: 64,
-            height: 32,
-            colorimetry: Colorimetry::default(),
-        };
-        assert!(matches!(
-            validate_render_target(&offset),
-            Err(ImportError::Vulkan(message)) if message.contains("offset must be zero")
-        ));
+        // Case `yuyv_is_imported_at_half_width_because_one_texel_holds_two_pixels`.
+        {
+            let (layout, specs) = plane_specs(DRM_FORMAT_YUYV, 1920, 1080).unwrap();
+            assert_eq!(layout, PlaneLayout::PackedYuv422);
+            assert_eq!(specs.len(), 1);
+            assert_eq!((specs[0].width, specs[0].height), (960, 1080));
+            assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::Rgba8Unorm);
+        }
 
-        let short_planes = one_plane(&file, 0, 64 * 4 - 1);
-        let short = DmabufRef {
-            planes: &short_planes,
-            ..offset
-        };
-        assert_eq!(
-            validate_render_target(&short),
-            Err(ImportError::StrideMismatch {
-                plane: 0,
-                producer: 255,
-                driver: 256,
-            })
-        );
-    }
+        // Case `drm_rgb_names_map_to_the_matching_vulkan_byte_order`.
+        {
+            // Getting this backwards swaps red and blue — the classic dmabuf bug.
+            // DRM names by little-endian word order, so AR24 (ARGB8888) is
+            // B,G,R,A in memory.
+            let (layout, specs) = plane_specs(DRM_FORMAT_ARGB8888, 64, 64).unwrap();
+            assert_eq!(layout, PlaneLayout::Packed);
+            assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::Bgra8Unorm);
+            assert_eq!(specs[0].format, vk::Format::B8G8R8A8_UNORM);
 
-    #[test]
-    fn nv12_maps_to_a_luma_and_a_half_resolution_chroma_plane() {
-        let (layout, specs) = plane_specs(DRM_FORMAT_NV12, 1920, 1080).unwrap();
-        assert_eq!(layout, PlaneLayout::BiPlanarYuv);
-        assert_eq!(specs.len(), 2);
-        assert_eq!((specs[0].width, specs[0].height), (1920, 1080));
-        assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::R8Unorm);
-        assert_eq!(
-            (specs[1].width, specs[1].height),
-            (960, 540),
-            "chroma is half in both axes"
-        );
-        assert_eq!(
-            specs[1].wgpu_format,
-            wgpu::TextureFormat::Rg8Unorm,
-            "NV12 chroma is interleaved Cb,Cr — two components in one plane"
-        );
-    }
+            let (_, specs) = plane_specs(DRM_FORMAT_ABGR8888, 64, 64).unwrap();
+            assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::Rgba8Unorm);
 
-    #[test]
-    fn p010_uses_sixteen_bit_planes_for_its_ten_bit_samples() {
-        let (layout, specs) = plane_specs(DRM_FORMAT_P010, 3840, 2160).unwrap();
-        assert_eq!(layout, PlaneLayout::BiPlanarYuv);
-        assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::R16Unorm);
-        assert_eq!(specs[1].wgpu_format, wgpu::TextureFormat::Rg16Unorm);
-        assert_eq!(specs[0].texel_bytes, 2);
-        assert_eq!(specs[1].texel_bytes, 4);
-    }
+            // The X variants share the layout; alpha is simply ignored.
+            let (_, x) = plane_specs(DRM_FORMAT_XRGB8888, 64, 64).unwrap();
+            assert_eq!(x[0].wgpu_format, wgpu::TextureFormat::Bgra8Unorm);
+        }
 
-    #[test]
-    fn odd_dimensions_keep_a_whole_chroma_sample_for_the_last_row_and_column() {
-        // Rounding down would drop the right column and bottom row of chroma,
-        // tinting the edges of an odd-sized picture.
-        let (_, specs) = plane_specs(DRM_FORMAT_NV12, 1919, 1079).unwrap();
-        assert_eq!((specs[1].width, specs[1].height), (960, 540));
-    }
-
-    #[test]
-    fn yuyv_is_imported_at_half_width_because_one_texel_holds_two_pixels() {
-        let (layout, specs) = plane_specs(DRM_FORMAT_YUYV, 1920, 1080).unwrap();
-        assert_eq!(layout, PlaneLayout::PackedYuv422);
-        assert_eq!(specs.len(), 1);
-        assert_eq!((specs[0].width, specs[0].height), (960, 1080));
-        assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::Rgba8Unorm);
-    }
-
-    #[test]
-    fn drm_rgb_names_map_to_the_matching_vulkan_byte_order() {
-        // Getting this backwards swaps red and blue — the classic dmabuf bug.
-        // DRM names by little-endian word order, so AR24 (ARGB8888) is
-        // B,G,R,A in memory.
-        let (layout, specs) = plane_specs(DRM_FORMAT_ARGB8888, 64, 64).unwrap();
-        assert_eq!(layout, PlaneLayout::Packed);
-        assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::Bgra8Unorm);
-        assert_eq!(specs[0].format, vk::Format::B8G8R8A8_UNORM);
-
-        let (_, specs) = plane_specs(DRM_FORMAT_ABGR8888, 64, 64).unwrap();
-        assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::Rgba8Unorm);
-
-        // The X variants share the layout; alpha is simply ignored.
-        let (_, x) = plane_specs(DRM_FORMAT_XRGB8888, 64, 64).unwrap();
-        assert_eq!(x[0].wgpu_format, wgpu::TextureFormat::Bgra8Unorm);
-    }
-
-    #[test]
-    fn an_unknown_fourcc_is_rejected_rather_than_guessed_at() {
-        assert!(plane_specs(media::dmabuf::fourcc(b'Z', b'Z', b'Z', b'Z'), 64, 64).is_none());
+        // Case `an_unknown_fourcc_is_rejected_rather_than_guessed_at`.
+        {
+            assert!(plane_specs(media::dmabuf::fourcc(b'Z', b'Z', b'Z', b'Z'), 64, 64).is_none());
+        }
     }
 
     #[test]

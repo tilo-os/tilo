@@ -9,40 +9,42 @@
 use super::*;
 
 #[test]
-fn accepts_only_bounded_visible_input() {
-    for raw in [
-        r#"{"op":"observe"}"#,
-        r#"{"op":"click","x":12,"y":34}"#,
-        r#"{"op":"context_click","x":12,"y":34}"#,
-        r#"{"op":"key","key":"a","modifiers":["ctrl"]}"#,
-        r#"{"op":"type","text":"Evidence"}"#,
-        r#"{"op":"wheel","x":12,"y":34,"dx":0,"dy":300}"#,
-        r#"{"op":"finish"}"#,
-    ] {
-        assert!(validate_command(raw, [1280, 800]).is_ok(), "{raw}");
+fn bench_input_accepts_only_bounded_visible_commands() {
+    // Phase `accepts_only_bounded_visible_input`.
+    {
+        for raw in [
+            r#"{"op":"observe"}"#,
+            r#"{"op":"click","x":12,"y":34}"#,
+            r#"{"op":"context_click","x":12,"y":34}"#,
+            r#"{"op":"key","key":"a","modifiers":["ctrl"]}"#,
+            r#"{"op":"type","text":"Evidence"}"#,
+            r#"{"op":"wheel","x":12,"y":34,"dx":0,"dy":300}"#,
+            r#"{"op":"finish"}"#,
+        ] {
+            assert!(validate_command(raw, [1280, 800]).is_ok(), "{raw}");
+        }
     }
-}
-
-#[test]
-fn rejects_malformed_nonfinite_outside_and_semantic_commands() {
-    for raw in [
-        "null",
-        "garbage",
-        r#"{"op":"click","x":1e999,"y":0}"#,
-        r#"{"op":"click","x":-1,"y":0}"#,
-        r#"{"op":"click","x":1280,"y":0}"#,
-        r#"{"op":"click","x":0,"y":800}"#,
-        r#"{"op":"context_click","x":1280,"y":10}"#,
-        r#"{"op":"observe","extra":true}"#,
-        r#"{"op":"click_named","target":"Files"}"#,
-        r#"{"op":"key","key":"Frob","modifiers":[]}"#,
-        r#"{"op":"key","key":"a","modifiers":["unknown"]}"#,
-        r#"{"op":"wheel","x":10,"y":10,"dx":0,"dy":10001}"#,
-    ] {
-        assert!(validate_command(raw, [1280, 800]).is_err(), "{raw}");
+    // Phase `rejects_malformed_nonfinite_outside_and_semantic_commands`.
+    {
+        for raw in [
+            "null",
+            "garbage",
+            r#"{"op":"click","x":1e999,"y":0}"#,
+            r#"{"op":"click","x":-1,"y":0}"#,
+            r#"{"op":"click","x":1280,"y":0}"#,
+            r#"{"op":"click","x":0,"y":800}"#,
+            r#"{"op":"context_click","x":1280,"y":10}"#,
+            r#"{"op":"observe","extra":true}"#,
+            r#"{"op":"click_named","target":"Files"}"#,
+            r#"{"op":"key","key":"Frob","modifiers":[]}"#,
+            r#"{"op":"key","key":"a","modifiers":["unknown"]}"#,
+            r#"{"op":"wheel","x":10,"y":10,"dx":0,"dy":10001}"#,
+        ] {
+            assert!(validate_command(raw, [1280, 800]).is_err(), "{raw}");
+        }
+        let long = serde_json::json!({"op":"type","text":"x".repeat(4097)}).to_string();
+        assert!(validate_command(&long, [1280, 800]).is_err());
     }
-    let long = serde_json::json!({"op":"type","text":"x".repeat(4097)}).to_string();
-    assert!(validate_command(&long, [1280, 800]).is_err());
 }
 
 // Removing the interactive branch, rebuilding each request, or retaining a chord

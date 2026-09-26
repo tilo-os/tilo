@@ -122,6 +122,7 @@ impl HostedTileInputs {
             Some(file_explorer::files_app::HostedFileServices {
                 thumbnails: None,
                 document_opener: None,
+                open_with: None,
             }),
         )
     }
@@ -316,57 +317,61 @@ mod tests {
     }
 
     #[test]
-    fn fixture_directory_lives_through_last_input_clone() {
-        let parent = tempfile::tempdir().unwrap();
-        let inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
-        let child = inputs.files.as_ref().unwrap().initial_dir.clone();
-        assert_eq!(child.parent(), Some(parent.path()));
-        assert_eq!(
-            std::fs::read(child.join("Welcome.txt")).unwrap(),
-            b"Shell capture fixture\n"
-        );
-        let last = inputs.clone();
-        drop(inputs);
-        assert!(child.is_dir());
-        let tile = crate::shell::try_to_ui_tile(
-            &files_tile(),
-            terminal::HostedProcessServices::default(),
-            &last,
-        )
-        .unwrap();
-        assert!(matches!(tile, ui::widget::TileContent::App(_)));
-        drop(tile);
-        assert!(child.is_dir());
-        drop(last);
-        assert!(!child.exists());
-        assert!(parent.path().is_dir());
-    }
+    fn hosted_file_inputs_live_through_clones_and_never_fall_back() {
+        fn fixture_directory_lives_through_last_input_clone() {
+            let parent = tempfile::tempdir().unwrap();
+            let inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
+            let child = inputs.files.as_ref().unwrap().initial_dir.clone();
+            assert_eq!(child.parent(), Some(parent.path()));
+            assert_eq!(
+                std::fs::read(child.join("Welcome.txt")).unwrap(),
+                b"Shell capture fixture\n"
+            );
+            let last = inputs.clone();
+            drop(inputs);
+            assert!(child.is_dir());
+            let tile = crate::shell::try_to_ui_tile(
+                &files_tile(),
+                terminal::HostedProcessServices::default(),
+                &last,
+            )
+            .unwrap();
+            assert!(matches!(tile, ui::widget::TileContent::App(_)));
+            drop(tile);
+            assert!(child.is_dir());
+            drop(last);
+            assert!(!child.exists());
+            assert!(parent.path().is_dir());
+        }
 
-    #[test]
-    fn fixture_missing_files_input_does_not_fall_back_on_linux() {
-        let parent = tempfile::tempdir().unwrap();
-        let mut inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
-        inputs.files = None;
-        let result = crate::shell::try_to_ui_tile(
-            &files_tile(),
-            terminal::HostedProcessServices::default(),
-            &inputs,
-        );
-        assert!(matches!(
-            result,
-            Err(HostedTileError::RequiredServiceMissing("Files startup"))
-        ));
-    }
+        fn fixture_missing_files_input_does_not_fall_back_on_linux() {
+            let parent = tempfile::tempdir().unwrap();
+            let mut inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
+            inputs.files = None;
+            let result = crate::shell::try_to_ui_tile(
+                &files_tile(),
+                terminal::HostedProcessServices::default(),
+                &inputs,
+            );
+            assert!(matches!(
+                result,
+                Err(HostedTileError::RequiredServiceMissing("Files startup"))
+            ));
+        }
 
-    #[test]
-    fn a_files_tab_can_start_in_its_dropped_directory() {
-        let parent = tempfile::tempdir().unwrap();
-        let inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
-        let dropped = parent.path().join("dropped");
-        std::fs::create_dir(&dropped).unwrap();
-        inputs.bind_files_directory(42, dropped.clone());
-        assert_eq!(inputs.files_for_tab(42).unwrap().initial_dir, dropped);
-        assert!(inputs.files_for_tab(43).is_none());
+        fn a_files_tab_can_start_in_its_dropped_directory() {
+            let parent = tempfile::tempdir().unwrap();
+            let inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
+            let dropped = parent.path().join("dropped");
+            std::fs::create_dir(&dropped).unwrap();
+            inputs.bind_files_directory(42, dropped.clone());
+            assert_eq!(inputs.files_for_tab(42).unwrap().initial_dir, dropped);
+            assert!(inputs.files_for_tab(43).is_none());
+        }
+
+        fixture_directory_lives_through_last_input_clone();
+        fixture_missing_files_input_does_not_fall_back_on_linux();
+        a_files_tab_can_start_in_its_dropped_directory();
     }
 }
 

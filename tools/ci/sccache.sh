@@ -18,6 +18,15 @@ case "$mode" in
       # caching enabled, but use the compiler-driven mode that preserves the
       # real preprocessor semantics for native build scripts as well as rustc.
       export SCCACHE_DIRECT=false
+      # sccache recognises a rustup proxy by running `rustc +stable`. The
+      # images carry only the pinned toolchain, so rustup's default
+      # auto-install downloaded all of `stable` into every job before its first
+      # compile (9-29 s). Without auto-install that check fails at once and
+      # sccache runs the proxy as the compiler: rustup still selects the pinned
+      # toolchain, and cache keys (sysroot library digests, arguments, inputs)
+      # are unchanged. A job whose pinned toolchain is missing now fails
+      # instead of fetching one.
+      export RUSTUP_AUTO_INSTALL=0
       # Forgejo runner-level environment variables intentionally provide the
       # production defaults, and take precedence over workflow `env` entries.
       # A canary needs a fresh namespace, though, so carry its request under a
@@ -41,6 +50,7 @@ case "$mode" in
         if [ "$mode" = prepare ] && [ -n "${GITHUB_ENV:-}" ]; then
           printf 'RUSTC_WRAPPER=%s\n' "$path" >> "$GITHUB_ENV"
           printf 'SCCACHE_DIRECT=false\n' >> "$GITHUB_ENV"
+          printf 'RUSTUP_AUTO_INSTALL=0\n' >> "$GITHUB_ENV"
           if [ -n "${TILO_SCCACHE_KEY_PREFIX:-}" ]; then
             printf 'SCCACHE_S3_KEY_PREFIX=%s\n' "$TILO_SCCACHE_KEY_PREFIX" >> "$GITHUB_ENV"
           fi

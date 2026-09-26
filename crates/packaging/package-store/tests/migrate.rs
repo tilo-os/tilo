@@ -49,82 +49,114 @@ fn legacy_install(root: &Path, packed: &Packed, source_files: &BTreeMap<&str, Ve
 }
 
 #[test]
-fn a_legacy_install_moves_into_the_content_store_once() {
-    let identity = SigningIdentity::generate();
-    let source = files();
-    let (_payload, packed) = package(&identity, "so.tilo.legacy", "1.0.0", &source);
-    let root = scratch();
-    legacy_install(root.path(), &packed, &source);
-    // A second legacy row with no record cannot be verified; it is kept.
-    std::fs::create_dir_all(root.path().join("payloads/so.tilo.orphan")).unwrap();
-    let mut registry = std::fs::read_to_string(root.path().join("registry.toml")).unwrap();
-    write!(
-        registry,
-        "[[entry]]\nid = \"so.tilo.orphan\"\npayload_root = {:?}\nmanifest_path = {:?}\n",
-        root.path()
-            .join("payloads/so.tilo.orphan")
-            .display()
-            .to_string(),
-        root.path()
-            .join("payloads/so.tilo.orphan/manifest.toml")
-            .display()
-            .to_string(),
-    )
-    .unwrap();
-    std::fs::write(root.path().join("registry.toml"), registry).unwrap();
+fn legacy_stores_are_imported_into_the_content_store() {
+    // phase: a_legacy_install_moves_into_the_content_store_once
+    {
+        let identity = SigningIdentity::generate();
+        let source = files();
+        let (_payload, packed) = package(&identity, "so.tilo.legacy", "1.0.0", &source);
+        let root = scratch();
+        legacy_install(root.path(), &packed, &source);
+        // A second legacy row with no record cannot be verified; it is kept.
+        std::fs::create_dir_all(root.path().join("payloads/so.tilo.orphan")).unwrap();
+        let mut registry = std::fs::read_to_string(root.path().join("registry.toml")).unwrap();
+        write!(
+            registry,
+            "[[entry]]\nid = \"so.tilo.orphan\"\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            root.path()
+                .join("payloads/so.tilo.orphan")
+                .display()
+                .to_string(),
+            root.path()
+                .join("payloads/so.tilo.orphan/manifest.toml")
+                .display()
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(root.path().join("registry.toml"), registry).unwrap();
 
-    let store = PackageStore::at(root.path());
-    let report = store.migrate_legacy_layout().unwrap();
-    assert_eq!(report.migrated, vec!["so.tilo.legacy".to_string()]);
-    assert_eq!(report.kept.len(), 1);
-    assert_eq!(report.kept[0].0, "so.tilo.orphan");
+        let store = PackageStore::at(root.path());
+        let report = store.migrate_legacy_layout().unwrap();
+        assert_eq!(report.migrated, vec!["so.tilo.legacy".to_string()]);
+        assert_eq!(report.kept.len(), 1);
+        assert_eq!(report.kept[0].0, "so.tilo.orphan");
 
-    let registry = store.registry().unwrap();
-    let row = registry.find("so.tilo.legacy").unwrap();
-    assert_eq!(row.payload_root, store.layout().payload(packed.id()));
-    assert_eq!(row.manifest_path, store.layout().manifest(packed.id()));
-    assert!(row.pinned, "row fields survive the move");
-    assert_eq!(row.source, "/old.tapp");
-    let expected: BTreeMap<String, Vec<u8>> = source
-        .iter()
-        .map(|(rel, content)| ((*rel).to_string(), content.clone()))
-        .collect();
-    assert_eq!(tree(&row.payload_root), expected);
-    assert!(
-        package_store::integrity::verify(row, &row.payload_root)
-            .unwrap()
-            .is_intact()
-    );
-    assert!(!root.path().join("payloads/so.tilo.legacy").exists());
-    assert!(!root.path().join("integrity/so.tilo.legacy").exists());
-    assert!(
-        registry.find("so.tilo.orphan").is_some(),
-        "an unverifiable row keeps launching as it did"
-    );
+        let registry = store.registry().unwrap();
+        let row = registry.find("so.tilo.legacy").unwrap();
+        assert_eq!(row.payload_root, store.layout().payload(packed.id()));
+        assert_eq!(row.manifest_path, store.layout().manifest(packed.id()));
+        assert!(row.pinned, "row fields survive the move");
+        assert_eq!(row.source, "/old.tapp");
+        let expected: BTreeMap<String, Vec<u8>> = source
+            .iter()
+            .map(|(rel, content)| ((*rel).to_string(), content.clone()))
+            .collect();
+        assert_eq!(tree(&row.payload_root), expected);
+        assert!(
+            package_store::integrity::verify(row, &row.payload_root)
+                .unwrap()
+                .is_intact()
+        );
+        assert!(!root.path().join("payloads/so.tilo.legacy").exists());
+        assert!(!root.path().join("integrity/so.tilo.legacy").exists());
+        assert!(
+            registry.find("so.tilo.orphan").is_some(),
+            "an unverifiable row keeps launching as it did"
+        );
 
-    // Idempotent: nothing left to move, the orphan is reported again.
-    let again = store.migrate_legacy_layout().unwrap();
-    assert!(again.migrated.is_empty());
-    assert_eq!(store.registry().unwrap(), registry);
-}
+        // Idempotent: nothing left to move, the orphan is reported again.
+        let again = store.migrate_legacy_layout().unwrap();
+        assert!(again.migrated.is_empty());
+        assert_eq!(store.registry().unwrap(), registry);
+    }
+    // phase: a_tampered_legacy_payload_is_kept_rather_than_imported
+    {
+        let identity = SigningIdentity::generate();
+        let source = files();
+        let (_payload, packed) = package(&identity, "so.tilo.legacy", "1.0.0", &source);
+        let root = scratch();
+        legacy_install(root.path(), &packed, &source);
+        std::fs::write(
+            root.path().join("payloads/so.tilo.legacy/share/data.bin"),
+            b"changed",
+        )
+        .unwrap();
+        let store = PackageStore::at(root.path());
+        let report = store.migrate_legacy_layout().unwrap();
+        assert!(report.migrated.is_empty());
+        assert_eq!(report.kept.len(), 1);
+        assert!(root.path().join("payloads/so.tilo.legacy").exists());
+    }
+    // phase: the_app_host_store_is_imported_and_deleted
+    {
+        let identity = SigningIdentity::generate();
+        let source = files();
+        let (_payload, packed) = package(&identity, "so.tilo.hosted", "2.0.0", &source);
+        let old = scratch();
+        app_host_install(old.path(), &packed, &source);
+        let root = scratch();
+        let store = PackageStore::at(root.path());
 
-#[test]
-fn a_tampered_legacy_payload_is_kept_rather_than_imported() {
-    let identity = SigningIdentity::generate();
-    let source = files();
-    let (_payload, packed) = package(&identity, "so.tilo.legacy", "1.0.0", &source);
-    let root = scratch();
-    legacy_install(root.path(), &packed, &source);
-    std::fs::write(
-        root.path().join("payloads/so.tilo.legacy/share/data.bin"),
-        b"changed",
-    )
-    .unwrap();
-    let store = PackageStore::at(root.path());
-    let report = store.migrate_legacy_layout().unwrap();
-    assert!(report.migrated.is_empty());
-    assert_eq!(report.kept.len(), 1);
-    assert!(root.path().join("payloads/so.tilo.legacy").exists());
+        let report = store.import_app_host_store(old.path()).unwrap();
+        assert_eq!(report.migrated, vec!["so.tilo.hosted".to_string()]);
+        let registry = store.registry().unwrap();
+        let row = registry.find("so.tilo.hosted").unwrap();
+        assert!(row.pinned);
+        assert_eq!(row.last_used, 1_700_000_500);
+        assert_eq!(row.version, "2.0.0");
+        assert!(
+            package_store::integrity::verify(row, &row.payload_root)
+                .unwrap()
+                .is_intact()
+        );
+        for gone in ["store", "payloads", "registry.toml"] {
+            assert!(!old.path().join(gone).exists(), "{gone} is removed");
+        }
+        assert!(
+            store.import_app_host_store(old.path()).unwrap().is_empty(),
+            "a second run finds nothing to import"
+        );
+    }
 }
 
 /// Lay `packed` out the way the app host used to: every blob under
@@ -160,35 +192,4 @@ fn app_host_install(old: &Path, packed: &Packed, source_files: &BTreeMap<&str, V
         ),
     )
     .unwrap();
-}
-
-#[test]
-fn the_app_host_store_is_imported_and_deleted() {
-    let identity = SigningIdentity::generate();
-    let source = files();
-    let (_payload, packed) = package(&identity, "so.tilo.hosted", "2.0.0", &source);
-    let old = scratch();
-    app_host_install(old.path(), &packed, &source);
-    let root = scratch();
-    let store = PackageStore::at(root.path());
-
-    let report = store.import_app_host_store(old.path()).unwrap();
-    assert_eq!(report.migrated, vec!["so.tilo.hosted".to_string()]);
-    let registry = store.registry().unwrap();
-    let row = registry.find("so.tilo.hosted").unwrap();
-    assert!(row.pinned);
-    assert_eq!(row.last_used, 1_700_000_500);
-    assert_eq!(row.version, "2.0.0");
-    assert!(
-        package_store::integrity::verify(row, &row.payload_root)
-            .unwrap()
-            .is_intact()
-    );
-    for gone in ["store", "payloads", "registry.toml"] {
-        assert!(!old.path().join(gone).exists(), "{gone} is removed");
-    }
-    assert!(
-        store.import_app_host_store(old.path()).unwrap().is_empty(),
-        "a second run finds nothing to import"
-    );
 }

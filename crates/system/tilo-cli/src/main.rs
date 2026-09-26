@@ -705,195 +705,195 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
-    /// clap's own consistency check: duplicate names, bad arg definitions, a subcommand with no
-    /// help. Fails the build rather than a user's first attempt to use it.
     #[test]
-    fn the_command_tree_is_well_formed() {
-        Cli::command().debug_assert();
-        SystemCli::command().debug_assert();
+    fn the_command_tree_parses_namespaces_and_completes_both_argv0s() {
+        // Phase `the_command_tree_is_well_formed`.
+        // clap's own consistency check: duplicate names, bad arg definitions, a subcommand with no
+        // help. Fails the build rather than a user's first attempt to use it.
+        {
+            Cli::command().debug_assert();
+            SystemCli::command().debug_assert();
+        }
+        // Phase `completion_scripts_cover_tilo_and_system`.
+        {
+            let mut output = Vec::new();
+            clap_complete::generate(Shell::Bash, &mut Cli::command(), "tilo", &mut output);
+            clap_complete::generate(
+                Shell::Bash,
+                &mut SystemCli::command(),
+                "system",
+                &mut output,
+            );
+            let script = String::from_utf8(output).expect("completion is UTF-8");
+            assert!(script.contains("_tilo()"), "{script}");
+            assert!(script.contains("default tilo"), "{script}");
+            assert!(script.contains("_system()"), "{script}");
+            assert!(script.contains("default system"), "{script}");
+        }
+        // Phase `elapsed_time_is_compact_and_stable`.
+        {
+            assert_eq!(human_duration(Duration::from_secs(9)), "9s");
+            assert_eq!(human_duration(Duration::from_secs(125)), "2m 05s");
+        }
+        // Phase `status_takes_the_unprivileged_path`.
+        // `status` must not require root. A person diagnosing a machine that won't boot properly
+        // shouldn't have to authenticate to be told what's on it, which requiring it would push
+        // them towards `sudo` for a read.
+        {
+            let cli = Cli::try_parse_from(["tilo", "status"]).expect("parses");
+            assert!(
+                matches!(cli.cmd, Cmd::Status { json: false }),
+                "status must parse without flags"
+            );
+        }
+        // Phase `provider_namespaces_parse_independently`.
+        {
+            let system = Cli::try_parse_from(["tilo", "system", "status"]).expect("system parses");
+            assert!(matches!(
+                system.cmd,
+                Cmd::System {
+                    cmd: SystemCmd::Status { json: false }
+                }
+            ));
+            let app = Cli::try_parse_from(["tilo", "app", "u", "browser"]).expect("app parses");
+            assert!(matches!(app.cmd, Cmd::App { .. }));
+        }
+        // Phase `system_argv0_is_the_same_system_namespace`.
+        {
+            let args = vec![
+                OsString::from("system"),
+                OsString::from("update"),
+                OsString::from("-y"),
+            ];
+            assert!(invoked_as(&args, "system"));
+            let cli = SystemCli::try_parse_from(args).expect("the system alias parses");
+            assert!(matches!(cli.cmd, SystemCmd::Update { yes: true }));
+        }
     }
 
     #[test]
-    fn completion_scripts_cover_tilo_and_system() {
-        let mut output = Vec::new();
-        clap_complete::generate(Shell::Bash, &mut Cli::command(), "tilo", &mut output);
-        clap_complete::generate(
-            Shell::Bash,
-            &mut SystemCli::command(),
-            "system",
-            &mut output,
-        );
-        let script = String::from_utf8(output).expect("completion is UTF-8");
-        assert!(script.contains("_tilo()"), "{script}");
-        assert!(script.contains("default tilo"), "{script}");
-        assert!(script.contains("_system()"), "{script}");
-        assert!(script.contains("default system"), "{script}");
+    fn providers_are_discovered_forwarded_and_overridable() {
+        // Phase `missing_optional_provider_is_detectable`.
+        {
+            assert!(!command_available(std::ffi::OsStr::new(
+                "tilo-provider-that-does-not-exist"
+            )));
+        }
+        // Phase `app_provider_defaults_to_path_for_partial_non_tilo_installations`.
+        {
+            assert_eq!(app_binary_from(None), OsString::from("app"));
+            assert_eq!(
+                app_binary_from(Some(OsString::from("/custom/app"))),
+                OsString::from("/custom/app")
+            );
+        }
+        // Phase `app_help_is_forwarded_to_the_app_provider`.
+        {
+            let cli = Cli::try_parse_from(["tilo", "app", "--help"])
+                .expect("app help must be forwarded rather than consumed by the super-command");
+            assert!(matches!(cli.cmd, Cmd::App { args } if args == [OsString::from("--help")]));
+            assert!(is_help_request(&[OsString::from("--help")]));
+            assert!(is_help_request(&[
+                OsString::from("update"),
+                OsString::from("-h")
+            ]));
+            assert!(!is_help_request(&[
+                OsString::from("update"),
+                OsString::from("browser")
+            ]));
+        }
+        // Phase `the_helper_path_is_overridable_and_defaults_to_libexec`.
+        // The helper path is a single named constant, not a string repeated at each call site — the
+        // failure mode being one verb pointing at a path the image does not have.
+        {
+            // Not asserting on a process-global env var here (tests run in parallel); assert the
+            // default, which is the part that ships.
+            assert!(
+                helper().ends_with("tilo-deployment"),
+                "the helper must be tilo-deployment, got {}",
+                helper()
+            );
+        }
     }
 
     #[test]
-    fn elapsed_time_is_compact_and_stable() {
-        assert_eq!(human_duration(Duration::from_secs(9)), "9s");
-        assert_eq!(human_duration(Duration::from_secs(125)), "2m 05s");
-    }
-
-    /// `status` must not require root. A person diagnosing a machine that won't boot properly
-    /// shouldn't have to authenticate to be told what's on it, which requiring it would push
-    /// them towards `sudo` for a read.
-    #[test]
-    fn status_takes_the_unprivileged_path() {
-        let cli = Cli::try_parse_from(["tilo", "status"]).expect("parses");
-        assert!(
-            matches!(cli.cmd, Cmd::Status { json: false }),
-            "status must parse without flags"
-        );
-    }
-
-    #[test]
-    fn provider_namespaces_parse_independently() {
-        let system = Cli::try_parse_from(["tilo", "system", "status"]).expect("system parses");
-        assert!(matches!(
-            system.cmd,
-            Cmd::System {
-                cmd: SystemCmd::Status { json: false }
-            }
-        ));
-        let app = Cli::try_parse_from(["tilo", "app", "u", "browser"]).expect("app parses");
-        assert!(matches!(app.cmd, Cmd::App { .. }));
-    }
-
-    #[test]
-    fn system_argv0_is_the_same_system_namespace() {
-        let args = vec![
-            OsString::from("system"),
-            OsString::from("update"),
-            OsString::from("-y"),
-        ];
-        assert!(invoked_as(&args, "system"));
-        let cli = SystemCli::try_parse_from(args).expect("the system alias parses");
-        assert!(matches!(cli.cmd, SystemCmd::Update { yes: true }));
-    }
-
-    #[test]
-    fn missing_optional_provider_is_detectable() {
-        assert!(!command_available(std::ffi::OsStr::new(
-            "tilo-provider-that-does-not-exist"
-        )));
-    }
-
-    #[test]
-    fn app_provider_defaults_to_path_for_partial_non_tilo_installations() {
-        assert_eq!(app_binary_from(None), OsString::from("app"));
-        assert_eq!(
-            app_binary_from(Some(OsString::from("/custom/app"))),
-            OsString::from("/custom/app")
-        );
-    }
-
-    #[test]
-    fn app_help_is_forwarded_to_the_app_provider() {
-        let cli = Cli::try_parse_from(["tilo", "app", "--help"])
-            .expect("app help must be forwarded rather than consumed by the super-command");
-        assert!(matches!(cli.cmd, Cmd::App { args } if args == [OsString::from("--help")]));
-        assert!(is_help_request(&[OsString::from("--help")]));
-        assert!(is_help_request(&[
-            OsString::from("update"),
-            OsString::from("-h")
-        ]));
-        assert!(!is_help_request(&[
-            OsString::from("update"),
-            OsString::from("browser")
-        ]));
-    }
-
-    #[test]
-    fn umbrella_update_uses_whichever_providers_are_available() {
-        let mut app_runs = 0;
-        let mut system_runs = 0;
-        let status = update_available_providers(
-            true,
-            false,
-            "app unavailable",
-            || {
-                app_runs += 1;
-                Ok(ExitCode::SUCCESS)
-            },
-            || {
-                system_runs += 1;
-                Ok(ExitCode::SUCCESS)
-            },
-        )
-        .unwrap();
-        assert_eq!(status, ExitCode::SUCCESS);
-        assert_eq!((app_runs, system_runs), (1, 0));
-
-        let status = update_available_providers(
-            false,
-            true,
-            "app unavailable",
-            || Ok(ExitCode::SUCCESS),
-            || Ok(ExitCode::SUCCESS),
-        )
-        .unwrap();
-        assert_eq!(status, ExitCode::SUCCESS);
-    }
-
-    #[test]
-    fn umbrella_update_fails_for_no_provider_or_any_failed_provider() {
-        assert!(
-            update_available_providers(
+    fn umbrella_update_runs_available_providers_and_fails_on_any_failure() {
+        // Phase `umbrella_update_uses_whichever_providers_are_available`.
+        {
+            let mut app_runs = 0;
+            let mut system_runs = 0;
+            let status = update_available_providers(
+                true,
                 false,
-                false,
-                "app unavailable",
-                || Ok(ExitCode::SUCCESS),
-                || Ok(ExitCode::SUCCESS)
-            )
-            .is_err()
-        );
-        assert_eq!(
-            update_available_providers(
-                true,
-                true,
-                "app unavailable",
-                || Ok(ExitCode::FAILURE),
-                || Ok(ExitCode::SUCCESS)
-            )
-            .unwrap(),
-            ExitCode::FAILURE
-        );
-
-        let mut apps = 0;
-        let mut system = 0;
-        assert_eq!(
-            update_available_providers(
-                true,
-                true,
                 "app unavailable",
                 || {
-                    apps += 1;
+                    app_runs += 1;
                     Ok(ExitCode::SUCCESS)
                 },
                 || {
-                    system += 1;
-                    anyhow::bail!("the deployment service is unavailable")
-                }
+                    system_runs += 1;
+                    Ok(ExitCode::SUCCESS)
+                },
             )
-            .unwrap(),
-            ExitCode::FAILURE,
-            "one provider error must not turn a completed app update into an indeterminate CLI error"
-        );
-        assert_eq!((apps, system), (1, 1));
-    }
+            .unwrap();
+            assert_eq!(status, ExitCode::SUCCESS);
+            assert_eq!((app_runs, system_runs), (1, 0));
 
-    /// The helper path is a single named constant, not a string repeated at each call site — the
-    /// failure mode being one verb pointing at a path the image does not have.
-    #[test]
-    fn the_helper_path_is_overridable_and_defaults_to_libexec() {
-        // Not asserting on a process-global env var here (tests run in parallel); assert the
-        // default, which is the part that ships.
-        assert!(
-            helper().ends_with("tilo-deployment"),
-            "the helper must be tilo-deployment, got {}",
-            helper()
-        );
+            let status = update_available_providers(
+                false,
+                true,
+                "app unavailable",
+                || Ok(ExitCode::SUCCESS),
+                || Ok(ExitCode::SUCCESS),
+            )
+            .unwrap();
+            assert_eq!(status, ExitCode::SUCCESS);
+        }
+        // Phase `umbrella_update_fails_for_no_provider_or_any_failed_provider`.
+        {
+            assert!(
+                update_available_providers(
+                    false,
+                    false,
+                    "app unavailable",
+                    || Ok(ExitCode::SUCCESS),
+                    || Ok(ExitCode::SUCCESS)
+                )
+                .is_err()
+            );
+            assert_eq!(
+                update_available_providers(
+                    true,
+                    true,
+                    "app unavailable",
+                    || Ok(ExitCode::FAILURE),
+                    || Ok(ExitCode::SUCCESS)
+                )
+                .unwrap(),
+                ExitCode::FAILURE
+            );
+
+            let mut apps = 0;
+            let mut system = 0;
+            assert_eq!(
+                update_available_providers(
+                    true,
+                    true,
+                    "app unavailable",
+                    || {
+                        apps += 1;
+                        Ok(ExitCode::SUCCESS)
+                    },
+                    || {
+                        system += 1;
+                        anyhow::bail!("the deployment service is unavailable")
+                    }
+                )
+                .unwrap(),
+                ExitCode::FAILURE,
+                "one provider error must not turn a completed app update into an indeterminate CLI error"
+            );
+            assert_eq!((apps, system), (1, 1));
+        }
     }
 }

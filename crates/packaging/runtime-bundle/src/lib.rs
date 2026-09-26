@@ -903,12 +903,205 @@ mod tests {
     use super::*;
 
     #[test]
-    fn source_date_epoch_controls_produced_at() {
-        assert_eq!(produced_at_from(Ok("123456".into())).unwrap(), 123_456);
-        assert!(matches!(
-            produced_at_from(Ok("not-a-timestamp".into())),
-            Err(BundleError::InvalidSourceDateEpoch(_))
-        ));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn build_produces_deterministic_verifiable_bundles_per_layout() {
+        // phase: source_date_epoch_controls_produced_at
+        {
+            assert_eq!(produced_at_from(Ok("123456".into())).unwrap(), 123_456);
+            assert!(matches!(
+                produced_at_from(Ok("not-a-timestamp".into())),
+                Err(BundleError::InvalidSourceDateEpoch(_))
+            ));
+        }
+        // phase: build_then_verify_roundtrips_x86_64
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let out = tempfile::tempdir().unwrap();
+            let manifest = build_bundle_with(
+                out.path(),
+                "2026.07",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: None,
+                    extra_libs: &[],
+                },
+            )
+            .expect("build");
+            assert_eq!(manifest.version, "2026.07");
+            assert_eq!(manifest.arch, "x86_64");
+            assert!(!manifest.files.is_empty());
+            assert_eq!(manifest.root_hash.len(), 64);
+            assert!(manifest.signature_hex.is_none());
+
+            let verified = verify_bundle(out.path()).expect("verify");
+            assert_eq!(verified.root_hash, manifest.root_hash);
+            assert_eq!(verified.arch, "x86_64");
+        }
+        // phase: build_supports_aarch64_fedora_layout
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_aarch64_fedora_host(host.path());
+            let out = tempfile::tempdir().unwrap();
+            let m = build_bundle_with(
+                out.path(),
+                "1",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("aarch64"),
+                    identity: None,
+                    extra_libs: &[],
+                },
+            )
+            .expect("build");
+            assert_eq!(m.arch, "aarch64");
+            // Fedora layout: loader at /lib/, libc at /lib64/.
+            let paths: Vec<&str> = m.files.iter().map(|f| f.path.as_str()).collect();
+            assert!(
+                paths
+                    .iter()
+                    .any(|p| p.ends_with("lib/ld-linux-aarch64.so.1"))
+            );
+            assert!(paths.iter().any(|p| p.ends_with("lib64/libc.so.6")));
+            verify_bundle(out.path()).expect("verify");
+        }
+        // phase: build_supports_aarch64_debian_layout
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_aarch64_debian_host(host.path());
+            let out = tempfile::tempdir().unwrap();
+            let m = build_bundle_with(
+                out.path(),
+                "1",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("aarch64"),
+                    identity: None,
+                    extra_libs: &[],
+                },
+            )
+            .expect("build");
+            let paths: Vec<&str> = m.files.iter().map(|f| f.path.as_str()).collect();
+            assert!(
+                paths
+                    .iter()
+                    .any(|p| p.ends_with("aarch64-linux-gnu/libc.so.6"))
+            );
+            verify_bundle(out.path()).expect("verify");
+        }
+        // phase: unsupported_arch_errors
+        {
+            let host = tempfile::tempdir().unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let err = build_bundle_with(
+                out.path(),
+                "1",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("mips64"),
+                    identity: None,
+                    extra_libs: &[],
+                },
+            )
+            .unwrap_err();
+            matches!(err, BundleError::UnsupportedArch(_));
+        }
+        // phase: build_fails_when_no_sources_resolve
+        {
+            let host = tempfile::tempdir().unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let err = build_bundle_with(
+                out.path(),
+                "0.0.1",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: None,
+                    extra_libs: &[],
+                },
+            )
+            .unwrap_err();
+            matches!(err, BundleError::NoSources { .. });
+        }
+        // phase: root_hash_is_deterministic
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let out1 = tempfile::tempdir().unwrap();
+            let out2 = tempfile::tempdir().unwrap();
+            let opts = BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+                extra_libs: &[],
+            };
+            let a = build_bundle_with(out1.path(), "v", &opts).unwrap();
+            let b = build_bundle_with(out2.path(), "v", &opts).unwrap();
+            assert_eq!(a.root_hash, b.root_hash);
+        }
+        // phase: extra_libs_land_at_lib_root_and_are_hashed_and_verify
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+
+            // Two stand-in shared objects a thin app links dynamically (Rust std
+            // + Tilo runtime dylib); content is arbitrary — the point is they land
+            // in the bundle, content-addressed, and pass verification.
+            let extras_dir = tempfile::tempdir().unwrap();
+            let libstd = extras_dir.path().join("libstd-deadbeef.so");
+            let libruntime = extras_dir.path().join("libruntime_dylib.so");
+            fs::write(&libstd, b"fake libstd bytes").unwrap();
+            fs::write(&libruntime, b"fake libruntime bytes").unwrap();
+
+            let out = tempfile::tempdir().unwrap();
+            let manifest = build_bundle_with(
+                out.path(),
+                "thin-1",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: None,
+                    extra_libs: &[libstd, libruntime],
+                },
+            )
+            .expect("build with extras");
+
+            // Both extras appear at the TOP of lib/ (by file name) for soname resolution via LD_LIBRARY_PATH.
+            assert!(out.path().join("lib/libstd-deadbeef.so").exists());
+            assert!(out.path().join("lib/libruntime_dylib.so").exists());
+
+            // Both are recorded in the manifest — hashed, covered by the root hash, and thus any signature.
+            let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+            assert!(paths.contains(&"lib/libstd-deadbeef.so"), "{paths:?}");
+            assert!(paths.contains(&"lib/libruntime_dylib.so"), "{paths:?}");
+
+            // Full verify roundtrips — proves the extras are part of the
+            // content-addressed set, not loose files verify would reject.
+            verify_bundle(out.path()).expect("verify with extras");
+        }
+        // phase: missing_extra_lib_is_an_error
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let out = tempfile::tempdir().unwrap();
+            let missing = out.path().join("does-not-exist.so");
+            let err = build_bundle_with(
+                out.path(),
+                "thin-1",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: None,
+                    extra_libs: &[missing],
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(err, BundleError::IncludeMissing { .. }));
+        }
     }
 
     fn fake_x86_64_host(root: &Path) {
@@ -951,387 +1144,305 @@ mod tests {
     }
 
     #[test]
-    fn build_then_verify_roundtrips_x86_64() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let out = tempfile::tempdir().unwrap();
-        let manifest = build_bundle_with(
-            out.path(),
-            "2026.07",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: None,
-                extra_libs: &[],
-            },
-        )
-        .expect("build");
-        assert_eq!(manifest.version, "2026.07");
-        assert_eq!(manifest.arch, "x86_64");
-        assert!(!manifest.files.is_empty());
-        assert_eq!(manifest.root_hash.len(), 64);
-        assert!(manifest.signature_hex.is_none());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn verify_rejects_modified_unlisted_and_malformed_payloads() {
+        // phase: verify_detects_a_modified_byte
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let out = tempfile::tempdir().unwrap();
+            build_bundle_with(
+                out.path(),
+                "2026.07",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: None,
+                    extra_libs: &[],
+                },
+            )
+            .unwrap();
+            let libc = out.path().join("lib/lib64/libc.so.6");
+            let mut bytes = fs::read(&libc).unwrap();
+            bytes[0] ^= 0xff;
+            fs::write(&libc, bytes).unwrap();
 
-        let verified = verify_bundle(out.path()).expect("verify");
-        assert_eq!(verified.root_hash, manifest.root_hash);
-        assert_eq!(verified.arch, "x86_64");
-    }
-
-    #[test]
-    fn build_supports_aarch64_fedora_layout() {
-        let host = tempfile::tempdir().unwrap();
-        fake_aarch64_fedora_host(host.path());
-        let out = tempfile::tempdir().unwrap();
-        let m = build_bundle_with(
-            out.path(),
-            "1",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("aarch64"),
-                identity: None,
-                extra_libs: &[],
-            },
-        )
-        .expect("build");
-        assert_eq!(m.arch, "aarch64");
-        // Fedora layout: loader at /lib/, libc at /lib64/.
-        let paths: Vec<&str> = m.files.iter().map(|f| f.path.as_str()).collect();
-        assert!(
-            paths
-                .iter()
-                .any(|p| p.ends_with("lib/ld-linux-aarch64.so.1"))
-        );
-        assert!(paths.iter().any(|p| p.ends_with("lib64/libc.so.6")));
-        verify_bundle(out.path()).expect("verify");
-    }
-
-    #[test]
-    fn build_supports_aarch64_debian_layout() {
-        let host = tempfile::tempdir().unwrap();
-        fake_aarch64_debian_host(host.path());
-        let out = tempfile::tempdir().unwrap();
-        let m = build_bundle_with(
-            out.path(),
-            "1",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("aarch64"),
-                identity: None,
-                extra_libs: &[],
-            },
-        )
-        .expect("build");
-        let paths: Vec<&str> = m.files.iter().map(|f| f.path.as_str()).collect();
-        assert!(
-            paths
-                .iter()
-                .any(|p| p.ends_with("aarch64-linux-gnu/libc.so.6"))
-        );
-        verify_bundle(out.path()).expect("verify");
-    }
-
-    #[test]
-    fn unsupported_arch_errors() {
-        let host = tempfile::tempdir().unwrap();
-        let out = tempfile::tempdir().unwrap();
-        let err = build_bundle_with(
-            out.path(),
-            "1",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("mips64"),
-                identity: None,
-                extra_libs: &[],
-            },
-        )
-        .unwrap_err();
-        matches!(err, BundleError::UnsupportedArch(_));
-    }
-
-    #[test]
-    fn verify_detects_a_modified_byte() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let out = tempfile::tempdir().unwrap();
-        build_bundle_with(
-            out.path(),
-            "2026.07",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: None,
-                extra_libs: &[],
-            },
-        )
-        .unwrap();
-        let libc = out.path().join("lib/lib64/libc.so.6");
-        let mut bytes = fs::read(&libc).unwrap();
-        bytes[0] ^= 0xff;
-        fs::write(&libc, bytes).unwrap();
-
-        let err = verify_bundle(out.path()).unwrap_err();
-        matches!(err, BundleError::HashMismatch { .. });
-    }
-
-    #[test]
-    fn verify_detects_unlisted_file() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let out = tempfile::tempdir().unwrap();
-        build_bundle_with(
-            out.path(),
-            "2026.07",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: None,
-                extra_libs: &[],
-            },
-        )
-        .unwrap();
-        fs::write(out.path().join("lib/lib64/extra.so"), b"surprise").unwrap();
-        let err = verify_bundle(out.path()).unwrap_err();
-        matches!(err, BundleError::FileUnlisted { .. });
-    }
-
-    #[test]
-    fn build_fails_when_no_sources_resolve() {
-        let host = tempfile::tempdir().unwrap();
-        let out = tempfile::tempdir().unwrap();
-        let err = build_bundle_with(
-            out.path(),
-            "0.0.1",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: None,
-                extra_libs: &[],
-            },
-        )
-        .unwrap_err();
-        matches!(err, BundleError::NoSources { .. });
-    }
-
-    #[test]
-    fn root_hash_is_deterministic() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let out1 = tempfile::tempdir().unwrap();
-        let out2 = tempfile::tempdir().unwrap();
-        let opts = BuildOptions {
-            from: Some(host.path()),
-            arch: Some("x86_64"),
-            identity: None,
-            extra_libs: &[],
-        };
-        let a = build_bundle_with(out1.path(), "v", &opts).unwrap();
-        let b = build_bundle_with(out2.path(), "v", &opts).unwrap();
-        assert_eq!(a.root_hash, b.root_hash);
-    }
-
-    #[test]
-    fn signed_bundle_roundtrips_and_verify_accepts() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let identity_path = host.path().join("identity.json");
-        let identity = Identity::generate();
-        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
-
-        let out = tempfile::tempdir().unwrap();
-        let manifest = build_bundle_with(
-            out.path(),
-            "signed",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: Some(&identity_path),
-                extra_libs: &[],
-            },
-        )
-        .expect("build signed");
-        assert_eq!(
-            manifest.publisher_hex.as_deref(),
-            Some(identity.public_key_hex()).as_deref()
-        );
-        assert!(manifest.signature_hex.is_some());
-
-        // Default verify accepts a valid signed bundle.
-        let v = verify_bundle(out.path()).expect("verify");
-        assert_eq!(v.publisher_hex, manifest.publisher_hex);
-
-        // require_publisher matching same key accepts.
-        verify_bundle_with(
-            out.path(),
-            &VerifyOptions {
-                require_publisher: Some(identity.public_key_hex()),
+            let err = verify_bundle(out.path()).unwrap_err();
+            matches!(err, BundleError::HashMismatch { .. });
+        }
+        // phase: verify_detects_unlisted_file
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let out = tempfile::tempdir().unwrap();
+            build_bundle_with(
+                out.path(),
+                "2026.07",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: None,
+                    extra_libs: &[],
+                },
+            )
+            .unwrap();
+            fs::write(out.path().join("lib/lib64/extra.so"), b"surprise").unwrap();
+            let err = verify_bundle(out.path()).unwrap_err();
+            matches!(err, BundleError::FileUnlisted { .. });
+        }
+        // phase: metadata_verify_checks_shape_but_deliberately_not_content
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let identity_path = host.path().join("identity.json");
+            fs::write(&identity_path, Identity::generate().to_json_bytes()).unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let manifest = build_bundle_with(
+                out.path(),
+                "system-fast-path",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: Some(&identity_path),
+                    extra_libs: &[],
+                },
+            )
+            .unwrap();
+            let opts = VerifyOptions {
                 require_signature: true,
-                require_arch: None,
-            },
-        )
-        .expect("required-publisher matches");
+                ..VerifyOptions::default()
+            };
+            verify_bundle_metadata_with(out.path(), &opts).expect("untouched metadata verifies");
+
+            let payload = out.path().join(&manifest.files[0].path);
+            let mut same_size = fs::read(&payload).unwrap();
+            same_size[0] ^= 1;
+            fs::write(&payload, &same_size).unwrap();
+            verify_bundle_metadata_with(out.path(), &opts)
+                .expect("caller-owned immutability is what protects equal-sized content");
+            assert!(matches!(
+                verify_bundle_with(out.path(), &opts),
+                Err(BundleError::HashMismatch { .. })
+            ));
+
+            fs::write(&payload, [same_size, vec![0]].concat()).unwrap();
+            assert!(matches!(
+                verify_bundle_metadata_with(out.path(), &opts),
+                Err(BundleError::SizeMismatch { .. })
+            ));
+        }
+        // phase: verify_rejects_traversal_and_duplicate_manifest_paths
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let out = tempfile::tempdir().unwrap();
+            let mut manifest = build_bundle_with(
+                out.path(),
+                "malformed-paths",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: None,
+                    extra_libs: &[],
+                },
+            )
+            .unwrap();
+            manifest.files[0].path = "../outside".to_string();
+            fs::write(
+                out.path().join(BUNDLE_MANIFEST_FILENAME),
+                toml::to_string_pretty(&manifest).unwrap(),
+            )
+            .unwrap();
+            assert!(matches!(
+                verify_bundle(out.path()),
+                Err(BundleError::InvalidPayloadPath { .. })
+            ));
+
+            let mut manifest = build_bundle_with(
+                out.path(),
+                "duplicate-paths",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: None,
+                    extra_libs: &[],
+                },
+            )
+            .unwrap();
+            manifest.files.push(manifest.files[0].clone());
+            fs::write(
+                out.path().join(BUNDLE_MANIFEST_FILENAME),
+                toml::to_string_pretty(&manifest).unwrap(),
+            )
+            .unwrap();
+            assert!(matches!(
+                verify_bundle(out.path()),
+                Err(BundleError::InvalidPayloadPath { .. })
+            ));
+        }
     }
 
     #[test]
-    fn verify_refuses_bad_publisher() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let identity_path = host.path().join("identity.json");
-        let identity = Identity::generate();
-        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn bundle_signatures_bind_the_publisher_and_domain() {
+        // phase: signed_bundle_roundtrips_and_verify_accepts
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let identity_path = host.path().join("identity.json");
+            let identity = Identity::generate();
+            fs::write(&identity_path, identity.to_json_bytes()).unwrap();
 
-        let out = tempfile::tempdir().unwrap();
-        build_bundle_with(
-            out.path(),
-            "signed",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: Some(&identity_path),
-                extra_libs: &[],
-            },
-        )
-        .unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let manifest = build_bundle_with(
+                out.path(),
+                "signed",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: Some(&identity_path),
+                    extra_libs: &[],
+                },
+            )
+            .expect("build signed");
+            assert_eq!(
+                manifest.publisher_hex.as_deref(),
+                Some(identity.public_key_hex()).as_deref()
+            );
+            assert!(manifest.signature_hex.is_some());
 
-        let other = Identity::generate();
-        let err = verify_bundle_with(
-            out.path(),
-            &VerifyOptions {
-                require_publisher: Some(other.public_key_hex()),
-                require_signature: true,
-                require_arch: None,
-            },
-        )
-        .unwrap_err();
-        matches!(err, BundleError::PublisherMismatch { .. });
-    }
+            // Default verify accepts a valid signed bundle.
+            let v = verify_bundle(out.path()).expect("verify");
+            assert_eq!(v.publisher_hex, manifest.publisher_hex);
 
-    #[test]
-    fn verify_refuses_tampered_signature() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let identity_path = host.path().join("identity.json");
-        let identity = Identity::generate();
-        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+            // require_publisher matching same key accepts.
+            verify_bundle_with(
+                out.path(),
+                &VerifyOptions {
+                    require_publisher: Some(identity.public_key_hex()),
+                    require_signature: true,
+                    require_arch: None,
+                },
+            )
+            .expect("required-publisher matches");
+        }
+        // phase: verify_refuses_bad_publisher
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let identity_path = host.path().join("identity.json");
+            let identity = Identity::generate();
+            fs::write(&identity_path, identity.to_json_bytes()).unwrap();
 
-        let out = tempfile::tempdir().unwrap();
-        build_bundle_with(
-            out.path(),
-            "signed",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: Some(&identity_path),
-                extra_libs: &[],
-            },
-        )
-        .unwrap();
+            let out = tempfile::tempdir().unwrap();
+            build_bundle_with(
+                out.path(),
+                "signed",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: Some(&identity_path),
+                    extra_libs: &[],
+                },
+            )
+            .unwrap();
 
-        // Root-hash tampering is caught by the integrity check before the
-        // signature; to test the signature path specifically, flip a byte in
-        // signature_hex instead.
-        let bundle_toml = out.path().join(BUNDLE_MANIFEST_FILENAME);
-        let text = fs::read_to_string(&bundle_toml).unwrap();
-        let mut manifest: BundleManifest = toml::from_str(&text).unwrap();
-        let sig = manifest.signature_hex.as_mut().unwrap();
-        // Flip one hex nibble deterministically.
-        let bytes: &mut [u8] = unsafe { sig.as_bytes_mut() };
-        bytes[0] = if bytes[0] == b'0' { b'1' } else { b'0' };
-        fs::write(&bundle_toml, toml::to_string_pretty(&manifest).unwrap()).unwrap();
+            let other = Identity::generate();
+            let err = verify_bundle_with(
+                out.path(),
+                &VerifyOptions {
+                    require_publisher: Some(other.public_key_hex()),
+                    require_signature: true,
+                    require_arch: None,
+                },
+            )
+            .unwrap_err();
+            matches!(err, BundleError::PublisherMismatch { .. });
+        }
+        // phase: verify_refuses_tampered_signature
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let identity_path = host.path().join("identity.json");
+            let identity = Identity::generate();
+            fs::write(&identity_path, identity.to_json_bytes()).unwrap();
 
-        let err = verify_bundle(out.path()).unwrap_err();
-        matches!(err, BundleError::BadSignature);
-    }
+            let out = tempfile::tempdir().unwrap();
+            build_bundle_with(
+                out.path(),
+                "signed",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: Some(&identity_path),
+                    extra_libs: &[],
+                },
+            )
+            .unwrap();
 
-    #[test]
-    fn metadata_verify_checks_shape_but_deliberately_not_content() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let identity_path = host.path().join("identity.json");
-        fs::write(&identity_path, Identity::generate().to_json_bytes()).unwrap();
-        let out = tempfile::tempdir().unwrap();
-        let manifest = build_bundle_with(
-            out.path(),
-            "system-fast-path",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: Some(&identity_path),
-                extra_libs: &[],
-            },
-        )
-        .unwrap();
-        let opts = VerifyOptions {
-            require_signature: true,
-            ..VerifyOptions::default()
-        };
-        verify_bundle_metadata_with(out.path(), &opts).expect("untouched metadata verifies");
+            // Root-hash tampering is caught by the integrity check before the
+            // signature; to test the signature path specifically, flip a byte in
+            // signature_hex instead.
+            let bundle_toml = out.path().join(BUNDLE_MANIFEST_FILENAME);
+            let text = fs::read_to_string(&bundle_toml).unwrap();
+            let mut manifest: BundleManifest = toml::from_str(&text).unwrap();
+            let sig = manifest.signature_hex.as_mut().unwrap();
+            // Flip one hex nibble deterministically.
+            let bytes: &mut [u8] = unsafe { sig.as_bytes_mut() };
+            bytes[0] = if bytes[0] == b'0' { b'1' } else { b'0' };
+            fs::write(&bundle_toml, toml::to_string_pretty(&manifest).unwrap()).unwrap();
 
-        let payload = out.path().join(&manifest.files[0].path);
-        let mut same_size = fs::read(&payload).unwrap();
-        same_size[0] ^= 1;
-        fs::write(&payload, &same_size).unwrap();
-        verify_bundle_metadata_with(out.path(), &opts)
-            .expect("caller-owned immutability is what protects equal-sized content");
-        assert!(matches!(
-            verify_bundle_with(out.path(), &opts),
-            Err(BundleError::HashMismatch { .. })
-        ));
-
-        fs::write(&payload, [same_size, vec![0]].concat()).unwrap();
-        assert!(matches!(
-            verify_bundle_metadata_with(out.path(), &opts),
-            Err(BundleError::SizeMismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn verify_rejects_traversal_and_duplicate_manifest_paths() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let out = tempfile::tempdir().unwrap();
-        let mut manifest = build_bundle_with(
-            out.path(),
-            "malformed-paths",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: None,
-                extra_libs: &[],
-            },
-        )
-        .unwrap();
-        manifest.files[0].path = "../outside".to_string();
-        fs::write(
-            out.path().join(BUNDLE_MANIFEST_FILENAME),
-            toml::to_string_pretty(&manifest).unwrap(),
-        )
-        .unwrap();
-        assert!(matches!(
-            verify_bundle(out.path()),
-            Err(BundleError::InvalidPayloadPath { .. })
-        ));
-
-        let mut manifest = build_bundle_with(
-            out.path(),
-            "duplicate-paths",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: None,
-                extra_libs: &[],
-            },
-        )
-        .unwrap();
-        manifest.files.push(manifest.files[0].clone());
-        fs::write(
-            out.path().join(BUNDLE_MANIFEST_FILENAME),
-            toml::to_string_pretty(&manifest).unwrap(),
-        )
-        .unwrap();
-        assert!(matches!(
-            verify_bundle(out.path()),
-            Err(BundleError::InvalidPayloadPath { .. })
-        ));
+            let err = verify_bundle(out.path()).unwrap_err();
+            matches!(err, BundleError::BadSignature);
+        }
+        // phase: require_signature_refuses_unsigned_bundle
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let out = tempfile::tempdir().unwrap();
+            build_bundle_with(
+                out.path(),
+                "unsigned",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: None,
+                    extra_libs: &[],
+                },
+            )
+            .unwrap();
+            let err = verify_bundle_with(
+                out.path(),
+                &VerifyOptions {
+                    require_signature: true,
+                    ..VerifyOptions::default()
+                },
+            )
+            .unwrap_err();
+            matches!(err, BundleError::NotSigned);
+        }
+        // phase: signing_preimage_is_domain_separated
+        {
+            let a = signing_preimage("v1", "aa");
+            let b = signing_preimage("v2", "aa");
+            let c = signing_preimage("v1", "bb");
+            assert_ne!(a, b);
+            assert_ne!(a, c);
+            // Domain prefix cannot be reproduced from bare inputs.
+            let hasher_bare = {
+                let mut h = blake3::Hasher::new();
+                h.update(b"v1");
+                h.update(b"aa");
+                *h.finalize().as_bytes()
+            };
+            assert_ne!(a, hasher_bare);
+        }
     }
 
     #[cfg(unix)]
@@ -1379,150 +1490,46 @@ mod tests {
     }
 
     #[test]
-    fn require_signature_refuses_unsigned_bundle() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let out = tempfile::tempdir().unwrap();
-        build_bundle_with(
-            out.path(),
-            "unsigned",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: None,
-                extra_libs: &[],
-            },
-        )
-        .unwrap();
-        let err = verify_bundle_with(
-            out.path(),
-            &VerifyOptions {
-                require_signature: true,
-                ..VerifyOptions::default()
-            },
-        )
-        .unwrap_err();
-        matches!(err, BundleError::NotSigned);
-    }
-
-    #[test]
-    fn signing_preimage_is_domain_separated() {
-        let a = signing_preimage("v1", "aa");
-        let b = signing_preimage("v2", "aa");
-        let c = signing_preimage("v1", "bb");
-        assert_ne!(a, b);
-        assert_ne!(a, c);
-        // Domain prefix cannot be reproduced from bare inputs.
-        let hasher_bare = {
-            let mut h = blake3::Hasher::new();
-            h.update(b"v1");
-            h.update(b"aa");
-            *h.finalize().as_bytes()
-        };
-        assert_ne!(a, hasher_bare);
-    }
-
-    #[test]
-    fn default_bundle_path_uses_data_dir() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove(RUNTIME_DIR_ENV);
-        if let Ok(p) = default_bundle_path("v") {
-            assert!(p.ends_with("tilo-runtime/v"));
-        }
-    }
-
-    /// A session that repoints `XDG_DATA_HOME` for its own documents must
-    /// still reach the machine's runtime bundles, or every app in that
-    /// session fails to launch on a missing bundle.
-    #[test]
-    fn the_env_override_names_the_bundle_root() {
-        let shared = tempfile::tempdir().expect("tempdir");
-        let resolved = {
+    fn bundle_root_resolves_from_the_environment_or_data_dir() {
+        // phase: default_bundle_path_uses_data_dir
+        {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("XDG_DATA_HOME", "/nonexistent/session/data")
-                .set(RUNTIME_DIR_ENV, shared.path());
-            default_bundle_path("2026.07")
-        };
-        assert_eq!(
-            resolved.expect("the override needs no data dir"),
-            shared.path().join("2026.07"),
-            "the override must win over an isolated XDG_DATA_HOME",
-        );
-    }
-
-    /// An empty value is not a path — treating it as one resolves to
-    /// `/<version>` (nowhere), turning a stray `TILO_RUNTIME_BUNDLE_DIR=`
-    /// into "no app on this machine launches".
-    #[test]
-    fn an_empty_override_falls_back_to_the_data_dir() {
-        let resolved = {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(RUNTIME_DIR_ENV, "");
-            default_bundle_path("v")
-        };
-        if let Ok(p) = resolved {
-            assert!(p.ends_with("tilo-runtime/v"), "got {p:?}");
+            env.remove(RUNTIME_DIR_ENV);
+            if let Ok(p) = default_bundle_path("v") {
+                assert!(p.ends_with("tilo-runtime/v"));
+            }
         }
-    }
-
-    #[test]
-    fn extra_libs_land_at_lib_root_and_are_hashed_and_verify() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-
-        // Two stand-in shared objects a thin app links dynamically (Rust std
-        // + Tilo runtime dylib); content is arbitrary — the point is they land
-        // in the bundle, content-addressed, and pass verification.
-        let extras_dir = tempfile::tempdir().unwrap();
-        let libstd = extras_dir.path().join("libstd-deadbeef.so");
-        let libruntime = extras_dir.path().join("libruntime_dylib.so");
-        fs::write(&libstd, b"fake libstd bytes").unwrap();
-        fs::write(&libruntime, b"fake libruntime bytes").unwrap();
-
-        let out = tempfile::tempdir().unwrap();
-        let manifest = build_bundle_with(
-            out.path(),
-            "thin-1",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: None,
-                extra_libs: &[libstd, libruntime],
-            },
-        )
-        .expect("build with extras");
-
-        // Both extras appear at the TOP of lib/ (by file name) for soname resolution via LD_LIBRARY_PATH.
-        assert!(out.path().join("lib/libstd-deadbeef.so").exists());
-        assert!(out.path().join("lib/libruntime_dylib.so").exists());
-
-        // Both are recorded in the manifest — hashed, covered by the root hash, and thus any signature.
-        let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
-        assert!(paths.contains(&"lib/libstd-deadbeef.so"), "{paths:?}");
-        assert!(paths.contains(&"lib/libruntime_dylib.so"), "{paths:?}");
-
-        // Full verify roundtrips — proves the extras are part of the
-        // content-addressed set, not loose files verify would reject.
-        verify_bundle(out.path()).expect("verify with extras");
-    }
-
-    #[test]
-    fn missing_extra_lib_is_an_error() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let out = tempfile::tempdir().unwrap();
-        let missing = out.path().join("does-not-exist.so");
-        let err = build_bundle_with(
-            out.path(),
-            "thin-1",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: None,
-                extra_libs: &[missing],
-            },
-        )
-        .unwrap_err();
-        assert!(matches!(err, BundleError::IncludeMissing { .. }));
+        // phase: the_env_override_names_the_bundle_root
+        // A session that repoints `XDG_DATA_HOME` for its own documents must
+        // still reach the machine's runtime bundles, or every app in that
+        // session fails to launch on a missing bundle.
+        {
+            let shared = tempfile::tempdir().expect("tempdir");
+            let resolved = {
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.set("XDG_DATA_HOME", "/nonexistent/session/data")
+                    .set(RUNTIME_DIR_ENV, shared.path());
+                default_bundle_path("2026.07")
+            };
+            assert_eq!(
+                resolved.expect("the override needs no data dir"),
+                shared.path().join("2026.07"),
+                "the override must win over an isolated XDG_DATA_HOME",
+            );
+        }
+        // phase: an_empty_override_falls_back_to_the_data_dir
+        // An empty value is not a path — treating it as one resolves to
+        // `/<version>` (nowhere), turning a stray `TILO_RUNTIME_BUNDLE_DIR=`
+        // into "no app on this machine launches".
+        {
+            let resolved = {
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.set(RUNTIME_DIR_ENV, "");
+                default_bundle_path("v")
+            };
+            if let Ok(p) = resolved {
+                assert!(p.ends_with("tilo-runtime/v"), "got {p:?}");
+            }
+        }
     }
 }

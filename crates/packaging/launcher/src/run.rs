@@ -349,64 +349,65 @@ mod resource_claim_tests {
     }
 
     #[test]
-    fn uri_is_revalidated_against_the_launch_manifest() {
-        let manifest = browser_manifest();
-        let accepted = RunOptions {
-            open_uri: Some("https://example.test/a --not-an-argument".into()),
-            ..Default::default()
-        };
-        validate_open_uri(&manifest, &accepted).unwrap();
-
-        for uri in [
-            "http://example.test",
-            "file:///etc/passwd",
-            "https://x\n--flag",
-        ] {
-            let opts = RunOptions {
-                open_uri: Some(uri.into()),
+    fn launch_claims_and_device_hints_follow_the_manifest() {
+        // Phase `uri_is_revalidated_against_the_launch_manifest`.
+        {
+            let manifest = browser_manifest();
+            let accepted = RunOptions {
+                open_uri: Some("https://example.test/a --not-an-argument".into()),
                 ..Default::default()
             };
-            assert!(
-                validate_open_uri(&manifest, &opts).is_err(),
-                "accepted {uri:?}"
-            );
+            validate_open_uri(&manifest, &accepted).unwrap();
+
+            for uri in [
+                "http://example.test",
+                "file:///etc/passwd",
+                "https://x\n--flag",
+            ] {
+                let opts = RunOptions {
+                    open_uri: Some(uri.into()),
+                    ..Default::default()
+                };
+                assert!(
+                    validate_open_uri(&manifest, &opts).is_err(),
+                    "accepted {uri:?}"
+                );
+            }
         }
-    }
+        // Phase `only_gui_game_packages_receive_the_scheduler_hint`.
+        {
+            let game: MinimalManifest = toml::from_str(
+                "[package]\nid = \"so.tilo.game\"\nversion = \"1\"\ncategory = \"Games\"\n\
+                 [entrypoint]\nbin = \"bin/game\"\n",
+            )
+            .unwrap();
+            assert!(is_native_game_launch(&game, &RunOptions::default()));
+            let service = RunOptions {
+                mode: LaunchMode::Service {
+                    passthrough_argv: Vec::new(),
+                },
+                ..RunOptions::default()
+            };
+            assert!(!is_native_game_launch(&game, &service));
+            assert!(!is_native_game_launch(
+                &browser_manifest(),
+                &RunOptions::default()
+            ));
+        }
+        // Phase `only_game_launches_receive_the_ntsync_device`.
+        {
+            let mut game = vec!["/app/game".to_string()];
+            splice_game_ntsync(&mut game, true).unwrap();
+            assert!(
+                game.windows(3)
+                    .any(|window| { window == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
+            );
+            assert_eq!(game.last().map(String::as_str), Some("/app/game"));
 
-    #[test]
-    fn only_gui_game_packages_receive_the_scheduler_hint() {
-        let game: MinimalManifest = toml::from_str(
-            "[package]\nid = \"so.tilo.game\"\nversion = \"1\"\ncategory = \"Games\"\n\
-             [entrypoint]\nbin = \"bin/game\"\n",
-        )
-        .unwrap();
-        assert!(is_native_game_launch(&game, &RunOptions::default()));
-        let service = RunOptions {
-            mode: LaunchMode::Service {
-                passthrough_argv: Vec::new(),
-            },
-            ..RunOptions::default()
-        };
-        assert!(!is_native_game_launch(&game, &service));
-        assert!(!is_native_game_launch(
-            &browser_manifest(),
-            &RunOptions::default()
-        ));
-    }
-
-    #[test]
-    fn only_game_launches_receive_the_ntsync_device() {
-        let mut game = vec!["/app/game".to_string()];
-        splice_game_ntsync(&mut game, true).unwrap();
-        assert!(
-            game.windows(3)
-                .any(|window| { window == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
-        );
-        assert_eq!(game.last().map(String::as_str), Some("/app/game"));
-
-        let mut ordinary = vec!["/app/browser".to_string()];
-        splice_game_ntsync(&mut ordinary, false).unwrap();
-        assert_eq!(ordinary, ["/app/browser"]);
+            let mut ordinary = vec!["/app/browser".to_string()];
+            splice_game_ntsync(&mut ordinary, false).unwrap();
+            assert_eq!(ordinary, ["/app/browser"]);
+        }
     }
 }
 
@@ -432,44 +433,45 @@ mod managed_service_tests {
     }
 
     #[test]
-    fn managed_service_requires_service_kind_and_headless_entrypoint() {
-        let service = manifest("service", "cli");
-        assert!(validate_launch_mode(&service, &service_options()).is_ok());
-        assert!(matches!(
-            validate_launch_mode(&manifest("app", "cli"), &service_options()),
-            Err(RunError::InvalidServiceLaunch(_))
-        ));
-        assert!(matches!(
-            validate_launch_mode(&manifest("service", "gui"), &service_options()),
-            Err(RunError::InvalidServiceLaunch(_))
-        ));
-    }
-
-    #[test]
-    fn managed_service_cannot_receive_a_display_or_open_resource() {
-        let manifest = manifest("service", "cli");
-        let display = RunOptions {
-            wayland_socket: Some("/run/user/1000/wayland-0".into()),
-            ..service_options()
-        };
-        assert!(validate_launch_mode(&manifest, &display).is_err());
-        let document = RunOptions {
-            open_document: Some("/tmp/document".into()),
-            ..service_options()
-        };
-        assert!(validate_launch_mode(&manifest, &document).is_err());
-    }
-
-    #[test]
-    fn managed_service_cannot_readdress_its_authenticated_identity() {
-        let opts = RunOptions {
-            app_id: Some("so.tilo.other".into()),
-            ..service_options()
-        };
-        assert!(matches!(
-            validate_launch_mode(&manifest("service", "cli"), &opts),
-            Err(RunError::InvalidServiceLaunch(_))
-        ));
+    fn managed_service_launches_are_confined_to_headless_service_packages() {
+        // Phase `managed_service_requires_service_kind_and_headless_entrypoint`.
+        {
+            let service = manifest("service", "cli");
+            assert!(validate_launch_mode(&service, &service_options()).is_ok());
+            assert!(matches!(
+                validate_launch_mode(&manifest("app", "cli"), &service_options()),
+                Err(RunError::InvalidServiceLaunch(_))
+            ));
+            assert!(matches!(
+                validate_launch_mode(&manifest("service", "gui"), &service_options()),
+                Err(RunError::InvalidServiceLaunch(_))
+            ));
+        }
+        // Phase `managed_service_cannot_receive_a_display_or_open_resource`.
+        {
+            let manifest = manifest("service", "cli");
+            let display = RunOptions {
+                wayland_socket: Some("/run/user/1000/wayland-0".into()),
+                ..service_options()
+            };
+            assert!(validate_launch_mode(&manifest, &display).is_err());
+            let document = RunOptions {
+                open_document: Some("/tmp/document".into()),
+                ..service_options()
+            };
+            assert!(validate_launch_mode(&manifest, &document).is_err());
+        }
+        // Phase `managed_service_cannot_readdress_its_authenticated_identity`.
+        {
+            let opts = RunOptions {
+                app_id: Some("so.tilo.other".into()),
+                ..service_options()
+            };
+            assert!(matches!(
+                validate_launch_mode(&manifest("service", "cli"), &opts),
+                Err(RunError::InvalidServiceLaunch(_))
+            ));
+        }
     }
 }
 
@@ -949,46 +951,47 @@ mod dev_override_tests {
     use crate::dev_env::{TRUSTED_PUBLISHERS_FILE_ENV, dev_override_from};
 
     #[test]
-    fn a_release_build_reads_the_images_trusted_publisher_list() {
-        let path = trusted_publishers_path_from(dev_override_from(
-            false,
-            TRUSTED_PUBLISHERS_FILE_ENV,
-            Some("/tmp/attacker-publishers.txt".into()),
-        ));
-        assert_eq!(path, Path::new(TRUSTED_PUBLISHERS_FILE));
-    }
-
-    #[test]
-    fn a_developer_build_honours_the_trusted_publisher_override() {
-        let path = trusted_publishers_path_from(dev_override_from(
-            true,
-            TRUSTED_PUBLISHERS_FILE_ENV,
-            Some("/dev/runtime/trusted-publishers.txt".into()),
-        ));
-        assert_eq!(path, Path::new("/dev/runtime/trusted-publishers.txt"));
-    }
-
-    #[test]
-    fn a_release_build_ignores_the_runtime_bundle_root_override() {
-        let gated = dev_override_from(
-            false,
-            runtime_bundle::RUNTIME_DIR_ENV,
-            Some("/tmp/attacker-runtime".into()),
-        );
-        // Resolution may fail on a machine with no data dir; what matters is
-        // that it never lands under the override.
-        if let Ok(path) = runtime_bundle::default_bundle_path_from(gated, "1") {
-            assert!(!path.starts_with("/tmp/attacker-runtime"), "{path:?}");
+    fn trust_roots_follow_the_build_profile() {
+        // Phase `a_release_build_reads_the_images_trusted_publisher_list`.
+        {
+            let path = trusted_publishers_path_from(dev_override_from(
+                false,
+                TRUSTED_PUBLISHERS_FILE_ENV,
+                Some("/tmp/attacker-publishers.txt".into()),
+            ));
+            assert_eq!(path, Path::new(TRUSTED_PUBLISHERS_FILE));
         }
-        let honoured = dev_override_from(
-            true,
-            runtime_bundle::RUNTIME_DIR_ENV,
-            Some("/dev/runtime".into()),
-        );
-        assert_eq!(
-            runtime_bundle::default_bundle_path_from(honoured, "1").ok(),
-            Some(PathBuf::from("/dev/runtime/1"))
-        );
+        // Phase `a_developer_build_honours_the_trusted_publisher_override`.
+        {
+            let path = trusted_publishers_path_from(dev_override_from(
+                true,
+                TRUSTED_PUBLISHERS_FILE_ENV,
+                Some("/dev/runtime/trusted-publishers.txt".into()),
+            ));
+            assert_eq!(path, Path::new("/dev/runtime/trusted-publishers.txt"));
+        }
+        // Phase `a_release_build_ignores_the_runtime_bundle_root_override`.
+        {
+            let gated = dev_override_from(
+                false,
+                runtime_bundle::RUNTIME_DIR_ENV,
+                Some("/tmp/attacker-runtime".into()),
+            );
+            // Resolution may fail on a machine with no data dir; what matters is
+            // that it never lands under the override.
+            if let Ok(path) = runtime_bundle::default_bundle_path_from(gated, "1") {
+                assert!(!path.starts_with("/tmp/attacker-runtime"), "{path:?}");
+            }
+            let honoured = dev_override_from(
+                true,
+                runtime_bundle::RUNTIME_DIR_ENV,
+                Some("/dev/runtime".into()),
+            );
+            assert_eq!(
+                runtime_bundle::default_bundle_path_from(honoured, "1").ok(),
+                Some(PathBuf::from("/dev/runtime/1"))
+            );
+        }
     }
 }
 
@@ -2158,64 +2161,65 @@ mod captured_resource_tests {
     }
 
     #[test]
-    fn limits_are_nonzero_and_launcher_bounded() {
-        assert!(plan().validate().is_ok());
-        for invalid in [
-            CapturedResourcePlan {
-                cpu_seconds: 0,
-                ..plan()
-            },
-            CapturedResourcePlan {
-                memory_bytes: CapturedResourcePlan::MAX_MEMORY_BYTES.saturating_add(1),
-                ..plan()
-            },
-            CapturedResourcePlan {
-                output_bytes: 0,
-                ..plan()
-            },
-            CapturedResourcePlan {
-                wall_time: CapturedResourcePlan::MAX_WALL_TIME + Duration::from_millis(1),
-                ..plan()
-            },
-        ] {
-            assert!(matches!(
-                invalid.validate(),
-                Err(crate::capture::InvalidCapturePlan)
-            ));
+    fn captured_output_is_bounded_and_cancellable() {
+        // Phase `limits_are_nonzero_and_launcher_bounded`.
+        {
+            assert!(plan().validate().is_ok());
+            for invalid in [
+                CapturedResourcePlan {
+                    cpu_seconds: 0,
+                    ..plan()
+                },
+                CapturedResourcePlan {
+                    memory_bytes: CapturedResourcePlan::MAX_MEMORY_BYTES.saturating_add(1),
+                    ..plan()
+                },
+                CapturedResourcePlan {
+                    output_bytes: 0,
+                    ..plan()
+                },
+                CapturedResourcePlan {
+                    wall_time: CapturedResourcePlan::MAX_WALL_TIME + Duration::from_millis(1),
+                    ..plan()
+                },
+            ] {
+                assert!(matches!(
+                    invalid.validate(),
+                    Err(crate::capture::InvalidCapturePlan)
+                ));
+            }
         }
-    }
-
-    #[test]
-    fn stdout_and_stderr_share_one_hard_memory_budget() {
-        let used = Arc::new(AtomicUsize::new(0));
-        let exceeded = Arc::new(AtomicBool::new(false));
-        let first = drain_bounded(
-            std::io::Cursor::new(b"123456"),
-            used.as_ref(),
-            exceeded.as_ref(),
-            8,
-        )
-        .unwrap();
-        let second = drain_bounded(
-            std::io::Cursor::new(b"abcdef"),
-            used.as_ref(),
-            exceeded.as_ref(),
-            8,
-        )
-        .unwrap();
-        assert_eq!(first, b"123456");
-        assert_eq!(second, b"ab");
-        assert_eq!(used.load(AtomicOrdering::Acquire), 8);
-        assert!(exceeded.load(AtomicOrdering::Acquire));
-    }
-
-    #[test]
-    fn cancellation_is_target_local_and_sticky() {
-        let cancellation = CaptureCancellation::default();
-        let observer = cancellation.clone();
-        assert!(!observer.is_cancelled());
-        cancellation.cancel();
-        assert!(observer.is_cancelled());
+        // Phase `stdout_and_stderr_share_one_hard_memory_budget`.
+        {
+            let used = Arc::new(AtomicUsize::new(0));
+            let exceeded = Arc::new(AtomicBool::new(false));
+            let first = drain_bounded(
+                std::io::Cursor::new(b"123456"),
+                used.as_ref(),
+                exceeded.as_ref(),
+                8,
+            )
+            .unwrap();
+            let second = drain_bounded(
+                std::io::Cursor::new(b"abcdef"),
+                used.as_ref(),
+                exceeded.as_ref(),
+                8,
+            )
+            .unwrap();
+            assert_eq!(first, b"123456");
+            assert_eq!(second, b"ab");
+            assert_eq!(used.load(AtomicOrdering::Acquire), 8);
+            assert!(exceeded.load(AtomicOrdering::Acquire));
+        }
+        // Phase `cancellation_is_target_local_and_sticky`.
+        {
+            let cancellation = CaptureCancellation::default();
+            let observer = cancellation.clone();
+            assert!(!observer.is_cancelled());
+            cancellation.cancel();
+            assert!(observer.is_cancelled());
+        }
     }
 }
 
@@ -2798,132 +2802,131 @@ mod identity_resolution_tests {
     }
 
     #[test]
-    fn explicit_record_wins_and_skips_existence_check() {
-        let opts = RunOptions {
-            identity: IdentitySource::Record(PathBuf::from("/nowhere/does/not/exist.json")),
-            ..RunOptions::default()
-        };
-        assert_eq!(
-            resolve_identity_host_path(&opts),
-            Some(PathBuf::from("/nowhere/does/not/exist.json")),
-            "explicit path is used verbatim, no exists() check"
-        );
-    }
+    fn identity_record_resolution_honours_the_requested_source() {
+        // Phase `explicit_record_wins_and_skips_existence_check`.
+        {
+            let opts = RunOptions {
+                identity: IdentitySource::Record(PathBuf::from("/nowhere/does/not/exist.json")),
+                ..RunOptions::default()
+            };
+            assert_eq!(
+                resolve_identity_host_path(&opts),
+                Some(PathBuf::from("/nowhere/does/not/exist.json")),
+                "explicit path is used verbatim, no exists() check"
+            );
+        }
+        // Phase `a_named_store_resolves_its_active_identity`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = store_with_primary(tmp.path());
+            let opts = RunOptions {
+                identity: IdentitySource::Store(store.clone()),
+                ..RunOptions::default()
+            };
+            assert_eq!(
+                resolve_identity_host_path(&opts),
+                Some(store.join("primary.json"))
+            );
+        }
+        // Phase `an_empty_store_resolves_nothing`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let opts = RunOptions {
+                identity: IdentitySource::Store(tmp.path().to_path_buf()),
+                ..RunOptions::default()
+            };
+            assert_eq!(resolve_identity_host_path(&opts), None);
+        }
+        // Phase `no_identity_ignores_the_users_store`.
+        // `None` means no identity even when the user's store holds one.
+        {
+            let home = tilo_test_env::TestHome::new().unwrap();
+            store_with_primary(home.config());
+            let opts = RunOptions {
+                identity: IdentitySource::None,
+                ..RunOptions::default()
+            };
+            assert_eq!(resolve_identity_host_path(&opts), None);
+        }
+        // Phase `explicit_identity_outside_the_managed_store_is_never_rewritten`.
+        {
+            use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn a_named_store_resolves_its_active_identity() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = store_with_primary(tmp.path());
-        let opts = RunOptions {
-            identity: IdentitySource::Store(store.clone()),
-            ..RunOptions::default()
-        };
-        assert_eq!(
-            resolve_identity_host_path(&opts),
-            Some(store.join("primary.json"))
-        );
-    }
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+            let store = tempfile::tempdir().unwrap();
+            let path = dir.path().join("custom.json");
+            let secret = [31u8; 32];
+            let key = ed25519_dalek::SigningKey::from_bytes(&secret);
+            let original = serde_json::to_vec(&serde_json::json!({
+                "display_name": "Explicit debug identity",
+                "avatar_color": [1, 2, 3],
+                "threshold_identity": {
+                    "single_device": true,
+                    "group_public_key": key.verifying_key().to_bytes(),
+                    "threshold": 1,
+                    "total_shares": 1,
+                    "share_index": 1,
+                    "secret_bytes": secret,
+                },
+                "created_at": "2026-08-30T00:00:00Z",
+                "schema_version": 1,
+            }))
+            .unwrap();
+            std::fs::write(&path, &original).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-    #[test]
-    fn an_empty_store_resolves_nothing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let opts = RunOptions {
-            identity: IdentitySource::Store(tmp.path().to_path_buf()),
-            ..RunOptions::default()
-        };
-        assert_eq!(resolve_identity_host_path(&opts), None);
-    }
+            let (app, control, thread) = start_identity_broker(&path, Some(store.path())).unwrap();
+            drop(app);
+            drop(control);
+            thread.join().unwrap();
 
-    /// `None` means no identity even when the user's store holds one.
-    #[test]
-    fn no_identity_ignores_the_users_store() {
-        let home = tilo_test_env::TestHome::new().unwrap();
-        store_with_primary(home.config());
-        let opts = RunOptions {
-            identity: IdentitySource::None,
-            ..RunOptions::default()
-        };
-        assert_eq!(resolve_identity_host_path(&opts), None);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn explicit_identity_outside_the_managed_store_is_never_rewritten() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        let store = tempfile::tempdir().unwrap();
-        let path = dir.path().join("custom.json");
-        let secret = [31u8; 32];
-        let key = ed25519_dalek::SigningKey::from_bytes(&secret);
-        let original = serde_json::to_vec(&serde_json::json!({
-            "display_name": "Explicit debug identity",
-            "avatar_color": [1, 2, 3],
-            "threshold_identity": {
-                "single_device": true,
-                "group_public_key": key.verifying_key().to_bytes(),
-                "threshold": 1,
-                "total_shares": 1,
-                "share_index": 1,
-                "secret_bytes": secret,
-            },
-            "created_at": "2026-08-30T00:00:00Z",
-            "schema_version": 1,
-        }))
-        .unwrap();
-        std::fs::write(&path, &original).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-        let (app, control, thread) = start_identity_broker(&path, Some(store.path())).unwrap();
-        drop(app);
-        drop(control);
-        thread.join().unwrap();
-
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert_eq!(
-            std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
-            0o755,
-            "an explicit path must never chmod its parent"
-        );
-        assert!(!dir.path().join("secrets").exists());
-        assert!(!dir.path().join(".identity.lock").exists());
-        assert!(!store.path().join("secrets").exists());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert_eq!(
+                std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+                0o755,
+                "an explicit path must never chmod its parent"
+            );
+            assert!(!dir.path().join("secrets").exists());
+            assert!(!dir.path().join(".identity.lock").exists());
+            assert!(!store.path().join("secrets").exists());
+        }
     }
 
     // The user's store is located through the environment; these pin that
     // resolution itself.
 
     #[test]
-    fn the_user_store_prefers_xdg_config_home() {
-        let mut home = tilo_test_env::TestHome::new().unwrap();
-        // A record under `$HOME/.config` must lose to `$XDG_CONFIG_HOME`.
-        store_with_primary(&home.home().join(".config"));
-        let xdg = home.root().join("xdg-config");
-        let ident = store_with_primary(&xdg).join("primary.json");
-        home.env().set("XDG_CONFIG_HOME", &xdg);
-        assert_eq!(
-            resolve_identity_host_path(&RunOptions::default()),
-            Some(ident)
-        );
-    }
-
-    #[test]
-    fn the_user_store_falls_back_to_home_without_xdg() {
-        let mut home = tilo_test_env::TestHome::new().unwrap();
-        let ident = store_with_primary(&home.home().join(".config")).join("primary.json");
-        home.env().remove("XDG_CONFIG_HOME");
-        assert_eq!(
-            resolve_identity_host_path(&RunOptions::default()),
-            Some(ident)
-        );
-    }
-
-    #[test]
-    fn the_user_store_resolves_nothing_without_a_home() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove("XDG_CONFIG_HOME").remove("HOME");
-        assert_eq!(resolve_identity_host_path(&RunOptions::default()), None);
+    fn the_user_identity_store_is_located_via_xdg_then_home() {
+        // Phase `the_user_store_prefers_xdg_config_home`.
+        {
+            let mut home = tilo_test_env::TestHome::new().unwrap();
+            // A record under `$HOME/.config` must lose to `$XDG_CONFIG_HOME`.
+            store_with_primary(&home.home().join(".config"));
+            let xdg = home.root().join("xdg-config");
+            let ident = store_with_primary(&xdg).join("primary.json");
+            home.env().set("XDG_CONFIG_HOME", &xdg);
+            assert_eq!(
+                resolve_identity_host_path(&RunOptions::default()),
+                Some(ident)
+            );
+        }
+        // Phase `the_user_store_falls_back_to_home_without_xdg`.
+        {
+            let mut home = tilo_test_env::TestHome::new().unwrap();
+            let ident = store_with_primary(&home.home().join(".config")).join("primary.json");
+            home.env().remove("XDG_CONFIG_HOME");
+            assert_eq!(
+                resolve_identity_host_path(&RunOptions::default()),
+                Some(ident)
+            );
+        }
+        // Phase `the_user_store_resolves_nothing_without_a_home`.
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove("XDG_CONFIG_HOME").remove("HOME");
+            assert_eq!(resolve_identity_host_path(&RunOptions::default()), None);
+        }
     }
 }
 
@@ -2954,66 +2957,67 @@ mod app_dir_tests {
     }
 
     #[test]
-    fn workspace_launch_without_an_author_grant_is_read_only() {
-        let m = manifest("so.tilo.fixture");
-        let workspace = resolve_capabilities(&m, &opts_in(Some("room-a")));
-        assert_eq!(
-            workspace.participation,
-            crate::capabilities::Participation::ReadOnly
-        );
+    fn the_app_directory_is_resolved_per_room_and_never_from_the_manifest() {
+        // Phase `workspace_launch_without_an_author_grant_is_read_only`.
+        {
+            let m = manifest("so.tilo.fixture");
+            let workspace = resolve_capabilities(&m, &opts_in(Some("room-a")));
+            assert_eq!(
+                workspace.participation,
+                crate::capabilities::Participation::ReadOnly
+            );
 
-        let personal = resolve_capabilities(&m, &opts_in(None));
-        assert_eq!(
-            personal.participation,
-            crate::capabilities::Participation::Unscoped
-        );
-    }
-
-    /// The launch path resolves the directory rather than the manifest
-    /// naming it — the room launched into decides which one.
-    #[test]
-    fn the_launch_resolves_one_directory_per_room() {
-        let data = tempfile::tempdir().expect("tempdir");
-
-        let m = manifest("so.tilo.fixture");
-        let a = resolve_app_dir(&m, &opts_at(data.path(), Some("room-a"))).expect("room a");
-        let b = resolve_app_dir(&m, &opts_at(data.path(), Some("room-b"))).expect("room b");
-        let personal = resolve_app_dir(&m, &opts_at(data.path(), None)).expect("personal");
-
-        assert!(a.is_dir() && b.is_dir() && personal.is_dir());
-        assert_ne!(a, b);
-        assert_ne!(a, personal);
-        assert!(
-            !a.starts_with(&b) && !b.starts_with(&a),
-            "neither room may contain the other: {a:?} {b:?}"
-        );
-        for dir in [&a, &b, &personal] {
-            assert!(
-                dir.starts_with(data.path().join("tilo-rooms")),
-                "{dir:?} is outside the rooms tree"
+            let personal = resolve_capabilities(&m, &opts_in(None));
+            assert_eq!(
+                personal.participation,
+                crate::capabilities::Participation::Unscoped
             );
         }
-    }
+        // Phase `the_launch_resolves_one_directory_per_room`.
+        // The launch path resolves the directory rather than the manifest
+        // naming it — the room launched into decides which one.
+        {
+            let data = tempfile::tempdir().expect("tempdir");
 
-    /// A package cannot make the launcher create a directory it named: the
-    /// retired `sandbox.fs.write` block is refused before the directory step.
-    #[test]
-    fn a_declared_write_path_is_never_created() {
-        let data = tempfile::tempdir().expect("tempdir");
+            let m = manifest("so.tilo.fixture");
+            let a = resolve_app_dir(&m, &opts_at(data.path(), Some("room-a"))).expect("room a");
+            let b = resolve_app_dir(&m, &opts_at(data.path(), Some("room-b"))).expect("room b");
+            let personal = resolve_app_dir(&m, &opts_at(data.path(), None)).expect("personal");
 
-        let mut m = manifest("so.tilo.fixture");
-        let victim = data.path().join("so.tilo.totp");
-        m.sandbox.fs.write.push(victim.display().to_string());
-        let refused = run_with(&m, Path::new("/nonexistent"), &opts_at(data.path(), None));
+            assert!(a.is_dir() && b.is_dir() && personal.is_dir());
+            assert_ne!(a, b);
+            assert_ne!(a, personal);
+            assert!(
+                !a.starts_with(&b) && !b.starts_with(&a),
+                "neither room may contain the other: {a:?} {b:?}"
+            );
+            for dir in [&a, &b, &personal] {
+                assert!(
+                    dir.starts_with(data.path().join("tilo-rooms")),
+                    "{dir:?} is outside the rooms tree"
+                );
+            }
+        }
+        // Phase `a_declared_write_path_is_never_created`.
+        // A package cannot make the launcher create a directory it named: the
+        // retired `sandbox.fs.write` block is refused before the directory step.
+        {
+            let data = tempfile::tempdir().expect("tempdir");
 
-        let err = refused.expect_err("a manifest naming a write path must be refused");
-        assert!(
-            matches!(err, RunError::FsPolicy(_)),
-            "expected a policy refusal, got: {err}"
-        );
-        assert!(
-            !victim.exists(),
-            "the launcher must not create a path a package named"
-        );
+            let mut m = manifest("so.tilo.fixture");
+            let victim = data.path().join("so.tilo.totp");
+            m.sandbox.fs.write.push(victim.display().to_string());
+            let refused = run_with(&m, Path::new("/nonexistent"), &opts_at(data.path(), None));
+
+            let err = refused.expect_err("a manifest naming a write path must be refused");
+            assert!(
+                matches!(err, RunError::FsPolicy(_)),
+                "expected a policy refusal, got: {err}"
+            );
+            assert!(
+                !victim.exists(),
+                "the launcher must not create a path a package named"
+            );
+        }
     }
 }

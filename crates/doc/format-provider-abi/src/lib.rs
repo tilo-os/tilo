@@ -308,66 +308,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tier_parses_and_orders() {
-        assert_eq!(Tier::parse("builtin"), Some(Tier::Builtin));
-        assert_eq!(Tier::parse("Installed"), Some(Tier::Installed));
-        assert_eq!(Tier::parse("ephemeral"), Some(Tier::Ephemeral));
-        assert_eq!(Tier::parse("nope"), None);
+    fn tiers_and_error_kinds_have_stable_names() {
+        for (text, want) in [
+            ("builtin", Some(Tier::Builtin)),
+            ("Installed", Some(Tier::Installed)),
+            ("ephemeral", Some(Tier::Ephemeral)),
+            ("nope", None),
+        ] {
+            assert_eq!(Tier::parse(text), want, "case {text}");
+        }
         assert!(Tier::Builtin > Tier::Installed);
         assert!(Tier::Installed > Tier::Ephemeral);
+
+        for (err, kind) in [
+            (CodecError::parse("x"), "parse"),
+            (CodecError::export("x"), "export"),
+            (CodecError::unsupported("x"), "unsupported"),
+            (CodecError::resource_limit("x"), "resource_limit"),
+            (CodecError::trap("x"), "trap"),
+        ] {
+            assert_eq!(err.kind, kind);
+        }
     }
 
     #[test]
-    fn codec_error_kinds_distinct() {
-        assert_eq!(CodecError::parse("x").kind, "parse");
-        assert_eq!(CodecError::export("x").kind, "export");
-        assert_eq!(CodecError::unsupported("x").kind, "unsupported");
-        assert_eq!(CodecError::resource_limit("x").kind, "resource_limit");
-        assert_eq!(CodecError::trap("x").kind, "trap");
-    }
-
-    #[test]
-    fn region_round_trips() {
+    fn abi_payloads_round_trip_and_reject_malformed_bytes() {
         let packed = pack_region(0x1234_5678, 0x9abc_def0);
         assert_eq!(unpack_region(packed), (0x1234_5678, 0x9abc_def0));
-    }
 
-    #[test]
-    fn detected_round_trips() {
-        let d = Detected {
-            confidence: Confidence {
-                tier: 2,
-                score: 0.9,
+        for d in [
+            Detected {
+                confidence: Confidence {
+                    tier: 2,
+                    score: 0.9,
+                },
+                mime: Some("text/markdown".into()),
             },
-            mime: Some("text/markdown".into()),
-        };
-        assert_eq!(decode_detected(&encode_detected(&d)).unwrap(), d);
-        let none = Detected {
-            confidence: Confidence {
-                tier: 0,
-                score: 0.0,
+            Detected {
+                confidence: Confidence {
+                    tier: 0,
+                    score: 0.0,
+                },
+                mime: None,
             },
-            mime: None,
-        };
-        assert_eq!(decode_detected(&encode_detected(&none)).unwrap(), none);
+        ] {
+            assert_eq!(decode_detected(&encode_detected(&d)).unwrap(), d);
+        }
         assert!(decode_detected(&[1, 2, 3]).is_err());
-    }
 
-    #[test]
-    fn result_round_trips() {
-        let ok: Result<Vec<u8>, CodecError> = Ok(b"canonical".to_vec());
-        assert_eq!(decode_result(encode_result(&ok)).unwrap(), ok);
-        let err: Result<Vec<u8>, CodecError> = Err(CodecError::parse("bad heading"));
-        assert_eq!(decode_result(encode_result(&err)).unwrap(), err);
-        let empty: Result<Vec<u8>, CodecError> = Ok(Vec::new());
-        assert_eq!(decode_result(encode_result(&empty)).unwrap(), empty);
-    }
-
-    #[test]
-    fn malformed_results_are_rejected() {
-        assert!(decode_result(Vec::new()).is_err());
-        assert!(decode_result(vec![7]).is_err());
-        assert!(decode_result(vec![STATUS_ERR, 9, 0, 0, 0, b'x']).is_err());
-        assert!(decode_result(vec![STATUS_ERR, 1, 0, 0, 0, 0xff]).is_err());
+        for result in [
+            Ok(b"canonical".to_vec()),
+            Err(CodecError::parse("bad heading")),
+            Ok(Vec::new()),
+        ] {
+            assert_eq!(decode_result(encode_result(&result)).unwrap(), result);
+        }
+        for malformed in [
+            Vec::new(),
+            vec![7],
+            vec![STATUS_ERR, 9, 0, 0, 0, b'x'],
+            vec![STATUS_ERR, 1, 0, 0, 0, 0xff],
+        ] {
+            assert!(decode_result(malformed.clone()).is_err(), "{malformed:?}");
+        }
     }
 }

@@ -43,116 +43,117 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 #[test]
-fn a_saved_document_carries_the_reference_and_not_the_bytes() {
-    let bytes = png();
-    let mut doc = Document::new();
-    let mut inputs = ContentInputs::new();
-    let hash = doc.attach(&bytes, &mut inputs);
-    assert_eq!(
-        inputs.get(&hash),
-        Some(bytes.as_slice()),
-        "the bytes go to the caller"
-    );
+fn saved_documents_carry_blob_references_with_mime_and_descriptor_not_bytes() {
+    // Phase `a_saved_document_carries_the_reference_and_not_the_bytes`.
+    {
+        let bytes = png();
+        let mut doc = Document::new();
+        let mut inputs = ContentInputs::new();
+        let hash = doc.attach(&bytes, &mut inputs);
+        assert_eq!(
+            inputs.get(&hash),
+            Some(bytes.as_slice()),
+            "the bytes go to the caller"
+        );
 
-    let saved = doc.save();
+        let saved = doc.save();
 
-    // A body of 4 kB of one value is findable by any window scan, so this fails
-    // loudly if inlining ever comes back.
-    assert!(
-        !contains(&saved, &bytes[..64]),
-        "the saved document carries the image's own bytes ({} bytes saved)",
-        saved.len()
-    );
-    assert!(
-        !contains(&saved, &[0xA5u8; 64]),
-        "the saved document carries the image's body"
-    );
+        // A body of 4 kB of one value is findable by any window scan, so this fails
+        // loudly if inlining ever comes back.
+        assert!(
+            !contains(&saved, &bytes[..64]),
+            "the saved document carries the image's own bytes ({} bytes saved)",
+            saved.len()
+        );
+        assert!(
+            !contains(&saved, &[0xA5u8; 64]),
+            "the saved document carries the image's body"
+        );
 
-    // The hash is the address the content store is keyed by, so it is the one
-    // thing that must survive.
-    assert!(
-        contains(&saved, hash.as_bytes()),
-        "the saved document does not carry the blob's hash {hash}"
-    );
+        // The hash is the address the content store is keyed by, so it is the one
+        // thing that must survive.
+        assert!(
+            contains(&saved, hash.as_bytes()),
+            "the saved document does not carry the blob's hash {hash}"
+        );
 
-    assert!(
-        saved.len() < bytes.len() / 2,
-        "a referencing document ({} bytes) should be far smaller than the image it \
-         references ({} bytes)",
-        saved.len(),
-        bytes.len()
-    );
-}
-
-#[test]
-fn the_mime_survives_in_a_document_that_also_has_text() {
-    // The minimal case is not the case a reader meets: a real document has
-    // paragraphs and block structure around the image, and automerge encodes a
-    // bigger document differently.
-    let mut doc = Document::new();
-    let p = doc.insert_block(None, "paragraph");
-    doc.splice_text(&p, 0, 0, "An opening paragraph with some length to it.");
-    for line in ["a first list item", "a second list item"] {
-        let b = doc.insert_block(Some(&p), "list_item");
-        doc.splice_text(&b, 0, 0, line);
+        assert!(
+            saved.len() < bytes.len() / 2,
+            "a referencing document ({} bytes) should be far smaller than the image it \
+             references ({} bytes)",
+            saved.len(),
+            bytes.len()
+        );
     }
-    let store = ContentStore::memory();
-    let mut inputs = ContentInputs::new();
-    let hash = doc.attach(&png(), &mut inputs);
-    store.put_inputs(&inputs).unwrap();
-    let _img = doc.insert_block(Some(&p), "image");
+    // Phase `the_mime_survives_in_a_document_that_also_has_text`.
+    {
+        // The minimal case is not the case a reader meets: a real document has
+        // paragraphs and block structure around the image, and automerge encodes a
+        // bigger document differently.
+        let mut doc = Document::new();
+        let p = doc.insert_block(None, "paragraph");
+        doc.splice_text(&p, 0, 0, "An opening paragraph with some length to it.");
+        for line in ["a first list item", "a second list item"] {
+            let b = doc.insert_block(Some(&p), "list_item");
+            doc.splice_text(&b, 0, 0, line);
+        }
+        let store = ContentStore::memory();
+        let mut inputs = ContentInputs::new();
+        let hash = doc.attach(&png(), &mut inputs);
+        store.put_inputs(&inputs).unwrap();
+        let _img = doc.insert_block(Some(&p), "image");
 
-    let saved = doc.save();
-    assert!(
-        contains(&saved, b"image/png"),
-        "the mime is not findable in a {}-byte document with text in it",
-        saved.len()
-    );
-    // The hash is deliberately *not* asserted here, and that is the finding this
-    // test records. In a document holding nothing but a blob it is plain ASCII in
-    // the saved bytes; add paragraphs and it stops being findable, because it is
-    // a map key and automerge encodes keys differently once the document is worth
-    // compressing. A scan for the hash therefore works on a toy document and
-    // fails on a real one — the worst shape a check can have. Anything looking
-    // for an image reference in bytes off the wire should look for the mime,
-    // which is a scalar value and survives both.
-    assert!(
-        !contains(&saved, &[0xA5u8; 64]),
-        "the image's bytes are in a document with text in it"
-    );
-    let reopened = Document::load(&saved).expect("a saved document reloads");
-    assert!(
-        reopened.referenced_content().contains(&hash),
-        "the reference is gone once the document has text in it"
-    );
-    assert_eq!(
-        store.read(&hash).as_deref(),
-        Some(png().as_slice()),
-        "the reference no longer resolves once the document has text in it"
-    );
-}
+        let saved = doc.save();
+        assert!(
+            contains(&saved, b"image/png"),
+            "the mime is not findable in a {}-byte document with text in it",
+            saved.len()
+        );
+        // The hash is deliberately *not* asserted here, and that is the finding this
+        // test records. In a document holding nothing but a blob it is plain ASCII in
+        // the saved bytes; add paragraphs and it stops being findable, because it is
+        // a map key and automerge encodes keys differently once the document is worth
+        // compressing. A scan for the hash therefore works on a toy document and
+        // fails on a real one — the worst shape a check can have. Anything looking
+        // for an image reference in bytes off the wire should look for the mime,
+        // which is a scalar value and survives both.
+        assert!(
+            !contains(&saved, &[0xA5u8; 64]),
+            "the image's bytes are in a document with text in it"
+        );
+        let reopened = Document::load(&saved).expect("a saved document reloads");
+        assert!(
+            reopened.referenced_content().contains(&hash),
+            "the reference is gone once the document has text in it"
+        );
+        assert_eq!(
+            store.read(&hash).as_deref(),
+            Some(png().as_slice()),
+            "the reference no longer resolves once the document has text in it"
+        );
+    }
+    // Phase `the_descriptor_travels_with_the_reference`.
+    {
+        // The intrinsic size has to cross too. Without it a peer whose bytes have
+        // not arrived guesses a size, and every paragraph below the image moves when
+        // they land — on a shared document, while somebody is typing into it.
+        let mut doc = Document::new();
+        let hash = doc.attach(&png(), &mut ContentInputs::new());
+        let saved = doc.save();
 
-#[test]
-fn the_descriptor_travels_with_the_reference() {
-    // The intrinsic size has to cross too. Without it a peer whose bytes have
-    // not arrived guesses a size, and every paragraph below the image moves when
-    // they land — on a shared document, while somebody is typing into it.
-    let mut doc = Document::new();
-    let hash = doc.attach(&png(), &mut ContentInputs::new());
-    let saved = doc.save();
+        // The descriptor is written as scalars beside the hash, so the sniffed mime
+        // is literal ASCII in the saved bytes. The `blob_*` attrs belong to the
+        // materialised snapshot and are added at read time, so they never appear.
+        assert!(
+            contains(&saved, b"image/png"),
+            "the descriptor's mime did not survive the save"
+        );
 
-    // The descriptor is written as scalars beside the hash, so the sniffed mime
-    // is literal ASCII in the saved bytes. The `blob_*` attrs belong to the
-    // materialised snapshot and are added at read time, so they never appear.
-    assert!(
-        contains(&saved, b"image/png"),
-        "the descriptor's mime did not survive the save"
-    );
-
-    let reopened = Document::load(&saved).expect("a saved document reloads");
-    let meta = qdoc::model::blob_meta(reopened.as_ref().doc, reopened.as_ref().c, &hash)
-        .expect("the descriptor survives the save");
-    assert_eq!((meta.mime.as_str(), meta.w, meta.h), ("image/png", 7, 11));
+        let reopened = Document::load(&saved).expect("a saved document reloads");
+        let meta = qdoc::model::blob_meta(reopened.as_ref().doc, reopened.as_ref().c, &hash)
+            .expect("the descriptor survives the save");
+        assert_eq!((meta.mime.as_str(), meta.w, meta.h), ("image/png", 7, 11));
+    }
 }
 
 #[test]

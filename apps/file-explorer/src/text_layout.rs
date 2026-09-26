@@ -42,39 +42,43 @@ pub fn centered_text_y(y0: f64, h: f64, size: f32, text_scale: f32) -> f64 {
 mod tests {
     use super::*;
 
+    /// Runs lift above the naive box centre and centre their rendered size at every text scale.
     #[test]
-    fn lifts_the_run_above_the_naive_box_center() {
-        // The naive centering (used before this fix) placed the run at
-        // `(h - size)/2`; the optical helper must sit strictly higher so the
-        // text rises to meet an icon centered in the same row.
-        let naive = 10.0 + (34.0 - 15.0) / 2.0;
-        let optical = centered_text_y(10.0, 34.0, 15.0, 1.0);
-        assert!(
-            optical < naive,
-            "optical y ({optical}) lifts above naive ({naive})"
-        );
-        // The lift scales with the font size (a larger run needs a larger lift).
-        let small = 0.0 + (34.0 - 12.0) / 2.0 - centered_text_y(0.0, 34.0, 12.0, 1.0);
-        let large = 0.0 + (34.0 - 24.0) / 2.0 - centered_text_y(0.0, 34.0, 24.0, 1.0);
-        assert!(
-            large > small,
-            "lift grows with font size: {large} > {small}"
-        );
-    }
+    fn text_runs_centre_their_rendered_size_at_every_scale() {
+        // --- phase: lifts_the_run_above_the_naive_box_center ---
+        {
+            // The naive centering (used before this fix) placed the run at
+            // `(h - size)/2`; the optical helper must sit strictly higher so the
+            // text rises to meet an icon centered in the same row.
+            let naive = 10.0 + (34.0 - 15.0) / 2.0;
+            let optical = centered_text_y(10.0, 34.0, 15.0, 1.0);
+            assert!(
+                optical < naive,
+                "optical y ({optical}) lifts above naive ({naive})"
+            );
+            // The lift scales with the font size (a larger run needs a larger lift).
+            let small = 0.0 + (34.0 - 12.0) / 2.0 - centered_text_y(0.0, 34.0, 12.0, 1.0);
+            let large = 0.0 + (34.0 - 24.0) / 2.0 - centered_text_y(0.0, 34.0, 24.0, 1.0);
+            assert!(
+                large > small,
+                "lift grows with font size: {large} > {small}"
+            );
+        }
 
-    /// At 200 % the renderer paints a 13 px request as 26 px; centring must
-    /// follow the painted size, not the requested one, or the run sits a
-    /// quarter line low in a row that grew with the text.
-    #[test]
-    fn centres_the_rendered_size_at_every_text_scale() {
-        let one_x = centered_text_y(0.0, 34.0, 13.0, 1.0);
-        let two_x = centered_text_y(0.0, 68.0, 13.0, 2.0);
-        assert!(
-            (two_x - 2.0 * one_x).abs() < 1e-9,
-            "a doubled row and doubled glyphs double the offset: {two_x} vs 2×{one_x}"
-        );
-        // Same painted size, requested two ways, lands on the same y.
-        let direct = centered_text_y(0.0, 68.0, 26.0, 1.0);
-        assert!((two_x - direct).abs() < 1e-9, "{two_x} vs {direct}");
+        // --- phase: centres_the_rendered_size_at_every_text_scale ---
+        // At 200 % the renderer paints a 13 px request as 26 px; centring must
+        // follow the painted size, not the requested one, or the run sits a
+        // quarter line low in a row that grew with the text.
+        {
+            let one_x = centered_text_y(0.0, 34.0, 13.0, 1.0);
+            let two_x = centered_text_y(0.0, 68.0, 13.0, 2.0);
+            assert!(
+                (two_x - 2.0 * one_x).abs() < 1e-9,
+                "a doubled row and doubled glyphs double the offset: {two_x} vs 2×{one_x}"
+            );
+            // Same painted size, requested two ways, lands on the same y.
+            let direct = centered_text_y(0.0, 68.0, 26.0, 1.0);
+            assert!((two_x - direct).abs() < 1e-9, "{two_x} vs {direct}");
+        }
     }
 }

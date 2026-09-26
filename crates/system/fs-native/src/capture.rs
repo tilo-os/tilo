@@ -17,11 +17,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::btrfs;
-use crate::chunking::{ChunkStats, Manifest};
 use crate::extents;
 use crate::hydrate::RESIDENCY_XATTR;
 use crate::journal::{ChangeJournal, JournalBatch, JournalOp};
 use crate::sys;
+use fs_content::{ChunkStats, Manifest};
 
 /// Directory marker that opts a tree out of sync, per
 /// <https://bford.info/cachedir/>.
@@ -80,8 +80,8 @@ impl Node {
             NodeKind::File => {
                 self.size == other.size
                     && self.mtime_ns == other.mtime_ns
-                    && self.manifest.as_ref().map(|m| m.content_id)
-                        == other.manifest.as_ref().map(|m| m.content_id)
+                    && self.manifest.as_ref().map(|m| m.id())
+                        == other.manifest.as_ref().map(|m| m.id())
             }
         }
     }
@@ -1107,20 +1107,20 @@ fn hash_one(
     let (manifest, stats) = if let Some((base_file, base_manifest)) = base {
         let old = File::open(&base_file)?;
         let changed = extents::diff_files(&old, &file)?;
-        if changed.is_empty() && len == base_manifest.total_len {
+        if changed.is_empty() && len == base_manifest.total_len() {
             let stats = ChunkStats {
-                chunks_reused: base_manifest.chunks.len() as u64,
+                chunks_reused: base_manifest.chunks().len() as u64,
                 ..ChunkStats::default()
             };
             (base_manifest, stats)
         } else {
             let map = sys::Mmap::map(&file, len)?;
-            let (m, s) = Manifest::rebuild(Some(&base_manifest), map.as_slice(), &changed, None);
+            let (m, s) = fs_content::rebuild(Some(&base_manifest), map.as_slice(), &changed, None);
             (Arc::new(m), s)
         }
     } else {
         let map = sys::Mmap::map(&file, len)?;
-        let (m, s) = Manifest::build(map.as_slice(), None);
+        let (m, s) = fs_content::build(map.as_slice(), None);
         (Arc::new(m), s)
     };
     node.size = len;
@@ -1451,59 +1451,60 @@ mod tests {
     }
 
     #[test]
-    fn journal_order_is_kept_and_parents_come_first() {
-        let order: HashMap<PathBuf, u64> = [("a/obj", 1), ("a", 5), ("ref", 3)]
-            .into_iter()
-            .map(|(p, s)| (PathBuf::from(p), s))
-            .collect();
-        let ops = order_ops(
-            vec![
-                ("ref".into(), node(NodeKind::File, 0)),
-                ("a/obj".into(), node(NodeKind::File, 0)),
-                ("a".into(), node(NodeKind::Dir, 0)),
-            ],
-            vec![],
-            vec![],
-            &order,
-            false,
-        );
-        assert_eq!(paths(&ops), ["+a", "+a/obj", "+ref"]);
-    }
-
-    #[test]
-    fn directory_removal_follows_its_contents() {
-        let order: HashMap<PathBuf, u64> = [("d", 1), ("d/x", 2), ("d/y/z", 3), ("d/y", 4)]
-            .into_iter()
-            .map(|(p, s)| (PathBuf::from(p), s))
-            .collect();
-        let ops = order_ops(
-            vec![],
-            vec![
-                ("d".into(), true),
-                ("d/x".into(), false),
-                ("d/y".into(), true),
-                ("d/y/z".into(), false),
-            ],
-            vec![],
-            &order,
-            false,
-        );
-        assert_eq!(paths(&ops), ["-d/y/z", "-d/x", "-d/y", "-d"]);
-    }
-
-    #[test]
-    fn rescans_order_by_change_time() {
-        let ops = order_ops(
-            vec![
-                ("late".into(), node(NodeKind::File, 20)),
-                ("early".into(), node(NodeKind::File, 10)),
-            ],
-            vec![("gone".into(), false)],
-            vec![],
-            &HashMap::new(),
-            true,
-        );
-        assert_eq!(paths(&ops), ["+early", "+late", "-gone"]);
+    fn journal_batches_order_parents_removals_and_rescans() {
+        // Phase `journal_order_is_kept_and_parents_come_first`.
+        {
+            let order: HashMap<PathBuf, u64> = [("a/obj", 1), ("a", 5), ("ref", 3)]
+                .into_iter()
+                .map(|(p, s)| (PathBuf::from(p), s))
+                .collect();
+            let ops = order_ops(
+                vec![
+                    ("ref".into(), node(NodeKind::File, 0)),
+                    ("a/obj".into(), node(NodeKind::File, 0)),
+                    ("a".into(), node(NodeKind::Dir, 0)),
+                ],
+                vec![],
+                vec![],
+                &order,
+                false,
+            );
+            assert_eq!(paths(&ops), ["+a", "+a/obj", "+ref"]);
+        }
+        // Phase `directory_removal_follows_its_contents`.
+        {
+            let order: HashMap<PathBuf, u64> = [("d", 1), ("d/x", 2), ("d/y/z", 3), ("d/y", 4)]
+                .into_iter()
+                .map(|(p, s)| (PathBuf::from(p), s))
+                .collect();
+            let ops = order_ops(
+                vec![],
+                vec![
+                    ("d".into(), true),
+                    ("d/x".into(), false),
+                    ("d/y".into(), true),
+                    ("d/y/z".into(), false),
+                ],
+                vec![],
+                &order,
+                false,
+            );
+            assert_eq!(paths(&ops), ["-d/y/z", "-d/x", "-d/y", "-d"]);
+        }
+        // Phase `rescans_order_by_change_time`.
+        {
+            let ops = order_ops(
+                vec![
+                    ("late".into(), node(NodeKind::File, 20)),
+                    ("early".into(), node(NodeKind::File, 10)),
+                ],
+                vec![("gone".into(), false)],
+                vec![],
+                &HashMap::new(),
+                true,
+            );
+            assert_eq!(paths(&ops), ["+early", "+late", "-gone"]);
+        }
     }
 
     fn prev(entries: &[(&str, NodeKind, u64)]) -> BTreeMap<PathBuf, Node> {
@@ -1532,119 +1533,123 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_move_carries_its_subtree_and_rewrites_removals_inside_it() {
-        let before = prev(&[
-            ("a", NodeKind::Dir, 1),
-            ("a/f", NodeKind::File, 2),
-            ("a/gone", NodeKind::File, 3),
-            ("a/out", NodeKind::File, 4),
-        ]);
-        let mut order: HashMap<PathBuf, u64> = [
-            ("z", 2),
-            ("a", 2),
-            ("a/gone", 1),
-            ("elsewhere", 3),
-            ("a/out", 3),
-        ]
-        .into_iter()
-        .map(|(p, s)| (PathBuf::from(p), s))
-        .collect();
-        let (ups, rms, mv) = pair_moves(
-            vec![
-                at("z", NodeKind::Dir, 1),
-                at("z/f", NodeKind::File, 2),
-                at("elsewhere", NodeKind::File, 4),
-            ],
-            vec![
-                ("a".into(), true),
-                ("a/f".into(), false),
-                ("a/gone".into(), false),
-                ("a/out".into(), false),
-            ],
-            &before,
-            &mut order,
-        );
-        assert!(ups.is_empty(), "the unchanged descendant is implied");
-        assert_eq!(rms, [(PathBuf::from("z/gone"), false)]);
-        assert_eq!(order.get(Path::new("z/gone")), Some(&1));
-        let ops = order_ops(ups, rms, mv, &order, false);
-        assert_eq!(paths(&ops), ["a>z", "-z/gone", "z/out>elsewhere"]);
-        let next = next_state(&before, &ops, false, Path::new("/nonexistent"));
-        let keys: Vec<&str> = next.keys().filter_map(|p| p.to_str()).collect();
-        assert_eq!(keys, ["elsewhere", "z", "z/f"]);
+    fn moves_and_hard_links_are_told_apart_by_inode_and_path() {
+        // Phase `a_directory_move_carries_its_subtree_and_rewrites_removals_inside_it`.
+        {
+            let before = prev(&[
+                ("a", NodeKind::Dir, 1),
+                ("a/f", NodeKind::File, 2),
+                ("a/gone", NodeKind::File, 3),
+                ("a/out", NodeKind::File, 4),
+            ]);
+            let mut order: HashMap<PathBuf, u64> = [
+                ("z", 2),
+                ("a", 2),
+                ("a/gone", 1),
+                ("elsewhere", 3),
+                ("a/out", 3),
+            ]
+            .into_iter()
+            .map(|(p, s)| (PathBuf::from(p), s))
+            .collect();
+            let (ups, rms, mv) = pair_moves(
+                vec![
+                    at("z", NodeKind::Dir, 1),
+                    at("z/f", NodeKind::File, 2),
+                    at("elsewhere", NodeKind::File, 4),
+                ],
+                vec![
+                    ("a".into(), true),
+                    ("a/f".into(), false),
+                    ("a/gone".into(), false),
+                    ("a/out".into(), false),
+                ],
+                &before,
+                &mut order,
+            );
+            assert!(ups.is_empty(), "the unchanged descendant is implied");
+            assert_eq!(rms, [(PathBuf::from("z/gone"), false)]);
+            assert_eq!(order.get(Path::new("z/gone")), Some(&1));
+            let ops = order_ops(ups, rms, mv, &order, false);
+            assert_eq!(paths(&ops), ["a>z", "-z/gone", "z/out>elsewhere"]);
+            let next = next_state(&before, &ops, false, Path::new("/nonexistent"));
+            let keys: Vec<&str> = next.keys().filter_map(|p| p.to_str()).collect();
+            assert_eq!(keys, ["elsewhere", "z", "z/f"]);
+        }
+        // Phase `an_inode_still_at_its_old_path_is_a_hard_link_not_a_move`.
+        {
+            let before = prev(&[("a", NodeKind::File, 7)]);
+            let (ups, rms, mv) = pair_moves(
+                vec![at("a", NodeKind::File, 7), at("b", NodeKind::File, 7)],
+                vec![],
+                &before,
+                &mut HashMap::new(),
+            );
+            assert_eq!(ups.len(), 2);
+            assert!(rms.is_empty() && mv.is_empty());
+            // A file replaced by a directory of the same inode number is not a
+            // move either.
+            let (ups, _, mv) = pair_moves(
+                vec![at("d", NodeKind::Dir, 7)],
+                vec![("a".into(), false)],
+                &before,
+                &mut HashMap::new(),
+            );
+            assert_eq!(ups.len(), 1);
+            assert!(mv.is_empty());
+        }
     }
 
     #[test]
-    fn an_inode_still_at_its_old_path_is_a_hard_link_not_a_move() {
-        let before = prev(&[("a", NodeKind::File, 7)]);
-        let (ups, rms, mv) = pair_moves(
-            vec![at("a", NodeKind::File, 7), at("b", NodeKind::File, 7)],
-            vec![],
-            &before,
-            &mut HashMap::new(),
-        );
-        assert_eq!(ups.len(), 2);
-        assert!(rms.is_empty() && mv.is_empty());
-        // A file replaced by a directory of the same inode number is not a
-        // move either.
-        let (ups, _, mv) = pair_moves(
-            vec![at("d", NodeKind::Dir, 7)],
-            vec![("a".into(), false)],
-            &before,
-            &mut HashMap::new(),
-        );
-        assert_eq!(ups.len(), 1);
-        assert!(mv.is_empty());
-    }
-
-    #[test]
-    fn scheduler_cuts_at_quiescence_or_max_interval() {
-        let mut s = EpochScheduler::default();
-        let t = Instant::now();
-        assert!(!s.due(t));
-        s.observe(t, &JournalOp::Modify, Some(Path::new("f")), false);
-        assert!(!s.due(t + Duration::from_millis(100)));
-        assert!(s.due(t + Duration::from_millis(600)));
-        // A steady stream of events is still cut every 2 s.
-        for i in 1..30 {
+    fn the_epoch_scheduler_cuts_at_quiescence_interval_or_grace_limit() {
+        // Phase `scheduler_cuts_at_quiescence_or_max_interval`.
+        {
+            let mut s = EpochScheduler::default();
+            let t = Instant::now();
+            assert!(!s.due(t));
+            s.observe(t, &JournalOp::Modify, Some(Path::new("f")), false);
+            assert!(!s.due(t + Duration::from_millis(100)));
+            assert!(s.due(t + Duration::from_millis(600)));
+            // A steady stream of events is still cut every 2 s.
+            for i in 1..30 {
+                s.observe(
+                    t + Duration::from_millis(i * 100),
+                    &JournalOp::Modify,
+                    None,
+                    false,
+                );
+            }
+            assert!(s.due(t + Duration::from_millis(2_950)));
+            s.cut();
+            assert!(!s.due(t + Duration::from_secs(10)));
+        }
+        // Phase `scheduler_waits_for_fresh_open_files_up_to_the_grace_limit`.
+        {
+            let mut s = EpochScheduler::default();
+            let t = Instant::now();
+            s.observe(t, &JournalOp::Create, Some(Path::new("index.lock")), false);
+            assert!(!s.due(t + Duration::from_millis(600)));
             s.observe(
-                t + Duration::from_millis(i * 100),
-                &JournalOp::Modify,
-                None,
+                t + Duration::from_millis(700),
+                &JournalOp::Create,
+                Some(Path::new("b.lock")),
                 false,
             );
+            assert!(!s.due(t + Duration::from_millis(1_500)));
+            assert!(s.due(t + Duration::from_secs(5)));
+            s.observe(
+                t + Duration::from_millis(800),
+                &JournalOp::Rename { from: None },
+                Some(Path::new("index.lock")),
+                false,
+            );
+            s.observe(
+                t + Duration::from_millis(800),
+                &JournalOp::CloseWrite,
+                Some(Path::new("b.lock")),
+                false,
+            );
+            assert!(s.due(t + Duration::from_millis(1_400)));
         }
-        assert!(s.due(t + Duration::from_millis(2_950)));
-        s.cut();
-        assert!(!s.due(t + Duration::from_secs(10)));
-    }
-
-    #[test]
-    fn scheduler_waits_for_fresh_open_files_up_to_the_grace_limit() {
-        let mut s = EpochScheduler::default();
-        let t = Instant::now();
-        s.observe(t, &JournalOp::Create, Some(Path::new("index.lock")), false);
-        assert!(!s.due(t + Duration::from_millis(600)));
-        s.observe(
-            t + Duration::from_millis(700),
-            &JournalOp::Create,
-            Some(Path::new("b.lock")),
-            false,
-        );
-        assert!(!s.due(t + Duration::from_millis(1_500)));
-        assert!(s.due(t + Duration::from_secs(5)));
-        s.observe(
-            t + Duration::from_millis(800),
-            &JournalOp::Rename { from: None },
-            Some(Path::new("index.lock")),
-            false,
-        );
-        s.observe(
-            t + Duration::from_millis(800),
-            &JournalOp::CloseWrite,
-            Some(Path::new("b.lock")),
-            false,
-        );
-        assert!(s.due(t + Duration::from_millis(1_400)));
     }
 }

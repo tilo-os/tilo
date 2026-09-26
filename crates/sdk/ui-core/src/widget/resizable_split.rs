@@ -752,125 +752,131 @@ mod tests {
     }
 
     #[test]
-    fn resizable_split_initial_position_split_evenly() {
-        let s = ResizableSplit::new(
-            TestLeaf::new(),
-            TestLeaf::new(),
-            SplitOrientation::Horizontal,
-        );
-        assert_eq!(s.split_position(), 0.5);
-    }
+    fn split_layout_starts_even_and_fills_the_axis() {
+        // Case `resizable_split_initial_position_split_evenly`.
+        {
+            let s = ResizableSplit::new(
+                TestLeaf::new(),
+                TestLeaf::new(),
+                SplitOrientation::Horizontal,
+            );
+            assert_eq!(s.split_position(), 0.5);
+        }
 
-    #[test]
-    fn layout_children_match_widget_children_and_fill_the_available_axis() {
-        let mut split = ResizableSplit::new(
-            TestLeaf::new(),
-            TestLeaf::new(),
-            SplitOrientation::Horizontal,
-        )
-        .with_split_position(0.32);
-        let mut tree = TaffyTree::<()>::new();
-        let mut node_map = HashMap::new();
-        let node = split.build_layout(&mut tree, &Theme::dark(), &mut node_map);
-        let root = tree.parent_node(
-            Style {
-                size: taffy::Size {
-                    width: length(1000.0_f32),
-                    height: length(640.0_f32),
+        // Case `layout_children_match_widget_children_and_fill_the_available_axis`.
+        {
+            let mut split = ResizableSplit::new(
+                TestLeaf::new(),
+                TestLeaf::new(),
+                SplitOrientation::Horizontal,
+            )
+            .with_split_position(0.32);
+            let mut tree = TaffyTree::<()>::new();
+            let mut node_map = HashMap::new();
+            let node = split.build_layout(&mut tree, &Theme::dark(), &mut node_map);
+            let root = tree.parent_node(
+                Style {
+                    size: taffy::Size {
+                        width: length(1000.0_f32),
+                        height: length(640.0_f32),
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            },
-            &[node],
-        );
-        tree.compute_layout(
-            root,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(1000.0),
-                height: taffy::AvailableSpace::Definite(640.0),
-            },
-        )
-        .expect("valid split layout");
-        split.apply_layout(&tree, node, Point::ZERO);
+                &[node],
+            );
+            tree.compute_layout(
+                root,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(1000.0),
+                    height: taffy::AvailableSpace::Definite(640.0),
+                },
+            )
+            .expect("valid split layout");
+            split.apply_layout(&tree, node, Point::ZERO);
 
-        assert_eq!(tree.children(node).expect("split children").len(), 2);
-        assert!((split.left.rect.width() - 320.0).abs() < 0.1);
-        assert!((split.right.rect.width() - 680.0).abs() < 0.1);
+            assert_eq!(tree.children(node).expect("split children").len(), 2);
+            assert!((split.left.rect.width() - 320.0).abs() < 0.1);
+            assert!((split.right.rect.width() - 680.0).abs() < 0.1);
+        }
     }
 
     #[test]
-    fn resizable_split_dragging_divider_changes_split_position() {
-        // Rect is 400 wide; divider starts at x=200 (centre). Drag the
-        // cursor to x=100 and assert the split now sits at 0.25.
-        let mut s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
-        dispatch(&mut s, &cursor_moved(200.0, 150.0));
-        assert!(
-            s.divider_hover,
-            "cursor inside divider_rect should set hover=true",
-        );
-        dispatch(&mut s, &mouse_press());
-        assert!(
-            s.divider_drag.is_some(),
-            "press while hovered should start a drag"
-        );
-        dispatch(&mut s, &cursor_moved(100.0, 150.0));
-        dispatch(&mut s, &mouse_release());
-        assert!(s.divider_drag.is_none(), "release must end the drag");
-        // Tolerance insulates against future ratio tweaks.
-        let pos = s.split_position();
-        assert!(
-            (pos - 0.25).abs() < 1e-3,
-            "split_position should be ~0.25 after drag; got {pos}",
-        );
-    }
+    fn divider_drag_moves_the_split_within_bounds_with_a_resize_cursor() {
+        // Case `resizable_split_dragging_divider_changes_split_position`.
+        {
+            // Rect is 400 wide; divider starts at x=200 (centre). Drag the
+            // cursor to x=100 and assert the split now sits at 0.25.
+            let mut s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
+            dispatch(&mut s, &cursor_moved(200.0, 150.0));
+            assert!(
+                s.divider_hover,
+                "cursor inside divider_rect should set hover=true",
+            );
+            dispatch(&mut s, &mouse_press());
+            assert!(
+                s.divider_drag.is_some(),
+                "press while hovered should start a drag"
+            );
+            dispatch(&mut s, &cursor_moved(100.0, 150.0));
+            dispatch(&mut s, &mouse_release());
+            assert!(s.divider_drag.is_none(), "release must end the drag");
+            // Tolerance insulates against future ratio tweaks.
+            let pos = s.split_position();
+            assert!(
+                (pos - 0.25).abs() < 1e-3,
+                "split_position should be ~0.25 after drag; got {pos}",
+            );
+        }
 
-    #[test]
-    fn cursor_shape_over_divider_is_resize_per_orientation() {
-        // Rect is 400 wide; default 50% divider is centred at x = 200.
-        let s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
-        assert_eq!(
-            Widget::cursor_shape(&s, Point::new(200.0, 150.0)),
-            Some(winit::window::CursorIcon::EwResize),
-            "pointer over a horizontal split's divider requests EwResize",
-        );
-        assert_eq!(
-            Widget::cursor_shape(&s, Point::new(50.0, 150.0)),
-            None,
-            "off the divider the split defers to its panes (no claim here)",
-        );
+        // Case `cursor_shape_over_divider_is_resize_per_orientation`.
+        {
+            // Rect is 400 wide; default 50% divider is centred at x = 200.
+            let s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
+            assert_eq!(
+                Widget::cursor_shape(&s, Point::new(200.0, 150.0)),
+                Some(winit::window::CursorIcon::EwResize),
+                "pointer over a horizontal split's divider requests EwResize",
+            );
+            assert_eq!(
+                Widget::cursor_shape(&s, Point::new(50.0, 150.0)),
+                None,
+                "off the divider the split defers to its panes (no claim here)",
+            );
 
-        // Rect is 300 tall; default 50% divider is centred at y = 150.
-        let s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Vertical);
-        assert_eq!(
-            Widget::cursor_shape(&s, Point::new(200.0, 150.0)),
-            Some(winit::window::CursorIcon::NsResize),
-            "pointer over a vertical split's divider requests NsResize",
-        );
-    }
+            // Rect is 300 tall; default 50% divider is centred at y = 150.
+            let s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Vertical);
+            assert_eq!(
+                Widget::cursor_shape(&s, Point::new(200.0, 150.0)),
+                Some(winit::window::CursorIcon::NsResize),
+                "pointer over a vertical split's divider requests NsResize",
+            );
+        }
 
-    #[test]
-    fn resizable_split_clamps_position_to_min_max_bounds() {
-        // Drag to a cursor x that would yield 0.01 (4px); assert clamp to 0.1.
-        let mut s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
-        dispatch(&mut s, &cursor_moved(200.0, 150.0));
-        dispatch(&mut s, &mouse_press());
-        dispatch(&mut s, &cursor_moved(4.0, 150.0));
-        dispatch(&mut s, &mouse_release());
-        assert_eq!(
-            s.split_position(),
-            SPLIT_MIN,
-            "split_position must clamp to {SPLIT_MIN} on the low end",
-        );
+        // Case `resizable_split_clamps_position_to_min_max_bounds`.
+        {
+            // Drag to a cursor x that would yield 0.01 (4px); assert clamp to 0.1.
+            let mut s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
+            dispatch(&mut s, &cursor_moved(200.0, 150.0));
+            dispatch(&mut s, &mouse_press());
+            dispatch(&mut s, &cursor_moved(4.0, 150.0));
+            dispatch(&mut s, &mouse_release());
+            assert_eq!(
+                s.split_position(),
+                SPLIT_MIN,
+                "split_position must clamp to {SPLIT_MIN} on the low end",
+            );
 
-        // Drag to 0.99 → clamp to 0.9.
-        let mut s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
-        dispatch(&mut s, &cursor_moved(200.0, 150.0));
-        dispatch(&mut s, &mouse_press());
-        dispatch(&mut s, &cursor_moved(396.0, 150.0));
-        dispatch(&mut s, &mouse_release());
-        assert_eq!(
-            s.split_position(),
-            SPLIT_MAX,
-            "split_position must clamp to {SPLIT_MAX} on the high end",
-        );
+            // Drag to 0.99 → clamp to 0.9.
+            let mut s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
+            dispatch(&mut s, &cursor_moved(200.0, 150.0));
+            dispatch(&mut s, &mouse_press());
+            dispatch(&mut s, &cursor_moved(396.0, 150.0));
+            dispatch(&mut s, &mouse_release());
+            assert_eq!(
+                s.split_position(),
+                SPLIT_MAX,
+                "split_position must clamp to {SPLIT_MAX} on the high end",
+            );
+        }
     }
 }

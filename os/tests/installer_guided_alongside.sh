@@ -2,7 +2,10 @@
 # Destructive loopback proof for guided alongside partition creation. The test
 # snapshots both the existing GPT entry and bytes inside it, then requires the
 # helper to append exactly three partitions without changing either snapshot.
-set -euo pipefail
+set -Eeuo pipefail
+# Every unexpected non-zero exit names the command that failed; the invariant
+# runner shows only this script's output.
+trap 'printf "FAIL  guided alongside loopback test: line %s exited %s: %s\n" "$LINENO" "$?" "$BASH_COMMAND" >&2' ERR
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 helper="$repo_root/os/usr/libexec/tilo-guided-partition"
@@ -12,6 +15,16 @@ if [ "$(id -u)" -ne 0 ] && ! sudo -n true >/dev/null 2>&1; then
   exit 0
 fi
 run_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n "$@"; fi; }
+
+# The helper waits for the kernel's new partition nodes to appear in /dev. Only
+# devtmpfs creates them; a container /dev on tmpfs is a static snapshot where
+# they never appear, so the proof cannot run there.
+dev_fstype="$(findmnt -no FSTYPE /dev 2>/dev/null || echo unknown)"
+if [ "$dev_fstype" != devtmpfs ]; then
+  printf 'SKIP  guided alongside loopback test needs a devtmpfs /dev that shows new partition nodes (/dev is %s)\n' \
+    "$dev_fstype"
+  exit 0
+fi
 
 tmp="$(mktemp -d)"
 loop=""
@@ -37,8 +50,16 @@ printf 'label: gpt\nstart=2048, size=8192, type=0fc63daf-8483-4772-8e79-3d69d847
 run_root blockdev --rereadpt "$loop"
 run_root partx -u "$loop"
 for _ in {1..50}; do [ -b "${loop}p1" ] && break; sleep 0.1; done
+if [ ! -b "${loop}p1" ]; then
+  loop_name="${loop##*/}"
+  printf 'FAIL  %sp1 never appeared on devtmpfs /dev (kernel partition: %s, loop partscan: %s)\n' \
+    "$loop" \
+    "$([ -e "/sys/class/block/${loop_name}p1" ] && echo registered || echo absent)" \
+    "$(cat "/sys/block/$loop_name/loop/partscan" 2>/dev/null || echo unknown)" >&2
+  exit 1
+fi
 existing="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; u=sys.argv[1]; print(next(p["node"] for p in json.load(sys.stdin)["partitiontable"]["partitions"] if p["uuid"].lower()==u))' "$existing_uuid")"
-[ -b "$existing" ]
+[ -b "$existing" ] || { printf 'FAIL  existing partition node %s is not a block device\n' "$existing" >&2; exit 1; }
 printf 'existing-operating-system-data\n' | run_root dd of="$existing" bs=1 seek=4096 conv=notrunc status=none
 before_hash="$(run_root dd if="$existing" bs=1 skip=4096 count=31 status=none | sha256sum)"
 before_entry="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; t=json.load(sys.stdin)["partitiontable"]; p=t["partitions"][0]; print("{}:{}:{}".format(p["uuid"].lower(),p["start"]*t["sectorsize"],p["size"]*t["sectorsize"]))')"

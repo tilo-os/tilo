@@ -21,6 +21,10 @@ on:
         description: "Re-sign copied digests of signature-required repositories under their new name"
         type: boolean
         default: false
+      extra_references:
+        description: "Space-separated code.tilo.so references this tree does not pin (e.g. infra's runner label images)"
+        type: string
+        default: ""
 
 concurrency:
   group: copy-images-to-tilo-registry
@@ -70,6 +74,7 @@ jobs:
           APPLY: ${{ inputs.apply && '1' || '0' }}
           ALL_TAGS: ${{ inputs.all_tags && '1' || '0' }}
           RESIGN: ${{ inputs.resign && '1' || '0' }}
+          EXTRA_REFERENCES: ${{ inputs.extra_references }}
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: tools/ci/copy-images-to-tilo-registry.sh

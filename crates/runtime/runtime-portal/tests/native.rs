@@ -43,114 +43,189 @@ fn bootstrap_child() {
         }
     }
 }
+/// Let `fds` survive into the child's exec (they are close-on-exec by default).
+fn inherit(command: &mut Command, fds: Vec<std::os::fd::RawFd>) {
+    unsafe {
+        command.pre_exec(move || {
+            for &fd in &fds {
+                libc::fcntl(fd, libc::F_SETFD, 0);
+            }
+            Ok(())
+        });
+    }
+}
+
 #[test]
-fn malformed_inherited_connection_never_starts_another_host() {
+fn invalid_inherited_connections_fail_closed() {
+    // A malformed inherited connection never starts another host.
     let output = child()
         .env("TILO_SVC_COLLAB_FD", "bad")
         .env("TILO_RUNTIME_BINARY", "/must-not-run")
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(21));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("inherited"));
+    assert_eq!(output.status.code(), Some(21), "case malformed");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("inherited"),
+        "case malformed"
+    );
+
+    // Aliased inherited descriptors are rejected before SDK ownership.
+    {
+        let (socket, _peer) = UnixStream::pair().unwrap();
+        let fd = socket.as_raw_fd();
+        let mut command = child();
+        command
+            .env("TILO_SVC_COLLAB_FD", fd.to_string())
+            .env("TILO_SVC_IDENTITY_FD", format!("0{fd}"));
+        inherit(&mut command, vec![fd]);
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(21), "case aliased");
+    }
+
+    // An inherited datagram is rejected as the wrong SDK transport.
+    {
+        let (socket, _peer) = std::os::unix::net::UnixDatagram::pair().unwrap();
+        let (stream, _stream_peer) = UnixStream::pair().unwrap();
+        let fds = [socket.as_raw_fd(), stream.as_raw_fd()];
+        let mut command = child();
+        command
+            .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
+            .env("TILO_SVC_IDENTITY_FD", fds[1].to_string());
+        inherit(&mut command, fds.to_vec());
+        assert_eq!(
+            command.output().unwrap().status.code(),
+            Some(21),
+            "case datagram"
+        );
+    }
+
+    // Current and unknown transfer provenance fail closed.
+    let mut current = Command::new("/bin/sh");
+    current
+        .args([
+            "-c",
+            "export TILO_RUNTIME_CONNECTION_OWNER_PID=$$; exec \"$@\"",
+            "provenance-test",
+        ])
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", "bootstrap_child", "--nocapture"])
+        .env("TILO_BOOTSTRAP_TEST_CHILD", "1")
+        .env("TILO_SVC_COLLAB_FD", "bad")
+        .env_remove("TILO_SVC_IDENTITY_FD")
+        .env("TILO_RUNTIME_STANDALONE", "1");
+    assert_eq!(
+        current.output().unwrap().status.code(),
+        Some(21),
+        "case current provenance"
+    );
+    for owner in ["unknown", "0"] {
+        let output = child()
+            .env("TILO_RUNTIME_CONNECTION_OWNER_PID", owner)
+            .env("TILO_RUNTIME_STANDALONE", "1")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(21), "case owner {owner}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("inherited"),
+            "case owner {owner}"
+        );
+    }
 }
 #[test]
-fn explicit_standalone_bypasses_host_lookup() {
+fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
+    // Explicit standalone bypasses host lookup.
     let output = child()
         .env("TILO_RUNTIME_STANDALONE", "1")
         .env("TILO_RUNTIME_BINARY", "/must-not-run")
         .output()
         .unwrap();
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("RETURNED"));
-}
-#[test]
-fn complete_inherited_connections_take_precedence_over_profile_and_binary() {
-    let (a, _a_peer) = UnixStream::pair().unwrap();
-    let (b, _b_peer) = UnixStream::pair().unwrap();
-    let fds = [a.as_raw_fd(), b.as_raw_fd()];
-    let mut command = child();
-    command
-        .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
-        .env("TILO_SVC_IDENTITY_FD", fds[1].to_string())
-        .env("TILO_RUNTIME_PROFILE", "relative-invalid")
-        .env("TILO_RUNTIME_BINARY", "/must-not-run");
-    unsafe {
-        command.pre_exec(move || {
-            for fd in fds {
-                libc::fcntl(fd, libc::F_SETFD, 0);
-            }
-            Ok(())
-        });
-    }
-    let output = command.output().unwrap();
+    assert!(output.status.success(), "case explicit standalone");
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&output.stdout).contains("RETURNED"),
+        "case explicit standalone"
     );
-}
-#[test]
-fn bootstrap_exec_preserves_original_arguments_and_working_directory() {
-    let root = std::env::temp_dir().join(format!("tilo-bootstrap-test-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
-    let host = root.join("host");
-    std::fs::write(&host, "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\"\n").unwrap();
-    std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    // Complete inherited connections take precedence over profile and binary.
+    {
+        let (a, _a_peer) = UnixStream::pair().unwrap();
+        let (b, _b_peer) = UnixStream::pair().unwrap();
+        let fds = [a.as_raw_fd(), b.as_raw_fd()];
+        let mut command = child();
+        command
+            .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
+            .env("TILO_SVC_IDENTITY_FD", fds[1].to_string())
+            .env("TILO_RUNTIME_PROFILE", "relative-invalid")
+            .env("TILO_RUNTIME_BINARY", "/must-not-run");
+        inherit(&mut command, fds.to_vec());
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "case complete inherited: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // Bootstrap exec preserves the original arguments and working directory.
+    {
+        let root = std::env::temp_dir().join(format!("tilo-bootstrap-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let host = root.join("host");
+        std::fs::write(&host, "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\"\n").unwrap();
+        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let output = child()
+            .current_dir(&root)
+            .env("TILO_RUNTIME_BINARY", &host)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "case host exec");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            stdout.contains("--run-app\ndev.tilo.bootstrap-test\n--\n"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("--exact\nbootstrap_child\n--nocapture"),
+            "{stdout}"
+        );
+        assert!(stdout.contains(root.to_str().unwrap()));
+        assert!(!stdout.contains("RETURNED"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Ancestor-owned descriptors are hidden even when bootstrap is skipped.
+    {
+        let (a, _a_peer) = UnixStream::pair().unwrap();
+        let (b, _b_peer) = UnixStream::pair().unwrap();
+        let fds = [a.as_raw_fd(), b.as_raw_fd()];
+        let mut command = child();
+        command
+            .env("TILO_BOOTSTRAP_LOOKUP_ONLY", "1")
+            .env("TILO_WORKSPACE_ID", "ancestor-workspace")
+            .env(
+                "TILO_RUNTIME_CONNECTION_OWNER_PID",
+                std::process::id().to_string(),
+            )
+            .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
+            .env("TILO_SVC_IDENTITY_FD", fds[1].to_string());
+        inherit(&mut command, fds.to_vec());
+        assert!(command.status().unwrap().success(), "case ancestor hidden");
+    }
+
+    // A standalone child ignores ancestor metadata without mutating it.
     let output = child()
-        .current_dir(&root)
-        .env("TILO_RUNTIME_BINARY", &host)
+        .env(
+            "TILO_RUNTIME_CONNECTION_OWNER_PID",
+            std::process::id().to_string(),
+        )
+        .env("TILO_SVC_COLLAB_FD", "closed-ancestor-fd")
+        .env("TILO_RUNTIME_STANDALONE", "1")
         .output()
         .unwrap();
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
-        stdout.contains("--run-app\ndev.tilo.bootstrap-test\n--\n"),
-        "{stdout}"
+        output.status.success(),
+        "case standalone ignores ancestor: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        stdout.contains("--exact\nbootstrap_child\n--nocapture"),
-        "{stdout}"
-    );
-    assert!(stdout.contains(root.to_str().unwrap()));
-    assert!(!stdout.contains("RETURNED"));
-    std::fs::remove_dir_all(root).unwrap();
-}
-#[test]
-fn aliased_inherited_descriptors_are_rejected_before_sdk_ownership() {
-    let (socket, _peer) = UnixStream::pair().unwrap();
-    let fd = socket.as_raw_fd();
-    let mut command = child();
-    command
-        .env("TILO_SVC_COLLAB_FD", fd.to_string())
-        .env("TILO_SVC_IDENTITY_FD", format!("0{fd}"));
-    unsafe {
-        command.pre_exec(move || {
-            libc::fcntl(fd, libc::F_SETFD, 0);
-            Ok(())
-        });
-    }
-    let output = command.output().unwrap();
-    assert_eq!(output.status.code(), Some(21));
-}
-
-#[test]
-fn inherited_datagram_is_rejected_as_wrong_sdk_transport() {
-    let (socket, _peer) = std::os::unix::net::UnixDatagram::pair().unwrap();
-    let (stream, _stream_peer) = UnixStream::pair().unwrap();
-    let fds = [socket.as_raw_fd(), stream.as_raw_fd()];
-    let mut command = child();
-    command
-        .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
-        .env("TILO_SVC_IDENTITY_FD", fds[1].to_string());
-    unsafe {
-        command.pre_exec(move || {
-            for fd in fds {
-                libc::fcntl(fd, libc::F_SETFD, 0);
-            }
-            Ok(())
-        });
-    }
-    assert_eq!(command.output().unwrap().status.code(), Some(21));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -172,75 +247,4 @@ async fn adopting_service_descriptor_restores_close_on_exec() {
         "SDK-owned service leaked into subsequent execs"
     );
     drop(client);
-}
-
-#[test]
-fn ancestor_owned_descriptors_are_hidden_even_when_bootstrap_is_skipped() {
-    let (a, _a_peer) = UnixStream::pair().unwrap();
-    let (b, _b_peer) = UnixStream::pair().unwrap();
-    let fds = [a.as_raw_fd(), b.as_raw_fd()];
-    let mut command = child();
-    command
-        .env("TILO_BOOTSTRAP_LOOKUP_ONLY", "1")
-        .env("TILO_WORKSPACE_ID", "ancestor-workspace")
-        .env(
-            "TILO_RUNTIME_CONNECTION_OWNER_PID",
-            std::process::id().to_string(),
-        )
-        .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
-        .env("TILO_SVC_IDENTITY_FD", fds[1].to_string());
-    unsafe {
-        command.pre_exec(move || {
-            for fd in fds {
-                libc::fcntl(fd, libc::F_SETFD, 0);
-            }
-            Ok(())
-        });
-    }
-    assert!(command.status().unwrap().success());
-}
-
-#[test]
-fn standalone_child_ignores_ancestor_metadata_without_mutating_it() {
-    let output = child()
-        .env(
-            "TILO_RUNTIME_CONNECTION_OWNER_PID",
-            std::process::id().to_string(),
-        )
-        .env("TILO_SVC_COLLAB_FD", "closed-ancestor-fd")
-        .env("TILO_RUNTIME_STANDALONE", "1")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-#[test]
-fn current_and_unknown_transfer_provenance_fail_closed() {
-    let mut current = Command::new("/bin/sh");
-    current
-        .args([
-            "-c",
-            "export TILO_RUNTIME_CONNECTION_OWNER_PID=$$; exec \"$@\"",
-            "provenance-test",
-        ])
-        .arg(std::env::current_exe().unwrap())
-        .args(["--exact", "bootstrap_child", "--nocapture"])
-        .env("TILO_BOOTSTRAP_TEST_CHILD", "1")
-        .env("TILO_SVC_COLLAB_FD", "bad")
-        .env_remove("TILO_SVC_IDENTITY_FD")
-        .env("TILO_RUNTIME_STANDALONE", "1");
-    assert_eq!(current.output().unwrap().status.code(), Some(21));
-    for owner in ["unknown", "0"] {
-        let output = child()
-            .env("TILO_RUNTIME_CONNECTION_OWNER_PID", owner)
-            .env("TILO_RUNTIME_STANDALONE", "1")
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(21));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("inherited"));
-    }
 }
