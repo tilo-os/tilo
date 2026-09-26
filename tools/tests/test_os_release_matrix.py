@@ -74,6 +74,8 @@ class OsReleaseMatrixTests(unittest.TestCase):
             [
                 {"arch": "x86_64", "runner": "imager-linux-x86_64"},
                 {"arch": "aarch64", "runner": "imager-linux-aarch64"},
+                {"arch": "x86_64", "runner": "imager-linux-x86_64", "role": "reproduce"},
+                {"arch": "aarch64", "runner": "imager-linux-aarch64", "role": "reproduce"},
             ],
         )
 
@@ -85,6 +87,8 @@ class OsReleaseMatrixTests(unittest.TestCase):
             [
                 {"arch": "x86_64", "runner": "runner-large"},
                 {"arch": "aarch64", "runner": "runner-large-arm64"},
+                {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
+                {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
             ],
         )
 
@@ -105,6 +109,8 @@ class OsReleaseMatrixTests(unittest.TestCase):
             [
                 {"arch": "x86_64", "runner": "runner-large"},
                 {"arch": "aarch64", "runner": "runner-large-arm64"},
+                {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
+                {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
             ],
         )
 
@@ -249,7 +255,7 @@ class ReleaseGateTests(unittest.TestCase):
         workflow = WORKFLOW.read_text()
         archive = re.compile(r"oci-archive:/var/tmp/tilo-image(?:-repro)?\.tar")
         uses = list(archive.finditer(workflow))
-        self.assertEqual(len(uses), 5)
+        self.assertEqual(len(uses), 4)
         for use in uses:
             self.assertRegex(
                 workflow[use.end():use.end() + 24],
