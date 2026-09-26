@@ -73,6 +73,7 @@ suites = [
   "os/tests/test_compile_retention.py",
   "os/tests/test_compile_tools_cache.py",
   "os/tests/test_compile_tools_source.py",
+  "os/tests/test_container_signature_policy.py",
   "os/tests/test_complete_initramfs_rebind.py",
   "os/tests/test_copy_windows_direct_final_install.py",
   "os/tests/test_create_development_disk.py",
