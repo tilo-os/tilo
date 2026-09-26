@@ -27,6 +27,10 @@ use ui::accesskit::{
 };
 
 use crate::compositor::lock_auth::UNAVAILABLE_MSG;
+use crate::shell::now_playing::PlayerSnapshot;
+use crate::shell::quick_settings::now_playing::{
+    Transport, paint_artwork, paint_transport, transport_rects,
+};
 
 // `ui::accesskit_bridge` reserves 0, low ids, 1<<60, 2<<60, 1<<62 and
 // 1<<63 for desktop widgets/resources/actions/text/synthetic nodes. Keeping
@@ -38,6 +42,30 @@ pub const LOCK_PASSWORD_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 1);
 const LOCK_CLOCK_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 2);
 const LOCK_HELP_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 3);
 const LOCK_STATUS_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 4);
+const LOCK_MEDIA_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 5);
+pub const LOCK_MEDIA_PREVIOUS_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 6);
+pub const LOCK_MEDIA_PLAY_PAUSE_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 7);
+pub const LOCK_MEDIA_NEXT_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 8);
+
+/// The transport button an accessibility node stands for. The lock tree has
+/// no other actionable media node: no player switching, no output routing.
+#[must_use]
+pub fn transport_for_node(node: AccessNodeId) -> Option<Transport> {
+    match node {
+        LOCK_MEDIA_PREVIOUS_ID => Some(Transport::Previous),
+        LOCK_MEDIA_PLAY_PAUSE_ID => Some(Transport::PlayPause),
+        LOCK_MEDIA_NEXT_ID => Some(Transport::Next),
+        _ => None,
+    }
+}
+
+const fn transport_node(transport: Transport) -> AccessNodeId {
+    match transport {
+        Transport::Previous => LOCK_MEDIA_PREVIOUS_ID,
+        Transport::PlayPause => LOCK_MEDIA_PLAY_PAUSE_ID,
+        Transport::Next => LOCK_MEDIA_NEXT_ID,
+    }
+}
 
 /// Slow artwork does not need the display's full refresh rate. This deadline
 /// remains pending until an actual lock frame paints, so renderer backpressure
@@ -74,6 +102,9 @@ pub struct LockView<'a> {
     /// renders "Verifying…" and suppresses the empty-field placeholder so
     /// the screen reads as checking, not "type here".
     pub verifying: bool,
+    /// What is playing, shown as a compact card with transport controls
+    /// only. `None` hides the card.
+    pub now_playing: Option<&'a PlayerSnapshot>,
 }
 
 /// One output the lock overlay must cover, in the compositor's combined
@@ -267,6 +298,76 @@ impl LockLayout {
     }
 }
 
+/// The compact now-playing card under the credential panel on the primary
+/// output: artwork, title and artist, and the three transport buttons.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LockMediaLayout {
+    pub card: Rect,
+    pub art: Rect,
+    pub text: Rect,
+    pub transport: [(Transport, Rect); 3],
+}
+
+impl LockMediaLayout {
+    /// `None` when the output has no room under the credential panel; the
+    /// hardware media keys still work then.
+    #[must_use]
+    pub fn for_layout(layout: &LockLayout, theme: &Theme) -> Option<Self> {
+        let scale = layout.scale;
+        let text_scale = f64::from(theme.text_scale).clamp(0.5, 4.0);
+        let pad = 12.0 * scale;
+        let lines = (20.0 + 16.0) * text_scale * scale;
+        let height = (64.0 * scale).max(2.0 * pad + lines);
+        let top = layout.panel.y1 + 16.0 * scale;
+        let card = Rect::new(layout.panel.x0, top, layout.panel.x1, top + height);
+        let edge = 8.0 * scale;
+        if card.y1 > layout.output.y1 - edge {
+            return None;
+        }
+        let art_edge = height - 2.0 * pad;
+        let art = Rect::new(
+            card.x0 + pad,
+            card.y0 + pad,
+            card.x0 + pad + art_edge,
+            card.y1 - pad,
+        );
+        let centred = transport_rects(Rect::new(0.0, card.y0, 0.0, card.y1), scale);
+        let shift = card.x1 - pad - centred[2].1.x1;
+        let transport = centred
+            .map(|(transport, rect)| (transport, rect.with_origin((rect.x0 + shift, rect.y0))));
+        let text = Rect::new(
+            art.x1 + pad,
+            card.y0 + pad,
+            (transport[0].1.x0 - pad).max(art.x1 + pad),
+            card.y1 - pad,
+        );
+        Some(Self {
+            card,
+            art,
+            text,
+            transport,
+        })
+    }
+}
+
+/// The transport button under `point` on the lock screen, if the player
+/// offers it. Nothing else on the card reacts to the pointer.
+#[must_use]
+pub fn transport_at(
+    outputs: &[LockOutput],
+    theme: &Theme,
+    view: &LockView<'_>,
+    point: Point,
+) -> Option<Transport> {
+    let player = view.now_playing?;
+    let layout = LockLayout::for_output(primary_output(outputs)?, theme);
+    LockMediaLayout::for_layout(&layout, theme)?
+        .transport
+        .into_iter()
+        .find(|(transport, rect)| rect.contains(point) && transport.enabled(player))
+        .map(|(transport, _)| transport)
+}
+
 /// Resolve the one output that carries the credential surface. A hot-unplug
 /// can remove the previous primary connector while locked; then the first
 /// surviving output takes over rather than leaving the password unreachable.
@@ -329,6 +430,40 @@ pub fn build_accessibility_tree(
         (LOCK_PASSWORD_ID, password),
         (LOCK_HELP_ID, help),
     ];
+    if let (Some(player), Some(media)) = (
+        view.now_playing,
+        LockMediaLayout::for_layout(&layout, theme),
+    ) {
+        let mut group = AccessNode::new(AccessRole::Group);
+        let mut label = format!(
+            "{}: {}",
+            crate::shell::now_playing::tr("now-playing-title"),
+            player.headline()
+        );
+        if let Some(subline) = player.subline() {
+            label.push_str(", ");
+            label.push_str(subline);
+        }
+        group.set_label(label);
+        group.set_bounds(access_rect(media.card));
+        let mut buttons = Vec::with_capacity(media.transport.len());
+        for (transport, rect) in media.transport {
+            let id = transport_node(transport);
+            let mut button = AccessNode::new(AccessRole::Button);
+            button.set_label(transport.label(player));
+            button.set_bounds(access_rect(rect));
+            if transport.enabled(player) {
+                button.add_action(AccessAction::Click);
+            } else {
+                button.set_disabled();
+            }
+            buttons.push(id);
+            nodes.push((id, button));
+        }
+        group.set_children(buttons);
+        children.push(LOCK_MEDIA_ID);
+        nodes.push((LOCK_MEDIA_ID, group));
+    }
     let status = if view.verifying {
         Some("Verifying password".to_string())
     } else if let Some(error) = view.error {
@@ -631,6 +766,11 @@ fn draw_lock_widget(
     );
     draw_password_field(scene, layout, theme, text, view);
     draw_status(scene, layout, theme, text, view);
+    if let (Some(player), Some(media)) =
+        (view.now_playing, LockMediaLayout::for_layout(layout, theme))
+    {
+        draw_lock_media(scene, layout, &media, theme, text, player);
+    }
     let label = count_label(view.notification_count);
     if !label.is_empty() {
         draw_centered_text(
@@ -643,6 +783,97 @@ fn draw_lock_widget(
         );
     }
     text.set_text_scale(renderer_scale);
+}
+
+/// The compact now-playing card: the same Panel ground as the credential
+/// card, the shared artwork and transport painters, and no pickers.
+fn draw_lock_media(
+    scene: &mut Scene,
+    layout: &LockLayout,
+    media: &LockMediaLayout,
+    theme: &Theme,
+    text: &mut TextRenderer,
+    player: &PlayerSnapshot,
+) {
+    let card = RoundedRect::from_rect(
+        media.card,
+        f64::from(theme.tokens.radii.lg) * layout.scale / f64::from(theme.ui_scale).max(0.1),
+    );
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        ui::chrome::shell::panel_ground(theme),
+        None,
+        &card,
+    );
+    scene.stroke(
+        &Stroke::new((1.0 * layout.scale).max(1.0)),
+        Affine::IDENTITY,
+        ui::chrome::shell::panel_border(theme),
+        None,
+        &card,
+    );
+    let image = player.artwork.as_ref().map(|art| ImageData {
+        data: vello::peniko::Blob::new(art.rgba.clone()),
+        format: vello::peniko::ImageFormat::Rgba8,
+        alpha_type: vello::peniko::ImageAlphaType::Alpha,
+        width: art.width,
+        height: art.height,
+    });
+    paint_artwork(
+        scene,
+        Affine::IDENTITY,
+        text,
+        theme,
+        media.art,
+        player,
+        image.as_ref(),
+    );
+    let type_scale = ui::tokens::TypeScale::default();
+    let title_size = scaled_text_size(type_scale.sm, layout.scale, theme);
+    let caption_size = scaled_text_size(type_scale.xs, layout.scale, theme);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "lock output geometry is bounded to compositor dimensions; f32 width is sufficient for text shaping"
+    )]
+    let width = media.text.width().max(1.0) as f32;
+    let title = text.elide_to_width(player.headline(), title_size, width);
+    let subline = player
+        .subline()
+        .map(|subline| text.elide_to_width(subline, caption_size, width));
+    let (_, title_h) = text.measure(&title, title_size, None);
+    let caption_h = subline.as_ref().map_or(0.0, |line| {
+        f64::from(text.measure(line, caption_size, None).1)
+    });
+    let top = media.text.center().y - f64::midpoint(f64::from(title_h), caption_h);
+    text.draw_text(
+        scene,
+        &title,
+        title_size,
+        theme.text_primary,
+        Affine::translate((media.text.x0, top)),
+        None,
+    );
+    if let Some(subline) = subline {
+        text.draw_text(
+            scene,
+            &subline,
+            caption_size,
+            theme.text_dim,
+            Affine::translate((media.text.x0, top + f64::from(title_h))),
+            None,
+        );
+    }
+    paint_transport(
+        scene,
+        Affine::IDENTITY,
+        text,
+        theme,
+        &media.transport,
+        player,
+        None,
+        None,
+    );
 }
 
 /// Quiet secondary-display indication. It must never paint a second password
@@ -1732,5 +1963,141 @@ mod tests {
             two_ops < one_ops * 2,
             "secondary must not mirror a second full password card: {two_ops} vs {one_ops}"
         );
+    }
+
+    fn playing() -> PlayerSnapshot {
+        crate::shell::now_playing::tests::player(
+            "music",
+            "Music",
+            crate::shell::now_playing::PlaybackStatus::Playing,
+        )
+    }
+
+    #[test]
+    fn lock_media_card_exposes_only_transport_actions() {
+        let player = playing();
+        let v = LockView {
+            now_playing: Some(&player),
+            ..view()
+        };
+        let update = build_accessibility_tree(&single(1600.0, 900.0), &Theme::dark(), &v);
+        let actionable = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| {
+                node.supports_action(AccessAction::Click)
+                    || node.supports_action(AccessAction::SetValue)
+            })
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actionable,
+            vec![
+                LOCK_PASSWORD_ID,
+                LOCK_MEDIA_PREVIOUS_ID,
+                LOCK_MEDIA_PLAY_PAUSE_ID,
+                LOCK_MEDIA_NEXT_ID,
+            ],
+            "the lock offers the password and transport, nothing else"
+        );
+        for (id, node) in &update.nodes {
+            if let Some(transport) = transport_for_node(*id) {
+                assert_eq!(node.role(), AccessRole::Button);
+                assert_eq!(node.label(), Some(transport.label(&player).as_str()));
+                assert!(!node.supports_action(AccessAction::SetValue));
+                assert!(!node.supports_action(AccessAction::Expand));
+            }
+        }
+        let media = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == LOCK_MEDIA_ID)
+            .map(|(_, node)| node)
+            .expect("the card is published");
+        assert!(
+            media
+                .label()
+                .is_some_and(|label| label.contains("Music track")),
+            "the card says what is playing"
+        );
+        assert_eq!(update.focus, LOCK_PASSWORD_ID, "the card never takes focus");
+        assert_eq!(transport_for_node(LOCK_PASSWORD_ID), None);
+        assert_eq!(transport_for_node(LOCK_MEDIA_ID), None);
+    }
+
+    #[test]
+    fn lock_media_card_disables_what_the_player_cannot_do() {
+        let mut player = playing();
+        player.can_go_next = false;
+        let v = LockView {
+            now_playing: Some(&player),
+            ..view()
+        };
+        let outputs = single(1600.0, 900.0);
+        let theme = Theme::dark();
+        let update = build_accessibility_tree(&outputs, &theme, &v);
+        let (_, next) = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == LOCK_MEDIA_NEXT_ID)
+            .expect("next is published");
+        assert!(!next.supports_action(AccessAction::Click));
+        let layout = LockLayout::for_output(outputs[0], &theme);
+        let media = LockMediaLayout::for_layout(&layout, &theme).expect("room for the card");
+        for (transport, rect) in media.transport {
+            let hit = transport_at(&outputs, &theme, &v, rect.center());
+            if transport == Transport::Next {
+                assert_eq!(hit, None, "a disabled button does nothing");
+            } else {
+                assert_eq!(hit, Some(transport));
+            }
+        }
+        assert_eq!(
+            transport_at(&outputs, &theme, &v, media.art.center()),
+            None,
+            "only the transport reacts to the pointer"
+        );
+        assert_eq!(
+            transport_at(&outputs, &theme, &view(), media.transport[1].1.center()),
+            None,
+            "no card, no transport"
+        );
+    }
+
+    #[test]
+    fn lock_media_card_sits_under_the_credentials_inside_the_output() {
+        let player = playing();
+        for (w, h) in [
+            (1600.0, 900.0),
+            (1280.0, 800.0),
+            (1024.0, 768.0),
+            (2560.0, 1440.0),
+        ] {
+            let outputs = single(w, h);
+            let theme = Theme::dark();
+            let layout = LockLayout::for_output(outputs[0], &theme);
+            let media = LockMediaLayout::for_layout(&layout, &theme).expect("room for the card");
+            assert!(media.card.y0 >= layout.panel.y1, "{w}x{h}: under the panel");
+            assert_inside(media.card, layout.output, "media card");
+            assert_inside(media.art, media.card, "artwork");
+            for (_, rect) in media.transport {
+                assert_inside(rect, media.card, "transport");
+                assert!(rect.intersect(media.text).area() <= 0.0);
+            }
+            let v = LockView {
+                now_playing: Some(&player),
+                ..view()
+            };
+            let mut text = TextRenderer::new();
+            let with = draw_lock_scene(&outputs, &theme, &mut text, &v);
+            let without = draw_lock_scene(&outputs, &theme, &mut text, &view());
+            assert!(with.encoding().n_paths > without.encoding().n_paths);
+        }
+        let tiny = single(320.0, 240.0);
+        let theme = Theme::dark();
+        let layout = LockLayout::for_output(tiny[0], &theme);
+        if let Some(media) = LockMediaLayout::for_layout(&layout, &theme) {
+            assert_inside(media.card, layout.output, "tiny media card");
+        }
     }
 }

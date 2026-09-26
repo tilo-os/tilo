@@ -4401,6 +4401,41 @@ mod tests {
         assert_eq!(reopened.len(), 2);
     }
 
+    /// A peer that serves another workspace's changeset, complete and
+    /// validly signed by its author, gets nothing applied here.
+    #[test]
+    fn a_validly_signed_changeset_of_another_workspace_is_refused() {
+        let author = Fixture::new();
+        let batches = two_record_batches(&author);
+        let auth = AnyRecord(author.actor);
+        let repo = RecordRepository::open(&author.root).unwrap();
+        repo.begin_changeset(author.key.workspace_id, author.actor)
+            .unwrap();
+        for (key, envelopes) in &batches {
+            repo.apply_batch(*key, envelopes, &auth).unwrap();
+        }
+        let signed = repo
+            .commit_changeset(&author.device_key, 1)
+            .unwrap()
+            .unwrap();
+        signed.verify().unwrap();
+        let all: Vec<RecordEnvelopeV1> = batches
+            .iter()
+            .flat_map(|(_, envelopes)| envelopes.iter().cloned())
+            .collect();
+
+        let peer_dir = tempfile::tempdir().unwrap();
+        let peer = RecordRepository::open(peer_dir.path().join("records")).unwrap();
+        let this_workspace = Uuid::new_v4();
+        assert_ne!(this_workspace, author.key.workspace_id);
+        assert!(matches!(
+            peer.apply_changeset(this_workspace, &signed, &all, &auth),
+            Err(RecordRepositoryError::TransactionWorkspaceMismatch)
+        ));
+        assert!(peer.is_empty());
+        assert_eq!(peer.logged_operations().unwrap(), 0);
+    }
+
     #[test]
     fn a_write_outside_the_changeset_takes_its_pending_envelopes_along() {
         let fixture = Fixture::new();

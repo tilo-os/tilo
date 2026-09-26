@@ -26,7 +26,6 @@ jobs:
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/codex/')
     runs-on: runner
     timeout-minutes: 30
-    enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -38,7 +37,11 @@ jobs:
           python3 os/tests/test_wine_rpm_merge.py
           python3 os/tests/test_wine_rpm_contract.py
       - name: Log in to candidate artifact registry
-        uses: ./.forgejo/actions/tilo-registry-login
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Validate both artifacts and merge equivalent noarch packages
         env:

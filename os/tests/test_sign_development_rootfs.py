@@ -87,7 +87,7 @@ class RootfsIdentityTests(unittest.TestCase):
     def arguments(self):
         return argparse.Namespace(rootfs_id=IMAGE, architecture='aarch64', revision=REVISION,
                                   source_date_epoch='1700000000',
-                                  target='code.tilo.so/tilo/tilo-development:testing-aarch64',
+                                  target='registry.tilo.so/tilo/tilo-development:testing-aarch64',
                                   signer=Path('/var/lib/tilo-test-identity/signer'))
 
     def test_preflight_rejects_mutable_ids_non_native_inputs_and_remote_connections(self):

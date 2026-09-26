@@ -136,6 +136,8 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             window_no_activate: std::env::var("TILO_PROFILE_WINDOW_NO_ACTIVATE").as_deref()
                 == Ok("1"),
         },
+        dev_session: path("TILO_DEV_SESSION"),
+        ui_graph_dir: path("TILO_UI_GRAPH_DIR"),
     }
 }
 

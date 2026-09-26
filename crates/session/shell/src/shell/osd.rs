@@ -59,6 +59,11 @@ pub enum OsdKind {
     AirplaneMode { on: bool },
     /// The touchpad after its toggle key.
     Touchpad { enabled: bool },
+    /// A client locked or confined the pointer (`held`), or it was just
+    /// released. The caption names the way out.
+    PointerHeld { held: bool },
+    /// Mouse keys after its Shift+Alt+Num Lock chord.
+    MouseKeys { enabled: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,6 +135,14 @@ impl Osd {
         }
     }
 
+    pub fn pointer_held(held: bool) -> Self {
+        Self {
+            kind: OsdKind::PointerHeld { held },
+            level: 0.0,
+            raised_at: Instant::now(),
+        }
+    }
+
     pub fn transport(t: Transport) -> Self {
         Self {
             kind: OsdKind::Transport(t),
@@ -170,6 +183,14 @@ impl Osd {
         }
     }
 
+    pub fn mouse_keys(enabled: bool) -> Self {
+        Self {
+            kind: OsdKind::MouseKeys { enabled },
+            level: 0.0,
+            raised_at: Instant::now(),
+        }
+    }
+
     /// Whether this kind draws a level bar — a bar pinned at zero next to
     /// "Next track" would read as a broken meter.
     pub fn has_level(&self) -> bool {
@@ -199,6 +220,13 @@ impl Osd {
             OsdKind::AirplaneMode { on: false } => "Airplane mode off".to_string(),
             OsdKind::Touchpad { enabled: true } => "Touchpad on".to_string(),
             OsdKind::Touchpad { enabled: false } => "Touchpad off".to_string(),
+            OsdKind::PointerHeld { held: true } => format!(
+                "Pointer held by app · {} releases",
+                crate::compositor::pointer_lock::RELEASE_CHORD_LABEL
+            ),
+            OsdKind::PointerHeld { held: false } => "Pointer released".to_string(),
+            OsdKind::MouseKeys { enabled: true } => "Mouse keys on".to_string(),
+            OsdKind::MouseKeys { enabled: false } => "Mouse keys off".to_string(),
         }
     }
 
@@ -436,7 +464,7 @@ fn draw_glyph(
         OsdKind::NoBacklight => (ui::icons::Icon::Monitor, colors.text_dim),
         OsdKind::AirplaneMode { on: true } => (ui::icons::Icon::WifiOff, colors.text_primary),
         OsdKind::AirplaneMode { on: false } => (ui::icons::Icon::Wifi, colors.text_primary),
-        OsdKind::Touchpad { enabled } => (
+        OsdKind::Touchpad { enabled } | OsdKind::MouseKeys { enabled } => (
             ui::icons::Icon::Mouse,
             if enabled {
                 colors.text_primary
@@ -444,6 +472,7 @@ fn draw_glyph(
                 colors.text_dim
             },
         ),
+        OsdKind::PointerHeld { .. } => (ui::icons::Icon::MousePointer2, colors.text_primary),
     };
     ui::icons::draw_icon(
         scene,
@@ -570,6 +599,8 @@ mod tests {
         assert_eq!(Osd::airplane_mode(false).caption(), "Airplane mode off");
         assert_eq!(Osd::touchpad(false).caption(), "Touchpad off");
         assert_eq!(Osd::touchpad(true).caption(), "Touchpad on");
+        assert_eq!(Osd::mouse_keys(true).caption(), "Mouse keys on");
+        assert_eq!(Osd::mouse_keys(false).caption(), "Mouse keys off");
         assert_eq!(Osd::no_backlight().caption(), "No adjustable display");
         assert_eq!(Osd::transport(Transport::Stop).caption(), "Stop");
         for toggle in [

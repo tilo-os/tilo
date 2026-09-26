@@ -43,8 +43,7 @@
 #   CHANNEL            true advances tilo-vm:latest, only forward (default false)
 #   TILO_PACKAGE_TOKEN, TILO_PACKAGE_PUBLIC_BASE_URL   generic package access
 #   TILO_VM_PUBLISH_DIR  scratch for converted disks (default /var/tmp/tilo-vm-publish)
-# Registry credentials for registry.tilo.so come from the job's login
-# (.forgejo/actions/tilo-registry-login).
+# Registry credentials for registry.tilo.so come from the job's login.
 set -euo pipefail
 
 REPOSITORY=registry.tilo.so/tilo/tilo-vm

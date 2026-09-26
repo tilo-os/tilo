@@ -379,6 +379,11 @@ pub struct QuickSettingsState {
     pub vpns: Vec<os_actions::VpnConnectionInfo>,
     pub privacy: os_actions::PrivacyStatus,
     pub night_light: bool,
+    /// The machine has an accelerometer, so its screen can follow the device
+    /// and the rotation-lock tile is offered.
+    pub rotation_available: bool,
+    /// `display.rotation_lock`: the screen stays put when the device turns.
+    pub rotation_lock: bool,
     /// The renderer dispatches on `nav_stack.last()` (always at least
     /// `Root`) — pushing `Wifi`/`Bluetooth` flips the popover to the
     /// drill-in list.
@@ -435,6 +440,8 @@ pub struct SearchResourceScope {
     pub app_id: String,
     pub resource: String,
     pub label: String,
+    /// The resource's kind, which decides the shortcuts offered on it.
+    pub kind: String,
 }
 
 /// Session-local presence changes requested through the semantic action
@@ -471,6 +478,13 @@ impl Default for QuickSettingsState {
             privacy: os_actions::get_privacy_status(),
             night_light: settings_store::bool_at(&settings_store::load(), "display", "night_light")
                 .unwrap_or(false),
+            rotation_available: os_actions::has_accelerometer(),
+            rotation_lock: settings_store::bool_at(
+                &settings_store::load(),
+                "display",
+                "rotation_lock",
+            )
+            .unwrap_or(false),
             nav_stack: vec![QsLevel::Root],
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
@@ -515,6 +529,8 @@ impl QuickSettingsState {
             vpns: Vec::new(),
             privacy: os_actions::PrivacyStatus::default(),
             night_light: false,
+            rotation_available: false,
+            rotation_lock: false,
             nav_stack: vec![QsLevel::Root],
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
@@ -648,7 +664,7 @@ pub struct ChromeState {
     /// The top-bar tray consumes the aggregate; a future dock can consume the
     /// same per-package map without inventing another badge protocol.
     notification_badges: BTreeMap<String, u32>,
-    notification_sound: Option<media::notification_sound::NotificationSoundPlayer>,
+    system_sounds: Option<crate::shell::system_sounds::SystemSounds>,
     priority_contacts: crate::priority_contacts::PriorityContactRegistry,
     notification_policy: settings_store::notification_policy::NotificationPolicy,
     notification_policy_checked: Option<std::time::Instant>,
@@ -700,6 +716,9 @@ pub struct ChromeState {
     /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
     presence_requests: Vec<PresenceRequest>,
+    /// "Send…" requests for the last screenshot from the action door,
+    /// drained into the capture studio by the overlay host.
+    screenshot_sends: Vec<ui::widget::ScreenshotSendTarget>,
     /// Compatibility queue for callers of the original active-room API.
     legacy_record_requests: Vec<(String, String)>,
     /// Tracked record actions retain the exact authorized destination until
@@ -714,6 +733,10 @@ pub struct ChromeState {
     /// here lets the chrome remove its durable tab immediately without owning
     /// Wayland protocol handles.
     close_surface_requests: Vec<u64>,
+    /// The full-screen chord was pressed. The native compositor drains it
+    /// and toggles the focused client's `xdg_toplevel` fullscreen state,
+    /// which only it holds the protocol handles for.
+    fullscreen_toggle_requested: bool,
     /// Docked at the strip's left edge by default; `Some(point)`
     /// detaches the wheel to the pointer. Cleared on Escape or
     /// picking a workspace.
@@ -821,7 +844,7 @@ impl ChromeState {
             notification_history_store: None,
             notification_history_dirty: false,
             notification_badges: BTreeMap::new(),
-            notification_sound: None,
+            system_sounds: None,
             priority_contacts: crate::priority_contacts::PriorityContactRegistry::in_memory(),
             notification_policy: settings_store::notification_policy::NotificationPolicy::default(),
             notification_policy_checked: None,
@@ -837,6 +860,7 @@ impl ChromeState {
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
             presence_requests: Vec::new(),
+            screenshot_sends: Vec::new(),
             wheel_summon: None,
             legacy_record_requests: Vec::new(),
             tracked_record_requests: Vec::new(),
@@ -845,6 +869,7 @@ impl ChromeState {
             peer_sync_request_results: BTreeMap::new(),
             next_peer_sync_request_id: 1,
             close_surface_requests: Vec::new(),
+            fullscreen_toggle_requested: false,
             strip_viewport: None,
             viewport_size: None,
             continuity_suggestions:
@@ -935,6 +960,14 @@ impl ChromeState {
         std::mem::take(&mut self.presence_requests)
     }
 
+    pub fn push_screenshot_send(&mut self, target: ui::widget::ScreenshotSendTarget) {
+        self.screenshot_sends.push(target);
+    }
+
+    pub fn take_screenshot_sends(&mut self) -> Vec<ui::widget::ScreenshotSendTarget> {
+        std::mem::take(&mut self.screenshot_sends)
+    }
+
     pub(crate) fn take_peer_sync_request_result(
         &mut self,
         request_id: u64,
@@ -996,6 +1029,15 @@ impl ChromeState {
 
     pub fn take_surface_close_requests(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.close_surface_requests)
+    }
+
+    pub fn request_fullscreen_toggle(&mut self) {
+        self.fullscreen_toggle_requested = true;
+        self.bump();
+    }
+
+    pub fn take_fullscreen_toggle_request(&mut self) -> bool {
+        std::mem::take(&mut self.fullscreen_toggle_requested)
     }
 
     pub fn fullscreen_group(&self) -> Option<u64> {
@@ -1879,8 +1921,7 @@ impl ChromeState {
             return id;
         }
         if visual_notification_alerts_enabled() {
-            self.visual_alert_until =
-                std::time::Instant::now().checked_add(std::time::Duration::from_millis(450));
+            self.flash_visual_alert(std::time::Instant::now());
         }
         self.notifications.push(n);
         // Cap-evicted entries retire to history rather than dropping.
@@ -1890,6 +1931,13 @@ impl ChromeState {
         }
         self.bump();
         id
+    }
+
+    /// Start the accessibility edge flash now. Notifications raise it when
+    /// visual alerts are on; bounce keys raises it for a swallowed press.
+    pub fn flash_visual_alert(&mut self, now: std::time::Instant) {
+        self.visual_alert_until = now.checked_add(std::time::Duration::from_millis(450));
+        self.bump();
     }
 
     /// Whether shell chrome should paint the accessibility edge flash this
@@ -1927,6 +1975,7 @@ impl ChromeState {
         title: impl Into<String>,
         body: impl Into<String>,
     ) -> u64 {
+        let _ = self.play_system_sound(settings_store::system_sounds::SystemSoundEvent::Error);
         self.push_notification_full(
             Notification::new(title, body)
                 .with_severity(NotificationSeverity::Error)
@@ -2418,6 +2467,15 @@ impl ChromeState {
         self.dnd() || self.notifications_auto_quiet()
     }
 
+    /// Whether the person's focus schedule is holding banners at this local
+    /// time.
+    pub fn focus_schedule_on(&self, local_minute: u16, weekday_from_monday: u8) -> bool {
+        self.notification_policy
+            .focus
+            .active_until(local_minute, weekday_from_monday)
+            .is_some()
+    }
+
     /// Why banners are being held, for the status pill: Do Not Disturb, an
     /// automatic hold while presenting or sharing, or the focus schedule and
     /// when it ends. `None` when notifications show normally.
@@ -2448,11 +2506,31 @@ impl ChromeState {
 
     pub fn set_notification_runtime(
         &mut self,
-        sound: media::notification_sound::NotificationSoundPlayer,
+        sounds: crate::shell::system_sounds::SystemSounds,
         priority_contacts: crate::priority_contacts::PriorityContactRegistry,
     ) {
-        self.notification_sound = Some(sound);
+        self.system_sounds = Some(sounds);
         self.priority_contacts = priority_contacts;
+    }
+
+    /// Play a system event sound, subject to the person's "System sounds"
+    /// choices, Do Not Disturb, focus time and presenting. A session without
+    /// a sound runtime (tests, renders) stays silent.
+    pub fn play_system_sound(
+        &self,
+        event: settings_store::system_sounds::SystemSoundEvent,
+    ) -> bool {
+        self.play_system_sound_allowed(event, true)
+    }
+
+    fn play_system_sound_allowed(
+        &self,
+        event: settings_store::system_sounds::SystemSoundEvent,
+        delivery_allows: bool,
+    ) -> bool {
+        self.system_sounds.as_ref().is_some_and(|sounds| {
+            sounds.play(event, self.notifications_auto_quiet(), delivery_allows)
+        })
     }
 
     /// Keep notification unit tests independent of the developer account's
@@ -2534,6 +2612,7 @@ impl ChromeState {
             let sharing = bridge.take_sharing(dbus_id);
             let urgency = inc.urgency;
             let badge_count = inc.badge_count;
+            let sound = inc.sound;
             let verified_priority_contact = verified_app_id.is_some()
                 && inc
                     .contact_endpoint
@@ -2586,11 +2665,15 @@ impl ChromeState {
                     self.notification_badges.insert(app_id, count.min(9_999));
                 }
             }
-            if effective.sounds && !self.notifications_auto_quiet() {
-                let _ = self
-                    .notification_sound
-                    .as_ref()
-                    .map(media::notification_sound::NotificationSoundPlayer::play);
+            if let Some(event) = sound {
+                use settings_store::system_sounds::SystemSoundEvent;
+                // Notifications and messages carry the notification policy's
+                // per-app verdict; other events follow System sounds alone.
+                let allows = !matches!(
+                    event,
+                    SystemSoundEvent::Notification | SystemSoundEvent::Message
+                ) || effective.sounds;
+                let _ = self.play_system_sound_allowed(event, allows);
             }
             if effective.banners {
                 self.push_notification_full(notification);

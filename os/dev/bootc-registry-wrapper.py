@@ -19,7 +19,7 @@ import tomllib
 import installer_bootc_helper
 
 
-SOURCE = re.compile(r'docker://code\.tilo\.so/[a-z0-9_./-]+@(sha256:[0-9a-f]{64})')
+SOURCE = re.compile(r'docker://registry\.tilo\.so/tilo/[a-z0-9_./-]+@(sha256:[0-9a-f]{64})')
 INSTALLER_BOOTC = '/run/tilo-installer-bootc'
 
 

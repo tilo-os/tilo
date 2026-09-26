@@ -36,7 +36,6 @@ jobs:
             runner: runner-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
-    enable-openid-connect: true
     env:
       IMAGE_REPOSITORY: registry.tilo.so/tilo/tilo-release-tools
       SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -49,7 +48,6 @@ jobs:
             os/Containerfile.release-tools
             os/tests/release_tools_image.sh
             .forgejo/actions/setup-buildx
-            .forgejo/actions/tilo-registry-login
           sparse-checkout-cone-mode: false
 
       - name: Set up native BuildKit
@@ -75,7 +73,11 @@ jobs:
             github.event_name == 'push' ||
             github.event.pull_request.head.repo.full_name == github.repository
           }}
-        uses: ./.forgejo/actions/tilo-registry-login
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish the exact tested native image
         if: >-
@@ -117,24 +119,21 @@ jobs:
       }}
     runs-on: runner
     timeout-minutes: 10
-    enable-openid-connect: true
     env:
       IMAGE_REPOSITORY: registry.tilo.so/tilo/tilo-release-tools
       SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-          sparse-checkout: .forgejo/actions/tilo-registry-login
-          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: release-tools-children
       - name: Set up registry inspection
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Log in for index publication
-        uses: ./.forgejo/actions/tilo-registry-login
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish one immutable multi-architecture image and receipt
         run: |
           set -euo pipefail
