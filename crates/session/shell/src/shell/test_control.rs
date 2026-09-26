@@ -1895,6 +1895,8 @@ mod tests {
         assert!(out.contains("\"sharing\""), "got {out}");
     }
 
+    use crate::shell::search::providers::actions::PROVIDER_ID as SHELL_ACTIONS;
+
     struct ActionState;
 
     impl ControlState for ActionState {
@@ -1907,7 +1909,7 @@ mod tests {
                 "query": query,
                 "count": 1,
                 "actions": [{
-                    "provider": "shell.actions",
+                    "provider": SHELL_ACTIONS,
                     "id": "settings.open",
                     "kind": "Actions",
                     "title": "Open settings",
@@ -1924,8 +1926,8 @@ mod tests {
             args: &serde_json::Map<String, serde_json::Value>,
         ) -> Result<serde_json::Value, ActionRefusal> {
             let params: &[crate::shell::search::action_api::ActionParam] = match (provider, id) {
-                ("shell.actions", "settings.open") => &[],
-                ("shell.actions", "text.insert") => MOCK_INSERT_PARAMS,
+                (SHELL_ACTIONS, "settings.open") => &[],
+                (SHELL_ACTIONS, "text.insert") => MOCK_INSERT_PARAMS,
                 _ => {
                     return Err(ActionRefusal::unknown(format!(
                         "no visible action addressed by ({provider}, {id})"
@@ -1958,7 +1960,7 @@ mod tests {
 
     fn invoke_with(id: &str, args: &serde_json::Value) -> Command {
         Command::ActionsInvoke {
-            provider: "shell.actions".to_string(),
+            provider: SHELL_ACTIONS.to_string(),
             id: id.to_string(),
             args: args.as_object().cloned().unwrap_or_default(),
         }
@@ -1982,7 +1984,7 @@ mod tests {
             panic!("expected Response::Answer, got {resp:?}");
         };
         assert_eq!(payload["count"], 1);
-        assert_eq!(payload["actions"][0]["provider"], "shell.actions");
+        assert_eq!(payload["actions"][0]["provider"], SHELL_ACTIONS);
         assert_eq!(payload["actions"][0]["id"], "settings.open");
     }
 
@@ -2000,7 +2002,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![PlannedAction::InvokeAction {
-                provider: "shell.actions".to_string(),
+                provider: SHELL_ACTIONS.to_string(),
                 id: "settings.open".to_string(),
                 args: serde_json::Map::new(),
             }]
@@ -2034,9 +2036,9 @@ mod tests {
 
     #[test]
     fn a_nullary_invocation_needs_no_args_key() {
-        let cmd = parse_command(
-            r#"{"op":"actions_invoke","provider":"shell.actions","id":"settings.open"}"#,
-        )
+        let cmd = parse_command(&format!(
+            r#"{{"op":"actions_invoke","provider":"{SHELL_ACTIONS}","id":"settings.open"}}"#
+        ))
         .expect("an invocation without `args` must still parse");
         let (resp, actions) = dispatch_command(&cmd, &ActionState);
         assert!(matches!(resp, Response::Answer(_)), "got {resp:?}");

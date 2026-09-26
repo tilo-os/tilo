@@ -9270,6 +9270,65 @@ mod tests {
         }
     }
 
+    /// The provider id `tilo-control` spells for shell actions must be the one
+    /// the socket resolves: a feedback verb reaches the recorder action (which
+    /// refuses here, having no broker to record through) rather than being
+    /// answered as an unknown address.
+    #[test]
+    fn shell_actions_are_addressed_by_their_provider_id_over_the_socket() {
+        use std::io::Write as _;
+
+        let mut frame_builder = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
+        let mut ctx = TestControlCtx::new();
+        let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+        let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, client) = UnixStream::pair().expect("socket pair");
+        let mut writer = client.try_clone().expect("client writer");
+        let mut reader = BufReader::new(client);
+        let mut conn = TestControlConn::new(server).expect("server connection");
+
+        let mut ask = |provider: &str| {
+            let invoke = serde_json::json!({
+                "op": "actions_invoke",
+                "provider": provider,
+                "id": "feedback.recent-buffer.set",
+                "args": {"enabled": true},
+            });
+            writer
+                .write_all(format!("{invoke}\n").as_bytes())
+                .expect("queue invocation");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            socket_response(&mut reader)
+        };
+        let provider = crate::shell::search::providers::actions::PROVIDER_ID;
+        match ask(provider) {
+            test_control::Response::Err { code, message } => assert_eq!(
+                code, "action_failed",
+                "the shell action must resolve and then refuse ({message})"
+            ),
+            answer => {
+                panic!("a session without a broker cannot record: {answer:?}")
+            }
+        }
+        assert!(
+            matches!(
+                ask("shell.actions"),
+                test_control::Response::Err { ref code, .. } if code == "unknown_action"
+            ),
+            "any other spelling of the provider is an unknown address"
+        );
+    }
+
     fn directory_test_tree() -> crate::shell::state::WorkspaceTreeHandle {
         let mut tree = crate::shell::state::WorkspaceTree::default();
         let mut workspace = crate::shell::state::Workspace::new(

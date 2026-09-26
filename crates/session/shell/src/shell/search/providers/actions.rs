@@ -49,6 +49,10 @@ const AGENT_INVITE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+/// The provider id every shell action is addressed by: `(PROVIDER_ID, id)`
+/// is what Ctrl+K, agents and `tilo-control actions invoke` name.
+pub const PROVIDER_ID: &str = "actions";
+
 /// What `feedback.record.start` may be told.
 const FEEDBACK_RECORD_START_PARAMS: &[ActionParam] = &[
     ActionParam::optional(
@@ -1868,7 +1872,7 @@ impl Default for ActionsProvider {
 
 impl SearchProvider for ActionsProvider {
     fn id(&self) -> &'static str {
-        "actions"
+        PROVIDER_ID
     }
     fn name(&self) -> &'static str {
         "Actions"

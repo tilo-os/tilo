@@ -18,6 +18,7 @@ use std::process::ExitCode;
 
 use serde_json::json;
 
+use shell::shell::search::providers::actions::PROVIDER_ID as SHELL_ACTIONS;
 use shell::shell::test_control_socket::{TEST_CONTROL_ENV, default_socket_path};
 
 /// Pick the socket: `--socket`, else `$TILO_TEST_CONTROL`, else the default
@@ -455,14 +456,14 @@ feedback recent-buffer on|off | feedback status";
 
 fn feedback_invoke(id: &str, args: &serde_json::Value) -> Command {
     Command::ActionsInvoke {
-        provider: "shell.actions".to_string(),
+        provider: SHELL_ACTIONS.to_string(),
         id: id.to_string(),
         args_json: Some(args.to_string()),
     }
 }
 
 /// Parse `feedback ...` into the shell actions it names. Every verb is the
-/// same `shell.actions` operation Ctrl+K and agents invoke; this only spells
+/// same shell action Ctrl+K and agents invoke; this only spells
 /// the arguments.
 fn parse_feedback_command<'a>(
     iter: &mut impl Iterator<Item = &'a String>,
@@ -1266,7 +1267,7 @@ mod tests {
     #[test]
     fn feedback_verbs_are_the_shell_recording_actions() {
         let invoke = |id: &str, args: serde_json::Value| Command::ActionsInvoke {
-            provider: "shell.actions".into(),
+            provider: SHELL_ACTIONS.into(),
             id: id.into(),
             args_json: Some(args.to_string()),
         };
