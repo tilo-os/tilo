@@ -1,0 +1,31 @@
+[package]
+name = "session-trace"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "session_trace"
+path = "src/lib.rs"
+
+# The content of a `session` record: what a silent recording participant saw
+# in a room (starting snapshots, the signed document ops the broker fanned
+# out, presence, inspect keyframes, environment). Pure data plus its layout
+# inside the record's Automerge document — no `ui`, no I/O — so the shell,
+# chat's report card, replay and headless tests all read the same format.
+
+[dependencies]
+collab-types = { path = "../collab-types" }
+tilo-actions = { path = "../actions" }
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
+
+[lints]
+workspace = true

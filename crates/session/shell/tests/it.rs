@@ -129,6 +129,8 @@ mod portal_test;
 mod qs_actions_click_routing;
 #[path = "real_apps_visual.rs"]
 mod real_apps_visual;
+#[path = "recorder_test.rs"]
+mod recorder_test;
 #[path = "remote_cursors_test.rs"]
 mod remote_cursors_test;
 #[path = "sandbox_check.rs"]

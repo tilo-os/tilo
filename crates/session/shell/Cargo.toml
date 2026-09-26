@@ -153,6 +153,8 @@ image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
 # the validator live in `tilo-collab-types`.
 collab-types = { path = "../../collab/collab-types" }
+# The content of the `session` record the recorder produces.
+session-trace = { path = "../../collab/session-trace" }
 # The neighbour wire vocabulary (`NeighbourMsg`) and its retention rules,
 # shared with every other peer that speaks the collaboration protocol.
 neighbour-wire = { path = "../../collab/neighbour-wire" }

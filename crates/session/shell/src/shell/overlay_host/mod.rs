@@ -13178,6 +13178,30 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Recorder upkeep: revocations, the recent buffer's room, the roster
+    /// row that is the recording indicator, and finishing captures.
+    fn pump_recorder(&self) -> bool {
+        let Some((recorder, user)) = self.chrome.as_ref().and_then(|chrome| {
+            let chrome = chrome.borrow();
+            let recorder = chrome.recorder().cloned()?;
+            Some((recorder, chrome.active_local_user()))
+        }) else {
+            return false;
+        };
+        recorder.pump(std::time::Instant::now(), &user)
+    }
+
+    /// Attach the session recorder to `broker`, sharing the chrome's tree so
+    /// its admission is the workspace's own capability state.
+    pub fn attach_recorder(&mut self, broker: &crate::shell::collab_broker::BrokerHandle) {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let tree = chrome.borrow().tree_handle();
+        let recorder = crate::shell::recorder::Recorder::attach(broker, tree);
+        chrome.borrow_mut().set_recorder(recorder);
+    }
+
     fn persist_collaboration_preferences(&self) {
         let manual_status = matches!(self.local_status_origin, ui::StatusOrigin::Manual)
             .then(|| self.local_status.clone())
@@ -16011,7 +16035,7 @@ impl Widget for ShellOverlayHost {
         self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
         self.harvest_active_tab_writeback();
-        let presence_dirty = self.pump_presence_requests();
+        let presence_dirty = self.pump_presence_requests() | self.pump_recorder();
         let follow_dirty = self.reconcile_followed_peer();
         // Both edge-triggered on `active_group`, so they run after the
         // writeback above reflects this frame's focus change.

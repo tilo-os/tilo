@@ -49,6 +49,44 @@ const AGENT_INVITE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+/// What `feedback.record.start` may be told.
+const FEEDBACK_RECORD_START_PARAMS: &[ActionParam] = &[
+    ActionParam::optional(
+        "rooms",
+        ParamType::Text,
+        "Comma-separated room ids to record. Defaults to the active workspace's room.",
+    ),
+    ActionParam::optional(
+        "apps",
+        ParamType::Text,
+        "Comma-separated app ids; only their documents are recorded. Defaults to every app.",
+    ),
+];
+
+const FEEDBACK_RECENT_BUFFER_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "enabled",
+    ParamType::Boolean,
+    "Keep the last two minutes of this device's rooms in memory for capture-recent.",
+)];
+
+fn comma_list(value: Option<&str>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn recorder(
+    st: &ChromeState,
+) -> Result<std::sync::Arc<crate::shell::recorder::Recorder>, ActionError> {
+    st.recorder().cloned().ok_or_else(|| {
+        ActionError::Refused("this session has no collaboration broker to record through".into())
+    })
+}
+
 /// The agent this OS ships. Kept in step with `tilo-agent`'s own default by
 /// being the same string, not by being imported — the shell does not
 /// depend on the agent binary.
@@ -163,8 +201,14 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         "identity.devices.copy" | "identity.device.enroll" | "identity.home-peer.enroll" => {
             contract.permission = PermissionRequirement::Admin;
         }
-        "peer.invite.named" | "agent.invite" => {
+        // Recording admits the Recorder agent to the room.
+        "peer.invite.named" | "agent.invite" | "feedback.record.start" => {
             contract.permission = PermissionRequirement::Invite;
+        }
+        "feedback.record.stop"
+        | "feedback.record.capture-recent"
+        | "feedback.recent-buffer.set" => {
+            contract.retry = RetryPolicy::AtMostOnce;
         }
         "peer.invite" | "peer.connect" => contract = ActionContract::view(),
         // Moving a tab between groups is layout, undone by moving it back;
@@ -1276,6 +1320,70 @@ impl Action {
                 // next visible action is Review access, not a chat prompt.
                 st.open_workspace_settings(crate::shell::chrome_state::WsTab::Agents);
                 Ok(())
+            },
+        },
+        // The recorder is an agent participant: starting admits it to the
+        // chosen rooms as an Observer, and its presence there is the
+        // recording indicator. The session waits in memory for review.
+        Action {
+            id: "feedback.record.start",
+            label: "Start recording for feedback",
+            subtitle: "Admit the Recorder agent to watch this workspace; it stays listed while it records",
+            params: FEEDBACK_RECORD_START_PARAMS,
+            apply: |st, args| {
+                let recorder = recorder(st)?;
+                let user = st.active_local_user();
+                let mut rooms = comma_list(args.text("rooms"));
+                if rooms.is_empty() {
+                    rooms.extend(
+                        st.tree()
+                            .desktop
+                            .active_workspace()
+                            .map(|workspace| workspace.room.to_string()),
+                    );
+                }
+                let apps = comma_list(args.text("apps"));
+                recorder
+                    .start(&rooms, apps, &user)
+                    .map_err(|error| ActionError::Refused(error.to_string()))
+            },
+        },
+        chrome(
+            "feedback.record.stop",
+            "Stop recording",
+            "Remove the Recorder agent and keep the session for review; nothing is sent",
+            |st, _| {
+                let recorder = recorder(st)?;
+                let user = st.active_local_user();
+                recorder
+                    .stop(&user)
+                    .map(|_| ())
+                    .map_err(|error| ActionError::Refused(error.to_string()))
+            },
+        ),
+        chrome(
+            "feedback.record.capture-recent",
+            "Record what just happened",
+            "Build a session from the last two minutes the recent buffer kept; nothing is sent",
+            |st, _| {
+                recorder(st)?
+                    .capture_recent()
+                    .map_err(|error| ActionError::Refused(error.to_string()))
+            },
+        ),
+        Action {
+            id: "feedback.recent-buffer.set",
+            label: "Keep recent activity for feedback",
+            subtitle: "Hold the last two minutes in memory so they can be recorded afterwards",
+            params: FEEDBACK_RECENT_BUFFER_PARAMS,
+            apply: |st, args| {
+                let enabled = args.boolean("enabled").ok_or_else(|| {
+                    ActionError::Refused("say whether the recent buffer is enabled".into())
+                })?;
+                let user = st.active_local_user();
+                recorder(st)?
+                    .set_recent_buffer(enabled, &user)
+                    .map_err(|error| ActionError::Refused(format!("setting not saved: {error}")))
             },
         },
         chrome(

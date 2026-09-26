@@ -12627,6 +12627,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "session-trace"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "collab-types",
+ "postcard",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tilo-actions",
+ "uuid",
+]
+
+[[package]]
 name = "settings"
 version = "0.1.0"
 dependencies = [
@@ -12894,6 +12908,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "session-trace",
  "settings-store",
  "sha2 0.11.0",
  "smithay",

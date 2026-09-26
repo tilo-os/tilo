@@ -92,6 +92,8 @@ enum Command {
     ActionsCancel {
         invocation_id: u64,
     },
+    /// Show what the recorder holds and what waits for review.
+    FeedbackStatus,
     Raw {
         json: String,
     },
@@ -222,6 +224,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
             Command::StateDump { pretty }
         }
         "actions" => parse_actions_command(&mut iter)?,
+        "feedback" => parse_feedback_command(&mut iter)?,
         "raw" => {
             let json = iter.next().ok_or_else(|| {
                 ParseError::Usage("raw '<json>' requires the JSON payload".to_string())
@@ -329,6 +332,95 @@ fn parse_actions_command<'a>(
     }
 }
 
+const FEEDBACK_USAGE: &str = "feedback record start [--room ROOM]... [--app APP]... | \
+feedback record stop | feedback record capture-recent | \
+feedback recent-buffer on|off | feedback status";
+
+fn feedback_invoke(id: &str, args: &serde_json::Value) -> Command {
+    Command::ActionsInvoke {
+        provider: "shell.actions".to_string(),
+        id: id.to_string(),
+        args_json: Some(args.to_string()),
+    }
+}
+
+/// Parse `feedback ...` into the shell actions it names. Every verb is the
+/// same `shell.actions` operation Ctrl+K and agents invoke; this only spells
+/// the arguments.
+fn parse_feedback_command<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+) -> Result<Command, ParseError> {
+    let verb = iter
+        .next()
+        .ok_or_else(|| ParseError::Usage(format!("feedback requires a verb: {FEEDBACK_USAGE}")))?;
+    match verb.as_str() {
+        "status" => Ok(Command::FeedbackStatus),
+        "recent-buffer" => match iter.next().map(String::as_str) {
+            Some("on") => Ok(feedback_invoke(
+                "feedback.recent-buffer.set",
+                &serde_json::json!({"enabled": true}),
+            )),
+            Some("off") => Ok(feedback_invoke(
+                "feedback.recent-buffer.set",
+                &serde_json::json!({"enabled": false}),
+            )),
+            _ => Err(ParseError::Usage(
+                "feedback recent-buffer requires `on` or `off`".to_string(),
+            )),
+        },
+        "record" => match iter.next().map(String::as_str) {
+            Some("start") => parse_feedback_start(iter),
+            Some("stop") => Ok(feedback_invoke(
+                "feedback.record.stop",
+                &serde_json::json!({}),
+            )),
+            Some("capture-recent") => Ok(feedback_invoke(
+                "feedback.record.capture-recent",
+                &serde_json::json!({}),
+            )),
+            _ => Err(ParseError::Usage(
+                "feedback record requires `start`, `stop`, or `capture-recent`".to_string(),
+            )),
+        },
+        other => Err(ParseError::Usage(format!(
+            "feedback: unknown verb `{other}` (usage: {FEEDBACK_USAGE})"
+        ))),
+    }
+}
+
+fn parse_feedback_start<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+) -> Result<Command, ParseError> {
+    let mut rooms: Vec<String> = Vec::new();
+    let mut apps: Vec<String> = Vec::new();
+    while let Some(flag) = iter.next() {
+        let target = match flag.as_str() {
+            "--room" => &mut rooms,
+            "--app" => &mut apps,
+            other => {
+                return Err(ParseError::Usage(format!(
+                    "feedback record start: unknown option `{other}` (--room ROOM, --app APP)"
+                )));
+            }
+        };
+        let value = iter
+            .next()
+            .ok_or_else(|| ParseError::Usage(format!("{flag} requires a value")))?;
+        target.push(value.clone());
+    }
+    let mut args = serde_json::Map::new();
+    if !rooms.is_empty() {
+        args.insert("rooms".into(), rooms.join(",").into());
+    }
+    if !apps.is_empty() {
+        args.insert("apps".into(), apps.join(",").into());
+    }
+    Ok(feedback_invoke(
+        "feedback.record.start",
+        &serde_json::Value::Object(args),
+    ))
+}
+
 /// Pull the next argv slot and parse it as `f64`. Helper for the
 /// `click-at` / `drag` subcommands so each missing-arg / parse-failure
 /// path reads as one line at the call site.
@@ -415,7 +507,7 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             "logo": logo,
         }),
         Command::Snapshot { path } => json!({ "op": "snapshot", "path": path }),
-        Command::StateDump { .. } => json!({ "op": "state_dump" }),
+        Command::StateDump { .. } | Command::FeedbackStatus => json!({ "op": "state_dump" }),
         Command::ActionsList { query, .. } => {
             json!({ "op": "actions_enumerate", "query": query })
         }
@@ -579,6 +671,18 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             };
             println!("{out}");
         }
+        Command::FeedbackStatus => {
+            let feedback = response
+                .get("state")
+                .and_then(|state| state.get("chrome"))
+                .and_then(|chrome| chrome.get("feedback"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&feedback).unwrap_or_else(|_| feedback.to_string())
+            );
+        }
         Command::Snapshot { path } => {
             // The wire's `Ok { frame }` doesn't echo the path back, so print
             // it here to make `snapshot /tmp/x.png | xclip` work.
@@ -642,6 +746,18 @@ fn print_usage() {
          \x20                               run one typed action without synthetic input\n\
          \x20 actions status INVOCATION_ID   read latest broker state/output\n\
          \x20 actions cancel INVOCATION_ID   request cooperative cancellation\n\
+         \x20 feedback record start [--room ROOM]... [--app APP]...\n\
+         \x20                               admit the Recorder agent (Observer) to ROOM (default:\n\
+         \x20                               the active workspace) and record its documents,\n\
+         \x20                               presence and actions; --app narrows the documents.\n\
+         \x20                               The Recorder is listed as AGENT while it records.\n\
+         \x20 feedback record stop          remove the Recorder and keep the `session` record\n\
+         \x20                               in memory for review; nothing is written or sent\n\
+         \x20 feedback record capture-recent\n\
+         \x20                               build a session from the last two minutes\n\
+         \x20 feedback recent-buffer on|off keep (or forget) those two minutes; off by default\n\
+         \x20 feedback status               rooms held, the recording, sessions awaiting review\n\
+         \x20                               (the `chrome.feedback` part of state-dump)\n\
          \x20 raw '<json>'                  passthrough — escape hatch for new commands"
     );
 }
@@ -901,6 +1017,63 @@ mod tests {
                 args_json: Some(r#"{"count":2,"force":true}"#.into()),
             }
         );
+    }
+
+    #[test]
+    fn feedback_verbs_are_the_shell_recording_actions() {
+        let invoke = |id: &str, args: serde_json::Value| Command::ActionsInvoke {
+            provider: "shell.actions".into(),
+            id: id.into(),
+            args_json: Some(args.to_string()),
+        };
+        assert_eq!(
+            parse(&[
+                "feedback",
+                "record",
+                "start",
+                "--room",
+                "a",
+                "--room",
+                "b",
+                "--app",
+                "so.tilo.notes",
+            ])
+            .unwrap()
+            .command,
+            invoke(
+                "feedback.record.start",
+                serde_json::json!({"rooms": "a,b", "apps": "so.tilo.notes"})
+            )
+        );
+        assert_eq!(
+            parse(&["feedback", "record", "stop"]).unwrap().command,
+            invoke("feedback.record.stop", serde_json::json!({}))
+        );
+        assert_eq!(
+            parse(&["feedback", "record", "capture-recent"])
+                .unwrap()
+                .command,
+            invoke("feedback.record.capture-recent", serde_json::json!({}))
+        );
+        assert_eq!(
+            parse(&["feedback", "recent-buffer", "on"]).unwrap().command,
+            invoke(
+                "feedback.recent-buffer.set",
+                serde_json::json!({"enabled": true})
+            )
+        );
+        assert_eq!(
+            parse(&["feedback", "status"]).unwrap().command,
+            Command::FeedbackStatus
+        );
+        for bad in [
+            &["feedback"][..],
+            &["feedback", "record"],
+            &["feedback", "record", "start", "--room"],
+            &["feedback", "recent-buffer", "maybe"],
+        ] {
+            assert!(matches!(parse(bad), Err(ParseError::Usage(_))), "{bad:?}");
+        }
     }
 
     #[test]

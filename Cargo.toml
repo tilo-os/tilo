@@ -114,6 +114,7 @@ members = [
     "crates/collab/feedback-review",
     "crates/collab/neighbour-wire",
     "crates/collab/reference",
+    "crates/collab/session-trace",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
     "crates/collab/tilo-user-identity",

@@ -2454,6 +2454,31 @@ impl CapnpBrokerState {
         }
     }
 
+    /// Ask for the late-joiner snapshot of every document route in `room` on
+    /// behalf of `requester`, returning the routes a holder was asked on.
+    /// The answer arrives like any other snapshot: fanned out on the route.
+    pub(crate) fn request_room_snapshots(&self, room: &str, requester: u64) -> Vec<CrdtRoute> {
+        let channel_ids: Vec<String> = self
+            .channels
+            .lock()
+            .map(|channels| {
+                channels
+                    .keys()
+                    .filter(|key| {
+                        let route = CrdtRoute::from_channel_key(key);
+                        !route.app_id.is_empty() && route.cluster_id == room
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        channel_ids
+            .into_iter()
+            .filter(|channel_id| self.request_document_snapshot(channel_id, requester))
+            .map(|channel_id| CrdtRoute::from_channel_key(&channel_id))
+            .collect()
+    }
+
     const MAX_RETAINED_INVOCATIONS: usize = 256;
     const INVOCATION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
     const CANCELLATION_GRACE: std::time::Duration = std::time::Duration::from_secs(30);

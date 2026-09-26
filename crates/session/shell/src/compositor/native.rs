@@ -1770,6 +1770,9 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "own_status": own_status,
                 "following": following,
             },
+            // What the recorder holds and what waits for review; `null`
+            // when this session has no broker to record through.
+            "feedback": chrome.recorder().map(|recorder| recorder.status_json()),
             "ws_settings_tab": format!("{:?}", chrome.ws_settings_tab),
             "revision": chrome.revision,
             // What is actually on screen — without it a harness can only see that *a*
@@ -4252,6 +4255,7 @@ fn attach_collab_broker_bridges(
     frame_builder: &mut FrameBuilder,
     broker: &crate::shell::collab_broker::BrokerHandle,
 ) {
+    frame_builder.host_mut().attach_recorder(broker);
     let dispatcher = broker.follow_dispatcher();
     frame_builder
         .host_mut()

@@ -1801,6 +1801,45 @@ mod tests {
     }
 
     #[test]
+    fn the_recorder_is_listed_as_an_observer_agent() {
+        use crate::shell::recorder::{RECORDER_ADMISSION, RECORDER_AGENT, RECORDER_LABEL};
+        use crate::shell::state::{CapOverride, Subject, Verb, Workspace, WorkspaceId};
+
+        let mut workspace = Workspace::new(WorkspaceId::new(), "Recorded");
+        workspace.owner = Some("owner".into());
+        workspace
+            .grant_as(
+                &"owner".to_string(),
+                CapOverride::membership(
+                    Subject::agent(RECORDER_AGENT),
+                    workspace.room.to_string(),
+                    Verb::Read,
+                )
+                .with_id(RECORDER_ADMISSION.to_string()),
+            )
+            .expect("owner admits the recorder");
+        workspace
+            .collaborators
+            .push(crate::shell::state::Collaborator::new(
+                RECORDER_AGENT,
+                RECORDER_LABEL,
+            ));
+        assert_eq!(
+            crate::shell::workspace_settings::agent_authority_preset(&workspace, RECORDER_AGENT),
+            crate::shell::workspace_settings::AgentAuthorityPreset::Observer
+        );
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.active = workspace.id;
+        tree.desktop.workspaces.push(workspace);
+
+        let rows = collaborator_roster_rows(&tree);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].is_agent, "the recording indicator is the AGENT row");
+        assert_eq!(rows[0].label, RECORDER_LABEL);
+        assert_eq!(rows[0].role.as_deref(), Some("viewer"));
+    }
+
+    #[test]
     fn hit_testing_uses_the_same_cached_geometry_as_paint() {
         let mut overlay = CollaboratorsOverlay::default();
         overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 2, false, true, false);

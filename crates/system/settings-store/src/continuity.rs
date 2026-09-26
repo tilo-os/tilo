@@ -177,6 +177,9 @@ policies! {
         "tilo.agent_providers.config",
         "tilo.collaboration.status_sharing",
         "tilo.collaboration.manual_status",
+        // Consent to keep the last minutes of this device's rooms in memory
+        // for "record what just happened"; it covers this machine only.
+        "tilo.feedback.recent_buffer",
     ],
     Secret => [
         "tilo.agent_providers.api_key",

@@ -53,6 +53,10 @@ pub struct PeerPresence {
     /// when. Read by [`should_publish_cursor`].
     last_published: Mutex<CursorPublishHistory>,
     net: Arc<ShellNetwork>,
+    /// Who takes part from inside this process (the session recorder). They
+    /// have no network session, so the room's labels and arrivals cannot
+    /// name them; without this the roster would erase them every frame.
+    fanout: Arc<crate::shell::collab_broker::FanoutState>,
 }
 
 /// Smallest gap between two pointer publishes for the same room — ~30
@@ -262,6 +266,7 @@ impl PeerPresence {
             rooms: Mutex::new(rooms_mirror),
             last_published: Mutex::new(HashMap::new()),
             net: net_for_desktop,
+            fanout: broker.fanout(),
         }
     }
 
@@ -432,6 +437,11 @@ impl PeerPresence {
             let mut arrived = handles_seen_in(presence, &ws.room.to_string());
             arrived.extend(replica.participants_in(ws.room));
             let mut rows = room_roster(ws, &labels, &arrived, local);
+            rows.extend(local_participant_rows(
+                ws,
+                &self.fanout.local_participants_in(&ws.room.to_string()),
+                &rows,
+            ));
             for row in &mut rows {
                 let presence_id = presence
                     .names
@@ -477,6 +487,30 @@ impl PeerPresence {
         tree.desktop.collaborators = rows;
         true
     }
+}
+
+/// Roster rows for in-process agent participants `ws`'s room holds, skipping
+/// any already listed. Named by their agent id, the capability subject, so
+/// the popover's agent classification recognises them.
+pub fn local_participant_rows(
+    ws: &crate::shell::state::Workspace,
+    participants: &[crate::shell::collab_broker::LocalParticipant],
+    listed: &[crate::shell::state::Collaborator],
+) -> Vec<crate::shell::state::Collaborator> {
+    participants
+        .iter()
+        .filter(|participant| !listed.iter().any(|row| row.id == participant.agent))
+        .map(|participant| {
+            let row = crate::shell::state::Collaborator::new(
+                participant.agent.clone(),
+                participant.label.clone(),
+            );
+            match ws.role_of_agent(&participant.agent) {
+                Some(role) => row.with_role(crate::shell::state::role_label(role)),
+                None => row,
+            }
+        })
+        .collect()
 }
 
 /// The peer handles this session has had presence from in `room`.

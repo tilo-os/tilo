@@ -287,6 +287,19 @@ pub struct FanoutState {
 pub struct RoomSubscription {
     rooms: Mutex<Vec<String>>,
     sink: FanoutSink,
+    /// The agent principal this subscription is a live participant as, if
+    /// any. The compositor's own subscribers are not participants; an
+    /// in-process agent (the session recorder) is, and belongs on the roster
+    /// of every room it holds for as long as it holds it.
+    participant: Option<LocalParticipant>,
+}
+
+/// An agent principal taking part in a room from inside the shell process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalParticipant {
+    /// Stable agent id, the capability subject it was admitted as.
+    pub agent: String,
+    pub label: String,
 }
 
 impl RoomSubscription {
@@ -295,6 +308,11 @@ impl RoomSubscription {
         if let Ok(mut g) = self.rooms.lock() {
             *g = rooms;
         }
+    }
+
+    /// The rooms this subscription currently covers.
+    pub fn rooms(&self) -> Vec<String> {
+        self.rooms.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
     /// Whether `route` addresses any room this subscription holds. Uses
@@ -326,14 +344,68 @@ impl FanoutState {
         rooms: Vec<String>,
         sink: FanoutSink,
     ) -> Arc<RoomSubscription> {
+        self.subscribe(rooms, sink, None)
+    }
+
+    /// Register an in-process subscriber that takes part in its rooms as the
+    /// agent `participant`. Its authority is the agent's own admission: the
+    /// owner keeps [`RoomSubscription::set_rooms`] to the rooms where that
+    /// admission is live.
+    pub(crate) fn subscribe_rooms_as(
+        &self,
+        participant: LocalParticipant,
+        rooms: Vec<String>,
+        sink: FanoutSink,
+    ) -> Arc<RoomSubscription> {
+        self.subscribe(rooms, sink, Some(participant))
+    }
+
+    fn subscribe(
+        &self,
+        rooms: Vec<String>,
+        sink: FanoutSink,
+        participant: Option<LocalParticipant>,
+    ) -> Arc<RoomSubscription> {
         let sub = Arc::new(RoomSubscription {
             rooms: Mutex::new(rooms),
             sink,
+            participant,
         });
         if let Ok(mut g) = self.local_subs.lock() {
             g.push(Arc::clone(&sub));
         }
         sub
+    }
+
+    /// Stop delivering to `subscription`.
+    pub(crate) fn unsubscribe(&self, subscription: &Arc<RoomSubscription>) {
+        if let Ok(mut g) = self.local_subs.lock() {
+            g.retain(|sub| !Arc::ptr_eq(sub, subscription));
+        }
+    }
+
+    /// In-process agent participants live in `room` — the roster's answer
+    /// for participants that have no network session.
+    pub fn local_participants_in(&self, room: &str) -> Vec<LocalParticipant> {
+        let mut out: Vec<LocalParticipant> = Vec::new();
+        for sub in self.local_subs() {
+            let Some(participant) = &sub.participant else {
+                continue;
+            };
+            if sub.rooms().iter().any(|held| held == room) && !out.contains(participant) {
+                out.push(participant.clone());
+            }
+        }
+        out
+    }
+
+    /// Ask every document route in `room` for its late-joiner snapshot on
+    /// behalf of the typed participant `requester`. Returns the routes a
+    /// holder was asked on; empty when no typed broker is attached.
+    pub(crate) fn request_room_snapshots(&self, room: &str, requester: u64) -> Vec<CrdtRoute> {
+        self.capnp_state()
+            .map(|capnp| capnp.request_room_snapshots(room, requester))
+            .unwrap_or_default()
     }
 
     /// Snapshot the in-process subscribers so the sinks run without
@@ -660,6 +732,12 @@ impl BrokerHandle {
     /// the reader thread that decoded the frame: keep it short.
     pub fn subscribe_rooms(&self, rooms: Vec<String>, sink: FanoutSink) -> Arc<RoomSubscription> {
         self.fanout.subscribe_rooms(rooms, sink)
+    }
+
+    /// The shared fanout registry, for in-process participants that outlive
+    /// a borrow of the handle.
+    pub fn fanout(&self) -> Arc<FanoutState> {
+        Arc::clone(&self.fanout)
     }
 
     /// The bound Cap'n Proto socket.

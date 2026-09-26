@@ -120,6 +120,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // without this the host records an intent and drops it: reachable in the palette, inert in a running session.
     let mut host = attach_peer_sync_bridge(host, peer_sync.as_ref(), tree_handle.clone());
     if let Some(broker) = collab_broker.as_ref() {
+        host.attach_recorder(broker);
         let dispatcher = broker.follow_dispatcher();
         host.set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
             dispatcher.set(&room.to_string(), peer_id);

@@ -673,6 +673,9 @@ pub struct ChromeState {
     /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
     presence_requests: Vec<PresenceRequest>,
+    /// The session recorder, once the collaboration broker is up. Absent in
+    /// bare and headless hosts, where recording actions refuse.
+    recorder: Option<std::sync::Arc<crate::shell::recorder::Recorder>>,
     /// Compatibility queue for callers of the original active-room API.
     legacy_record_requests: Vec<(String, String)>,
     /// Tracked record actions retain the exact authorized destination until
@@ -801,6 +804,7 @@ impl ChromeState {
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
             presence_requests: Vec::new(),
+            recorder: None,
             wheel_summon: None,
             legacy_record_requests: Vec::new(),
             tracked_record_requests: Vec::new(),
@@ -885,6 +889,14 @@ impl ChromeState {
         result: Result<(), String>,
     ) {
         self.peer_sync_request_results.insert(request_id, result);
+    }
+
+    pub fn set_recorder(&mut self, recorder: std::sync::Arc<crate::shell::recorder::Recorder>) {
+        self.recorder = Some(recorder);
+    }
+
+    pub fn recorder(&self) -> Option<&std::sync::Arc<crate::shell::recorder::Recorder>> {
+        self.recorder.as_ref()
     }
 
     pub fn push_presence_request(&mut self, request: PresenceRequest) {
