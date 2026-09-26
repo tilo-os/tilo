@@ -11191,7 +11191,27 @@ impl ShellOverlayHost {
                         || state.alt_key()
                         || state.shift_key()
                         || state.super_key());
-                if capture_chord {
+                if self.portal_dialogs.is_authentication() {
+                    // Every key belongs to the authentication sheet while it
+                    // is up; none reaches an application.
+                    match logical_key {
+                        Key::Named(NamedKey::Enter) => {
+                            self.portal_dialogs.confirm();
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            self.portal_dialogs.cancel();
+                        }
+                        Key::Named(NamedKey::ArrowDown | NamedKey::Tab) => {
+                            self.portal_dialogs.select_next(false);
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            self.portal_dialogs.select_next(true);
+                        }
+                        _ => {
+                            self.portal_dialogs.edit_secret(logical_key);
+                        }
+                    }
+                } else if capture_chord {
                     self.portal_dialogs.key(physical_key, modifiers);
                 } else {
                     match logical_key {
@@ -20677,6 +20697,18 @@ impl ShellOverlayHost {
                     ui::chrome::SelectionState::active(selected),
                 );
             }
+        }
+        if let (Some(rect), Some(secret)) = (layout.secret, self.portal_dialogs.secret_display()) {
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                &secret,
+                theme.tokens.typography.scale.base,
+                ui::chrome::SelectionState::active(true),
+            );
         }
         for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate() {
             let accelerator = row.accelerator.as_deref().map_or_else(

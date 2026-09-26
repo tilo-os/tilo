@@ -1187,6 +1187,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # logind: `systemctl reboot` / `poweroff` issue the
 # `org.freedesktop.login1.{reboot,power-off}` actions, which polkit authorises
 # for the `greetd` user via etc/polkit-1/rules.d/49-tilo-greeter-power.rules.
+# It also ships `polkit-agent-helper-1` (and its activation socket), which the
+# compositor's authentication agent drives to run PAM for administrator
+# prompts from pkexec, GNOME Disks, virt-manager and system Flatpak installs.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     greetd \
     fprintd \
