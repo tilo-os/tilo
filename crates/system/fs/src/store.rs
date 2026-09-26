@@ -375,6 +375,19 @@ impl ContentStore {
         }
     }
 
+    /// Shuts the store down and releases its databases, so the same
+    /// directory can be opened again in this process while handles to this
+    /// store remain; they fail from now on.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the blob store does not shut down cleanly.
+    pub async fn shutdown(&self) -> Result<()> {
+        let stopped = self.store().shutdown().await;
+        self.files.close();
+        stopped.map_err(Into::into)
+    }
+
     /// The file-backed content and cache.
     pub const fn files(&self) -> &Arc<FileArea> {
         &self.files
