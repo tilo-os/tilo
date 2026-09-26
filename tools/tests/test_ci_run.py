@@ -42,54 +42,43 @@ class CiRunSummaryTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stdout)
 
-    def test_completion_reaps_heartbeat_sleeper_and_preserves_status(self):
+    def run_heartbeat_fixture(self, root, body):
+        command = root / "command.sh"
+        command.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8", newline="\n")
+        # Capturing output waits for every owner of the pipe, the heartbeat included.
+        return subprocess.run(
+            bash_command(shell_path(CI_RUN), "heartbeat", "--", "bash", shell_path(command)),
+            cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=10, check=False,
+        )
+
+    def test_completion_stops_the_heartbeat_and_preserves_status(self):
         for status in (0, 7, -15):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                sleeper = root / "sleeper.pid"
-                binary = root / "bin"
-                binary.mkdir()
-                shim = binary / "sleep"
-                # Record only the heartbeat sleeper, then retain its exact PID.
-                shim.write_text(
-                    "#!/usr/bin/env bash\n"
-                    f'if [ "$1" = 60 ]; then echo $$ > {shlex.quote(shell_path(sleeper))}; fi\n'
-                    'exec /bin/sleep "$@"\n', encoding="utf-8", newline="\n"
-                )
-                shim.chmod(0o755)
-                command = root / "command.sh"
+                # Give the heartbeat time to reach its wait before finishing.
                 finish = 'kill -TERM "$PPID"\nexit 0\n' if status == -15 else f"exit {status}\n"
-                command.write_text(
-                    "#!/usr/bin/env bash\n"
-                    f"for attempt in {{1..200}}; do [ -s {shlex.quote(shell_path(sleeper))} ] && break; sleep 0.01; done\n"
-                    f"test -s {shlex.quote(shell_path(sleeper))} || exit 99\n"
-                    + finish, encoding="utf-8", newline="\n"
+                result = self.run_heartbeat_fixture(Path(directory), "sleep 0.2\n" + finish)
+                # wsl.exe reports the terminating Linux signal as a positive code;
+                # native subprocess reports it as a negative return code.
+                expected = 15 if os.name == "nt" and status == -15 else status
+                self.assertEqual(result.returncode, expected, result.stdout)
+
+    def test_a_process_the_command_leaves_behind_does_not_keep_the_heartbeat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            leftover = root / "leftover.pid"
+            try:
+                result = self.run_heartbeat_fixture(
+                    root,
+                    f"sleep 30 >/dev/null 2>&1 &\necho $! > {shlex.quote(shell_path(leftover))}\nexit 0\n",
                 )
-                try:
-                    result = subprocess.run(
-                        bash_command("-c", 'export PATH="$1:$PATH"; exec bash "$2" heartbeat -- bash "$3"',
-                                     "fixture", shell_path(binary), shell_path(CI_RUN), shell_path(command)),
-                        cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                        timeout=10, check=False,
+                self.assertEqual(result.returncode, 0, result.stdout)
+            finally:
+                if leftover.exists():
+                    subprocess.run(
+                        bash_command("-c", 'kill -TERM "$1" 2>/dev/null || true',
+                                     "fixture", leftover.read_text().strip()), check=False,
                     )
-                    # wsl.exe reports the terminating Linux signal as a positive code;
-                    # native subprocess reports it as a negative return code.
-                    expected = 15 if os.name == "nt" and status == -15 else status
-                    self.assertEqual(result.returncode, expected, result.stdout)
-                    pid = sleeper.read_text().strip()
-                    reaped = subprocess.run(
-                        bash_command("-c", 'test ! -e "/proc/$1"', "fixture", pid),
-                        check=False,
-                    )
-                    self.assertEqual(reaped.returncode, 0, "heartbeat must reap its owned sleep")
-                finally:
-                    # Keep a regressed wrapper from leaking its recorded child.
-                    # This runs after the reaping assertion, never in its place.
-                    if sleeper.exists():
-                        subprocess.run(
-                            bash_command("-c", 'kill -TERM "$1" 2>/dev/null || true',
-                                         "fixture", sleeper.read_text().strip()), check=False,
-                        )
 
 
 class CiRunMemoryTests(unittest.TestCase):
