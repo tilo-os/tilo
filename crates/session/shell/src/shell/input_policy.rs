@@ -256,7 +256,7 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
             | ChordKey::ArrowRight
             | ChordKey::ArrowUp
             | ChordKey::ArrowDown
-            | ChordKey::Char('k' | 'q' | '/' | '-' | '=')
+            | ChordKey::Char('k' | 'q' | '/' | '-' | '=' | '1'..='9' | 'e' | 'v' | 'a' | 'f')
     ) && ((mods.logo && !mods.ctrl && !mods.alt)
         || (matches!(key, ChordKey::Tab) && (mods.ctrl || mods.alt)))
     {
@@ -965,6 +965,136 @@ pub fn track_forwarded_key<S: std::hash::BuildHasher>(
         press_can_forward
     } else {
         forwarded.remove(&code)
+    }
+}
+
+/// Super pressed and released with nothing in between: the tap that opens
+/// global search on every mainstream desktop.
+///
+/// Fed every input event ahead of chord routing, so a Super chord the
+/// shell handles (Super+L, Super+Left) disarms it exactly like one a
+/// client receives, and a Super-click or Super-scroll does too.
+#[derive(Debug, Default)]
+pub struct SuperTap {
+    armed: bool,
+}
+
+impl SuperTap {
+    /// `true` on the release that completes a lone tap.
+    pub fn observe(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                let is_super = matches!(
+                    key.logical_key,
+                    Key::Named(NamedKey::Super | NamedKey::Meta)
+                );
+                match (is_super, key.state) {
+                    (true, ElementState::Pressed) => {
+                        // Autorepeat of the held key keeps the tap alive;
+                        // a fresh press starts one.
+                        if !key.repeat {
+                            self.armed = true;
+                        }
+                        false
+                    }
+                    (true, ElementState::Released) => std::mem::take(&mut self.armed),
+                    (false, ElementState::Pressed) => {
+                        self.armed = false;
+                        false
+                    }
+                    (false, ElementState::Released) => false,
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::Touch(_) => {
+                self.armed = false;
+                false
+            }
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod super_tap_tests {
+    use super::*;
+    use winit::keyboard::{KeyLocation, PhysicalKey};
+
+    fn key(logical: Key, state: ElementState) -> WindowEvent {
+        // winit's `KeyEvent` has a private platform field, so the struct is
+        // zero-initialised and every public field overwritten.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical;
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Left;
+        ev.state = state;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn super_key(state: ElementState) -> WindowEvent {
+        key(Key::Named(NamedKey::Super), state)
+    }
+
+    #[test]
+    fn a_lone_super_tap_fires_on_release() {
+        let mut tap = SuperTap::default();
+        assert!(!tap.observe(&super_key(ElementState::Pressed)));
+        assert!(tap.observe(&super_key(ElementState::Released)));
+        assert!(
+            !tap.observe(&super_key(ElementState::Released)),
+            "one tap, one search"
+        );
+    }
+
+    #[test]
+    fn any_key_in_between_makes_it_a_chord_not_a_tap() {
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&key(Key::Character("l".into()), ElementState::Pressed));
+        tap.observe(&key(Key::Character("l".into()), ElementState::Released));
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+
+        tap.observe(&key(Key::Named(NamedKey::Shift), ElementState::Pressed));
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&key(Key::Named(NamedKey::Tab), ElementState::Pressed));
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+    }
+
+    #[test]
+    fn a_super_click_or_scroll_is_not_a_tap() {
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&WindowEvent::MouseWheel {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+            phase: winit::event::TouchPhase::Moved,
+        });
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+    }
+
+    #[test]
+    fn a_modifier_released_alone_is_not_super() {
+        let mut tap = SuperTap::default();
+        tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Pressed));
+        assert!(!tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Released)));
     }
 }
 

@@ -26,7 +26,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Intent | Keyboard | Pointer route |
 |---|---|---|
 | Search current app | Ctrl+K | Search |
-| Search all Tilo | Super+K, Super+Space | Search |
+| Search all Tilo | Super+K, Super+Space, Super tapped alone | Search |
 | Open/close Overview | Super+Tab | Overview button |
 | Preview workspace in Overview | Up/Down | Workspace rail |
 | Commit preview | Enter | Select workspace |
@@ -34,11 +34,16 @@ strip changes context; switching a window or tab changes focus within it.
 | Previous/next strip | Super+Shift+Up/Down | Strip navigation |
 | Cycle previous/next window | Alt+Shift+Tab / Alt+Tab | Select group/tab |
 | Spatial previous/next window | Super+Left/Right | Select group/tab |
+| Focus the Nth window of the strip | Super+1 … Super+9 | Select group/tab |
 | Summon/dismiss workspace wheel | Super+S | — |
 | Capture Studio (choose what to capture) | Print | Capture action |
 | Screenshot the whole screen now | Shift+Print | — |
 | Screenshot the focused window now | Alt+Print | — |
 | Dismiss top transient surface | Escape | Scrim/close action |
+| Clipboard history | Super+V | Quick Settings → Clipboard |
+| Notifications | Super+A | Quick Settings → Notifications |
+| Power menu | Ctrl+Alt+Delete | Quick Settings power button |
+| Magnifier on/off | Super+Alt+8 | Settings → Accessibility |
 
 Shift+Print and Alt+Print skip the chooser: the capture is saved to
 `Pictures/Screenshots`, copied to the clipboard and announced by the same
@@ -57,6 +62,9 @@ Super+Left/Right clamps because it describes a spatial direction.
 | Open app as tab in current group | Super+T | Tab-strip `+` |
 | Open app as adjacent window | Super+N | Global search/open |
 | Open recovery terminal | Super+Enter | Global search/open Terminal |
+| Open a terminal | Ctrl+Alt+T | Global search/open Terminal |
+| Open Files | Super+E | Global search/open Files |
+| Full screen / restore focused window | Super+F | — |
 | Close focused tab | Super+W | Tab close |
 | Reopen last closed tab (this workspace) | Super+Shift+T | Close toast's Undo |
 | Duplicate focused tab | Super+D | Tab action |
@@ -65,6 +73,15 @@ Super+Left/Right clamps because it describes a spatial direction.
 | Move active tab into adjacent group | Super+[/] | Drag tab onto adjacent group |
 | Previous/next tab in current group | Ctrl+Shift+Tab / Ctrl+Tab | Tab strip |
 | Choose where the desktop appears (extend, mirror, one screen, wireless) | Super+P | Search "mirror displays" / Settings › Displays |
+
+Super tapped alone means Super pressed and released with no other key,
+click or scroll in between; any chord disarms it. Super+N is already the
+adjacent-window chord, so notifications take Super+A (the Windows Action
+Center key). Super+F makes a Wayland client full screen through
+`xdg_toplevel`; a Tilo app, which has no protocol fullscreen, maximizes its
+window group instead. Super+1 … 9, Super+E, Ctrl+Alt+T, Super+V, Super+A,
+Super+F, Super+Alt+8 and Ctrl+Alt+Delete are defaults, rebindable in
+Settings → Keyboard shortcuts.
 
 Application Ctrl shortcuts stay application-owned; shell-level window actions
 use Super so a browser, terminal or editor does not lose familiar bindings.
