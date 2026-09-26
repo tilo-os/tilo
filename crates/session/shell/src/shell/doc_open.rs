@@ -150,30 +150,34 @@ pub fn resolve_for(
         .and_then(|resource| {
             launcher::handler_for_resource_with_policy(&resource, user_id, workspace_defaults)
         });
-    let by_extension = || {
-        ext.as_deref().and_then(|ext| {
-            launcher::app_for_extension_with_policy(ext, user_id, workspace_defaults)
-        })
+    let by_extension = ext
+        .as_deref()
+        .and_then(|ext| desktop_policy::ResourceKind::extension(ext).ok())
+        .and_then(|resource| {
+            launcher::package_for_resource_with_policy(&resource, user_id, workspace_defaults)
+        });
+    let chosen = |source: desktop_policy::defaults::SelectionSource| {
+        !matches!(
+            source,
+            desktop_policy::defaults::SelectionSource::SystemDefault
+                | desktop_policy::defaults::SelectionSource::DeterministicFallback
+        )
     };
-    // A host application only wins over a package claiming the extension
-    // when the person or workspace chose it; otherwise Tilo's own app opens it.
-    let handler = match by_mime {
-        Some((launcher::ResourceHandler::Host(host), source))
-            if !matches!(
-                source,
-                desktop_policy::defaults::SelectionSource::SystemDefault
-                    | desktop_policy::defaults::SelectionSource::DeterministicFallback
-            ) =>
-        {
-            Some(launcher::ResourceHandler::Host(host))
-        }
-        Some((launcher::ResourceHandler::Host(host), _)) => Some(
-            by_extension().map_or(launcher::ResourceHandler::Host(host), |app| {
+    // A choice (personal or workspace) wins, by type before extension.
+    // Without one, a host application only wins when no package claims the
+    // extension; otherwise Tilo's own app opens it.
+    let handler = match (by_mime, by_extension) {
+        (Some((handler, source)), _) if chosen(source) => Some(handler),
+        (_, Some((app, source))) if chosen(source) => Some(launcher::ResourceHandler::Package(app)),
+        (Some((launcher::ResourceHandler::Host(host), _)), by_extension) => Some(
+            by_extension.map_or(launcher::ResourceHandler::Host(host), |(app, _)| {
                 launcher::ResourceHandler::Package(app)
             }),
         ),
-        Some((handler, _)) => Some(handler),
-        None => by_extension().map(launcher::ResourceHandler::Package),
+        (Some((handler, _)), _) => Some(handler),
+        (None, by_extension) => {
+            by_extension.map(|(app, _)| launcher::ResourceHandler::Package(app))
+        }
     };
     match handler {
         Some(launcher::ResourceHandler::Package(app)) => DocumentTarget::App {
@@ -248,7 +252,7 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
         )
     };
     let app = match target {
-        DocumentTarget::App { app, .. } => app,
+        DocumentTarget::App { app, .. } => *app,
         DocumentTarget::HostApp { app } => return open_with_host(&app, path, chrome, placement),
         DocumentTarget::NoAppForDocument { ext } => {
             return Err(OpenError::NoHandler {
@@ -263,7 +267,18 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
             });
         }
     };
+    open_package(app, path, chrome, placement)
+}
 
+/// Open `path` in the Tilo package `app`, after re-checking that it still
+/// claims the file's type: focus an existing window on the document, else
+/// grant the read and launch.
+fn open_package(
+    app: InstalledApp,
+    path: &Path,
+    chrome: &Chrome,
+    placement: Option<Placement>,
+) -> Result<Opened, OpenError> {
     let claim_is_current = mime_guess::from_path(path)
         .first_raw()
         .and_then(|mime| desktop_policy::ResourceKind::mime(mime).ok())
@@ -300,15 +315,12 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
                 focus(chrome, tab);
             }
             return Ok(Opened::Focused {
-                app: *app,
+                app,
                 tab: Some(tab.tab),
             });
         }
         Some(Existing::Starting) => {
-            return Ok(Opened::Focused {
-                app: *app,
-                tab: None,
-            });
+            return Ok(Opened::Focused { app, tab: None });
         }
         None => {}
     }
@@ -381,6 +393,143 @@ fn open_with_host(
     )
     .map(|app| Opened::HostLaunched { app })
     .map_err(OpenError::Launch)
+}
+
+/// One application offered under "Open With" for a file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenWithChoice {
+    /// A Tilo package id, or a host entry as `desktop_policy::host_app_id`.
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
+/// The resource kinds a file is resolved by: its MIME type, then its extension.
+fn resource_kinds(path: &Path) -> Vec<desktop_policy::ResourceKind> {
+    mime_guess::from_path(path)
+        .first_raw()
+        .and_then(|mime| desktop_policy::ResourceKind::mime(mime).ok())
+        .into_iter()
+        .chain(
+            extension_of(path).and_then(|ext| desktop_policy::ResourceKind::extension(&ext).ok()),
+        )
+        .collect()
+}
+
+/// How a file's type reads in "Always use for …".
+pub fn type_label(path: &Path) -> String {
+    resource_kinds(path)
+        .iter()
+        .rev()
+        .map(desktop_policy::ResourceKind::display_label)
+        .next()
+        .unwrap_or_else(|| "this file type".to_string())
+}
+
+/// Every Tilo package and host application that claims `path`'s type,
+/// the one activation would use first, then packages, then by name.
+pub fn open_with_choices(
+    path: &Path,
+    user_id: &str,
+    workspace_defaults: Option<&desktop_policy::WorkspaceDefaults>,
+) -> Vec<OpenWithChoice> {
+    if path.is_dir() {
+        return Vec::new();
+    }
+    let default_id = match resolve_for(path, user_id, workspace_defaults) {
+        DocumentTarget::App { app, .. } => Some(app.package_id),
+        DocumentTarget::HostApp { app } => Some(desktop_policy::host_app_id(&app.desktop_id)),
+        _ => None,
+    };
+    let kinds = resource_kinds(path);
+    let mut choices: Vec<(bool, OpenWithChoice)> = launcher::resource_candidates()
+        .into_iter()
+        .filter(|candidate| kinds.iter().any(|kind| candidate.handles(kind)))
+        .map(|candidate| {
+            let host = candidate.is_host();
+            (
+                host,
+                OpenWithChoice {
+                    is_default: default_id.as_deref() == Some(candidate.package_id.as_str()),
+                    id: candidate.package_id,
+                    name: candidate.display_name,
+                },
+            )
+        })
+        .collect();
+    choices.sort_by(|(a_host, a), (b_host, b)| {
+        b.is_default
+            .cmp(&a.is_default)
+            .then_with(|| a_host.cmp(b_host))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    choices.dedup_by(|(_, a), (_, b)| a.id == b.id);
+    choices.into_iter().map(|(_, choice)| choice).collect()
+}
+
+/// Open `path` with exactly `app_id`, which must claim its type now. A Tilo
+/// package goes through the same claim check, read grant and placement as
+/// activation; a host application is launched with the file.
+///
+/// # Errors
+///
+/// [`OpenError::NoHandler`] when `app_id` is gone or does not claim the type,
+/// else the same conditions as [`open_in_workspace`].
+pub fn open_with_app(path: &Path, chrome: &Chrome, app_id: &str) -> Result<Opened, OpenError> {
+    let no_handler = || OpenError::NoHandler {
+        path: path.to_path_buf(),
+        ext: extension_of(path),
+    };
+    let kinds = resource_kinds(path);
+    let claims = launcher::resource_candidates().iter().any(|candidate| {
+        candidate.package_id == app_id && kinds.iter().any(|kind| candidate.handles(kind))
+    });
+    if !claims {
+        return Err(no_handler());
+    }
+    if let Some(desktop_id) = desktop_policy::host_desktop_id(app_id) {
+        let app = crate::shell::host_apps::find(desktop_id).ok_or_else(no_handler)?;
+        return open_with_host(&app, path, chrome, None);
+    }
+    let app = launcher::gui_apps()
+        .into_iter()
+        .find(|app| app.package_id == app_id)
+        .ok_or_else(no_handler)?;
+    open_package(app, path, chrome, None)
+}
+
+/// Make `app_id` the person's default for `path`'s type: by MIME type when
+/// the app claims it, else by extension.
+///
+/// # Errors
+///
+/// A message naming the app when it claims neither, or the choice could not
+/// be saved.
+pub fn set_personal_default(path: &Path, app_id: &str) -> Result<(), String> {
+    let candidates = launcher::resource_candidates();
+    let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
+    let mut personal = desktop_policy::PersonalDefaults::load();
+    let mut last_error = None;
+    for kind in resource_kinds(path) {
+        match personal.set(kind, app_id.to_string(), &resolver) {
+            Ok(()) => {
+                personal.save().map_err(|error| error.to_string())?;
+                launcher::publish_host_mimeapps();
+                return Ok(());
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.map_or_else(
+        || {
+            format!(
+                "{} has no file type to choose an application for",
+                path.display()
+            )
+        },
+        |error| error.to_string(),
+    ))
 }
 
 /// A document opened elsewhere belongs *with* whatever asked for it —
@@ -1264,6 +1413,79 @@ mod tests {
         );
 
         file_explorer::files_app::clear_document_opener();
+        clear_launch_env();
+    }
+
+    /// Files' "Open With" is the compositor's resolver: every package that
+    /// claims the type, the activation default first; a pick launches exactly
+    /// that package with the file; "Always" makes the next activation use it.
+    #[test]
+    #[serial_test::serial(process_env, launch_events)]
+    fn open_with_lists_claiming_packages_launches_the_pick_and_remembers_always() {
+        use file_explorer::open_with::OpenWithRoute as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let apps = tmp.path().join("apps");
+        std::fs::create_dir_all(&apps).unwrap();
+        install(&apps, "so.tilo.pdf-viewer", "PDF Viewer", &["pdf"]);
+        install(&apps, "so.tilo.zine", "Zine", &["pdf"]);
+        install(&apps, "so.tilo.text-editor", "Text Editor", &["md"]);
+        let files = tmp.path().join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let doc = files.join("manual.pdf");
+        std::fs::write(&doc, b"x").unwrap();
+        let config = tmp.path().join("config");
+        let data = tmp.path().join("data");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", &apps);
+        env.set("XDG_CONFIG_HOME", &config);
+        env.set("XDG_DATA_HOME", &data);
+        env.set("XDG_DATA_DIRS", &data);
+        env.set("XDG_CONFIG_DIRS", &config);
+        let log = install_recording_launcher(tmp.path(), &mut env);
+        reset_session_state();
+        let chrome = chrome_with_workspace();
+
+        let route = crate::shell::ShellOpenWithRoute { chrome };
+        let candidates = route.candidates(&doc);
+        let packages: Vec<(&str, bool)> = candidates
+            .apps
+            .iter()
+            .filter(|app| desktop_policy::host_desktop_id(&app.id).is_none())
+            .map(|app| (app.id.as_str(), app.is_default))
+            .collect();
+        assert_eq!(
+            packages,
+            vec![("so.tilo.pdf-viewer", true), ("so.tilo.zine", false)],
+            "only claiming packages, the activation default first"
+        );
+        assert_eq!(candidates.apps[0].id, "so.tilo.pdf-viewer");
+        assert_eq!(candidates.type_label, ".pdf files");
+
+        route.open_with(&doc, "so.tilo.zine").unwrap();
+        let commands = launched_commands(&log, 1);
+        assert!(
+            commands[0].contains("--app-id so.tilo.zine")
+                && commands[0].contains(&format!("--open {}", doc.display())),
+            "the pick launches with the file: {}",
+            commands[0]
+        );
+        assert!(
+            route.open_with(&doc, "so.tilo.text-editor").is_err(),
+            "an app that does not claim the type is refused"
+        );
+
+        route.set_default(&doc, "so.tilo.zine").unwrap();
+        assert!(matches!(
+            resolve_for(&doc, "", None),
+            DocumentTarget::App { ref app, .. } if app.package_id == "so.tilo.zine"
+        ));
+        assert!(
+            route.candidates(&doc).apps[0].is_default
+                && route.candidates(&doc).apps[0].id == "so.tilo.zine"
+        );
+        assert!(route.set_default(&doc, "so.tilo.text-editor").is_err());
         clear_launch_env();
     }
 

@@ -130,6 +130,22 @@ pub enum FileCommand {
     CancelNearby {
         handle: ui::collaboration::NearbyTransferHandle,
     },
+    /// Open the "Open With" flyout for the single selected file. Handled by
+    /// the menu routing (opens a submenu), like the templates flyout.
+    OpenWithMenu,
+    /// Open `path` with exactly `app_id`; with `always`, first make that app
+    /// the person's default for the file's type.
+    OpenWith {
+        path: PathBuf,
+        app_id: String,
+        always: bool,
+    },
+    /// Open the searchable app chooser for the single selected file.
+    OpenWithOther,
+    /// Go to the folder holding `path` with it selected (from Recent).
+    RevealInFolder(PathBuf),
+    /// Remove `path` from the Recent list; the file itself is untouched.
+    ForgetRecent(PathBuf),
     /// Open the "New File" flyout populated from the Templates directory.
     /// Handled by the app's menu routing (opens a submenu), not applied.
     OpenTemplatesMenu,

@@ -326,6 +326,9 @@ pub struct StartupInputs {
 pub struct HostedFileServices {
     pub thumbnails: Option<Arc<ThumbnailService>>,
     pub document_opener: Option<Rc<RefCell<DocumentOpener>>>,
+    /// Lists and launches "Open With" applications; absent means the
+    /// submenu offers nothing rather than guessing.
+    pub open_with: Option<crate::open_with::SharedOpenWithRoute>,
 }
 
 enum FileServices {
@@ -555,6 +558,15 @@ pub struct FileExplorerWidget {
     thumbs: Option<Arc<ThumbnailService>>,
     /// App-lived memo turning a decoded thumbnail into a `peniko` image once, so
     /// a scrolling grid never rebuilds the GPU blob per frame.
+    /// Recently opened or changed files, newest first.
+    recent: crate::recent::RecentFiles,
+    /// "Open With" candidates per file type, asked of the host once per
+    /// listing rather than once per row.
+    open_with_cache: RefCell<HashMap<String, crate::open_with::OpenWithCandidates>>,
+    /// The shared searchable picker behind "Other Application…"; its rows are
+    /// the published open-with actions of [`Self::app_chooser_target`].
+    app_chooser: ui::widget::command_palette::CommandPalette,
+    app_chooser_target: Option<PathBuf>,
     thumb_imgs: Rc<RefCell<HashMap<ThumbKey, PenikoImage>>>,
 }
 
@@ -744,6 +756,10 @@ impl FileExplorerWidget {
         };
         let trusted_humans = inputs.trusted_humans;
         let startup_accounts = injected.then_some(remote_accounts);
+        let config_dir_recent = config_dir
+            .as_deref()
+            .map(crate::recent::RecentFiles::load)
+            .unwrap_or_default();
         Self {
             services,
             startup_accounts,
@@ -854,6 +870,10 @@ impl FileExplorerWidget {
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
             thumbs,
+            recent: config_dir_recent,
+            open_with_cache: RefCell::new(HashMap::new()),
+            app_chooser: ui::widget::command_palette::CommandPalette::commands(),
+            app_chooser_target: None,
             thumb_imgs: Rc::new(RefCell::new(HashMap::new())),
         }
     }
@@ -1009,7 +1029,7 @@ impl FileExplorerWidget {
     fn update_toolbar(&mut self) {
         let can_back = !self.history.is_empty();
         let can_forward = !self.forward.is_empty();
-        let can_up = self.current_path.parent().is_some();
+        let can_up = self.current_path.parent().is_some() && !self.is_recent_view();
         self.toolbar.set_context(
             self.current_path.clone(),
             self.home_path.clone(),
@@ -1138,7 +1158,9 @@ impl FileExplorerWidget {
     }
 
     fn empty_state_message(&self) -> String {
-        if self.is_trash_view() {
+        if self.is_recent_view() {
+            t("files-empty-recent")
+        } else if self.is_trash_view() {
             t("files-empty-trash")
         } else {
             t("files-empty-folder")
@@ -1585,6 +1607,9 @@ impl FileExplorerWidget {
     }
 
     fn read_directory(&self, path: &Path) -> Result<Vec<Entry>, String> {
+        if crate::recent::is_location(path) {
+            return Ok(self.recent_entries());
+        }
         if self.startup_accounts.is_some() {
             crate::model::read_dir_with_workspace_roots(path, &self.workspace_roots)
         } else {
@@ -1603,11 +1628,14 @@ impl FileExplorerWidget {
         // A new directory starts at the top; the persisted scroll offset only
         // survives *structural* rebuilds within the same directory.
         self.scroll_offset.set((0.0, 0.0));
+        self.invalidate_open_with();
+        self.close_app_chooser();
         // Opening the Trash for the first time (nothing deleted yet) should show
         // an empty folder, not a "no such directory" error, so materialise it.
         if matches!(self.services, FileServices::Legacy) && fileops::is_trash_dir(&path) {
             let _ = fileops::ensure_trash_dir();
         }
+        let recent = crate::recent::is_location(&path);
         let loaded = if let Some((archive_path, prefix)) = crate::archive::location(&path) {
             crate::archive::list_directory(&archive_path, &prefix)
                 .map(|archive_entries| {
@@ -1654,7 +1682,10 @@ impl FileExplorerWidget {
                 if !self.show_hidden {
                     entries.retain(|e| !e.name.starts_with('.'));
                 }
-                sort_entries(self.sort_by, self.sort_order, &mut entries);
+                // Recent is ordered by when you last used each item.
+                if !recent {
+                    sort_entries(self.sort_by, self.sort_order, &mut entries);
+                }
                 self.entries = entries;
             }
             Err(e) => {
@@ -1677,6 +1708,9 @@ impl FileExplorerWidget {
 
     /// Go to the parent directory (history-aware).
     pub fn back(&mut self) {
+        if self.is_recent_view() {
+            return;
+        }
         if let Some(parent) = self.current_path.parent() {
             self.navigate(parent.to_path_buf());
         }
@@ -1778,7 +1812,9 @@ impl FileExplorerWidget {
         if !self.show_hidden {
             entries.retain(|entry| !entry.name.starts_with('.'));
         }
-        sort_entries(self.sort_by, self.sort_order, &mut entries);
+        if !self.is_recent_view() {
+            sort_entries(self.sort_by, self.sort_order, &mut entries);
+        }
         if entries == self.entries {
             return false;
         }
@@ -1896,6 +1932,22 @@ impl FileExplorerWidget {
             )
         {
             self.status = Some(t("files-archive-read-only"));
+            return true;
+        }
+        // Recent is not a folder: nothing can be created in, pasted into or
+        // run from it. Items keep working (open, copy, rename, drag).
+        if self.is_recent_view()
+            && matches!(
+                &cmd,
+                FileCommand::NewFolder
+                    | FileCommand::NewFromTemplate(_)
+                    | FileCommand::Paste
+                    | FileCommand::OpenTerminal
+                    | FileCommand::ExtractHere
+                    | FileCommand::CompressSelection
+            )
+        {
+            self.status = Some(t("files-recent-not-a-folder"));
             return true;
         }
         match cmd {
@@ -2864,6 +2916,21 @@ impl FileExplorerWidget {
                 });
                 true
             }
+            FileCommand::OpenWithMenu => {
+                self.open_open_with_submenu(self.last_cursor);
+                true
+            }
+            FileCommand::OpenWith {
+                path,
+                app_id,
+                always,
+            } => self.apply_open_with(&path, &app_id, always),
+            FileCommand::OpenWithOther => {
+                self.open_app_chooser();
+                true
+            }
+            FileCommand::RevealInFolder(path) => self.apply_reveal_in_folder(&path),
+            FileCommand::ForgetRecent(path) => self.apply_forget_recent(&path),
             FileCommand::NewFromTemplate(template) => self.apply_new_from_template(&template),
             FileCommand::ArmDrag { path, is_dir, at } => self.apply_arm_drag(path, is_dir, at),
             FileCommand::BeginDrag { path, is_dir } => self.apply_begin_drag(path, is_dir),
@@ -3127,6 +3194,7 @@ impl FileExplorerWidget {
     fn apply_new_from_template(&mut self, template: &Path) -> bool {
         match templates::create_from_template(template, &self.current_path) {
             Ok(path) => {
+                self.note_recent(&path, crate::recent::RecentUse::Changed);
                 self.refresh();
                 if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
                     self.selection.select_only(i);
@@ -3902,9 +3970,12 @@ impl FileExplorerWidget {
             )),
         };
         match result {
-            Some(Ok(())) => {}
+            Some(Ok(())) => self.note_recent(&path, crate::recent::RecentUse::Opened),
             Some(Err(reason)) => self.status = Some(reason),
-            None => runner.open_default(&path)?,
+            None => {
+                runner.open_default(&path)?;
+                self.note_recent(&path, crate::recent::RecentUse::Opened);
+            }
         }
         Ok(true)
     }
@@ -4018,7 +4089,9 @@ impl FileExplorerWidget {
         if rect.width() <= 1.0 || rect.height() <= 1.0 {
             return;
         }
-        let (icon, msg) = if self.is_trash_view() {
+        let (icon, msg) = if self.is_recent_view() {
+            (ui::icons::Icon::History, self.empty_state_message())
+        } else if self.is_trash_view() {
             (ui::icons::Icon::Trash2, self.empty_state_message())
         } else {
             (ui::icons::Icon::Folder, self.empty_state_message())
@@ -4384,7 +4457,8 @@ impl FileExplorerWidget {
             return false;
         }
         match fileops::rename(&path, &new_name) {
-            Ok(_) => {
+            Ok(renamed) => {
+                self.recent_moved(&path, &renamed);
                 self.end_rename_editor();
                 self.refresh();
                 self.status = Some(t("files-renamed"));
@@ -4650,6 +4724,12 @@ impl FileExplorerWidget {
         let in_trash = self.is_trash_view();
         let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
 
+        // Recent gathers files from many folders: it is for finding and
+        // reopening, not for editing in place.
+        if self.is_recent_view() {
+            return self.recent_menu_spec();
+        }
+
         // An archive is a read-only folder view. Synthetic member paths must
         // never leak into filesystem mutation commands such as rename, trash,
         // drag, paste, sharing, or terminal launch.
@@ -4694,6 +4774,9 @@ impl FileExplorerWidget {
                 t("files-menu-open"),
                 self.selection.primary().map(FileCommand::Activate),
             ));
+            if self.open_with_available() {
+                spec.push((t("files-menu-open-with"), Some(FileCommand::OpenWithMenu)));
+            }
             spec.push((t("files-menu-rename"), Some(FileCommand::Rename)));
             spec.push((String::new(), None));
             spec.push((t("files-menu-cut"), Some(FileCommand::Cut)));
@@ -5594,6 +5677,11 @@ impl FileExplorerWidget {
                 }
                 return true;
             }
+            if let Some(FileCommand::OpenWithMenu) = cmd {
+                let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
+                self.open_open_with_submenu(anchor);
+                return true;
+            }
             self.context_menu.close();
             if let Some(cmd) = cmd {
                 self.apply_command(cmd);
@@ -5662,6 +5750,13 @@ impl FileExplorerWidget {
         } else if let Some(FileCommand::OpenShortcutsMenu) = command {
             let rect = self.context_menu.get_rect();
             self.open_shortcuts_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
+        } else if let Some(FileCommand::OpenWithMenu) = command {
+            let rect = self.context_menu.get_rect();
+            let row = self
+                .context_menu
+                .item_rect(index)
+                .map_or(rect.y0 + 28.0, |row| row.y0);
+            self.open_open_with_submenu(Point::new(rect.x1 - 6.0, row));
         } else {
             self.submenu.close();
             self.context_menu.close();
@@ -6709,7 +6804,7 @@ impl FileExplorerWidget {
             &"",
         ) {
             folder.actions.push(spec.with_contract(ActionContract {
-                availability: if self.current_path.exists() {
+                availability: if self.current_path.exists() || self.is_recent_view() {
                     Availability::Available
                 } else {
                     Availability::Unavailable {
@@ -6734,6 +6829,7 @@ impl FileExplorerWidget {
             ("up", "Parent folder", "up", OperationKind::View),
             ("back", "Back", "back", OperationKind::View),
             ("forward", "Forward", "forward", OperationKind::View),
+            ("recent", "Show recent files", "recent", OperationKind::View),
             (
                 "open-terminal",
                 "Open terminal here",
@@ -7000,6 +7096,7 @@ impl FileExplorerWidget {
                 .actions
                 .push(spec.with_contract(ActionContract::view()));
         }
+        self.append_open_with_actions(entry, &resource_id, &mut resource);
         if !self.is_trash_view() {
             let rename_resource_id = resource_id.clone();
             resource.actions.push(
@@ -7392,6 +7489,7 @@ impl Widget for FileExplorerWidget {
             "files.paste",
             "files.new-from-template",
             "files.open",
+            "files.open-with",
             "files.reveal-record",
             "files.folder-command",
             "files.entry-command",
@@ -7696,6 +7794,7 @@ impl Widget for FileExplorerWidget {
                     .actions
                     .push(spec.with_contract(ActionContract::view()));
             }
+            self.append_open_with_actions(entry, &resource_id, &mut resource);
             if !self.is_trash_view() {
                 let rename_resource_id = resource_id.clone();
                 resource.actions.push(
@@ -8041,6 +8140,9 @@ impl Widget for FileExplorerWidget {
                     .ok_or_else(|| "file location is no longer available".to_string())?;
                 self.open_path(target);
             }
+            (OperationKind::Effect, "files.open-with") => {
+                self.invoke_open_with(payload)?;
+            }
             (OperationKind::View, "files.reveal-record") => {
                 let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 let record_id = uuid::Uuid::parse_str(&value)
@@ -8066,9 +8168,11 @@ impl Widget for FileExplorerWidget {
             (kind, "files.folder-command") => {
                 let verb: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 let expected_kind = match verb.as_str() {
-                    "up" | "back" | "forward" | "list" | "grid" | "sort-name" | "sort-size"
-                    | "sort-type" | "sort-modified" | "sort-ascending" | "sort-descending"
-                    | "zoom-in" | "zoom-out" | "hidden" | "shortcuts" => OperationKind::View,
+                    "up" | "back" | "forward" | "recent" | "list" | "grid" | "sort-name"
+                    | "sort-size" | "sort-type" | "sort-modified" | "sort-ascending"
+                    | "sort-descending" | "zoom-in" | "zoom-out" | "hidden" | "shortcuts" => {
+                        OperationKind::View
+                    }
                     "add-favorite" | "remove-favorite" | "empty-trash" | "terminal"
                     | "undo-trash" => OperationKind::Effect,
                     _ => return Ok(false),
@@ -8080,6 +8184,7 @@ impl Widget for FileExplorerWidget {
                     "up" => self.go_up(),
                     "back" => self.history_back(),
                     "forward" => self.history_forward(),
+                    "recent" => self.navigate(crate::recent::location()),
                     "list" => self.set_view_mode(ViewMode::List),
                     "grid" => self.set_view_mode(ViewMode::Grid),
                     "sort-name" => self.set_sort_by(SortBy::Name),
@@ -8743,6 +8848,7 @@ impl Widget for FileExplorerWidget {
         // floats above everything else.
         self.draw_drop_highlight(scene, transform, theme);
         self.draw_pin_ghost(scene, transform, text_renderer, theme);
+        self.draw_app_chooser(scene, transform, text_renderer, theme, presence);
     }
 
     // Primary widget event dispatcher; pointer, keyboard, drag, menu, and
@@ -8766,6 +8872,18 @@ impl Widget for FileExplorerWidget {
         use winit::event::{ElementState, MouseButton, WindowEvent};
         self.poll_share_result();
         self.poll_history_result();
+        if self.app_chooser_open() {
+            self.route_app_chooser_event(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                path,
+                focus_target,
+            );
+            *handled = true;
+            return;
+        }
         let panel_was_open = self.collab_panel.is_some();
         // Track the cursor for menu placement + hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -8983,6 +9101,9 @@ impl Widget for FileExplorerWidget {
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(invocation) = self.app_chooser.take_control_invocation() {
+            return Some(invocation);
+        }
         self.state_retry.take_control_invocation().or_else(|| {
             self.children_mut()
                 .into_iter()
@@ -9001,7 +9122,7 @@ impl Widget for FileExplorerWidget {
     }
 
     fn traps_focus(&self) -> bool {
-        self.collab_panel.is_some()
+        self.collab_panel.is_some() || self.app_chooser_open()
     }
 
     fn is_focusable(&self) -> bool {
@@ -9022,6 +9143,9 @@ impl Widget for FileExplorerWidget {
     )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+        if self.app_chooser_open() {
+            return self.app_chooser.accessibility();
+        }
         if let Some(panel) = &self.collab_panel {
             let mut children = Vec::with_capacity(panel.lines.len() + 2);
             children
@@ -9155,6 +9279,9 @@ impl AppWidget for FileExplorerWidget {
         self.host_intent.take()
     }
 }
+
+#[path = "files_app/open_with_recent.rs"]
+mod open_with_recent;
 
 #[cfg(test)]
 #[path = "files_app/tests.rs"]
