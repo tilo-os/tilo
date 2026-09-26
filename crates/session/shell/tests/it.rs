@@ -55,6 +55,8 @@ mod cursor_protocol;
 mod dbus_runtime_context;
 #[path = "desktop_env_interactions.rs"]
 mod desktop_env_interactions;
+#[path = "display_layout_switcher.rs"]
+mod display_layout_switcher;
 #[path = "dmabuf_commit_barrier.rs"]
 mod dmabuf_commit_barrier;
 #[path = "dmabuf_direct_capture_path.rs"]

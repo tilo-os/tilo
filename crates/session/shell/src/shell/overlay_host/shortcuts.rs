@@ -209,7 +209,7 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(&'stat
         fixed(FixedChordAction::WorkspaceWheel),
         editable("Lock", ShortcutAction::Lock),
         fixed(FixedChordAction::Screenshot),
-        fixed(FixedChordAction::WirelessDisplay),
+        fixed(FixedChordAction::DisplayLayout),
         fixed(FixedChordAction::CaptureScreenshot),
         fixed(FixedChordAction::OpenTerminal),
         fixed(FixedChordAction::PictureInPicture),

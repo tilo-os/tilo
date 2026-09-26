@@ -1338,6 +1338,7 @@ enum AccessibleOverlay {
     RoomActivity,
     QuickSettings,
     ShortcutHelp,
+    DisplayLayouts,
 }
 
 /// The result of asking whether the global Print Screen shortcut may change
@@ -2949,6 +2950,10 @@ impl ShellOverlayHost {
     fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
         let mut order = Vec::with_capacity(7);
         let flags = self.overlay_flags();
+        // The display sheet is modal and drawn above every other overlay.
+        if flags.projection {
+            order.push(AccessibleOverlay::DisplayLayouts);
+        }
         if self.tab_menu.is_open() {
             order.push(AccessibleOverlay::TabContextMenu);
         }
@@ -12327,8 +12332,9 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // Win+P — wireless display picker. Super specifically, so an
-        // application's Ctrl+P remains Print.
+        // Win+P — the display layout sheet. Super specifically, so an
+        // application's Ctrl+P remains Print. Once open, the sheet owns the
+        // chord itself: pressing it again moves to the next layout.
         if super_down
             && !shift_down
             && let Key::Character(s) = logical_key
@@ -12337,7 +12343,7 @@ impl ShellOverlayHost {
         {
             if !repeat {
                 let mut st = chrome.borrow_mut();
-                st.overlays.projection = !st.overlays.projection;
+                st.overlays.projection = true;
                 st.bump();
             }
             *handled = true;
@@ -18009,6 +18015,9 @@ impl Widget for ShellOverlayHost {
                         }
                     }
                 }
+                AccessibleOverlay::DisplayLayouts => {
+                    root.children.push(self.projection_overlay.accessibility());
+                }
                 AccessibleOverlay::ShortcutHelp => {
                     use settings_store::hardware::ShortcutAction;
                     let shortcuts = &self.shortcut_config;
@@ -18211,7 +18220,9 @@ impl Widget for ShellOverlayHost {
                 }
                 _ => None,
             },
-            AccessibleOverlay::MemberSheet | AccessibleOverlay::ShortcutHelp => None,
+            AccessibleOverlay::MemberSheet
+            | AccessibleOverlay::ShortcutHelp
+            | AccessibleOverlay::DisplayLayouts => None,
         }
     }
 
@@ -18251,7 +18262,8 @@ impl Widget for ShellOverlayHost {
             }
             AccessibleOverlay::Overview
             | AccessibleOverlay::MemberSheet
-            | AccessibleOverlay::ShortcutHelp => false,
+            | AccessibleOverlay::ShortcutHelp
+            | AccessibleOverlay::DisplayLayouts => false,
         }
     }
 
@@ -27560,7 +27572,7 @@ mod palette_dispatch_tests {
             "Lock:Super+L",
             "Quick Settings:Super+Q",
             "Workspace wheel:Super+S",
-            "Wireless display:Super+P",
+            "Display layout:Super+P",
             "Capture screenshot:Super+Shift+S",
             "Picture in picture:Super+Shift+P",
             "Save recent replay:Super+Shift+R",
@@ -32360,7 +32372,7 @@ mod tests {
     }
 
     #[test]
-    fn super_p_opens_and_toggles_the_projection_sheet() {
+    fn super_p_opens_the_display_sheet_and_escape_closes_it() {
         let mut h = build_harness();
         let sup = Modifiers::from(ModifiersState::SUPER);
         assert!(!h.chrome.borrow().overlays.projection);
@@ -32368,14 +32380,21 @@ mod tests {
         assert!(pump(&mut h, &key_press(Key::Character("p".into())), sup));
         assert!(
             h.chrome.borrow().overlays.projection,
-            "Win+P must open the OS-owned projection sheet"
+            "Win+P must open the OS-owned display sheet"
         );
 
         assert!(pump(&mut h, &key_press(Key::Character("p".into())), sup));
         assert!(
-            !h.chrome.borrow().overlays.projection,
-            "the same familiar chord closes the sheet again"
+            h.chrome.borrow().overlays.projection,
+            "pressing Win+P again moves between layouts; it does not close the sheet"
         );
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::Escape)),
+            Modifiers::default()
+        ));
+        assert!(!h.chrome.borrow().overlays.projection);
     }
 
     #[test]
