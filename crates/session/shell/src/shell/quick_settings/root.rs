@@ -38,6 +38,8 @@ fn f32v(value: f64) -> f32 {
 pub enum RootAction {
     None,
     OpenSettings,
+    /// The active workspace's app grants and enforced access.
+    OpenPrivacy,
     OpenPowerMenu,
     Enter(QsLevel),
     Changed(PendingRootActions),
@@ -54,6 +56,79 @@ pub struct PendingRootActions {
     pub mobile: Option<bool>,
     pub night_light: Option<bool>,
     pub power: Option<PowerProfile>,
+}
+
+/// A labelled destination tile under the title band.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RootTile {
+    Settings,
+    Privacy,
+    History,
+    Power,
+}
+
+impl RootTile {
+    /// Paint order, left to right.
+    const ALL: [Self; 4] = [Self::Settings, Self::Privacy, Self::History, Self::Power];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Settings => "Settings",
+            Self::Privacy => "Privacy",
+            Self::History => "History",
+            Self::Power => "Power",
+        }
+    }
+    const fn semantic_name(self) -> &'static str {
+        match self {
+            Self::Settings => "settings",
+            Self::Privacy => "privacy",
+            Self::History => "history",
+            Self::Power => "power",
+        }
+    }
+    const fn description(self) -> &'static str {
+        match self {
+            Self::Settings => "Open device settings",
+            Self::Privacy => "App grants and enforced access for this workspace",
+            Self::History => "Notification history",
+            Self::Power => "Lock, log out, restart or shut down",
+        }
+    }
+    const fn icon(self) -> ui::icons::Icon {
+        match self {
+            Self::Settings => ui::icons::Icon::Settings2,
+            Self::Privacy => ui::icons::Icon::Shield,
+            Self::History => ui::icons::Icon::History,
+            Self::Power => ui::icons::Icon::Power,
+        }
+    }
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|tile| *tile == self).unwrap_or(0)
+    }
+    fn action(self) -> RootAction {
+        match self {
+            Self::Settings => RootAction::OpenSettings,
+            Self::Privacy => RootAction::OpenPrivacy,
+            Self::History => RootAction::Enter(QsLevel::Notifications),
+            Self::Power => RootAction::OpenPowerMenu,
+        }
+    }
+}
+
+/// One keyboard focus stop on the root page. [`QuickSettingsRoot::root_stops`]
+/// is the single ordered table that paint, keyboard activation, semantic
+/// targets and the accessibility tree all index, so a focus ring can never
+/// light one control while Enter activates another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RootStop {
+    Slider(usize),
+    Control(usize, QuickSettingsControl),
+    Devices,
+    Clipboard,
+    PowerProfile,
+    Edit,
+    Tile(RootTile),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -110,8 +185,6 @@ impl QuickSettingsRoot {
 
     const PAD: f64 = 16.0;
     const ACTION_COUNT: usize = 4;
-    const SLIDER_FOCUS_START: usize = 0;
-    const CONTROL_FOCUS_START: usize = Self::SLIDER_FOCUS_START + 2;
     const EDIT_ACTION_WIDTH: f64 = 76.0; // Text affordance width, not a spacing step.
     const EDIT_HELP_COPY: &'static str = "Drag to reorder · Ctrl + Up/Down";
 
@@ -229,9 +302,8 @@ impl QuickSettingsRoot {
     }
     pub fn reset_focus(&mut self) {
         // Opening the popover does not itself move keyboard focus. The first
-        // Tab selects the first visible control (Edit), matching ordinary
-        // desktop traversal instead of silently preselecting it and making
-        // that same Tab skip to Settings.
+        // Tab selects the first stop in `root_stops` (Brightness) instead of
+        // silently preselecting it and making that same Tab skip past it.
         self.keyboard_focus = None;
     }
 
@@ -270,50 +342,22 @@ impl QuickSettingsRoot {
         }
 
         let mut rects = Vec::new();
-        for (index, name) in ["brightness", "volume"].into_iter().enumerate() {
-            let (bar, _) = self.slider_geometry_for(self.panel, index);
-            rects.push((format!("quick_settings_{name}"), bar.inflate(6.0, 10.0)));
-        }
-        let controls = self.visible_controls(state);
-        for (index, control) in controls.iter().copied().enumerate() {
-            let card = self.control_card(self.panel, index, controls.len());
-            let name = Self::semantic_control_name(control);
-            let primary = if Self::has_details(control, state) {
-                Rect::new(
-                    card.x0,
-                    card.y0,
-                    self.control_details_rect(card).x0,
-                    card.y1,
-                )
-            } else {
-                card
-            };
-            rects.push((format!("quick_settings_{name}"), primary));
-            if Self::has_details(control, state) {
+        for stop in self.root_stops(state) {
+            let rect = self.stop_hit_rect(stop, state);
+            let name = Self::semantic_stop_name(stop);
+            if let RootStop::Control(_, control) = stop
+                && Self::has_details(control, state)
+            {
+                let details = self.control_details_rect(rect);
                 rects.push((
-                    format!("quick_settings_{name}_details"),
-                    self.control_details_rect(card),
+                    name.clone(),
+                    Rect::new(rect.x0, rect.y0, details.x0, rect.y1),
                 ));
+                rects.push((format!("{name}_details"), details));
+            } else {
+                rects.push((name, rect));
             }
         }
-        rects.push((
-            "quick_settings_power_profile".into(),
-            self.power_geometry(self.panel, state),
-        ));
-        rects.extend([
-            (
-                "quick_settings_edit".into(),
-                self.utility(self.panel, state, 0),
-            ),
-            (
-                "quick_settings_settings".into(),
-                self.utility(self.panel, state, 1),
-            ),
-            (
-                "quick_settings_power".into(),
-                self.utility(self.panel, state, 2),
-            ),
-        ]);
         rects
     }
 
@@ -525,16 +569,17 @@ impl QuickSettingsRoot {
                 + scaled(Self::EDIT_FOOTER)
         } else {
             let rows = n(self.visible_controls(state).len().div_ceil(2));
-            // Title band → tiles → sliders → cards → power: one section gap
-            // before each section that exists on this machine.
+            // Title band → tiles → sliders → cards → rows: one section gap
+            // before each section that exists on this machine. The Devices
+            // and Clipboard row and the power row sit one sibling gap apart.
             let sections = if rows > 0.0 { 4.0 } else { 3.0 };
-            scaled(PANEL_PAD * 2.0 + SECTION_GAP * sections)
+            scaled(PANEL_PAD * 2.0 + SECTION_GAP * sections + SIBLING_GAP)
                 + self.header_height_at(layout_scale)
                 + Self::sliders_height_at(layout_scale)
                 + self.action_height_at(layout_scale)
                 + rows * self.card_height_at(layout_scale)
                 + (rows - 1.0).max(0.0) * scaled(SIBLING_GAP)
-                + self.power_height_at(layout_scale)
+                + 2.0 * self.power_height_at(layout_scale)
         }
     }
     fn save_config(&mut self) {
@@ -749,28 +794,33 @@ impl QuickSettingsRoot {
         let face = self.slider_face_rect(panel, i);
         (SliderFace::new(face, 0.0).track_rect(), face.y0)
     }
-    pub(crate) fn power_geometry(&self, panel: Rect, state: &QuickSettingsState) -> Rect {
-        let count = if self.edit_mode {
-            self.edit_controls(state).len()
-        } else {
-            self.visible_controls(state).len()
-        };
-        let rows = if self.edit_mode {
-            count
-        } else {
-            count.div_ceil(2)
-        };
-        // One section gap under the cards — or straight under the sliders
-        // when this machine has no controls to show.
+    /// Bottom edge of the control cards — or of the sliders when this
+    /// machine has no controls to show.
+    fn cards_bottom(&self, panel: Rect, state: &QuickSettingsState) -> f64 {
+        let rows = self.visible_controls(state).len().div_ceil(2);
         let grid_top = self.grid_top(panel);
-        let y = if rows == 0 {
-            grid_top
+        if rows == 0 {
+            grid_top - self.scaled(SECTION_GAP)
         } else {
             grid_top
                 + n(rows) * self.card_height()
                 + n(rows.saturating_sub(1)) * self.scaled(SIBLING_GAP)
-                + self.scaled(SECTION_GAP)
-        };
+        }
+    }
+    /// Devices and Clipboard share one row, one section gap under the
+    /// cards. `index` 0 is Devices, 1 is Clipboard.
+    fn link_rect(&self, panel: Rect, state: &QuickSettingsState, index: usize) -> Rect {
+        let pad = self.scaled(PANEL_PAD);
+        let gap = self.scaled(SIBLING_GAP);
+        let y = self.cards_bottom(panel, state) + self.scaled(SECTION_GAP);
+        let w = (panel.width() - 2.0 * pad - gap) / 2.0;
+        let x = panel.x0 + pad + n(index.min(1)) * (w + gap);
+        Rect::new(x, y, x + w, y + self.power_height())
+    }
+    /// The power-profile row: one sibling gap under the Devices and
+    /// Clipboard row it shares its row style with.
+    pub(crate) fn power_geometry(&self, panel: Rect, state: &QuickSettingsState) -> Rect {
+        let y = self.link_rect(panel, state, 0).y1 + self.scaled(SIBLING_GAP);
         Rect::new(
             panel.x0 + self.scaled(PANEL_PAD),
             y,
@@ -787,27 +837,107 @@ impl QuickSettingsRoot {
         let y = self.actions_top(self.panel);
         Rect::new(x, y, x + w, y + self.action_height())
     }
-    /// The Edit button: a pointer-floor square on the trailing panel
-    /// padding, centred in the title band.
-    fn power_focus_index(control_count: usize) -> usize {
-        // Keep the trailing power-profile row after the two sliders and all
-        // visible controls. This is also the index used by keyboard
-        // activation; using a separate offset here makes the painted focus
-        // ring target a different control from Enter.
-        Self::CONTROL_FOCUS_START.saturating_add(control_count)
+    /// Every root focus stop, in keyboard order: the two sliders, the live
+    /// controls, Devices, Clipboard and the power profile, then Edit and the
+    /// four destination tiles. Controls come first so the first Tab after
+    /// opening reaches Brightness.
+    fn root_stops(&self, state: &QuickSettingsState) -> Vec<RootStop> {
+        let mut stops = vec![RootStop::Slider(0), RootStop::Slider(1)];
+        stops.extend(
+            self.visible_controls(state)
+                .into_iter()
+                .enumerate()
+                .map(|(index, control)| RootStop::Control(index, control)),
+        );
+        stops.extend([
+            RootStop::Devices,
+            RootStop::Clipboard,
+            RootStop::PowerProfile,
+            RootStop::Edit,
+        ]);
+        stops.extend(RootTile::ALL.map(RootStop::Tile));
+        stops
     }
-    fn utility(&self, panel: Rect, state: &QuickSettingsState, index: usize) -> Rect {
-        let _ = (panel, state);
-        match index {
-            // Edit is painted as a quiet square in the title band, but owns
-            // the same wide pointer target as a labelled action tile.
-            0 => {
-                let edit = self.edit_rect();
-                Rect::from_center_size(edit.center(), (self.action(0).width(), 44.0))
+    fn focused_stop(&self, state: &QuickSettingsState) -> Option<RootStop> {
+        if self.edit_mode {
+            return None;
+        }
+        self.keyboard_focus
+            .and_then(|index| self.root_stops(state).get(index).copied())
+    }
+    fn is_focused(&self, state: &QuickSettingsState, stop: RootStop) -> bool {
+        self.focused_stop(state) == Some(stop)
+    }
+    /// The rect a stop paints and publishes to accessibility.
+    fn stop_rect(&self, stop: RootStop, state: &QuickSettingsState) -> Rect {
+        match stop {
+            RootStop::Slider(index) => self.slider_face_rect(self.panel, index),
+            RootStop::Control(index, _) => {
+                self.control_card(self.panel, index, self.visible_controls(state).len())
             }
-            1 => self.action(0),
-            2 => self.action(3),
-            _ => Rect::ZERO,
+            RootStop::Devices => self.link_rect(self.panel, state, 0),
+            RootStop::Clipboard => self.link_rect(self.panel, state, 1),
+            RootStop::PowerProfile => self.power_geometry(self.panel, state),
+            RootStop::Edit => self.edit_rect(),
+            RootStop::Tile(tile) => self.action(tile.index()),
+        }
+    }
+    /// The pointer target of a stop. Edit is painted as a quiet square in
+    /// the title band but owns the same wide target as a labelled tile.
+    fn stop_hit_rect(&self, stop: RootStop, state: &QuickSettingsState) -> Rect {
+        match stop {
+            RootStop::Edit => {
+                Rect::from_center_size(self.edit_rect().center(), (self.action(0).width(), 44.0))
+            }
+            _ => self.stop_rect(stop, state),
+        }
+    }
+    fn semantic_stop_name(stop: RootStop) -> String {
+        match stop {
+            RootStop::Slider(0) => "quick_settings_brightness".into(),
+            RootStop::Slider(_) => "quick_settings_volume".into(),
+            RootStop::Control(_, control) => {
+                format!("quick_settings_{}", Self::semantic_control_name(control))
+            }
+            RootStop::Devices => "quick_settings_devices".into(),
+            RootStop::Clipboard => "quick_settings_clipboard".into(),
+            RootStop::PowerProfile => "quick_settings_power_profile".into(),
+            RootStop::Edit => "quick_settings_edit".into(),
+            RootStop::Tile(tile) => format!("quick_settings_{}", tile.semantic_name()),
+        }
+    }
+    /// What activating a stop does, shared by Enter/Space and a click on
+    /// the stop's body.
+    fn activate_stop(&mut self, stop: RootStop, state: &mut QuickSettingsState) -> RootAction {
+        match stop {
+            RootStop::Slider(_) => RootAction::None,
+            RootStop::Control(_, control) => {
+                let mut p = PendingRootActions::default();
+                Self::toggle(control, state, &mut p).unwrap_or(RootAction::Changed(p))
+            }
+            RootStop::Devices => RootAction::Enter(QsLevel::Devices),
+            RootStop::Clipboard => RootAction::Enter(QsLevel::Clipboard),
+            RootStop::PowerProfile => Self::cycle_power(state),
+            RootStop::Edit => {
+                self.edit_mode = true;
+                self.keyboard_focus = None;
+                RootAction::LayoutChanged
+            }
+            RootStop::Tile(tile) => tile.action(),
+        }
+    }
+    fn devices_subline(state: &QuickSettingsState) -> String {
+        match state.personal_devices {
+            None => "Audio and media".into(),
+            Some(1) => "1 device".into(),
+            Some(count) => format!("{count} devices"),
+        }
+    }
+    fn clipboard_subline(state: &QuickSettingsState) -> String {
+        match state.clipboard_items {
+            0 => "Empty".into(),
+            1 => "1 item".into(),
+            count => format!("{count} items"),
         }
     }
     fn edit_rect(&self) -> Rect {
@@ -957,10 +1087,7 @@ impl QuickSettingsRoot {
             // duplicates Done with an unexplained checkmark.
             self.edit_controls(state).len().saturating_add(2)
         } else {
-            // Brightness, Volume, controls, power profile, then three utilities.
-            Self::CONTROL_FOCUS_START
-                .saturating_add(self.visible_controls(state).len())
-                .saturating_add(4)
+            self.root_stops(state).len()
         };
         if count == 0 {
             return false;
@@ -1017,34 +1144,10 @@ impl QuickSettingsRoot {
             }
             return RootAction::None;
         }
-        let controls = self.visible_controls(state);
-        if i == Self::SLIDER_FOCUS_START || i == Self::SLIDER_FOCUS_START + 1 {
-            return RootAction::None;
+        match self.root_stops(state).get(i).copied() {
+            Some(stop) => self.activate_stop(stop, state),
+            None => RootAction::None,
         }
-        if let Some(c) = i
-            .checked_sub(Self::CONTROL_FOCUS_START)
-            .and_then(|index| controls.get(index))
-            .copied()
-        {
-            let mut p = PendingRootActions::default();
-            return Self::toggle(c, state, &mut p).unwrap_or(RootAction::Changed(p));
-        }
-        let base = Self::power_focus_index(controls.len());
-        if i == base {
-            return Self::cycle_power(state);
-        }
-        if i == base.saturating_add(1) {
-            self.edit_mode = true;
-            self.keyboard_focus = None;
-            return RootAction::LayoutChanged;
-        }
-        if i == base.saturating_add(2) {
-            return RootAction::OpenSettings;
-        }
-        if i == base.saturating_add(3) {
-            return RootAction::OpenPowerMenu;
-        }
-        RootAction::None
     }
     pub fn reorder_focused(&mut self, state: &QuickSettingsState, direction: i8) -> bool {
         if !self.edit_mode {
@@ -1095,21 +1198,19 @@ impl QuickSettingsRoot {
         state: &mut QuickSettingsState,
         direction: f32,
     ) -> Option<SliderCommit> {
-        let available = match self.keyboard_focus? {
-            Self::SLIDER_FOCUS_START => state.brightness_available,
-            i if i == Self::SLIDER_FOCUS_START + 1 => state.volume_available,
-            _ => return None,
+        let Some(RootStop::Slider(index)) = self.focused_stop(state) else {
+            return None;
+        };
+        let (available, value) = if index == 0 {
+            (state.brightness_available, &mut state.brightness)
+        } else {
+            (state.volume_available, &mut state.volume)
         };
         if !available {
             return None;
         }
-        let value = match self.keyboard_focus? {
-            Self::SLIDER_FOCUS_START => &mut state.brightness,
-            i if i == Self::SLIDER_FOCUS_START + 1 => &mut state.volume,
-            _ => return None,
-        };
         *value = (*value + direction * 0.05).clamp(0., 1.);
-        Some(if self.keyboard_focus == Some(Self::SLIDER_FOCUS_START) {
+        Some(if index == 0 {
             SliderCommit::Brightness(*value * 100.)
         } else {
             SliderCommit::Volume(*value * 100.)
@@ -1152,43 +1253,26 @@ impl QuickSettingsRoot {
                 return RootAction::Changed(PendingRootActions::default());
             }
         }
-        let controls = self.visible_controls(state);
-        for (i, c) in controls.iter().copied().enumerate() {
-            let card = self.control_card(panel, i, controls.len());
-            if !card.contains(point) {
-                continue;
-            }
-            if (matches!(c, QuickSettingsControl::Wifi) && state.radios.wifi_available
-                || matches!(
-                    c,
-                    QuickSettingsControl::Bluetooth | QuickSettingsControl::Vpn
-                ))
-                && self.card_drill_in_rect(card).contains(point)
-            {
-                return RootAction::Enter(match c {
-                    QuickSettingsControl::Wifi => QsLevel::Wifi,
-                    QuickSettingsControl::Bluetooth => QsLevel::Bluetooth,
-                    _ => QsLevel::Vpn,
-                });
-            }
-            let mut p = PendingRootActions::default();
-            return Self::toggle(c, state, &mut p).unwrap_or(RootAction::Changed(p));
+        let Some(stop) = self
+            .root_stops(state)
+            .into_iter()
+            .find(|stop| self.stop_hit_rect(*stop, state).contains(point))
+        else {
+            return RootAction::None;
+        };
+        if let RootStop::Control(_, control) = stop
+            && Self::has_details(control, state)
+            && self
+                .control_details_rect(self.stop_rect(stop, state))
+                .contains(point)
+        {
+            return RootAction::Enter(match control {
+                QuickSettingsControl::Wifi => QsLevel::Wifi,
+                QuickSettingsControl::Bluetooth => QsLevel::Bluetooth,
+                _ => QsLevel::Vpn,
+            });
         }
-        if self.power_geometry(panel, state).contains(point) {
-            return Self::cycle_power(state);
-        }
-        if self.utility(panel, state, 0).contains(point) {
-            self.edit_mode = true;
-            self.keyboard_focus = None;
-            return RootAction::LayoutChanged;
-        }
-        if self.utility(panel, state, 1).contains(point) {
-            return RootAction::OpenSettings;
-        }
-        if self.utility(panel, state, 2).contains(point) {
-            return RootAction::OpenPowerMenu;
-        }
-        RootAction::None
+        self.activate_stop(stop, state)
     }
     /// The footer's two buttons: one section gap under the last section,
     /// one sibling gap apart.
@@ -1319,9 +1403,10 @@ impl QuickSettingsRoot {
         // `surfaces.raised`) covered the inner half of that border and made
         // the tiles' own `raised` faces vanish into it.
         if self.edit_mode {
-            self.header(scene, transform, text, theme, cursor);
+            self.header(scene, transform, text, theme, cursor, state);
             self.draw_edit(scene, transform, text, theme, cursor, state);
         } else {
+            self.header(scene, transform, text, theme, cursor, state);
             self.draw_root(scene, transform, text, theme, cursor, state);
         }
     }
@@ -1332,6 +1417,7 @@ impl QuickSettingsRoot {
         text: &mut TextRenderer,
         theme: &Theme,
         cursor: Option<Point>,
+        state: &QuickSettingsState,
     ) {
         let colors = &theme.tokens.colors;
         // Panel title (HIG §9.6): `scale.base` semibold, centred on the
@@ -1368,7 +1454,7 @@ impl QuickSettingsRoot {
                 &ButtonFace::new(r, "")
                     .ghost()
                     .hovered(cursor.is_some_and(|p| r.contains(p)))
-                    .focused(self.keyboard_focus == Some(0))
+                    .focused(self.is_focused(state, RootStop::Edit))
                     .accessible_name(name),
             );
             // The standard glyph centred in the pointer-floor button.
@@ -1403,26 +1489,17 @@ impl QuickSettingsRoot {
         // original GNOME-inspired shell, rather than becoming unexplained
         // footer glyphs.  The visible label is part of the control: a
         // tooltip or accessibility tree is not sufficient discoverability.
-        for (i, (icon, label)) in [
-            (ui::icons::Icon::Settings2, "Settings"),
-            (ui::icons::Icon::Shield, "Privacy"),
-            (ui::icons::Icon::History, "History"),
-            (ui::icons::Icon::Power, "Power"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let r = self.action(i);
-            let power = i == 3;
-            // Focus index 0 is the Edit button and the tiles follow it
-            // (`activate_focused`), so tile `i` lights at `i + 1`.
+        for tile in RootTile::ALL {
+            let (icon, label) = (tile.icon(), tile.label());
+            let r = self.stop_rect(RootStop::Tile(tile), state);
+            let power = tile == RootTile::Power;
             paint_control(
                 scene,
                 transform,
                 theme,
                 r,
                 cursor.is_some_and(|p| r.contains(p)),
-                self.keyboard_focus == Some(i.saturating_add(1)),
+                self.is_focused(state, RootStop::Tile(tile)),
             );
             let color = if power {
                 colors.semantic.danger
@@ -1515,7 +1592,7 @@ impl QuickSettingsRoot {
                     }),
                 )
                 .hovered(available && cursor.is_some_and(|p| face.contains(p)))
-                .focused(self.keyboard_focus == Some(Self::SLIDER_FOCUS_START.saturating_add(i)))
+                .focused(self.is_focused(state, RootStop::Slider(i)))
                 .dragging(self.slider_drag == Some(i))
                 .disabled(!available),
             );
@@ -1534,17 +1611,34 @@ impl QuickSettingsRoot {
                 c,
             );
         }
+        for (stop, icon, label, detail) in [
+            (
+                RootStop::Devices,
+                ui::icons::Icon::Monitor,
+                "Devices",
+                Self::devices_subline(state),
+            ),
+            (
+                RootStop::Clipboard,
+                ui::icons::Icon::ClipboardPaste,
+                "Clipboard",
+                Self::clipboard_subline(state),
+            ),
+        ] {
+            self.draw_link_row(
+                scene, transform, text, theme, cursor, state, stop, icon, label, &detail,
+            );
+        }
         // The power row: battery glyph, profile and detail, chevron — all
         // on the row's centre line.
         let r = self.power_geometry(self.panel, state);
-        let power_focus = Self::power_focus_index(self.visible_controls(state).len());
         paint_control(
             scene,
             transform,
             theme,
             r,
             cursor.is_some_and(|p| r.contains(p)),
-            self.keyboard_focus == Some(power_focus),
+            self.is_focused(state, RootStop::PowerProfile),
         );
         let battery = leading_glyph(r, inset, glyph);
         ui::icons::draw_icon(
@@ -1608,6 +1702,75 @@ impl QuickSettingsRoot {
             None,
         );
     }
+    /// A drill-in row (Devices, Clipboard): leading glyph, label over a
+    /// detail line, trailing chevron — the power row's anatomy at half width.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a drill-in row's retained rendering needs its shared renderer context plus the stop, glyph and copy it presents"
+    )]
+    fn draw_link_row(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        cursor: Option<Point>,
+        state: &QuickSettingsState,
+        stop: RootStop,
+        icon: ui::icons::Icon,
+        label: &str,
+        detail: &str,
+    ) {
+        let colors = &theme.tokens.colors;
+        let glyph = Self::glyph_at(self.layout_scale);
+        let inset = self.scaled(CONTROL_INSET);
+        let r = self.stop_rect(stop, state);
+        paint_control(
+            scene,
+            transform,
+            theme,
+            r,
+            cursor.is_some_and(|p| r.contains(p)),
+            self.is_focused(state, stop),
+        );
+        let leading = leading_glyph(r, inset, glyph);
+        ui::icons::draw_icon(scene, transform, leading, icon, colors.text_primary, 1.5);
+        let chevron = trailing_glyph(r, inset, glyph);
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            chevron,
+            ui::icons::Icon::ChevronRight,
+            colors.text_dim,
+            1.5,
+        );
+        let text_x = leading.x1 + inset;
+        let text_width = f32v((chevron.x0 - self.scaled(RELATED_GAP) - text_x).max(1.0));
+        let label_size = type_size(text, theme.tokens.typography.scale.sm);
+        let detail_size = type_size(text, theme.tokens.typography.scale.xs);
+        let label = text.elide_to_width(label, label_size, text_width);
+        let detail = text.elide_to_width(detail, detail_size, text_width);
+        let (_, label_h) = text.measure_weighted(&label, label_size, None, TextWeight::Semibold);
+        let (_, detail_h) = text.measure(&detail, detail_size, None);
+        let block_top = centred_text_top(r, f64::from(label_h) + f64::from(detail_h));
+        text.draw_text_weighted(
+            scene,
+            &label,
+            label_size,
+            colors.text_primary,
+            transform.pre_translate((text_x, block_top).into()),
+            None,
+            TextWeight::Semibold,
+        );
+        text.draw_text(
+            scene,
+            &detail,
+            detail_size,
+            colors.text_dim,
+            transform.pre_translate((text_x, block_top + f64::from(label_h)).into()),
+            None,
+        );
+    }
     #[allow(
         clippy::too_many_arguments,
         reason = "a control's retained rendering needs its shared renderer context plus the explicit indexed control data for stable focus and geometry"
@@ -1633,7 +1796,7 @@ impl QuickSettingsRoot {
             theme,
             r,
             cursor.is_some_and(|p| r.contains(p)),
-            self.keyboard_focus == Some(Self::CONTROL_FOCUS_START.saturating_add(i)),
+            self.is_focused(s, RootStop::Control(i, c)),
         );
         let inset = self.scaled(CONTROL_INSET);
         let glyph = Self::glyph_at(self.layout_scale);
@@ -2012,10 +2175,6 @@ impl QuickSettingsRoot {
         };
         Button::paint(scene, transform, text, theme, &action_face);
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a declarative accessibility tree for every Quick Settings control"
-    )]
     pub fn accessibility_snapshot(&self, state: &QuickSettingsState) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
         // Every node carries the rect its paint and hit-test use, so a
@@ -2043,99 +2202,51 @@ impl QuickSettingsRoot {
             self.panel,
         );
         if !self.edit_mode {
-            root.children.push(bounded(
-                AccessNode::new(Role::Button)
-                    .with_name("Edit controls")
-                    .with_state(AccessState::new().focusable(true)),
-                self.edit_rect(),
-            ));
-        }
-        if !self.edit_mode {
-            for (index, name) in ["Settings", "Privacy", "History", "Power"]
-                .into_iter()
-                .enumerate()
-            {
-                root.children.push(bounded(
-                    AccessNode::new(Role::Button)
-                        .with_name(name)
-                        .with_state(AccessState::new().focusable(true)),
-                    self.action(index),
-                ));
-            }
-            for (index, (name, value)) in
-                [("Brightness", state.brightness), ("Volume", state.volume)]
-                    .into_iter()
-                    .enumerate()
-            {
-                root.children.push(bounded(
-                    AccessNode::new(Role::Slider)
-                        .with_name(name)
-                        .with_value(format!("{:.0}%", value * 100.0))
-                        .with_description("Use Left and Right Arrow to adjust")
-                        .with_state(AccessState::new().focusable(true)),
-                    self.slider_face_rect(self.panel, index),
-                ));
-            }
-        }
-        let controls = if self.edit_mode {
-            self.active_edit_controls(state)
-                .into_iter()
-                .chain(self.available_edit_controls(state))
-                .collect()
-        } else {
-            self.visible_controls(state)
-        };
-        let count = controls.len();
-        for (index, c) in controls.into_iter().enumerate() {
-            let role = if self.edit_mode || matches!(c, QuickSettingsControl::Vpn) {
-                Role::Button
-            } else {
-                Role::Switch
-            };
-            let mut node = AccessNode::new(role)
-                .with_name(Self::rendered_label(c, state))
-                .with_description(if self.edit_mode {
-                    if c.required() {
-                        "Required; use Control plus Arrow keys to reorder"
-                    } else {
-                        "Select to add or remove; use Control plus Arrow keys to reorder"
+            // Children follow the keyboard focus table, so an assistive
+            // technology's child index is the focus stop it names.
+            for stop in self.root_stops(state) {
+                let node = Self::stop_access_node(stop, state).with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.is_focused(state, stop)),
+                );
+                let node = match stop {
+                    RootStop::Control(_, control) if Self::is_switch(control) => {
+                        let mut node = node;
+                        node.state.checked = Some(Self::on(control, state));
+                        node
                     }
+                    _ => node,
+                };
+                root.children
+                    .push(bounded(node, self.stop_rect(stop, state)));
+            }
+            return root;
+        }
+        let controls: Vec<_> = self
+            .active_edit_controls(state)
+            .into_iter()
+            .chain(self.available_edit_controls(state))
+            .collect();
+        let active_count = self.active_edit_controls(state).len();
+        for (index, c) in controls.into_iter().enumerate() {
+            let node = AccessNode::new(Role::Button)
+                .with_name(Self::rendered_label(c, state))
+                .with_description(if c.required() {
+                    "Required; use Control plus Arrow keys to reorder"
                 } else {
-                    Self::subline(c, state)
+                    "Select to add or remove; use Control plus Arrow keys to reorder"
                 })
                 .with_state(AccessState::new().focusable(true));
-            if role == Role::Switch {
-                node.state.checked = Some(Self::on(c, state));
-            }
-            let rect = if self.edit_mode {
-                let active_count = self.active_edit_controls(state).len();
-                if index < active_count {
-                    self.card(self.panel, index, true)
-                } else {
-                    // index >= active_count on this branch, so this never saturates.
-                    self.available_edit_chip(state, index.saturating_sub(active_count))
-                }
+            let rect = if index < active_count {
+                self.card(self.panel, index, true)
             } else {
-                self.control_card(self.panel, index, count)
+                // index >= active_count on this branch, so this never saturates.
+                self.available_edit_chip(state, index.saturating_sub(active_count))
             };
             root.children.push(bounded(node, rect));
         }
-        if !self.edit_mode {
-            // The power-profile row is a real control with keyboard focus
-            // (`activate_focused`), so it must be in the tree too.
-            root.children.push(bounded(
-                AccessNode::new(Role::Button)
-                    .with_name("Change power profile")
-                    .with_value(format!(
-                        "{}, {}",
-                        state.power_profile.label(),
-                        power_detail(state)
-                    ))
-                    .with_state(AccessState::new().focusable(true)),
-                self.power_geometry(self.panel, state),
-            ));
-        }
-        if self.edit_mode {
+        {
             root.children.push(bounded(
                 AccessNode::new(Role::Button)
                     .with_name("Reset defaults")
@@ -2150,6 +2261,51 @@ impl QuickSettingsRoot {
             ));
         }
         root
+    }
+    const fn is_switch(control: QuickSettingsControl) -> bool {
+        !matches!(control, QuickSettingsControl::Vpn)
+    }
+    fn stop_access_node(stop: RootStop, state: &QuickSettingsState) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, Role};
+        match stop {
+            RootStop::Slider(index) => {
+                let (name, value) = if index == 0 {
+                    ("Brightness", state.brightness)
+                } else {
+                    ("Volume", state.volume)
+                };
+                AccessNode::new(Role::Slider)
+                    .with_name(name)
+                    .with_value(format!("{:.0}%", value * 100.0))
+                    .with_description("Use Left and Right Arrow to adjust")
+            }
+            RootStop::Control(_, control) => AccessNode::new(if Self::is_switch(control) {
+                Role::Switch
+            } else {
+                Role::Button
+            })
+            .with_name(Self::rendered_label(control, state))
+            .with_description(Self::subline(control, state)),
+            RootStop::Devices => AccessNode::new(Role::Button)
+                .with_name("Devices")
+                .with_value(Self::devices_subline(state))
+                .with_description("Personal devices, audio outputs and media routes"),
+            RootStop::Clipboard => AccessNode::new(Role::Button)
+                .with_name("Clipboard")
+                .with_value(Self::clipboard_subline(state))
+                .with_description("Private clipboard history"),
+            RootStop::PowerProfile => AccessNode::new(Role::Button)
+                .with_name("Change power profile")
+                .with_value(format!(
+                    "{}, {}",
+                    state.power_profile.label(),
+                    power_detail(state)
+                )),
+            RootStop::Edit => AccessNode::new(Role::Button).with_name("Edit controls"),
+            RootStop::Tile(tile) => AccessNode::new(Role::Button)
+                .with_name(tile.label())
+                .with_description(tile.description()),
+        }
     }
     pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
         match path {
@@ -2223,7 +2379,11 @@ mod tests {
         for required in [
             "quick_settings_edit",
             "quick_settings_settings",
+            "quick_settings_privacy",
+            "quick_settings_history",
             "quick_settings_power",
+            "quick_settings_devices",
+            "quick_settings_clipboard",
             "quick_settings_brightness",
             "quick_settings_volume",
             "quick_settings_network",
@@ -2377,40 +2537,120 @@ mod tests {
     fn normal_focus_order_matches_visible_actions_and_accessibility_paths() {
         let mut root = QuickSettingsRoot::default();
         let mut state = QuickSettingsState::default();
-
-        let utility_start =
-            QuickSettingsRoot::power_focus_index(root.visible_controls(&state).len()) + 1;
-        for (path, expected) in [
-            (utility_start, RootAction::LayoutChanged),
-            (utility_start + 1, RootAction::OpenSettings),
-            (utility_start + 2, RootAction::OpenPowerMenu),
+        root.panel = PANEL;
+        let stops = root.root_stops(&state);
+        let position = |stop| stops.iter().position(|s| *s == stop).unwrap();
+        for (stop, expected) in [
+            (RootStop::Devices, RootAction::Enter(QsLevel::Devices)),
+            (RootStop::Clipboard, RootAction::Enter(QsLevel::Clipboard)),
+            (RootStop::Tile(RootTile::Settings), RootAction::OpenSettings),
+            (RootStop::Tile(RootTile::Privacy), RootAction::OpenPrivacy),
+            (
+                RootStop::Tile(RootTile::History),
+                RootAction::Enter(QsLevel::Notifications),
+            ),
+            (RootStop::Tile(RootTile::Power), RootAction::OpenPowerMenu),
+            (RootStop::Edit, RootAction::LayoutChanged),
         ] {
+            let path = position(stop);
             assert!(root.focus_accessibility_path(&[path], &state));
-            assert_eq!(root.keyboard_focus, Some(path));
+            assert_eq!(root.focused_stop(&state), Some(stop));
             assert_eq!(root.activate_focused(PANEL, &mut state), expected);
-            if path == utility_start {
-                root.edit_mode = false;
-            }
+            root.edit_mode = false;
         }
     }
+
+    /// Every stop paints, publishes and activates as the same control: the
+    /// accessibility child at a focus index is the one node marked focused,
+    /// and it carries the rect that stop paints.
+    #[test]
+    fn each_focus_stop_marks_exactly_one_accessibility_node() {
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::default();
+        state.radios.wifi_available = true;
+        state.bluetooth_available = true;
+        root.panel = PANEL;
+        let stops = root.root_stops(&state);
+        for (index, stop) in stops.iter().copied().enumerate() {
+            assert!(root.focus_next(&state, false));
+            assert_eq!(root.keyboard_focus, Some(index));
+            let snapshot = root.accessibility_snapshot(&state);
+            assert_eq!(snapshot.children.len(), stops.len());
+            let focused: Vec<_> = snapshot
+                .children
+                .iter()
+                .enumerate()
+                .filter(|(_, node)| node.state.focused)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(focused, vec![index], "{stop:?}");
+            assert_eq!(
+                snapshot.children[index]
+                    .bounds
+                    .map(ui::AccessBounds::to_rect),
+                Some(root.stop_rect(stop, &state)),
+                "{stop:?}"
+            );
+        }
+        assert!(root.focus_next(&state, false));
+        assert_eq!(root.keyboard_focus, Some(0), "Tab wraps to Brightness");
+    }
+
+    #[test]
+    fn every_destination_tile_click_routes_to_its_action() {
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::default();
+        root.panel = PANEL;
+        for tile in RootTile::ALL {
+            let centre = root.stop_rect(RootStop::Tile(tile), &state).center();
+            assert_eq!(root.handle_click(centre, PANEL, &mut state), tile.action());
+        }
+        for (stop, level) in [
+            (RootStop::Devices, QsLevel::Devices),
+            (RootStop::Clipboard, QsLevel::Clipboard),
+        ] {
+            let centre = root.stop_rect(stop, &state).center();
+            assert_eq!(
+                root.handle_click(centre, PANEL, &mut state),
+                RootAction::Enter(level)
+            );
+        }
+    }
+
+    #[test]
+    fn devices_and_clipboard_rows_summarise_their_panes() {
+        let mut state = QuickSettingsState::default();
+        assert_eq!(
+            QuickSettingsRoot::devices_subline(&state),
+            "Audio and media"
+        );
+        state.personal_devices = Some(3);
+        assert_eq!(QuickSettingsRoot::devices_subline(&state), "3 devices");
+        state.personal_devices = Some(1);
+        assert_eq!(QuickSettingsRoot::devices_subline(&state), "1 device");
+        assert_eq!(QuickSettingsRoot::clipboard_subline(&state), "Empty");
+        state.clipboard_items = 4;
+        assert_eq!(QuickSettingsRoot::clipboard_subline(&state), "4 items");
+    }
+
     #[test]
     fn power_profile_focus_matches_its_enter_action() {
         let mut root = QuickSettingsRoot::default();
         let mut state = QuickSettingsState::default();
         state.radios.wifi_available = true;
         state.bluetooth_available = true;
-        let control_count = root.visible_controls(&state).len();
-        let focus = QuickSettingsRoot::power_focus_index(control_count);
+        let focus = root
+            .root_stops(&state)
+            .iter()
+            .position(|stop| *stop == RootStop::PowerProfile)
+            .unwrap();
 
-        // The renderer uses this same index for the visible Power profile
-        // row. Enter must therefore cycle that row, not the preceding control.
+        // The renderer lights the power-profile row at this same index.
+        // Enter must therefore cycle that row, not the preceding control.
         root.keyboard_focus = Some(focus);
+        assert!(root.is_focused(&state, RootStop::PowerProfile));
         let previous = state.power_profile;
         let action = root.activate_focused(PANEL, &mut state);
-        assert_eq!(
-            focus,
-            QuickSettingsRoot::CONTROL_FOCUS_START + control_count
-        );
         assert_eq!(
             action,
             RootAction::Changed(PendingRootActions {
@@ -2627,9 +2867,16 @@ mod tests {
         let mut root = QuickSettingsRoot::default();
         let state = QuickSettingsState::default();
         root.panel = Rect::new(0., 48., 400., 520.);
-        let actions: Vec<_> = (0..3)
-            .map(|index| root.utility(root.panel, &state, index))
-            .collect();
+        let actions: Vec<_> = [
+            RootStop::Edit,
+            RootStop::Tile(RootTile::Settings),
+            RootStop::Tile(RootTile::Privacy),
+            RootStop::Tile(RootTile::History),
+            RootStop::Tile(RootTile::Power),
+        ]
+        .into_iter()
+        .map(|stop| root.stop_hit_rect(stop, &state))
+        .collect();
         for action in &actions {
             assert!(action.width() >= 44. && action.height() >= 44.);
         }
@@ -2677,7 +2924,12 @@ mod tests {
         let panel = Rect::new(0., 48., 400., 520.);
         root.panel = panel;
         assert_eq!(
-            root.handle_click(root.utility(panel, &state, 2).center(), panel, &mut state),
+            root.handle_click(
+                root.stop_hit_rect(RootStop::Tile(RootTile::Power), &state)
+                    .center(),
+                panel,
+                &mut state
+            ),
             RootAction::OpenPowerMenu
         );
     }
@@ -2854,8 +3106,14 @@ mod tests {
             close(cards[2].y0 - cards[0].y1, s3),
             "card row ↔ card row is s3"
         );
+        let links = [
+            root.link_rect(panel, &state, 0),
+            root.link_rect(panel, &state, 1),
+        ];
+        assert!(close(links[0].y0 - cards[2].y1, s4), "cards → rows is s4");
+        assert!(close(links[1].x0 - links[0].x1, s3), "row ↔ row is s3");
         let power = root.power_geometry(panel, &state);
-        assert!(close(power.y0 - cards[2].y1, s4), "cards → power is s4");
+        assert!(close(power.y0 - links[0].y1, s3), "rows → power is s3");
         assert!(
             close(panel.y1 - power.y1, s4),
             "power → panel edge is the panel padding"
@@ -2886,6 +3144,7 @@ mod tests {
         let mut all = tiles;
         all.push(sliders);
         all.extend(cards.iter().copied());
+        all.extend(links);
         all.push(power);
         for (i, a) in all.iter().enumerate() {
             for b in &all[..i] {
