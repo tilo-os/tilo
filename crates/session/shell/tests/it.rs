@@ -133,6 +133,8 @@ mod permission_prompt_pump;
 mod permissions_tab_test;
 #[path = "persisted_app_placeholders.rs"]
 mod persisted_app_placeholders;
+#[path = "pointer_lock_protocol.rs"]
+mod pointer_lock_protocol;
 #[path = "portal_file_chooser_e2e.rs"]
 mod portal_file_chooser_e2e;
 #[path = "portal_grant_reaches_sandbox.rs"]
