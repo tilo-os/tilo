@@ -100,7 +100,7 @@ jobs:
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
-          tags: code.podesta.ai/qos/tilo-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}
+          tags: code.podesta.ai/qos/tilo-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Audit the immutable buildroot
         env:
           DIGEST: ${{ steps.buildroot.outputs.digest }}
@@ -167,6 +167,7 @@ jobs:
         with:
           token: ${{ github.token }}
           fetch-depth: 0
+          filter: blob:none
       - name: Install checksum-pinned Cosign
         uses: ./.forgejo/actions/install-cosign
         with:

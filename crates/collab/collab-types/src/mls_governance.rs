@@ -50,6 +50,13 @@ pub enum MlsGovernanceAction {
         existing_member_commit: Option<Vec<u8>>,
         key_history: Vec<u8>,
     },
+    /// The first frame of a channel created encrypted: the issuer's device
+    /// is the group's only member and the channel's steward, and no
+    /// plaintext document op is accepted for the channel from then on. A
+    /// channel that carried plaintext before is migrated by the same frame:
+    /// new content is encrypted, earlier plaintext stays with the members
+    /// that already hold it. Appended so frames written before it decode.
+    Genesis,
 }
 
 impl MlsGovernanceAction {
@@ -78,7 +85,7 @@ impl MlsGovernanceAction {
                 existing_member_commit.as_deref(),
                 Some(key_history),
             )),
-            Self::Remove { .. } | Self::EnableEncryption { .. } => None,
+            Self::Remove { .. } | Self::EnableEncryption { .. } | Self::Genesis => None,
         }
     }
 }
@@ -326,8 +333,175 @@ impl MlsGovernanceFrameV1 {
                     return Err(MlsGovernanceError::SnapshotNotDurable);
                 }
             }
+            MlsGovernanceAction::Genesis => {
+                let only_issuer = context.current_mls_members.len() == 1
+                    && context.current_mls_members.contains(&self.signed_by);
+                if self.previous_frame_digest != [0; 32] || !only_issuer {
+                    return Err(MlsGovernanceError::MembershipMismatch);
+                }
+            }
         }
         Ok(())
+    }
+}
+
+/// Version of [`MlsAccessRequestV1`] and [`MlsGovernanceAckV1`].
+pub const MLS_ACCESS_VERSION: u16 = 1;
+
+/// One device asking a channel's steward for membership: a fresh MLS key
+/// package for that channel, signed by the device's certified key.
+///
+/// The steward admits the device only when the channel's access policy
+/// (room membership through the person's certified device set, or a live
+/// service grant) names this device key. The signature binds the key
+/// package to the device, so a relay that stores or forwards the request
+/// cannot substitute its own package.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MlsAccessRequestV1 {
+    pub version: u16,
+    pub channel: ChannelId,
+    /// Certified device key of the requester; also its MLS credential name.
+    pub device: Ed25519PublicKey,
+    /// TLS-serialised MLS `KeyPackage` minted for this channel only.
+    pub key_package: Vec<u8>,
+    /// When the device minted the request (seconds since the Unix epoch),
+    /// so a steward keeps only the newest request per device.
+    pub issued_at: u64,
+    pub signature: Signature,
+}
+
+#[derive(Serialize)]
+struct AccessRequestView<'a> {
+    domain: &'static [u8],
+    version: u16,
+    channel: ChannelId,
+    device: Ed25519PublicKey,
+    key_package: &'a [u8],
+    issued_at: u64,
+}
+
+impl MlsAccessRequestV1 {
+    /// Create and sign a request with the device key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] if the signing view cannot be encoded.
+    pub fn signed(
+        channel: ChannelId,
+        key_package: Vec<u8>,
+        issued_at: u64,
+        device_key: &SigningKey,
+    ) -> Result<Self, CanonicalError> {
+        let mut request = Self {
+            version: MLS_ACCESS_VERSION,
+            channel,
+            device: Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes()),
+            key_package,
+            issued_at,
+            signature: Signature::from_bytes([0; 64]),
+        };
+        request.signature = sign_event(&request.signing_view(), device_key)?;
+        Ok(request)
+    }
+
+    fn signing_view(&self) -> AccessRequestView<'_> {
+        AccessRequestView {
+            domain: b"tilo.mls-access-request.v1",
+            version: self.version,
+            channel: self.channel,
+            device: self.device,
+            key_package: &self.key_package,
+            issued_at: self.issued_at,
+        }
+    }
+
+    /// Verify the version, payload bound and device signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsGovernanceError`] for another version, an empty or
+    /// oversized key package, or a bad signature.
+    pub fn verify(&self) -> Result<(), MlsGovernanceError> {
+        if self.version != MLS_ACCESS_VERSION {
+            return Err(MlsGovernanceError::Version(self.version));
+        }
+        if self.key_package.is_empty() || self.key_package.len() > MAX_MLS_CONTROL_BYTES {
+            return Err(MlsGovernanceError::InvalidControlPayload);
+        }
+        verify_event(&self.signing_view(), &self.signature, &self.device)
+            .map_err(|error| MlsGovernanceError::Signature(error.to_string()))
+    }
+}
+
+/// A device's cumulative acknowledgement: it has durably processed every
+/// governance frame of `channel` up to and including `through_digest`.
+///
+/// Cumulative acknowledgements keep delivery idempotent and ordered: a
+/// repeated or late acknowledgement never undoes what the steward already
+/// recorded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MlsGovernanceAckV1 {
+    pub version: u16,
+    pub channel: ChannelId,
+    pub device: Ed25519PublicKey,
+    pub through_digest: [u8; 32],
+    pub signature: Signature,
+}
+
+#[derive(Serialize)]
+struct AckView {
+    domain: &'static [u8],
+    version: u16,
+    channel: ChannelId,
+    device: Ed25519PublicKey,
+    through_digest: [u8; 32],
+}
+
+impl MlsGovernanceAckV1 {
+    /// Create and sign an acknowledgement with the device key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] if the signing view cannot be encoded.
+    pub fn signed(
+        channel: ChannelId,
+        through_digest: [u8; 32],
+        device_key: &SigningKey,
+    ) -> Result<Self, CanonicalError> {
+        let mut ack = Self {
+            version: MLS_ACCESS_VERSION,
+            channel,
+            device: Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes()),
+            through_digest,
+            signature: Signature::from_bytes([0; 64]),
+        };
+        ack.signature = sign_event(&ack.signing_view(), device_key)?;
+        Ok(ack)
+    }
+
+    fn signing_view(&self) -> AckView {
+        AckView {
+            domain: b"tilo.mls-governance-ack.v1",
+            version: self.version,
+            channel: self.channel,
+            device: self.device,
+            through_digest: self.through_digest,
+        }
+    }
+
+    /// Verify the version and device signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsGovernanceError`] for another version or a bad signature.
+    pub fn verify(&self) -> Result<(), MlsGovernanceError> {
+        if self.version != MLS_ACCESS_VERSION {
+            return Err(MlsGovernanceError::Version(self.version));
+        }
+        verify_event(&self.signing_view(), &self.signature, &self.device)
+            .map_err(|error| MlsGovernanceError::Signature(error.to_string()))
     }
 }
 
@@ -358,6 +532,84 @@ mod tests {
         assert_eq!(
             frame.verify_journal_signature(),
             Err(MlsGovernanceError::Version(MLS_GOVERNANCE_VERSION + 1))
+        );
+    }
+
+    #[test]
+    fn access_request_is_bound_to_its_device_channel_and_package() {
+        let (device, device_pk) = generate_keypair();
+        let channel = ChannelId::new();
+        let request = MlsAccessRequestV1::signed(channel, vec![1, 2, 3], 7, &device).unwrap();
+        assert_eq!(request.device, device_pk);
+        request.verify().unwrap();
+
+        let mut swapped = request.clone();
+        swapped.key_package = vec![9];
+        assert!(swapped.verify().is_err());
+        let mut moved = request.clone();
+        moved.channel = ChannelId::new();
+        assert!(moved.verify().is_err());
+        let (_, other) = generate_keypair();
+        let mut impersonated = request;
+        impersonated.device = other;
+        assert!(impersonated.verify().is_err());
+        let empty = MlsAccessRequestV1::signed(channel, Vec::new(), 7, &device).unwrap();
+        assert_eq!(
+            empty.verify(),
+            Err(MlsGovernanceError::InvalidControlPayload)
+        );
+    }
+
+    #[test]
+    fn acknowledgement_is_bound_to_its_device_and_digest() {
+        let (device, _) = generate_keypair();
+        let ack = MlsGovernanceAckV1::signed(ChannelId::new(), [4; 32], &device).unwrap();
+        ack.verify().unwrap();
+        let mut forged = ack;
+        forged.through_digest = [5; 32];
+        assert!(forged.verify().is_err());
+    }
+
+    #[test]
+    fn genesis_must_open_the_chain_with_only_its_issuer() {
+        let (steward, steward_pk) = generate_keypair();
+        let (_, other) = generate_keypair();
+        let channel = ChannelId::new();
+        let governors = BTreeSet::from([steward_pk]);
+        let only_steward = BTreeSet::from([steward_pk]);
+        let crowded = BTreeSet::from([steward_pk, other]);
+        let context = |previous, members| MlsGovernanceContext {
+            channel,
+            membership_revision: 1,
+            previous_frame_digest: previous,
+            expected_epoch: 0,
+            governors: &governors,
+            desired_members: members,
+            current_mls_members: members,
+            durable_snapshot_ack: None,
+        };
+        let genesis = |previous| {
+            MlsGovernanceFrameV1::signed(
+                channel,
+                [1; 32],
+                1,
+                previous,
+                0,
+                MlsGovernanceAction::Genesis,
+                &steward,
+            )
+            .unwrap()
+        };
+        genesis([0; 32])
+            .validate(&context([0; 32], &only_steward))
+            .unwrap();
+        assert_eq!(
+            genesis([0; 32]).validate(&context([0; 32], &crowded)),
+            Err(MlsGovernanceError::MembershipMismatch)
+        );
+        assert_eq!(
+            genesis([3; 32]).validate(&context([3; 32], &only_steward)),
+            Err(MlsGovernanceError::MembershipMismatch)
         );
     }
 }

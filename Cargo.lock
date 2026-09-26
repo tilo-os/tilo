@@ -1931,6 +1931,7 @@ dependencies = [
  "openmls_traits",
  "postcard",
  "serde",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
  "tilo-seal",
@@ -3545,6 +3546,14 @@ name = "embedded-io"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
+
+[[package]]
+name = "emoji"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "encoding_rs"
@@ -8571,6 +8580,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "collab-types",
+ "ed25519-dalek 3.0.0",
  "postcard",
  "serde",
  "serde_json",
@@ -14913,6 +14923,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-font-catalog"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 1.0.6+spec-1.1.0",
+]
+
+[[package]]
 name = "tilo-headless-schema"
 version = "0.1.0"
 dependencies = [
@@ -14983,6 +15005,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-content",
+ "tilo-font-catalog",
  "typst",
  "typst-assets",
  "typst-layout",
@@ -15291,6 +15314,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-content",
  "tilo-desktop-model",
+ "tilo-font-catalog",
  "tilo-headless-schema",
  "tilo-rt",
  "tilo-seal",
@@ -15299,7 +15323,6 @@ dependencies = [
  "tilo-ui-graph",
  "tokio",
  "tokio-util",
- "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "tts",

@@ -19,6 +19,8 @@ mod governance_journal;
 mod interop_with_signed_op;
 #[path = "outsider_cannot_decrypt.rs"]
 mod outsider_cannot_decrypt;
+#[path = "provisioning.rs"]
+mod provisioning;
 #[path = "sealed_persistence.rs"]
 mod sealed_persistence;
 #[path = "third_member_joins.rs"]

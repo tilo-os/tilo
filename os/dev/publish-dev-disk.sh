@@ -114,6 +114,12 @@ config=$(skopeo inspect "docker://$REPOSITORY@$image_digest")
 [[ $(jq -r .Architecture <<< "$config") == "$platform" ]] || die "$child_tag is not linux/$platform"
 [[ $(jq -r '.Labels["org.opencontainers.image.revision"] // empty' <<< "$config") == "$SOURCE_REVISION" ]] \
   || die "$child_tag does not carry revision $SOURCE_REVISION"
+# $child_tag moves with every rerun of this series, and the registry drops a
+# manifest that loses its last tag. A tag named after the digest keeps this
+# child reachable for the disk manifest that records it; pushing the same
+# bytes again re-tags the same digest.
+skopeo copy --preserve-digests "docker://$REPOSITORY@$image_digest" \
+  "docker://$REPOSITORY:$DEV_TAG-$ARCH-${image_digest:7:16}" >/dev/null
 note "pushed $child_tag ($image_digest)"
 
 # ---- 2. the index of every child published so far ------------------------------
@@ -166,6 +172,10 @@ for attempt in 1 2 3 4 5 6; do
 done
 [[ $converged == true ]] || die "$index_tag did not converge on the published children"
 index_digest=$(manifest_digest "$index_tag")
+# The index is rebuilt whenever another architecture lands; keep each one
+# reachable by its digest, as for the child above.
+skopeo copy --all --preserve-digests "docker://$REPOSITORY@$index_digest" \
+  "docker://$REPOSITORY:$DEV_TAG-${index_digest:7:16}" >/dev/null
 note "$index_tag ($index_digest) holds $(jq -r '[.[].architecture] | join(", ")' <<< "$wanted")"
 
 # ---- 3. the disks --------------------------------------------------------------

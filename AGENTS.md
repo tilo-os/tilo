@@ -240,7 +240,9 @@ actions and cold-boots the result (`tilo-vm guide scenarios`).
 Move one crate at a time with `cargo update -p <crate> --precise <version>`. A fresh resolve
 moves hundreds of transitive versions at once, and a break surfaces inside a dependency rather
 than where you touched. Treat a lock change as a real change: read the diff and rebuild before
-pushing. `--locked` in CI.
+pushing. `--locked` in CI. Commit a lock-only update with the command declared,
+`TILO_CARGO_UPDATE='-p <crate> --precise <version>' git commit`; the pre-commit hook refuses any
+other lock change without a manifest beside it (DEVELOPMENT.md, "Pre-commit hook").
 
 Tilo's own crates use one RustCrypto generation, the one iroh uses: `ed25519-dalek` and
 `x25519-dalek` 3, `rand`/`rand_core`/`rand_chacha` 0.10, `sha2` 0.11, `hmac` 0.13,

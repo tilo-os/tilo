@@ -1317,6 +1317,13 @@ jobs:
             echo "::error::$ref carries revision '${revision}', expected $GITHUB_SHA"
             exit 1
           }
+          # $ref is pushed again by a rerun or a later run of this series, and
+          # the registry drops a manifest that loses its last tag. This
+          # run- and attempt-unique tag keeps the digest the dev disk and the
+          # integration index record reachable.
+          skopeo copy --retry-times 3 --preserve-digests --src-creds "$REGISTRY_CREDS" --dest-creds "$REGISTRY_CREDS" \
+            "docker://code.podesta.ai/qos/tilo-ci@$digest" \
+            "docker://code.podesta.ai/qos/tilo-ci:$DEV_SERIES-$ARCH-$GITHUB_RUN_ID-${{ github.run_attempt }}"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "::notice::pushed dev-trust integration image $ref ($digest)"
@@ -1437,7 +1444,7 @@ jobs:
               qemu_packages='qemu-efi-aarch64 qemu-system-arm'
             fi
             sudo -n apt-get install -y --no-install-recommends \
-              binutils btrfs-progs dosfstools fuse-overlayfs openssh-client podman \
+              binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs openssh-client podman \
               jq qemu-system-gui qemu-utils skopeo slirp4netns socat sshpass sudo systemd \
               uidmap util-linux $qemu_packages
           elif command -v dnf >/dev/null; then
@@ -1446,7 +1453,7 @@ jobs:
             else
               qemu_packages='edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core'
             fi
-            sudo -n dnf install -y binutils btrfs-progs dosfstools fuse-overlayfs \
+            sudo -n dnf install -y binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs \
               jq openssh-clients podman qemu-img qemu-ui-egl-headless qemu-ui-opengl skopeo slirp4netns socat sshpass \
               sudo systemd util-linux $qemu_packages
           else
@@ -1455,6 +1462,15 @@ jobs:
           fi
           qemu_binary="qemu-system-${{ matrix.arch }}"
           command -v jq podman qemu-img "$qemu_binary" skopeo sshpass socat systemd-repart >/dev/null
+
+          # Kata runners' nested default store commits every Podman layer
+          # through fuse-overlayfs, about ten minutes per dev image RUN FROM
+          # this image. Their loop devices were proven above, so give Podman a
+          # native overlay store for the import, the dev image and the install.
+          if [[ '${{ matrix.runner }}' == runner-large* ]]; then
+            CONTAINERS_STORAGE_CONF="$(./os/dev/ci-native-podman-store.sh)"
+            export CONTAINERS_STORAGE_CONF
+          fi
 
           # Select the Buildx digest's named descriptor and pass its bare OCI
           # reference to Skopeo, including for the independent rebuild.
@@ -1668,7 +1684,7 @@ jobs:
             # verification, so update clients cannot observe a half-published
             # release through a channel tag.
             digest_file="$(mktemp /var/tmp/tilo-push-digest.XXXXXX)"
-            candidate="code.podesta.ai/qos/tilo:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ matrix.arch }}"
+            candidate="code.podesta.ai/qos/tilo:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}-${{ matrix.arch }}"
             podman tag "$TILO_IMAGE" "$candidate"
             podman push --digestfile "$digest_file" "$candidate"
             digest="$(tr -d '[:space:]' < "$digest_file")"
@@ -1972,7 +1988,7 @@ jobs:
               '. + [{architecture:$arch,digest:$digest}]' <<<"$child_dependencies")"
           done
 
-          candidate="code.podesta.ai/qos/tilo:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          candidate="code.podesta.ai/qos/tilo:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"
           manifest="tilo-release-index-${GITHUB_RUN_ID}"
           podman manifest create "$manifest"
           for arch in x86_64 aarch64; do
@@ -2259,7 +2275,7 @@ jobs:
           for digest in $(jq -r '.[].digest' <<< "$children"); do
             podman manifest add "$manifest" "docker://$repository@$digest"
           done
-          candidate="$repository:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          candidate="$repository:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"
           digest_file="$(mktemp /var/tmp/tilo-ci-index.XXXXXX)"
           podman manifest push --all --digestfile "$digest_file" "$manifest" "docker://$candidate"
           index_digest="$(tr -d '[:space:]' < "$digest_file")"

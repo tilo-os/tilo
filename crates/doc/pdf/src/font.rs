@@ -4,19 +4,22 @@
 //! Appearance text (a typed signature, a stamp's lines, free text) can be in
 //! any script, so it is never set in a standard font. An export must also be
 //! the same bytes for the same edits on every machine, so the fonts are not
-//! the host's: they are Tilo's own pinned Noto set (the checked-in font
-//! catalog, `crates/sdk/ui-core/assets/fonts`, whose files are pinned by
-//! hash), compiled into the helper and handed to the engine with
-//! [`install_faces`]. Each run of the text is given the first face of that
-//! set, in a fixed order, that covers it (staying with the previous run's
-//! face while it covers the text), shaped with `harfrust` in its bidi
-//! direction (so Arabic joins and combining marks sit where they belong) at
-//! the regular weight, and the glyphs used are embedded as a CID-keyed subset
+//! whatever the host happens to have: they are Tilo's pinned font catalog
+//! ([`tilo_font_catalog`]), which the OS image installs once and the helper
+//! reads through a read-only Landlock grant on that one directory
+//! ([`use_catalog`]). Each file is checked against its pinned SHA-256 as it
+//! is mapped, so the bytes are the same everywhere, or no appearance text is
+//! set at all. Each run of the text is given the first face of [`PINNED`],
+//! in that fixed order, that covers it (staying with the previous run's face
+//! while it covers the text), shaped with `harfrust` in its bidi direction
+//! (so Arabic joins and combining marks sit where they belong) at the
+//! regular weight, and the glyphs used are embedded as a CID-keyed subset
 //! font with a `ToUnicode` map, so the text stays selectable and searchable
 //! in every reader. A character none of the faces covers becomes the first
 //! face's missing glyph — also the same everywhere.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use pdf_writer::types::{CidFontType, FontFlags, SystemInfo, UnicodeCmap};
@@ -26,49 +29,114 @@ use skrifa::instance::{Location, Size};
 use skrifa::raw::TableProvider;
 use skrifa::string::StringId;
 use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
+use tilo_font_catalog::{Error as CatalogError, Scope};
 
-/// One face of a pinned font file handed to [`install_faces`].
+/// The catalog faces appearance text is set in, in preference order: the
+/// first face covering a character sets it. `(file, face index, family)`.
+const PINNED: [(&str, u32, &str); 10] = [
+    ("NotoSans[wght].ttf", 0, "Noto Sans"),
+    ("NotoSansArabic[wght].ttf", 0, "Noto Sans Arabic"),
+    ("NotoSansHebrew[wght].ttf", 0, "Noto Sans Hebrew"),
+    ("NotoSansDevanagari[wght].ttf", 0, "Noto Sans Devanagari"),
+    ("NotoSansBengali[wght].ttf", 0, "Noto Sans Bengali"),
+    ("NotoSansThai[wght].ttf", 0, "Noto Sans Thai"),
+    // Face 2 of the collection is Noto Sans CJK SC: Han in its
+    // simplified-Chinese forms, with kana and hangul.
+    ("NotoSansCJK-VF.ttc", 2, "Noto Sans CJK SC"),
+    ("NotoSansSymbols[wght].ttf", 0, "Noto Sans Symbols"),
+    ("NotoSansSymbols2-Regular.ttf", 0, "Noto Sans Symbols 2"),
+    ("NotoSansMath-Regular.ttf", 0, "Noto Sans Math"),
+];
+
+/// One face of a pinned catalog file, mapped read-only.
 #[derive(Clone, Copy, Debug)]
-pub struct BundledFace {
-    /// The font file (a collection for `index > 0`).
-    pub data: &'static [u8],
-    pub index: u32,
+pub(crate) struct BundledFace {
+    /// The verified font file (a collection for `index > 0`).
+    data: &'static [u8],
+    index: u32,
     /// Its family name, recorded in the embedded font.
-    pub family: &'static str,
+    family: &'static str,
 }
 
-/// The faces appearance text is set in, in preference order. Installed once
-/// per process before the first export ([`install_faces`]); without them
-/// appearance text is left out.
-static FACES: OnceLock<Vec<BundledFace>> = OnceLock::new();
+/// The catalog directory appearance text is read from. Set once per process
+/// before the first export ([`use_catalog`]); without it appearance text is
+/// left out.
+static CATALOG: OnceLock<PathBuf> = OnceLock::new();
 
-/// The installed faces that parse and have outlines, checked on first use
-/// (not at start-up, which every helper pays).
+/// The [`PINNED`] faces, mapped and verified on first use (not at start-up,
+/// which every helper pays). Empty when any of them is unavailable.
 static USABLE: OnceLock<Vec<BundledFace>> = OnceLock::new();
 
-/// Hand the engine the faces appearance text is set in. The first call wins:
-/// the set must not change within a process, or two exports of the same
-/// edits could differ.
-pub fn install_faces(faces: Vec<BundledFace>) {
-    let _ = FACES.set(faces);
+/// Read appearance fonts from the pinned catalog at `root`. The first call
+/// wins: the set must not change within a process, or two exports of the
+/// same edits could differ.
+pub fn use_catalog(root: PathBuf) {
+    let _ = CATALOG.set(root);
 }
 
 fn library() -> &'static [BundledFace] {
     USABLE.get_or_init(|| {
-        FACES
-            .get()
-            .into_iter()
-            .flatten()
-            .filter(|face| {
-                FontRef::from_index(face.data, face.index).is_ok_and(|f| {
-                    has_table(&f, Tag::new(b"glyf"))
-                        || has_table(&f, Tag::new(b"CFF "))
-                        || has_table(&f, Tag::new(b"CFF2"))
-                })
-            })
-            .copied()
-            .collect()
+        let Some(root) = CATALOG.get() else {
+            return Vec::new();
+        };
+        load(root).unwrap_or_else(|error| {
+            // All or nothing: a partial set would pick different faces for
+            // the same text on different machines.
+            eprintln!("tilo-pdf: appearance text is left out: {error}");
+            Vec::new()
+        })
     })
+}
+
+fn load(root: &Path) -> Result<Vec<BundledFace>, CatalogError> {
+    tilo_font_catalog::check_manifest(root)?;
+    let manifest = tilo_font_catalog::manifest()?;
+    let mut mapped: BTreeMap<&str, &'static [u8]> = BTreeMap::new();
+    let mut faces = Vec::with_capacity(PINNED.len());
+    for (file, index, family) in PINNED {
+        let data = if let Some(data) = mapped.get(file) {
+            *data
+        } else {
+            let asset = manifest
+                .font
+                .iter()
+                .find(|asset| asset.file == file && asset.scope == Scope::Product)
+                .ok_or_else(|| CatalogError::at(root, format!("{file} is not pinned")))?;
+            let path = asset.path_in(root)?;
+            let data = map(&path)?;
+            asset.verify_bytes(&path, data)?;
+            mapped.insert(file, data);
+            data
+        };
+        let usable = FontRef::from_index(data, index).is_ok_and(|f| {
+            has_table(&f, Tag::new(b"glyf"))
+                || has_table(&f, Tag::new(b"CFF "))
+                || has_table(&f, Tag::new(b"CFF2"))
+        });
+        if !usable {
+            return Err(CatalogError::at(
+                root.join(file),
+                format!("face {index} has no outlines"),
+            ));
+        }
+        faces.push(BundledFace {
+            data,
+            index,
+            family,
+        });
+    }
+    Ok(faces)
+}
+
+/// Map a catalog file read-only for the rest of the process.
+fn map(path: &Path) -> Result<&'static [u8], CatalogError> {
+    let file = std::fs::File::open(path).map_err(|e| CatalogError::at(path, e))?;
+    // SAFETY: a read-only shared mapping of a font file. The installed
+    // catalog lives on the read-only system image, its bytes are checked
+    // against their pinned hash right after mapping, and nothing in this
+    // process writes to it.
+    let map = unsafe { memmap2::Mmap::map(&file) }.map_err(|e| CatalogError::at(path, e))?;
+    Ok(&**Box::leak(Box::new(map)))
 }
 
 /// The regular weight, for faces with a weight axis.

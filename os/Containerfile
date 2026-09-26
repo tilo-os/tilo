@@ -1093,7 +1093,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     harfbuzz-icu \
     libatomic \
     at-spi2-core \
-    google-noto-sans-fonts \
     plymouth \
     plymouth-plugin-script \
     plymouth-scripts \
@@ -1312,23 +1311,33 @@ RUN grep -q '^video:' /etc/group || echo "video:x:39:greetd" >> /etc/group; \
     grep -q '^video:x:39:.*greetd' /etc/group; \
     grep -q '^input:x:104:.*greetd' /etc/group
 
-# Fonts
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-    adwaita-sans-fonts \
-    google-noto-sans-fonts \
-    google-noto-sans-mono-fonts \
-    google-noto-serif-fonts \
-    google-noto-color-emoji-fonts \
-    google-noto-sans-symbols-fonts \
-    google-noto-sans-symbols-2-fonts \
-    google-noto-sans-math-fonts \
-    google-noto-sans-cjk-fonts \
-    google-noto-sans-arabic-fonts \
-    google-noto-sans-hebrew-fonts \
-    google-noto-sans-devanagari-fonts \
-    google-noto-sans-bengali-fonts \
-    google-noto-sans-thai-fonts \
-    && dnf clean all && ${FINALIZE_RPMDB}
+# Fonts. Tilo's pinned font catalog is the system's one copy of its Noto
+# faces: staged here once, verified file by file against its manifest, and
+# found by fontconfig, the UI toolkit and the PDF helper (which reads it
+# through a read-only Landlock grant) alike. Fedora's static Noto packages
+# would ship the same families a second time, several times larger, so the
+# snippet installed with the catalog gives it their generic-family defaults.
+# Adwaita Sans is not a product font of the catalog, so it stays a package.
+# `fontconfig` is named because this step indexes the catalog with it.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
+    --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
+    --mount=type=bind,source=os/usr/share/fontconfig/conf.avail/57-tilo-fonts.conf,target=/tilo-src/57-tilo-fonts.conf,ro \
+    dnf install -y --setopt=reposdir=/repo \
+        fontconfig \
+        adwaita-sans-fonts \
+    && dnf clean all && ${FINALIZE_RPMDB} \
+    && python3 /tilo-src/tools/font-catalog.py stage \
+        /tilo-src/crates/sdk/ui-core/assets/fonts /usr/share/fonts/tilo --scope product \
+    && install -D -m 0644 /tilo-src/57-tilo-fonts.conf /usr/share/fontconfig/conf.avail/57-tilo-fonts.conf \
+    && ln -s ../../../usr/share/fontconfig/conf.avail/57-tilo-fonts.conf /etc/fonts/conf.d/57-tilo-fonts.conf \
+    && fc-cache -s \
+    && for generic in 'Noto Sans CJK SC' serif monospace emoji; do \
+           case "$(fc-match -f '%{file}' "$generic")" in \
+               /usr/share/fonts/tilo/*) ;; \
+               *) echo "fontconfig does not resolve $generic from the catalog" >&2; exit 1 ;; \
+           esac; \
+       done
 
 # The frozen snapshot already resolves these development specs and their exact
 # runtime library closure. Erase the header/pkg-config payloads in the same
@@ -2279,6 +2288,7 @@ COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem \
     os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py \
     os/etc/containers/policy.json os/etc/containers/registries.d/code.podesta.ai.yaml \
     os/etc/containers/registries.d/code.tilo.so.yaml \
+    os/etc/containers/registries.d/registry.tilo.so.yaml \
     /run/tilo-trust-inputs/
 RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/run/tilo-build-tools/openssl,ro \
     mkdir -p /run/tilo-official-trust /run/tilo-trust-tools /etc/containers/registries.d \
@@ -2287,6 +2297,7 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
  && cp -a /run/tilo-trust-inputs/policy.json /etc/containers/policy.json \
  && cp -a /run/tilo-trust-inputs/code.podesta.ai.yaml /etc/containers/registries.d/code.podesta.ai.yaml \
  && cp -a /run/tilo-trust-inputs/code.tilo.so.yaml /etc/containers/registries.d/code.tilo.so.yaml \
+ && cp -a /run/tilo-trust-inputs/registry.tilo.so.yaml /etc/containers/registries.d/registry.tilo.so.yaml \
  && PATH="/run/tilo-build-tools:$PATH" python3 /run/tilo-trust-tools/install-public-trust.py \
       --source /run/tilo-public-trust --official /run/tilo-official-trust \
       --destination /usr/share/tilo --mode "$TILO_PUBLIC_TRUST_MODE" \

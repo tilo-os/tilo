@@ -21,6 +21,17 @@ pub enum DeliveryKind {
     Commit,
 }
 
+/// Outcome of [`GovernanceJournal::append_mirrored`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MirrorAppend {
+    /// The frame extended the chain; its digest.
+    Appended([u8; 32]),
+    /// The frame was already in the journal.
+    Duplicate,
+    /// The frame's predecessor is missing; it was not stored.
+    OutOfOrder,
+}
+
 /// Durable per-endpoint delivery record. Acknowledgement is idempotent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -213,7 +224,7 @@ impl GovernanceJournal {
                     }
                 }
             }
-            MlsGovernanceAction::EnableEncryption { .. } => {
+            MlsGovernanceAction::EnableEncryption { .. } | MlsGovernanceAction::Genesis => {
                 next.encryption_required = true;
             }
         }
@@ -221,6 +232,142 @@ impl GovernanceJournal {
         self.persist(&next)?;
         self.state = next;
         Ok(digest)
+    }
+
+    /// Append a frame received from the channel's steward to this device's
+    /// mirror of the journal. The mirror holds the same hash chain as the
+    /// steward's journal but no delivery records: its only use is to apply
+    /// frames once each and in order, and to gate document ingress.
+    ///
+    /// A frame already present is [`MirrorAppend::Duplicate`]; one whose
+    /// predecessor has not arrived yet is [`MirrorAppend::OutOfOrder`] and
+    /// is not stored. Neither is an error, so redelivery is harmless.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a frame of another channel, one not signed by
+    /// `steward`, a bad signature, or a failed atomic write.
+    pub fn append_mirrored(
+        &mut self,
+        channel: collab_types::ChannelId,
+        steward: Ed25519PublicKey,
+        frame: MlsGovernanceFrameV1,
+    ) -> Result<MirrorAppend> {
+        if frame.channel != channel {
+            return Err(Error::Governance(
+                "governance frame names another channel".into(),
+            ));
+        }
+        if frame.signed_by != steward {
+            return Err(Error::Governance(
+                "governance frame is not signed by the channel steward".into(),
+            ));
+        }
+        frame
+            .verify_signature()
+            .map_err(|error| Error::Governance(error.to_string()))?;
+        let digest = frame
+            .digest()
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        if self.contains(digest) {
+            return Ok(MirrorAppend::Duplicate);
+        }
+        if frame.previous_frame_digest != self.head_digest() {
+            return Ok(MirrorAppend::OutOfOrder);
+        }
+        let mut next = self.state.clone();
+        if matches!(
+            frame.action,
+            MlsGovernanceAction::EnableEncryption { .. } | MlsGovernanceAction::Genesis
+        ) {
+            next.encryption_required = true;
+        }
+        next.frames.push(frame);
+        self.persist(&next)?;
+        self.state = next;
+        Ok(MirrorAppend::Appended(digest))
+    }
+
+    /// Whether a frame with this digest is in the journal.
+    pub fn contains(&self, digest: [u8; 32]) -> bool {
+        self.state
+            .frames
+            .iter()
+            .any(|frame| frame.digest().ok() == Some(digest))
+    }
+
+    /// Every frame, oldest first.
+    pub fn frames(&self) -> &[MlsGovernanceFrameV1] {
+        &self.state.frames
+    }
+
+    /// Frames after the one with digest `after` (all frames for the all-zero
+    /// digest), oldest first; `None` when `after` is not in the journal.
+    pub fn frames_after(&self, after: [u8; 32]) -> Option<&[MlsGovernanceFrameV1]> {
+        if after == [0; 32] {
+            return Some(&self.state.frames);
+        }
+        let position = self
+            .state
+            .frames
+            .iter()
+            .position(|frame| frame.digest().ok() == Some(after))?;
+        self.state.frames.get(position.saturating_add(1)..)
+    }
+
+    /// Recipients with at least one unacknowledged delivery.
+    pub fn pending_recipients(&self) -> std::collections::BTreeSet<Ed25519PublicKey> {
+        self.state
+            .deliveries
+            .iter()
+            .filter(|delivery| !delivery.acknowledged)
+            .map(|delivery| delivery.recipient)
+            .collect()
+    }
+
+    /// Apply a cumulative acknowledgement: `recipient` has processed every
+    /// frame up to and including `through`. Returns how many deliveries it
+    /// completed; an acknowledgement that completes nothing new writes
+    /// nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `through` is not in the journal or the atomic
+    /// write fails.
+    pub fn acknowledge_through(
+        &mut self,
+        recipient: Ed25519PublicKey,
+        through: [u8; 32],
+    ) -> Result<usize> {
+        let position = self
+            .state
+            .frames
+            .iter()
+            .position(|frame| frame.digest().ok() == Some(through))
+            .ok_or_else(|| Error::Governance("acknowledged frame is unknown".into()))?;
+        let covered: std::collections::BTreeSet<[u8; 32]> = self
+            .state
+            .frames
+            .iter()
+            .take(position.saturating_add(1))
+            .filter_map(|frame| frame.digest().ok())
+            .collect();
+        let mut next = self.state.clone();
+        let mut completed: usize = 0;
+        for delivery in &mut next.deliveries {
+            if delivery.recipient == recipient
+                && !delivery.acknowledged
+                && covered.contains(&delivery.frame_digest)
+            {
+                delivery.acknowledged = true;
+                completed = completed.saturating_add(1);
+            }
+        }
+        if completed > 0 {
+            self.persist(&next)?;
+            self.state = next;
+        }
+        Ok(completed)
     }
 
     /// Return unacknowledged records for one authenticated endpoint.
