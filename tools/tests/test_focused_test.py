@@ -146,6 +146,18 @@ class FocusedTests(unittest.TestCase):
                 focused.execute(root / 'source', self.values)
             read.assert_not_called()
 
+    def test_builder_image_root_cargo_config_is_not_an_ancestor_checkout(self):
+        image_config = Path('/.cargo/config.toml')
+        real_exists = Path.exists
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(focused.Path, 'exists', autospec=True,
+                          side_effect=lambda path: path == image_config or real_exists(path)):
+            self.assertEqual(focused.ancestor_cargo_configs(Path(tmp) / 'source'), [])
+            (Path(tmp) / '.cargo').mkdir()
+            (Path(tmp) / '.cargo/config.toml').write_text('[build]\njobs=1\n')
+            self.assertEqual(focused.ancestor_cargo_configs(Path(tmp) / 'source'),
+                             [Path(tmp).resolve() / '.cargo/config.toml'])
+
     def test_group_inputs_are_bounded_unique_and_exact(self):
         for cases in ([], ['module::case'] * 2, ['case_' + str(n) for n in range(33)],
                       ['case; echo bad'], [123], 'case', {'case': True}):
