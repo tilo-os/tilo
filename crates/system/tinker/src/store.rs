@@ -125,7 +125,7 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// Returns an error if `name` fails [`validate_name`], a layer by that
+    /// Returns an error if `name` fails `validate_name`, a layer by that
     /// name already exists, any `stacked_on` parent does not exist, or the
     /// layer's directories or metadata can't be written.
     pub fn create(
@@ -213,7 +213,7 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error if `name` does not exist, `new_name` fails
-    /// [`validate_name`] or is already taken, or the rename or the rewritten
+    /// `validate_name` or is already taken, or the rename or the rewritten
     /// metadata can't be written.
     pub fn promote(&self, name: &str, new_name: Option<&str>, note: Option<&str>) -> Result<Layer> {
         let mut layer = self.load(name)?;

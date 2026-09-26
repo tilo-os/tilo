@@ -4,7 +4,7 @@
 //! Edits broadcast to P2P peers via namespace sync.
 //!
 //! It is the same enforcement point as the FUSE mount, not a second door: it
-//! consults the same [`WorkspaceAcl`] for the same identity, and answers
+//! consults the same [`WorkspaceAcl`](crate::acl::WorkspaceAcl) for the same identity, and answers
 //! denials the same way — [`Resp::NotFound`] outside the view (so it can't
 //! enumerate what's filtered), [`Resp::Err`] with the read-only-filesystem
 //! message for a write without capability, CRDT untouched.

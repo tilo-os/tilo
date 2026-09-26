@@ -19,7 +19,7 @@
 //! - [`entry`]  — the file format: groups, keys, locales, escapes.
 //! - [`exec`]   — `Exec=` splitting and `%f`/`%F`/`%u`/`%U`/`%i` expansion.
 //! - [`locale`] — the `Name[xx]=` fallback chain.
-//! - [`scan`]   — the XDG search path, desktop-file IDs, precedence.
+//! - [`mod@scan`]   — the XDG search path, desktop-file IDs, precedence.
 //! - [`cache`]  — memoising a scan for a UI that queries per keystroke.
 //! - [`launch`] — spawning a host application, and what that costs.
 

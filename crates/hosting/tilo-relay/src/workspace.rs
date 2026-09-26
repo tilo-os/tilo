@@ -71,7 +71,7 @@ pub struct WorkspaceRuntime {
     /// Pinned CRDT — only `Some` when the config marks this
     /// workspace `pin = true`. Reloaded from disk on start and
     /// materialized forward as raw Automerge deltas arrive (see
-    /// [`WorkspaceRuntime::materialize`]), so the host holds
+    /// `WorkspaceRuntime::materialize`), so the host holds
     /// authoritative current state that [`WorkspaceRuntime::changes_since`]
     /// serves as the anti-entropy source of truth — independent of the
     /// per-peer pending queues.
