@@ -52,6 +52,7 @@ use ui::theme::Theme;
 use ui::tilo_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
 use ui::widget::Widget;
 
+use crate::autocorrect::{Autocorrector, KeyAdjacency};
 use crate::futo::FutoSwipeModel;
 use crate::imclient::{content_hint, may_learn};
 use crate::inject::Symbol;
@@ -189,6 +190,10 @@ pub struct OskWidget {
     current_word_overflowed: bool,
     /// The previously committed word, for bigram next-word context.
     prev_word: Option<String>,
+    /// Word-boundary corrector, indexed on first use.
+    autocorrect: Option<Autocorrector>,
+    /// The correction just committed, revertible until the next action.
+    last_correction: Option<Correction>,
     /// Where this user tends to hit each letter; adapts tap resolution.
     touch_model: TouchModel,
     /// Next-letter probabilities for the current typing context.
@@ -287,6 +292,8 @@ impl OskWidget {
             word_from_swipe: false,
             current_word_overflowed: false,
             prev_word: None,
+            autocorrect: None,
+            last_correction: None,
             touch_model: TouchModel::new(),
             next_key: NextKeyCache::default(),
             pointer: None,
@@ -474,6 +481,9 @@ impl OskWidget {
     pub fn clear_personalization(&mut self) {
         self.predictor.clear_learned();
         self.touch_model.clear();
+        if let Some(ac) = &mut self.autocorrect {
+            ac.clear_kept();
+        }
     }
 
     // --- runtime configuration -----------------------------------------
@@ -798,6 +808,7 @@ impl OskWidget {
     /// punctuation and Return commit it; Backspace edits it while it exists
     /// and becomes a real key press otherwise.
     fn apply_action(&mut self, action: KeyAction) {
+        let correction = self.last_correction.take();
         match &action {
             KeyAction::Char(s) => {
                 // One-shot shift resets after a character; caps is sticky.
@@ -818,13 +829,18 @@ impl OskWidget {
                 self.prev_word = None;
                 self.suggestions.clear();
             }
-            KeyAction::Backspace => self.backspace(),
+            KeyAction::Backspace => match correction {
+                Some(c) => self.revert_correction(c),
+                None => self.backspace(),
+            },
             KeyAction::Shift => {
                 self.shift = self.shift.cycle();
+                self.last_correction = correction;
             }
             KeyAction::SymbolsToggle => {
                 self.showing_symbols = !self.showing_symbols;
                 self.structure_dirty = true;
+                self.last_correction = correction;
             }
             KeyAction::Layout(name) => {
                 self.select_text_layout(name);
@@ -926,7 +942,11 @@ impl OskWidget {
     /// nothing before an editing key). The word becomes the bigram context for
     /// next-word prediction and the bar is refilled with predictions.
     fn finish_word(&mut self, tail: &str) {
-        let word = std::mem::take(&mut self.current_word);
+        let mut word = std::mem::take(&mut self.current_word);
+        let typed = (!tail.is_empty() && !self.word_from_swipe)
+            .then(|| self.correction_for(&word))
+            .flatten()
+            .map(|fixed| std::mem::replace(&mut word, fixed));
         if !word.is_empty() || !tail.is_empty() {
             let mut text = word.clone();
             text.push_str(tail);
@@ -942,6 +962,55 @@ impl OskWidget {
             }
             self.prev_word = Some(committed);
         }
+        self.refresh_next_word_suggestions();
+        if let Some(typed) = typed {
+            // Offer the word as typed first, the way it was before the fix.
+            self.suggestions
+                .insert(0, Suggestion::new(format!("\u{201c}{typed}\u{201d}"), 1.0));
+            self.suggestions.truncate(MAX_SUGGESTIONS);
+            self.last_correction = Some(Correction {
+                typed,
+                corrected: word,
+                tail: tail.to_string(),
+            });
+        }
+    }
+
+    /// Whether the focused field may be autocorrected: ordinary, non-secret
+    /// text with suggestions on. Passwords, addresses and codes are typed
+    /// verbatim.
+    fn autocorrect_allowed(&self) -> bool {
+        self.purpose == InputPurpose::Text && self.suggestions_enabled && !self.is_secret_field()
+    }
+
+    /// The correction for a finished `word`, if autocorrection applies and the
+    /// word is neither known nor one this user has typed or kept before.
+    fn correction_for(&mut self, word: &str) -> Option<String> {
+        if word.is_empty() || !self.autocorrect_allowed() || self.predictor.has_learned(word) {
+            return None;
+        }
+        let adjacency = KeyAdjacency::from_layout(self.current_layout());
+        let dict = self.predictor.dictionary();
+        let ac = self
+            .autocorrect
+            .get_or_insert_with(|| Autocorrector::new(dict, KeyAdjacency::default()));
+        ac.set_adjacency(adjacency);
+        ac.correct(word)
+    }
+
+    /// Undo a just-committed correction: erase it, commit the word as typed
+    /// and never correct that word again.
+    fn revert_correction(&mut self, c: Correction) {
+        for _ in c.corrected.chars().chain(c.tail.chars()) {
+            self.emit(OskOutput::Key(Symbol::BackSpace));
+        }
+        if let Some(ac) = &mut self.autocorrect {
+            ac.keep(&c.typed);
+        }
+        self.prev_word = Some(c.typed.to_lowercase());
+        let mut text = c.typed;
+        text.push_str(&c.tail);
+        self.emit(OskOutput::Commit(text));
         self.refresh_next_word_suggestions();
     }
 
@@ -970,6 +1039,7 @@ impl OskWidget {
     /// (or went away), so none of it belongs to what the user edits next — and
     /// a password typed there must not outlive the field.
     pub fn reset_composition(&mut self) {
+        self.last_correction = None;
         self.current_word.clear();
         self.word_from_swipe = false;
         self.current_word_overflowed = false;
@@ -1028,6 +1098,13 @@ impl OskWidget {
     ///
     /// Returns whether a chip was activated.
     pub fn activate_suggestion(&mut self, index: usize) -> bool {
+        let correction = self.last_correction.take();
+        if index == 0
+            && let Some(c) = correction
+        {
+            self.revert_correction(c);
+            return true;
+        }
         let Some(s) = self.suggestions.get(index).cloned() else {
             return false;
         };
@@ -1058,6 +1135,7 @@ impl OskWidget {
             return false;
         };
         let top = top_cand.word.clone();
+        self.last_correction = None;
         if self.word_from_swipe {
             self.finish_word(" ");
         }
@@ -1140,6 +1218,15 @@ impl OskWidget {
             .find(|(_, r)| r.contains(p))
             .map(|(i, _)| *i)
     }
+}
+
+/// An autocorrection committed at the last word boundary.
+#[derive(Clone, Debug)]
+struct Correction {
+    typed: String,
+    corrected: String,
+    /// The space or punctuation committed after the word.
+    tail: String,
 }
 
 /// Interaction/visual flags for one drawn cell, bundled so [`draw_cell`]
@@ -2154,6 +2241,87 @@ mod tests {
             vec![pre("h"), pre("hi"), commit("hi "), pre("m")]
         );
         assert_eq!(osk.pending_text(), "hi m");
+    }
+
+    fn type_word(osk: &mut OskWidget, word: &str) {
+        for c in word.chars() {
+            osk.apply_action(KeyAction::Char(c.to_string()));
+        }
+    }
+
+    #[test]
+    fn space_autocorrects_a_non_word_and_offers_it_as_typed() {
+        let mut osk = OskWidget::new();
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.pending_text(), "the ");
+        assert_eq!(osk.suggestions()[0].word, "\u{201c}teh\u{201d}");
+        type_word(&mut osk, "tge");
+        osk.apply_action(KeyAction::Char(",".into()));
+        assert_eq!(osk.pending_text(), "the the,");
+    }
+
+    #[test]
+    fn backspace_after_a_correction_reverts_it_and_keeps_the_word() {
+        let mut osk = OskWidget::new();
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        osk.take_output();
+        osk.apply_action(KeyAction::Backspace);
+        assert_eq!(
+            osk.take_output(),
+            vec![
+                OskOutput::Key(Symbol::BackSpace),
+                OskOutput::Key(Symbol::BackSpace),
+                OskOutput::Key(Symbol::BackSpace),
+                OskOutput::Key(Symbol::BackSpace),
+                commit("teh "),
+            ]
+        );
+        assert_eq!(osk.pending_text(), "teh ");
+        // Kept as typed: the same word is no longer corrected.
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.pending_text(), "teh teh ");
+        // A second Backspace is an ordinary one.
+        osk.apply_action(KeyAction::Backspace);
+        assert_eq!(osk.pending_text(), "teh teh");
+    }
+
+    #[test]
+    fn as_typed_chip_reverts_a_correction() {
+        let mut osk = OskWidget::new();
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert!(osk.activate_suggestion(0));
+        assert_eq!(osk.pending_text(), "teh ");
+    }
+
+    #[test]
+    fn words_the_user_has_typed_are_never_corrected() {
+        let mut predictor = Predictor::english();
+        predictor.learn_transition(None, "teh");
+        let mut osk = OskWidget::new().with_predictor(predictor);
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.pending_text(), "teh ");
+    }
+
+    #[test]
+    fn password_fields_are_never_autocorrected() {
+        let mut osk = OskWidget::new().with_purpose(InputPurpose::Password);
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.pending_text(), "teh ");
+    }
+
+    #[test]
+    fn sensitive_text_fields_are_never_autocorrected() {
+        let mut osk = OskWidget::new();
+        osk.set_content_hints(content_hint::SENSITIVE_DATA);
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.pending_text(), "teh ");
     }
 
     #[test]
