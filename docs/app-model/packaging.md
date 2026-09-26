@@ -184,6 +184,32 @@ ext  = ["md", "markdown"]
 schemes = ["web+notes"]
 ```
 
+#### `[target]` — written by the packer
+
+Authors never write this block. `tilo-app-package pack-web` derives the web
+build of the same package from the authored manifest and the app's
+WebAssembly side module: it records the module's toolkit-core ABI (its
+`tilo.runtime_abi` custom section) and used features (LLVM's
+`target_features` section), points `[entrypoint]` at the module and drops
+native-only fields (`[package.isa]`, native binaries, splash segments,
+`[cli]`). Everything else — id, version, publisher, sandbox, providers — is
+the author's manifest, signed like any other package.
+
+```toml
+[target]
+platform = "web"
+architecture = "wasm32"
+isa = "wasm32-mvp+bulk-memory+mutable-globals+sign-ext"
+runtime = "tilo-runtime/2026.07+abi.0123456789abcdef"
+module = "books.wasm"
+```
+
+The first four fields are exactly the registry's signed target (see
+[registry.md](../registry.md#5-publisher-workflow) for the spellings). For an
+app, `runtime` is the toolkit core it links against and must extend the
+authored `package.runtime`; for `kind = "runtime"` (the toolkit core itself)
+it is the core the package provides.
+
 ### Validation
 
 `tilo-app-package pack` calls
@@ -205,6 +231,10 @@ schemes = ["web+notes"]
 - provider extensions, concrete MIME types, and URI schemes use their strict
   normalized identifier grammars; active/reserved `file`, `data`, and
   `javascript` schemes are rejected.
+- a `[target]` is a canonical web target, its `module` is a `.wasm` file in
+  the payload, the package declares no native `[package.isa]`, only
+  `kind = "app"` or `"runtime"` has one, and an app's entrypoint is the
+  module.
 
 ### On-disk layout
 
