@@ -29,6 +29,12 @@
 #                 as in the release workflow). Copied signatures still name
 #                 the old repository, which that policy refuses.
 #   SCAN_ROOT     default: this checkout.
+#   EXTRA_REFERENCES
+#                 optional. Space-separated $SOURCE_REGISTRY references to
+#                 copy as if this tree named them, for images that only
+#                 another repository pins (the CI runner label images are
+#                 pinned in the infra repository). The owner and
+#                 private-image rules below apply to them unchanged.
 #
 # Signature (.sig), attestation (.att) and SBOM (.sbom) tags that cosign keeps
 # next to a digest are copied with it, for an index and for each child.
@@ -69,20 +75,28 @@ name_re='[a-z0-9][a-z0-9._/-]*[a-z0-9]'
 tag_re='[A-Za-z0-9_]([A-Za-z0-9_.-]{0,126}[A-Za-z0-9_])?'
 digest_re='sha256:[0-9a-f]{64}'
 
+extra_re="^${SOURCE_REGISTRY//./\\.}/[a-z0-9][a-z0-9._-]*/${name_re}(:${tag_re})?(@${digest_re})?\$"
+for ref in ${EXTRA_REFERENCES:-}; do
+  [[ $ref =~ $extra_re ]] || die "EXTRA_REFERENCES entry is not a $SOURCE_REGISTRY image reference: $ref"
+done
+
 # Collect "<new-owner>/<name> <tag|-> <digest|->" for every reference to
 # either the old or the new location. Test fixtures and experiment records
 # name repositories that were never published, so they are not scanned.
 references() {
   local registry pattern
-  for registry in "$SOURCE_REGISTRY" "$DEST_REGISTRY"; do
-    # The trailing class drops references that continue into a shell or
-    # workflow expression ("tilo:main-${sha}"): only complete names are real.
-    pattern="${registry//./\\.}/[a-z0-9][a-z0-9._-]*/${name_re}(:${tag_re})?(@${digest_re})?([^A-Za-z0-9_.$\{/-]|\$)"
-    git -C "$SCAN_ROOT" grep -hoE "$pattern" -- . \
-        ':(exclude,glob)**/tests/**' ':(exclude,glob)**/test_*' ':(exclude,glob)**/*_test.*' \
-        ':(exclude,glob)**/*_tests.rs' ':(exclude,glob)**/tests.rs' \
-        ':(exclude,glob)experiments/**' ':(exclude)tools/ci/copy-images-to-tilo-registry.sh' || true
-  done | sed -E 's/[^A-Za-z0-9_]$//' | sort -u | while IFS= read -r ref; do
+  {
+    for registry in "$SOURCE_REGISTRY" "$DEST_REGISTRY"; do
+      # The trailing class drops references that continue into a shell or
+      # workflow expression ("tilo:main-${sha}"): only complete names are real.
+      pattern="${registry//./\\.}/[a-z0-9][a-z0-9._-]*/${name_re}(:${tag_re})?(@${digest_re})?([^A-Za-z0-9_.$\{/-]|\$)"
+      git -C "$SCAN_ROOT" grep -hoE "$pattern" -- . \
+          ':(exclude,glob)**/tests/**' ':(exclude,glob)**/test_*' ':(exclude,glob)**/*_test.*' \
+          ':(exclude,glob)**/*_tests.rs' ':(exclude,glob)**/tests.rs' \
+          ':(exclude,glob)experiments/**' ':(exclude)tools/ci/copy-images-to-tilo-registry.sh' || true
+    done
+    for ref in ${EXTRA_REFERENCES:-}; do printf '%s\n' "$ref"; done
+  } | sed -E 's/[^A-Za-z0-9_]$//' | sort -u | while IFS= read -r ref; do
     local rest=${ref#*/} owner name tag=- digest=- origin=-
     owner=${rest%%/*}
     rest=${rest#*/}

@@ -90,6 +90,9 @@ pub enum Denial {
     RateLimited,
     /// More than [`CLICK_BURST_LIMIT`] clicks inside [`CLICK_BURST_WINDOW`], or still inside the resulting block.
     ClickBurst,
+    /// A local client holds the pointer locked or confined; a peer's
+    /// pointer would move the shared seat and break (or steer) it.
+    PointerHeld,
 }
 
 impl Denial {
@@ -111,6 +114,7 @@ impl Denial {
             Denial::SurfaceMismatch => "surface-mismatch",
             Denial::RateLimited => "rate-limited",
             Denial::ClickBurst => "click-burst",
+            Denial::PointerHeld => "pointer-held",
         }
     }
 }
@@ -136,6 +140,8 @@ pub struct ShellView {
     session_locked: bool,
     /// Set by every real publish, distinguishing "nothing on screen" from "nobody looked".
     observed: bool,
+    /// A local client has the pointer locked or confined.
+    pointer_held: bool,
 }
 
 impl ShellView {
@@ -153,6 +159,7 @@ impl ShellView {
             overlay_open,
             session_locked: false,
             observed: true,
+            pointer_held: false,
         }
     }
 
@@ -160,6 +167,13 @@ impl ShellView {
     #[must_use]
     pub fn locked(mut self, locked: bool) -> Self {
         self.session_locked = locked;
+        self
+    }
+
+    /// Mark the local pointer as held by a client's lock or confinement.
+    #[must_use]
+    pub fn pointer_held(mut self, held: bool) -> Self {
+        self.pointer_held = held;
         self
     }
 
@@ -399,6 +413,16 @@ impl RemoteInputFirewall {
         event: &InputEvent,
         now: Instant,
     ) -> Result<InputEvent, Denial> {
+        if self.view.pointer_held
+            && matches!(
+                event,
+                InputEvent::PointerMotion { .. }
+                    | InputEvent::PointerButton { .. }
+                    | InputEvent::PointerEnter { .. }
+            )
+        {
+            return Err(Denial::PointerHeld);
+        }
         match event {
             InputEvent::PointerMotion { x, y } => {
                 let global = self.locate(surface, (*x, *y))?;
@@ -1144,7 +1168,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::bool_assert_comparison)]
+    #[allow(
+        clippy::bool_assert_comparison,
+        reason = "comparing against a literal verdict reads as the rule being asserted"
+    )]
     fn a_denied_event_still_costs_the_peer_its_rate_budget() {
         let mut fw = firewall();
         let t0 = Instant::now();
@@ -1535,6 +1562,41 @@ mod production_path {
 
     /// A locked session has no driver, remote least of all — the lock surface
     /// isn't part of the tiled tree, so this isn't covered by the z-order check on its own.
+    #[test]
+    fn a_locally_held_pointer_refuses_peer_pointer_input_but_not_keys() {
+        let mut state = staged();
+        state.remote_input_firewall.publish_view(
+            ShellView::new(vec![(SHARED, TILE)], Some(SHARED), false, false).pointer_held(true),
+        );
+        for event in [
+            InputEvent::PointerMotion { x: 10.0, y: 10.0 },
+            InputEvent::PointerEnter { surface: SHARED },
+            InputEvent::PointerButton {
+                button: 0x110,
+                pressed: true,
+            },
+        ] {
+            assert_eq!(
+                state.review_remote_input(PEER, SHARED, event),
+                Err(Denial::PointerHeld),
+                "a peer must neither steer nor break a local pointer lock"
+            );
+        }
+        assert_ne!(
+            state.review_remote_input(
+                PEER,
+                SHARED,
+                InputEvent::Key {
+                    keysym: 30,
+                    pressed: true,
+                    modifiers: 0,
+                },
+            ),
+            Err(Denial::PointerHeld),
+            "typing into the shared app does not touch the pointer"
+        );
+    }
+
     #[test]
     fn a_locked_session_refuses_remote_input_that_would_otherwise_pass() {
         let mut state = staged();
