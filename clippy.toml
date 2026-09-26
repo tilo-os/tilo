@@ -8,10 +8,15 @@ allow-indexing-slicing-in-tests = true
 disallowed-methods = [
     { path = "reqwest::Client::new", reason = "use tilo_net::http::client()" },
     { path = "reqwest::Client::builder", reason = "use tilo_net::http::client()" },
-    { path = "reqwest::blocking::Client::new", reason = "use tilo_net::http::blocking_client()" },
-    { path = "reqwest::blocking::Client::builder", reason = "use tilo_net::http::blocking_client()" },
+    { path = "reqwest::ClientBuilder::new", reason = "use tilo_net::http::client()" },
     { path = "reqwest::get", reason = "use tilo_net::http::client()" },
-    { path = "reqwest::blocking::get", reason = "use tilo_net::http::blocking_client()" },
+    # `reqwest::blocking` exists only when the `blocking` feature is compiled
+    # in. A package whose dependency graph lacks it has nothing to ban, so an
+    # unresolved path there is expected rather than a stale entry.
+    { path = "reqwest::blocking::Client::new", reason = "use tilo_net::http::blocking_client()", allow-invalid = true },
+    { path = "reqwest::blocking::Client::builder", reason = "use tilo_net::http::blocking_client()", allow-invalid = true },
+    { path = "reqwest::blocking::ClientBuilder::new", reason = "use tilo_net::http::blocking_client()", allow-invalid = true },
+    { path = "reqwest::blocking::get", reason = "use tilo_net::http::blocking_client()", allow-invalid = true },
     # The environment is process-global: parallel tests race on it and a bare
     # remove_var discards the value that was there before. Pass the directory
     # explicitly (`*_at(root)`/`*_in(root)`), or in tests use tilo-test-env.
