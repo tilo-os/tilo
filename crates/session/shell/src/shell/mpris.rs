@@ -892,6 +892,7 @@ pub enum Command {
     PlayPause,
     Next,
     Previous,
+    Stop,
 }
 
 impl Command {
@@ -901,6 +902,7 @@ impl Command {
             Command::PlayPause => "PlayPause",
             Command::Next => "Next",
             Command::Previous => "Previous",
+            Command::Stop => "Stop",
         }
     }
 }
@@ -912,6 +914,7 @@ pub enum Outcome {
     NowPlaying,
     NowPaused,
     Skipped,
+    Stopped,
 }
 
 /// Send `cmd` to the active player on the session runtime and return at
@@ -1016,6 +1019,7 @@ async fn run(cmd: Command) -> Option<Outcome> {
             }
         }
         Command::Next | Command::Previous => Outcome::Skipped,
+        Command::Stop => Outcome::Stopped,
     })
 }
 
@@ -1094,6 +1098,7 @@ mod tests {
         assert_eq!(Command::Pause.method(), "Pause");
         assert_eq!(Command::Next.method(), "Next");
         assert_eq!(Command::Previous.method(), "Previous");
+        assert_eq!(Command::Stop.method(), "Stop");
     }
 
     #[test]

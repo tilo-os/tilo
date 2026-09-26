@@ -6308,16 +6308,47 @@ pub fn run() {
                             apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                         }
                     } else if let Some(mk) = crate::shell::media_keys::classify(wev) {
-                        // Hardware media/brightness keys belong to the machine, not whichever
-                        // client holds focus — handled before client routing for that reason.
-                        if let Some(osd) = crate::shell::media_keys::apply(
+                        // Hardware media/brightness/machine keys belong to the machine, not
+                        // whichever client holds focus — handled before client routing for that reason.
+                        let airplane_mode =
+                            frame_builder.chrome().quick_settings.radios.airplane_mode;
+                        let settings = settings_store::settings_path();
+                        let response = crate::shell::media_keys::apply(
                             mk,
-                            frame_builder.host().qs_actions(),
-                            frame_builder.host().status_bridge(),
-                            &transport_osd,
-                        ) {
-                            frame_builder.with_chrome(|st| publish_media_osd(st, osd));
-                            session_changed = true;
+                            &crate::shell::media_keys::Context {
+                                actions: frame_builder.host().qs_actions(),
+                                status: frame_builder.host().status_bridge(),
+                                transport_osd: &transport_osd,
+                                airplane_mode,
+                                settings: settings.as_deref(),
+                            },
+                        );
+                        match response {
+                            Some(crate::shell::media_keys::Response::Osd(osd)) => {
+                                frame_builder.with_chrome(|st| publish_media_osd(st, osd));
+                                session_changed = true;
+                            }
+                            Some(crate::shell::media_keys::Response::Suspend) => {
+                                tracing::info!(target: "tilo::power", "sleep key: requesting suspend");
+                                sleep_lock_was_locked = session.is_locked();
+                                session_changed = true;
+                                power_bridge.request_suspend();
+                            }
+                            Some(crate::shell::media_keys::Response::OpenDisplayModes) => {
+                                frame_builder.with_chrome(|st| {
+                                    st.overlays.projection = true;
+                                    st.bump();
+                                });
+                                session_changed = true;
+                            }
+                            Some(crate::shell::media_keys::Response::Launch {
+                                package_id,
+                                display_name,
+                            }) => {
+                                frame_builder.host().launch_app(package_id, display_name);
+                                session_changed = true;
+                            }
+                            None => {}
                         }
                     } else if peer_sync.as_ref().is_some_and(|network| {
                         forward_spatial_window_event(wev, network, &mut spatial_control)
@@ -8406,7 +8437,14 @@ fn sync_quick_settings_from_osd(
         crate::shell::osd::OsdKind::Brightness => {
             quick_settings.brightness = osd.level;
         }
-        crate::shell::osd::OsdKind::MicMute { .. } | crate::shell::osd::OsdKind::Transport(_) => {}
+        crate::shell::osd::OsdKind::AirplaneMode { on } => {
+            quick_settings.radios.airplane_mode = on;
+        }
+        crate::shell::osd::OsdKind::MicMute { .. }
+        | crate::shell::osd::OsdKind::Transport(_)
+        | crate::shell::osd::OsdKind::KeyboardBacklight
+        | crate::shell::osd::OsdKind::NoBacklight
+        | crate::shell::osd::OsdKind::Touchpad { .. } => {}
     }
 }
 
@@ -8425,6 +8463,15 @@ mod media_osd_publication_tests {
 
         sync_quick_settings_from_osd(&mut quick_settings, Osd::brightness(0.28));
         assert!((quick_settings.brightness - 0.28).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn the_wireless_key_keeps_the_quick_settings_toggle_in_step() {
+        let mut quick_settings = QuickSettingsState::default();
+        sync_quick_settings_from_osd(&mut quick_settings, Osd::airplane_mode(true));
+        assert!(quick_settings.radios.airplane_mode);
+        sync_quick_settings_from_osd(&mut quick_settings, Osd::airplane_mode(false));
+        assert!(!quick_settings.radios.airplane_mode);
     }
 }
 

@@ -3975,6 +3975,15 @@ impl ShellOverlayHost {
         self.status_bridge.as_ref()
     }
 
+    /// Open an installed app through the launcher the palette uses, so a
+    /// hardware launch key gets the same placement, duplicate focusing and
+    /// missing-package notice as a search result.
+    pub fn launch_app(&self, package_id: &str, display_name: &str) {
+        if let Some(chrome) = self.chrome.as_ref() {
+            (self.app_launcher)(chrome, package_id, display_name);
+        }
+    }
+
     /// Paint the transient hardware-key readout, if one is up.
     fn draw_osd(
         &self,
