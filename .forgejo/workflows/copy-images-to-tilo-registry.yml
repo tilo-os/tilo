@@ -34,6 +34,25 @@ jobs:
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The runner image carries no skopeo. Install it from the distribution
+      # the way the builder publication job does, in the dry run too, so a
+      # dry run that passes proves the real run can start.
+      - name: Install skopeo
+        run: |
+          set -euo pipefail
+          if ! command -v skopeo >/dev/null; then
+            if command -v apt-get >/dev/null; then
+              sudo -n apt-get update
+              sudo -n apt-get install -y --no-install-recommends software-properties-common
+              sudo -n add-apt-repository --yes universe
+              sudo -n apt-get update
+              sudo -n apt-get install -y --no-install-recommends skopeo jq
+            else
+              sudo -n dnf install -y skopeo jq
+            fi
+          fi
+          skopeo --version
+          jq --version
       - name: Install checksum-pinned Cosign
         if: inputs.resign
         uses: ./.forgejo/actions/install-cosign
