@@ -436,6 +436,9 @@ pub struct FileExplorerWidget {
     /// stays open across frames. `menu_commands[i]` is the command to run
     /// for menu item `i` (None for separators).
     context_menu: ContextMenu,
+    /// Which menu `context_menu` currently shows, so a View can name it and
+    /// open the same one again.
+    menu_kind: Option<FilesMenu>,
     menu_commands: Vec<Option<FileCommand>>,
     /// The "New File ▸" flyout submenu, populated from the Templates dir when
     /// the main menu opens; empty (and closed) when there are no templates.
@@ -803,6 +806,7 @@ impl FileExplorerWidget {
             cmds,
             structure_dirty: false,
             context_menu: ContextMenu::new(),
+            menu_kind: None,
             menu_commands: Vec::new(),
             submenu: ContextMenu::new(),
             submenu_commands: Vec::new(),
@@ -5133,6 +5137,7 @@ impl FileExplorerWidget {
         }
         menu.open_at([at.x as f32, at.y as f32]);
         self.context_menu = menu;
+        self.menu_kind = Some(FilesMenu::Context);
         self.menu_commands = cmds;
         layout_menu_widget(&mut self.context_menu);
     }
@@ -5300,6 +5305,7 @@ impl FileExplorerWidget {
     /// file, a clearly-labelled show-hidden toggle with a check, and a terminal.
     /// Everything here is spelled out in words — no mystery symbolic controls.
     fn open_view_menu(&mut self) {
+        self.menu_kind = Some(FilesMenu::View);
         let anchor = self.toolbar.view_menu_anchor();
         let flip_y = self
             .toolbar
@@ -5390,6 +5396,7 @@ impl FileExplorerWidget {
     /// then the direction, each with a check on the active choice. This is the
     /// grid's equivalent of clicking a list column header.
     fn open_sort_menu(&mut self) {
+        self.menu_kind = Some(FilesMenu::Sort);
         let anchor = self.toolbar.sort_menu_anchor();
         let flip_y = self
             .toolbar
@@ -5427,6 +5434,7 @@ impl FileExplorerWidget {
     /// standard "Remove from Favourites" (suppressed for the pinned Home entry,
     /// which cannot be removed). Anchored at the cursor like any context menu.
     fn open_favorite_menu(&mut self, path: PathBuf, at: Point) {
+        self.menu_kind = Some(FilesMenu::Favorite(path.clone()));
         let is_home = self
             .favs
             .borrow()
@@ -7253,7 +7261,89 @@ impl Collaborative for FileExplorerWidget {
     }
 }
 
+/// The menus the explorer shows in its one overlay menu slot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FilesMenu {
+    /// The right-click menu for the current selection.
+    Context,
+    View,
+    Sort,
+    /// The right-click menu for one sidebar favourite.
+    Favorite(PathBuf),
+}
+
 impl Widget for FileExplorerWidget {
+    fn open_overlay(&self) -> Option<ui::view::OverlayState> {
+        if !self.context_menu.is_open() {
+            return None;
+        }
+        let ui::view::OverlayState::Menu {
+            anchor,
+            highlighted,
+            ..
+        } = self.context_menu.overlay_state()
+        else {
+            return None;
+        };
+        let (menu, target) = match self.menu_kind.as_ref()? {
+            FilesMenu::Context => ("context", None),
+            FilesMenu::View => ("view", None),
+            FilesMenu::Sort => ("sort", None),
+            FilesMenu::Favorite(path) => ("favorite", Some(path.to_string_lossy().into_owned())),
+        };
+        Some(ui::view::OverlayState::Menu {
+            anchor,
+            highlighted,
+            menu: Some(menu.into()),
+            target,
+        })
+    }
+
+    /// Re-open the menu a View named through the same opener a click uses,
+    /// so its rows reflect this app's current selection and settings.
+    fn restore_overlay(
+        &mut self,
+        state: Option<&ui::view::OverlayState>,
+        _presentation: ui::view::OverlayPresentation,
+    ) {
+        let Some(
+            restored @ ui::view::OverlayState::Menu {
+                anchor,
+                menu: Some(menu),
+                target,
+                ..
+            },
+        ) = state
+        else {
+            if state.is_none() {
+                self.submenu.close();
+                self.context_menu.close();
+                self.menu_kind = None;
+            }
+            return;
+        };
+        let at = match *anchor {
+            ui::view::OverlayAnchor::Point { x, y } => Point::new(x, y),
+            ui::view::OverlayAnchor::Rect { x0, y1, .. } => Point::new(x0, y1),
+            ui::view::OverlayAnchor::Owner => self.last_cursor,
+        };
+        // The toolbar menus place themselves against their trigger; only the
+        // pointer-opened menus take the captured anchor back.
+        match (menu.as_str(), target) {
+            ("view", _) => self.open_view_menu(),
+            ("sort", _) => self.open_sort_menu(),
+            ("context", _) => {
+                self.open_context_menu(at);
+                self.context_menu.restore_overlay_state(Some(restored));
+            }
+            ("favorite", Some(path)) => {
+                self.open_favorite_menu(PathBuf::from(path), at);
+                self.context_menu.restore_overlay_state(Some(restored));
+            }
+            _ => {}
+        }
+    }
+
     fn history_registration(
         &self,
     ) -> Result<

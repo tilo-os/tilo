@@ -137,6 +137,40 @@ pub(crate) enum MenuTarget {
     Workspace(Id),
 }
 
+impl MenuTarget {
+    /// The menu's name and target id as a View carries them.
+    pub(crate) fn overlay_parts(&self) -> (&'static str, &str) {
+        match self {
+            MenuTarget::Channel(id) => ("channel", id),
+            MenuTarget::Category(id) => ("category", id),
+            MenuTarget::Message(id) => ("message", id),
+            MenuTarget::Workspace(id) => ("workspace", id),
+        }
+    }
+
+    pub(crate) fn from_overlay_parts(menu: &str, id: &str) -> Option<Self> {
+        let id = id.to_string();
+        Some(match menu {
+            "channel" => MenuTarget::Channel(id),
+            "category" => MenuTarget::Category(id),
+            "message" => MenuTarget::Message(id),
+            "workspace" => MenuTarget::Workspace(id),
+            _ => return None,
+        })
+    }
+
+    /// The actions a menu over this target offers — the same rows a
+    /// right-click there shows.
+    pub(crate) fn menu_actions(&self) -> Vec<MenuAction> {
+        match self {
+            MenuTarget::Channel(_) => MenuAction::for_channel().to_vec(),
+            MenuTarget::Category(_) => MenuAction::for_category().to_vec(),
+            MenuTarget::Message(_) => MenuAction::for_message().to_vec(),
+            MenuTarget::Workspace(_) => vec![MenuAction::NewCategory],
+        }
+    }
+}
+
 /// The structural actions reachable from a context menu. The **first**
 /// channel action is also what a left-swipe on the row resolves to, so the
 /// gesture and the menu can never drift (swipe⇔menu parity).
@@ -3285,6 +3319,60 @@ impl FloatingSurfaceProvider for ChatApp {
 }
 
 impl Widget for ChatApp {
+    fn open_overlay(&self) -> Option<ui::view::OverlayState> {
+        let menu = self.menu.as_ref().filter(|menu| menu.widget.is_open())?;
+        let ui::view::OverlayState::Menu {
+            anchor,
+            highlighted,
+            ..
+        } = menu.widget.overlay_state()
+        else {
+            return None;
+        };
+        let (kind, id) = menu.target.overlay_parts();
+        Some(ui::view::OverlayState::Menu {
+            anchor,
+            highlighted,
+            menu: Some(kind.into()),
+            target: Some(id.into()),
+        })
+    }
+
+    /// Re-open the structure menu over the channel, category, message or
+    /// workspace it named, with the rows a right-click there offers.
+    fn restore_overlay(
+        &mut self,
+        state: Option<&ui::view::OverlayState>,
+        _presentation: ui::view::OverlayPresentation,
+    ) {
+        let Some(
+            restored @ ui::view::OverlayState::Menu {
+                anchor,
+                menu: Some(kind),
+                target: Some(id),
+                ..
+            },
+        ) = state
+        else {
+            if state.is_none() {
+                self.menu = None;
+            }
+            return;
+        };
+        let Some(target) = MenuTarget::from_overlay_parts(kind, id) else {
+            return;
+        };
+        let at = match *anchor {
+            ui::view::OverlayAnchor::Point { x, y } => Point::new(x, y),
+            ui::view::OverlayAnchor::Rect { x0, y1, .. } => Point::new(x0, y1),
+            ui::view::OverlayAnchor::Owner => self.last_mouse,
+        };
+        let items = target.menu_actions();
+        let mut menu = ContextMenu::new(target, at, items, self.rect);
+        menu.widget.restore_overlay_state(Some(restored));
+        self.menu = Some(menu);
+    }
+
     fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
         Some(self)
     }

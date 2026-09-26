@@ -354,7 +354,40 @@ impl Banner {
     }
 }
 
+impl From<BannerKind> for crate::view::OverlaySeverity {
+    fn from(kind: BannerKind) -> Self {
+        match kind {
+            BannerKind::Info => Self::Info,
+            BannerKind::Success => Self::Success,
+            BannerKind::Warning => Self::Warning,
+            BannerKind::Error => Self::Error,
+        }
+    }
+}
+
 impl Widget for Banner {
+    /// A shown banner is part of what the participant sees. Which banner is
+    /// shown is the app's model, so a View never creates one: restoring only
+    /// brings back one this app still declares but the person dismissed.
+    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
+        (!self.dismissed).then(|| crate::view::OverlayState::Banner {
+            severity: self.kind.into(),
+            title: Some(self.title.clone()),
+        })
+    }
+
+    fn restore_overlay(
+        &mut self,
+        state: Option<&crate::view::OverlayState>,
+        presentation: crate::view::OverlayPresentation,
+    ) {
+        if presentation == crate::view::OverlayPresentation::Owned
+            && matches!(state, Some(crate::view::OverlayState::Banner { .. }))
+        {
+            self.dismissed = false;
+        }
+    }
+
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     #[allow(

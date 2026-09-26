@@ -112,6 +112,9 @@ pub struct ModalDialog<C: Widget> {
     on_dismiss: Option<Box<dyn FnMut()>>,
     open: bool,
     destructive: bool,
+    /// Shown for a participant this app follows live: drawn as it is for
+    /// them, but it neither traps focus nor captures input here.
+    mirrored: bool,
     viewport: Rect,
     /// Box max width / height; override via [`with_max_size`](Self::with_max_size)
     /// when the default 480×320 reads as unbalanced for the content.
@@ -159,6 +162,7 @@ impl<C: Widget> ModalDialog<C> {
             secondary_action: None,
             on_dismiss: None,
             open: false,
+            mirrored: false,
             destructive: false,
             viewport: Rect::ZERO,
             max_w: MAX_DIALOG_WIDTH,
@@ -209,6 +213,8 @@ impl<C: Widget> ModalDialog<C> {
     /// dialog [traps focus](Widget::traps_focus).
     pub fn set_open(&mut self, open: bool) {
         self.open = open;
+        // Opening it here makes it this app's own dialog again.
+        self.mirrored = false;
         // A closed dialog receives no moves, so whatever position it last
         // saw is stale by the time it reopens.
         self.pointer_inside = false;
@@ -493,10 +499,17 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         self.open.then_some(crate::view::OverlayState::Dialog)
     }
 
-    fn restore_overlay(&mut self, state: Option<&crate::view::OverlayState>) {
+    fn restore_overlay(
+        &mut self,
+        state: Option<&crate::view::OverlayState>,
+        presentation: crate::view::OverlayPresentation,
+    ) {
         match state {
             None => self.set_open(false),
-            Some(crate::view::OverlayState::Dialog) => self.set_open(true),
+            Some(crate::view::OverlayState::Dialog) => {
+                self.set_open(true);
+                self.mirrored = presentation == crate::view::OverlayPresentation::Mirrored;
+            }
             Some(_) => {}
         }
     }
@@ -667,7 +680,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        if !self.open {
+        if !self.open || self.mirrored {
             return;
         }
         // Blocking: while open, marks every event handled itself so it
@@ -779,7 +792,11 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        if self.open { Some(self.rect) } else { None }
+        if self.open && !self.mirrored {
+            Some(self.rect)
+        } else {
+            None
+        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -809,7 +826,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     }
 
     fn traps_focus(&self) -> bool {
-        self.open
+        self.open && !self.mirrored
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -821,7 +838,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         let mut node = AccessNode::new(Role::Dialog)
             .with_optional_name(name)
             .with_state(AccessState {
-                modal: true,
+                modal: !self.mirrored,
                 hidden: !self.open,
                 ..Default::default()
             });

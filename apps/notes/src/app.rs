@@ -3782,7 +3782,87 @@ impl ui::widget::AppWidget for NotesApp {
     }
 }
 
+/// Which of the notes menus a View names.
+const NOTE_MENU_PAGE: &str = "page";
+const NOTE_MENU_EDITOR: &str = "editor";
+
 impl Widget for NotesApp {
+    fn open_overlay(&self) -> Option<ui::view::OverlayState> {
+        if !self.note_menu.is_open() {
+            return None;
+        }
+        let ui::view::OverlayState::Menu {
+            anchor,
+            highlighted,
+            ..
+        } = self.note_menu.overlay_state()
+        else {
+            return None;
+        };
+        Some(ui::view::OverlayState::Menu {
+            anchor,
+            highlighted,
+            menu: Some(
+                if self.note_menu_editor {
+                    NOTE_MENU_EDITOR
+                } else {
+                    NOTE_MENU_PAGE
+                }
+                .into(),
+            ),
+            target: self.note_menu_target.map(|page| page.to_string()),
+        })
+    }
+
+    /// Re-open the note menu for the page it named, if that page is the one
+    /// shown here; a menu for another page has nothing to act on.
+    fn restore_overlay(
+        &mut self,
+        state: Option<&ui::view::OverlayState>,
+        _presentation: ui::view::OverlayPresentation,
+    ) {
+        let Some(
+            restored @ ui::view::OverlayState::Menu {
+                anchor,
+                menu,
+                target,
+                ..
+            },
+        ) = state
+        else {
+            if state.is_none() {
+                self.note_menu.close();
+                self.note_menu_target = None;
+            }
+            return;
+        };
+        let editor = match menu.as_deref() {
+            Some(NOTE_MENU_EDITOR) => true,
+            Some(NOTE_MENU_PAGE) => false,
+            _ => return,
+        };
+        let Some(page) = self.workspace.selected() else {
+            return;
+        };
+        if target
+            .as_ref()
+            .is_some_and(|target| *target != page.to_string())
+        {
+            return;
+        }
+        let anchor = match *anchor {
+            ui::view::OverlayAnchor::Point { x, y } => Point::new(x, y),
+            ui::view::OverlayAnchor::Rect { x0, y1, .. } => Point::new(x0, y1),
+            ui::view::OverlayAnchor::Owner => {
+                let rect = self.main.get_rect();
+                Point::new(rect.x0, rect.y0)
+            }
+        };
+        self.note_menu_editor = editor;
+        self.build_note_menu(anchor, page);
+        self.note_menu.restore_overlay_state(Some(restored));
+    }
+
     fn has_pending_control_invocation(&self) -> bool {
         !self.adopted
             || self.pending_markdown_source.is_some()
@@ -5108,6 +5188,15 @@ impl NotesApp {
                 self.main.editor_mut().set_focus(true);
             }
         }
+        self.build_note_menu(anchor, page);
+        *handled = true;
+        true
+    }
+
+    /// Fill and open the note menu for `page` at `anchor`: the editor's menu
+    /// when `note_menu_editor` is set, the page menu otherwise. The one path
+    /// that opens it, for a right-click, a menu key, and a restored View.
+    fn build_note_menu(&mut self, anchor: Point, page: PageId) {
         self.note_menu = ContextMenu::new();
         self.note_menu_table = self
             .note_menu_editor
@@ -5151,8 +5240,6 @@ impl NotesApp {
             .open_at([num::f32_of_f64(anchor.x), num::f32_of_f64(anchor.y)]);
         self.note_menu_target = Some(page);
         self.self_dirty = true;
-        *handled = true;
-        true
     }
 
     fn apply_note_menu_selection(&mut self, index: usize, state: &mut AutoCommit) {

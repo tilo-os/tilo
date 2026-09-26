@@ -1167,6 +1167,18 @@ impl MailApp {
         }
     }
 
+    /// Open the row menu for `id` at `pos`, with the actions that message
+    /// offers now. The one path for a right-click and a restored View.
+    fn open_message_menu(&mut self, id: MessageId, pos: Point, active: usize) {
+        let items = self.shared.borrow().context_items_for(id);
+        self.context_menu = (!items.is_empty()).then(|| ContextMenu {
+            target: id,
+            pos,
+            active: active.min(items.len().saturating_sub(1)),
+            items,
+        });
+    }
+
     fn process_intents(&mut self) {
         let intents = self.shared.borrow_mut().take_intents();
         for intent in intents {
@@ -1183,15 +1195,7 @@ impl MailApp {
                 Intent::ReplyAll(id) => self.open_reply_all(id),
                 Intent::Forward(id) => self.open_forward(id),
                 Intent::EditDraft(id) => self.open_draft(id),
-                Intent::ContextMenu(id, pt) => {
-                    let items = self.shared.borrow().context_items_for(id);
-                    self.context_menu = (!items.is_empty()).then_some(ContextMenu {
-                        target: id,
-                        pos: pt,
-                        items,
-                        active: 0,
-                    });
-                }
+                Intent::ContextMenu(id, pt) => self.open_message_menu(id, pt, 0),
                 Intent::Settings(idx) => self.open_setup_edit(idx),
                 Intent::SaveAttachment(message_id, index) => {
                     if let Err(error) = self.begin_attachment_save(message_id, index) {
@@ -4849,6 +4853,48 @@ impl MailApp {
 }
 
 impl Widget for MailApp {
+    fn open_overlay(&self) -> Option<ui::view::OverlayState> {
+        let menu = self.context_menu.as_ref()?;
+        Some(ui::view::OverlayState::Menu {
+            anchor: ui::view::OverlayAnchor::Point {
+                x: menu.pos.x,
+                y: menu.pos.y,
+            },
+            highlighted: Some(menu.active),
+            menu: Some("message".into()),
+            target: Some(menu.target.to_string()),
+        })
+    }
+
+    /// Re-open the row menu for the message it named, if that message is
+    /// still here.
+    fn restore_overlay(
+        &mut self,
+        state: Option<&ui::view::OverlayState>,
+        _presentation: ui::view::OverlayPresentation,
+    ) {
+        match state {
+            None => self.context_menu = None,
+            Some(ui::view::OverlayState::Menu {
+                anchor,
+                highlighted,
+                menu: Some(menu),
+                target: Some(target),
+            }) if menu == "message" => {
+                let Ok(id) = target.parse::<MessageId>() else {
+                    return;
+                };
+                let pos = match *anchor {
+                    ui::view::OverlayAnchor::Point { x, y } => Point::new(x, y),
+                    ui::view::OverlayAnchor::Rect { x0, y1, .. } => Point::new(x0, y1),
+                    ui::view::OverlayAnchor::Owner => Point::ZERO,
+                };
+                self.open_message_menu(id, pos, highlighted.unwrap_or(0));
+            }
+            Some(_) => {}
+        }
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::MAIL_OPERATION_TYPE]
     }

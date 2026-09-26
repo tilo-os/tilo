@@ -339,15 +339,59 @@ impl App {
     /// Following a peer who hasn't published a View yet latches the intent
     /// without moving anything; the viewport snaps to them once their first
     /// View arrives.
+    ///
+    /// This is a live follow: see [`crate::view::FollowMode`].
     pub fn follow(&mut self, peer_id: impl Into<String>) {
+        self.follow_with(peer_id, crate::view::FollowMode::Live);
+    }
+
+    /// Follow `peer_id` in `mode`. A replay peer follows the recorded
+    /// participant with [`FollowMode::Replay`](crate::view::FollowMode::Replay).
+    pub fn follow_with(&mut self, peer_id: impl Into<String>, mode: crate::view::FollowMode) {
         let _entry = self.enter_wake_scope();
         self.presence.followed_peer = Some(peer_id.into());
+        self.presence.follow_mode = mode;
         self.apply_follow();
     }
 
+    /// Stop following. Overlays shown only because the followed participant
+    /// had them open close with it; they were never this app's own.
     pub fn unfollow(&mut self) {
         let _entry = self.enter_wake_scope();
         self.presence.followed_peer = None;
+        self.presence.follow_mode = crate::view::FollowMode::Live;
+        for owner in std::mem::take(&mut self.presence.mirrored_overlays) {
+            self.restore_overlay_at(&owner, None, crate::view::OverlayPresentation::Owned);
+        }
+    }
+
+    pub fn follow_mode(&self) -> crate::view::FollowMode {
+        self.presence.follow_mode
+    }
+
+    /// A live follower's own input breaks away from following, before the
+    /// input is dispatched: the person has taken the controls back, so what
+    /// they were only watching must neither receive it nor stay open. Replay
+    /// has no such input; its viewer drives nothing.
+    pub(super) fn break_away_on_local_input(&mut self, event: &WindowEvent) {
+        if self.presence.followed_peer.is_none()
+            || self.presence.follow_mode != crate::view::FollowMode::Live
+        {
+            return;
+        }
+        let takes_control = match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+            | WindowEvent::MouseWheel { .. } => true,
+            WindowEvent::KeyboardInput { event, .. } => event.state == ElementState::Pressed,
+            WindowEvent::Touch(touch) => touch.phase == winit::event::TouchPhase::Started,
+            _ => false,
+        };
+        if takes_control {
+            self.unfollow();
+        }
     }
 
     fn apply_follow(&mut self) {
@@ -367,9 +411,20 @@ impl App {
                 view_mode: view.view_mode,
             });
         // A follower sees what the followed participant sees, including the
-        // menu or dialog they have open; a replay is this same path. Toasts
-        // arrive without their text and so never replace the follower's own.
-        self.restore_overlays(&view.overlays);
+        // menu or dialog they have open; a replay is this same path. The mode
+        // decides whether those overlays take control (see `FollowMode`).
+        // Toasts arrive without their text and never replace the follower's.
+        let presentation = self.presence.follow_mode.overlay_presentation();
+        self.restore_overlays(&view.overlays, presentation);
+        self.presence.mirrored_overlays =
+            if presentation == crate::view::OverlayPresentation::Mirrored {
+                view.overlays
+                    .iter()
+                    .map(|overlay| overlay.owner.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
         self.layout.layout_dirty = true;
         self.needs_sync = true;
     }

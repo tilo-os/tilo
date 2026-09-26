@@ -658,8 +658,12 @@ pub trait Decorator {
         self.inner().open_overlay()
     }
 
-    fn restore_overlay(&mut self, state: Option<&crate::view::OverlayState>) {
-        self.inner_mut().restore_overlay(state);
+    fn restore_overlay(
+        &mut self,
+        state: Option<&crate::view::OverlayState>,
+        presentation: crate::view::OverlayPresentation,
+    ) {
+        self.inner_mut().restore_overlay(state, presentation);
     }
 
     fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
@@ -1428,8 +1432,12 @@ impl<T: Decorator> Widget for T {
         Decorator::open_overlay(self)
     }
 
-    fn restore_overlay(&mut self, state: Option<&crate::view::OverlayState>) {
-        Decorator::restore_overlay(self, state);
+    fn restore_overlay(
+        &mut self,
+        state: Option<&crate::view::OverlayState>,
+        presentation: crate::view::OverlayPresentation,
+    ) {
+        Decorator::restore_overlay(self, state, presentation);
     }
 
     fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {

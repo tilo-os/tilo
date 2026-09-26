@@ -3882,7 +3882,11 @@ impl Widget for TextInput {
         clippy::cast_possible_truncation,
         reason = "menu anchors are surface coordinates, well inside f32 range"
     )]
-    fn restore_overlay(&mut self, state: Option<&crate::view::OverlayState>) {
+    fn restore_overlay(
+        &mut self,
+        state: Option<&crate::view::OverlayState>,
+        _presentation: crate::view::OverlayPresentation,
+    ) {
         match state {
             None => self.context_menu.close(),
             Some(menu @ crate::view::OverlayState::Menu { anchor, .. }) => {

@@ -340,6 +340,13 @@ fn draw_button(
 }
 
 impl Widget for PermissionPrompt {
+    /// A prompt is in the tree exactly while it asks, so it is always an open
+    /// dialog. It answers this app's own request and is never opened from a
+    /// View: restoring leaves it alone.
+    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
+        Some(crate::view::OverlayState::Dialog)
+    }
+
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
         // Content is pushed by the host's portal request flow, not pulled from the doc.
     }

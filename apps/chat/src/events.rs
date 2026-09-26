@@ -640,36 +640,17 @@ impl ChatApp {
     /// Right-click opens a context menu for the channel/category/workspace
     /// under the cursor.
     fn on_right_click(&mut self, hit: Hit) {
-        let menu = match hit {
-            Hit::Channel(id) | Hit::VoiceChannel(id) => Some(ContextMenu::new(
-                MenuTarget::Channel(id),
-                self.last_mouse,
-                MenuAction::for_channel().to_vec(),
-                self.rect,
-            )),
+        let target = match hit {
+            Hit::Channel(id) | Hit::VoiceChannel(id) => MenuTarget::Channel(id),
             Hit::CategoryToggle(id) | Hit::AddChannel { category: id, .. } => {
-                Some(ContextMenu::new(
-                    MenuTarget::Category(id),
-                    self.last_mouse,
-                    MenuAction::for_category().to_vec(),
-                    self.rect,
-                ))
+                MenuTarget::Category(id)
             }
             // One of your own messages — offer the message actions (Edit).
-            Hit::MessageMenu { msg } => Some(ContextMenu::new(
-                MenuTarget::Message(msg),
-                self.last_mouse,
-                MenuAction::for_message().to_vec(),
-                self.rect,
-            )),
-            _ => Some(ContextMenu::new(
-                MenuTarget::Workspace(self.active_ws.clone()),
-                self.last_mouse,
-                vec![MenuAction::NewCategory],
-                self.rect,
-            )),
+            Hit::MessageMenu { msg } => MenuTarget::Message(msg),
+            _ => MenuTarget::Workspace(self.active_ws.clone()),
         };
-        self.menu = menu;
+        let items = target.menu_actions();
+        self.menu = Some(ContextMenu::new(target, self.last_mouse, items, self.rect));
     }
 
     /// Top-most matching region (regions are recorded back-to-front, so a
@@ -1838,6 +1819,33 @@ mod tests {
         (app, doc)
     }
 
+    /// The structure menu is part of the View: it is captured with what it
+    /// is over, and a restored View re-opens the same menu, with the same
+    /// rows, over the same channel.
+    #[test]
+    fn the_structure_menu_round_trips_through_the_view() {
+        use ui::Widget as _;
+        let (mut app, _doc) = app_with_doc();
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 900.0, 700.0);
+        app.last_mouse = Point::new(120.0, 140.0);
+        app.on_right_click(Hit::Channel("c_crit".into()));
+        let captured = app.open_overlay().expect("an open menu is an overlay");
+        assert!(matches!(
+            &captured,
+            ui::view::OverlayState::Menu { menu: Some(menu), target: Some(target), .. }
+                if menu == "channel" && target == "c_crit"
+        ));
+
+        app.restore_overlay(None, ui::view::OverlayPresentation::Owned);
+        assert!(app.menu.is_none(), "restoring no overlay closes it");
+
+        app.restore_overlay(Some(&captured), ui::view::OverlayPresentation::Owned);
+        let menu = app.menu.as_ref().expect("the menu is open again");
+        assert_eq!(menu.target, MenuTarget::Channel("c_crit".into()));
+        assert_eq!(menu.items, MenuAction::for_channel().to_vec());
+        assert_eq!(app.open_overlay(), Some(captured));
+    }
+
     /// Exercise a domain action through the retained menu's semantic
     /// activation channel—the same selection channel used by Enter/click.
     fn activate_context_menu_action(
@@ -1846,12 +1854,7 @@ mod tests {
         target: MenuTarget,
         action: MenuAction,
     ) {
-        let items = match &target {
-            MenuTarget::Channel(_) => MenuAction::for_channel().to_vec(),
-            MenuTarget::Category(_) => MenuAction::for_category().to_vec(),
-            MenuTarget::Message(_) => MenuAction::for_message().to_vec(),
-            MenuTarget::Workspace(_) => vec![MenuAction::NewCategory],
-        };
+        let items = target.menu_actions();
         let index = items
             .iter()
             .position(|candidate| *candidate == action)

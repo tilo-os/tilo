@@ -1500,7 +1500,12 @@ pub trait Widget {
     /// Re-open this widget's overlay from a View (`Some`), or close it
     /// (`None`). A state this widget cannot show (another kind, or a toast
     /// whose text was not carried) is ignored.
-    fn restore_overlay(&mut self, _state: Option<&crate::view::OverlayState>) {}
+    fn restore_overlay(
+        &mut self,
+        _state: Option<&crate::view::OverlayState>,
+        _presentation: crate::view::OverlayPresentation,
+    ) {
+    }
 
     /// Theme/high-contrast/reduced-motion/scale, polled under
     /// [`crate::app::App::appearance_reconcile`] — how a settings pane

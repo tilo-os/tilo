@@ -293,6 +293,9 @@ pub(super) struct PresenceRuntime {
     pub(super) broadcast_scope: Option<PresenceKey>,
     pub(super) pointer_space: Option<crate::presence::PointerSpace>,
     pub(super) followed_peer: Option<String>,
+    pub(super) follow_mode: crate::view::FollowMode,
+    /// Owners of the overlays open only because a live follow mirrored them.
+    pub(super) mirrored_overlays: Vec<String>,
     pub(super) last_pointer_broadcast: Option<Instant>,
     pub(super) last_focus: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
     pub(super) last_location: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
@@ -307,6 +310,8 @@ impl PresenceRuntime {
             broadcast_scope: None,
             pointer_space: None,
             followed_peer: None,
+            follow_mode: crate::view::FollowMode::Live,
+            mirrored_overlays: Vec::new(),
             last_pointer_broadcast: None,
             last_focus: None,
             last_location: None,

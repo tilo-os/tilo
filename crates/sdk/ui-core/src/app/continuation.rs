@@ -10,7 +10,10 @@ pub const STRUCTURAL_CONTINUATION_SCHEMA: u16 = u16::MAX - 1;
 /// strings and `RecordId::for_file` values: both may contain local paths or
 /// app secrets. File navigation is restored by the shell's typed
 /// `FileRecordId` launch intent; this fallback carries presentation only.
-/// Open overlays travel in their broadcast form, so toast text never does.
+/// Open overlays travel in their broadcast form, so toast and banner text
+/// never does: a continuation is offered to the person's other devices as a
+/// remote resume, so it leaves this one. Only a local freeze
+/// ([`crate::view::FrozenApp`]) keeps that text.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct PortableContinuationView {
     scroll: Vec<f64>,
@@ -71,7 +74,7 @@ impl PortableContinuationView {
 
     fn valid(&self) -> bool {
         self.overlays.len() <= MAX_PORTABLE_OVERLAYS
-            && self.into_view_for_validation().validate().is_ok()
+            && self.clone().into_view().validate().is_ok()
             && self.scroll.len() <= 32
             && self.scroll.iter().all(|value| value.is_finite())
             && [
@@ -89,12 +92,6 @@ impl PortableContinuationView {
                         .bytes()
                         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
             })
-    }
-}
-
-impl PortableContinuationView {
-    fn into_view_for_validation(&self) -> crate::view::View {
-        self.clone().into_view()
     }
 }
 

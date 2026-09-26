@@ -209,7 +209,7 @@ impl SelectionRange {
 mod view_key_tests {
     use super::*;
     use crate::view::{
-        OpenOverlay, OverlayAnchor, OverlayState, ToastSeverity, ToastView, ViewRect, ViewSubset,
+        OpenOverlay, OverlayAnchor, OverlaySeverity, OverlayState, ToastView, ViewRect, ViewSubset,
     };
 
     #[test]
@@ -230,6 +230,8 @@ mod view_key_tests {
                     state: OverlayState::Menu {
                         anchor: OverlayAnchor::Point { x: 40.0, y: 12.5 },
                         highlighted: Some(2),
+                        menu: Some("page".into()),
+                        target: Some("notes.page:1".into()),
                     },
                 },
                 OpenOverlay {
@@ -240,7 +242,7 @@ mod view_key_tests {
                     owner: "w9".into(),
                     state: OverlayState::Toasts {
                         toasts: vec![ToastView {
-                            severity: ToastSeverity::Error,
+                            severity: OverlaySeverity::Error,
                             text: None,
                         }],
                     },

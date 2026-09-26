@@ -85,7 +85,7 @@ pub enum ToastKind {
     Error,
 }
 
-impl From<ToastKind> for crate::view::ToastSeverity {
+impl From<ToastKind> for crate::view::OverlaySeverity {
     fn from(kind: ToastKind) -> Self {
         match kind {
             ToastKind::Info => Self::Info,
@@ -96,13 +96,13 @@ impl From<ToastKind> for crate::view::ToastSeverity {
     }
 }
 
-impl From<crate::view::ToastSeverity> for ToastKind {
-    fn from(severity: crate::view::ToastSeverity) -> Self {
+impl From<crate::view::OverlaySeverity> for ToastKind {
+    fn from(severity: crate::view::OverlaySeverity) -> Self {
         match severity {
-            crate::view::ToastSeverity::Info => Self::Info,
-            crate::view::ToastSeverity::Success => Self::Success,
-            crate::view::ToastSeverity::Warning => Self::Warning,
-            crate::view::ToastSeverity::Error => Self::Error,
+            crate::view::OverlaySeverity::Info => Self::Info,
+            crate::view::OverlaySeverity::Success => Self::Success,
+            crate::view::OverlaySeverity::Warning => Self::Warning,
+            crate::view::OverlaySeverity::Error => Self::Error,
         }
     }
 }
@@ -874,7 +874,11 @@ impl Widget for ToastStack {
     /// Toasts are this participant's own notifications. A View only adds
     /// them back when it carries their text (a thaw); a broadcast View
     /// (follow, replay) never clears or replaces them.
-    fn restore_overlay(&mut self, state: Option<&crate::view::OverlayState>) {
+    fn restore_overlay(
+        &mut self,
+        state: Option<&crate::view::OverlayState>,
+        _presentation: crate::view::OverlayPresentation,
+    ) {
         let Some(crate::view::OverlayState::Toasts { toasts }) = state else {
             return;
         };

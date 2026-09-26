@@ -529,8 +529,9 @@ impl ContextMenu {
     }
 
     /// This menu as View overlay state: where it opened and which row is
-    /// highlighted. Owners that embed a menu rather than parenting it report
-    /// this from their own [`Widget::open_overlay`].
+    /// highlighted. The owner reports it from its own
+    /// [`Widget::open_overlay`], adding which of its menus this is and what
+    /// it targets.
     pub fn overlay_state(&self) -> crate::view::OverlayState {
         let anchor = match (self.bounds, self.position) {
             (Some((anchor, _)), _) => crate::view::OverlayAnchor::Rect {
@@ -545,10 +546,7 @@ impl ContextMenu {
             },
             (None, None) => crate::view::OverlayAnchor::Owner,
         };
-        crate::view::OverlayState::Menu {
-            anchor,
-            highlighted: self.hovered,
-        }
+        crate::view::OverlayState::menu(anchor, self.hovered)
     }
 
     /// Re-open at a captured [`overlay_state`](Self::overlay_state), or close.
@@ -560,6 +558,7 @@ impl ContextMenu {
         let Some(crate::view::OverlayState::Menu {
             anchor,
             highlighted,
+            ..
         }) = state
         else {
             if state.is_none() {
@@ -764,15 +763,10 @@ fn label_inset(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s1) + LABEL_GAP
 }
 
+// A menu never reports itself as an open overlay: it is always embedded by
+// an owner that fills its rows for a target, and only that owner can open it
+// again. Owners report `overlay_state` from their own `Widget::open_overlay`.
 impl Widget for ContextMenu {
-    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
-        self.open.then(|| self.overlay_state())
-    }
-
-    fn restore_overlay(&mut self, state: Option<&crate::view::OverlayState>) {
-        self.restore_overlay_state(state);
-    }
-
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn build_layout(

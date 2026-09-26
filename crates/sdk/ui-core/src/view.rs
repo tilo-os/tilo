@@ -84,9 +84,10 @@ impl OverlayAnchor {
     }
 }
 
-/// Severity of an open toast, matching [`crate::widget::toast::ToastKind`].
+/// Severity of an open toast or banner, matching
+/// [`crate::widget::toast::ToastKind`] and [`crate::widget::banner::BannerKind`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ToastSeverity {
+pub enum OverlaySeverity {
     Info,
     Success,
     Warning,
@@ -102,7 +103,7 @@ pub enum ToastSeverity {
 /// device.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToastView {
-    pub severity: ToastSeverity,
+    pub severity: OverlaySeverity,
     pub text: Option<String>,
 }
 
@@ -111,9 +112,16 @@ pub struct ToastView {
 pub enum OverlayState {
     /// A list of choices: a context menu, a popover menu, a dropdown's list.
     /// `highlighted` is the row under keyboard focus, when there is one.
+    ///
+    /// `menu` is the owner's name for which of its menus is open, when it has
+    /// more than one (a page menu and an editor menu). `target` is the stable
+    /// identity of what the menu acts on (a resource id), when that is not
+    /// simply the owner's current selection. Neither is ever content.
     Menu {
         anchor: OverlayAnchor,
         highlighted: Option<usize>,
+        menu: Option<String>,
+        target: Option<String>,
     },
     /// A popover holding arbitrary content next to its owner.
     Popover,
@@ -122,6 +130,63 @@ pub enum OverlayState {
     Dialog,
     /// The toasts currently shown by a notification stack, oldest first.
     Toasts { toasts: Vec<ToastView> },
+    /// An inline alert, the classic "what went wrong" signal. Its title is
+    /// content, carried like a toast's text: kept locally, dropped from a
+    /// broadcast and read from the banner's own semantic node instead.
+    Banner {
+        severity: OverlaySeverity,
+        title: Option<String>,
+    },
+}
+
+impl OverlayState {
+    /// A menu with no owner-specific identity.
+    pub fn menu(anchor: OverlayAnchor, highlighted: Option<usize>) -> Self {
+        OverlayState::Menu {
+            anchor,
+            highlighted,
+            menu: None,
+            target: None,
+        }
+    }
+}
+
+/// How a restored overlay behaves once it is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverlayPresentation {
+    /// This app's own overlay again: a thaw, a resume, or a replay the viewer
+    /// only watches. A modal is fully modal.
+    Owned,
+    /// Someone else's overlay shown to a live follower. It is drawn
+    /// faithfully but never takes the follower's focus or input: a modal
+    /// does not trap focus or capture the pointer, and the follower's first
+    /// input breaks away from following and closes it.
+    Mirrored,
+}
+
+/// How a follow binds this app to the followed participant's View.
+///
+/// This is where follow and replay differ. A live follower is a person with
+/// their own hands on the app, so what they follow is shown but never takes
+/// control from them ([`OverlayPresentation::Mirrored`]) and any input of
+/// theirs breaks away. A replay viewer drives nothing — the replay peer is
+/// the only source of input — so the recorded overlays behave exactly as
+/// they did ([`OverlayPresentation::Owned`]) and local input does not end the
+/// follow.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FollowMode {
+    #[default]
+    Live,
+    Replay,
+}
+
+impl FollowMode {
+    pub fn overlay_presentation(self) -> OverlayPresentation {
+        match self {
+            FollowMode::Live => OverlayPresentation::Mirrored,
+            FollowMode::Replay => OverlayPresentation::Owned,
+        }
+    }
 }
 
 /// An overlay open in a [`View`], named by the semantic id of the widget
@@ -138,7 +203,8 @@ pub struct OpenOverlay {
 }
 
 impl OpenOverlay {
-    /// The broadcastable form: toast text stays on the owner's semantic node.
+    /// The broadcastable form: toast text and banner titles stay on the
+    /// owner's semantic node.
     #[must_use]
     pub fn for_broadcast(&self) -> Self {
         let state = match &self.state {
@@ -150,6 +216,10 @@ impl OpenOverlay {
                         text: None,
                     })
                     .collect(),
+            },
+            OverlayState::Banner { severity, .. } => OverlayState::Banner {
+                severity: *severity,
+                title: None,
             },
             other => other.clone(),
         };
@@ -265,7 +335,10 @@ impl View {
         }
         if self.overlays.iter().any(|overlay| match &overlay.state {
             OverlayState::Menu { anchor, .. } => !anchor.is_finite(),
-            OverlayState::Popover | OverlayState::Dialog | OverlayState::Toasts { .. } => false,
+            OverlayState::Popover
+            | OverlayState::Dialog
+            | OverlayState::Toasts { .. }
+            | OverlayState::Banner { .. } => false,
         }) {
             return Err(ThawError::InvalidView("nonfinite overlay anchor".into()));
         }
@@ -516,13 +589,15 @@ pub trait FreezeThaw {
     }
 }
 
-/// A root with one of each toolkit-owned overlay: a dropdown list, a dialog
-/// and a notification stack. `open` builds it with all three showing.
+/// A root with one of each toolkit-owned overlay: a dropdown list, a dialog,
+/// a notification stack and an error banner. `open` builds it with the list,
+/// dialog and toast showing; the banner is always declared.
 #[cfg(test)]
 pub(crate) fn overlay_test_root(
     open: bool,
     own_toast: Option<&str>,
 ) -> Box<dyn crate::widget::Widget> {
+    use crate::widget::banner::Banner;
     use crate::widget::toast::{ToastKind, ToastStack};
     use crate::widget::{Column, Dropdown, ModalDialog, Text};
     let mut dropdown = Dropdown::new(vec!["One".into(), "Two".into(), "Three".into()], "choice");
@@ -540,7 +615,8 @@ pub(crate) fn overlay_test_root(
         Column::new()
             .push(Box::new(dropdown))
             .push(Box::new(dialog))
-            .push(Box::new(toasts)),
+            .push(Box::new(toasts))
+            .push(Box::new(Banner::error("Couldn't reach the server"))),
     )
 }
 
@@ -760,9 +836,31 @@ mod tests {
                 OverlayState::Popover => "popover",
                 OverlayState::Dialog => "dialog",
                 OverlayState::Toasts { .. } => "toasts",
+                OverlayState::Banner { .. } => "banner",
             })
             .collect::<Vec<_>>();
-        assert_eq!(kinds, ["menu", "dialog", "toasts"], "{:?}", v1.overlays);
+        assert_eq!(
+            kinds,
+            ["menu", "dialog", "toasts", "banner"],
+            "{:?}",
+            v1.overlays
+        );
+        assert_eq!(
+            v1.overlays[3].state,
+            OverlayState::Banner {
+                severity: OverlaySeverity::Error,
+                title: Some("Couldn't reach the server".into()),
+            },
+            "the local View keeps the banner's title"
+        );
+        assert_eq!(
+            v1.overlays[3].for_broadcast().state,
+            OverlayState::Banner {
+                severity: OverlaySeverity::Error,
+                title: None,
+            },
+            "a broadcast carries that an error banner is shown, not what it says"
+        );
         assert!(
             v1.overlays.iter().all(|overlay| app1
                 .semantic_tree()
@@ -774,7 +872,7 @@ mod tests {
             v1.overlays[2].state,
             OverlayState::Toasts {
                 toasts: vec![ToastView {
-                    severity: ToastSeverity::Error,
+                    severity: OverlaySeverity::Error,
                     text: Some("Couldn't send".into()),
                 }],
             },
@@ -789,7 +887,11 @@ mod tests {
             App::new_with_controlled_inputs(State::new(), overlay_test_root(false, None));
         app2.init_layout();
         app2.refresh_semantic_tree();
-        assert!(app2.capture_view().overlays.is_empty());
+        assert_eq!(
+            app2.capture_view().overlays,
+            v1.overlays[3..],
+            "a fresh app shows only the banner it declares"
+        );
 
         app2.thaw(&frozen).expect("thaw a well-formed envelope");
         app2.refresh_semantic_tree();

@@ -9282,6 +9282,15 @@ impl WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
+    /// Reported so followers and recordings see the open menu. It is not
+    /// re-opened from a View: its rows are derived from the document under
+    /// the click, which only a pointer event carries.
+    fn open_overlay(&self) -> Option<ui::view::OverlayState> {
+        self.context_menu
+            .is_open()
+            .then(|| self.context_menu.overlay_state())
+    }
+
     fn native_input_snapshot(
         &self,
         state: &AutoCommit,

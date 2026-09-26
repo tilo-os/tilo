@@ -2983,7 +2983,11 @@ impl App {
     /// Make the open overlays exactly `overlays`: re-open each by its owner's
     /// semantic id and close any other that is open. An owner this frame does
     /// not have is skipped: its overlay cannot be shown here.
-    fn restore_overlays(&mut self, overlays: &[crate::view::OpenOverlay]) {
+    fn restore_overlays(
+        &mut self,
+        overlays: &[crate::view::OpenOverlay],
+        presentation: crate::view::OverlayPresentation,
+    ) {
         if overlays.is_empty() && !crate::view::any_overlay_open_bound(self.root_widget.as_ref()) {
             return;
         }
@@ -2997,10 +3001,10 @@ impl App {
             .map(|open| open.owner.clone())
             .collect::<Vec<_>>();
         for owner in stale {
-            self.restore_overlay_at(&owner, None);
+            self.restore_overlay_at(&owner, None, presentation);
         }
         for overlay in overlays {
-            self.restore_overlay_at(&overlay.owner, Some(&overlay.state));
+            self.restore_overlay_at(&overlay.owner, Some(&overlay.state), presentation);
         }
     }
 
@@ -3025,14 +3029,19 @@ impl App {
         }
     }
 
-    fn restore_overlay_at(&mut self, owner: &str, state: Option<&crate::view::OverlayState>) {
+    fn restore_overlay_at(
+        &mut self,
+        owner: &str,
+        state: Option<&crate::view::OverlayState>,
+        presentation: crate::view::OverlayPresentation,
+    ) {
         let Some(node) =
             self.semantic_node_widget(&crate::a11y_tree::SemanticId(owner.to_string()))
         else {
             return;
         };
         if self
-            .mutate_node(node, |widget| widget.restore_overlay(state))
+            .mutate_node(node, |widget| widget.restore_overlay(state, presentation))
             .is_ok()
         {
             self.layout.layout_dirty = true;
@@ -3098,7 +3107,7 @@ impl crate::view::FreezeThaw for App {
     fn restore_view(&mut self, view: &crate::view::View) {
         let _entry = self.enter_wake_scope();
         crate::view::restore_widget_view_bound(&mut *self.root_widget, view);
-        self.restore_overlays(&view.overlays);
+        self.restore_overlays(&view.overlays, crate::view::OverlayPresentation::Owned);
 
         if let Some(f) = &view.focus
             && let Some(&id) = self.focusable_order.get(f.ordinal)
@@ -3671,7 +3680,7 @@ mod view_presence_tests {
             .cloned()
             .expect("a View frame");
         let sent = key.as_view().expect("the frame carries the View subset");
-        assert_eq!(sent.overlays.len(), 3, "{:?}", sent.overlays);
+        assert_eq!(sent.overlays.len(), 4, "{:?}", sent.overlays);
         assert!(
             sent.overlays.iter().all(|overlay| match &overlay.state {
                 OverlayState::Toasts { toasts } => toasts.iter().all(|toast| toast.text.is_none()),
@@ -3696,7 +3705,7 @@ mod view_presence_tests {
                 .presence_ctx()
                 .peer_view(&crate::permissions::UserId("alice".into()))
                 .map(|view| view.overlays.len()),
-            Some(3),
+            Some(4),
             "every participant can see what alice has open"
         );
         assert_eq!(
@@ -3716,7 +3725,7 @@ mod view_presence_tests {
             mirrored[2].state,
             OverlayState::Toasts {
                 toasts: vec![ToastView {
-                    severity: crate::view::ToastSeverity::Success,
+                    severity: crate::view::OverlaySeverity::Success,
                     text: Some("Saved".into()),
                 }],
             },
@@ -3737,6 +3746,93 @@ mod view_presence_tests {
             own,
             "alice closing her menu and dialog closes them for the follower"
         );
+    }
+
+    /// A live follower sees the followed participant's dialog but keeps the
+    /// controls: it traps no focus, captures no pointer, and the follower's
+    /// first key press breaks away and closes it. In replay the same dialog
+    /// is fully modal and the viewer's input does not end the follow.
+    #[test]
+    fn a_mirrored_modal_never_takes_a_live_followers_controls() {
+        fn leader_view() -> PresenceKey {
+            let mut leader = App::new(State::new(), crate::view::overlay_test_root(true, None));
+            leader.init_layout();
+            let captured: Arc<Mutex<Vec<PresenceKey>>> = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&captured);
+            leader.set_presence_broadcast_sink(move |k, _| sink.lock().unwrap().push(k.clone()));
+            leader.broadcast_view_presence();
+            captured
+                .lock()
+                .unwrap()
+                .last()
+                .cloned()
+                .expect("a View frame")
+        }
+        fn dialog_open(app: &mut App) -> bool {
+            app.refresh_semantic_tree();
+            <App as FreezeThaw>::capture_view(app)
+                .overlays
+                .iter()
+                .any(|overlay| overlay.state == crate::view::OverlayState::Dialog)
+        }
+        fn follower(mode: crate::view::FollowMode) -> App {
+            let mut app = App::new(State::new(), crate::view::overlay_test_root(false, None));
+            app.init_layout();
+            app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+                user_id: "alice".into(),
+                key: leader_view(),
+                payload: PresencePayload::Arrived,
+            });
+            app.follow_with("alice", mode);
+            app.refresh_focus_order();
+            app
+        }
+        fn press_key(app: &mut App) {
+            let mut handled = false;
+            let mut focus = None;
+            app.presentation_handle_event(
+                &super::action_palette_tests::synth_enter(),
+                1.0,
+                &mut handled,
+                &mut focus,
+            );
+        }
+
+        let mut live = follower(crate::view::FollowMode::Live);
+        assert!(dialog_open(&mut live), "the follower sees alice's dialog");
+        assert!(
+            live.root_widget.modal_capture().is_none(),
+            "a mirrored dialog captures none of the follower's pointer"
+        );
+        assert!(
+            !live.accessibility.focus_trap_active,
+            "a mirrored dialog traps none of the follower's focus"
+        );
+        press_key(&mut live);
+        assert_eq!(
+            live.followed_peer(),
+            None,
+            "the follower's input breaks away"
+        );
+        assert!(
+            !dialog_open(&mut live),
+            "breaking away closes what was only mirrored"
+        );
+
+        let mut replay = follower(crate::view::FollowMode::Replay);
+        assert!(dialog_open(&mut replay));
+        assert!(
+            replay.root_widget.modal_capture().is_some(),
+            "in replay the recorded dialog is modal"
+        );
+        assert!(replay.accessibility.focus_trap_active);
+        press_key(&mut replay);
+        assert_eq!(
+            replay.followed_peer(),
+            Some("alice"),
+            "a replay viewer's input does not end the replay"
+        );
+        assert!(dialog_open(&mut replay));
     }
 }
 

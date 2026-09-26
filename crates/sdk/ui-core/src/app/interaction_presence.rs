@@ -222,23 +222,21 @@ impl App {
             Err(error) => Some(InteractionPhase::from_door_error(error)),
         };
         self.publish_human_phase(&mut interaction, InteractionPhase::Applying);
-        match terminal {
-            Some(phase) => self.publish_human_phase(&mut interaction, phase),
-            None => {
-                // Bounded: an accepted request whose answer never arrives
-                // must not grow this forever. Peers expire an unanswered
-                // attempt on their own, so dropping one here loses nothing
-                // they would still show.
-                if self.actions.human_interactions.len() >= 64
-                    && let Some(evicted) = self.actions.human_interactions.keys().next().copied()
-                {
-                    self.actions.human_interactions.remove(&evicted);
-                }
-                self.actions
-                    .human_interactions
-                    .insert(interaction.invocation, interaction);
-            }
+        if let Some(phase) = terminal {
+            self.publish_human_phase(&mut interaction, phase);
+            return;
         }
+        // Bounded: an accepted request whose answer never arrives must not
+        // grow this forever. Peers expire an unanswered attempt on their own,
+        // so dropping one here loses nothing they would still show.
+        if self.actions.human_interactions.len() >= 64
+            && let Some(evicted) = self.actions.human_interactions.keys().next().copied()
+        {
+            self.actions.human_interactions.remove(&evicted);
+        }
+        self.actions
+            .human_interactions
+            .insert(interaction.invocation, interaction);
     }
 
     /// A press on a disabled control runs nothing and emits no intent, so the
