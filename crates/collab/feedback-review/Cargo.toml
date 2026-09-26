@@ -13,13 +13,22 @@ path = "src/lib.rs"
 # Pure data and detectors, no IPC: the shell (caller) and the model gateway
 # (which validates the model's answer) both link this.
 
+[features]
+# The mapper between a recorded session and review requests. The shell and
+# headless tests enable it; the model gateway only needs the contract.
+trace = ["dep:session-trace", "dep:tilo-reference", "dep:tilo-actions"]
+
 [dependencies]
 regex.workspace = true
+session-trace = { path = "../session-trace", optional = true }
+tilo-reference = { path = "../reference", optional = true }
+tilo-actions = { path = "../actions", optional = true }
 serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

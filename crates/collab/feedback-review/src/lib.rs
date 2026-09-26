@@ -26,6 +26,8 @@
 
 mod detect;
 mod merge;
+#[cfg(feature = "trace")]
+pub mod trace;
 mod view;
 
 use std::collections::BTreeSet;

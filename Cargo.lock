@@ -14445,7 +14445,11 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "session-trace",
  "thiserror 2.0.18",
+ "tilo-actions",
+ "tilo-reference",
+ "uuid",
 ]
 
 [[package]]
