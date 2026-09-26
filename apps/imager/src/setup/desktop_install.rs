@@ -1262,7 +1262,8 @@ mod tests {
         let path = std::path::PathBuf::from(
             std::env::var_os("TILO_DESKTOP_TEST_ARTIFACT").expect("explicit local artifact"),
         );
-        let digest = std::env::var("TILO_DESKTOP_TEST_SHA256").expect("independent artifact SHA256");
+        let digest =
+            std::env::var("TILO_DESKTOP_TEST_SHA256").expect("independent artifact SHA256");
         let version = std::env::var("TILO_DESKTOP_TEST_VERSION").expect("native package version");
         let mut backend = native::NativeBackend;
         let host = backend.probe().unwrap();
