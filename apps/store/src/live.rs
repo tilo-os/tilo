@@ -342,31 +342,35 @@ impl Widget for LiveStore {
 mod tests {
     use super::*;
 
+    /// The live root is the real worker-backed host with its launch contract, and reconnects after drop.
     #[test]
-    fn app_root_is_the_real_worker_backed_store_host() {
-        let root = app_root();
-        assert_eq!(root.name(), "LiveStore");
-        assert!(
-            root.local_resource_operation_handlers()
-                .contains(&"store.refresh")
-        );
-    }
+    fn live_root_is_the_worker_backed_host_and_reconnects() {
+        // Case `app_root_is_the_real_worker_backed_store_host`.
+        {
+            let root = app_root();
+            assert_eq!(root.name(), "LiveStore");
+            assert!(
+                root.local_resource_operation_handlers()
+                    .contains(&"store.refresh")
+            );
+        }
 
-    #[test]
-    fn launch_context_keeps_the_real_host_contract() {
-        let root = app_root_with_launch(None, Some("so.tilo.notes".into()));
-        assert_eq!(root.name(), "LiveStore");
-        assert!(root.needs_animation_frame());
-    }
+        // Case `launch_context_keeps_the_real_host_contract`.
+        {
+            let root = app_root_with_launch(None, Some("so.tilo.notes".into()));
+            assert_eq!(root.name(), "LiveStore");
+            assert!(root.needs_animation_frame());
+        }
 
-    #[test]
-    fn a_fresh_root_reconnects_after_the_previous_host_is_dropped() {
-        // Dropping a Store root drops the worker request sender. The worker
-        // exits after its current operation; a reopened app must always own a
-        // fresh, independent host rather than retaining the old channel.
-        drop(app_root());
-        let reopened = app_root();
-        assert_eq!(reopened.name(), "LiveStore");
-        assert!(reopened.needs_animation_frame());
+        // Case `a_fresh_root_reconnects_after_the_previous_host_is_dropped`.
+        {
+            // Dropping a Store root drops the worker request sender. The worker
+            // exits after its current operation; a reopened app must always own a
+            // fresh, independent host rather than retaining the old channel.
+            drop(app_root());
+            let reopened = app_root();
+            assert_eq!(reopened.name(), "LiveStore");
+            assert!(reopened.needs_animation_frame());
+        }
     }
 }

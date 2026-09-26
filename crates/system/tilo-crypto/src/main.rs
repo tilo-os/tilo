@@ -833,107 +833,78 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     #[test]
-    fn ed25519_generation_is_exclusive_and_emits_matching_public_identity() {
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let private = temp.path().join("owner.key");
-        let public = temp.path().join("owner.pub");
-        generate_ed25519_key(&private, &public).expect("generate owner identity");
-        let seed: [u8; 32] = fs::read(&private)
-            .expect("read private seed")
-            .try_into()
-            .expect("32-byte private seed");
-        let expected = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
-        assert_eq!(
-            fs::read_to_string(&public).expect("read public identity"),
-            format!("{}\n", hex::encode(expected.to_bytes()))
-        );
-        assert_eq!(
-            fs::metadata(&private).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert!(generate_ed25519_key(&private, &public).is_err());
-    }
+    fn key_generation_is_exclusive_private_and_readers_reject_unsafe_files() {
+        // Phase `ed25519_generation_is_exclusive_and_emits_matching_public_identity`.
+        {
+            let temp = tempfile::tempdir().expect("temporary directory");
+            let private = temp.path().join("owner.key");
+            let public = temp.path().join("owner.pub");
+            generate_ed25519_key(&private, &public).expect("generate owner identity");
+            let seed: [u8; 32] = fs::read(&private)
+                .expect("read private seed")
+                .try_into()
+                .expect("32-byte private seed");
+            let expected = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
+            assert_eq!(
+                fs::read_to_string(&public).expect("read public identity"),
+                format!("{}\n", hex::encode(expected.to_bytes()))
+            );
+            assert_eq!(
+                fs::metadata(&private).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert!(generate_ed25519_key(&private, &public).is_err());
+        }
+        // Phase `tpm_authority_generation_is_exclusive_and_private`.
+        {
+            let temp = tempfile::tempdir().expect("temporary directory");
+            let private = temp.path().join("authority.key");
+            let public = temp.path().join("authority.pub");
+            generate_tpm_authority_key(&private, &public).expect("generate TPM authority");
+            let public_pem = fs::read_to_string(&public).expect("read public key");
+            assert_eq!(
+                tilo_crypto::rsa_public_key_info(&public_pem)
+                    .expect("inspect public key")
+                    .0,
+                2048
+            );
+            assert_eq!(
+                fs::metadata(&private).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert!(generate_tpm_authority_key(&private, &public).is_err());
+        }
+        // Phase `private_key_reader_rejects_symlinks_and_permissive_files`.
+        {
+            let temp = tempfile::tempdir().expect("temporary directory");
+            let key = temp.path().join("db.key");
+            let link = temp.path().join("db-link.key");
+            write_new(&key, b"private key fixture", 0o600).expect("private key fixture");
+            assert_eq!(
+                &*read_private_key(&key).expect("read private key"),
+                "private key fixture"
+            );
 
-    #[test]
-    fn tpm_authority_generation_is_exclusive_and_private() {
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let private = temp.path().join("authority.key");
-        let public = temp.path().join("authority.pub");
-        generate_tpm_authority_key(&private, &public).expect("generate TPM authority");
-        let public_pem = fs::read_to_string(&public).expect("read public key");
-        assert_eq!(
-            tilo_crypto::rsa_public_key_info(&public_pem)
-                .expect("inspect public key")
-                .0,
-            2048
-        );
-        assert_eq!(
-            fs::metadata(&private).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert!(generate_tpm_authority_key(&private, &public).is_err());
-    }
+            symlink(&key, &link).expect("private key symlink");
+            assert!(read_private_key(&link).is_err());
+            assert!(read_bounded(&link, 1024, "input fixture").is_err());
 
-    #[test]
-    fn durable_rename_is_same_directory_and_rejects_symlink_sources() {
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let other = temp.path().join("other");
-        fs::create_dir(&other).expect("second directory");
-        let source = temp.path().join("signed.new");
-        let target = temp.path().join("signed.efi");
-        fs::write(&source, b"verified signed image").expect("signed fixture");
+            let hard_link = temp.path().join("db-hard-link.key");
+            fs::hard_link(&key, &hard_link).expect("private key hard link");
+            let error = read_private_key(&key).expect_err("multiply-linked key must fail");
+            assert!(error.contains("2 hard links"));
+            fs::remove_file(hard_link).expect("remove private key hard link");
 
-        durable_rename_command([OsString::from(&source), OsString::from(&target)].into_iter())
-            .expect("durable same-directory replacement");
-        assert!(!source.exists());
-        assert_eq!(
-            fs::read(&target).expect("installed image"),
-            b"verified signed image"
-        );
+            let linked_parent = temp.path().join("linked-parent");
+            symlink(temp.path(), &linked_parent).expect("parent-directory symlink");
+            assert!(read_private_key(&linked_parent.join("db.key")).is_err());
+            assert!(read_bounded(&linked_parent.join("db.key"), 1024, "input fixture").is_err());
 
-        let cross_source = temp.path().join("cross.new");
-        fs::write(&cross_source, b"cross-directory").expect("cross fixture");
-        assert!(
-            durable_rename_command(
-                [
-                    OsString::from(&cross_source),
-                    OsString::from(other.join("target")),
-                ]
-                .into_iter(),
-            )
-            .is_err()
-        );
-        assert!(cross_source.exists());
-
-        let link = temp.path().join("link.new");
-        symlink(&cross_source, &link).expect("source symlink");
-        assert!(
-            durable_rename_command([OsString::from(&link), OsString::from(&target)].into_iter(),)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn durable_unlink_rejects_symlinks_and_removes_only_the_named_inode() {
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let key = temp.path().join("PK.key");
-        let sibling = temp.path().join("db.key");
-        let link = temp.path().join("key-link");
-        fs::write(&key, b"retired enrollment authority").expect("key fixture");
-        fs::write(&sibling, b"ongoing signing authority").expect("sibling fixture");
-        symlink(&key, &link).expect("key symlink");
-        assert!(
-            durable_unlink_command([OsString::from(&link)].into_iter()).is_err(),
-            "retirement must never follow a link"
-        );
-        assert!(key.exists());
-        durable_unlink_command([OsString::from(&key)].into_iter())
-            .expect("durably retire exact enrollment key");
-        assert!(!key.exists());
-        assert_eq!(
-            fs::read(sibling).expect("ongoing key remains"),
-            b"ongoing signing authority"
-        );
+            fs::set_permissions(&key, fs::Permissions::from_mode(0o640))
+                .expect("loosen private key mode");
+            let error = read_private_key(&key).expect_err("group-readable key must fail");
+            assert!(error.contains("insecure permissions 640"));
+        }
     }
 
     #[test]
@@ -941,97 +912,82 @@ mod tests {
         clippy::too_many_lines,
         reason = "one lifecycle test keeps all efivarfs mutation assertions together"
     )]
-    fn firmware_esl_round_trip_uses_attributes_and_refuses_symlinks() {
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let input = temp.path().join("db.esl");
-        let output = temp.path().join("readback.esl");
-        let mut esl = vec![0_u8; 16];
-        esl.extend_from_slice(&45_u32.to_le_bytes());
-        esl.extend_from_slice(&0_u32.to_le_bytes());
-        esl.extend_from_slice(&17_u32.to_le_bytes());
-        esl.extend_from_slice(&[0_u8; 16]);
-        esl.push(1);
-        fs::write(&input, &esl).expect("write ESL fixture");
-        let year_before = time::OffsetDateTime::now_utc().year();
-        firmware_write_esl_command(
-            [
-                OsString::from(temp.path()),
-                OsString::from("db"),
-                OsString::from(&input),
-            ]
-            .into_iter(),
-        )
-        .expect("write fake efivarfs variable");
-        let year_after = time::OffsetDateTime::now_utc().year();
+    fn durable_file_operations_refuse_symlinks_and_touch_only_named_inodes() {
+        // Phase `durable_rename_is_same_directory_and_rejects_symlink_sources`.
+        {
+            let temp = tempfile::tempdir().expect("temporary directory");
+            let other = temp.path().join("other");
+            fs::create_dir(&other).expect("second directory");
+            let source = temp.path().join("signed.new");
+            let target = temp.path().join("signed.efi");
+            fs::write(&source, b"verified signed image").expect("signed fixture");
 
-        let variable = temp
-            .path()
-            .join(format!("db-{EFI_IMAGE_SECURITY_DATABASE_GUID}"));
-        let encoded = fs::read(&variable).expect("read encoded variable");
-        assert_eq!(&encoded[..4], &0x27_u32.to_le_bytes());
-        let encoded_year = i32::from(u16::from_le_bytes([encoded[4], encoded[5]]));
-        assert!((year_before..=year_after).contains(&encoded_year));
-        assert_eq!(&encoded[20..24], &24_u32.to_le_bytes());
-        assert_eq!(&encoded[24..26], &0x0200_u16.to_le_bytes());
-        assert_eq!(&encoded[26..28], &0x0ef1_u16.to_le_bytes());
-        assert_eq!(&encoded[44..], esl);
+            durable_rename_command([OsString::from(&source), OsString::from(&target)].into_iter())
+                .expect("durable same-directory replacement");
+            assert!(!source.exists());
+            assert_eq!(
+                fs::read(&target).expect("installed image"),
+                b"verified signed image"
+            );
 
-        // efivarfs accepts the authenticated update envelope, while firmware
-        // exposes only the resulting ESL on subsequent reads.
-        let mut stored = 0x27_u32.to_le_bytes().to_vec();
-        stored.extend_from_slice(&esl);
-        fs::write(&variable, stored).expect("simulate firmware read-back");
+            let cross_source = temp.path().join("cross.new");
+            fs::write(&cross_source, b"cross-directory").expect("cross fixture");
+            assert!(
+                durable_rename_command(
+                    [
+                        OsString::from(&cross_source),
+                        OsString::from(other.join("target")),
+                    ]
+                    .into_iter(),
+                )
+                .is_err()
+            );
+            assert!(cross_source.exists());
 
-        let mut unauthenticated = 0x07_u32.to_le_bytes().to_vec();
-        unauthenticated.extend_from_slice(&esl);
-        fs::write(&variable, unauthenticated).expect("simulate unsafe firmware attributes");
-        assert!(
-            firmware_read_esl_command(
-                [
-                    OsString::from(temp.path()),
-                    OsString::from("db"),
-                    OsString::from(&output),
-                ]
-                .into_iter(),
-            )
-            .is_err(),
-            "an unauthenticated Secure Boot variable must not establish firmware trust"
-        );
-        assert!(!output.exists());
-
-        let mut malformed = SECURE_BOOT_ATTRIBUTES.to_le_bytes().to_vec();
-        malformed.extend_from_slice(b"not-an-esl");
-        fs::write(&variable, malformed).expect("simulate malformed authenticated read-back");
-        assert!(
-            firmware_read_esl_command(
-                [
-                    OsString::from(temp.path()),
-                    OsString::from("db"),
-                    OsString::from(&output),
-                ]
-                .into_iter(),
-            )
-            .is_err(),
-            "authenticated attributes must not make malformed ESL data trusted"
-        );
-        assert!(!output.exists());
-
-        let mut stored = 0x27_u32.to_le_bytes().to_vec();
-        stored.extend_from_slice(&esl);
-        fs::write(&variable, stored).expect("restore authenticated firmware read-back");
-        firmware_read_esl_command(
-            [
-                OsString::from(temp.path()),
-                OsString::from("db"),
-                OsString::from(&output),
-            ]
-            .into_iter(),
-        )
-        .expect("read fake efivarfs variable");
-        assert_eq!(fs::read(output).expect("read output"), esl);
-
-        fs::write(&input, b"not-an-esl").expect("write malformed ESL fixture");
-        assert!(
+            let link = temp.path().join("link.new");
+            symlink(&cross_source, &link).expect("source symlink");
+            assert!(
+                durable_rename_command(
+                    [OsString::from(&link), OsString::from(&target)].into_iter(),
+                )
+                .is_err()
+            );
+        }
+        // Phase `durable_unlink_rejects_symlinks_and_removes_only_the_named_inode`.
+        {
+            let temp = tempfile::tempdir().expect("temporary directory");
+            let key = temp.path().join("PK.key");
+            let sibling = temp.path().join("db.key");
+            let link = temp.path().join("key-link");
+            fs::write(&key, b"retired enrollment authority").expect("key fixture");
+            fs::write(&sibling, b"ongoing signing authority").expect("sibling fixture");
+            symlink(&key, &link).expect("key symlink");
+            assert!(
+                durable_unlink_command([OsString::from(&link)].into_iter()).is_err(),
+                "retirement must never follow a link"
+            );
+            assert!(key.exists());
+            durable_unlink_command([OsString::from(&key)].into_iter())
+                .expect("durably retire exact enrollment key");
+            assert!(!key.exists());
+            assert_eq!(
+                fs::read(sibling).expect("ongoing key remains"),
+                b"ongoing signing authority"
+            );
+        }
+        // Phase `firmware_esl_round_trip_uses_attributes_and_refuses_symlinks`.
+        {
+            let temp = tempfile::tempdir().expect("temporary directory");
+            let input = temp.path().join("db.esl");
+            let output = temp.path().join("readback.esl");
+            let mut esl = vec![0_u8; 16];
+            esl.extend_from_slice(&45_u32.to_le_bytes());
+            esl.extend_from_slice(&0_u32.to_le_bytes());
+            esl.extend_from_slice(&17_u32.to_le_bytes());
+            esl.extend_from_slice(&[0_u8; 16]);
+            esl.push(1);
+            fs::write(&input, &esl).expect("write ESL fixture");
+            let year_before = time::OffsetDateTime::now_utc().year();
             firmware_write_esl_command(
                 [
                     OsString::from(temp.path()),
@@ -1040,54 +996,102 @@ mod tests {
                 ]
                 .into_iter(),
             )
-            .is_err(),
-            "firmware writer must reject malformed ESL bytes before opening efivarfs"
-        );
+            .expect("write fake efivarfs variable");
+            let year_after = time::OffsetDateTime::now_utc().year();
 
-        fs::remove_file(&variable).expect("remove variable");
-        symlink(&input, &variable).expect("create variable symlink");
-        assert!(
-            firmware_write_esl_command(
+            let variable = temp
+                .path()
+                .join(format!("db-{EFI_IMAGE_SECURITY_DATABASE_GUID}"));
+            let encoded = fs::read(&variable).expect("read encoded variable");
+            assert_eq!(&encoded[..4], &0x27_u32.to_le_bytes());
+            let encoded_year = i32::from(u16::from_le_bytes([encoded[4], encoded[5]]));
+            assert!((year_before..=year_after).contains(&encoded_year));
+            assert_eq!(&encoded[20..24], &24_u32.to_le_bytes());
+            assert_eq!(&encoded[24..26], &0x0200_u16.to_le_bytes());
+            assert_eq!(&encoded[26..28], &0x0ef1_u16.to_le_bytes());
+            assert_eq!(&encoded[44..], esl);
+
+            // efivarfs accepts the authenticated update envelope, while firmware
+            // exposes only the resulting ESL on subsequent reads.
+            let mut stored = 0x27_u32.to_le_bytes().to_vec();
+            stored.extend_from_slice(&esl);
+            fs::write(&variable, stored).expect("simulate firmware read-back");
+
+            let mut unauthenticated = 0x07_u32.to_le_bytes().to_vec();
+            unauthenticated.extend_from_slice(&esl);
+            fs::write(&variable, unauthenticated).expect("simulate unsafe firmware attributes");
+            assert!(
+                firmware_read_esl_command(
+                    [
+                        OsString::from(temp.path()),
+                        OsString::from("db"),
+                        OsString::from(&output),
+                    ]
+                    .into_iter(),
+                )
+                .is_err(),
+                "an unauthenticated Secure Boot variable must not establish firmware trust"
+            );
+            assert!(!output.exists());
+
+            let mut malformed = SECURE_BOOT_ATTRIBUTES.to_le_bytes().to_vec();
+            malformed.extend_from_slice(b"not-an-esl");
+            fs::write(&variable, malformed).expect("simulate malformed authenticated read-back");
+            assert!(
+                firmware_read_esl_command(
+                    [
+                        OsString::from(temp.path()),
+                        OsString::from("db"),
+                        OsString::from(&output),
+                    ]
+                    .into_iter(),
+                )
+                .is_err(),
+                "authenticated attributes must not make malformed ESL data trusted"
+            );
+            assert!(!output.exists());
+
+            let mut stored = 0x27_u32.to_le_bytes().to_vec();
+            stored.extend_from_slice(&esl);
+            fs::write(&variable, stored).expect("restore authenticated firmware read-back");
+            firmware_read_esl_command(
                 [
                     OsString::from(temp.path()),
                     OsString::from("db"),
-                    OsString::from(&input),
+                    OsString::from(&output),
                 ]
                 .into_iter(),
             )
-            .is_err()
-        );
-    }
+            .expect("read fake efivarfs variable");
+            assert_eq!(fs::read(output).expect("read output"), esl);
 
-    #[test]
-    fn private_key_reader_rejects_symlinks_and_permissive_files() {
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let key = temp.path().join("db.key");
-        let link = temp.path().join("db-link.key");
-        write_new(&key, b"private key fixture", 0o600).expect("private key fixture");
-        assert_eq!(
-            &*read_private_key(&key).expect("read private key"),
-            "private key fixture"
-        );
+            fs::write(&input, b"not-an-esl").expect("write malformed ESL fixture");
+            assert!(
+                firmware_write_esl_command(
+                    [
+                        OsString::from(temp.path()),
+                        OsString::from("db"),
+                        OsString::from(&input),
+                    ]
+                    .into_iter(),
+                )
+                .is_err(),
+                "firmware writer must reject malformed ESL bytes before opening efivarfs"
+            );
 
-        symlink(&key, &link).expect("private key symlink");
-        assert!(read_private_key(&link).is_err());
-        assert!(read_bounded(&link, 1024, "input fixture").is_err());
-
-        let hard_link = temp.path().join("db-hard-link.key");
-        fs::hard_link(&key, &hard_link).expect("private key hard link");
-        let error = read_private_key(&key).expect_err("multiply-linked key must fail");
-        assert!(error.contains("2 hard links"));
-        fs::remove_file(hard_link).expect("remove private key hard link");
-
-        let linked_parent = temp.path().join("linked-parent");
-        symlink(temp.path(), &linked_parent).expect("parent-directory symlink");
-        assert!(read_private_key(&linked_parent.join("db.key")).is_err());
-        assert!(read_bounded(&linked_parent.join("db.key"), 1024, "input fixture").is_err());
-
-        fs::set_permissions(&key, fs::Permissions::from_mode(0o640))
-            .expect("loosen private key mode");
-        let error = read_private_key(&key).expect_err("group-readable key must fail");
-        assert!(error.contains("insecure permissions 640"));
+            fs::remove_file(&variable).expect("remove variable");
+            symlink(&input, &variable).expect("create variable symlink");
+            assert!(
+                firmware_write_esl_command(
+                    [
+                        OsString::from(temp.path()),
+                        OsString::from("db"),
+                        OsString::from(&input),
+                    ]
+                    .into_iter(),
+                )
+                .is_err()
+            );
+        }
     }
 }

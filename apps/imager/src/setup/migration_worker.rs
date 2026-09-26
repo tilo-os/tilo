@@ -352,122 +352,130 @@ mod tests {
         }
     }
 
-    // An unread burst must occupy one latest-value slot, without delaying the
-    // terminal result or requiring the UI to consume every per-file update.
+    /// Progress coalescing, completion, cancellation, disconnection and retry.
     #[test]
-    fn progress_burst_is_coalesced_before_the_terminal_event() {
-        let (_temp, job) = fixture();
-        for n in 0..80 {
-            fs::write(job.source().join(format!("{n:03}")), b"x").unwrap();
-        }
-        let mut worker = MigrationWorker::start(job).unwrap();
-        // Eighty durable copies can take tens of seconds on a loaded disk;
-        // this bound only catches a worker that never finishes.
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while worker.phase.load(Ordering::Acquire) != FINISHED {
-            assert!(Instant::now() < deadline, "worker did not finish");
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        let mut updates = 0;
-        loop {
-            match worker.try_next() {
-                Some(WorkerEvent::Progress(_)) => updates += 1,
-                Some(WorkerEvent::Finished(WorkerOutcome::Complete(_))) => break,
-                event => panic!("missing terminal event: {event:?}"),
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn migration_worker_terminal_events_are_ordered_and_distinct() {
+        // Phase `progress_burst_is_coalesced_before_the_terminal_event`.
+        // An unread burst must occupy one latest-value slot, without delaying the
+        // terminal result or requiring the UI to consume every per-file update.
+        {
+            let (_temp, job) = fixture();
+            for n in 0..80 {
+                fs::write(job.source().join(format!("{n:03}")), b"x").unwrap();
             }
-        }
-        assert!(
-            updates <= 1,
-            "UI must drain {updates} stale progress updates"
-        );
-    }
-
-    // Catches treating progress or a successful thread exit as completion
-    // without consuming the engine's verified terminal report.
-    #[test]
-    fn completes_only_after_the_verified_report() {
-        let (_temp, job) = fixture();
-        fs::write(job.source().join("hello"), b"verified bytes").unwrap();
-        let mut worker = MigrationWorker::start(job.clone()).unwrap();
-        let outcome = finish(&mut worker);
-
-        let WorkerOutcome::Complete(report) = outcome else {
-            panic!("expected complete outcome: {outcome:?}");
-        };
-        assert!(report.complete());
-        assert_eq!(report.verified_bytes, 14);
-        assert_eq!(
-            fs::read(job.destination().join("hello")).unwrap(),
-            b"verified bytes"
-        );
-        assert!(!worker.cancel());
-    }
-
-    // Catches a cancel request being reported as success or discarding verified
-    // output. The real engine sees the worker-owned cancellation flag.
-    #[test]
-    fn cancellation_is_an_incomplete_terminal_outcome() {
-        let (_temp, job) = fixture();
-        fs::write(job.source().join("hello"), vec![7_u8; 1024 * 1024]).unwrap();
-        let mut worker = MigrationWorker::start(job).unwrap();
-        assert!(worker.cancel());
-
-        let WorkerOutcome::Incomplete(report) = finish(&mut worker) else {
-            panic!("cancelled copy was not incomplete");
-        };
-        assert!(report.cancelled);
-        assert!(!report.complete());
-    }
-
-    // Catches a lost terminal sender being interpreted as a completed copy.
-    #[test]
-    fn disconnected_channel_is_interrupted_once() {
-        let (tx, rx) = mpsc::channel();
-        drop(tx);
-        let mut worker = MigrationWorker::from_channel_for_test(rx);
-
-        assert!(matches!(
-            worker.try_next(),
-            Some(WorkerEvent::Finished(WorkerOutcome::Interrupted))
-        ));
-        assert!(worker.try_next().is_none());
-        assert!(!worker.cancel());
-    }
-
-    // Catches retry starting a new overwrite-prone operation instead of asking
-    // the journal to revalidate and resume the retained verified output.
-    #[test]
-    fn explicit_retry_resumes_the_existing_journal() {
-        let (_temp, fresh) = fixture();
-        for index in 0..32 {
-            fs::write(
-                fresh.source().join(format!("file-{index}")),
-                vec![index as u8; 1024 * 1024],
-            )
-            .unwrap();
-        }
-        let mut cancelled = MigrationWorker::start(fresh.clone()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if matches!(cancelled.try_next(), Some(WorkerEvent::Progress(_))) {
-                assert!(cancelled.cancel());
-                break;
+            let mut worker = MigrationWorker::start(job).unwrap();
+            // Eighty durable copies can take tens of seconds on a loaded disk;
+            // this bound only catches a worker that never finishes.
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while worker.phase.load(Ordering::Acquire) != FINISHED {
+                assert!(Instant::now() < deadline, "worker did not finish");
+                std::thread::sleep(Duration::from_millis(1));
             }
-            assert!(Instant::now() < deadline, "worker did not report progress");
-            std::thread::yield_now();
+            let mut updates = 0;
+            loop {
+                match worker.try_next() {
+                    Some(WorkerEvent::Progress(_)) => updates += 1,
+                    Some(WorkerEvent::Finished(WorkerOutcome::Complete(_))) => break,
+                    event => panic!("missing terminal event: {event:?}"),
+                }
+            }
+            assert!(
+                updates <= 1,
+                "UI must drain {updates} stale progress updates"
+            );
         }
-        let outcome = finish(&mut cancelled);
-        assert!(matches!(outcome, WorkerOutcome::Incomplete(_)));
 
-        let retry = fresh.retry().unwrap();
-        let mut resumed = MigrationWorker::start(retry).unwrap();
-        let WorkerOutcome::Complete(report) = finish(&mut resumed) else {
-            panic!("explicit resume did not complete");
-        };
-        assert!(report.complete());
-        assert_eq!(
-            fs::read(fresh.destination().join("file-31")).unwrap(),
-            vec![31_u8; 1024 * 1024]
-        );
+        // Phase `completes_only_after_the_verified_report`.
+        // Catches treating progress or a successful thread exit as completion
+        // without consuming the engine's verified terminal report.
+        {
+            let (_temp, job) = fixture();
+            fs::write(job.source().join("hello"), b"verified bytes").unwrap();
+            let mut worker = MigrationWorker::start(job.clone()).unwrap();
+            let outcome = finish(&mut worker);
+
+            let WorkerOutcome::Complete(report) = outcome else {
+                panic!("expected complete outcome: {outcome:?}");
+            };
+            assert!(report.complete());
+            assert_eq!(report.verified_bytes, 14);
+            assert_eq!(
+                fs::read(job.destination().join("hello")).unwrap(),
+                b"verified bytes"
+            );
+            assert!(!worker.cancel());
+        }
+
+        // Phase `cancellation_is_an_incomplete_terminal_outcome`.
+        // Catches a cancel request being reported as success or discarding verified
+        // output. The real engine sees the worker-owned cancellation flag.
+        {
+            let (_temp, job) = fixture();
+            fs::write(job.source().join("hello"), vec![7_u8; 1024 * 1024]).unwrap();
+            let mut worker = MigrationWorker::start(job).unwrap();
+            assert!(worker.cancel());
+
+            let WorkerOutcome::Incomplete(report) = finish(&mut worker) else {
+                panic!("cancelled copy was not incomplete");
+            };
+            assert!(report.cancelled);
+            assert!(!report.complete());
+        }
+
+        // Phase `disconnected_channel_is_interrupted_once`.
+        // Catches a lost terminal sender being interpreted as a completed copy.
+        {
+            let (tx, rx) = mpsc::channel();
+            drop(tx);
+            let mut worker = MigrationWorker::from_channel_for_test(rx);
+
+            assert!(matches!(
+                worker.try_next(),
+                Some(WorkerEvent::Finished(WorkerOutcome::Interrupted))
+            ));
+            assert!(worker.try_next().is_none());
+            assert!(!worker.cancel());
+        }
+
+        // Phase `explicit_retry_resumes_the_existing_journal`.
+        // Catches retry starting a new overwrite-prone operation instead of asking
+        // the journal to revalidate and resume the retained verified output.
+        {
+            let (_temp, fresh) = fixture();
+            for index in 0..32 {
+                fs::write(
+                    fresh.source().join(format!("file-{index}")),
+                    vec![index as u8; 1024 * 1024],
+                )
+                .unwrap();
+            }
+            let mut cancelled = MigrationWorker::start(fresh.clone()).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if matches!(cancelled.try_next(), Some(WorkerEvent::Progress(_))) {
+                    assert!(cancelled.cancel());
+                    break;
+                }
+                assert!(Instant::now() < deadline, "worker did not report progress");
+                std::thread::yield_now();
+            }
+            let outcome = finish(&mut cancelled);
+            assert!(matches!(outcome, WorkerOutcome::Incomplete(_)));
+
+            let retry = fresh.retry().unwrap();
+            let mut resumed = MigrationWorker::start(retry).unwrap();
+            let WorkerOutcome::Complete(report) = finish(&mut resumed) else {
+                panic!("explicit resume did not complete");
+            };
+            assert!(report.complete());
+            assert_eq!(
+                fs::read(fresh.destination().join("file-31")).unwrap(),
+                vec![31_u8; 1024 * 1024]
+            );
+        }
     }
 }

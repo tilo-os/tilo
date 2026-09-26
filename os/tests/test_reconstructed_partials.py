@@ -7,6 +7,18 @@ spec=importlib.util.spec_from_file_location('resume',ROOT/'os/dev/native_resume.
 def sha(data):return hashlib.sha256(data).hexdigest()
 def canonical(value):return json.dumps(value,sort_keys=True,separators=(',',':')).encode()
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class ReconstructedPartials(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)
@@ -47,44 +59,51 @@ class ReconstructedPartials(unittest.TestCase):
   union={} if union is None else union
   r.validate_reconstructed_partial(self.native,self.receipt,self.receipt_sha,self.approval,self.source,self.legacy,self.seed,self.dest,union)
   return union
- def test_admitted_chain_and_payload_copied(self):
-  self.assertEqual(self.validate(),self.value['inventory']);self.assertEqual((self.dest/'tilo-crypto').read_bytes(),(self.payload/'partial/tilo-crypto').read_bytes())
- def test_missing_admission_and_wrong_receipt_rejected(self):
-  self.approval=None
-  with self.assertRaises(ValueError):self.validate()
- def test_producer_purpose_identity_and_capture_substitutions(self):
-  for key,value in [('purpose',r.PARTIAL),('run_id',20866),('helper_revision','0'*40),('source_revision','0'*40),('capture_script_sha256','0'*64),('architecture','x86_64'),('build_success',True)]:
-   with self.subTest(key=key):
-    old=self.value[key];self.value[key]=value;self.save()
-    with self.assertRaises(ValueError):self.validate()
-    self.value[key]=old;self.save()
- def test_chain_or_derivation_substitution_rejected(self):
-  for key,value in [('checkpoints',[]),('reused_inventory',{}),('derived_recipe_sha256','0'*64),('producer_sha256','0'*64),('missing_targets',{})]:
-   with self.subTest(key=key):
-    old=self.value['reconstruction'][key];self.value['reconstruction'][key]=value
-    # Even re-approving the hash does not bypass independent derivation/seed checks.
-    digest=sha(canonical(self.value['reconstruction']));self.value['reconstruction_sha256']=digest;self.receipt['reconstruction_sha256']=digest;self.approval['reconstruction_sha256']=digest;self.save()
-    with self.assertRaises(ValueError):self.validate()
-    self.value['reconstruction'][key]=old
- def test_payload_architecture_overlap_symlink_and_hash_rejected(self):
-  with self.assertRaises(ValueError):self.validate({'tilo-crypto':{'size':1,'sha256':'0'*64}})
-  path=self.payload/'partial/tilo-crypto';data=bytearray(path.read_bytes());struct.pack_into('<H',data,18,62);path.write_bytes(data)
-  with self.assertRaises(ValueError):self.validate()
-  path.unlink();path.symlink_to('/etc/passwd')
-  with self.assertRaises(ValueError):self.validate()
- def test_wrong_architecture_even_with_matching_approved_file_hash(self):
-  path=self.payload/'partial/tilo-crypto';data=bytearray(path.read_bytes());struct.pack_into('<H',data,18,62);path.write_bytes(data)
-  self.record['sha256']=sha(data);self.save()
-  with self.assertRaises(ValueError):self.validate()
- def test_copied_bytes_rechecked_before_union_update(self):
-  original=r.shutil.copyfile
-  def corrupt(source,destination):
-   original(source,destination);destination.write_bytes(b'corrupt')
-  union={}
-  with patch.object(r.shutil,'copyfile',corrupt):
-   with self.assertRaises(ValueError):self.validate(union)
-  self.assertEqual(union,{})
- def test_legacy_validator_still_rejects_reconstructed_purpose(self):
-  with self.assertRaises(ValueError):r.validate_partial(self.native,self.receipt,{},'',self.dest,{})
-
+ def test_admitted_chain_copy(self):
+  with self.subTest(phase="admitted_chain_and_payload_copied"):
+   self.assertEqual(self.validate(),self.value['inventory']);self.assertEqual((self.dest/'tilo-crypto').read_bytes(),(self.payload/'partial/tilo-crypto').read_bytes())
+  restart_fixture(self)
+  with self.subTest(phase="copied_bytes_rechecked_before_union_update"):
+   original=r.shutil.copyfile
+   def corrupt(source,destination):
+    original(source,destination);destination.write_bytes(b'corrupt')
+   union={}
+   with patch.object(r.shutil,'copyfile',corrupt):
+    with self.assertRaises(ValueError):self.validate(union)
+   self.assertEqual(union,{})
+  restart_fixture(self)
+  with self.subTest(phase="legacy_validator_still_rejects_reconstructed_purpose"):
+   with self.assertRaises(ValueError):r.validate_partial(self.native,self.receipt,{},'',self.dest,{})
+ def test_substitution_rejections(self):
+  with self.subTest(phase="missing_admission_and_wrong_receipt_rejected"):
+   self.approval=None
+   with self.assertRaises(ValueError):self.validate()
+  restart_fixture(self)
+  with self.subTest(phase="producer_purpose_identity_and_capture_substitutions"):
+   for key,value in [('purpose',r.PARTIAL),('run_id',20866),('helper_revision','0'*40),('source_revision','0'*40),('capture_script_sha256','0'*64),('architecture','x86_64'),('build_success',True)]:
+    with self.subTest(key=key):
+     old=self.value[key];self.value[key]=value;self.save()
+     with self.assertRaises(ValueError):self.validate()
+     self.value[key]=old;self.save()
+  restart_fixture(self)
+  with self.subTest(phase="chain_or_derivation_substitution_rejected"):
+   for key,value in [('checkpoints',[]),('reused_inventory',{}),('derived_recipe_sha256','0'*64),('producer_sha256','0'*64),('missing_targets',{})]:
+    with self.subTest(key=key):
+     old=self.value['reconstruction'][key];self.value['reconstruction'][key]=value
+     # Even re-approving the hash does not bypass independent derivation/seed checks.
+     digest=sha(canonical(self.value['reconstruction']));self.value['reconstruction_sha256']=digest;self.receipt['reconstruction_sha256']=digest;self.approval['reconstruction_sha256']=digest;self.save()
+     with self.assertRaises(ValueError):self.validate()
+     self.value['reconstruction'][key]=old
+  restart_fixture(self)
+  with self.subTest(phase="payload_architecture_overlap_symlink_and_hash_rejected"):
+   with self.assertRaises(ValueError):self.validate({'tilo-crypto':{'size':1,'sha256':'0'*64}})
+   path=self.payload/'partial/tilo-crypto';data=bytearray(path.read_bytes());struct.pack_into('<H',data,18,62);path.write_bytes(data)
+   with self.assertRaises(ValueError):self.validate()
+   path.unlink();path.symlink_to('/etc/passwd')
+   with self.assertRaises(ValueError):self.validate()
+  restart_fixture(self)
+  with self.subTest(phase="wrong_architecture_even_with_matching_approved_file_hash"):
+   path=self.payload/'partial/tilo-crypto';data=bytearray(path.read_bytes());struct.pack_into('<H',data,18,62);path.write_bytes(data)
+   self.record['sha256']=sha(data);self.save()
+   with self.assertRaises(ValueError):self.validate()
 if __name__=='__main__':unittest.main()

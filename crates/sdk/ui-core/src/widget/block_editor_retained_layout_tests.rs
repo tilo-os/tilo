@@ -231,113 +231,121 @@ impl RetainedEditor {
 }
 
 #[test]
-fn clicking_another_paragraph_places_caret_at_the_pointer_not_its_old_position() {
-    for scale in [1.0, 2.0] {
-        let mut fixture = RetainedEditor::new(280.0, scale, false);
-        fixture
-            .type_text("The first paragraph has enough words to wrap across several visual lines.");
-        let old_position = fixture.editor.blocks[0].line.cursor_pos();
-        let second = fixture.editor.blocks[1].line.caret_rect(&fixture.theme, 4);
-        fixture.click(Point::new(second.x0 + 0.1, second.center().y));
-        assert_eq!(fixture.editor.focused_index(), Some(1));
-        assert_eq!(
-            fixture.editor.blocks[1].line.cursor_pos(),
-            4,
-            "first click must use the current pointer, even on a previously unfocused line"
-        );
-        let target = 37;
-        let first = fixture.editor.blocks[0]
-            .line
-            .caret_rect(&fixture.theme, target);
-        assert!(first.y0 > fixture.editor.blocks[0].line.get_rect().y0 + 20.0);
-        fixture.click(Point::new(first.x0 + 0.1, first.center().y));
-        assert_eq!(fixture.editor.focused_index(), Some(0));
-        assert_ne!(fixture.editor.blocks[0].line.cursor_pos(), old_position);
-        assert_eq!(
-            fixture.editor.blocks[0].line.cursor_pos(),
-            target,
-            "returning to a wrapped paragraph must hit-test the clicked visual row"
-        );
-    }
-}
-
-#[test]
-fn retained_paragraph_grows_and_shrinks_while_typing_without_rebuilding() {
-    for scale in [1.0, 2.0] {
-        for width in [240.0, 640.0] {
-            let mut fixture = RetainedEditor::new(width, scale, false);
-            let initial = fixture.editor.blocks[0].line.get_rect().height();
-            let sentence =
-                "Let's go. Hi this is ada speaking. Why does pressing Enter not work? ";
-            let content = sentence.repeat(3);
-            fixture.type_text(&content);
-            assert_eq!(
-                fixture.rebuilds, 0,
-                "typing must retain the existing layout tree"
+fn retained_paragraph_layout_tracks_typing_reflow_clicks_and_attachments() {
+    fn clicking_another_paragraph_places_caret_at_the_pointer_not_its_old_position() {
+        for scale in [1.0, 2.0] {
+            let mut fixture = RetainedEditor::new(280.0, scale, false);
+            fixture.type_text(
+                "The first paragraph has enough words to wrap across several visual lines.",
             );
-            fixture.assert_focused_content_fits();
-            assert!(fixture.editor.blocks[0].line.get_rect().height() > initial * 2.0);
-            for _ in content.chars() {
-                fixture.key(Key::Named(NamedKey::Backspace), Modifiers::default());
+            let old_position = fixture.editor.blocks[0].line.cursor_pos();
+            let second = fixture.editor.blocks[1].line.caret_rect(&fixture.theme, 4);
+            fixture.click(Point::new(second.x0 + 0.1, second.center().y));
+            assert_eq!(fixture.editor.focused_index(), Some(1));
+            assert_eq!(
+                fixture.editor.blocks[1].line.cursor_pos(),
+                4,
+                "first click must use the current pointer, even on a previously unfocused line"
+            );
+            let target = 37;
+            let first = fixture.editor.blocks[0]
+                .line
+                .caret_rect(&fixture.theme, target);
+            assert!(first.y0 > fixture.editor.blocks[0].line.get_rect().y0 + 20.0);
+            fixture.click(Point::new(first.x0 + 0.1, first.center().y));
+            assert_eq!(fixture.editor.focused_index(), Some(0));
+            assert_ne!(fixture.editor.blocks[0].line.cursor_pos(), old_position);
+            assert_eq!(
+                fixture.editor.blocks[0].line.cursor_pos(),
+                target,
+                "returning to a wrapped paragraph must hit-test the clicked visual row"
+            );
+        }
+    }
+
+    fn retained_paragraph_grows_and_shrinks_while_typing_without_rebuilding() {
+        for scale in [1.0, 2.0] {
+            for width in [240.0, 640.0] {
+                let mut fixture = RetainedEditor::new(width, scale, false);
+                let initial = fixture.editor.blocks[0].line.get_rect().height();
+                let sentence =
+                    "Let's go. Hi this is ada speaking. Why does pressing Enter not work? ";
+                let content = sentence.repeat(3);
+                fixture.type_text(&content);
+                assert_eq!(
+                    fixture.rebuilds, 0,
+                    "typing must retain the existing layout tree"
+                );
+                fixture.assert_focused_content_fits();
+                assert!(fixture.editor.blocks[0].line.get_rect().height() > initial * 2.0);
+                for _ in content.chars() {
+                    fixture.key(Key::Named(NamedKey::Backspace), Modifiers::default());
+                }
+                fixture.assert_focused_content_fits();
+                assert!((fixture.editor.blocks[0].line.get_rect().height() - initial).abs() < 1.0);
+                assert_eq!(
+                    fixture.rebuilds, 0,
+                    "deletion must retain the existing layout tree"
+                );
             }
-            fixture.assert_focused_content_fits();
-            assert!((fixture.editor.blocks[0].line.get_rect().height() - initial).abs() < 1.0);
-            assert_eq!(
-                fixture.rebuilds, 0,
-                "deletion must retain the existing layout tree"
+        }
+    }
+
+    fn retained_paragraph_reflows_after_enter_and_shift_enter() {
+        for shift in [false, true] {
+            let mut fixture = RetainedEditor::new(260.0, 1.0, false);
+            fixture.type_text("First paragraph");
+            let mods = if shift {
+                ModifiersState::SHIFT.into()
+            } else {
+                Modifiers::default()
+            };
+            fixture.key(Key::Named(NamedKey::Enter), mods);
+            let active = usize::from(!shift);
+            assert_eq!(fixture.editor.focused_index(), Some(active));
+            assert_eq!(fixture.editor.blocks.len(), if shift { 2 } else { 3 });
+            if shift {
+                assert_eq!(fixture.editor.blocks[0].text(), "First paragraph\n");
+                assert_eq!(fixture.rebuilds, 0, "a soft break keeps the same block");
+            }
+            fixture.type_text(
+                &"A continuation should grow visibly as each new line wraps. ".repeat(3),
             );
+            fixture.assert_focused_content_fits();
+            let text = fixture.editor.blocks[active].text();
+            assert!(text.contains("A continuation"));
+            if shift {
+                assert!(text.starts_with("First paragraph\nA continuation"));
+            }
         }
     }
-}
 
-#[test]
-fn retained_paragraph_reflows_after_enter_and_shift_enter() {
-    for shift in [false, true] {
-        let mut fixture = RetainedEditor::new(260.0, 1.0, false);
-        fixture.type_text("First paragraph");
-        let mods = if shift {
-            ModifiersState::SHIFT.into()
-        } else {
-            Modifiers::default()
-        };
-        fixture.key(Key::Named(NamedKey::Enter), mods);
-        let active = usize::from(!shift);
-        assert_eq!(fixture.editor.focused_index(), Some(active));
-        assert_eq!(fixture.editor.blocks.len(), if shift { 2 } else { 3 });
-        if shift {
-            assert_eq!(fixture.editor.blocks[0].text(), "First paragraph\n");
-            assert_eq!(fixture.rebuilds, 0, "a soft break keeps the same block");
-        }
-        fixture.type_text(&"A continuation should grow visibly as each new line wraps. ".repeat(3));
+    fn attachment_children_do_not_hide_paragraph_measurement_changes() {
+        let mut fixture = RetainedEditor::new(300.0, 1.0, true);
+        assert!(
+            !fixture.editor.children().is_empty(),
+            "exercise the attachment-child branch"
+        );
+        fixture
+            .type_text(&"Words beside a note containing an attachment must still wrap. ".repeat(3));
         fixture.assert_focused_content_fits();
-        let text = fixture.editor.blocks[active].text();
-        assert!(text.contains("A continuation"));
-        if shift {
-            assert!(text.starts_with("First paragraph\nA continuation"));
-        }
+        // Model updates, like remote edits, must request a solve even when the
+        // attachment's fixed-size button has no measurement changes of its own.
+        fixture.editor.blocks[0]
+            .line
+            .set_text("A remote replacement paragraph. ".repeat(8).as_str());
+        assert!(
+            fixture.editor.layout_needs_measure(),
+            "attachment must not mask the text mutation"
+        );
+        fixture.frame();
+        fixture.assert_focused_content_fits();
     }
-}
 
-#[test]
-fn attachment_children_do_not_hide_paragraph_measurement_changes() {
-    let mut fixture = RetainedEditor::new(300.0, 1.0, true);
-    assert!(
-        !fixture.editor.children().is_empty(),
-        "exercise the attachment-child branch"
-    );
-    fixture.type_text(&"Words beside a note containing an attachment must still wrap. ".repeat(3));
-    fixture.assert_focused_content_fits();
-    // Model updates, like remote edits, must request a solve even when the
-    // attachment's fixed-size button has no measurement changes of its own.
-    fixture.editor.blocks[0]
-        .line
-        .set_text("A remote replacement paragraph. ".repeat(8).as_str());
-    assert!(
-        fixture.editor.layout_needs_measure(),
-        "attachment must not mask the text mutation"
-    );
-    fixture.frame();
-    fixture.assert_focused_content_fits();
+    clicking_another_paragraph_places_caret_at_the_pointer_not_its_old_position();
+    retained_paragraph_grows_and_shrinks_while_typing_without_rebuilding();
+    retained_paragraph_reflows_after_enter_and_shift_enter();
+    attachment_children_do_not_hide_paragraph_measurement_changes();
 }
 
 /// Typing in a long document measures and paints what it touched, not the

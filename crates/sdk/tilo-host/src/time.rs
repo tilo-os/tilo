@@ -42,14 +42,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn now_is_monotonic() {
-        let earlier = now();
-        let later = now();
-        assert!(later >= earlier);
-    }
+    fn clocks_are_monotonic_and_after_the_epoch() {
+        // Case `now_is_monotonic`.
+        {
+            let earlier = now();
+            let later = now();
+            assert!(later >= earlier);
+        }
 
-    #[test]
-    fn wall_is_after_the_epoch() {
-        assert!(wall().duration_since(UNIX_EPOCH).is_ok());
+        // Case `wall_is_after_the_epoch`.
+        {
+            assert!(wall().duration_since(UNIX_EPOCH).is_ok());
+        }
     }
 }

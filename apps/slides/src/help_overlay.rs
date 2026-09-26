@@ -254,33 +254,37 @@ const HELP_ROWS: [(&str, &str); 20] = [
 mod tests {
     use super::*;
 
+    /// The help overlay toggles without leaking keys and owns the next pointer press.
     #[test]
-    fn shortcut_toggles_and_modal_keys_do_not_leak() {
-        let mut overlay = HelpOverlay::default();
-        let question = Key::Character("?".into());
+    fn help_overlay_owns_its_keys_and_the_next_press() {
+        // Case `shortcut_toggles_and_modal_keys_do_not_leak`.
+        {
+            let mut overlay = HelpOverlay::default();
+            let question = Key::Character("?".into());
 
-        assert!(!overlay.on_key(&question, false));
-        assert!(!overlay.is_visible());
-        assert!(overlay.on_key(&question, true));
-        assert!(overlay.is_visible());
+            assert!(!overlay.on_key(&question, false));
+            assert!(!overlay.is_visible());
+            assert!(overlay.on_key(&question, true));
+            assert!(overlay.is_visible());
 
-        assert!(overlay.on_key(&Key::Named(NamedKey::ArrowRight), true));
-        assert!(overlay.is_visible(), "unrelated modal keys are swallowed");
-        assert!(overlay.on_key(&Key::Named(NamedKey::Escape), true));
-        assert!(!overlay.is_visible());
-    }
+            assert!(overlay.on_key(&Key::Named(NamedKey::ArrowRight), true));
+            assert!(overlay.is_visible(), "unrelated modal keys are swallowed");
+            assert!(overlay.on_key(&Key::Named(NamedKey::Escape), true));
+            assert!(!overlay.is_visible());
+        }
 
-    #[test]
-    fn visible_overlay_owns_the_next_pointer_press() {
-        let mut overlay = HelpOverlay::default();
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let inside = Point::new(400.0, 300.0);
-        assert!(!overlay.on_pointer_press(inside, viewport));
-        overlay.show();
-        assert!(!overlay.on_pointer_press(Point::new(900.0, 300.0), viewport));
-        assert!(overlay.is_visible(), "an out-of-viewport press is ignored");
-        assert!(overlay.on_pointer_press(inside, viewport));
-        assert!(!overlay.is_visible());
-        assert!(!overlay.on_pointer_press(inside, viewport));
+        // Case `visible_overlay_owns_the_next_pointer_press`.
+        {
+            let mut overlay = HelpOverlay::default();
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let inside = Point::new(400.0, 300.0);
+            assert!(!overlay.on_pointer_press(inside, viewport));
+            overlay.show();
+            assert!(!overlay.on_pointer_press(Point::new(900.0, 300.0), viewport));
+            assert!(overlay.is_visible(), "an out-of-viewport press is ignored");
+            assert!(overlay.on_pointer_press(inside, viewport));
+            assert!(!overlay.is_visible());
+            assert!(!overlay.on_pointer_press(inside, viewport));
+        }
     }
 }

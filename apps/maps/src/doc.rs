@@ -828,60 +828,68 @@ mod tests {
     use automerge::ActorId;
     use tilo_automerge::ApplyIncoming;
     #[test]
-    fn typed_schema_excludes_window_local_state() {
-        let mut d = AutoCommit::new();
-        let mut m = sample::default_model();
-        m.selected = Some("marienplatz".into());
-        m.panel = crate::model::Panel::Directions;
-        m.transit_choice = 1;
-        MapsDoc::save(&mut d, &m);
-        let out = MapsDoc::load(&d).unwrap();
-        assert_eq!(
-            out.route.as_ref().map(|route| route.mode),
-            m.route.as_ref().map(|route| route.mode)
-        );
-        assert!(
-            (out.route.as_ref().map_or(0.0, |route| route.distance_m)
-                - m.route.as_ref().map_or(0.0, |route| route.distance_m))
-            .abs()
-                < f64::EPSILON
-        );
-        assert_eq!(out.transit.len(), m.transit.len());
-        assert_eq!(
-            out.transit
-                .iter()
-                .map(|journey| (&journey.dep, &journey.arr, journey.duration_min))
-                .collect::<Vec<_>>(),
-            m.transit
-                .iter()
-                .map(|journey| (&journey.dep, &journey.arr, journey.duration_min))
-                .collect::<Vec<_>>()
-        );
-        assert!(out.results.is_empty());
-        assert!(out.selected.is_none());
-        assert_eq!(out.panel, crate::model::Panel::Explore);
-        assert_eq!(out.transit_choice, 0);
-        assert!(d.get(&ROOT, "maps").unwrap().is_none())
-    }
-    #[test]
-    fn legacy_route_fields_still_merge_and_load() {
-        let mut s = AutoCommit::new();
-        let m = sample::default_model();
-        MapsDoc::save(&mut s, &m);
-        let root = MapsDoc::existing(&s).unwrap();
-        s.delete(&root, "route_plan").unwrap();
-        let bytes = s.save();
-        let mut a = AutoCommit::load(&bytes).unwrap();
-        a.set_actor(ActorId::from([1; 16].as_slice()));
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        b.set_actor(ActorId::from([2; 16].as_slice()));
-        let mut route = m.route.clone().unwrap();
-        route.distance_m = 1234.;
-        MapsDoc::set_route(&mut a, &route);
-        MapsDoc::set_route_context(&mut b, m.origin, "Changed", m.dest, &m.dest_name, m.mode);
-        a.merge_incoming(&mut b).unwrap();
-        let out = MapsDoc::load(&a).unwrap();
-        assert_eq!(out.route.unwrap().distance_m, 1234.);
-        assert_eq!(out.origin_name, "Changed")
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn schema_excludes_window_state_and_loads_legacy_routes() {
+        // Phase `typed_schema_excludes_window_local_state`.
+        {
+            let mut d = AutoCommit::new();
+            let mut m = sample::default_model();
+            m.selected = Some("marienplatz".into());
+            m.panel = crate::model::Panel::Directions;
+            m.transit_choice = 1;
+            MapsDoc::save(&mut d, &m);
+            let out = MapsDoc::load(&d).unwrap();
+            assert_eq!(
+                out.route.as_ref().map(|route| route.mode),
+                m.route.as_ref().map(|route| route.mode)
+            );
+            assert!(
+                (out.route.as_ref().map_or(0.0, |route| route.distance_m)
+                    - m.route.as_ref().map_or(0.0, |route| route.distance_m))
+                .abs()
+                    < f64::EPSILON
+            );
+            assert_eq!(out.transit.len(), m.transit.len());
+            assert_eq!(
+                out.transit
+                    .iter()
+                    .map(|journey| (&journey.dep, &journey.arr, journey.duration_min))
+                    .collect::<Vec<_>>(),
+                m.transit
+                    .iter()
+                    .map(|journey| (&journey.dep, &journey.arr, journey.duration_min))
+                    .collect::<Vec<_>>()
+            );
+            assert!(out.results.is_empty());
+            assert!(out.selected.is_none());
+            assert_eq!(out.panel, crate::model::Panel::Explore);
+            assert_eq!(out.transit_choice, 0);
+            assert!(d.get(&ROOT, "maps").unwrap().is_none())
+        }
+
+        // Phase `legacy_route_fields_still_merge_and_load`.
+        {
+            let mut s = AutoCommit::new();
+            let m = sample::default_model();
+            MapsDoc::save(&mut s, &m);
+            let root = MapsDoc::existing(&s).unwrap();
+            s.delete(&root, "route_plan").unwrap();
+            let bytes = s.save();
+            let mut a = AutoCommit::load(&bytes).unwrap();
+            a.set_actor(ActorId::from([1; 16].as_slice()));
+            let mut b = AutoCommit::load(&bytes).unwrap();
+            b.set_actor(ActorId::from([2; 16].as_slice()));
+            let mut route = m.route.clone().unwrap();
+            route.distance_m = 1234.;
+            MapsDoc::set_route(&mut a, &route);
+            MapsDoc::set_route_context(&mut b, m.origin, "Changed", m.dest, &m.dest_name, m.mode);
+            a.merge_incoming(&mut b).unwrap();
+            let out = MapsDoc::load(&a).unwrap();
+            assert_eq!(out.route.unwrap().distance_m, 1234.);
+            assert_eq!(out.origin_name, "Changed")
+        }
     }
 }

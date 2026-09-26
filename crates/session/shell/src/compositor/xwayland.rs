@@ -1277,86 +1277,90 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_settings_retain_layout_variant_and_options_for_xwayland() {
-        let section = serde_json::json!({
-            "keyboard_layout": "de:nodeadkeys",
-            "keyboard_layouts": ["de:nodeadkeys"],
-            "compose_key": "rwin"
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let settings = KeyboardSettings::from_section(&section);
-        assert_eq!(settings.layouts, "de");
-        assert_eq!(settings.variants, "nodeadkeys");
-        assert_eq!(settings.options.as_deref(), Some("compose:rwin"));
+    fn xwayland_keyboard_settings_compile_to_setxkbmap_arguments() {
+        // Phase `keyboard_settings_retain_layout_variant_and_options_for_xwayland`.
+        {
+            let section = serde_json::json!({
+                "keyboard_layout": "de:nodeadkeys",
+                "keyboard_layouts": ["de:nodeadkeys"],
+                "compose_key": "rwin"
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            let settings = KeyboardSettings::from_section(&section);
+            assert_eq!(settings.layouts, "de");
+            assert_eq!(settings.variants, "nodeadkeys");
+            assert_eq!(settings.options.as_deref(), Some("compose:rwin"));
+        }
+        // Phase `live_xwayland_update_selects_the_active_layout_and_clears_old_options`.
+        {
+            let section = serde_json::json!({
+                "keyboard_layouts": ["us", "de:nodeadkeys"],
+                "keyboard_layout": "de:nodeadkeys",
+                "compose_key": "rwin"
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            let settings = KeyboardSettings::from_section(&section);
+            assert_eq!(
+                setxkbmap_args(&settings),
+                [
+                    "-layout",
+                    "de",
+                    "-variant",
+                    "nodeadkeys",
+                    "-option",
+                    "",
+                    "-option",
+                    "grp:alt_shift_toggle,compose:rwin",
+                ]
+                .map(OsString::from)
+            );
+
+            let plain = KeyboardSettings::default();
+            assert_eq!(
+                setxkbmap_args(&plain),
+                ["-layout", "us", "-option", ""].map(OsString::from)
+            );
+        }
     }
 
     #[test]
-    fn live_xwayland_update_selects_the_active_layout_and_clears_old_options() {
-        let section = serde_json::json!({
-            "keyboard_layouts": ["us", "de:nodeadkeys"],
-            "keyboard_layout": "de:nodeadkeys",
-            "compose_key": "rwin"
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let settings = KeyboardSettings::from_section(&section);
-        assert_eq!(
-            setxkbmap_args(&settings),
-            [
-                "-layout",
-                "de",
-                "-variant",
-                "nodeadkeys",
-                "-option",
-                "",
-                "-option",
-                "grp:alt_shift_toggle,compose:rwin",
-            ]
-            .map(OsString::from)
-        );
-
-        let plain = KeyboardSettings::default();
-        assert_eq!(
-            setxkbmap_args(&plain),
-            ["-layout", "us", "-option", ""].map(OsString::from)
-        );
-    }
-
-    #[test]
-    fn satellite_and_xwayland_are_resolved_from_one_runtime_first() {
-        let path = satellite_runtime_path(
-            Path::new("/usr/bin/xwayland-satellite"),
-            Some(OsStr::new("/run/host/usr/bin:/opt/tools:/usr/bin")),
-        )
-        .unwrap();
-        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
-        assert_eq!(
-            entries,
-            vec![
-                PathBuf::from("/usr/bin"),
-                PathBuf::from("/run/host/usr/bin"),
-                PathBuf::from("/opt/tools"),
-            ]
-        );
-    }
-
-    #[test]
-    fn authority_is_private_and_contains_no_text_cookie() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("Xauthority");
-        write_xauthority(&path, 1234).unwrap();
-        let metadata = fs::metadata(&path).unwrap();
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
-        let bytes = fs::read(path).unwrap();
-        assert!(bytes.windows(4).any(|window| window == b"1234"));
-        assert!(
-            bytes
-                .windows(b"MIT-MAGIC-COOKIE-1".len())
-                .any(|window| window == b"MIT-MAGIC-COOKIE-1")
-        );
+    fn xwayland_runtime_path_and_authority_are_private() {
+        // Phase `satellite_and_xwayland_are_resolved_from_one_runtime_first`.
+        {
+            let path = satellite_runtime_path(
+                Path::new("/usr/bin/xwayland-satellite"),
+                Some(OsStr::new("/run/host/usr/bin:/opt/tools:/usr/bin")),
+            )
+            .unwrap();
+            let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+            assert_eq!(
+                entries,
+                vec![
+                    PathBuf::from("/usr/bin"),
+                    PathBuf::from("/run/host/usr/bin"),
+                    PathBuf::from("/opt/tools"),
+                ]
+            );
+        }
+        // Phase `authority_is_private_and_contains_no_text_cookie`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("Xauthority");
+            write_xauthority(&path, 1234).unwrap();
+            let metadata = fs::metadata(&path).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+            let bytes = fs::read(path).unwrap();
+            assert!(bytes.windows(4).any(|window| window == b"1234"));
+            assert!(
+                bytes
+                    .windows(b"MIT-MAGIC-COOKIE-1".len())
+                    .any(|window| window == b"MIT-MAGIC-COOKIE-1")
+            );
+        }
     }
 
     #[test]

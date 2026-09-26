@@ -45,14 +45,14 @@ test-group = "compositor"
 filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
 test-group = "compositor"
 
-# Collaboration binaries share bounded socket resources.
+# Collaboration suites (modules of the agent `it` binary) share bounded socket resources.
 [[profile.default.overrides]]
-filter = 'package(agent) and (binary(presence_semantics) or binary(relay_roundtrip) or binary(discovered_operations) or binary(concurrent_edit))'
+filter = 'package(agent) and binary(it) and (test(presence_semantics::) or test(relay_roundtrip::) or test(discovered_operations::) or test(concurrent_edit::))'
 test-group = "agent-collaboration"
 threads-required = "num-cpus"
 
 [[profile.ci.overrides]]
-filter = 'package(agent) and (binary(presence_semantics) or binary(relay_roundtrip) or binary(discovered_operations) or binary(concurrent_edit))'
+filter = 'package(agent) and binary(it) and (test(presence_semantics::) or test(relay_roundtrip::) or test(discovered_operations::) or test(concurrent_edit::))'
 test-group = "agent-collaboration"
 threads-required = "num-cpus"
 

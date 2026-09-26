@@ -322,188 +322,194 @@ mod tests {
     }
 
     #[test]
-    fn semantic_activation_selects_without_committing_pending_edits() {
-        let mut pane = StandaloneHistoryPane::new();
-        let entry = entry(1);
-        pane.set_entries(std::slice::from_ref(&entry));
-        let semantics = pane.timeline.accessibility().expect("history semantics");
-        let target = semantics
-            .children
-            .iter()
-            .find(|node| node.role == Role::ListItem)
-            .and_then(|node| node.action_target.as_deref())
-            .expect("published selectable history entry");
-        let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "draft", "typing")
-            .expect("pending edit");
-        let pending = doc.pending_ops();
-        assert!(pane.timeline.perform_semantic_action(
-            target,
-            &Action::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        assert_eq!(
-            pane.take_intent(),
-            Some(HistoryPaneIntent::Select(entry.id))
-        );
-        assert_eq!(
-            pane.take_intent(),
-            None,
-            "one activation must not duplicate pointer selection"
-        );
-        assert_eq!(doc.pending_ops(), pending);
-    }
+    fn history_pane_selection_is_exact_and_never_commits_or_echoes() {
+        // Case `semantic_activation_selects_without_committing_pending_edits`.
+        {
+            let mut pane = StandaloneHistoryPane::new();
+            let entry = entry(1);
+            pane.set_entries(std::slice::from_ref(&entry));
+            let semantics = pane.timeline.accessibility().expect("history semantics");
+            let target = semantics
+                .children
+                .iter()
+                .find(|node| node.role == Role::ListItem)
+                .and_then(|node| node.action_target.as_deref())
+                .expect("published selectable history entry");
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "draft", "typing")
+                .expect("pending edit");
+            let pending = doc.pending_ops();
+            assert!(pane.timeline.perform_semantic_action(
+                target,
+                &Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            assert_eq!(
+                pane.take_intent(),
+                Some(HistoryPaneIntent::Select(entry.id))
+            );
+            assert_eq!(
+                pane.take_intent(),
+                None,
+                "one activation must not duplicate pointer selection"
+            );
+            assert_eq!(doc.pending_ops(), pending);
+        }
 
-    #[test]
-    fn removed_selection_clears_detail_instead_of_selecting_replacement_row() {
-        let mut pane = StandaloneHistoryPane::new();
-        pane.set_entries(&[entry(1), entry(2)]);
-        pane.timeline.set_selection(Some((0, 0)));
-        assert_eq!(
-            pane.take_intent(),
-            Some(HistoryPaneIntent::Select(entry(1).id))
-        );
-        pane.set_entries(&[entry(2)]);
-        assert_eq!(pane.take_intent(), Some(HistoryPaneIntent::ClearSelection));
-    }
+        // Case `removed_selection_clears_detail_instead_of_selecting_replacement_row`.
+        {
+            let mut pane = StandaloneHistoryPane::new();
+            pane.set_entries(&[entry(1), entry(2)]);
+            pane.timeline.set_selection(Some((0, 0)));
+            assert_eq!(
+                pane.take_intent(),
+                Some(HistoryPaneIntent::Select(entry(1).id))
+            );
+            pane.set_entries(&[entry(2)]);
+            assert_eq!(pane.take_intent(), Some(HistoryPaneIntent::ClearSelection));
+        }
 
-    #[test]
-    fn controller_selection_is_exact_and_never_echoes_as_input() {
-        let mut pane = StandaloneHistoryPane::new();
-        pane.set_entries(&[entry(1), entry(2), entry(3)]);
-        assert!(pane.set_selected_entries(&[entry(2).id]));
-        assert_eq!(pane.selected_ids(), Some(vec![entry(2).id]));
-        assert_eq!(pane.take_intent(), None);
-        assert!(pane.set_selected_entries(&[entry(1).id, entry(2).id, entry(3).id]));
-        assert_eq!(
-            pane.selected_ids(),
-            Some(vec![entry(1).id, entry(2).id, entry(3).id])
-        );
-        assert_eq!(pane.take_intent(), None);
-        assert!(pane.set_selected_entries(&[]));
-        assert_eq!(pane.selected_ids(), None);
-        assert_eq!(pane.take_intent(), None);
-        for invalid in [
-            vec![entry(1).id, entry(3).id],
-            vec![entry(9).id],
-            vec![entry(2).id, entry(2).id],
-        ] {
-            assert!(!pane.set_selected_entries(&invalid));
+        // Case `controller_selection_is_exact_and_never_echoes_as_input`.
+        {
+            let mut pane = StandaloneHistoryPane::new();
+            pane.set_entries(&[entry(1), entry(2), entry(3)]);
+            assert!(pane.set_selected_entries(&[entry(2).id]));
+            assert_eq!(pane.selected_ids(), Some(vec![entry(2).id]));
+            assert_eq!(pane.take_intent(), None);
+            assert!(pane.set_selected_entries(&[entry(1).id, entry(2).id, entry(3).id]));
+            assert_eq!(
+                pane.selected_ids(),
+                Some(vec![entry(1).id, entry(2).id, entry(3).id])
+            );
+            assert_eq!(pane.take_intent(), None);
+            assert!(pane.set_selected_entries(&[]));
             assert_eq!(pane.selected_ids(), None);
             assert_eq!(pane.take_intent(), None);
+            for invalid in [
+                vec![entry(1).id, entry(3).id],
+                vec![entry(9).id],
+                vec![entry(2).id, entry(2).id],
+            ] {
+                assert!(!pane.set_selected_entries(&invalid));
+                assert_eq!(pane.selected_ids(), None);
+                assert_eq!(pane.take_intent(), None);
+            }
         }
     }
 
     #[test]
-    fn complete_selected_range_materializes_the_state_before_all_three_changes() {
-        use crate::history_source::{HistorySource, compare_entries, entry_id_from_hash};
-        use automerge::ReadDoc;
+    fn history_pane_range_selection_compares_the_exact_before_state() {
+        // Case `complete_selected_range_materializes_the_state_before_all_three_changes`.
+        {
+            use crate::history_source::{HistorySource, compare_entries, entry_id_from_hash};
+            use automerge::ReadDoc;
 
-        let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "value", "before").unwrap();
-        doc.commit();
-        let mut ids = Vec::new();
-        for value in ["first", "middle", "last"] {
-            doc.put(automerge::ROOT, "value", value).unwrap();
-            ids.push(entry_id_from_hash(&doc.commit().unwrap().to_string()));
-        }
-        let entries = HistorySource::new().entries(&mut doc);
-        let selected_entries: Vec<_> = ids
-            .iter()
-            .map(|id| {
-                entries
-                    .iter()
-                    .find(|entry| entry.id == *id)
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "value", "before").unwrap();
+            doc.commit();
+            let mut ids = Vec::new();
+            for value in ["first", "middle", "last"] {
+                doc.put(automerge::ROOT, "value", value).unwrap();
+                ids.push(entry_id_from_hash(&doc.commit().unwrap().to_string()));
+            }
+            let entries = HistorySource::new().entries(&mut doc);
+            let selected_entries: Vec<_> = ids
+                .iter()
+                .map(|id| {
+                    entries
+                        .iter()
+                        .find(|entry| entry.id == *id)
+                        .unwrap()
+                        .clone()
+                })
+                .collect();
+            let mut pane = StandaloneHistoryPane::new();
+            pane.set_entries(&selected_entries);
+            pane.timeline.set_selection(Some((0, 2)));
+            let Some(HistoryPaneIntent::Compare(selected)) = pane.take_intent() else {
+                panic!("range must request a comparison");
+            };
+            assert_eq!(selected, ids);
+            let comparison = compare_entries(&mut doc, &selected).unwrap();
+            let before = AutoCommit::load(&comparison.before_document).unwrap();
+            let after = AutoCommit::load(&comparison.after_document).unwrap();
+            assert_eq!(
+                before
+                    .get(automerge::ROOT, "value")
                     .unwrap()
-                    .clone()
-            })
-            .collect();
-        let mut pane = StandaloneHistoryPane::new();
-        pane.set_entries(&selected_entries);
-        pane.timeline.set_selection(Some((0, 2)));
-        let Some(HistoryPaneIntent::Compare(selected)) = pane.take_intent() else {
-            panic!("range must request a comparison");
-        };
-        assert_eq!(selected, ids);
-        let comparison = compare_entries(&mut doc, &selected).unwrap();
-        let before = AutoCommit::load(&comparison.before_document).unwrap();
-        let after = AutoCommit::load(&comparison.after_document).unwrap();
-        assert_eq!(
-            before
-                .get(automerge::ROOT, "value")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("before")
-        );
-        assert_eq!(
-            after
-                .get(automerge::ROOT, "value")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("last")
-        );
-        // Omitting the interior change contaminates the before frontier with
-        // the last change's dependency: this is why endpoints are insufficient.
-        let endpoints = compare_entries(&mut doc, &[ids[0], ids[2]]).unwrap();
-        let endpoint_before = AutoCommit::load(&endpoints.before_document).unwrap();
-        assert_eq!(
-            endpoint_before
-                .get(automerge::ROOT, "value")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("middle")
-        );
-    }
+                    .unwrap()
+                    .0
+                    .as_str(),
+                Some("before")
+            );
+            assert_eq!(
+                after
+                    .get(automerge::ROOT, "value")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str(),
+                Some("last")
+            );
+            // Omitting the interior change contaminates the before frontier with
+            // the last change's dependency: this is why endpoints are insufficient.
+            let endpoints = compare_entries(&mut doc, &[ids[0], ids[2]]).unwrap();
+            let endpoint_before = AutoCommit::load(&endpoints.before_document).unwrap();
+            assert_eq!(
+                endpoint_before
+                    .get(automerge::ROOT, "value")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str(),
+                Some("middle")
+            );
+        }
 
-    #[test]
-    fn changed_interior_selection_emits_a_fresh_comparison() {
-        let mut pane = StandaloneHistoryPane::new();
-        pane.set_entries(&[entry(1), entry(2), entry(3)]);
-        pane.timeline.set_selection(Some((0, 2)));
-        assert_eq!(
-            pane.take_intent(),
-            Some(HistoryPaneIntent::Compare(vec![
-                entry(1).id,
-                entry(2).id,
-                entry(3).id
-            ]))
-        );
-        pane.set_entries(&[entry(1), entry(4), entry(3)]);
-        pane.timeline.set_selection(Some((0, 2)));
-        assert_eq!(
-            pane.take_intent(),
-            Some(HistoryPaneIntent::Compare(vec![
-                entry(1).id,
-                entry(4).id,
-                entry(3).id
-            ]))
-        );
-        assert_eq!(pane.take_intent(), None);
-    }
+        // Case `changed_interior_selection_emits_a_fresh_comparison`.
+        {
+            let mut pane = StandaloneHistoryPane::new();
+            pane.set_entries(&[entry(1), entry(2), entry(3)]);
+            pane.timeline.set_selection(Some((0, 2)));
+            assert_eq!(
+                pane.take_intent(),
+                Some(HistoryPaneIntent::Compare(vec![
+                    entry(1).id,
+                    entry(2).id,
+                    entry(3).id
+                ]))
+            );
+            pane.set_entries(&[entry(1), entry(4), entry(3)]);
+            pane.timeline.set_selection(Some((0, 2)));
+            assert_eq!(
+                pane.take_intent(),
+                Some(HistoryPaneIntent::Compare(vec![
+                    entry(1).id,
+                    entry(4).id,
+                    entry(3).id
+                ]))
+            );
+            assert_eq!(pane.take_intent(), None);
+        }
 
-    #[test]
-    fn range_selection_compares_stable_ids_and_clear_discards_queued_activation() {
-        let mut pane = StandaloneHistoryPane::new();
-        pane.set_entries(&[entry(1), entry(2)]);
-        pane.timeline.set_selection(Some((0, 1)));
-        assert_eq!(
-            pane.take_intent(),
-            Some(HistoryPaneIntent::Compare(vec![entry(1).id, entry(2).id]))
-        );
-        pane.timeline.set_all_expanded(true);
-        let row = (0..pane.timeline.row_count())
-            .find(|row| pane.timeline.row_entry(*row).is_some())
-            .expect("entry row");
-        assert!(pane.timeline.activate_row(row));
-        pane.clear();
-        assert_eq!(pane.take_intent(), None);
-        assert!(pane.timeline.entries().is_empty());
+        // Case `range_selection_compares_stable_ids_and_clear_discards_queued_activation`.
+        {
+            let mut pane = StandaloneHistoryPane::new();
+            pane.set_entries(&[entry(1), entry(2)]);
+            pane.timeline.set_selection(Some((0, 1)));
+            assert_eq!(
+                pane.take_intent(),
+                Some(HistoryPaneIntent::Compare(vec![entry(1).id, entry(2).id]))
+            );
+            pane.timeline.set_all_expanded(true);
+            let row = (0..pane.timeline.row_count())
+                .find(|row| pane.timeline.row_entry(*row).is_some())
+                .expect("entry row");
+            assert!(pane.timeline.activate_row(row));
+            pane.clear();
+            assert_eq!(pane.take_intent(), None);
+            assert!(pane.timeline.entries().is_empty());
+        }
     }
 }

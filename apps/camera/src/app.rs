@@ -6653,136 +6653,6 @@ mod tests {
         (app, doc, root)
     }
 
-    /// 2026-09-17 review: the Photo / Video / Scan capsule split its authored
-    /// 240 px into three 80 px segments at every scale, so 200% labels ran
-    /// into each other. The capsule keeps 240 at 1× and takes the measured
-    /// labels' width (plus padding) when they need more.
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the segment width is computed by the same expression from the same measurement, so it must match exactly"
-    )]
-    fn mode_switcher_segments_hold_their_measured_labels_at_2x() {
-        let mut tr = TextRenderer::new();
-        assert_eq!(
-            CameraApp::segmented_min_w(&mut tr, &["Photo", "Video", "Scan"]),
-            3.0 * (f64::from(p::text_w(&mut tr, "Photo", MODE_LABEL_SIZE))
-                + 2.0 * MODE_LABEL_PAD_X),
-            "the widest label sizes every segment"
-        );
-        for scale in [1.0_f32, 2.0] {
-            let (mut app, mut doc, root) = sample_app();
-            render_at_scaled(&mut app, &mut doc, &root, 800.0, 900.0, scale);
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(scale);
-            let tree = app.accessibility().expect("camera has a semantic window");
-            let segment = |target: &str| -> Rect {
-                tree.children
-                    .iter()
-                    .find(|node| node.action_target.as_deref() == Some(target))
-                    .and_then(|node| node.bounds)
-                    .map_or_else(
-                        || panic!("{target} is a painted segment"),
-                        ui::a11y::AccessBounds::to_rect,
-                    )
-            };
-            let photo = segment("camera.mode:photo");
-            let video = segment("camera.mode:video");
-            let scan = segment("camera.nav:scanner");
-            // Tap regions grow narrow segments to the 44 px touch minimum
-            // around their centre, so widths are read from adjacent centres.
-            let seg_w = video.center().x - photo.center().x;
-            assert!(
-                (scan.center().x - video.center().x - seg_w).abs() < 0.5,
-                "{scale}×: equal segments {photo:?} {video:?} {scan:?}"
-            );
-            if (scale - 1.0).abs() < f32::EPSILON {
-                let labels = ["Photo", "Video", "Codes", "Docs"];
-                let expected = 240.0_f64.max(CameraApp::segmented_min_w(&mut tr, &labels))
-                    / labels.len() as f64;
-                assert!(
-                    (seg_w - expected).abs() < 0.5,
-                    "1× keeps the authored width unless its four labels need more: {seg_w}"
-                );
-            } else {
-                let widest = ["Photo", "Video", "Scan"]
-                    .iter()
-                    .map(|label| f64::from(p::text_w(&mut tr, label, MODE_LABEL_SIZE)))
-                    .fold(0.0_f64, f64::max);
-                assert!(
-                    seg_w >= widest + 2.0 * MODE_LABEL_PAD_X,
-                    "{scale}×: {seg_w} px segments hold a {widest} px label with padding"
-                );
-            }
-        }
-    }
-
-    /// The gallery header used three literal sets that agreed only at 1×:
-    /// the title over its count at 200%, fixed 80 px filter segments over
-    /// each other, and on a 480 px window the filter on the title's row
-    /// running into it. One measured description now places all of it.
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the geometry pins authored whole-pixel constants, which are exact in binary floating point"
-    )]
-    fn gallery_chrome_keeps_title_count_filter_and_grid_apart() {
-        let labels = vec!["All", "Photos", "Videos", "Favorites"];
-        // 1× desktop: the authored geometry, filter beside the title.
-        let mut tr = TextRenderer::new();
-        let wide = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        let one = GalleryChrome::measure(&mut tr, wide, 24.0, "9 items", &labels);
-        assert_eq!(one.title_top, 16.0, "{one:?}");
-        assert_eq!(one.count_top, 44.0, "{one:?}");
-        assert_eq!(
-            one.content_top,
-            64.0,
-            "{one:?} (count line {})",
-            p::text_h(&mut tr, "9 items", GalleryChrome::COUNT_SIZE)
-        );
-        assert_eq!(one.filter.y0, 16.0, "1× filter shares the title row");
-        assert_eq!(one.filter.height(), 32.0);
-        assert_eq!(one.filter.width(), 320.0);
-        assert_eq!(one.filter.x1, wide.x1 - 24.0);
-
-        // 480 px: the filter cannot share the title's row without touching
-        // it, so it owns the row under the count and the grid follows it.
-        let phone = Rect::new(0.0, 0.0, 480.0, 900.0);
-        let narrow = GalleryChrome::measure(&mut tr, phone, 24.0, "9 items", &labels);
-        let count_bottom =
-            narrow.count_top + p::text_h(&mut tr, "9 items", GalleryChrome::COUNT_SIZE);
-        assert!(
-            narrow.filter.y0 >= count_bottom,
-            "phone filter {:?} starts below the count line ending at {count_bottom}",
-            narrow.filter
-        );
-        assert!(narrow.content_top >= narrow.filter.y1 + GalleryChrome::GAP);
-
-        // 2×: the count clears the measured title, every filter segment
-        // holds the widest measured label, and the grid clears both.
-        tr.set_text_scale(2.0);
-        let two = GalleryChrome::measure(&mut tr, wide, 24.0, "9 items", &labels);
-        let title_h = p::text_h(&mut tr, "Library", GalleryChrome::TITLE_SIZE);
-        assert!(
-            two.count_top >= two.title_top + title_h,
-            "2× count below the title: {two:?}"
-        );
-        let widest = labels
-            .iter()
-            .map(|label| f64::from(p::text_w(&mut tr, label, MODE_LABEL_SIZE)))
-            .fold(0.0_f64, f64::max);
-        assert!(
-            two.filter.width() / labels.len() as f64 >= widest + 2.0 * MODE_LABEL_PAD_X,
-            "2× filter segments hold {widest} px labels: {:?}",
-            two.filter
-        );
-        let count_bottom = two.count_top + p::text_h(&mut tr, "9 items", GalleryChrome::COUNT_SIZE);
-        assert!(
-            two.content_top >= count_bottom && two.content_top >= two.filter.y1,
-            "2× grid starts below the header and the filter: {two:?}"
-        );
-    }
-
     fn sync_until(
         app: &mut CameraApp,
         doc: &mut AutoCommit,
@@ -6804,805 +6674,6 @@ mod tests {
                 .map(|capture| capture.id.as_str())
                 .collect::<Vec<_>>()
         );
-    }
-
-    #[test]
-    fn detected_label_has_single_space() {
-        let tag = detected_label("QR Code");
-        assert_eq!(tag, "QR Code detected");
-        assert!(
-            !tag.contains("  "),
-            "detected label must not contain a double space: {tag:?}"
-        );
-    }
-
-    #[test]
-    fn sample_source_populates_without_touching_disk() {
-        let (app, _doc, _root) = sample_app();
-        assert_eq!(app.screen, Screen::Camera);
-        assert_eq!(app.captures.len(), 1);
-        assert!(app.captures.iter().all(|c| c.path.is_none()));
-    }
-
-    #[test]
-    fn disk_source_starts_empty_and_seeds_no_content() {
-        // Point at a directory that does not exist → no fabricated media, never
-        // fabricated samples.
-        let dir = std::env::temp_dir().join("camera-empty-lib-xyz-does-not-exist");
-        let mut app = CameraApp::with(Storage::Disk(dir), Screen::Camera);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        sync_until(&mut app, &mut doc, &root, |_| true);
-        assert!(app.captures.is_empty());
-        assert!(app.scans.is_empty());
-    }
-
-    #[test]
-    fn screen_reveals_are_presentation_only() {
-        let (mut app, mut doc, root) = sample_app();
-        let before = doc.get_heads();
-        app.apply(Action::Nav(Screen::Settings), &mut doc, &root);
-        assert_eq!(app.screen, Screen::Settings);
-        assert_eq!(doc.get_heads(), before);
-        assert!(app.take_committed_action().is_none());
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the geometry pins authored whole-pixel constants, which are exact in binary floating point"
-    )]
-    fn viewfinder_keeps_the_full_stage_at_wide_narrow_and_large_text_sizes() {
-        let (mut app, mut doc, root) = sample_app();
-        let heads = doc.get_heads();
-        render_at(&mut app, &mut doc, &root, 1_100.0, 720.0);
-        assert_eq!(app.rect.width(), 1_100.0);
-        assert!(
-            app.accessibility()
-                .expect("wide a11y")
-                .children
-                .iter()
-                .any(|node| { node.action_target.as_deref() == Some("camera.open-photos") })
-        );
-
-        render_at(&mut app, &mut doc, &root, 390.0, 720.0);
-        assert_eq!(app.rect.width(), 390.0);
-        assert!(
-            app.accessibility()
-                .expect("narrow a11y")
-                .children
-                .iter()
-                .any(|node| { node.action_target.as_deref() == Some("camera.shutter") })
-        );
-        assert_eq!(doc.get_heads(), heads, "viewfinder layout remains local");
-    }
-
-    #[test]
-    fn self_timer_is_a_local_cancellable_countdown_before_capture() {
-        let (mut app, mut doc, root) = sample_app();
-        app.apply(Action::SetTimer(Timer::S3), &mut doc, &root);
-        let before = app.captures.len();
-        let before_id = app.captures.first().map(|capture| capture.id.clone());
-        app.apply(Action::Shutter, &mut doc, &root);
-        assert!(app.is_counting_down());
-        assert_eq!(app.captures.len(), before, "timer does not capture early");
-        app.countdown.as_mut().expect("armed timer").due = Instant::now();
-        app.sync(&mut doc, &root);
-        assert!(!app.is_counting_down());
-        assert_eq!(app.captures.len(), 1);
-        assert_ne!(
-            app.captures.first().map(|capture| capture.id.clone()),
-            before_id
-        );
-
-        app.apply(Action::Shutter, &mut doc, &root);
-        assert!(app.is_counting_down());
-        app.apply(Action::Shutter, &mut doc, &root);
-        assert!(!app.is_counting_down(), "second shutter cancels safely");
-    }
-
-    #[test]
-    fn sample_shutter_replaces_the_recent_handoff() {
-        let (mut app, mut doc, root) = sample_app();
-        let before = app.captures[0].id.clone();
-        app.apply(Action::Shutter, &mut doc, &root);
-        assert_eq!(app.captures.len(), 1);
-        assert_ne!(app.captures[0].id, before);
-        assert!(app.toast.is_some());
-    }
-
-    #[test]
-    fn disk_shutter_writes_a_real_jpeg_via_handle_event() {
-        use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-        use winit::keyboard::{Key, NamedKey, PhysicalKey};
-
-        let dir = std::env::temp_dir().join(format!("camera-shutter-test-{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        sync_until(&mut app, &mut doc, &root, |_| true);
-        assert_eq!(app.screen, Screen::Camera);
-        assert_eq!(
-            app.settings.photo_format,
-            PhotoFormat::Jpeg,
-            "default format is JPEG"
-        );
-        // Simulate a camera frame arriving.
-        app.push_camera_frame(frame::viewfinder(1, 64, 48));
-
-        // Press Space through the real event path. `KeyEvent` carries a
-        // non-exhaustive field, so build it via the zeroed-struct idiom used
-        // across the toolkit's own tests.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(NamedKey::Space);
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        };
-        let mods = Modifiers::default();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            &event,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        assert!(handled, "space should be handled on the camera screen");
-
-        // Saving is now bounded background work; pump the real sync boundary
-        // until it settles rather than assuming UI event delivery did disk IO.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline
-            && std::fs::read_dir(&dir).map_or(true, |entries| {
-                !entries.flatten().any(|e| {
-                    e.path().extension().is_some_and(|x| x == "jpg")
-                        && e.metadata().is_ok_and(|m| m.len() >= 2)
-                })
-            })
-        {
-            app.sync(&mut doc, &root);
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        // A real JPEG landed on disk. Camera publishes the portable identity,
-        // not the private local projection path.
-        let files: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x == "jpg"))
-            .collect();
-        assert_eq!(files.len(), 1, "shutter wrote exactly one JPEG");
-        let bytes = std::fs::read(files[0].path()).unwrap();
-        assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "genuine JPEG (SOI marker)");
-        sync_until(&mut app, &mut doc, &root, |app| app.captures.len() == 1);
-        assert_eq!(app.captures.len(), 1);
-        assert!(app.captures[0].path.is_none());
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn disk_shutter_without_frame_is_honest() {
-        let dir = std::env::temp_dir().join(format!("camera-noframe-test-{}", std::process::id()));
-        let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        sync_until(&mut app, &mut doc, &root, |_| true);
-        assert!(!app.feed_active());
-        app.apply(Action::Shutter, &mut doc, &root);
-        // Nothing saved; the toast tells the truth.
-        assert!(app.captures.is_empty());
-        assert_eq!(app.toast.as_deref(), Some("Connect a camera to capture"));
-        assert!(
-            !dir.exists(),
-            "no directory created when there is nothing to save"
-        );
-    }
-
-    #[test]
-    fn unavailable_camera_recovery_is_semantic_and_has_touch_targets() {
-        let dir = std::env::temp_dir().join("camera-recovery-test-no-device");
-        let mut app = CameraApp::with(Storage::Disk(dir), Screen::Camera);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
-        app.camera_issue = Some(CameraIssue::PermissionDenied);
-        render_at(&mut app, &mut doc, &root, 320.0, 680.0);
-        let tree = app.accessibility().expect("camera has semantics");
-        let privacy = tree
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Open camera privacy settings"))
-            .expect("privacy recovery action");
-        let refresh = tree
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Refresh available cameras"))
-            .expect("refresh recovery action");
-        for node in [privacy, refresh] {
-            let bounds = node.bounds.expect("recovery has bounds");
-            assert!(bounds.x1 - bounds.x0 >= 44.0 && bounds.y1 - bounds.y0 >= 44.0);
-        }
-        assert!(app.perform_semantic_action(
-            "camera.retry-camera",
-            &A11yAction::Activate,
-            &mut doc,
-            &root,
-        ));
-        // Device discovery is deliberately real. The test host may expose a
-        // `/dev/video*` node (for example, a CI virtual camera), so assert
-        // the honest result for the discovered state rather than pretending
-        // every machine has no hardware.
-        let expected = if app.available_camera_devices().is_empty() {
-            "No cameras found. Connect one, then refresh"
-        } else {
-            "Refreshing camera"
-        };
-        assert_eq!(app.toast.as_deref(), Some(expected));
-    }
-
-    #[test]
-    fn sample_fixture_can_render_the_same_honest_permission_recovery() {
-        // The screenshot harness uses `Storage::Sample` to avoid both a real
-        // camera and private imagery.  An explicit permission result must
-        // still win over that procedural feed, otherwise visual regressions
-        // would accidentally hide the most important recovery state.
-        let (mut app, mut doc, root) = sample_app();
-        app.camera_issue = Some(CameraIssue::PermissionDenied);
-        assert!(!app.feed_active());
-        render_at(&mut app, &mut doc, &root, 390.0, 844.0);
-        let tree = app.accessibility().expect("camera has semantics");
-        assert!(
-            tree.children
-                .iter()
-                .any(|node| { node.name.as_deref() == Some("Open camera privacy settings") })
-        );
-    }
-
-    #[test]
-    fn sample_fixture_can_render_the_honest_no_device_state() {
-        let (mut app, _doc, _root) = sample_app();
-        app.camera_issue = Some(CameraIssue::NoDevice);
-        assert!(!app.feed_active());
-        assert_eq!(
-            app.no_feed_copy(),
-            (
-                "No camera connected",
-                "Connect a camera to start the viewfinder"
-            )
-        );
-    }
-
-    #[test]
-    fn narrow_privacy_recovery_label_fits_a_two_action_row() {
-        assert_eq!(
-            recovery_button_label(
-                &Action::OpenCameraPrivacySettings,
-                "Open privacy settings",
-                117.0
-            ),
-            "Privacy settings"
-        );
-        assert_eq!(
-            recovery_button_label(
-                &Action::OpenCameraPrivacySettings,
-                "Open privacy settings",
-                160.0
-            ),
-            "Open privacy settings"
-        );
-    }
-
-    #[test]
-    fn set_mode_persists_and_locks_while_recording() {
-        let (mut app, mut doc, root) = sample_app();
-        assert_eq!(app.mode, CaptureMode::Photo);
-        app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
-        assert_eq!(app.mode, CaptureMode::Video);
-        assert_eq!(doc::read_mode(&doc, &root), CaptureMode::Video);
-
-        // Shutter in video mode starts recording; mode can't be flipped while
-        // a clip is in progress.
-        app.apply(Action::Shutter, &mut doc, &root);
-        assert!(app.is_recording());
-        app.apply(Action::SetMode(CaptureMode::Photo), &mut doc, &root);
-        assert_eq!(app.mode, CaptureMode::Video, "mode locked while recording");
-    }
-
-    #[test]
-    fn document_route_captures_real_session_pages_in_sample_mode() {
-        let (mut app, mut doc, root) = sample_app();
-        app.apply(Action::Nav(Screen::Document), &mut doc, &root);
-        assert_eq!(app.screen, Screen::Document);
-        assert!(app.document_scan.pages.is_empty());
-
-        app.apply(Action::CaptureDocument, &mut doc, &root);
-        assert_eq!(app.document_scan.pages.len(), 1);
-        let page = app.document_scan.pages[0].rendered();
-        assert_eq!((page.width(), page.height()), (1240, 1754));
-        assert_eq!(app.toast.as_deref(), Some("Page 1 captured"));
-
-        app.apply(Action::BeginDocumentCrop, &mut doc, &root);
-        assert!(app.document_crop_editor.is_some());
-        app.document_crop_selection.set(CropSelection {
-            left: 0.1,
-            top: 0.1,
-            right: 0.9,
-            bottom: 0.9,
-        });
-        app.apply(Action::ApplyDocumentCrop, &mut doc, &root);
-        assert!(app.document_crop_editor.is_none());
-        let page = app.document_scan.pages[0].rendered();
-        assert_eq!((page.width(), page.height()), (992, 1404));
-
-        app.apply(Action::RotateDocument, &mut doc, &root);
-        let page = app.document_scan.pages[0].rendered();
-        assert_eq!((page.width(), page.height()), (1404, 992));
-
-        let (sender, receiver) = mpsc::channel();
-        app.document_job = Some(receiver);
-        app.document_job_kind = Some(DocumentJobKind::Recognize);
-        app.apply(Action::RemoveDocumentPage, &mut doc, &root);
-        assert_eq!(app.document_scan.pages.len(), 1, "busy page is stable");
-        sender
-            .send(DocumentJobResult::Recognize {
-                page: 0,
-                result: Ok(tilo_ocr::Recognition {
-                    document: tilo_ocr::Document {
-                        words: Vec::new(),
-                        language: "eng".into(),
-                    },
-                    deskew_degrees: Some(-2.5),
-                }),
-            })
-            .unwrap();
-        app.poll_document_job();
-        assert!(app.document_scan.pages[0].ocr.is_some());
-        assert_eq!(app.document_scan.pages[0].ocr_deskew_degrees, Some(-2.5));
-        assert_eq!(
-            app.toast.as_deref(),
-            Some("Recognized 0 words · Straightened 2.5°")
-        );
-        assert!(app.document_job.is_none());
-
-        app.apply(Action::RemoveDocumentPage, &mut doc, &root);
-        assert!(app.document_scan.pages.is_empty());
-    }
-
-    #[test]
-    fn document_controls_update_the_typed_worker_settings() {
-        let (mut app, mut doc, root) = sample_app();
-        assert_eq!(app.document_settings, DocumentSettings::default());
-        app.scanner_devices.push(os_actions::printing::Scanner {
-            device: "sample:office-scanner".into(),
-            description: "Office scanner".into(),
-        });
-        app.document_choice_anchors = [Rect::new(10.0, 10.0, 140.0, 54.0); 5];
-
-        for (choice, selection) in [
-            (DocumentChoice::Scanner, 1),
-            (DocumentChoice::Resolution, 2),
-            (DocumentChoice::Color, 1),
-            (DocumentChoice::Source, 1),
-            (DocumentChoice::Language, 1),
-        ] {
-            app.apply(Action::OpenDocumentChoice(choice), &mut doc, &root);
-            assert!(app.document_popover.is_open());
-            app.document_popover.select(selection);
-            let selected = app.document_popover.take_selection().unwrap();
-            app.apply_document_choice(selected);
-        }
-
-        assert_eq!(app.document_settings.scan.resolution_dpi, 600);
-        assert_eq!(
-            app.document_settings.scan.color,
-            os_actions::printing::ScanColor::Grayscale
-        );
-        assert_eq!(
-            app.document_settings.scan.source,
-            os_actions::printing::ScanSource::Feeder
-        );
-        assert_eq!(app.document_settings.ocr_language.code(), "deu");
-        assert_eq!(
-            app.selected_scanner.as_deref(),
-            Some("sample:office-scanner")
-        );
-
-        assert_eq!(
-            app.document_popover.items(),
-            &["English", "German", "French", "Spanish"]
-        );
-    }
-
-    #[test]
-    fn document_capture_never_falls_back_to_a_different_scanner() {
-        let (mut app, _doc, _root) = sample_app();
-        app.scanner_devices.push(os_actions::printing::Scanner {
-            device: "sample:office-scanner".into(),
-            description: "Office scanner".into(),
-        });
-        app.selected_scanner = Some("scanner:disconnected".into());
-
-        app.capture_document_page();
-        assert!(app.document_scan.pages.is_empty());
-        assert_eq!(app.toast.as_deref(), Some("Choose which scanner to use"));
-
-        app.selected_scanner = Some("sample:office-scanner".into());
-        app.capture_document_page();
-        assert_eq!(app.document_scan.pages.len(), 1);
-        assert_eq!(app.toast.as_deref(), Some("Page 1 captured"));
-    }
-
-    #[test]
-    fn document_text_status_detects_stale_language_and_copy_uses_real_ocr_text() {
-        let (mut app, mut doc, root) = sample_app();
-        app.apply(Action::CaptureDocument, &mut doc, &root);
-        assert_eq!(app.document_text_status(), "Text not recognized");
-        app.document_scan.pages[0].ocr = Some(tilo_ocr::Document {
-            words: vec![tilo_ocr::Word {
-                text: "Invoice".into(),
-                confidence: 98.0,
-                bounds: tilo_ocr::Bounds {
-                    x: 10,
-                    y: 10,
-                    width: 80,
-                    height: 20,
-                },
-                page: 0,
-                block: 0,
-                paragraph: 0,
-                line: 0,
-                position: 0,
-            }],
-            language: "eng".into(),
-        });
-        assert_eq!(app.document_text_status(), "1 word recognized");
-        app.document_scan.pages[0].ocr_deskew_degrees = Some(1.5);
-        assert_eq!(
-            app.document_text_status(),
-            "1 word recognized · Straightened 1.5°"
-        );
-        app.apply(Action::CopyDocumentText, &mut doc, &root);
-        assert_eq!(ui::clipboard_paste().as_deref(), Some("Invoice"));
-        assert_eq!(app.toast.as_deref(), Some("Recognized text copied"));
-
-        app.document_settings.ocr_language = OcrLanguage::German;
-        assert_eq!(app.document_text_status(), "Language changed; update text");
-    }
-
-    #[test]
-    fn document_ocr_failures_never_expose_engine_diagnostics() {
-        let (mut app, _, _) = sample_app();
-        let (sender, receiver) = mpsc::channel();
-        app.document_job = Some(receiver);
-        app.document_job_kind = Some(DocumentJobKind::Recognize);
-        sender
-            .send(DocumentJobResult::Recognize {
-                page: 0,
-                result: Err(tilo_ocr::Error::Engine(
-                    "/private/receipt.png: tesseract internals".into(),
-                )),
-            })
-            .unwrap();
-
-        app.poll_document_job();
-        let message = app.toast.as_deref().unwrap();
-        assert!(message.contains("clearer scan"));
-        assert!(!message.contains("/private"));
-        assert!(!message.contains("tesseract"));
-    }
-
-    #[test]
-    fn touch_activates_document_choices_on_release_and_cancels_after_dragging_off() {
-        use winit::event::TouchPhase;
-
-        fn touch(phase: TouchPhase, point: Point) -> WindowEvent {
-            WindowEvent::Touch(winit::event::Touch {
-                device_id: unsafe { std::mem::zeroed() },
-                phase,
-                location: winit::dpi::PhysicalPosition::new(point.x, point.y),
-                force: None,
-                id: 17,
-            })
-        }
-        fn dispatch(
-            app: &mut CameraApp,
-            event: &WindowEvent,
-            doc: &mut AutoCommit,
-            node: NodeId,
-            tree: &TaffyTree<()>,
-        ) {
-            let mut handled = false;
-            let mut focus = None;
-            app.handle_event(
-                event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                doc,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus,
-                node,
-                tree,
-            );
-            assert!(handled);
-        }
-
-        let (mut app, mut doc, _root) = sample_app();
-        let rect = Rect::new(20.0, 20.0, 180.0, 64.0);
-        app.document_choice_anchors[DocumentChoice::Resolution.index()] = rect;
-        app.regions
-            .push((rect, Action::OpenDocumentChoice(DocumentChoice::Resolution)));
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-
-        dispatch(
-            &mut app,
-            &touch(TouchPhase::Started, rect.center()),
-            &mut doc,
-            node,
-            &tree,
-        );
-        assert!(
-            !app.document_popover.is_open(),
-            "touch-down is not activation"
-        );
-        dispatch(
-            &mut app,
-            &touch(TouchPhase::Ended, rect.center()),
-            &mut doc,
-            node,
-            &tree,
-        );
-        assert!(app.document_popover.is_open());
-
-        app.document_popover.close();
-        dispatch(
-            &mut app,
-            &touch(TouchPhase::Started, rect.center()),
-            &mut doc,
-            node,
-            &tree,
-        );
-        dispatch(
-            &mut app,
-            &touch(
-                TouchPhase::Moved,
-                Point::new(rect.x1 + 40.0, rect.y1 + 40.0),
-            ),
-            &mut doc,
-            node,
-            &tree,
-        );
-        dispatch(
-            &mut app,
-            &touch(TouchPhase::Ended, rect.center()),
-            &mut doc,
-            node,
-            &tree,
-        );
-        assert!(
-            !app.document_popover.is_open(),
-            "dragging off cancels the press"
-        );
-    }
-
-    #[test]
-    fn sample_video_record_replaces_the_recent_handoff() {
-        let (mut app, mut doc, root) = sample_app();
-        app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
-
-        // Start; the hermetic frame-synth runs on each sync tick.
-        app.apply(Action::Shutter, &mut doc, &root);
-        assert!(app.is_recording());
-        for _ in 0..6 {
-            app.sync(&mut doc, &root);
-        }
-        assert!(
-            app.frame_gen >= 6,
-            "sample frames were admitted to the worker"
-        );
-
-        // Stop queues finalization; the bounded worker produces a real clip
-        // before sync registers its canonical capture resource.
-        app.apply(Action::Shutter, &mut doc, &root);
-        assert!(!app.is_recording());
-        sync_until(&mut app, &mut doc, &root, |app| {
-            app.captures
-                .first()
-                .is_some_and(|capture| capture.id.starts_with("VID_"))
-        });
-        let clip = app
-            .captures
-            .iter()
-            .find(|capture| capture.id.starts_with("VID_"))
-            .expect("finalized sample clip");
-        assert!(clip.is_video());
-        assert!(clip.dur_ms > 0, "clip has a real duration");
-        assert!(
-            app.toast
-                .as_deref()
-                .unwrap_or("")
-                .starts_with("Video saved")
-        );
-    }
-
-    #[test]
-    fn recording_requests_frames_and_reduced_motion_uses_a_wake_deadline() {
-        let (mut app, mut doc, root) = sample_app();
-        app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
-        app.apply(Action::Shutter, &mut doc, &root);
-        assert!(Widget::needs_animation_frame(&app));
-        app.set_motion_reduced(true);
-        assert!(!Widget::needs_animation_frame(&app));
-        assert!(Widget::next_wake_deadline(&app).is_some());
-    }
-
-    #[test]
-    fn disk_video_recording_writes_a_real_avi() {
-        let dir = std::env::temp_dir().join(format!("camera-vidrec-test-{}", std::process::id()));
-        let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
-        app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
-
-        // A frame arrives, then record: start seeds with it, further frames are
-        // fed straight into the encoder.
-        app.push_camera_frame(frame::viewfinder(0, 128, 96));
-        assert!(app.feed_active());
-        app.apply(Action::Shutter, &mut doc, &root); // start
-        assert!(app.is_recording());
-        for i in 1..6u8 {
-            app.push_camera_frame(frame::viewfinder(i % 6, 128, 96));
-        }
-        app.apply(Action::Shutter, &mut doc, &root); // stop → write clip
-        assert!(!app.is_recording());
-
-        sync_until(&mut app, &mut doc, &root, |app| app.captures.len() == 1);
-
-        // Exactly one real AVI on disk; it's a RIFF/AVI container that probes.
-        let avis: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x == "avi"))
-            .collect();
-        assert_eq!(avis.len(), 1, "recording wrote exactly one AVI");
-        let bytes = std::fs::read(avis[0].path()).unwrap();
-        assert_eq!(&bytes[0..4], b"RIFF");
-        assert_eq!(&bytes[8..12], b"AVI ");
-        let (w, h, dur) = crate::video::probe_avi(&avis[0].path()).expect("probe recorded clip");
-        assert_eq!((w, h), (128, 96));
-        assert!(dur > 0);
-
-        // Recent captures rescans it as a video with dimensions + duration.
-        assert_eq!(app.captures.len(), 1);
-        assert!(app.captures[0].is_video());
-        assert_eq!((app.captures[0].w, app.captures[0].h), (128, 96));
-        assert!(app.captures[0].dur_ms > 0);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn disk_video_record_without_feed_is_honest() {
-        let dir =
-            std::env::temp_dir().join(format!("camera-vidrec-noframe-{}", std::process::id()));
-        let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        sync_until(&mut app, &mut doc, &root, |_| true);
-        app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
-        assert!(!app.feed_active());
-        app.apply(Action::Shutter, &mut doc, &root);
-        assert!(!app.is_recording(), "no feed → recording never starts");
-        assert_eq!(app.toast.as_deref(), Some("Connect a camera to record"));
-        assert!(!dir.exists());
-    }
-
-    #[test]
-    fn cycle_facing_and_persist() {
-        let (mut app, mut doc, root) = sample_app();
-        assert_eq!(app.facing, Facing::Back);
-        app.apply(Action::CycleFacing, &mut doc, &root);
-        assert_eq!(app.facing, Facing::Front);
-        assert_eq!(doc::read_facing(&doc, &root), Facing::Front);
-    }
-
-    #[test]
-    fn toggle_grid_persists_to_settings() {
-        let (mut app, mut doc, root) = sample_app();
-        let before = app.settings.grid;
-        app.apply(Action::ToggleGrid, &mut doc, &root);
-        assert_eq!(app.settings.grid, !before);
-        assert_eq!(doc::read_settings(&doc, &root).grid, !before);
-        let dispatched = app
-            .test_last_dispatched()
-            .expect("grid control dispatches a canonical Camera action");
-        let action: crate::actions::CameraAction =
-            serde_json::from_slice(&dispatched.payload).expect("Camera action payload");
-        assert_eq!(
-            action,
-            crate::actions::CameraAction::SetGrid { on: !before }
-        );
-    }
-
-    #[test]
-    fn scan_action_records_history() {
-        let mut app = CameraApp::sample();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root); // decodes the sample poster → scanned set
-        // Force the scanner to decode by rendering once would need a GPU; the
-        // sample scanner frame is produced lazily on draw, so seed a scanned
-        // code directly to exercise the action path.
-        app.scanned = Some(ScannedCode {
-            raw: SCAN_PAYLOAD.to_string(),
-            kind: classify(SCAN_PAYLOAD),
-            symbology: "QR Code".into(),
-            corners: [(0.0, 0.0); 4],
-        });
-        app.apply(Action::Scan(0), &mut doc, &root);
-        let scans = doc::read_scans(&doc, &root);
-        assert_eq!(scans.len(), 1);
-        assert_eq!(scans[0].raw, SCAN_PAYLOAD);
-        assert_eq!(app.scans.len(), 1);
-    }
-
-    #[test]
-    fn wifi_scan_parses_and_primary_action_copies_password() {
-        // The Wi-Fi payload is parsed into its fields and the primary action
-        // ("Connect") copies the password — the parse+copy path, end to end.
-        let payload = "WIFI:T:WPA2;S:Tilo Lounge;P:welcome-aboard;H:false;;";
-        let kind = classify(payload);
-        match &kind {
-            CodeKind::Wifi {
-                ssid,
-                auth,
-                password,
-                hidden,
-            } => {
-                assert_eq!(ssid, "Tilo Lounge");
-                assert_eq!(auth, "WPA2");
-                assert_eq!(password, "welcome-aboard");
-                assert!(!hidden);
-                assert_eq!(kind.actions()[0], "Connect");
-            }
-            other => panic!("expected wifi, got {other:?}"),
-        }
-        let mut app = CameraApp::sample();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
-        app.scanned = Some(ScannedCode {
-            raw: payload.to_string(),
-            kind,
-            symbology: "QR Code".into(),
-            corners: [(0.0, 0.0); 4],
-        });
-        app.apply(Action::Scan(0), &mut doc, &root); // "Connect"
-        assert_eq!(app.toast.as_deref(), Some("Wi-Fi password copied"));
-    }
-
-    #[test]
-    fn resolution_cycles() {
-        let (mut app, mut doc, root) = sample_app();
-        assert_eq!(app.settings.resolution, Resolution::R12MP);
-        app.apply(Action::CycleResolution, &mut doc, &root);
-        assert_eq!(app.settings.resolution, Resolution::R4K);
     }
 
     /// Run the full five-pass frame (sync → layout → draw) for `app` at a
@@ -7690,391 +6761,6 @@ mod tests {
         );
     }
 
-    /// corrected-review-1 (2026-09-15) camera P2: at 200% text the "12 MP /
-    /// HDR / Timer" labels ran below their 30 px pills and "Photo" below its
-    /// selected segment. Capsules now grow from the measured label line, so
-    /// every painted control must contain its label at 1× and 2×, and the
-    /// four floating corner controls must sit on one edge inset.
-    #[test]
-    fn viewfinder_capsules_contain_their_labels_at_accessibility_scale() {
-        // Tap regions are the painted rect grown to the 44 px touch minimum
-        // around its centre (`push_tap_region`): anything taller than 44 is
-        // the painted capsule itself, and centres are always painted centres.
-        const TOUCH_MIN: f64 = 44.0;
-        for scale in [1.0_f32, 2.0] {
-            let (mut app, mut doc, root) = sample_app();
-            render_at_scaled(&mut app, &mut doc, &root, 1366.0, 768.0, scale);
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(scale);
-            let pill_label_h = f64::from(tr.measure("HDR", CTRL_PILL_LABEL_SIZE, None).1);
-            let mode_label_h = f64::from(tr.measure("Photo", MODE_LABEL_SIZE, None).1);
-            let tree = app.accessibility().expect("camera has a semantic window");
-            let bounds_of = |target: &str| -> Rect {
-                tree.children
-                    .iter()
-                    .find(|node| node.action_target.as_deref() == Some(target))
-                    .and_then(|node| node.bounds)
-                    .map_or_else(
-                        || panic!("{target} is a painted control"),
-                        ui::a11y::AccessBounds::to_rect,
-                    )
-            };
-            let photo = bounds_of("camera.mode:photo");
-            let shutter = bounds_of("camera.shutter");
-            let pill = bounds_of("camera.resolution");
-            if (scale - 1.0).abs() < f32::EPSILON {
-                // 1× keeps the authored 30 / 34 px capsules (both under the
-                // touch minimum, so their regions read exactly 44) and the
-                // 34 px switcher ends `ACTION_GAP` above the shutter's top
-                // edge, so the two 44 px tap boxes never overlap (HIG §7).
-                assert!((pill.height() - TOUCH_MIN).abs() < 0.5, "1× pill: {pill:?}");
-                assert!(
-                    (photo.height() - TOUCH_MIN).abs() < 0.5,
-                    "1× segment: {photo:?}"
-                );
-                assert!(
-                    (photo.center().y + MODE_SWITCHER_MIN_H / 2.0 + ACTION_GAP - shutter.y0).abs()
-                        < 0.5,
-                    "1×: switcher centre {photo:?} puts its bottom `s3` above the shutter {shutter:?}"
-                );
-                assert!(
-                    shutter.y0 - photo.y1 >= step(Spacing::BASE.s1),
-                    "1×: the switcher's tap box {photo:?} keeps a token gap to the shutter's {shutter:?}"
-                );
-            } else {
-                // 2×: the measured label lines exceed the minima, so the grown
-                // capsules are what the regions report — and they contain the
-                // labels with their padding, bottom edge still on the shutter.
-                let target = "camera.resolution";
-                let pill = bounds_of(target);
-                assert!(
-                    pill.height() + 0.5 >= pill_label_h + CTRL_PILL_PAD_Y * 2.0,
-                    "2×: {target} pill {pill:?} cannot contain a {pill_label_h} px label"
-                );
-                assert!(
-                    photo.height() + 0.5 >= mode_label_h + MODE_LABEL_PAD_Y * 2.0,
-                    "2×: mode segment {photo:?} cannot contain a {mode_label_h} px label"
-                );
-                assert!(
-                    (shutter.y0 - photo.y1 - ACTION_GAP).abs() < 0.5,
-                    "2×: switcher {photo:?} is bottom-anchored `s3` above the shutter {shutter:?}"
-                );
-            }
-            // Corner controls share one edge inset (checked through their
-            // painted centres, which touch inflation never moves).
-            let photos = bounds_of("camera.open-photos");
-            let lens = bounds_of("camera.facing");
-            let settings = bounds_of("camera.nav:settings");
-            assert!(
-                (photos.center().x - (app.rect.x1 - EDGE - 58.0)).abs() < 0.5,
-                "Photos handoff on the top control row: {photos:?}"
-            );
-            assert!(
-                (lens.center().x - (app.rect.x1 - EDGE - 26.0)).abs() < 0.5,
-                "lens switch (r 26) on EDGE: {lens:?}"
-            );
-            assert!(
-                (settings.center().x - (app.rect.x1 - EDGE - 16.0)).abs() < 0.5,
-                "settings (r 16) on EDGE: {settings:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn large_text_mode_switcher_keeps_each_destination_separate() {
-        let (mut app, mut doc, root) = sample_app();
-        render_with_theme(
-            &mut app,
-            &mut doc,
-            &root,
-            390.0,
-            844.0,
-            &Theme::dark().with_text_scale(2.0),
-        );
-
-        let tree = app.accessibility().expect("camera accessibility tree");
-        let bounds_for = |target| {
-            tree.children
-                .iter()
-                .find(|node| node.action_target.as_deref() == Some(target))
-                .and_then(|node| node.bounds)
-                .expect("mode-switcher destination is exposed")
-        };
-        let photo = bounds_for("camera.mode:photo");
-        let video = bounds_for("camera.mode:video");
-        let codes = bounds_for("camera.nav:scanner");
-        let documents = bounds_for("camera.nav:document");
-
-        assert!(
-            photo.y1 - photo.y0 >= 64.0,
-            "200% text gets a full-height segmented touch target"
-        );
-        assert!(photo.x1 <= video.x0);
-        assert!(video.x1 <= codes.x0);
-        assert!(codes.x1 <= documents.x0);
-        assert!(documents.x1 <= app.rect.x1);
-    }
-
-    #[test]
-    fn resize_reflows_the_same_instance() {
-        // The breakpoint must be re-derived from the current width every frame:
-        // one instance rendered wide THEN narrow must reflow, not stay frozen
-        // at the first frame's layout.
-        let mut app = CameraApp::with(Storage::Sample, Screen::Scanner);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-
-        render_at(&mut app, &mut doc, &root, 1280.0, 720.0);
-        assert_eq!(app.screen, Screen::Scanner);
-        let wide_w = app.scan_view.as_ref().expect("wide viewfinder").0;
-        assert!(app.rect.width() >= 1279.0);
-
-        render_at(&mut app, &mut doc, &root, 560.0, 720.0);
-        let narrow_w = app.scan_view.as_ref().expect("narrow viewfinder").0;
-        assert!(app.rect.width() <= 561.0, "rect tracked the resize");
-
-        // The viewfinder image was rebuilt for the narrower width — proof the
-        // layout followed the resize rather than caching the first frame.
-        assert!(
-            narrow_w < wide_w,
-            "viewfinder reflowed {wide_w} -> {narrow_w}"
-        );
-    }
-
-    #[test]
-    fn accessibility_exports_named_controls_from_the_painted_hit_map() {
-        let (mut app, mut doc, root) = sample_app();
-        render_at(&mut app, &mut doc, &root, 900.0, 700.0);
-        let tree = app.accessibility().expect("camera has a semantic window");
-        assert_eq!(tree.role, Role::Window);
-        assert_eq!(tree.name.as_deref(), Some("Camera"));
-        assert!(tree.children.iter().any(|node| {
-            node.name.as_deref() == Some("Take photo")
-                && node.role == Role::Button
-                && node.action_target.as_deref() == Some("camera.shutter")
-        }));
-        assert!(tree.children.iter().any(|node| {
-            node.name.as_deref() == Some("Open latest capture in Photos")
-                && node.role == Role::Button
-                && node.action_target.as_deref() == Some("camera.open-recent-capture")
-        }));
-        assert!(tree.children.iter().any(|node| {
-            node.name.as_deref() == Some("Open Photos to browse your library")
-                && node.role == Role::Button
-                && node.action_target.as_deref() == Some("camera.open-photos")
-        }));
-        assert!(tree.children.iter().all(|node| node.bounds.is_some()));
-    }
-
-    #[test]
-    fn browse_photos_uses_the_typed_owner_handoff_without_a_gallery() {
-        let (mut app, mut doc, root) = sample_app();
-        render_at(&mut app, &mut doc, &root, 900.0, 700.0);
-        assert!(app.perform_semantic_action(
-            "camera.open-photos",
-            &A11yAction::Activate,
-            &mut doc,
-            &root,
-        ));
-        let invocation = Widget::take_control_invocation(&mut app)
-            .expect("Photos browse emits a typed external invocation");
-        assert_eq!(invocation.address.resource, "camera.capture");
-        assert_eq!(invocation.address.action, "open-photos");
-        assert!(invocation.arguments.is_empty());
-        assert!(
-            app.captures.len() <= 1,
-            "Camera still owns no gallery cache"
-        );
-    }
-
-    #[test]
-    fn capture_switcher_exposes_document_capture_without_a_gallery_surface() {
-        let (mut app, mut doc, root) = sample_app();
-        render_at(&mut app, &mut doc, &root, 1_200.0, 760.0);
-        let tree = app
-            .accessibility()
-            .expect("camera has semantic capture controls");
-        assert!(tree.children.iter().any(|node| {
-            node.name.as_deref() == Some("Open Documents")
-                && node.action_target.as_deref() == Some("camera.nav:document")
-        }));
-        assert!(tree.children.iter().all(|node| {
-            !node
-                .action_target
-                .as_deref()
-                .is_some_and(|target| target.contains("gallery") || target.contains("library"))
-        }));
-    }
-
-    #[test]
-    fn accessibility_activation_reuses_camera_action_dispatch() {
-        let (mut app, mut doc, root) = sample_app();
-        render_at(&mut app, &mut doc, &root, 900.0, 700.0);
-        let before = app.captures[0].id.clone();
-        assert!(app.perform_semantic_action(
-            "camera.shutter",
-            &A11yAction::Activate,
-            &mut doc,
-            &root,
-        ));
-        assert_eq!(app.captures.len(), 1);
-        assert_ne!(app.captures[0].id, before);
-    }
-
-    #[test]
-    fn cancelled_capture_invocation_cannot_publish_or_leave_a_local_projection() {
-        let dir = std::env::temp_dir().join(format!(
-            "camera-cancel-capture-{}-{}",
-            std::process::id(),
-            now_secs()
-        ));
-        std::fs::remove_dir_all(&dir).ok();
-        let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        sync_until(&mut app, &mut doc, &root, |_| true);
-        assert!(app.push_camera_frame(frame::viewfinder(1, 64, 48)));
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&crate::actions::CameraOperation::Capture).unwrap();
-        assert!(matches!(
-            Widget::start_resource_operation_with_document(
-                &mut app,
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CAMERA_OPERATION_TYPE,
-                &payload,
-                &mut doc,
-                &root,
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        ));
-        assert!(matches!(
-            Widget::poll_resource_operation(&mut app, invocation, true, &doc, &root),
-            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-        ));
-        for _ in 0..150 {
-            app.sync(&mut doc, &root);
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(doc::read_recent_capture(&doc, &root).is_none());
-        assert!(std::fs::read_dir(&dir).map_or(true, |entries| {
-            entries
-                .flatten()
-                .all(|entry| entry.path().extension().is_none_or(|ext| ext != "jpg"))
-        }));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn sample_document_capture_reports_completion_only_after_adding_the_page() {
-        let mut app = CameraApp::with(Storage::Sample, Screen::Document);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
-        assert!(app.document_scan.pages.is_empty());
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&crate::actions::CameraOperation::CaptureDocumentPage)
-            .expect("document capture payload");
-        let result = Widget::start_resource_operation_with_document(
-            &mut app,
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::CAMERA_OPERATION_TYPE,
-            &payload,
-            &mut doc,
-            &root,
-        )
-        .expect("sample capture succeeds");
-        assert!(matches!(
-            result,
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert_eq!(app.document_scan.pages.len(), 1);
-    }
-
-    #[test]
-    fn cancelled_video_invocation_cannot_publish_or_leave_a_local_projection() {
-        let dir = std::env::temp_dir().join(format!(
-            "camera-cancel-video-{}-{}",
-            std::process::id(),
-            now_secs()
-        ));
-        std::fs::remove_dir_all(&dir).ok();
-        let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        sync_until(&mut app, &mut doc, &root, |_| true);
-        app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
-        assert!(app.push_camera_frame(frame::viewfinder(1, 128, 96)));
-        app.apply(Action::Shutter, &mut doc, &root);
-        for seed in 2..8 {
-            assert!(app.push_camera_frame(frame::viewfinder(seed, 128, 96)));
-        }
-
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&crate::actions::CameraOperation::ToggleRecording)
-            .expect("video operation payload");
-        assert!(matches!(
-            Widget::start_resource_operation_with_document(
-                &mut app,
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CAMERA_OPERATION_TYPE,
-                &payload,
-                &mut doc,
-                &root,
-            )
-            .expect("accepted video finalization"),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        ));
-        assert!(matches!(
-            Widget::poll_resource_operation(&mut app, invocation, true, &doc, &root),
-            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-        ));
-        for _ in 0..200 {
-            app.sync(&mut doc, &root);
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(doc::read_recent_capture(&doc, &root).is_none());
-        assert!(std::fs::read_dir(&dir).map_or(true, |entries| {
-            entries
-                .flatten()
-                .all(|entry| entry.path().extension().is_none_or(|ext| ext != "avi"))
-        }));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn compact_mode_switcher_stays_within_the_viewport() {
-        let (mut app, mut doc, root) = sample_app();
-        render_at(&mut app, &mut doc, &root, 260.0, 700.0);
-        let tree = app.accessibility().expect("camera has a semantic window");
-        let mode_controls: Vec<_> = tree
-            .children
-            .iter()
-            .filter(|node| {
-                node.role == Role::RadioButton
-                    && node
-                        .action_target
-                        .as_deref()
-                        .is_some_and(|target| target.starts_with("camera.mode:"))
-            })
-            .collect();
-        assert_eq!(mode_controls.len(), 2, "Photo and Video are reachable");
-        assert!(mode_controls.iter().all(|node| {
-            let bounds = node.bounds.expect("painted control has bounds");
-            bounds.x0 >= app.rect.x0 && bounds.x1 <= app.rect.x1
-        }));
-    }
-
-    #[test]
-    fn lens_label_never_reads_as_navigation() {
-        // The lens selector caption must not be the word "Back".
-        assert_eq!(Facing::Back.label(), "Rear");
-        assert_ne!(Facing::Back.label(), "Back");
-    }
-
     fn wheel(dy: f32) -> WindowEvent {
         WindowEvent::MouseWheel {
             device_id: unsafe { std::mem::zeroed() },
@@ -8104,124 +6790,1441 @@ mod tests {
     }
 
     #[test]
-    fn wheel_scrolls_settings() {
-        let (mut app, mut doc, root) = sample_app();
-        app.apply(Action::Nav(Screen::Settings), &mut doc, &root);
-        assert!(drive(&mut app, &wheel(-2.0), &mut doc, &root));
-        assert!(app.settings_scroll > 0.0);
-    }
-
-    #[test]
-    fn settings_sheet_needs_scroll_on_short_windows() {
-        // On a short window the whole sheet must remain reachable: the max
-        // scroll equals how far the content overflows the viewport.
-        let total = CameraApp::settings_total_height(&Theme::dark());
-        assert!(
-            (total - 670.0).abs() < 1.0,
-            "settings height ~670, got {total}"
-        );
-        let short = 560.0;
-        assert!(total - short > 100.0, "last rows are below a 560px fold");
-        let large_type = CameraApp::settings_total_height(&Theme::dark().with_text_scale(2.0));
-        assert!(
-            large_type > total + 250.0,
-            "large text rows need independent vertical controls"
-        );
-    }
-
-    #[test]
-    fn malformed_or_exhausted_frames_cannot_replace_the_current_frame() {
-        let (mut app, _doc, _root) = sample_app();
-        assert!(app.push_camera_frame(frame::viewfinder(1, 32, 24)));
-        let prior_generation = app.frame_gen;
-        let prior = app.latest_frame.as_ref().unwrap().rgba.clone();
-        assert!(!app.push_camera_frame(FrameBuf {
-            rgba: vec![0; 3],
-            w: 32,
-            h: 24,
-        }));
-        assert_eq!(app.frame_gen, prior_generation);
-        assert_eq!(app.latest_frame.as_ref().unwrap().rgba, prior);
-
-        app.frame_gen = u64::MAX;
-        assert!(!app.push_camera_frame(frame::viewfinder(2, 32, 24)));
-        assert_eq!(app.frame_gen, u64::MAX);
-        assert_eq!(app.latest_frame.as_ref().unwrap().rgba, prior);
-    }
-
-    #[test]
-    fn portal_selected_image_decodes_a_real_qr_without_media_indexing() {
-        // Rasterize a real QR to a PNG on disk, then prove the scanner decodes
-        // it through the production code path — no camera involved.
-        let payload = "https://example.test/scanned-from-a-saved-photo";
-        let m = crate::scan::encode(payload).expect("encode");
-        let (scale, quiet) = (8usize, 4usize);
-        let dim = (m.size + quiet * 2) * scale;
-        let mut rgba = vec![255u8; dim * dim * 4];
-        for my in 0..m.size {
-            for mx in 0..m.size {
-                if !m.is_dark(mx, my) {
-                    continue;
-                }
-                for dy in 0..scale {
-                    for dx in 0..scale {
-                        let px = (mx + quiet) * scale + dx;
-                        let py = (my + quiet) * scale + dy;
-                        let i = (py * dim + px) * 4;
-                        rgba[i] = 17;
-                        rgba[i + 1] = 17;
-                        rgba[i + 2] = 17;
-                    }
+    #[expect(
+        clippy::float_cmp,
+        reason = "the segment width is computed by the same expression from the same measurement, so it must match exactly; the stage geometry pins authored whole-pixel constants, which are exact in binary floating point"
+    )]
+    fn viewfinder_layout_holds_its_controls_at_every_size_and_text_scale() {
+        // Phase `mode_switcher_segments_hold_their_measured_labels_at_2x`.
+        // 2026-09-17 review: the Photo / Video / Scan capsule split its authored
+        // 240 px into three 80 px segments at every scale, so 200% labels ran
+        // into each other. The capsule keeps 240 at 1× and takes the measured
+        // labels' width (plus padding) when they need more.
+        {
+            let mut tr = TextRenderer::new();
+            assert_eq!(
+                CameraApp::segmented_min_w(&mut tr, &["Photo", "Video", "Scan"]),
+                3.0 * (f64::from(p::text_w(&mut tr, "Photo", MODE_LABEL_SIZE))
+                    + 2.0 * MODE_LABEL_PAD_X),
+                "the widest label sizes every segment"
+            );
+            for scale in [1.0_f32, 2.0] {
+                let (mut app, mut doc, root) = sample_app();
+                render_at_scaled(&mut app, &mut doc, &root, 800.0, 900.0, scale);
+                let mut tr = TextRenderer::new();
+                tr.set_text_scale(scale);
+                let tree = app.accessibility().expect("camera has a semantic window");
+                let segment = |target: &str| -> Rect {
+                    tree.children
+                        .iter()
+                        .find(|node| node.action_target.as_deref() == Some(target))
+                        .and_then(|node| node.bounds)
+                        .map_or_else(
+                            || panic!("{target} is a painted segment"),
+                            ui::a11y::AccessBounds::to_rect,
+                        )
+                };
+                let photo = segment("camera.mode:photo");
+                let video = segment("camera.mode:video");
+                let scan = segment("camera.nav:scanner");
+                // Tap regions grow narrow segments to the 44 px touch minimum
+                // around their centre, so widths are read from adjacent centres.
+                let seg_w = video.center().x - photo.center().x;
+                assert!(
+                    (scan.center().x - video.center().x - seg_w).abs() < 0.5,
+                    "{scale}×: equal segments {photo:?} {video:?} {scan:?}"
+                );
+                if (scale - 1.0).abs() < f32::EPSILON {
+                    let labels = ["Photo", "Video", "Codes", "Docs"];
+                    let expected = 240.0_f64.max(CameraApp::segmented_min_w(&mut tr, &labels))
+                        / labels.len() as f64;
+                    assert!(
+                        (seg_w - expected).abs() < 0.5,
+                        "1× keeps the authored width unless its four labels need more: {seg_w}"
+                    );
+                } else {
+                    let widest = ["Photo", "Video", "Scan"]
+                        .iter()
+                        .map(|label| f64::from(p::text_w(&mut tr, label, MODE_LABEL_SIZE)))
+                        .fold(0.0_f64, f64::max);
+                    assert!(
+                        seg_w >= widest + 2.0 * MODE_LABEL_PAD_X,
+                        "{scale}×: {seg_w} px segments hold a {widest} px label with padding"
+                    );
                 }
             }
         }
-        let fb = FrameBuf {
-            rgba,
-            w: dim as u32,
-            h: dim as u32,
-        };
+        // Phase `viewfinder_keeps_the_full_stage_at_wide_narrow_and_large_text_sizes`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            let heads = doc.get_heads();
+            render_at(&mut app, &mut doc, &root, 1_100.0, 720.0);
+            assert_eq!(app.rect.width(), 1_100.0);
+            assert!(
+                app.accessibility()
+                    .expect("wide a11y")
+                    .children
+                    .iter()
+                    .any(|node| { node.action_target.as_deref() == Some("camera.open-photos") })
+            );
 
-        let dir = std::env::temp_dir().join(format!("camera-scan-lib-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // Lossless PNG so the QR survives the write for a clean decode.
-        let name = library::write_photo(&dir, &fb, PhotoFormat::Png).unwrap();
+            render_at(&mut app, &mut doc, &root, 390.0, 720.0);
+            assert_eq!(app.rect.width(), 390.0);
+            assert!(
+                app.accessibility()
+                    .expect("narrow a11y")
+                    .children
+                    .iter()
+                    .any(|node| { node.action_target.as_deref() == Some("camera.shutter") })
+            );
+            assert_eq!(doc.get_heads(), heads, "viewfinder layout remains local");
+        }
+        // Phase `viewfinder_capsules_contain_their_labels_at_accessibility_scale`.
+        // corrected-review-1 (2026-09-15) camera P2: at 200% text the "12 MP /
+        // HDR / Timer" labels ran below their 30 px pills and "Photo" below its
+        // selected segment. Capsules now grow from the measured label line, so
+        // every painted control must contain its label at 1× and 2×, and the
+        // four floating corner controls must sit on one edge inset.
+        {
+            // Tap regions are the painted rect grown to the 44 px touch minimum
+            // around its centre (`push_tap_region`): anything taller than 44 is
+            // the painted capsule itself, and centres are always painted centres.
+            const TOUCH_MIN: f64 = 44.0;
+            for scale in [1.0_f32, 2.0] {
+                let (mut app, mut doc, root) = sample_app();
+                render_at_scaled(&mut app, &mut doc, &root, 1366.0, 768.0, scale);
+                let mut tr = TextRenderer::new();
+                tr.set_text_scale(scale);
+                let pill_label_h = f64::from(tr.measure("HDR", CTRL_PILL_LABEL_SIZE, None).1);
+                let mode_label_h = f64::from(tr.measure("Photo", MODE_LABEL_SIZE, None).1);
+                let tree = app.accessibility().expect("camera has a semantic window");
+                let bounds_of = |target: &str| -> Rect {
+                    tree.children
+                        .iter()
+                        .find(|node| node.action_target.as_deref() == Some(target))
+                        .and_then(|node| node.bounds)
+                        .map_or_else(
+                            || panic!("{target} is a painted control"),
+                            ui::a11y::AccessBounds::to_rect,
+                        )
+                };
+                let photo = bounds_of("camera.mode:photo");
+                let shutter = bounds_of("camera.shutter");
+                let pill = bounds_of("camera.resolution");
+                if (scale - 1.0).abs() < f32::EPSILON {
+                    // 1× keeps the authored 30 / 34 px capsules (both under the
+                    // touch minimum, so their regions read exactly 44) and the
+                    // 34 px switcher ends `ACTION_GAP` above the shutter's top
+                    // edge, so the two 44 px tap boxes never overlap (HIG §7).
+                    assert!((pill.height() - TOUCH_MIN).abs() < 0.5, "1× pill: {pill:?}");
+                    assert!(
+                        (photo.height() - TOUCH_MIN).abs() < 0.5,
+                        "1× segment: {photo:?}"
+                    );
+                    assert!(
+                        (photo.center().y + MODE_SWITCHER_MIN_H / 2.0 + ACTION_GAP - shutter.y0)
+                            .abs()
+                            < 0.5,
+                        "1×: switcher centre {photo:?} puts its bottom `s3` above the shutter {shutter:?}"
+                    );
+                    assert!(
+                        shutter.y0 - photo.y1 >= step(Spacing::BASE.s1),
+                        "1×: the switcher's tap box {photo:?} keeps a token gap to the shutter's {shutter:?}"
+                    );
+                } else {
+                    // 2×: the measured label lines exceed the minima, so the grown
+                    // capsules are what the regions report — and they contain the
+                    // labels with their padding, bottom edge still on the shutter.
+                    let target = "camera.resolution";
+                    let pill = bounds_of(target);
+                    assert!(
+                        pill.height() + 0.5 >= pill_label_h + CTRL_PILL_PAD_Y * 2.0,
+                        "2×: {target} pill {pill:?} cannot contain a {pill_label_h} px label"
+                    );
+                    assert!(
+                        photo.height() + 0.5 >= mode_label_h + MODE_LABEL_PAD_Y * 2.0,
+                        "2×: mode segment {photo:?} cannot contain a {mode_label_h} px label"
+                    );
+                    assert!(
+                        (shutter.y0 - photo.y1 - ACTION_GAP).abs() < 0.5,
+                        "2×: switcher {photo:?} is bottom-anchored `s3` above the shutter {shutter:?}"
+                    );
+                }
+                // Corner controls share one edge inset (checked through their
+                // painted centres, which touch inflation never moves).
+                let photos = bounds_of("camera.open-photos");
+                let lens = bounds_of("camera.facing");
+                let settings = bounds_of("camera.nav:settings");
+                assert!(
+                    (photos.center().x - (app.rect.x1 - EDGE - 58.0)).abs() < 0.5,
+                    "Photos handoff on the top control row: {photos:?}"
+                );
+                assert!(
+                    (lens.center().x - (app.rect.x1 - EDGE - 26.0)).abs() < 0.5,
+                    "lens switch (r 26) on EDGE: {lens:?}"
+                );
+                assert!(
+                    (settings.center().x - (app.rect.x1 - EDGE - 16.0)).abs() < 0.5,
+                    "settings (r 16) on EDGE: {settings:?}"
+                );
+            }
+        }
+        // Phase `large_text_mode_switcher_keeps_each_destination_separate`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            render_with_theme(
+                &mut app,
+                &mut doc,
+                &root,
+                390.0,
+                844.0,
+                &Theme::dark().with_text_scale(2.0),
+            );
 
-        let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Scanner);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
-        assert!(!app.feed_active(), "no camera in the test env");
-        assert!(
-            app.captures.is_empty(),
-            "Camera does not index the directory"
-        );
-        app.scan_image_path(dir.join(name));
-        sync_until(&mut app, &mut doc, &root, |app| app.pending_scan.is_none());
-        let scanned = app.scanned.clone().expect("the saved QR decodes");
-        assert_eq!(scanned.raw, payload);
-        // The decode is recorded to history like a live scan.
-        assert_eq!(app.scans.len(), 1);
-        assert_eq!(app.scans[0].raw, payload);
-        std::fs::remove_dir_all(&dir).ok();
+            let tree = app.accessibility().expect("camera accessibility tree");
+            let bounds_for = |target| {
+                tree.children
+                    .iter()
+                    .find(|node| node.action_target.as_deref() == Some(target))
+                    .and_then(|node| node.bounds)
+                    .expect("mode-switcher destination is exposed")
+            };
+            let photo = bounds_for("camera.mode:photo");
+            let video = bounds_for("camera.mode:video");
+            let codes = bounds_for("camera.nav:scanner");
+            let documents = bounds_for("camera.nav:document");
+
+            assert!(
+                photo.y1 - photo.y0 >= 64.0,
+                "200% text gets a full-height segmented touch target"
+            );
+            assert!(photo.x1 <= video.x0);
+            assert!(video.x1 <= codes.x0);
+            assert!(codes.x1 <= documents.x0);
+            assert!(documents.x1 <= app.rect.x1);
+        }
+        // Phase `compact_mode_switcher_stays_within_the_viewport`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            render_at(&mut app, &mut doc, &root, 260.0, 700.0);
+            let tree = app.accessibility().expect("camera has a semantic window");
+            let mode_controls: Vec<_> = tree
+                .children
+                .iter()
+                .filter(|node| {
+                    node.role == Role::RadioButton
+                        && node
+                            .action_target
+                            .as_deref()
+                            .is_some_and(|target| target.starts_with("camera.mode:"))
+                })
+                .collect();
+            assert_eq!(mode_controls.len(), 2, "Photo and Video are reachable");
+            assert!(mode_controls.iter().all(|node| {
+                let bounds = node.bounds.expect("painted control has bounds");
+                bounds.x0 >= app.rect.x0 && bounds.x1 <= app.rect.x1
+            }));
+        }
+        // Phase `resize_reflows_the_same_instance`.
+        {
+            // The breakpoint must be re-derived from the current width every frame:
+            // one instance rendered wide THEN narrow must reflow, not stay frozen
+            // at the first frame's layout.
+            let mut app = CameraApp::with(Storage::Sample, Screen::Scanner);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+
+            render_at(&mut app, &mut doc, &root, 1280.0, 720.0);
+            assert_eq!(app.screen, Screen::Scanner);
+            let wide_w = app.scan_view.as_ref().expect("wide viewfinder").0;
+            assert!(app.rect.width() >= 1279.0);
+
+            render_at(&mut app, &mut doc, &root, 560.0, 720.0);
+            let narrow_w = app.scan_view.as_ref().expect("narrow viewfinder").0;
+            assert!(app.rect.width() <= 561.0, "rect tracked the resize");
+
+            // The viewfinder image was rebuilt for the narrower width — proof the
+            // layout followed the resize rather than caching the first frame.
+            assert!(
+                narrow_w < wide_w,
+                "viewfinder reflowed {wide_w} -> {narrow_w}"
+            );
+        }
     }
 
     #[test]
-    fn synchronized_app_searches_and_resolves_canonical_scanner_actions() {
-        let (app, doc, _root) = sample_app();
-        let providers = Widget::search_providers(&app);
-        assert_eq!(providers.len(), 1);
-        let hits = providers[0].search_limited("scan existing image", 4);
-        assert_eq!(hits.len(), 1);
-        let address = hits[0].action_address().expect("search action");
-        assert_eq!(address.action.as_str(), "import-image");
-        let resource = Widget::resource(&app, &doc, address.resource.as_str())
-            .expect("widget resolves search result");
-        assert_eq!(resource.id.as_str(), address.resource);
-        assert!(
-            resource
-                .actions
+    #[expect(
+        clippy::float_cmp,
+        reason = "the geometry pins authored whole-pixel constants, which are exact in binary floating point"
+    )]
+    fn gallery_header_and_settings_sheet_stay_reachable_at_narrow_and_large_text() {
+        // Phase `gallery_chrome_keeps_title_count_filter_and_grid_apart`.
+        // The gallery header used three literal sets that agreed only at 1×:
+        // the title over its count at 200%, fixed 80 px filter segments over
+        // each other, and on a 480 px window the filter on the title's row
+        // running into it. One measured description now places all of it.
+        {
+            let labels = vec!["All", "Photos", "Videos", "Favorites"];
+            // 1× desktop: the authored geometry, filter beside the title.
+            let mut tr = TextRenderer::new();
+            let wide = Rect::new(0.0, 0.0, 1200.0, 800.0);
+            let one = GalleryChrome::measure(&mut tr, wide, 24.0, "9 items", &labels);
+            assert_eq!(one.title_top, 16.0, "{one:?}");
+            assert_eq!(one.count_top, 44.0, "{one:?}");
+            assert_eq!(
+                one.content_top,
+                64.0,
+                "{one:?} (count line {})",
+                p::text_h(&mut tr, "9 items", GalleryChrome::COUNT_SIZE)
+            );
+            assert_eq!(one.filter.y0, 16.0, "1× filter shares the title row");
+            assert_eq!(one.filter.height(), 32.0);
+            assert_eq!(one.filter.width(), 320.0);
+            assert_eq!(one.filter.x1, wide.x1 - 24.0);
+
+            // 480 px: the filter cannot share the title's row without touching
+            // it, so it owns the row under the count and the grid follows it.
+            let phone = Rect::new(0.0, 0.0, 480.0, 900.0);
+            let narrow = GalleryChrome::measure(&mut tr, phone, 24.0, "9 items", &labels);
+            let count_bottom =
+                narrow.count_top + p::text_h(&mut tr, "9 items", GalleryChrome::COUNT_SIZE);
+            assert!(
+                narrow.filter.y0 >= count_bottom,
+                "phone filter {:?} starts below the count line ending at {count_bottom}",
+                narrow.filter
+            );
+            assert!(narrow.content_top >= narrow.filter.y1 + GalleryChrome::GAP);
+
+            // 2×: the count clears the measured title, every filter segment
+            // holds the widest measured label, and the grid clears both.
+            tr.set_text_scale(2.0);
+            let two = GalleryChrome::measure(&mut tr, wide, 24.0, "9 items", &labels);
+            let title_h = p::text_h(&mut tr, "Library", GalleryChrome::TITLE_SIZE);
+            assert!(
+                two.count_top >= two.title_top + title_h,
+                "2× count below the title: {two:?}"
+            );
+            let widest = labels
                 .iter()
-                .any(|action| action.id == "import-image")
-        );
+                .map(|label| f64::from(p::text_w(&mut tr, label, MODE_LABEL_SIZE)))
+                .fold(0.0_f64, f64::max);
+            assert!(
+                two.filter.width() / labels.len() as f64 >= widest + 2.0 * MODE_LABEL_PAD_X,
+                "2× filter segments hold {widest} px labels: {:?}",
+                two.filter
+            );
+            let count_bottom =
+                two.count_top + p::text_h(&mut tr, "9 items", GalleryChrome::COUNT_SIZE);
+            assert!(
+                two.content_top >= count_bottom && two.content_top >= two.filter.y1,
+                "2× grid starts below the header and the filter: {two:?}"
+            );
+        }
+        // Phase `settings_sheet_needs_scroll_on_short_windows`.
+        {
+            // On a short window the whole sheet must remain reachable: the max
+            // scroll equals how far the content overflows the viewport.
+            let total = CameraApp::settings_total_height(&Theme::dark());
+            assert!(
+                (total - 670.0).abs() < 1.0,
+                "settings height ~670, got {total}"
+            );
+            let short = 560.0;
+            assert!(total - short > 100.0, "last rows are below a 560px fold");
+            let large_type = CameraApp::settings_total_height(&Theme::dark().with_text_scale(2.0));
+            assert!(
+                large_type > total + 250.0,
+                "large text rows need independent vertical controls"
+            );
+        }
+        // Phase `wheel_scrolls_settings`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            app.apply(Action::Nav(Screen::Settings), &mut doc, &root);
+            assert!(drive(&mut app, &wheel(-2.0), &mut doc, &root));
+            assert!(app.settings_scroll > 0.0);
+        }
+    }
+
+    #[test]
+    fn semantic_controls_are_plainly_named_and_dispatch_camera_actions() {
+        // Phase `detected_label_has_single_space`.
+        {
+            let tag = detected_label("QR Code");
+            assert_eq!(tag, "QR Code detected");
+            assert!(
+                !tag.contains("  "),
+                "detected label must not contain a double space: {tag:?}"
+            );
+        }
+        // Phase `lens_label_never_reads_as_navigation`.
+        {
+            // The lens selector caption must not be the word "Back".
+            assert_eq!(Facing::Back.label(), "Rear");
+            assert_ne!(Facing::Back.label(), "Back");
+        }
+        // Phase `accessibility_exports_named_controls_from_the_painted_hit_map`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            render_at(&mut app, &mut doc, &root, 900.0, 700.0);
+            let tree = app.accessibility().expect("camera has a semantic window");
+            assert_eq!(tree.role, Role::Window);
+            assert_eq!(tree.name.as_deref(), Some("Camera"));
+            assert!(tree.children.iter().any(|node| {
+                node.name.as_deref() == Some("Take photo")
+                    && node.role == Role::Button
+                    && node.action_target.as_deref() == Some("camera.shutter")
+            }));
+            assert!(tree.children.iter().any(|node| {
+                node.name.as_deref() == Some("Open latest capture in Photos")
+                    && node.role == Role::Button
+                    && node.action_target.as_deref() == Some("camera.open-recent-capture")
+            }));
+            assert!(tree.children.iter().any(|node| {
+                node.name.as_deref() == Some("Open Photos to browse your library")
+                    && node.role == Role::Button
+                    && node.action_target.as_deref() == Some("camera.open-photos")
+            }));
+            assert!(tree.children.iter().all(|node| node.bounds.is_some()));
+        }
+        // Phase `capture_switcher_exposes_document_capture_without_a_gallery_surface`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            render_at(&mut app, &mut doc, &root, 1_200.0, 760.0);
+            let tree = app
+                .accessibility()
+                .expect("camera has semantic capture controls");
+            assert!(tree.children.iter().any(|node| {
+                node.name.as_deref() == Some("Open Documents")
+                    && node.action_target.as_deref() == Some("camera.nav:document")
+            }));
+            assert!(tree.children.iter().all(|node| {
+                !node
+                    .action_target
+                    .as_deref()
+                    .is_some_and(|target| target.contains("gallery") || target.contains("library"))
+            }));
+        }
+        // Phase `browse_photos_uses_the_typed_owner_handoff_without_a_gallery`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            render_at(&mut app, &mut doc, &root, 900.0, 700.0);
+            assert!(app.perform_semantic_action(
+                "camera.open-photos",
+                &A11yAction::Activate,
+                &mut doc,
+                &root,
+            ));
+            let invocation = Widget::take_control_invocation(&mut app)
+                .expect("Photos browse emits a typed external invocation");
+            assert_eq!(invocation.address.resource, "camera.capture");
+            assert_eq!(invocation.address.action, "open-photos");
+            assert!(invocation.arguments.is_empty());
+            assert!(
+                app.captures.len() <= 1,
+                "Camera still owns no gallery cache"
+            );
+        }
+        // Phase `accessibility_activation_reuses_camera_action_dispatch`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            render_at(&mut app, &mut doc, &root, 900.0, 700.0);
+            let before = app.captures[0].id.clone();
+            assert!(app.perform_semantic_action(
+                "camera.shutter",
+                &A11yAction::Activate,
+                &mut doc,
+                &root,
+            ));
+            assert_eq!(app.captures.len(), 1);
+            assert_ne!(app.captures[0].id, before);
+        }
+    }
+
+    #[test]
+    fn unavailable_camera_recovery_is_honest_semantic_and_fits_touch_rows() {
+        // Phase `unavailable_camera_recovery_is_semantic_and_has_touch_targets`.
+        {
+            let dir = std::env::temp_dir().join("camera-recovery-test-no-device");
+            let mut app = CameraApp::with(Storage::Disk(dir), Screen::Camera);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            app.sync(&mut doc, &root);
+            app.camera_issue = Some(CameraIssue::PermissionDenied);
+            render_at(&mut app, &mut doc, &root, 320.0, 680.0);
+            let tree = app.accessibility().expect("camera has semantics");
+            let privacy = tree
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Open camera privacy settings"))
+                .expect("privacy recovery action");
+            let refresh = tree
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Refresh available cameras"))
+                .expect("refresh recovery action");
+            for node in [privacy, refresh] {
+                let bounds = node.bounds.expect("recovery has bounds");
+                assert!(bounds.x1 - bounds.x0 >= 44.0 && bounds.y1 - bounds.y0 >= 44.0);
+            }
+            assert!(app.perform_semantic_action(
+                "camera.retry-camera",
+                &A11yAction::Activate,
+                &mut doc,
+                &root,
+            ));
+            // Device discovery is deliberately real. The test host may expose a
+            // `/dev/video*` node (for example, a CI virtual camera), so assert
+            // the honest result for the discovered state rather than pretending
+            // every machine has no hardware.
+            let expected = if app.available_camera_devices().is_empty() {
+                "No cameras found. Connect one, then refresh"
+            } else {
+                "Refreshing camera"
+            };
+            assert_eq!(app.toast.as_deref(), Some(expected));
+        }
+        // Phase `sample_fixture_can_render_the_same_honest_permission_recovery`.
+        {
+            // The screenshot harness uses `Storage::Sample` to avoid both a real
+            // camera and private imagery.  An explicit permission result must
+            // still win over that procedural feed, otherwise visual regressions
+            // would accidentally hide the most important recovery state.
+            let (mut app, mut doc, root) = sample_app();
+            app.camera_issue = Some(CameraIssue::PermissionDenied);
+            assert!(!app.feed_active());
+            render_at(&mut app, &mut doc, &root, 390.0, 844.0);
+            let tree = app.accessibility().expect("camera has semantics");
+            assert!(
+                tree.children
+                    .iter()
+                    .any(|node| { node.name.as_deref() == Some("Open camera privacy settings") })
+            );
+        }
+        // Phase `sample_fixture_can_render_the_honest_no_device_state`.
+        {
+            let (mut app, _doc, _root) = sample_app();
+            app.camera_issue = Some(CameraIssue::NoDevice);
+            assert!(!app.feed_active());
+            assert_eq!(
+                app.no_feed_copy(),
+                (
+                    "No camera connected",
+                    "Connect a camera to start the viewfinder"
+                )
+            );
+        }
+        // Phase `narrow_privacy_recovery_label_fits_a_two_action_row`.
+        {
+            assert_eq!(
+                recovery_button_label(
+                    &Action::OpenCameraPrivacySettings,
+                    "Open privacy settings",
+                    117.0
+                ),
+                "Privacy settings"
+            );
+            assert_eq!(
+                recovery_button_label(
+                    &Action::OpenCameraPrivacySettings,
+                    "Open privacy settings",
+                    160.0
+                ),
+                "Open privacy settings"
+            );
+        }
+    }
+
+    #[test]
+    fn storage_sources_never_fabricate_media_or_capture_without_a_feed() {
+        // Phase `sample_source_populates_without_touching_disk`.
+        {
+            let (app, _doc, _root) = sample_app();
+            assert_eq!(app.screen, Screen::Camera);
+            assert_eq!(app.captures.len(), 1);
+            assert!(app.captures.iter().all(|c| c.path.is_none()));
+        }
+        // Phase `disk_source_starts_empty_and_seeds_no_content`.
+        {
+            // Point at a directory that does not exist → no fabricated media, never
+            // fabricated samples.
+            let dir = std::env::temp_dir().join("camera-empty-lib-xyz-does-not-exist");
+            let mut app = CameraApp::with(Storage::Disk(dir), Screen::Camera);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            sync_until(&mut app, &mut doc, &root, |_| true);
+            assert!(app.captures.is_empty());
+            assert!(app.scans.is_empty());
+        }
+        // Phase `disk_shutter_without_frame_is_honest`.
+        {
+            let dir =
+                std::env::temp_dir().join(format!("camera-noframe-test-{}", std::process::id()));
+            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            sync_until(&mut app, &mut doc, &root, |_| true);
+            assert!(!app.feed_active());
+            app.apply(Action::Shutter, &mut doc, &root);
+            // Nothing saved; the toast tells the truth.
+            assert!(app.captures.is_empty());
+            assert_eq!(app.toast.as_deref(), Some("Connect a camera to capture"));
+            assert!(
+                !dir.exists(),
+                "no directory created when there is nothing to save"
+            );
+        }
+        // Phase `disk_video_record_without_feed_is_honest`.
+        {
+            let dir =
+                std::env::temp_dir().join(format!("camera-vidrec-noframe-{}", std::process::id()));
+            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            sync_until(&mut app, &mut doc, &root, |_| true);
+            app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+            assert!(!app.feed_active());
+            app.apply(Action::Shutter, &mut doc, &root);
+            assert!(!app.is_recording(), "no feed → recording never starts");
+            assert_eq!(app.toast.as_deref(), Some("Connect a camera to record"));
+            assert!(!dir.exists());
+        }
+    }
+
+    #[test]
+    fn photo_shutter_captures_admitted_frames_and_replaces_the_recent_handoff() {
+        // Phase `self_timer_is_a_local_cancellable_countdown_before_capture`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            app.apply(Action::SetTimer(Timer::S3), &mut doc, &root);
+            let before = app.captures.len();
+            let before_id = app.captures.first().map(|capture| capture.id.clone());
+            app.apply(Action::Shutter, &mut doc, &root);
+            assert!(app.is_counting_down());
+            assert_eq!(app.captures.len(), before, "timer does not capture early");
+            app.countdown.as_mut().expect("armed timer").due = Instant::now();
+            app.sync(&mut doc, &root);
+            assert!(!app.is_counting_down());
+            assert_eq!(app.captures.len(), 1);
+            assert_ne!(
+                app.captures.first().map(|capture| capture.id.clone()),
+                before_id
+            );
+
+            app.apply(Action::Shutter, &mut doc, &root);
+            assert!(app.is_counting_down());
+            app.apply(Action::Shutter, &mut doc, &root);
+            assert!(!app.is_counting_down(), "second shutter cancels safely");
+        }
+        // Phase `sample_shutter_replaces_the_recent_handoff`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            let before = app.captures[0].id.clone();
+            app.apply(Action::Shutter, &mut doc, &root);
+            assert_eq!(app.captures.len(), 1);
+            assert_ne!(app.captures[0].id, before);
+            assert!(app.toast.is_some());
+        }
+        // Phase `disk_shutter_writes_a_real_jpeg_via_handle_event`.
+        {
+            use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+            use winit::keyboard::{Key, NamedKey, PhysicalKey};
+
+            let dir =
+                std::env::temp_dir().join(format!("camera-shutter-test-{}", std::process::id()));
+            std::fs::remove_dir_all(&dir).ok();
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            sync_until(&mut app, &mut doc, &root, |_| true);
+            assert_eq!(app.screen, Screen::Camera);
+            assert_eq!(
+                app.settings.photo_format,
+                PhotoFormat::Jpeg,
+                "default format is JPEG"
+            );
+            // Simulate a camera frame arriving.
+            app.push_camera_frame(frame::viewfinder(1, 64, 48));
+
+            // Press Space through the real event path. `KeyEvent` carries a
+            // non-exhaustive field, so build it via the zeroed-struct idiom used
+            // across the toolkit's own tests.
+            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+            ev.logical_key = Key::Named(NamedKey::Space);
+            ev.physical_key =
+                PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+            ev.location = winit::keyboard::KeyLocation::Standard;
+            ev.state = ElementState::Pressed;
+            ev.repeat = false;
+            ev.text = None;
+            let event = WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            };
+            let mods = Modifiers::default();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(
+                &event,
+                1.0,
+                &mods,
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+            assert!(handled, "space should be handled on the camera screen");
+
+            // Saving is now bounded background work; pump the real sync boundary
+            // until it settles rather than assuming UI event delivery did disk IO.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline
+                && std::fs::read_dir(&dir).map_or(true, |entries| {
+                    !entries.flatten().any(|e| {
+                        e.path().extension().is_some_and(|x| x == "jpg")
+                            && e.metadata().is_ok_and(|m| m.len() >= 2)
+                    })
+                })
+            {
+                app.sync(&mut doc, &root);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            // A real JPEG landed on disk. Camera publishes the portable identity,
+            // not the private local projection path.
+            let files: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.path().extension().is_some_and(|x| x == "jpg"))
+                .collect();
+            assert_eq!(files.len(), 1, "shutter wrote exactly one JPEG");
+            let bytes = std::fs::read(files[0].path()).unwrap();
+            assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "genuine JPEG (SOI marker)");
+            sync_until(&mut app, &mut doc, &root, |app| app.captures.len() == 1);
+            assert_eq!(app.captures.len(), 1);
+            assert!(app.captures[0].path.is_none());
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `malformed_or_exhausted_frames_cannot_replace_the_current_frame`.
+        {
+            let (mut app, _doc, _root) = sample_app();
+            assert!(app.push_camera_frame(frame::viewfinder(1, 32, 24)));
+            let prior_generation = app.frame_gen;
+            let prior = app.latest_frame.as_ref().unwrap().rgba.clone();
+            assert!(!app.push_camera_frame(FrameBuf {
+                rgba: vec![0; 3],
+                w: 32,
+                h: 24,
+            }));
+            assert_eq!(app.frame_gen, prior_generation);
+            assert_eq!(app.latest_frame.as_ref().unwrap().rgba, prior);
+
+            app.frame_gen = u64::MAX;
+            assert!(!app.push_camera_frame(frame::viewfinder(2, 32, 24)));
+            assert_eq!(app.frame_gen, u64::MAX);
+            assert_eq!(app.latest_frame.as_ref().unwrap().rgba, prior);
+        }
+    }
+
+    #[test]
+    fn video_recording_locks_mode_requests_frames_and_saves_a_real_clip() {
+        // Phase `set_mode_persists_and_locks_while_recording`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            assert_eq!(app.mode, CaptureMode::Photo);
+            app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+            assert_eq!(app.mode, CaptureMode::Video);
+            assert_eq!(doc::read_mode(&doc, &root), CaptureMode::Video);
+
+            // Shutter in video mode starts recording; mode can't be flipped while
+            // a clip is in progress.
+            app.apply(Action::Shutter, &mut doc, &root);
+            assert!(app.is_recording());
+            app.apply(Action::SetMode(CaptureMode::Photo), &mut doc, &root);
+            assert_eq!(app.mode, CaptureMode::Video, "mode locked while recording");
+        }
+        // Phase `recording_requests_frames_and_reduced_motion_uses_a_wake_deadline`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+            app.apply(Action::Shutter, &mut doc, &root);
+            assert!(Widget::needs_animation_frame(&app));
+            app.set_motion_reduced(true);
+            assert!(!Widget::needs_animation_frame(&app));
+            assert!(Widget::next_wake_deadline(&app).is_some());
+        }
+        // Phase `sample_video_record_replaces_the_recent_handoff`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+
+            // Start; the hermetic frame-synth runs on each sync tick.
+            app.apply(Action::Shutter, &mut doc, &root);
+            assert!(app.is_recording());
+            for _ in 0..6 {
+                app.sync(&mut doc, &root);
+            }
+            assert!(
+                app.frame_gen >= 6,
+                "sample frames were admitted to the worker"
+            );
+
+            // Stop queues finalization; the bounded worker produces a real clip
+            // before sync registers its canonical capture resource.
+            app.apply(Action::Shutter, &mut doc, &root);
+            assert!(!app.is_recording());
+            sync_until(&mut app, &mut doc, &root, |app| {
+                app.captures
+                    .first()
+                    .is_some_and(|capture| capture.id.starts_with("VID_"))
+            });
+            let clip = app
+                .captures
+                .iter()
+                .find(|capture| capture.id.starts_with("VID_"))
+                .expect("finalized sample clip");
+            assert!(clip.is_video());
+            assert!(clip.dur_ms > 0, "clip has a real duration");
+            assert!(
+                app.toast
+                    .as_deref()
+                    .unwrap_or("")
+                    .starts_with("Video saved")
+            );
+        }
+        // Phase `disk_video_recording_writes_a_real_avi`.
+        {
+            let dir =
+                std::env::temp_dir().join(format!("camera-vidrec-test-{}", std::process::id()));
+            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            app.sync(&mut doc, &root);
+            app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+
+            // A frame arrives, then record: start seeds with it, further frames are
+            // fed straight into the encoder.
+            app.push_camera_frame(frame::viewfinder(0, 128, 96));
+            assert!(app.feed_active());
+            app.apply(Action::Shutter, &mut doc, &root); // start
+            assert!(app.is_recording());
+            for i in 1..6u8 {
+                app.push_camera_frame(frame::viewfinder(i % 6, 128, 96));
+            }
+            app.apply(Action::Shutter, &mut doc, &root); // stop → write clip
+            assert!(!app.is_recording());
+
+            sync_until(&mut app, &mut doc, &root, |app| app.captures.len() == 1);
+
+            // Exactly one real AVI on disk; it's a RIFF/AVI container that probes.
+            let avis: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.path().extension().is_some_and(|x| x == "avi"))
+                .collect();
+            assert_eq!(avis.len(), 1, "recording wrote exactly one AVI");
+            let bytes = std::fs::read(avis[0].path()).unwrap();
+            assert_eq!(&bytes[0..4], b"RIFF");
+            assert_eq!(&bytes[8..12], b"AVI ");
+            let (w, h, dur) =
+                crate::video::probe_avi(&avis[0].path()).expect("probe recorded clip");
+            assert_eq!((w, h), (128, 96));
+            assert!(dur > 0);
+
+            // Recent captures rescans it as a video with dimensions + duration.
+            assert_eq!(app.captures.len(), 1);
+            assert!(app.captures[0].is_video());
+            assert_eq!((app.captures[0].w, app.captures[0].h), (128, 96));
+            assert!(app.captures[0].dur_ms > 0);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn capture_invocations_publish_only_completed_results() {
+        // Phase `cancelled_capture_invocation_cannot_publish_or_leave_a_local_projection`.
+        {
+            let dir = std::env::temp_dir().join(format!(
+                "camera-cancel-capture-{}-{}",
+                std::process::id(),
+                now_secs()
+            ));
+            std::fs::remove_dir_all(&dir).ok();
+            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            sync_until(&mut app, &mut doc, &root, |_| true);
+            assert!(app.push_camera_frame(frame::viewfinder(1, 64, 48)));
+            let invocation = tilo_actions::InvocationId::new();
+            let payload = serde_json::to_vec(&crate::actions::CameraOperation::Capture).unwrap();
+            assert!(matches!(
+                Widget::start_resource_operation_with_document(
+                    &mut app,
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::CAMERA_OPERATION_TYPE,
+                    &payload,
+                    &mut doc,
+                    &root,
+                )
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            ));
+            assert!(matches!(
+                Widget::poll_resource_operation(&mut app, invocation, true, &doc, &root),
+                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+            ));
+            for _ in 0..150 {
+                app.sync(&mut doc, &root);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(doc::read_recent_capture(&doc, &root).is_none());
+            assert!(std::fs::read_dir(&dir).map_or(true, |entries| {
+                entries
+                    .flatten()
+                    .all(|entry| entry.path().extension().is_none_or(|ext| ext != "jpg"))
+            }));
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `cancelled_video_invocation_cannot_publish_or_leave_a_local_projection`.
+        {
+            let dir = std::env::temp_dir().join(format!(
+                "camera-cancel-video-{}-{}",
+                std::process::id(),
+                now_secs()
+            ));
+            std::fs::remove_dir_all(&dir).ok();
+            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            sync_until(&mut app, &mut doc, &root, |_| true);
+            app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+            assert!(app.push_camera_frame(frame::viewfinder(1, 128, 96)));
+            app.apply(Action::Shutter, &mut doc, &root);
+            for seed in 2..8 {
+                assert!(app.push_camera_frame(frame::viewfinder(seed, 128, 96)));
+            }
+
+            let invocation = tilo_actions::InvocationId::new();
+            let payload = serde_json::to_vec(&crate::actions::CameraOperation::ToggleRecording)
+                .expect("video operation payload");
+            assert!(matches!(
+                Widget::start_resource_operation_with_document(
+                    &mut app,
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::CAMERA_OPERATION_TYPE,
+                    &payload,
+                    &mut doc,
+                    &root,
+                )
+                .expect("accepted video finalization"),
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            ));
+            assert!(matches!(
+                Widget::poll_resource_operation(&mut app, invocation, true, &doc, &root),
+                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+            ));
+            for _ in 0..200 {
+                app.sync(&mut doc, &root);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(doc::read_recent_capture(&doc, &root).is_none());
+            assert!(std::fs::read_dir(&dir).map_or(true, |entries| {
+                entries
+                    .flatten()
+                    .all(|entry| entry.path().extension().is_none_or(|ext| ext != "avi"))
+            }));
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `sample_document_capture_reports_completion_only_after_adding_the_page`.
+        {
+            let mut app = CameraApp::with(Storage::Sample, Screen::Document);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            app.sync(&mut doc, &root);
+            assert!(app.document_scan.pages.is_empty());
+            let invocation = tilo_actions::InvocationId::new();
+            let payload = serde_json::to_vec(&crate::actions::CameraOperation::CaptureDocumentPage)
+                .expect("document capture payload");
+            let result = Widget::start_resource_operation_with_document(
+                &mut app,
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::CAMERA_OPERATION_TYPE,
+                &payload,
+                &mut doc,
+                &root,
+            )
+            .expect("sample capture succeeds");
+            assert!(matches!(
+                result,
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
+            assert_eq!(app.document_scan.pages.len(), 1);
+        }
+    }
+
+    #[test]
+    fn document_scanning_captures_edits_and_recognizes_real_pages() {
+        // Phase `document_route_captures_real_session_pages_in_sample_mode`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            app.apply(Action::Nav(Screen::Document), &mut doc, &root);
+            assert_eq!(app.screen, Screen::Document);
+            assert!(app.document_scan.pages.is_empty());
+
+            app.apply(Action::CaptureDocument, &mut doc, &root);
+            assert_eq!(app.document_scan.pages.len(), 1);
+            let page = app.document_scan.pages[0].rendered();
+            assert_eq!((page.width(), page.height()), (1240, 1754));
+            assert_eq!(app.toast.as_deref(), Some("Page 1 captured"));
+
+            app.apply(Action::BeginDocumentCrop, &mut doc, &root);
+            assert!(app.document_crop_editor.is_some());
+            app.document_crop_selection.set(CropSelection {
+                left: 0.1,
+                top: 0.1,
+                right: 0.9,
+                bottom: 0.9,
+            });
+            app.apply(Action::ApplyDocumentCrop, &mut doc, &root);
+            assert!(app.document_crop_editor.is_none());
+            let page = app.document_scan.pages[0].rendered();
+            assert_eq!((page.width(), page.height()), (992, 1404));
+
+            app.apply(Action::RotateDocument, &mut doc, &root);
+            let page = app.document_scan.pages[0].rendered();
+            assert_eq!((page.width(), page.height()), (1404, 992));
+
+            let (sender, receiver) = mpsc::channel();
+            app.document_job = Some(receiver);
+            app.document_job_kind = Some(DocumentJobKind::Recognize);
+            app.apply(Action::RemoveDocumentPage, &mut doc, &root);
+            assert_eq!(app.document_scan.pages.len(), 1, "busy page is stable");
+            sender
+                .send(DocumentJobResult::Recognize {
+                    page: 0,
+                    result: Ok(tilo_ocr::Recognition {
+                        document: tilo_ocr::Document {
+                            words: Vec::new(),
+                            language: "eng".into(),
+                        },
+                        deskew_degrees: Some(-2.5),
+                    }),
+                })
+                .unwrap();
+            app.poll_document_job();
+            assert!(app.document_scan.pages[0].ocr.is_some());
+            assert_eq!(app.document_scan.pages[0].ocr_deskew_degrees, Some(-2.5));
+            assert_eq!(
+                app.toast.as_deref(),
+                Some("Recognized 0 words · Straightened 2.5°")
+            );
+            assert!(app.document_job.is_none());
+
+            app.apply(Action::RemoveDocumentPage, &mut doc, &root);
+            assert!(app.document_scan.pages.is_empty());
+        }
+        // Phase `document_capture_never_falls_back_to_a_different_scanner`.
+        {
+            let (mut app, _doc, _root) = sample_app();
+            app.scanner_devices.push(os_actions::printing::Scanner {
+                device: "sample:office-scanner".into(),
+                description: "Office scanner".into(),
+            });
+            app.selected_scanner = Some("scanner:disconnected".into());
+
+            app.capture_document_page();
+            assert!(app.document_scan.pages.is_empty());
+            assert_eq!(app.toast.as_deref(), Some("Choose which scanner to use"));
+
+            app.selected_scanner = Some("sample:office-scanner".into());
+            app.capture_document_page();
+            assert_eq!(app.document_scan.pages.len(), 1);
+            assert_eq!(app.toast.as_deref(), Some("Page 1 captured"));
+        }
+        // Phase `document_text_status_detects_stale_language_and_copy_uses_real_ocr_text`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            app.apply(Action::CaptureDocument, &mut doc, &root);
+            assert_eq!(app.document_text_status(), "Text not recognized");
+            app.document_scan.pages[0].ocr = Some(tilo_ocr::Document {
+                words: vec![tilo_ocr::Word {
+                    text: "Invoice".into(),
+                    confidence: 98.0,
+                    bounds: tilo_ocr::Bounds {
+                        x: 10,
+                        y: 10,
+                        width: 80,
+                        height: 20,
+                    },
+                    page: 0,
+                    block: 0,
+                    paragraph: 0,
+                    line: 0,
+                    position: 0,
+                }],
+                language: "eng".into(),
+            });
+            assert_eq!(app.document_text_status(), "1 word recognized");
+            app.document_scan.pages[0].ocr_deskew_degrees = Some(1.5);
+            assert_eq!(
+                app.document_text_status(),
+                "1 word recognized · Straightened 1.5°"
+            );
+            app.apply(Action::CopyDocumentText, &mut doc, &root);
+            assert_eq!(ui::clipboard_paste().as_deref(), Some("Invoice"));
+            assert_eq!(app.toast.as_deref(), Some("Recognized text copied"));
+
+            app.document_settings.ocr_language = OcrLanguage::German;
+            assert_eq!(app.document_text_status(), "Language changed; update text");
+        }
+        // Phase `document_ocr_failures_never_expose_engine_diagnostics`.
+        {
+            let (mut app, _, _) = sample_app();
+            let (sender, receiver) = mpsc::channel();
+            app.document_job = Some(receiver);
+            app.document_job_kind = Some(DocumentJobKind::Recognize);
+            sender
+                .send(DocumentJobResult::Recognize {
+                    page: 0,
+                    result: Err(tilo_ocr::Error::Engine(
+                        "/private/receipt.png: tesseract internals".into(),
+                    )),
+                })
+                .unwrap();
+
+            app.poll_document_job();
+            let message = app.toast.as_deref().unwrap();
+            assert!(message.contains("clearer scan"));
+            assert!(!message.contains("/private"));
+            assert!(!message.contains("tesseract"));
+        }
+    }
+
+    #[test]
+    fn document_choices_update_worker_settings_on_touch_release() {
+        // Phase `document_controls_update_the_typed_worker_settings`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            assert_eq!(app.document_settings, DocumentSettings::default());
+            app.scanner_devices.push(os_actions::printing::Scanner {
+                device: "sample:office-scanner".into(),
+                description: "Office scanner".into(),
+            });
+            app.document_choice_anchors = [Rect::new(10.0, 10.0, 140.0, 54.0); 5];
+
+            for (choice, selection) in [
+                (DocumentChoice::Scanner, 1),
+                (DocumentChoice::Resolution, 2),
+                (DocumentChoice::Color, 1),
+                (DocumentChoice::Source, 1),
+                (DocumentChoice::Language, 1),
+            ] {
+                app.apply(Action::OpenDocumentChoice(choice), &mut doc, &root);
+                assert!(app.document_popover.is_open());
+                app.document_popover.select(selection);
+                let selected = app.document_popover.take_selection().unwrap();
+                app.apply_document_choice(selected);
+            }
+
+            assert_eq!(app.document_settings.scan.resolution_dpi, 600);
+            assert_eq!(
+                app.document_settings.scan.color,
+                os_actions::printing::ScanColor::Grayscale
+            );
+            assert_eq!(
+                app.document_settings.scan.source,
+                os_actions::printing::ScanSource::Feeder
+            );
+            assert_eq!(app.document_settings.ocr_language.code(), "deu");
+            assert_eq!(
+                app.selected_scanner.as_deref(),
+                Some("sample:office-scanner")
+            );
+
+            assert_eq!(
+                app.document_popover.items(),
+                &["English", "German", "French", "Spanish"]
+            );
+        }
+        // Phase `touch_activates_document_choices_on_release_and_cancels_after_dragging_off`.
+        {
+            use winit::event::TouchPhase;
+
+            fn touch(phase: TouchPhase, point: Point) -> WindowEvent {
+                WindowEvent::Touch(winit::event::Touch {
+                    device_id: unsafe { std::mem::zeroed() },
+                    phase,
+                    location: winit::dpi::PhysicalPosition::new(point.x, point.y),
+                    force: None,
+                    id: 17,
+                })
+            }
+            fn dispatch(
+                app: &mut CameraApp,
+                event: &WindowEvent,
+                doc: &mut AutoCommit,
+                node: NodeId,
+                tree: &TaffyTree<()>,
+            ) {
+                let mut handled = false;
+                let mut focus = None;
+                app.handle_event(
+                    event,
+                    1.0,
+                    &winit::event::Modifiers::default(),
+                    doc,
+                    &automerge::ROOT,
+                    &mut handled,
+                    &mut focus,
+                    node,
+                    tree,
+                );
+                assert!(handled);
+            }
+
+            let (mut app, mut doc, _root) = sample_app();
+            let rect = Rect::new(20.0, 20.0, 180.0, 64.0);
+            app.document_choice_anchors[DocumentChoice::Resolution.index()] = rect;
+            app.regions
+                .push((rect, Action::OpenDocumentChoice(DocumentChoice::Resolution)));
+            let mut tree = TaffyTree::<()>::new();
+            let node = tree.new_leaf(Style::default()).unwrap();
+
+            dispatch(
+                &mut app,
+                &touch(TouchPhase::Started, rect.center()),
+                &mut doc,
+                node,
+                &tree,
+            );
+            assert!(
+                !app.document_popover.is_open(),
+                "touch-down is not activation"
+            );
+            dispatch(
+                &mut app,
+                &touch(TouchPhase::Ended, rect.center()),
+                &mut doc,
+                node,
+                &tree,
+            );
+            assert!(app.document_popover.is_open());
+
+            app.document_popover.close();
+            dispatch(
+                &mut app,
+                &touch(TouchPhase::Started, rect.center()),
+                &mut doc,
+                node,
+                &tree,
+            );
+            dispatch(
+                &mut app,
+                &touch(
+                    TouchPhase::Moved,
+                    Point::new(rect.x1 + 40.0, rect.y1 + 40.0),
+                ),
+                &mut doc,
+                node,
+                &tree,
+            );
+            dispatch(
+                &mut app,
+                &touch(TouchPhase::Ended, rect.center()),
+                &mut doc,
+                node,
+                &tree,
+            );
+            assert!(
+                !app.document_popover.is_open(),
+                "dragging off cancels the press"
+            );
+        }
+    }
+
+    #[test]
+    fn capture_preferences_persist_while_screen_reveals_stay_local() {
+        // Phase `screen_reveals_are_presentation_only`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            let before = doc.get_heads();
+            app.apply(Action::Nav(Screen::Settings), &mut doc, &root);
+            assert_eq!(app.screen, Screen::Settings);
+            assert_eq!(doc.get_heads(), before);
+            assert!(app.take_committed_action().is_none());
+        }
+        // Phase `cycle_facing_and_persist`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            assert_eq!(app.facing, Facing::Back);
+            app.apply(Action::CycleFacing, &mut doc, &root);
+            assert_eq!(app.facing, Facing::Front);
+            assert_eq!(doc::read_facing(&doc, &root), Facing::Front);
+        }
+        // Phase `toggle_grid_persists_to_settings`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            let before = app.settings.grid;
+            app.apply(Action::ToggleGrid, &mut doc, &root);
+            assert_eq!(app.settings.grid, !before);
+            assert_eq!(doc::read_settings(&doc, &root).grid, !before);
+            let dispatched = app
+                .test_last_dispatched()
+                .expect("grid control dispatches a canonical Camera action");
+            let action: crate::actions::CameraAction =
+                serde_json::from_slice(&dispatched.payload).expect("Camera action payload");
+            assert_eq!(
+                action,
+                crate::actions::CameraAction::SetGrid { on: !before }
+            );
+        }
+        // Phase `resolution_cycles`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            assert_eq!(app.settings.resolution, Resolution::R12MP);
+            app.apply(Action::CycleResolution, &mut doc, &root);
+            assert_eq!(app.settings.resolution, Resolution::R4K);
+        }
+    }
+
+    #[test]
+    fn scanned_codes_record_history_and_scanner_actions_are_searchable() {
+        // Phase `scan_action_records_history`.
+        {
+            let mut app = CameraApp::sample();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            app.sync(&mut doc, &root); // decodes the sample poster → scanned set
+            // Force the scanner to decode by rendering once would need a GPU; the
+            // sample scanner frame is produced lazily on draw, so seed a scanned
+            // code directly to exercise the action path.
+            app.scanned = Some(ScannedCode {
+                raw: SCAN_PAYLOAD.to_string(),
+                kind: classify(SCAN_PAYLOAD),
+                symbology: "QR Code".into(),
+                corners: [(0.0, 0.0); 4],
+            });
+            app.apply(Action::Scan(0), &mut doc, &root);
+            let scans = doc::read_scans(&doc, &root);
+            assert_eq!(scans.len(), 1);
+            assert_eq!(scans[0].raw, SCAN_PAYLOAD);
+            assert_eq!(app.scans.len(), 1);
+        }
+        // Phase `wifi_scan_parses_and_primary_action_copies_password`.
+        {
+            // The Wi-Fi payload is parsed into its fields and the primary action
+            // ("Connect") copies the password — the parse+copy path, end to end.
+            let payload = "WIFI:T:WPA2;S:Tilo Lounge;P:welcome-aboard;H:false;;";
+            let kind = classify(payload);
+            match &kind {
+                CodeKind::Wifi {
+                    ssid,
+                    auth,
+                    password,
+                    hidden,
+                } => {
+                    assert_eq!(ssid, "Tilo Lounge");
+                    assert_eq!(auth, "WPA2");
+                    assert_eq!(password, "welcome-aboard");
+                    assert!(!hidden);
+                    assert_eq!(kind.actions()[0], "Connect");
+                }
+                other => panic!("expected wifi, got {other:?}"),
+            }
+            let mut app = CameraApp::sample();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            app.sync(&mut doc, &root);
+            app.scanned = Some(ScannedCode {
+                raw: payload.to_string(),
+                kind,
+                symbology: "QR Code".into(),
+                corners: [(0.0, 0.0); 4],
+            });
+            app.apply(Action::Scan(0), &mut doc, &root); // "Connect"
+            assert_eq!(app.toast.as_deref(), Some("Wi-Fi password copied"));
+        }
+        // Phase `portal_selected_image_decodes_a_real_qr_without_media_indexing`.
+        {
+            // Rasterize a real QR to a PNG on disk, then prove the scanner decodes
+            // it through the production code path — no camera involved.
+            let payload = "https://example.test/scanned-from-a-saved-photo";
+            let m = crate::scan::encode(payload).expect("encode");
+            let (scale, quiet) = (8usize, 4usize);
+            let dim = (m.size + quiet * 2) * scale;
+            let mut rgba = vec![255u8; dim * dim * 4];
+            for my in 0..m.size {
+                for mx in 0..m.size {
+                    if !m.is_dark(mx, my) {
+                        continue;
+                    }
+                    for dy in 0..scale {
+                        for dx in 0..scale {
+                            let px = (mx + quiet) * scale + dx;
+                            let py = (my + quiet) * scale + dy;
+                            let i = (py * dim + px) * 4;
+                            rgba[i] = 17;
+                            rgba[i + 1] = 17;
+                            rgba[i + 2] = 17;
+                        }
+                    }
+                }
+            }
+            let fb = FrameBuf {
+                rgba,
+                w: dim as u32,
+                h: dim as u32,
+            };
+
+            let dir = std::env::temp_dir().join(format!("camera-scan-lib-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            // Lossless PNG so the QR survives the write for a clean decode.
+            let name = library::write_photo(&dir, &fb, PhotoFormat::Png).unwrap();
+
+            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Scanner);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            app.sync(&mut doc, &root);
+            assert!(!app.feed_active(), "no camera in the test env");
+            assert!(
+                app.captures.is_empty(),
+                "Camera does not index the directory"
+            );
+            app.scan_image_path(dir.join(name));
+            sync_until(&mut app, &mut doc, &root, |app| app.pending_scan.is_none());
+            let scanned = app.scanned.clone().expect("the saved QR decodes");
+            assert_eq!(scanned.raw, payload);
+            // The decode is recorded to history like a live scan.
+            assert_eq!(app.scans.len(), 1);
+            assert_eq!(app.scans[0].raw, payload);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `synchronized_app_searches_and_resolves_canonical_scanner_actions`.
+        {
+            let (app, doc, _root) = sample_app();
+            let providers = Widget::search_providers(&app);
+            assert_eq!(providers.len(), 1);
+            let hits = providers[0].search_limited("scan existing image", 4);
+            assert_eq!(hits.len(), 1);
+            let address = hits[0].action_address().expect("search action");
+            assert_eq!(address.action.as_str(), "import-image");
+            let resource = Widget::resource(&app, &doc, address.resource.as_str())
+                .expect("widget resolves search result");
+            assert_eq!(resource.id.as_str(), address.resource);
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "import-image")
+            );
+        }
     }
 }

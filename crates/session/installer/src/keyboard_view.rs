@@ -276,52 +276,51 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_us_before_any_sync() {
-        let kv = KeyboardView::new("installer.keymap");
-        assert_eq!(kv.layout_id(), "us");
-    }
+    fn keyboard_view_follows_the_synced_layout_as_a_non_focusable_leaf() {
+        // Phase `defaults_to_us_before_any_sync`.
+        {
+            let kv = KeyboardView::new("installer.keymap");
+            assert_eq!(kv.layout_id(), "us");
+        }
+        // Phase `sync_resolves_selected_layout`.
+        {
+            let mut kv = KeyboardView::new("installer.keymap");
+            let (mut doc, root) = doc_with_keymap("German (QWERTZ)");
+            kv.sync(&mut doc, &root);
+            assert_eq!(kv.layout_id(), "de");
+        }
+        // Phase `sync_tracks_changes_live`.
+        {
+            let mut kv = KeyboardView::new("installer.keymap");
+            let (mut doc, root) = doc_with_keymap("French (AZERTY)");
+            kv.sync(&mut doc, &root);
+            assert_eq!(kv.layout_id(), "fr");
 
-    #[test]
-    fn sync_resolves_selected_layout() {
-        let mut kv = KeyboardView::new("installer.keymap");
-        let (mut doc, root) = doc_with_keymap("German (QWERTZ)");
-        kv.sync(&mut doc, &root);
-        assert_eq!(kv.layout_id(), "de");
-    }
-
-    #[test]
-    fn sync_tracks_changes_live() {
-        let mut kv = KeyboardView::new("installer.keymap");
-        let (mut doc, root) = doc_with_keymap("French (AZERTY)");
-        kv.sync(&mut doc, &root);
-        assert_eq!(kv.layout_id(), "fr");
-
-        // Change the stored selection, re-sync → preview follows.
-        let (_, obj) = doc.get(&root, "installer.keymap").unwrap().unwrap();
-        let cur = doc.text(&obj).unwrap();
-        let _ = doc.splice_text(
-            &obj,
-            0,
-            ui::num::isize_of_usize(cur.chars().count()),
-            "Dvorak",
-        );
-        kv.sync(&mut doc, &root);
-        assert_eq!(kv.layout_id(), "dvorak");
-    }
-
-    #[test]
-    fn unknown_value_keeps_current_layout() {
-        let mut kv = KeyboardView::new("installer.keymap");
-        let (mut doc, root) = doc_with_keymap("Nonsense");
-        kv.sync(&mut doc, &root);
-        // Falls back to the default (no panic, no change to a bogus layout).
-        assert_eq!(kv.layout_id(), "us");
-    }
-
-    #[test]
-    fn is_a_non_focusable_leaf() {
-        let kv = KeyboardView::new("installer.keymap");
-        assert!(!kv.is_focusable());
-        assert!(kv.children().is_empty());
+            // Change the stored selection, re-sync → preview follows.
+            let (_, obj) = doc.get(&root, "installer.keymap").unwrap().unwrap();
+            let cur = doc.text(&obj).unwrap();
+            let _ = doc.splice_text(
+                &obj,
+                0,
+                ui::num::isize_of_usize(cur.chars().count()),
+                "Dvorak",
+            );
+            kv.sync(&mut doc, &root);
+            assert_eq!(kv.layout_id(), "dvorak");
+        }
+        // Phase `unknown_value_keeps_current_layout`.
+        {
+            let mut kv = KeyboardView::new("installer.keymap");
+            let (mut doc, root) = doc_with_keymap("Nonsense");
+            kv.sync(&mut doc, &root);
+            // Falls back to the default (no panic, no change to a bogus layout).
+            assert_eq!(kv.layout_id(), "us");
+        }
+        // Phase `is_a_non_focusable_leaf`.
+        {
+            let kv = KeyboardView::new("installer.keymap");
+            assert!(!kv.is_focusable());
+            assert!(kv.children().is_empty());
+        }
     }
 }

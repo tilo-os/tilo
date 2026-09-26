@@ -3341,429 +3341,213 @@ mod tests {
     }
 
     #[test]
-    fn app_component_factories_receive_props_and_keep_graph_lifecycle() {
-        let document = UiDocument::from_json(
+    fn graph_builds_real_accessible_widgets_from_components_and_json() {
+        // Case `app_component_factories_receive_props_and_keep_graph_lifecycle`.
+        {
+            let document = UiDocument::from_json(
             r#"{"version":1,"root":{"type":"component","id":"profile","name":"profile-card","props":{"title":"Ada"}}}"#,
         )
         .unwrap();
-        assert!(matches!(
-            document.build(&Theme::dark()),
-            Err(UiGraphError::UnknownComponent { id, name })
-                if id == "profile" && name == "profile-card"
-        ));
-
-        let seen = Rc::new(RefCell::new(Vec::new()));
-        let seen_by_factory = Rc::clone(&seen);
-        let context = UiBuildContext::default().with_component("profile-card", move |request| {
-            seen_by_factory.borrow_mut().push((
-                request.id.to_owned(),
-                request.name.to_owned(),
-                request.props.get("title").cloned(),
+            assert!(matches!(
+                document.build(&Theme::dark()),
+                Err(UiGraphError::UnknownComponent { id, name })
+                    if id == "profile" && name == "profile-card"
             ));
-            let title = request
-                .props
-                .get("title")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "title must be a string".to_owned())?;
-            Ok(Box::new(Text::new(title).with_id(request.id)))
-        });
-        let widget = document.build_with(&Theme::dark(), &context).unwrap();
-        let mut app = crate::headless::Driver::new(crate::State::new(), widget, (320, 120));
-        app.expect(
-            &crate::headless::SemanticExpectation::named("profile")
-                .role(Role::StaticText)
-                .name("Ada"),
-        )
-        .expect("factory result remains a normal graph widget");
-        assert_eq!(
-            seen.borrow().as_slice(),
-            [(
-                "profile".to_owned(),
-                "profile-card".to_owned(),
-                Some(serde_json::json!("Ada"))
-            )]
-        );
 
-        let failing = UiBuildContext::default()
-            .with_component("profile-card", |_| Err("missing account".to_owned()));
-        assert!(matches!(
-            document.build_with(&Theme::dark(), &failing),
-            Err(UiGraphError::ComponentBuild { message, .. }) if message == "missing account"
-        ));
-    }
+            let seen = Rc::new(RefCell::new(Vec::new()));
+            let seen_by_factory = Rc::clone(&seen);
+            let context =
+                UiBuildContext::default().with_component("profile-card", move |request| {
+                    seen_by_factory.borrow_mut().push((
+                        request.id.to_owned(),
+                        request.name.to_owned(),
+                        request.props.get("title").cloned(),
+                    ));
+                    let title = request
+                        .props
+                        .get("title")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| "title must be a string".to_owned())?;
+                    Ok(Box::new(Text::new(title).with_id(request.id)))
+                });
+            let widget = document.build_with(&Theme::dark(), &context).unwrap();
+            let mut app = crate::headless::Driver::new(crate::State::new(), widget, (320, 120));
+            app.expect(
+                &crate::headless::SemanticExpectation::named("profile")
+                    .role(Role::StaticText)
+                    .name("Ada"),
+            )
+            .expect("factory result remains a normal graph widget");
+            assert_eq!(
+                seen.borrow().as_slice(),
+                [(
+                    "profile".to_owned(),
+                    "profile-card".to_owned(),
+                    Some(serde_json::json!("Ada"))
+                )]
+            );
 
-    #[test]
-    fn builder_previews_and_edits_unloaded_app_components() {
-        let document = UiDocument::from_json(
+            let failing = UiBuildContext::default()
+                .with_component("profile-card", |_| Err("missing account".to_owned()));
+            assert!(matches!(
+                document.build_with(&Theme::dark(), &failing),
+                Err(UiGraphError::ComponentBuild { message, .. }) if message == "missing account"
+            ));
+        }
+
+        // Case `builder_previews_and_edits_unloaded_app_components`.
+        {
+            let document = UiDocument::from_json(
             r#"{"version":1,"root":{"type":"component","id":"profile","name":"profile-card","props":{"title":"Ada"}}}"#,
         )
         .unwrap();
-        let handle = UiGraphHandle::new(document).unwrap();
-        let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
-        let mut app =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1200, 720));
-        app.expect(
-            &crate::headless::SemanticExpectation::named("profile")
-                .role(Role::StaticText)
-                .name("Component: profile-card"),
-        )
-        .expect("builder uses a named placeholder without app code");
-
-        let mut component = handle.node("profile").unwrap();
-        set_editable_property(
-            &mut component,
-            EditableProperty::ComponentProps,
-            parse_editable_property(EditableProperty::ComponentProps, r#"{"title":"Grace"}"#)
-                .unwrap(),
-        );
-        handle.replace_node("profile", component).unwrap();
-        assert!(matches!(
-            handle.node("profile"),
-            Ok(UiNode::Component { props, .. })
-                if props.get("title") == Some(&serde_json::json!("Grace"))
-        ));
-    }
-
-    #[test]
-    fn graph_json_round_trips_and_builds_real_accessible_widgets() {
-        fn has_title(node: &crate::headless::InspectionNode) -> bool {
-            node.semantics.as_ref().is_some_and(|semantics| {
-                semantics.role == (Role::Heading { level: 1 })
-                    && semantics.name.as_deref() == Some("Roadmap")
-            }) || node.children.iter().any(has_title)
-        }
-
-        let document = sample();
-        let json = document.to_json_pretty().unwrap();
-        let reparsed = UiDocument::from_json(&json).unwrap();
-        assert_eq!(reparsed, document);
-        let mut title_doc = AutoCommit::new();
-        let text = title_doc.put_object(&ROOT, "title", ObjType::Text).unwrap();
-        title_doc.splice_text(&text, 0, 0, "Roadmap").unwrap();
-        let mut driver = crate::headless::Driver::new(
-            crate::State::from_doc(title_doc),
-            reparsed.build(&Theme::dark()).unwrap(),
-            (640, 360),
-        );
-        let inspection = driver.inspection();
-        assert!(has_title(&inspection.root));
-        driver
-            .expect(
-                &crate::headless::SemanticExpectation::named("title-input")
-                    .role(Role::TextInput)
-                    .name("Title"),
+            let handle = UiGraphHandle::new(document).unwrap();
+            let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
+            let mut app =
+                crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1200, 720));
+            app.expect(
+                &crate::headless::SemanticExpectation::named("profile")
+                    .role(Role::StaticText)
+                    .name("Component: profile-card"),
             )
-            .expect("serialized label names the real input");
-        assert!(
-            driver.targets().contains_key("title-view"),
-            "serialized text ids remain addressable in scenarios"
-        );
-        driver
-            .perform_named("save", &Action::Activate)
-            .expect("serialized button is a real button");
-        assert!(driver.dump_json().contains("save-requested"));
-    }
+            .expect("builder uses a named placeholder without app code");
 
-    #[test]
-    fn exhausted_graph_revision_rejects_a_mutation_without_reusing_live_state() {
-        let handle = UiGraphHandle::new(sample()).unwrap();
-        let before = handle.document().unwrap();
-        handle.inner.write().unwrap().revision = u64::MAX;
-        let replacement = UiDocument::new(UiNode::Text {
-            id: "replacement".into(),
-            text: UiTextSource::Static {
-                value: "Replacement".into(),
-            },
-            role: UiTextRole::Body,
-            size: None,
-        });
-        assert!(matches!(
-            handle.replace(replacement),
-            Err(UiGraphError::RevisionExhausted)
-        ));
-        assert_eq!(handle.document().unwrap(), before);
-    }
-
-    #[test]
-    fn serialized_check_label_builds_visible_and_spoken_semantics() {
-        fn has_visible_label(node: &crate::headless::InspectionNode) -> bool {
-            node.semantics.as_ref().is_some_and(|semantics| {
-                semantics.role == Role::StaticText
-                    && semantics.name.as_deref() == Some("Remember me")
-            }) || node.children.iter().any(has_visible_label)
+            let mut component = handle.node("profile").unwrap();
+            set_editable_property(
+                &mut component,
+                EditableProperty::ComponentProps,
+                parse_editable_property(EditableProperty::ComponentProps, r#"{"title":"Grace"}"#)
+                    .unwrap(),
+            );
+            handle.replace_node("profile", component).unwrap();
+            assert!(matches!(
+                handle.node("profile"),
+                Ok(UiNode::Component { props, .. })
+                    if props.get("title") == Some(&serde_json::json!("Grace"))
+            ));
         }
 
-        let document = UiDocument::new(UiNode::Checkbox {
-            id: "remember".into(),
-            label: Some("Remember me".into()),
-            accessible_name: String::new(),
-            value_path: "remember".into(),
-            enabled: true,
-        });
-        let mut driver = crate::headless::Driver::new(
-            crate::State::new(),
-            document.build(&Theme::dark()).unwrap(),
-            (360, 120),
-        );
+        // Case `graph_json_round_trips_and_builds_real_accessible_widgets`.
+        {
+            fn has_title(node: &crate::headless::InspectionNode) -> bool {
+                node.semantics.as_ref().is_some_and(|semantics| {
+                    semantics.role == (Role::Heading { level: 1 })
+                        && semantics.name.as_deref() == Some("Roadmap")
+                }) || node.children.iter().any(has_title)
+            }
 
-        driver
-            .expect(
-                &crate::headless::SemanticExpectation::named("remember")
-                    .role(Role::Checkbox)
-                    .name("Remember me"),
-            )
-            .expect("serialized label names the checkbox");
-        assert!(has_visible_label(&driver.inspection().root));
-    }
-
-    #[test]
-    fn editor_label_fields_clear_the_fallback_name_and_vice_versa() {
-        let mut node = UiNode::Toggle {
-            id: "sync".into(),
-            label: None,
-            accessible_name: "Unlabeled sync".into(),
-            value_path: "sync".into(),
-            enabled: true,
-        };
-
-        set_editable_property(
-            &mut node,
-            EditableProperty::CheckLabel,
-            ParsedProperty::OptionalText(Some("Sync changes".into())),
-        );
-        assert!(matches!(
-            &node,
-            UiNode::Toggle {
-                label: Some(label),
-                accessible_name,
-                ..
-            } if label == "Sync changes" && accessible_name.is_empty()
-        ));
-
-        set_editable_property(
-            &mut node,
-            EditableProperty::CheckAccessibleName,
-            ParsedProperty::Text("Background synchronization".into()),
-        );
-        assert!(matches!(
-            &node,
-            UiNode::Toggle {
-                label: None,
-                accessible_name,
-                ..
-            } if accessible_name == "Background synchronization"
-        ));
-    }
-
-    #[test]
-    fn routed_graph_buttons_drive_history_and_back_without_document_mutations() {
-        fn screen(id: &str, title: &str, button: UiNode) -> UiDocument {
-            UiDocument::new(UiNode::Column {
-                id: id.into(),
-                children: vec![
-                    UiNode::Text {
-                        id: format!("{id}-title"),
-                        text: UiTextSource::Static {
-                            value: title.into(),
-                        },
-                        role: UiTextRole::Title,
-                        size: None,
-                    },
-                    button,
-                ],
-                gap: None,
-                no_padding: false,
-                intrinsic_height: false,
-                fill_remaining_height: false,
-            })
-        }
-
-        let home = screen(
-            "home-root",
-            "Home",
-            UiNode::Button {
-                id: "open-settings".into(),
-                label: "Settings".into(),
-                accessible_name: None,
-                tooltip: None,
-                on_click_path: None,
-                click_value: None,
-                navigate: Some(UiNavigation::Push {
-                    route: "settings".into(),
-                }),
-                enabled: true,
-                style: UiButtonStyle::Primary,
-            },
-        );
-        let settings = screen(
-            "settings-root",
-            "Settings screen",
-            UiNode::Button {
-                id: "back-home".into(),
-                label: "Back".into(),
-                accessible_name: None,
-                tooltip: None,
-                on_click_path: None,
-                click_value: None,
-                navigate: Some(UiNavigation::Back),
-                enabled: true,
-                style: UiButtonStyle::Neutral,
-            },
-        );
-        let router = crate::widget::Router::new(
-            "home",
-            ["home", "settings"],
-            &Theme::dark(),
-            move |route, theme, handle| {
-                let document = if route == "home" { &home } else { &settings };
-                document
-                    .build_with(
-                        theme,
-                        &UiBuildContext::default().with_router(handle.clone()),
-                    )
-                    .map_err(|error| error.to_string())
-            },
-        )
-        .unwrap();
-        let handle = router.handle();
-        let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(router), (640, 360));
-        let document_before = driver.dump_json();
-
-        driver
-            .perform_named("open-settings", &Action::Activate)
-            .unwrap();
-        assert_eq!(handle.current(), "settings");
-        assert!(
+            let document = sample();
+            let json = document.to_json_pretty().unwrap();
+            let reparsed = UiDocument::from_json(&json).unwrap();
+            assert_eq!(reparsed, document);
+            let mut title_doc = AutoCommit::new();
+            let text = title_doc.put_object(&ROOT, "title", ObjType::Text).unwrap();
+            title_doc.splice_text(&text, 0, 0, "Roadmap").unwrap();
+            let mut driver = crate::headless::Driver::new(
+                crate::State::from_doc(title_doc),
+                reparsed.build(&Theme::dark()).unwrap(),
+                (640, 360),
+            );
+            let inspection = driver.inspection();
+            assert!(has_title(&inspection.root));
             driver
-                .inspection_json()
-                .unwrap()
-                .contains("Settings screen")
-        );
-        driver
-            .perform_named("back-home", &Action::Activate)
-            .unwrap();
-        assert_eq!(handle.current(), "home");
-        assert_eq!(driver.dump_json(), document_before);
-    }
-
-    #[test]
-    fn navigation_to_an_unknown_registered_screen_is_disabled() {
-        fn find_missing(
-            node: &crate::headless::InspectionNode,
-        ) -> Option<&crate::a11y::AccessNode> {
-            node.semantics
-                .as_ref()
-                .filter(|semantics| semantics.name.as_deref() == Some("Missing"))
-                .or_else(|| node.children.iter().find_map(find_missing))
+                .expect(
+                    &crate::headless::SemanticExpectation::named("title-input")
+                        .role(Role::TextInput)
+                        .name("Title"),
+                )
+                .expect("serialized label names the real input");
+            assert!(
+                driver.targets().contains_key("title-view"),
+                "serialized text ids remain addressable in scenarios"
+            );
+            driver
+                .perform_named("save", &Action::Activate)
+                .expect("serialized button is a real button");
+            assert!(driver.dump_json().contains("save-requested"));
         }
 
-        let mut document = sample();
-        if let UiNode::Column { children, .. } = &mut document.root {
-            children.push(UiNode::Button {
-                id: "missing".into(),
-                label: "Missing".into(),
-                accessible_name: None,
-                tooltip: None,
-                on_click_path: None,
-                click_value: None,
-                navigate: Some(UiNavigation::Push {
-                    route: "missing".into(),
-                }),
+        // Case `serialized_check_label_builds_visible_and_spoken_semantics`.
+        {
+            fn has_visible_label(node: &crate::headless::InspectionNode) -> bool {
+                node.semantics.as_ref().is_some_and(|semantics| {
+                    semantics.role == Role::StaticText
+                        && semantics.name.as_deref() == Some("Remember me")
+                }) || node.children.iter().any(has_visible_label)
+            }
+
+            let document = UiDocument::new(UiNode::Checkbox {
+                id: "remember".into(),
+                label: Some("Remember me".into()),
+                accessible_name: String::new(),
+                value_path: "remember".into(),
                 enabled: true,
-                style: UiButtonStyle::Neutral,
             });
-        }
-        let route = crate::widget::RouteHandle::new("home", ["home"]).unwrap();
-        let root = document
-            .build_with(
-                &Theme::dark(),
-                &UiBuildContext::default().with_router(route.clone()),
-            )
-            .unwrap();
-        let mut driver = crate::headless::Driver::new(crate::State::new(), root, (640, 360));
-        let inspection = driver.inspection();
-        let missing = find_missing(&inspection.root).expect("missing-route button remains visible");
-        assert!(missing.state.disabled);
-        driver
-            .perform_named("missing", &Action::Activate)
-            .expect("a disabled button ignores activation without crashing");
-        assert_eq!(route.current(), "home");
-    }
+            let mut driver = crate::headless::Driver::new(
+                crate::State::new(),
+                document.build(&Theme::dark()).unwrap(),
+                (360, 120),
+            );
 
-    #[test]
-    fn validation_is_atomic_and_accessibility_is_required() {
-        let handle = UiGraphHandle::new(sample()).unwrap();
-        let before = handle.to_json_pretty().unwrap();
-        let error = handle
-            .update_node("save", |node| {
-                if let UiNode::Button {
-                    label,
+            driver
+                .expect(
+                    &crate::headless::SemanticExpectation::named("remember")
+                        .role(Role::Checkbox)
+                        .name("Remember me"),
+                )
+                .expect("serialized label names the checkbox");
+            assert!(has_visible_label(&driver.inspection().root));
+        }
+
+        // Case `editor_label_fields_clear_the_fallback_name_and_vice_versa`.
+        {
+            let mut node = UiNode::Toggle {
+                id: "sync".into(),
+                label: None,
+                accessible_name: "Unlabeled sync".into(),
+                value_path: "sync".into(),
+                enabled: true,
+            };
+
+            set_editable_property(
+                &mut node,
+                EditableProperty::CheckLabel,
+                ParsedProperty::OptionalText(Some("Sync changes".into())),
+            );
+            assert!(matches!(
+                &node,
+                UiNode::Toggle {
+                    label: Some(label),
                     accessible_name,
                     ..
-                } = node
-                {
-                    label.clear();
-                    *accessible_name = None;
-                }
-            })
-            .unwrap_err();
-        assert!(matches!(error, UiGraphError::MissingAccessibleName(_)));
-        assert_eq!(handle.to_json_pretty().unwrap(), before);
-    }
+                } if label == "Sync changes" && accessible_name.is_empty()
+            ));
 
-    #[test]
-    fn duplicate_ids_and_unknown_fields_are_rejected() {
-        let mut duplicate = sample();
-        if let UiNode::Column { children, .. } = &mut duplicate.root {
-            *children.last_mut().unwrap() = UiNode::Spacer {
-                id: "title-input".into(),
-            };
+            set_editable_property(
+                &mut node,
+                EditableProperty::CheckAccessibleName,
+                ParsedProperty::Text("Background synchronization".into()),
+            );
+            assert!(matches!(
+                &node,
+                UiNode::Toggle {
+                    label: None,
+                    accessible_name,
+                    ..
+                } if accessible_name == "Background synchronization"
+            ));
         }
-        assert!(matches!(
-            duplicate.validate(),
-            Err(UiGraphError::DuplicateId(_))
-        ));
-        let json = r#"{"version":1,"root":{"type":"spacer","id":"root","mystery":1}}"#;
-        assert!(matches!(
-            UiDocument::from_json(json),
-            Err(UiGraphError::Json(_))
-        ));
     }
 
     #[test]
-    fn live_edit_rebuilds_the_real_subtree_and_round_trips() {
-        let handle = UiGraphHandle::new(sample()).unwrap();
-        assert_eq!(handle.document().unwrap().nodes().len(), 4);
-        assert!(matches!(handle.node("save"), Ok(UiNode::Button { .. })));
-        let live = handle.widget(&Theme::dark()).unwrap();
-        let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360));
-        assert!(driver.inspection_json().unwrap().contains("Save"));
-
-        handle
-            .update_node("save", |node| {
-                if let UiNode::Button { label, style, .. } = node {
-                    *label = "Publish".into();
-                    *style = UiButtonStyle::Danger;
-                }
-            })
-            .unwrap();
-        driver.relayout();
-        assert!(driver.inspection_json().unwrap().contains("Publish"));
-        assert!(
-            !driver
-                .inspection_json()
-                .unwrap()
-                .contains("\"name\": \"Save\"")
-        );
-        let saved = handle.to_json_pretty().unwrap();
-        let reopened = UiDocument::from_json(&saved).unwrap();
-        assert!(matches!(
-            reopened.node("save"),
-            Some(UiNode::Button { label, .. }) if label == "Publish"
-        ));
-    }
+    fn graph_validation_rejects_invalid_edits_atomically() {
+        // Case `exhausted_graph_revision_rejects_a_mutation_without_reusing_live_state`.
+        {
+            let handle = UiGraphHandle::new(sample()).unwrap();
+            let before = handle.document().unwrap();
+            handle.inner.write().unwrap().revision = u64::MAX;
+            let replacement = UiDocument::new(UiNode::Text {
+                id: "replacement".into(),
 
     fn set_named_state(widget: &mut dyn Widget, id: &str, state: &str) -> bool {
         if widget.test_id() == Some(id) {
@@ -4111,192 +3895,494 @@ mod tests {
             child: Box::new(UiNode::Text {
                 id: "body".into(),
                 text: UiTextSource::Static {
-                    value: "Before".into(),
+                    value: "Replacement".into(),
                 },
                 role: UiTextRole::Body,
                 size: None,
-            }),
-            background: true,
-            no_padding: false,
-            fill_height: false,
-            width: None,
-            height: None,
-        });
-        assert!(matches!(
-            document.remove_node("body"),
-            Err(UiGraphError::RequiredContainerChild { .. })
-        ));
-        document
-            .replace_node(
-                "body",
+            });
+            assert!(matches!(
+                handle.replace(replacement),
+                Err(UiGraphError::RevisionExhausted)
+            ));
+            assert_eq!(handle.document().unwrap(), before);
+        }
+
+        // Case `validation_is_atomic_and_accessibility_is_required`.
+        {
+            let handle = UiGraphHandle::new(sample()).unwrap();
+            let before = handle.to_json_pretty().unwrap();
+            let error = handle
+                .update_node("save", |node| {
+                    if let UiNode::Button {
+                        label,
+                        accessible_name,
+                        ..
+                    } = node
+                    {
+                        label.clear();
+                        *accessible_name = None;
+                    }
+                })
+                .unwrap_err();
+            assert!(matches!(error, UiGraphError::MissingAccessibleName(_)));
+            assert_eq!(handle.to_json_pretty().unwrap(), before);
+        }
+
+        // Case `duplicate_ids_and_unknown_fields_are_rejected`.
+        {
+            let mut duplicate = sample();
+            if let UiNode::Column { children, .. } = &mut duplicate.root {
+                *children.last_mut().unwrap() = UiNode::Spacer {
+                    id: "title-input".into(),
+                };
+            }
+            assert!(matches!(
+                duplicate.validate(),
+                Err(UiGraphError::DuplicateId(_))
+            ));
+            let json = r#"{"version":1,"root":{"type":"spacer","id":"root","mystery":1}}"#;
+            assert!(matches!(
+                UiDocument::from_json(json),
+                Err(UiGraphError::Json(_))
+            ));
+        }
+
+        // Case `structural_insert_is_validated_and_atomic`.
+        {
+            let mut document = sample();
+            document
+                .insert_child(
+                    "root",
+                    1,
+                    UiNode::Text {
+                        id: "subtitle".into(),
+                        text: UiTextSource::Static {
+                            value: "A small project".into(),
+                        },
+                        role: UiTextRole::Caption,
+                        size: None,
+                    },
+                )
+                .unwrap();
+            let ids: Vec<_> = document.nodes().iter().map(|node| node.id()).collect();
+            assert_eq!(
+                ids,
+                ["root", "title-view", "subtitle", "title-input", "save"]
+            );
+
+            let before = document.clone();
+            let error = document
+                .insert_child("root", 0, UiNode::Spacer { id: "save".into() })
+                .unwrap_err();
+            assert!(matches!(error, UiGraphError::DuplicateId(id) if id == "save"));
+            assert_eq!(document, before, "a failed structural edit is atomic");
+        }
+
+        // Case `remove_and_replace_obey_root_and_container_invariants`.
+        {
+            let mut document = UiDocument::new(UiNode::Container {
+                id: "root".into(),
+                child: Box::new(UiNode::Text {
+                    id: "body".into(),
+                    text: UiTextSource::Static {
+                        value: "Before".into(),
+                    },
+                    role: UiTextRole::Body,
+                    size: None,
+                }),
+                background: true,
+                no_padding: false,
+                fill_height: false,
+                width: None,
+                height: None,
+            });
+            assert!(matches!(
+                document.remove_node("body"),
+                Err(UiGraphError::RequiredContainerChild { .. })
+            ));
+            document
+                .replace_node(
+                    "body",
+                    UiNode::Button {
+                        id: "continue".into(),
+                        label: "Continue".into(),
+                        accessible_name: None,
+                        tooltip: None,
+                        on_click_path: None,
+                        click_value: None,
+                        navigate: None,
+                        enabled: true,
+                        style: UiButtonStyle::Primary,
+                    },
+                )
+                .unwrap();
+            assert!(document.node("body").is_none());
+            assert!(document.node("continue").is_some());
+            assert!(matches!(
+                document.remove_node("root"),
+                Err(UiGraphError::CannotRemoveRoot)
+            ));
+        }
+    }
+
+    #[test]
+    fn routed_graph_navigation_drives_history_and_disables_unknown_screens() {
+        // Case `routed_graph_buttons_drive_history_and_back_without_document_mutations`.
+        {
+            fn screen(id: &str, title: &str, button: UiNode) -> UiDocument {
+                UiDocument::new(UiNode::Column {
+                    id: id.into(),
+                    children: vec![
+                        UiNode::Text {
+                            id: format!("{id}-title"),
+                            text: UiTextSource::Static {
+                                value: title.into(),
+                            },
+                            role: UiTextRole::Title,
+                            size: None,
+                        },
+                        button,
+                    ],
+                    gap: None,
+                    no_padding: false,
+                    intrinsic_height: false,
+                    fill_remaining_height: false,
+                })
+            }
+
+            let home = screen(
+                "home-root",
+                "Home",
                 UiNode::Button {
-                    id: "continue".into(),
-                    label: "Continue".into(),
+                    id: "open-settings".into(),
+                    label: "Settings".into(),
                     accessible_name: None,
                     tooltip: None,
                     on_click_path: None,
                     click_value: None,
-                    navigate: None,
+                    navigate: Some(UiNavigation::Push {
+                        route: "settings".into(),
+                    }),
                     enabled: true,
                     style: UiButtonStyle::Primary,
                 },
+            );
+            let settings = screen(
+                "settings-root",
+                "Settings screen",
+                UiNode::Button {
+                    id: "back-home".into(),
+                    label: "Back".into(),
+                    accessible_name: None,
+                    tooltip: None,
+                    on_click_path: None,
+                    click_value: None,
+                    navigate: Some(UiNavigation::Back),
+                    enabled: true,
+                    style: UiButtonStyle::Neutral,
+                },
+            );
+            let router = crate::widget::Router::new(
+                "home",
+                ["home", "settings"],
+                &Theme::dark(),
+                move |route, theme, handle| {
+                    let document = if route == "home" { &home } else { &settings };
+                    document
+                        .build_with(
+                            theme,
+                            &UiBuildContext::default().with_router(handle.clone()),
+                        )
+                        .map_err(|error| error.to_string())
+                },
             )
             .unwrap();
-        assert!(document.node("body").is_none());
-        assert!(document.node("continue").is_some());
-        assert!(matches!(
-            document.remove_node("root"),
-            Err(UiGraphError::CannotRemoveRoot)
-        ));
+            let handle = router.handle();
+            let mut driver =
+                crate::headless::Driver::new(crate::State::new(), Box::new(router), (640, 360));
+            let document_before = driver.dump_json();
+
+            driver
+                .perform_named("open-settings", &Action::Activate)
+                .unwrap();
+            assert_eq!(handle.current(), "settings");
+            assert!(
+                driver
+                    .inspection_json()
+                    .unwrap()
+                    .contains("Settings screen")
+            );
+            driver
+                .perform_named("back-home", &Action::Activate)
+                .unwrap();
+            assert_eq!(handle.current(), "home");
+            assert_eq!(driver.dump_json(), document_before);
+        }
+
+        // Case `navigation_to_an_unknown_registered_screen_is_disabled`.
+        {
+            fn find_missing(
+                node: &crate::headless::InspectionNode,
+            ) -> Option<&crate::a11y::AccessNode> {
+                node.semantics
+                    .as_ref()
+                    .filter(|semantics| semantics.name.as_deref() == Some("Missing"))
+                    .or_else(|| node.children.iter().find_map(find_missing))
+            }
+
+            let mut document = sample();
+            if let UiNode::Column { children, .. } = &mut document.root {
+                children.push(UiNode::Button {
+                    id: "missing".into(),
+                    label: "Missing".into(),
+                    accessible_name: None,
+                    tooltip: None,
+                    on_click_path: None,
+                    click_value: None,
+                    navigate: Some(UiNavigation::Push {
+                        route: "missing".into(),
+                    }),
+                    enabled: true,
+                    style: UiButtonStyle::Neutral,
+                });
+            }
+            let route = crate::widget::RouteHandle::new("home", ["home"]).unwrap();
+            let root = document
+                .build_with(
+                    &Theme::dark(),
+                    &UiBuildContext::default().with_router(route.clone()),
+                )
+                .unwrap();
+            let mut driver = crate::headless::Driver::new(crate::State::new(), root, (640, 360));
+            let inspection = driver.inspection();
+            let missing =
+                find_missing(&inspection.root).expect("missing-route button remains visible");
+            assert!(missing.state.disabled);
+            driver
+                .perform_named("missing", &Action::Activate)
+                .expect("a disabled button ignores activation without crashing");
+            assert_eq!(route.current(), "home");
+        }
     }
 
     #[test]
-    fn live_graph_history_is_atomic_bounded_and_invalidated_by_new_edits() {
-        let handle = UiGraphHandle::new(sample()).unwrap();
-        assert!(!handle.can_undo());
-        assert!(!handle.can_redo());
+    fn live_graph_edits_rebuild_save_and_share_bounded_history() {
+        // Case `live_edit_rebuilds_the_real_subtree_and_round_trips`.
+        {
+            let handle = UiGraphHandle::new(sample()).unwrap();
+            assert_eq!(handle.document().unwrap().nodes().len(), 4);
+            assert!(matches!(handle.node("save"), Ok(UiNode::Button { .. })));
+            let live = handle.widget(&Theme::dark()).unwrap();
+            let mut driver =
+                crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360));
+            assert!(driver.inspection_json().unwrap().contains("Save"));
 
-        handle
-            .update_node("save", |node| {
-                if let UiNode::Button { label, .. } = node {
-                    *label = "Publish".into();
-                }
-            })
-            .unwrap();
-        assert!(handle.can_undo());
-        assert!(!handle.can_redo());
+            handle
+                .update_node("save", |node| {
+                    if let UiNode::Button { label, style, .. } = node {
+                        *label = "Publish".into();
+                        *style = UiButtonStyle::Danger;
+                    }
+                })
+                .unwrap();
+            driver.relayout();
+            assert!(driver.inspection_json().unwrap().contains("Publish"));
+            assert!(
+                !driver
+                    .inspection_json()
+                    .unwrap()
+                    .contains("\"name\": \"Save\"")
+            );
+            let saved = handle.to_json_pretty().unwrap();
+            let reopened = UiDocument::from_json(&saved).unwrap();
+            assert!(matches!(
+                reopened.node("save"),
+                Some(UiNode::Button { label, .. }) if label == "Publish"
+            ));
+        }
 
-        let invalid = handle.update_node("save", |node| {
-            if let UiNode::Button { id, .. } = node {
-                *id = "root".into();
-            }
-        });
-        assert!(matches!(invalid, Err(UiGraphError::DuplicateId(_))));
-        assert!(handle.undo().unwrap());
-        assert!(matches!(
-            handle.node("save"),
-            Ok(UiNode::Button { label, .. }) if label == "Save"
-        ));
-        assert!(
-            !handle.can_undo(),
-            "the rejected edit did not enter history"
-        );
-        assert!(handle.can_redo());
+        // Case `move_reparents_and_reorders_without_losing_the_subtree`.
+        {
+            let mut document = sample();
+            document
+                .insert_child(
+                    "root",
+                    1,
+                    UiNode::Row {
+                        id: "actions".into(),
+                        children: vec![UiNode::Spacer {
+                            id: "action-gap".into(),
+                        }],
+                        no_wrap: true,
+                        fill_remaining_height: false,
+                    },
+                )
+                .unwrap();
+            document.move_node("save", "actions", 0).unwrap();
+            let actions = document.node("actions").unwrap();
+            assert_eq!(
+                actions
+                    .children()
+                    .iter()
+                    .map(|child| child.id())
+                    .collect::<Vec<_>>(),
+                ["save", "action-gap"]
+            );
+            assert!(matches!(
+                document.move_node("actions", "save", 0),
+                Err(UiGraphError::MoveIntoDescendant { .. })
+            ));
+            assert!(document.node("save").is_some());
+        }
 
-        assert!(handle.redo().unwrap());
-        assert!(matches!(
-            handle.node("save"),
-            Ok(UiNode::Button { label, .. }) if label == "Publish"
-        ));
-        assert!(handle.undo().unwrap());
-        handle
-            .update_node("save", |node| {
-                if let UiNode::Button { label, .. } = node {
-                    *label = "Share".into();
-                }
-            })
-            .unwrap();
-        assert!(!handle.can_redo(), "a divergent edit starts a new future");
+        // Case `live_graph_history_is_atomic_bounded_and_invalidated_by_new_edits`.
+        {
+            let handle = UiGraphHandle::new(sample()).unwrap();
+            assert!(!handle.can_undo());
+            assert!(!handle.can_redo());
 
-        for index in 0..UI_GRAPH_HISTORY_LIMIT.saturating_add(5) {
             handle
                 .update_node("save", |node| {
                     if let UiNode::Button { label, .. } = node {
-                        *label = format!("Share {index}");
+                        *label = "Publish".into();
                     }
                 })
                 .unwrap();
-        }
-        let mut undo_count = 0;
-        while handle.undo().unwrap() {
-            undo_count += 1;
-        }
-        assert_eq!(undo_count, UI_GRAPH_HISTORY_LIMIT);
-        handle.clear_history().unwrap();
-        assert!(!handle.can_undo());
-        assert!(!handle.can_redo());
-    }
+            assert!(handle.can_undo());
+            assert!(!handle.can_redo());
 
-    #[test]
-    fn grouped_live_edits_share_one_undo_baseline_until_finished() {
-        let handle = UiGraphHandle::new(sample()).unwrap();
-        for label in ["Publ", "Publish"] {
+            let invalid = handle.update_node("save", |node| {
+                if let UiNode::Button { id, .. } = node {
+                    *id = "root".into();
+                }
+            });
+            assert!(matches!(invalid, Err(UiGraphError::DuplicateId(_))));
+            assert!(handle.undo().unwrap());
+            assert!(matches!(
+                handle.node("save"),
+                Ok(UiNode::Button { label, .. }) if label == "Save"
+            ));
+            assert!(
+                !handle.can_undo(),
+                "the rejected edit did not enter history"
+            );
+            assert!(handle.can_redo());
+
+            assert!(handle.redo().unwrap());
+            assert!(matches!(
+                handle.node("save"),
+                Ok(UiNode::Button { label, .. }) if label == "Publish"
+            ));
+            assert!(handle.undo().unwrap());
+            handle
+                .update_node("save", |node| {
+                    if let UiNode::Button { label, .. } = node {
+                        *label = "Share".into();
+                    }
+                })
+                .unwrap();
+            assert!(!handle.can_redo(), "a divergent edit starts a new future");
+
+            for index in 0..UI_GRAPH_HISTORY_LIMIT.saturating_add(5) {
+                handle
+                    .update_node("save", |node| {
+                        if let UiNode::Button { label, .. } = node {
+                            *label = format!("Share {index}");
+                        }
+                    })
+                    .unwrap();
+            }
+            let mut undo_count = 0;
+            while handle.undo().unwrap() {
+                undo_count += 1;
+            }
+            assert_eq!(undo_count, UI_GRAPH_HISTORY_LIMIT);
+            handle.clear_history().unwrap();
+            assert!(!handle.can_undo());
+            assert!(!handle.can_redo());
+        }
+
+        // Case `grouped_live_edits_share_one_undo_baseline_until_finished`.
+        {
+            let handle = UiGraphHandle::new(sample()).unwrap();
+            for label in ["Publ", "Publish"] {
+                handle
+                    .update_node_grouped("save", "button-label", |node| {
+                        if let UiNode::Button { label: current, .. } = node {
+                            *current = label.into();
+                        }
+                    })
+                    .unwrap();
+            }
+            assert!(handle.undo().unwrap());
+            assert!(matches!(
+                handle.node("save"),
+                Ok(UiNode::Button { label, .. }) if label == "Save"
+            ));
+            assert!(
+                !handle.can_undo(),
+                "the two keystroke updates formed one step"
+            );
+            assert!(handle.redo().unwrap());
+            assert!(matches!(
+                handle.node("save"),
+                Ok(UiNode::Button { label, .. }) if label == "Publish"
+            ));
+
+            handle.finish_edit_group().unwrap();
             handle
                 .update_node_grouped("save", "button-label", |node| {
-                    if let UiNode::Button { label: current, .. } = node {
-                        *current = label.into();
+                    if let UiNode::Button { label, .. } = node {
+                        *label = "Export".into();
                     }
                 })
                 .unwrap();
+            assert!(handle.undo().unwrap());
+            assert!(matches!(
+                handle.node("save"),
+                Ok(UiNode::Button { label, .. }) if label == "Publish"
+            ));
         }
-        assert!(handle.undo().unwrap());
-        assert!(matches!(
-            handle.node("save"),
-            Ok(UiNode::Button { label, .. }) if label == "Save"
-        ));
-        assert!(
-            !handle.can_undo(),
-            "the two keystroke updates formed one step"
-        );
-        assert!(handle.redo().unwrap());
-        assert!(matches!(
-            handle.node("save"),
-            Ok(UiNode::Button { label, .. }) if label == "Publish"
-        ));
 
-        handle.finish_edit_group().unwrap();
-        handle
-            .update_node_grouped("save", "button-label", |node| {
-                if let UiNode::Button { label, .. } = node {
-                    *label = "Export".into();
-                }
-            })
-            .unwrap();
-        assert!(handle.undo().unwrap());
-        assert!(matches!(
-            handle.node("save"),
-            Ok(UiNode::Button { label, .. }) if label == "Publish"
-        ));
-    }
-
-    #[test]
-    fn live_structural_edits_rebuild_and_save_the_same_graph() {
-        let handle = UiGraphHandle::new(sample()).unwrap();
-        let live = handle.widget(&Theme::dark()).unwrap();
-        let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360));
-        handle
-            .insert_child(
-                "root",
-                0,
-                UiNode::Button {
-                    id: "new-project".into(),
-                    label: "New project".into(),
-                    accessible_name: None,
-                    tooltip: None,
-                    on_click_path: Some("new-project".into()),
-                    click_value: Some("requested".into()),
-                    navigate: None,
-                    enabled: true,
-                    style: UiButtonStyle::Primary,
-                },
-            )
-            .unwrap();
-        driver.relayout();
-        driver
-            .perform_named("new-project", &Action::Activate)
-            .unwrap();
-        assert!(driver.dump_json().contains("new-project"));
-
-        let removed = handle.remove_node("new-project").unwrap();
-        assert_eq!(removed.id(), "new-project");
-        driver.relayout();
-        assert!(
+        // Case `live_structural_edits_rebuild_and_save_the_same_graph`.
+        {
+            let handle = UiGraphHandle::new(sample()).unwrap();
+            let live = handle.widget(&Theme::dark()).unwrap();
+            let mut driver =
+                crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360));
+            handle
+                .insert_child(
+                    "root",
+                    0,
+                    UiNode::Button {
+                        id: "new-project".into(),
+                        label: "New project".into(),
+                        accessible_name: None,
+                        tooltip: None,
+                        on_click_path: Some("new-project".into()),
+                        click_value: Some("requested".into()),
+                        navigate: None,
+                        enabled: true,
+                        style: UiButtonStyle::Primary,
+                    },
+                )
+                .unwrap();
+            driver.relayout();
             driver
                 .perform_named("new-project", &Action::Activate)
-                .is_err()
-        );
-        assert!(UiDocument::from_json(&handle.to_json_pretty().unwrap()).is_ok());
+                .unwrap();
+            assert!(driver.dump_json().contains("new-project"));
+
+            let removed = handle.remove_node("new-project").unwrap();
+            assert_eq!(removed.id(), "new-project");
+            driver.relayout();
+            assert!(
+                driver
+                    .perform_named("new-project", &Action::Activate)
+                    .is_err()
+            );
+            assert!(UiDocument::from_json(&handle.to_json_pretty().unwrap()).is_ok());
+        }
     }
 
     fn edit_builder_button_properties(driver: &mut crate::headless::Driver) {
@@ -4345,223 +4431,226 @@ mod tests {
     }
 
     #[test]
-    fn graphical_editor_changes_and_saves_the_live_preview_graph() {
-        let handle = UiGraphHandle::new(sample()).unwrap();
-        let saved = Rc::new(RefCell::new(None));
-        let saved_from_callback = Rc::clone(&saved);
-        let editor = UiGraphEditor::new(handle.clone(), Theme::dark())
-            .unwrap()
-            .on_save(move |source| {
-                *saved_from_callback.borrow_mut() = Some(source.to_owned());
-                Ok(())
-            });
-        let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
-
-        let initial = driver.inspection_json().unwrap();
-        assert!(initial.contains("builder-add-button"));
-        assert!(initial.contains("builder-add-checkbox"));
-        assert!(initial.contains("title-input"));
-
-        driver
-            .perform_named("builder-add-button", &Action::Activate)
-            .unwrap();
-        driver.relayout();
-        assert!(matches!(
-            handle.node("button"),
-            Ok(UiNode::Button { label, .. }) if label == "Button"
-        ));
-
-        driver
-            .perform_named("builder-undo", &Action::Activate)
-            .unwrap();
-        driver.relayout();
-        assert!(handle.node("button").is_err());
-        driver
-            .perform_named("builder-redo", &Action::Activate)
-            .unwrap();
-        driver.relayout();
-        assert!(handle.node("button").is_ok());
-        driver
-            .perform_named("builder-node-button", &Action::Activate)
-            .unwrap();
-        driver.relayout();
-
-        edit_builder_button_properties(&mut driver);
-        assert!(matches!(
-            handle.node("button"),
-            Ok(UiNode::Button {
-                label,
-                accessible_name: Some(accessible_name),
-                tooltip: Some(tooltip),
-                on_click_path: Some(on_click_path),
-                click_value: Some(click_value),
-                navigate: Some(UiNavigation::Push { route }),
-                enabled: false,
-                style: UiButtonStyle::Primary,
-                ..
-            }) if label == "Publish"
-                && accessible_name == "Publish changes"
-                && tooltip == "Publish this document"
-                && on_click_path == "publish-requested"
-                && click_value == "yes"
-                && route == "settings"
-        ));
-        assert!(driver.inspection_json().unwrap().contains("Publish"));
-
-        driver
-            .perform_named("builder-save", &Action::Activate)
-            .unwrap();
-        let saved = saved.borrow().clone().expect("Save callback ran");
-        let reopened = UiDocument::from_json(&saved).unwrap();
-        assert!(matches!(
-            reopened.node("button"),
-            Some(UiNode::Button {
-                label,
-                accessible_name: Some(accessible_name),
-                on_click_path: Some(on_click_path),
-                navigate: Some(UiNavigation::Push { route }),
-                enabled: false,
-                style: UiButtonStyle::Primary,
-                ..
-            }) if label == "Publish"
-                && accessible_name == "Publish changes"
-                && on_click_path == "publish-requested"
-                && route == "settings"
-        ));
-    }
-
-    #[test]
-    fn graphical_editor_validates_property_edits_atomically_and_tracks_renamed_ids() {
-        let handle = UiGraphHandle::new(sample()).unwrap();
-        let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
-        let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
-
-        driver
-            .perform_named("builder-add-container", &Action::Activate)
-            .unwrap();
-        driver.relayout();
-        let before_invalid_number = handle.to_json_pretty().unwrap();
-        driver
-            .perform_named("builder-container-width", &Action::SetValue("wide".into()))
-            .unwrap();
-        assert_eq!(handle.to_json_pretty().unwrap(), before_invalid_number);
-
-        driver
-            .perform_named("builder-node-id", &Action::SetValue("panel".into()))
-            .unwrap();
-        driver.relayout();
-        assert!(handle.node("container").is_err());
-        assert!(handle.node("panel").is_ok());
-
-        let before_duplicate_id = handle.to_json_pretty().unwrap();
-        driver
-            .perform_named("builder-node-id", &Action::SetValue("root".into()))
-            .unwrap();
-        assert_eq!(handle.to_json_pretty().unwrap(), before_duplicate_id);
-        assert!(driver.inspection_json().unwrap().contains("panel"));
-
-        driver
-            .perform_named("builder-node-root", &Action::Activate)
-            .unwrap();
-        driver.relayout();
-        driver
-            .perform_named("builder-add-checkbox", &Action::Activate)
-            .unwrap();
-        driver.relayout();
-        let before_invalid_binding = handle.to_json_pretty().unwrap();
-        driver
-            .perform_named("builder-check-value-path", &Action::SetValue(String::new()))
-            .unwrap();
-        assert_eq!(handle.to_json_pretty().unwrap(), before_invalid_binding);
-    }
-
-    #[test]
-    fn graphical_editor_keeps_renames_live_and_routes_shortcuts_to_local_history() {
-        let handle = UiGraphHandle::new(sample()).unwrap();
-        let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
-        let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
-
-        driver
-            .perform_named("builder-add-container", &Action::Activate)
-            .unwrap();
-        driver.relayout();
-        driver
-            .perform_named("builder-node-id", &Action::SetValue("panel".into()))
-            .unwrap();
-        driver.relayout();
-        driver
-            .perform_named("builder-node-id", &Action::SetValue("panel-final".into()))
-            .unwrap();
-        driver.relayout();
-        assert!(handle.node("container").is_err());
-        assert!(handle.node("panel").is_err());
-        assert!(handle.node("panel-final").is_ok());
-
-        driver
-            .perform_named("builder-node-id", &Action::Focus)
-            .unwrap();
-        driver.set_modifiers(&["ctrl".to_owned()]);
-        driver.key("z");
-        assert!(handle.node("container").is_ok());
-        assert!(handle.node("panel-final").is_err());
-
-        driver.set_modifiers(&["ctrl".to_owned(), "shift".to_owned()]);
-        driver.key("z");
-        assert!(handle.node("panel-final").is_ok());
-        driver.set_modifiers(&[]);
-    }
-
-    #[test]
-    fn graphical_editor_exposes_layout_and_text_source_choices() {
-        let handle = UiGraphHandle::new(sample()).unwrap();
-        let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
-        let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
-
-        driver
-            .perform_named("builder-column-gap", &Action::SetValue("12.5".into()))
-            .unwrap();
-        driver
-            .perform_named("builder-column-no-padding", &Action::Activate)
-            .unwrap();
-        driver.relayout();
-        assert!(matches!(
-            handle.node("root"),
-            Ok(UiNode::Column {
-                gap: Some(12.5),
-                no_padding: true,
-                ..
-            })
-        ));
-
-        driver
-            .perform_named("builder-node-title-view", &Action::Activate)
-            .unwrap();
-        driver.relayout();
-        driver
-            .perform_named("builder-text-role", &Action::Activate)
-            .unwrap();
-        driver.relayout();
-        driver
-            .perform_named("builder-text-source", &Action::Activate)
-            .unwrap();
-        driver.relayout();
-        assert!(matches!(
-            handle.node("title-view"),
-            Ok(UiNode::Text {
-                text: UiTextSource::Static { value },
-                role: UiTextRole::Heading,
-                ..
-            }) if value == "title"
-        ));
-        assert!(
-            driver
-                .inspection_json()
+    fn graphical_editor_edits_validates_and_saves_the_live_preview() {
+        // Case `graphical_editor_changes_and_saves_the_live_preview_graph`.
+        {
+            let handle = UiGraphHandle::new(sample()).unwrap();
+            let saved = Rc::new(RefCell::new(None));
+            let saved_from_callback = Rc::clone(&saved);
+            let editor = UiGraphEditor::new(handle.clone(), Theme::dark())
                 .unwrap()
-                .contains("Text source: Static")
-        );
+                .on_save(move |source| {
+                    *saved_from_callback.borrow_mut() = Some(source.to_owned());
+                    Ok(())
+                });
+            let mut driver =
+                crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+
+            let initial = driver.inspection_json().unwrap();
+            assert!(initial.contains("builder-add-button"));
+            assert!(initial.contains("builder-add-checkbox"));
+            assert!(initial.contains("title-input"));
+
+            driver
+                .perform_named("builder-add-button", &Action::Activate)
+                .unwrap();
+            driver.relayout();
+            assert!(matches!(
+                handle.node("button"),
+                Ok(UiNode::Button { label, .. }) if label == "Button"
+            ));
+
+            driver
+                .perform_named("builder-undo", &Action::Activate)
+                .unwrap();
+            driver.relayout();
+            assert!(handle.node("button").is_err());
+            driver
+                .perform_named("builder-redo", &Action::Activate)
+                .unwrap();
+            driver.relayout();
+            assert!(handle.node("button").is_ok());
+            driver
+                .perform_named("builder-node-button", &Action::Activate)
+                .unwrap();
+            driver.relayout();
+
+            edit_builder_button_properties(&mut driver);
+            assert!(matches!(
+                handle.node("button"),
+                Ok(UiNode::Button {
+                    label,
+                    accessible_name: Some(accessible_name),
+                    tooltip: Some(tooltip),
+                    on_click_path: Some(on_click_path),
+                    click_value: Some(click_value),
+                    navigate: Some(UiNavigation::Push { route }),
+                    enabled: false,
+                    style: UiButtonStyle::Primary,
+                    ..
+                }) if label == "Publish"
+                    && accessible_name == "Publish changes"
+                    && tooltip == "Publish this document"
+                    && on_click_path == "publish-requested"
+                    && click_value == "yes"
+                    && route == "settings"
+            ));
+            assert!(driver.inspection_json().unwrap().contains("Publish"));
+
+            driver
+                .perform_named("builder-save", &Action::Activate)
+                .unwrap();
+            let saved = saved.borrow().clone().expect("Save callback ran");
+            let reopened = UiDocument::from_json(&saved).unwrap();
+            assert!(matches!(
+                reopened.node("button"),
+                Some(UiNode::Button {
+                    label,
+                    accessible_name: Some(accessible_name),
+                    on_click_path: Some(on_click_path),
+                    navigate: Some(UiNavigation::Push { route }),
+                    enabled: false,
+                    style: UiButtonStyle::Primary,
+                    ..
+                }) if label == "Publish"
+                    && accessible_name == "Publish changes"
+                    && on_click_path == "publish-requested"
+                    && route == "settings"
+            ));
+        }
+
+        // Case `graphical_editor_validates_property_edits_atomically_and_tracks_renamed_ids`.
+        {
+            let handle = UiGraphHandle::new(sample()).unwrap();
+            let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
+            let mut driver =
+                crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+
+            driver
+                .perform_named("builder-add-container", &Action::Activate)
+                .unwrap();
+            driver.relayout();
+            let before_invalid_number = handle.to_json_pretty().unwrap();
+            driver
+                .perform_named("builder-container-width", &Action::SetValue("wide".into()))
+                .unwrap();
+            assert_eq!(handle.to_json_pretty().unwrap(), before_invalid_number);
+
+            driver
+                .perform_named("builder-node-id", &Action::SetValue("panel".into()))
+                .unwrap();
+            driver.relayout();
+            assert!(handle.node("container").is_err());
+            assert!(handle.node("panel").is_ok());
+
+            let before_duplicate_id = handle.to_json_pretty().unwrap();
+            driver
+                .perform_named("builder-node-id", &Action::SetValue("root".into()))
+                .unwrap();
+            assert_eq!(handle.to_json_pretty().unwrap(), before_duplicate_id);
+            assert!(driver.inspection_json().unwrap().contains("panel"));
+
+            driver
+                .perform_named("builder-node-root", &Action::Activate)
+                .unwrap();
+            driver.relayout();
+            driver
+                .perform_named("builder-add-checkbox", &Action::Activate)
+                .unwrap();
+            driver.relayout();
+            let before_invalid_binding = handle.to_json_pretty().unwrap();
+            driver
+                .perform_named("builder-check-value-path", &Action::SetValue(String::new()))
+                .unwrap();
+            assert_eq!(handle.to_json_pretty().unwrap(), before_invalid_binding);
+        }
+
+        // Case `graphical_editor_keeps_renames_live_and_routes_shortcuts_to_local_history`.
+        {
+            let handle = UiGraphHandle::new(sample()).unwrap();
+            let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
+            let mut driver =
+                crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+
+            driver
+                .perform_named("builder-add-container", &Action::Activate)
+                .unwrap();
+            driver.relayout();
+            driver
+                .perform_named("builder-node-id", &Action::SetValue("panel".into()))
+                .unwrap();
+            driver.relayout();
+            driver
+                .perform_named("builder-node-id", &Action::SetValue("panel-final".into()))
+                .unwrap();
+            driver.relayout();
+            assert!(handle.node("container").is_err());
+            assert!(handle.node("panel").is_err());
+            assert!(handle.node("panel-final").is_ok());
+
+            driver
+                .perform_named("builder-node-id", &Action::Focus)
+                .unwrap();
+            driver.set_modifiers(&["ctrl".to_owned()]);
+            driver.key("z");
+            assert!(handle.node("container").is_ok());
+            assert!(handle.node("panel-final").is_err());
+
+            driver.set_modifiers(&["ctrl".to_owned(), "shift".to_owned()]);
+            driver.key("z");
+            assert!(handle.node("panel-final").is_ok());
+            driver.set_modifiers(&[]);
+        }
+
+        // Case `graphical_editor_exposes_layout_and_text_source_choices`.
+        {
+            let handle = UiGraphHandle::new(sample()).unwrap();
+            let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
+            let mut driver =
+                crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+
+            driver
+                .perform_named("builder-column-gap", &Action::SetValue("12.5".into()))
+                .unwrap();
+            driver
+                .perform_named("builder-column-no-padding", &Action::Activate)
+                .unwrap();
+            driver.relayout();
+            assert!(matches!(
+                handle.node("root"),
+                Ok(UiNode::Column {
+                    gap: Some(12.5),
+                    no_padding: true,
+                    ..
+                })
+            ));
+
+            driver
+                .perform_named("builder-node-title-view", &Action::Activate)
+                .unwrap();
+            driver.relayout();
+            driver
+                .perform_named("builder-text-role", &Action::Activate)
+                .unwrap();
+            driver.relayout();
+            driver
+                .perform_named("builder-text-source", &Action::Activate)
+                .unwrap();
+            driver.relayout();
+            assert!(matches!(
+                handle.node("title-view"),
+                Ok(UiNode::Text {
+                    text: UiTextSource::Static { value },
+                    role: UiTextRole::Heading,
+                    ..
+                }) if value == "title"
+            ));
+            assert!(
+                driver
+                    .inspection_json()
+                    .unwrap()
+                    .contains("Text source: Static")
+            );
+        }
     }
 }

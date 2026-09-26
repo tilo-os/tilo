@@ -262,50 +262,52 @@ mod tests {
     use iroh::protocol::Router;
 
     #[test]
-    fn every_runtime_gate_blocks_speculation() {
-        let base = PredictivePolicy::default();
-        for policy in [
-            PredictivePolicy {
-                enabled: false,
-                ..base
-            },
-            PredictivePolicy {
-                network_allows: false,
-                ..base
-            },
-            PredictivePolicy {
-                power_allows: false,
-                ..base
-            },
-            PredictivePolicy {
-                storage_allows: false,
-                ..base
-            },
-            PredictivePolicy {
-                max_queued_bytes: 0,
-                ..base
-            },
-        ] {
-            let mut pending = HashMap::new();
-            assert!(!admit_pending(&mut pending, Hash::from([1; 32]), 1, policy));
-            assert!(pending.is_empty());
+    fn speculation_is_gated_and_budgeted() {
+        // Phase `every_runtime_gate_blocks_speculation`.
+        {
+            let base = PredictivePolicy::default();
+            for policy in [
+                PredictivePolicy {
+                    enabled: false,
+                    ..base
+                },
+                PredictivePolicy {
+                    network_allows: false,
+                    ..base
+                },
+                PredictivePolicy {
+                    power_allows: false,
+                    ..base
+                },
+                PredictivePolicy {
+                    storage_allows: false,
+                    ..base
+                },
+                PredictivePolicy {
+                    max_queued_bytes: 0,
+                    ..base
+                },
+            ] {
+                let mut pending = HashMap::new();
+                assert!(!admit_pending(&mut pending, Hash::from([1; 32]), 1, policy));
+                assert!(pending.is_empty());
+            }
         }
-    }
-
-    #[test]
-    fn aggregate_byte_budget_and_duplicate_hashes_are_bounded() {
-        let policy = PredictivePolicy {
-            max_queued_bytes: 10,
-            ..PredictivePolicy::default()
-        };
-        let first = Hash::from([1; 32]);
-        let second = Hash::from([2; 32]);
-        let mut pending = HashMap::new();
-        assert!(admit_pending(&mut pending, first, 6, policy));
-        assert!(!admit_pending(&mut pending, first, 1, policy));
-        assert!(!admit_pending(&mut pending, second, 5, policy));
-        assert!(admit_pending(&mut pending, second, 4, policy));
-        assert_eq!(pending.values().copied().sum::<u64>(), 10);
+        // Phase `aggregate_byte_budget_and_duplicate_hashes_are_bounded`.
+        {
+            let policy = PredictivePolicy {
+                max_queued_bytes: 10,
+                ..PredictivePolicy::default()
+            };
+            let first = Hash::from([1; 32]);
+            let second = Hash::from([2; 32]);
+            let mut pending = HashMap::new();
+            assert!(admit_pending(&mut pending, first, 6, policy));
+            assert!(!admit_pending(&mut pending, first, 1, policy));
+            assert!(!admit_pending(&mut pending, second, 5, policy));
+            assert!(admit_pending(&mut pending, second, 4, policy));
+            assert_eq!(pending.values().copied().sum::<u64>(), 10);
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

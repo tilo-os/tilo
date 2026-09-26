@@ -18,6 +18,13 @@ fn loaded_fixture() -> (
 }
 
 #[test]
+fn native_snapshot_reports_readiness_durable_edits_and_wheel_input() {
+    // Each phase builds a fresh app/fixture: edits and scroll must not leak.
+    native_snapshot_of_unopened_editor_is_not_ready();
+    native_snapshot_tracks_durable_edits_and_caret_without_source_text();
+    native_snapshot_observes_real_wheel_input_with_explicit_units();
+}
+
 fn native_snapshot_of_unopened_editor_is_not_ready() {
     let app = CodeApp::new();
     let doc = AutoCommit::new();
@@ -28,7 +35,6 @@ fn native_snapshot_of_unopened_editor_is_not_ready() {
     assert!(snapshot["buffer_id"].is_null());
 }
 
-#[test]
 fn native_snapshot_tracks_durable_edits_and_caret_without_source_text() {
     let (_directory, mut app, mut doc, manifest) = loaded_fixture();
     let before = app.native_input_snapshot(&doc, &automerge::ROOT).unwrap();
@@ -61,7 +67,6 @@ fn native_snapshot_tracks_durable_edits_and_caret_without_source_text() {
     );
 }
 
-#[test]
 fn native_snapshot_observes_real_wheel_input_with_explicit_units() {
     let (_directory, mut app, mut doc, manifest) = loaded_fixture();
     app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);

@@ -525,68 +525,71 @@ mod tests {
     }
 
     #[test]
-    fn discovers_only_explicit_loopback_vision_model() {
-        assert!(discover_local_capability(&config(true, "http://127.0.0.1:8100/v1")).is_some());
-        assert!(discover_local_capability(&config(false, "http://127.0.0.1:8100/v1")).is_none());
-        assert!(discover_local_capability(&config(true, "http://192.168.1.9:8100/v1")).is_none());
-    }
-
-    #[test]
-    fn preparation_hashes_original_and_limits_pixels() {
-        let image =
-            DynamicImage::ImageRgba8(RgbaImage::from_pixel(3_200, 2_000, Rgba([5, 7, 9, 255])));
-        let prepared = prepare(&image, b"original photo bytes").unwrap();
-        assert!(prepared.width <= MAX_INPUT_EDGE);
-        assert!(prepared.height <= MAX_INPUT_EDGE);
-        assert!(prepared.jpeg.len() <= MAX_ENCODED_PREVIEW_BYTES);
-        assert_eq!(
-            prepared.source_content_hash,
-            hex::encode(Sha256::digest(b"original photo bytes"))
-        );
-    }
-
-    #[test]
-    fn parsing_rejects_unknown_fields_and_bounds_model_text() {
-        assert!(parse_analysis(r#"{"description":"x","unexpected":true}"#).is_err());
-        let parsed = parse_analysis(&format!(
-            r#"{{"description":"{}","labels":["cat",""],"ocr":"note"}}"#,
-            "x".repeat(MAX_DESCRIPTION_CHARS + 10)
-        ))
-        .unwrap();
-        assert_eq!(parsed.description.chars().count(), MAX_DESCRIPTION_CHARS);
-        assert_eq!(parsed.labels, vec!["cat"]);
-    }
-
-    #[test]
-    fn parsing_accepts_only_the_openai_content_field_from_an_envelope() {
-        let parsed = parse_analysis(
-            r#"{"choices":[{"message":{"content":"{\"description\":\"A dog\",\"labels\":[\"dog\"],\"ocr\":\"\"}"}}]}"#,
-        )
-        .unwrap();
-        assert_eq!(parsed.description, "A dog");
-        assert_eq!(parsed.labels, vec!["dog"]);
-    }
-
-    #[test]
-    fn pet_labels_are_model_output_and_face_clusters_cannot_escape_the_batch() {
-        let parsed =
-            parse_analysis(r#"{"description":"","labels":["dog"],"pets":["dog"],"ocr":""}"#)
-                .unwrap();
-        assert_eq!(parsed.pets, ["dog"]);
-        let ids = std::collections::BTreeSet::from([
-            "photos.photo:one".to_owned(),
-            "photos.photo:two".to_owned(),
-        ]);
-        let accepted = parse_face_clusters(
-            r#"{"clusters":[{"id":"local-1","photo_ids":["photos.photo:one","photos.photo:two"]}]}"#,
-            &ids,
-        )
-        .unwrap();
-        assert_eq!(accepted.clusters.len(), 1);
-        assert!(parse_face_clusters(
-            r#"{"clusters":[{"id":"local-1","photo_ids":["photos.photo:one","photos.photo:other"]}]}"#,
-            &ids,
-        )
-        .is_err());
+    fn vision_model_discovery_preparation_and_parsing_are_bounded() {
+        // Phase `discovers_only_explicit_loopback_vision_model`.
+        {
+            assert!(discover_local_capability(&config(true, "http://127.0.0.1:8100/v1")).is_some());
+            assert!(
+                discover_local_capability(&config(false, "http://127.0.0.1:8100/v1")).is_none()
+            );
+            assert!(
+                discover_local_capability(&config(true, "http://192.168.1.9:8100/v1")).is_none()
+            );
+        }
+        // Phase `preparation_hashes_original_and_limits_pixels`.
+        {
+            let image =
+                DynamicImage::ImageRgba8(RgbaImage::from_pixel(3_200, 2_000, Rgba([5, 7, 9, 255])));
+            let prepared = prepare(&image, b"original photo bytes").unwrap();
+            assert!(prepared.width <= MAX_INPUT_EDGE);
+            assert!(prepared.height <= MAX_INPUT_EDGE);
+            assert!(prepared.jpeg.len() <= MAX_ENCODED_PREVIEW_BYTES);
+            assert_eq!(
+                prepared.source_content_hash,
+                hex::encode(Sha256::digest(b"original photo bytes"))
+            );
+        }
+        // Phase `parsing_rejects_unknown_fields_and_bounds_model_text`.
+        {
+            assert!(parse_analysis(r#"{"description":"x","unexpected":true}"#).is_err());
+            let parsed = parse_analysis(&format!(
+                r#"{{"description":"{}","labels":["cat",""],"ocr":"note"}}"#,
+                "x".repeat(MAX_DESCRIPTION_CHARS + 10)
+            ))
+            .unwrap();
+            assert_eq!(parsed.description.chars().count(), MAX_DESCRIPTION_CHARS);
+            assert_eq!(parsed.labels, vec!["cat"]);
+        }
+        // Phase `parsing_accepts_only_the_openai_content_field_from_an_envelope`.
+        {
+            let parsed = parse_analysis(
+                r#"{"choices":[{"message":{"content":"{\"description\":\"A dog\",\"labels\":[\"dog\"],\"ocr\":\"\"}"}}]}"#,
+            )
+            .unwrap();
+            assert_eq!(parsed.description, "A dog");
+            assert_eq!(parsed.labels, vec!["dog"]);
+        }
+        // Phase `pet_labels_are_model_output_and_face_clusters_cannot_escape_the_batch`.
+        {
+            let parsed =
+                parse_analysis(r#"{"description":"","labels":["dog"],"pets":["dog"],"ocr":""}"#)
+                    .unwrap();
+            assert_eq!(parsed.pets, ["dog"]);
+            let ids = std::collections::BTreeSet::from([
+                "photos.photo:one".to_owned(),
+                "photos.photo:two".to_owned(),
+            ]);
+            let accepted = parse_face_clusters(
+                r#"{"clusters":[{"id":"local-1","photo_ids":["photos.photo:one","photos.photo:two"]}]}"#,
+                &ids,
+            )
+            .unwrap();
+            assert_eq!(accepted.clusters.len(), 1);
+            assert!(parse_face_clusters(
+                r#"{"clusters":[{"id":"local-1","photo_ids":["photos.photo:one","photos.photo:other"]}]}"#,
+                &ids,
+            )
+            .is_err());
+        }
     }
 }

@@ -1124,252 +1124,262 @@ mod admission_tests {
     };
 
     #[test]
-    fn occluded_primary_keeps_visible_sibling_projection_fresh_through_real_admission() {
-        use crate::widget::Widget;
-        use automerge::transaction::Transactable;
-        // The primary is the sole owner of this retained root's update/sync;
-        // auxiliary painting observes its Text projection rather than syncing.
-        struct Root {
-            text: crate::widget::Text,
-            pending: Option<&'static str>,
-        }
-        impl Widget for Root {
-            fn update(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) -> bool {
-                if let Some(value) = self.pending.take() {
-                    doc.put(path, "label", value).unwrap();
-                    true
-                } else {
-                    false
+    fn occlusion_admission_keeps_payloads_probes_and_sibling_projections() {
+        // Case `occluded_primary_keeps_visible_sibling_projection_fresh_through_real_admission`.
+        {
+            use crate::widget::Widget;
+            use automerge::transaction::Transactable;
+            // The primary is the sole owner of this retained root's update/sync;
+            // auxiliary painting observes its Text projection rather than syncing.
+            struct Root {
+                text: crate::widget::Text,
+                pending: Option<&'static str>,
+            }
+            impl Widget for Root {
+                fn update(
+                    &mut self,
+                    doc: &mut automerge::AutoCommit,
+                    path: &automerge::ObjId,
+                ) -> bool {
+                    if let Some(value) = self.pending.take() {
+                        doc.put(path, "label", value).unwrap();
+                        true
+                    } else {
+                        false
+                    }
+                }
+                fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+                    self.text.sync(doc, path);
+                }
+                fn build_layout(
+                    &mut self,
+                    tree: &mut taffy::TaffyTree<()>,
+                    theme: &crate::Theme,
+                    map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+                ) -> taffy::NodeId {
+                    self.text.build_layout(tree, theme, map)
+                }
+                fn apply_layout(
+                    &mut self,
+                    tree: &taffy::TaffyTree<()>,
+                    node: taffy::NodeId,
+                    offset: vello::kurbo::Point,
+                ) {
+                    self.text.apply_layout(tree, node, offset);
+                }
+                fn draw(
+                    &mut self,
+                    scene: &mut Scene,
+                    transform: vello::kurbo::Affine,
+                    renderer: &mut crate::text_render::TextRenderer,
+                    theme: &crate::Theme,
+                    presence: &crate::presence::PresenceCtx,
+                ) {
+                    self.text.draw(scene, transform, renderer, theme, presence);
+                }
+                fn handle_event(
+                    &mut self,
+                    event: &winit::event::WindowEvent,
+                    scale: f64,
+                    modifiers: &winit::event::Modifiers,
+                    doc: &mut automerge::AutoCommit,
+                    path: &automerge::ObjId,
+                    handled: &mut bool,
+                    focus: &mut Option<taffy::NodeId>,
+                    node: taffy::NodeId,
+                    tree: &taffy::TaffyTree<()>,
+                ) {
+                    self.text.handle_event(
+                        event, scale, modifiers, doc, path, handled, focus, node, tree,
+                    );
+                }
+                fn get_rect(&self) -> Rect {
+                    self.text.get_rect()
+                }
+                fn name(&self) -> &'static str {
+                    "shared-projection"
+                }
+                fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+                    self.text.accessibility()
                 }
             }
-            fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-                self.text.sync(doc, path);
-            }
-            fn build_layout(
-                &mut self,
-                tree: &mut taffy::TaffyTree<()>,
-                theme: &crate::Theme,
-                map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
-            ) -> taffy::NodeId {
-                self.text.build_layout(tree, theme, map)
-            }
-            fn apply_layout(
-                &mut self,
-                tree: &taffy::TaffyTree<()>,
-                node: taffy::NodeId,
-                offset: vello::kurbo::Point,
-            ) {
-                self.text.apply_layout(tree, node, offset);
-            }
-            fn draw(
-                &mut self,
-                scene: &mut Scene,
-                transform: vello::kurbo::Affine,
-                renderer: &mut crate::text_render::TextRenderer,
-                theme: &crate::Theme,
-                presence: &crate::presence::PresenceCtx,
-            ) {
-                self.text.draw(scene, transform, renderer, theme, presence);
-            }
-            fn handle_event(
-                &mut self,
-                event: &winit::event::WindowEvent,
-                scale: f64,
-                modifiers: &winit::event::Modifiers,
-                doc: &mut automerge::AutoCommit,
-                path: &automerge::ObjId,
-                handled: &mut bool,
-                focus: &mut Option<taffy::NodeId>,
-                node: taffy::NodeId,
-                tree: &taffy::TaffyTree<()>,
-            ) {
-                self.text.handle_event(
-                    event, scale, modifiers, doc, path, handled, focus, node, tree,
-                );
-            }
-            fn get_rect(&self) -> Rect {
-                self.text.get_rect()
-            }
-            fn name(&self) -> &'static str {
-                "shared-projection"
-            }
-            fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-                self.text.accessibility()
-            }
-        }
-        let mut root = Root {
-            text: crate::widget::Text::from_document_string("label"),
-            pending: Some("initial"),
-        };
-        let mut doc = automerge::AutoCommit::new();
-        root.update(&mut doc, &automerge::ROOT);
-        root.sync(&mut doc, &automerge::ROOT);
-        let now = crate::time::now();
-        let mut retry = retry::RenderRetryState::default();
-        for _ in 0..8 {
-            retry.observe(FrameOutcome::Occluded, now);
-        }
-        let (tx, rx) = mpsc::sync_channel(2);
-        let mut buffers = BufferPool::new(rx, Arc::new(AtomicBool::new(false)));
-        for (index, value) in ["animation tick", "auxiliary input"]
-            .into_iter()
-            .enumerate()
-        {
-            let tick = now + retry::FRAME_INTERVAL * (index as u32 + 1);
-            retry.observe_for_shared_root(
-                FrameOutcome::Occluded,
-                tick - retry::FRAME_INTERVAL,
-                true,
-            );
-            tx.send((Scene::new(), Vec::<Rect>::new())).unwrap();
-            root.pending = Some(value);
-            let admitted_at = if index == 1 {
-                assert!(retry.known_occluded());
-                assert!(
-                    retry.request_probe(),
-                    "auxiliary input also probes the shared primary"
-                );
-                tick - retry::FRAME_INTERVAL
-            } else {
-                tick
+            let mut root = Root {
+                text: crate::widget::Text::from_document_string("label"),
+                pending: Some("initial"),
             };
-            if prepare_frame(&mut retry, &mut buffers, admitted_at).unwrap() {
-                assert!(root.update(&mut doc, &automerge::ROOT));
-                root.sync(&mut doc, &automerge::ROOT);
-                let _ = buffers.recv().unwrap();
+            let mut doc = automerge::AutoCommit::new();
+            root.update(&mut doc, &automerge::ROOT);
+            root.sync(&mut doc, &automerge::ROOT);
+            let now = crate::time::now();
+            let mut retry = retry::RenderRetryState::default();
+            for _ in 0..8 {
+                retry.observe(FrameOutcome::Occluded, now);
             }
+            let (tx, rx) = mpsc::sync_channel(2);
+            let mut buffers = BufferPool::new(rx, Arc::new(AtomicBool::new(false)));
+            for (index, value) in ["animation tick", "auxiliary input"]
+                .into_iter()
+                .enumerate()
+            {
+                let tick = now + retry::FRAME_INTERVAL * (index as u32 + 1);
+                retry.observe_for_shared_root(
+                    FrameOutcome::Occluded,
+                    tick - retry::FRAME_INTERVAL,
+                    true,
+                );
+                tx.send((Scene::new(), Vec::<Rect>::new())).unwrap();
+                root.pending = Some(value);
+                let admitted_at = if index == 1 {
+                    assert!(retry.known_occluded());
+                    assert!(
+                        retry.request_probe(),
+                        "auxiliary input also probes the shared primary"
+                    );
+                    tick - retry::FRAME_INTERVAL
+                } else {
+                    tick
+                };
+                if prepare_frame(&mut retry, &mut buffers, admitted_at).unwrap() {
+                    assert!(root.update(&mut doc, &automerge::ROOT));
+                    root.sync(&mut doc, &automerge::ROOT);
+                    let _ = buffers.recv().unwrap();
+                }
+                assert_eq!(
+                    root.accessibility().unwrap().name.as_deref(),
+                    Some(value),
+                    "visible sibling must observe each shared update, not a 250ms-old projection"
+                );
+            }
+            for _ in 0..8 {
+                retry.observe_for_shared_root(FrameOutcome::Occluded, now, true);
+            }
+            assert!(
+                retry.known_occluded(),
+                "a sibling must not erase primary occlusion history"
+            );
+            retry.observe_for_shared_root(FrameOutcome::Occluded, now, false);
             assert_eq!(
-                root.accessibility().unwrap().name.as_deref(),
-                Some(value),
-                "visible sibling must observe each shared update, not a 250ms-old projection"
+                retry.deadline(),
+                Some(now + crate::time::Duration::from_millis(250))
             );
         }
-        for _ in 0..8 {
-            retry.observe_for_shared_root(FrameOutcome::Occluded, now, true);
-        }
-        assert!(
-            retry.known_occluded(),
-            "a sibling must not erase primary occlusion history"
-        );
-        retry.observe_for_shared_root(FrameOutcome::Occluded, now, false);
-        assert_eq!(
-            retry.deadline(),
-            Some(now + crate::time::Duration::from_millis(250))
-        );
-    }
 
-    #[test]
-    fn occlusion_admission_preserves_dirty_payload_and_probe_until_buffers_return() {
-        let now = crate::time::now();
-        let mut retry = retry::RenderRetryState::default();
-        for _ in 0..8 {
+        // Case `occlusion_admission_preserves_dirty_payload_and_probe_until_buffers_return`.
+        {
+            let now = crate::time::now();
+            let mut retry = retry::RenderRetryState::default();
+            for _ in 0..8 {
+                retry.observe(FrameOutcome::Occluded, now);
+            }
+            let (tx, rx) = mpsc::sync_channel(2);
+            let waiting = Arc::new(AtomicBool::new(false));
+            let mut pool = BufferPool::new(rx, waiting.clone());
+            tx.send(("scene", vec![1, 2, 3])).unwrap();
+            assert!(!prepare_frame(&mut retry, &mut pool, now).unwrap());
+            assert!(
+                !pool.redraw_deferred(),
+                "occlusion must not arm a false buffer wait"
+            );
+            retry.request_probe();
+            retry.observe(FrameOutcome::Occluded, now); // Older completion drained after input.
+            assert!(prepare_frame(&mut retry, &mut pool, now).unwrap());
+            assert_eq!(pool.recv().unwrap(), ("scene", vec![1, 2, 3]));
             retry.observe(FrameOutcome::Occluded, now);
+            retry.request_probe();
+            assert!(!prepare_frame(&mut retry, &mut pool, now).unwrap());
+            assert!(
+                retry.allows(now),
+                "buffer deferral must preserve explicit probe"
+            );
+            tx.send(("latest dirty scene", vec![4, 5])).unwrap();
+            notify_render_completion(&waiting, &|| {}, FrameOutcome::Occluded);
+            retry.observe(FrameOutcome::Occluded, now);
+            assert!(prepare_frame(&mut retry, &mut pool, now).unwrap());
+            assert_eq!(pool.recv().unwrap(), ("latest dirty scene", vec![4, 5]));
+            retry.observe(FrameOutcome::Occluded, now);
+            assert_eq!(retry.deadline(), Some(now + retry::FRAME_INTERVAL));
         }
-        let (tx, rx) = mpsc::sync_channel(2);
-        let waiting = Arc::new(AtomicBool::new(false));
-        let mut pool = BufferPool::new(rx, waiting.clone());
-        tx.send(("scene", vec![1, 2, 3])).unwrap();
-        assert!(!prepare_frame(&mut retry, &mut pool, now).unwrap());
-        assert!(
-            !pool.redraw_deferred(),
-            "occlusion must not arm a false buffer wait"
-        );
-        retry.request_probe();
-        retry.observe(FrameOutcome::Occluded, now); // Older completion drained after input.
-        assert!(prepare_frame(&mut retry, &mut pool, now).unwrap());
-        assert_eq!(pool.recv().unwrap(), ("scene", vec![1, 2, 3]));
-        retry.observe(FrameOutcome::Occluded, now);
-        retry.request_probe();
-        assert!(!prepare_frame(&mut retry, &mut pool, now).unwrap());
-        assert!(
-            retry.allows(now),
-            "buffer deferral must preserve explicit probe"
-        );
-        tx.send(("latest dirty scene", vec![4, 5])).unwrap();
-        notify_render_completion(&waiting, &|| {}, FrameOutcome::Occluded);
-        retry.observe(FrameOutcome::Occluded, now);
-        assert!(prepare_frame(&mut retry, &mut pool, now).unwrap());
-        assert_eq!(pool.recv().unwrap(), ("latest dirty scene", vec![4, 5]));
-        retry.observe(FrameOutcome::Occluded, now);
-        assert_eq!(retry.deadline(), Some(now + retry::FRAME_INTERVAL));
-    }
 
-    #[test]
-    fn failed_outcomes_wake_even_without_deferred_work() {
-        use std::cell::Cell;
-        let waiting = AtomicBool::new(false);
-        let wakes = Cell::new(0);
-        let wake = || wakes.set(wakes.get() + 1);
-        notify_render_completion(&waiting, &wake, FrameOutcome::Presented);
-        assert_eq!(wakes.get(), 0);
-        for outcome in [
-            FrameOutcome::Skipped,
-            FrameOutcome::Reconfigured,
-            FrameOutcome::Occluded,
-            FrameOutcome::SurfaceGone,
-        ] {
-            notify_render_completion(&waiting, &wake, outcome);
+        // Case `admission_defers_without_consuming_partial_state_and_retains_reservation`.
+        {
+            let (tx, rx) = mpsc::sync_channel(2);
+            let waiting = Arc::new(AtomicBool::new(false));
+            let mut pool = BufferPool::new(rx, waiting.clone());
+            assert!(!pool.prepare().unwrap());
+            assert!(waiting.load(Ordering::SeqCst));
+            tx.send(41).unwrap();
+            assert!(pool.prepare().unwrap());
+            assert!(!waiting.load(Ordering::SeqCst));
+            // An aborted layout keeps the reservation for the next redraw.
+            assert!(pool.prepare().unwrap());
+            assert_eq!(pool.recv().unwrap(), 41);
+            assert!(!pool.prepare().unwrap());
+            drop(tx);
+            assert!(pool.prepare().is_err());
         }
-        assert_eq!(wakes.get(), 4);
-        waiting.store(true, Ordering::SeqCst);
-        notify_render_completion(&waiting, &wake, FrameOutcome::Presented);
-        assert_eq!(wakes.get(), 5);
-        assert!(!waiting.load(Ordering::SeqCst));
     }
 
     #[test]
-    fn completion_wakes_only_deferred_work_and_cannot_lose_ready_buffers() {
-        use std::cell::Cell;
-        let (tx, rx) = mpsc::sync_channel(2);
-        let waiting = Arc::new(AtomicBool::new(false));
-        let mut pool = BufferPool::new(rx, waiting.clone());
-        let wakes = Cell::new(0);
-        let wake = || wakes.set(wakes.get() + 1);
-        notify_buffer_waiter(&waiting, &wake);
-        assert_eq!(wakes.get(), 0, "static completions must stay idle");
-        assert!(!pool.prepare().unwrap());
-        assert!(
-            pool.redraw_deferred(),
-            "periodic redraw demand must defer while busy"
-        );
-        tx.send(7).unwrap();
-        notify_buffer_waiter(&waiting, &wake);
-        notify_buffer_waiter(&waiting, &wake);
-        assert_eq!(wakes.get(), 1, "one wake services a deferred redraw");
-        assert!(
-            !pool.redraw_deferred(),
-            "completion re-enables periodic redraws"
-        );
-        assert!(pool.prepare().unwrap());
-        assert_eq!(pool.recv().unwrap(), 7);
-        // Completion before admission needs no wake: admission finds the pair.
-        tx.send(8).unwrap();
-        notify_buffer_waiter(&waiting, &wake);
-        assert!(pool.prepare().unwrap());
-        assert_eq!(pool.recv().unwrap(), 8);
-        assert_eq!(wakes.get(), 1);
-        assert!(!pool.prepare().unwrap());
-        drop(tx);
-        notify_buffer_waiter(&waiting, &wake);
-        assert_eq!(wakes.get(), 2, "worker exit wakes a pending admission");
-        assert!(pool.prepare().is_err());
-    }
+    fn completion_and_failure_wake_deferred_work_without_losing_buffers() {
+        // Case `failed_outcomes_wake_even_without_deferred_work`.
+        {
+            use std::cell::Cell;
+            let waiting = AtomicBool::new(false);
+            let wakes = Cell::new(0);
+            let wake = || wakes.set(wakes.get() + 1);
+            notify_render_completion(&waiting, &wake, FrameOutcome::Presented);
+            assert_eq!(wakes.get(), 0);
+            for outcome in [
+                FrameOutcome::Skipped,
+                FrameOutcome::Reconfigured,
+                FrameOutcome::Occluded,
+                FrameOutcome::SurfaceGone,
+            ] {
+                notify_render_completion(&waiting, &wake, outcome);
+            }
+            assert_eq!(wakes.get(), 4);
+            waiting.store(true, Ordering::SeqCst);
+            notify_render_completion(&waiting, &wake, FrameOutcome::Presented);
+            assert_eq!(wakes.get(), 5);
+            assert!(!waiting.load(Ordering::SeqCst));
+        }
 
-    #[test]
-    fn admission_defers_without_consuming_partial_state_and_retains_reservation() {
-        let (tx, rx) = mpsc::sync_channel(2);
-        let waiting = Arc::new(AtomicBool::new(false));
-        let mut pool = BufferPool::new(rx, waiting.clone());
-        assert!(!pool.prepare().unwrap());
-        assert!(waiting.load(Ordering::SeqCst));
-        tx.send(41).unwrap();
-        assert!(pool.prepare().unwrap());
-        assert!(!waiting.load(Ordering::SeqCst));
-        // An aborted layout keeps the reservation for the next redraw.
-        assert!(pool.prepare().unwrap());
-        assert_eq!(pool.recv().unwrap(), 41);
-        assert!(!pool.prepare().unwrap());
-        drop(tx);
-        assert!(pool.prepare().is_err());
+        // Case `completion_wakes_only_deferred_work_and_cannot_lose_ready_buffers`.
+        {
+            use std::cell::Cell;
+            let (tx, rx) = mpsc::sync_channel(2);
+            let waiting = Arc::new(AtomicBool::new(false));
+            let mut pool = BufferPool::new(rx, waiting.clone());
+            let wakes = Cell::new(0);
+            let wake = || wakes.set(wakes.get() + 1);
+            notify_buffer_waiter(&waiting, &wake);
+            assert_eq!(wakes.get(), 0, "static completions must stay idle");
+            assert!(!pool.prepare().unwrap());
+            assert!(
+                pool.redraw_deferred(),
+                "periodic redraw demand must defer while busy"
+            );
+            tx.send(7).unwrap();
+            notify_buffer_waiter(&waiting, &wake);
+            notify_buffer_waiter(&waiting, &wake);
+            assert_eq!(wakes.get(), 1, "one wake services a deferred redraw");
+            assert!(
+                !pool.redraw_deferred(),
+                "completion re-enables periodic redraws"
+            );
+            assert!(pool.prepare().unwrap());
+            assert_eq!(pool.recv().unwrap(), 7);
+            // Completion before admission needs no wake: admission finds the pair.
+            tx.send(8).unwrap();
+            notify_buffer_waiter(&waiting, &wake);
+            assert!(pool.prepare().unwrap());
+            assert_eq!(pool.recv().unwrap(), 8);
+            assert_eq!(wakes.get(), 1);
+            assert!(!pool.prepare().unwrap());
+            drop(tx);
+            notify_buffer_waiter(&waiting, &wake);
+            assert_eq!(wakes.get(), 2, "worker exit wakes a pending admission");
+            assert!(pool.prepare().is_err());
+        }
     }
 }

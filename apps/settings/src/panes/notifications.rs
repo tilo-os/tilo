@@ -993,288 +993,305 @@ impl Widget for NotificationsPane {
 mod tests {
     use super::*;
 
+    /// Rule enumeration, inherited per-app rules, seeding, DND persistence, status text and layout.
     #[test]
-    fn notification_rules_enumerate_system_and_flatpak_desktop_identities() {
-        let tmp = tempfile::tempdir().unwrap();
-        let apps_dir = tmp.path().join("applications");
-        std::fs::create_dir_all(&apps_dir).unwrap();
-        std::fs::write(
-            apps_dir.join("org.example.Writer.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Writer\nExec=/bin/true\n",
-        )
-        .unwrap();
-        std::fs::write(
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn notification_pane_seeds_rules_and_status_without_writing() {
+        // Case `notification_rules_enumerate_system_and_flatpak_desktop_identities`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let apps_dir = tmp.path().join("applications");
+            std::fs::create_dir_all(&apps_dir).unwrap();
+            std::fs::write(
+                apps_dir.join("org.example.Writer.desktop"),
+                "[Desktop Entry]\nType=Application\nName=Writer\nExec=/bin/true\n",
+            )
+            .unwrap();
+            std::fs::write(
             apps_dir.join("org.example.Chat.desktop"),
             "[Desktop Entry]\nType=Application\nName=Chat\nExec=/bin/true\nX-Flatpak=org.example.Chat\n",
         )
         .unwrap();
-        let entries = desktop_entry::scan_dirs(
-            &[apps_dir],
-            &[desktop_entry::scan::CURRENT_DESKTOP.to_string()],
-        )
-        .entries;
+            let entries = desktop_entry::scan_dirs(
+                &[apps_dir],
+                &[desktop_entry::scan::CURRENT_DESKTOP.to_string()],
+            )
+            .entries;
 
-        let apps = installed_notification_apps_from(&BTreeMap::default(), &entries);
-        assert_eq!(
-            apps.iter()
-                .find(|app| app.id == "org.example.Chat")
-                .map(|app| app.name.as_str()),
-            Some("Chat"),
-            "Flatpak rules use X-Flatpak rather than the desktop-file id"
-        );
-        assert_eq!(
-            apps.iter()
-                .find(|app| app.id == "org.example.Writer")
-                .map(|app| app.name.as_str()),
-            Some("Writer"),
-            "system rules use the desktop-file id"
-        );
+            let apps = installed_notification_apps_from(&BTreeMap::default(), &entries);
+            assert_eq!(
+                apps.iter()
+                    .find(|app| app.id == "org.example.Chat")
+                    .map(|app| app.name.as_str()),
+                Some("Chat"),
+                "Flatpak rules use X-Flatpak rather than the desktop-file id"
+            );
+            assert_eq!(
+                apps.iter()
+                    .find(|app| app.id == "org.example.Writer")
+                    .map(|app| app.name.as_str()),
+                Some("Writer"),
+                "system rules use the desktop-file id"
+            );
+        }
+
+        // Case `opening_the_pane_keeps_per_app_rules_inherited_and_writes_nothing`.
+        {
+            let config = crate::prefs::test_env::ConfigGuard::new();
+            let id = "org.example.Inherits";
+            let mut per_app = BTreeMap::new();
+            per_app.insert(
+                id.to_string(),
+                settings_store::notification_policy::AppNotificationRule::default(),
+            );
+            let mut pane = NotificationsPane::with_prefs(NotificationPrefs {
+                show_banners: false,
+                per_app,
+                ..NotificationPrefs::default()
+            });
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                read_bool(&doc, &root, app_key(id, "banners")),
+                Some(false),
+                "the toggle shows the inherited global value"
+            );
+            assert_eq!(
+                pane.prefs().per_app[id].banners,
+                None,
+                "showing the inherited value is not an override"
+            );
+            assert!(
+                !config.config_root().join("settings.json").exists(),
+                "opening the pane persists nothing"
+            );
+
+            let _ = doc.put(
+                &root,
+                app_key(id, "banners").as_str(),
+                automerge::ScalarValue::Boolean(true),
+            );
+            pane.sync(&mut doc, &root);
+            let rule = pane.prefs().per_app[id];
+            assert_eq!(rule.banners, Some(true), "a flip is an override");
+            assert_eq!(rule.sounds, None, "and only for the flipped field");
+            assert_eq!(
+                SystemPrefs::load().notifications.per_app[id].banners,
+                Some(true)
+            );
+        }
+
+        // Case `seed_writes_current_prefs_into_crdt`.
+        {
+            let mut pane = NotificationsPane::with_prefs(NotificationPrefs {
+                do_not_disturb: true,
+                show_banners: false,
+                show_previews: true,
+                play_sounds: false,
+                show_on_lock_screen: true,
+                ..NotificationPrefs::default()
+            });
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert_eq!(read_bool(&doc, &root, DND_KEY), Some(true));
+            assert_eq!(read_bool(&doc, &root, BANNERS_KEY), Some(false));
+            assert_eq!(read_bool(&doc, &root, LOCK_SCREEN_KEY), Some(true));
+        }
+
+        // Case `toggling_dnd_updates_and_persists_prefs`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert!(!pane.prefs().do_not_disturb);
+            // User flips DND on.
+            let _ = doc.put(&root, DND_KEY, automerge::ScalarValue::Boolean(true));
+            pane.sync(&mut doc, &root);
+            assert!(pane.prefs().do_not_disturb, "the pane adopted the toggle");
+            // And it persisted to the shared store (loaded back through the store).
+            assert!(
+                SystemPrefs::load().notifications.do_not_disturb,
+                "persisted"
+            );
+        }
+
+        // Case `status_reflects_the_toggle_combination`.
+        {
+            let active = NotificationsPane::with_prefs(NotificationPrefs::default());
+            assert_eq!(active.status().0, "Active");
+            let silenced = NotificationsPane::with_prefs(NotificationPrefs {
+                do_not_disturb: true,
+                ..NotificationPrefs::default()
+            });
+            assert_eq!(silenced.status().0, "Silenced");
+            let banners_off = NotificationsPane::with_prefs(NotificationPrefs {
+                show_banners: false,
+                ..NotificationPrefs::default()
+            });
+            assert_eq!(banners_off.status().0, "Banners off");
+        }
+
+        // Case `builds_layout`.
+        {
+            let mut pane = build();
+            let theme = Theme::dark();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        }
     }
 
+    /// On-screen toggles dispatch the palette action and record one undo boundary.
     #[test]
-    fn opening_the_pane_keeps_per_app_rules_inherited_and_writes_nothing() {
-        let config = crate::prefs::test_env::ConfigGuard::new();
-        let id = "org.example.Inherits";
-        let mut per_app = BTreeMap::new();
-        per_app.insert(
-            id.to_string(),
-            settings_store::notification_policy::AppNotificationRule::default(),
-        );
-        let mut pane = NotificationsPane::with_prefs(NotificationPrefs {
-            show_banners: false,
-            per_app,
-            ..NotificationPrefs::default()
-        });
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root);
-        assert_eq!(
-            read_bool(&doc, &root, app_key(id, "banners")),
-            Some(false),
-            "the toggle shows the inherited global value"
-        );
-        assert_eq!(
-            pane.prefs().per_app[id].banners,
-            None,
-            "showing the inherited value is not an override"
-        );
-        assert!(
-            !config.config_root().join("settings.json").exists(),
-            "opening the pane persists nothing"
-        );
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn notification_toggles_dispatch_palette_actions_with_one_undo() {
+        // Case `on_screen_toggle_dispatches_same_action_as_palette`.
+        // Single source of truth: an on-screen toggle flip dispatches the exact
+        // same [`EncodedAction`] the Ctrl+K palette's flip spec builds — proven at
+        // the same pre-flip document state so both target the same value.
+        {
+            let config = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default()); // DND off
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root); // seeds both keys; nothing to dispatch
+            assert!(
+                pane.last_dispatched().is_none(),
+                "seeding dispatches no action"
+            );
 
-        let _ = doc.put(
-            &root,
-            app_key(id, "banners").as_str(),
-            automerge::ScalarValue::Boolean(true),
-        );
-        pane.sync(&mut doc, &root);
-        let rule = pane.prefs().per_app[id];
-        assert_eq!(rule.banners, Some(true), "a flip is an override");
-        assert_eq!(rule.sounds, None, "and only for the flipped field");
-        assert_eq!(
-            SystemPrefs::load().notifications.per_app[id].banners,
-            Some(true)
-        );
-    }
+            // The palette's DND flip spec, read at the pre-flip state (DND off).
+            let app = config.app();
+            let res = Widget::resources(&app, &doc);
+            let notif = res[0]
+                .children
+                .iter()
+                .find(|r| r.id.as_str() == "settings.section:notifications")
+                .unwrap();
+            let dnd_spec = notif.actions.iter().find(|a| a.id == "dnd").unwrap();
+            let from_spec = match &dnd_spec.input {
+                tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+                tilo_actions::ActionInput::Prompted { .. } => {
+                    panic!("the DND flip is an immediate action")
+                }
+            };
 
-    #[test]
-    fn seed_writes_current_prefs_into_crdt() {
-        let mut pane = NotificationsPane::with_prefs(NotificationPrefs {
-            do_not_disturb: true,
-            show_banners: false,
-            show_previews: true,
-            play_sounds: false,
-            show_on_lock_screen: true,
-            ..NotificationPrefs::default()
-        });
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert_eq!(read_bool(&doc, &root, DND_KEY), Some(true));
-        assert_eq!(read_bool(&doc, &root, BANNERS_KEY), Some(false));
-        assert_eq!(read_bool(&doc, &root, LOCK_SCREEN_KEY), Some(true));
-    }
+            // Simulate the Toggle writing its scratch key on a flip, then sync.
+            let scratch = NotificationsPane::scratch_key(DND_KEY);
+            let _ = doc.put(
+                &root,
+                scratch.as_str(),
+                automerge::ScalarValue::Boolean(true),
+            );
+            pane.sync(&mut doc, &root);
 
-    #[test]
-    fn toggling_dnd_updates_and_persists_prefs() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert!(!pane.prefs().do_not_disturb);
-        // User flips DND on.
-        let _ = doc.put(&root, DND_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        assert!(pane.prefs().do_not_disturb, "the pane adopted the toggle");
-        // And it persisted to the shared store (loaded back through the store).
-        assert!(
-            SystemPrefs::load().notifications.do_not_disturb,
-            "persisted"
-        );
-    }
+            let dispatched = pane
+                .last_dispatched()
+                .expect("the flip dispatched an action")
+                .clone();
+            let from_builder =
+                crate::actions::encode(&crate::actions::set_bool_action(DND_KEY, true));
+            assert_eq!(
+                dispatched, from_builder,
+                "on-screen flip == the shared builder"
+            );
+            assert_eq!(
+                dispatched, from_spec,
+                "on-screen flip == the palette ActionSpec"
+            );
 
-    /// Single source of truth: an on-screen toggle flip dispatches the exact
-    /// same [`EncodedAction`] the Ctrl+K palette's flip spec builds — proven at
-    /// the same pre-flip document state so both target the same value.
-    #[test]
-    fn on_screen_toggle_dispatches_same_action_as_palette() {
-        let config = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default()); // DND off
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root); // seeds both keys; nothing to dispatch
-        assert!(
-            pane.last_dispatched().is_none(),
-            "seeding dispatches no action"
-        );
+            // The action landed on the canonical key and the pane adopted + persisted it.
+            assert_eq!(read_bool(&doc, &root, DND_KEY), Some(true));
+            assert!(pane.prefs().do_not_disturb);
+        }
 
-        // The palette's DND flip spec, read at the pre-flip state (DND off).
-        let app = config.app();
-        let res = Widget::resources(&app, &doc);
-        let notif = res[0]
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == "settings.section:notifications")
-            .unwrap();
-        let dnd_spec = notif.actions.iter().find(|a| a.id == "dnd").unwrap();
-        let from_spec = match &dnd_spec.input {
-            tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => {
-                panic!("the DND flip is an immediate action")
-            }
-        };
+        // Case `on_screen_toggle_records_one_undo_boundary_and_reverts`.
+        // The full undo covenant on the on-screen path: a toggle flip dispatched
+        // through the executor records exactly one undo boundary, and Ctrl+Z reverts
+        // precisely that setting — after which the pane mirrors the reverted value
+        // back into the toggle.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default());
+            let mut state = ui::State::new();
+            pane.sync(&mut state.doc, &state.root); // seed
 
-        // Simulate the Toggle writing its scratch key on a flip, then sync.
-        let scratch = NotificationsPane::scratch_key(DND_KEY);
-        let _ = doc.put(
-            &root,
-            scratch.as_str(),
-            automerge::ScalarValue::Boolean(true),
-        );
-        pane.sync(&mut doc, &root);
+            // Flip the toggle's scratch key, then sync → the pane dispatches.
+            let scratch = NotificationsPane::scratch_key(DND_KEY);
+            let _ = state.doc.put(
+                &state.root,
+                scratch.as_str(),
+                automerge::ScalarValue::Boolean(true),
+            );
+            pane.sync(&mut state.doc, &state.root);
 
-        let dispatched = pane
-            .last_dispatched()
-            .expect("the flip dispatched an action")
-            .clone();
-        let from_builder = crate::actions::encode(&crate::actions::set_bool_action(DND_KEY, true));
-        assert_eq!(
-            dispatched, from_builder,
-            "on-screen flip == the shared builder"
-        );
-        assert_eq!(
-            dispatched, from_spec,
-            "on-screen flip == the palette ActionSpec"
-        );
+            // The host's own recorder drains the pane's captured bracket and records
+            // the boundary. Going through it rather than pushing an entry by hand is
+            // the point: attribution happens in there, and undo is author-scoped.
+            // The node map is empty because the pane is the root widget here.
+            let local_author = ui::collaboration::local_user_id();
+            let root: *mut dyn ui::widget::Widget = &mut pane;
+            assert!(
+                ui::undo::record_dispatched_action(
+                    &mut state,
+                    root,
+                    &std::collections::HashMap::new(),
+                    &local_author,
+                ),
+                "the host recorded an undo boundary for the dispatched flip"
+            );
+            assert_eq!(
+                read_bool(&state.doc, &state.root, DND_KEY),
+                Some(true),
+                "the action set DND on"
+            );
+            assert!(pane.prefs().do_not_disturb);
+            let entry = state
+                .peek_last_undo()
+                .expect("exactly one undo boundary recorded");
+            assert_eq!(
+                entry.author.as_ref(),
+                Some(&local_author),
+                "attributed to the local user, so their Ctrl+Z can reach it"
+            );
+            assert!(
+                pane.take_committed_action().is_none(),
+                "the bracket is rising-edge"
+            );
 
-        // The action landed on the canonical key and the pane adopted + persisted it.
-        assert_eq!(read_bool(&doc, &root, DND_KEY), Some(true));
-        assert!(pane.prefs().do_not_disturb);
-    }
-
-    /// The full undo covenant on the on-screen path: a toggle flip dispatched
-    /// through the executor records exactly one undo boundary, and Ctrl+Z reverts
-    /// precisely that setting — after which the pane mirrors the reverted value
-    /// back into the toggle.
-    #[test]
-    fn on_screen_toggle_records_one_undo_boundary_and_reverts() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default());
-        let mut state = ui::State::new();
-        pane.sync(&mut state.doc, &state.root); // seed
-
-        // Flip the toggle's scratch key, then sync → the pane dispatches.
-        let scratch = NotificationsPane::scratch_key(DND_KEY);
-        let _ = state.doc.put(
-            &state.root,
-            scratch.as_str(),
-            automerge::ScalarValue::Boolean(true),
-        );
-        pane.sync(&mut state.doc, &state.root);
-
-        // The host's own recorder drains the pane's captured bracket and records
-        // the boundary. Going through it rather than pushing an entry by hand is
-        // the point: attribution happens in there, and undo is author-scoped.
-        // The node map is empty because the pane is the root widget here.
-        let local_author = ui::collaboration::local_user_id();
-        let root: *mut dyn ui::widget::Widget = &mut pane;
-        assert!(
-            ui::undo::record_dispatched_action(
-                &mut state,
-                root,
-                &std::collections::HashMap::new(),
-                &local_author,
-            ),
-            "the host recorded an undo boundary for the dispatched flip"
-        );
-        assert_eq!(
-            read_bool(&state.doc, &state.root, DND_KEY),
-            Some(true),
-            "the action set DND on"
-        );
-        assert!(pane.prefs().do_not_disturb);
-        let entry = state
-            .peek_last_undo()
-            .expect("exactly one undo boundary recorded");
-        assert_eq!(
-            entry.author.as_ref(),
-            Some(&local_author),
-            "attributed to the local user, so their Ctrl+Z can reach it"
-        );
-        assert!(
-            pane.take_committed_action().is_none(),
-            "the bracket is rising-edge"
-        );
-
-        // Ctrl+Z reverts precisely the setting.
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
-        assert_eq!(
-            read_bool(&state.doc, &state.root, DND_KEY),
-            Some(false),
-            "undo reverted the setting"
-        );
-        // Next frame the pane mirrors the reverted canonical back into the scratch
-        // and adopts it, so the toggle follows — and it does not re-dispatch.
-        pane.sync(&mut state.doc, &state.root);
-        assert!(!pane.prefs().do_not_disturb, "the pane adopted the revert");
-        assert_eq!(
-            read_bool(&state.doc, &state.root, scratch.as_str()),
-            Some(false),
-            "the toggle's scratch mirrors the reverted value"
-        );
-        assert!(
-            pane.take_committed_action().is_none(),
-            "mirroring the revert dispatches nothing"
-        );
-    }
-
-    #[test]
-    fn status_reflects_the_toggle_combination() {
-        let active = NotificationsPane::with_prefs(NotificationPrefs::default());
-        assert_eq!(active.status().0, "Active");
-        let silenced = NotificationsPane::with_prefs(NotificationPrefs {
-            do_not_disturb: true,
-            ..NotificationPrefs::default()
-        });
-        assert_eq!(silenced.status().0, "Silenced");
-        let banners_off = NotificationsPane::with_prefs(NotificationPrefs {
-            show_banners: false,
-            ..NotificationPrefs::default()
-        });
-        assert_eq!(banners_off.status().0, "Banners off");
-    }
-
-    #[test]
-    fn builds_layout() {
-        let mut pane = build();
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+            // Ctrl+Z reverts precisely the setting.
+            state
+                .undo_as(Some(&local_author), None, None)
+                .expect("an undo entry to pop");
+            assert_eq!(
+                read_bool(&state.doc, &state.root, DND_KEY),
+                Some(false),
+                "undo reverted the setting"
+            );
+            // Next frame the pane mirrors the reverted canonical back into the scratch
+            // and adopts it, so the toggle follows — and it does not re-dispatch.
+            pane.sync(&mut state.doc, &state.root);
+            assert!(!pane.prefs().do_not_disturb, "the pane adopted the revert");
+            assert_eq!(
+                read_bool(&state.doc, &state.root, scratch.as_str()),
+                Some(false),
+                "the toggle's scratch mirrors the reverted value"
+            );
+            assert!(
+                pane.take_committed_action().is_none(),
+                "mirroring the revert dispatches nothing"
+            );
+        }
     }
 }

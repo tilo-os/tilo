@@ -246,60 +246,65 @@ mod tests {
         certificate
     }
 
+    /// Validation rejects ambiguous or unpresentable rows, and v2 binds each device certificate to one
+    /// governed human root.
     #[test]
-    fn validation_rejects_ambiguous_or_unpresentable_rows() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[4; 32])
-            .verifying_key()
-            .to_bytes();
-        let row = |name: &str| GovernedHumanIdentityV1 {
-            root_public_key: root,
-            display_name: name.to_string(),
-        };
-        let duplicate = TrustedIdentityProjectionV1 {
-            schema_version: TRUSTED_IDENTITY_PROJECTION_V1_VERSION,
-            humans: vec![row("Ada"), row("Grace")],
-        };
-        assert_eq!(
-            duplicate.validate(),
-            Err(TrustedIdentityProjectionError::DuplicateRootKey)
-        );
-        let untrimmed = TrustedIdentityProjectionV1 {
-            schema_version: TRUSTED_IDENTITY_PROJECTION_V1_VERSION,
-            humans: vec![row(" Ada ")],
-        };
-        assert_eq!(
-            untrimmed.validate(),
-            Err(TrustedIdentityProjectionError::InvalidDisplayName)
-        );
-    }
+    fn identity_projections_are_unambiguous_and_bind_devices_to_one_root() {
+        // Phase: validation_rejects_ambiguous_or_unpresentable_rows.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[4; 32])
+                .verifying_key()
+                .to_bytes();
+            let row = |name: &str| GovernedHumanIdentityV1 {
+                root_public_key: root,
+                display_name: name.to_string(),
+            };
+            let duplicate = TrustedIdentityProjectionV1 {
+                schema_version: TRUSTED_IDENTITY_PROJECTION_V1_VERSION,
+                humans: vec![row("Ada"), row("Grace")],
+            };
+            assert_eq!(
+                duplicate.validate(),
+                Err(TrustedIdentityProjectionError::DuplicateRootKey)
+            );
+            let untrimmed = TrustedIdentityProjectionV1 {
+                schema_version: TRUSTED_IDENTITY_PROJECTION_V1_VERSION,
+                humans: vec![row(" Ada ")],
+            };
+            assert_eq!(
+                untrimmed.validate(),
+                Err(TrustedIdentityProjectionError::InvalidDisplayName)
+            );
+        }
 
-    #[test]
-    fn v2_binds_each_device_certificate_to_one_governed_human_root() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
-        let certificate = certificate(&root, 22);
-        let projection = TrustedIdentityProjectionV2 {
-            schema_version: TRUSTED_IDENTITY_PROJECTION_VERSION,
-            humans: vec![GovernedHumanIdentityV2 {
-                root_public_key: root.verifying_key().to_bytes(),
-                display_name: "Ada Lovelace".into(),
-                devices: vec![GovernedDeviceIdentityV2 { certificate }],
-            }],
-        };
-        projection.validate().unwrap();
+        // Phase: v2_binds_each_device_certificate_to_one_governed_human_root.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
+            let certificate = certificate(&root, 22);
+            let projection = TrustedIdentityProjectionV2 {
+                schema_version: TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![GovernedHumanIdentityV2 {
+                    root_public_key: root.verifying_key().to_bytes(),
+                    display_name: "Ada Lovelace".into(),
+                    devices: vec![GovernedDeviceIdentityV2 { certificate }],
+                }],
+            };
+            projection.validate().unwrap();
 
-        let mut wrong_root = projection.clone();
-        wrong_root.humans[0].root_public_key = ed25519_dalek::SigningKey::from_bytes(&[23; 32])
-            .verifying_key()
-            .to_bytes();
-        assert_eq!(
-            wrong_root.validate(),
-            Err(TrustedIdentityProjectionError::InvalidDeviceCertificate)
-        );
-        let mut tampered = projection;
-        tampered.humans[0].devices[0].certificate.device_label = "Impostor laptop".into();
-        assert_eq!(
-            tampered.validate(),
-            Err(TrustedIdentityProjectionError::InvalidDeviceCertificate)
-        );
+            let mut wrong_root = projection.clone();
+            wrong_root.humans[0].root_public_key = ed25519_dalek::SigningKey::from_bytes(&[23; 32])
+                .verifying_key()
+                .to_bytes();
+            assert_eq!(
+                wrong_root.validate(),
+                Err(TrustedIdentityProjectionError::InvalidDeviceCertificate)
+            );
+            let mut tampered = projection;
+            tampered.humans[0].devices[0].certificate.device_label = "Impostor laptop".into();
+            assert_eq!(
+                tampered.validate(),
+                Err(TrustedIdentityProjectionError::InvalidDeviceCertificate)
+            );
+        }
     }
 }

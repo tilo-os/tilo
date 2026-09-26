@@ -252,84 +252,85 @@ mod tests {
     }
 
     #[test]
-    fn base_comes_from_agreeing_sources() {
-        let s = State {
-            nv_index: 1,
-            nv_base: 100,
-            last_confirmed: Some(7),
-            foreign_keyslots: vec![0],
-        };
-        let toks = vec![tok(7, 100), tok(6, 100)];
-        assert_eq!(load_base(Some(&s), &toks).unwrap(), Some(100));
+    fn confirmation_bases_come_only_from_agreeing_sources() {
+        // Phase `base_comes_from_agreeing_sources`.
+        {
+            let s = State {
+                nv_index: 1,
+                nv_base: 100,
+                last_confirmed: Some(7),
+                foreign_keyslots: vec![0],
+            };
+            let toks = vec![tok(7, 100), tok(6, 100)];
+            assert_eq!(load_base(Some(&s), &toks).unwrap(), Some(100));
+        }
+        // Phase `a_disagreeing_base_is_refused`.
+        {
+            let s = State {
+                nv_index: 1,
+                nv_base: 100,
+                last_confirmed: Some(7),
+                foreign_keyslots: vec![0],
+            };
+            let toks = vec![tok(7, 999)];
+            let e = load_base(Some(&s), &toks).unwrap_err().to_string();
+            assert!(e.contains("disagrees between sources"), "{e}");
+        }
+        // Phase `no_source_means_no_base_yet`.
+        {
+            assert_eq!(load_base(None, &[]).unwrap(), None);
+        }
+        // Phase `a_base_from_tokens_alone_is_usable`.
+        {
+            assert_eq!(load_base(None, &[tok(7, 42)]).unwrap(), Some(42));
+        }
     }
 
     #[test]
-    fn a_disagreeing_base_is_refused() {
-        let s = State {
-            nv_index: 1,
-            nv_base: 100,
-            last_confirmed: Some(7),
-            foreign_keyslots: vec![0],
-        };
-        let toks = vec![tok(7, 999)];
-        let e = load_base(Some(&s), &toks).unwrap_err().to_string();
-        assert!(e.contains("disagrees between sources"), "{e}");
-    }
+    fn confirmation_plans_window_prune_floor_and_round_trip_state() {
+        // Phase `planning_confirms_the_window_and_the_prune`.
+        {
+            let floor = FloorState {
+                counter: 100,
+                base: 100,
+            }; // floor generation 0
+            let p = plan(10, floor, &[7, 8, 9, 10], 3, None).unwrap();
+            assert_eq!(p.floor.target_floor, 8);
+            assert_eq!(p.keep, vec![10, 9, 8]);
+            assert_eq!(p.drop, vec![7]);
+        }
+        // Phase `planning_honours_a_declared_floor`.
+        {
+            let floor = FloorState {
+                counter: 100,
+                base: 100,
+            };
+            let p = plan(10, floor, &[8, 9, 10], 3, Some(10)).unwrap();
+            assert_eq!(p.floor.target_floor, 10);
+            // The keyslots are still retained even though the floor closed the window — the floor
+            // enforces, and keeping slots means a later re-enrollment doesn't rebuild from nothing.
+            assert_eq!(p.keep, vec![10, 9, 8]);
+        }
+        // Phase `state_round_trips`.
+        {
+            use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn no_source_means_no_base_yet() {
-        assert_eq!(load_base(None, &[]).unwrap(), None);
-    }
-
-    #[test]
-    fn a_base_from_tokens_alone_is_usable() {
-        assert_eq!(load_base(None, &[tok(7, 42)]).unwrap(), Some(42));
-    }
-
-    #[test]
-    fn planning_confirms_the_window_and_the_prune() {
-        let floor = FloorState {
-            counter: 100,
-            base: 100,
-        }; // floor generation 0
-        let p = plan(10, floor, &[7, 8, 9, 10], 3, None).unwrap();
-        assert_eq!(p.floor.target_floor, 8);
-        assert_eq!(p.keep, vec![10, 9, 8]);
-        assert_eq!(p.drop, vec![7]);
-    }
-
-    #[test]
-    fn planning_honours_a_declared_floor() {
-        let floor = FloorState {
-            counter: 100,
-            base: 100,
-        };
-        let p = plan(10, floor, &[8, 9, 10], 3, Some(10)).unwrap();
-        assert_eq!(p.floor.target_floor, 10);
-        // The keyslots are still retained even though the floor closed the window — the floor
-        // enforces, and keeping slots means a later re-enrollment doesn't rebuild from nothing.
-        assert_eq!(p.keep, vec![10, 9, 8]);
-    }
-
-    #[test]
-    fn state_round_trips() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("s.json");
-        let s = State {
-            nv_index: 0x01D9_1100,
-            nv_base: 5,
-            last_confirmed: None,
-            foreign_keyslots: vec![0, 1],
-        };
-        assert_eq!(load_state(&p).unwrap(), None);
-        save_state(&p, &s).unwrap();
-        assert_eq!(load_state(&p).unwrap(), Some(s));
-        assert_eq!(
-            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+            let d = tempfile::tempdir().unwrap();
+            let p = d.path().join("s.json");
+            let s = State {
+                nv_index: 0x01D9_1100,
+                nv_base: 5,
+                last_confirmed: None,
+                foreign_keyslots: vec![0, 1],
+            };
+            assert_eq!(load_state(&p).unwrap(), None);
+            save_state(&p, &s).unwrap();
+            assert_eq!(load_state(&p).unwrap(), Some(s));
+            assert_eq!(
+                std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 }
 

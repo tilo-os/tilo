@@ -451,81 +451,82 @@ dhcp-option DNS 172.20.4.1
 ";
 
     #[test]
-    fn parse_result_is_secret_free_profile_identity() {
-        let c = parse_config("Home", ConnKind::WireGuard, WG);
-        assert_eq!(c.name, "Home");
-        assert_eq!(c.kind, ConnKind::WireGuard);
-        assert_eq!(c.status, ConnStatus::Disconnected);
-    }
-
-    #[test]
-    fn readiness_validation_rejects_partial_or_unverifiable_profiles() {
-        assert!(validate_config(ConnKind::WireGuard, "[Peer]\nEndpoint=x:1").is_err());
-        assert!(validate_config(ConnKind::WireGuard, WG).is_ok());
-        assert!(validate_config(ConnKind::OpenVpn, "client\nremote vpn.example 1194").is_err());
-        assert!(
-            validate_config(
-                ConnKind::OpenVpn,
-                "client\nremote vpn.example 1194\n<ca>\ncertificate\n</ca>"
-            )
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn openvpn_parse_result_does_not_contain_server_details() {
-        let c = parse_config("Work", ConnKind::OpenVpn, OVPN);
-        assert_eq!(c.name, "Work");
-        assert_eq!(c.kind, ConnKind::OpenVpn);
-    }
-
-    #[test]
-    fn kind_detected_from_extension() {
-        assert_eq!(kind_from_filename("home.conf"), Some(ConnKind::WireGuard));
-        assert_eq!(kind_from_filename("WORK.OVPN"), Some(ConnKind::OpenVpn));
-        assert_eq!(kind_from_filename("notes.txt"), None);
-    }
-
-    #[test]
-    fn command_plans_use_iface_without_imported_config() {
-        // No imported config → the interface name is the sanitised tunnel
-        // name, and wg-quick resolves it against /etc/wireguard.
-        let c = Connection::new("Home", ConnKind::WireGuard);
-        assert_eq!(iface_name(&c), "home");
-        let up = connect_plan(&c, Backend::WgQuick);
-        assert_eq!(up.display(), "wg-quick up home");
-        let down = disconnect_plan(&c, Backend::WgQuick);
-        assert_eq!(down.display(), "wg-quick down home");
-        let nm = connect_plan(&c, Backend::NetworkManager);
-        assert_eq!(nm.display(), "nmcli connection up Home");
-    }
-
-    #[test]
-    fn iface_name_is_sanitised_and_bounded() {
-        let mut c = Connection::new("My Work VPN (São Paulo)!!", ConnKind::WireGuard);
-        let n = iface_name(&c);
-        assert!(
-            crate::net::is_valid_iface(&n),
-            "derived name {n:?} must be a valid iface"
-        );
-        assert!(n.len() <= 15);
-        // An empty name still yields a valid, unique-ish interface.
-        c.name = "   ".into();
-        let n2 = iface_name(&c);
-        assert!(
-            crate::net::is_valid_iface(&n2),
-            "fallback {n2:?} must be valid"
-        );
+    fn config_parsing_yields_secret_free_validated_profiles() {
+        // Case `parse_result_is_secret_free_profile_identity`.
+        {
+            let c = parse_config("Home", ConnKind::WireGuard, WG);
+            assert_eq!(c.name, "Home");
+            assert_eq!(c.kind, ConnKind::WireGuard);
+            assert_eq!(c.status, ConnStatus::Disconnected);
+        }
+        // Case `readiness_validation_rejects_partial_or_unverifiable_profiles`.
+        {
+            assert!(validate_config(ConnKind::WireGuard, "[Peer]\nEndpoint=x:1").is_err());
+            assert!(validate_config(ConnKind::WireGuard, WG).is_ok());
+            assert!(validate_config(ConnKind::OpenVpn, "client\nremote vpn.example 1194").is_err());
+            assert!(
+                validate_config(
+                    ConnKind::OpenVpn,
+                    "client\nremote vpn.example 1194\n<ca>\ncertificate\n</ca>"
+                )
+                .is_ok()
+            );
+        }
+        // Case `openvpn_parse_result_does_not_contain_server_details`.
+        {
+            let c = parse_config("Work", ConnKind::OpenVpn, OVPN);
+            assert_eq!(c.name, "Work");
+            assert_eq!(c.kind, ConnKind::OpenVpn);
+        }
+        // Case `kind_detected_from_extension`.
+        {
+            assert_eq!(kind_from_filename("home.conf"), Some(ConnKind::WireGuard));
+            assert_eq!(kind_from_filename("WORK.OVPN"), Some(ConnKind::OpenVpn));
+            assert_eq!(kind_from_filename("notes.txt"), None);
+        }
     }
 
     #[test]
     #[serial_test::serial(vpn_env)]
-    fn execute_is_guarded_off_by_default() {
-        // The execution boundary rejects anything outside its fixed VPN
-        // vocabulary, even after a UI confirmation.
-        let plan = tor_plan(true);
-        let r = execute(&plan);
-        assert!(r.is_err());
-        assert!(r.unwrap_err().contains("execution disabled"));
+    fn command_plans_are_sanitised_and_guarded() {
+        // Case `command_plans_use_iface_without_imported_config`.
+        {
+            // No imported config → the interface name is the sanitised tunnel
+            // name, and wg-quick resolves it against /etc/wireguard.
+            let c = Connection::new("Home", ConnKind::WireGuard);
+            assert_eq!(iface_name(&c), "home");
+            let up = connect_plan(&c, Backend::WgQuick);
+            assert_eq!(up.display(), "wg-quick up home");
+            let down = disconnect_plan(&c, Backend::WgQuick);
+            assert_eq!(down.display(), "wg-quick down home");
+            let nm = connect_plan(&c, Backend::NetworkManager);
+            assert_eq!(nm.display(), "nmcli connection up Home");
+        }
+        // Case `iface_name_is_sanitised_and_bounded`.
+        {
+            let mut c = Connection::new("My Work VPN (São Paulo)!!", ConnKind::WireGuard);
+            let n = iface_name(&c);
+            assert!(
+                crate::net::is_valid_iface(&n),
+                "derived name {n:?} must be a valid iface"
+            );
+            assert!(n.len() <= 15);
+            // An empty name still yields a valid, unique-ish interface.
+            c.name = "   ".into();
+            let n2 = iface_name(&c);
+            assert!(
+                crate::net::is_valid_iface(&n2),
+                "fallback {n2:?} must be valid"
+            );
+        }
+        // Case `execute_is_guarded_off_by_default`.
+        {
+            // The execution boundary rejects anything outside its fixed VPN
+            // vocabulary, even after a UI confirmation.
+            let plan = tor_plan(true);
+            let r = execute(&plan);
+            assert!(r.is_err());
+            assert!(r.unwrap_err().contains("execution disabled"));
+        }
     }
 }

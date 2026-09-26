@@ -74,22 +74,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cpu_work_runs_on_the_cpu_pool_not_the_runtime() {
-        let (name, in_runtime) = crate::block_on(cpu(|| {
-            (
-                std::thread::current().name().map(str::to_owned),
-                crate::in_runtime(),
-            )
-        }))
-        .unwrap()
-        .unwrap();
-        assert!(name.unwrap().starts_with("tilo-cpu-"));
-        assert!(!in_runtime);
-    }
-
-    #[test]
-    fn a_panicking_job_reports_failure() {
-        let result = crate::block_on(cpu(|| -> u8 { panic!("job failure") })).unwrap();
-        assert!(matches!(result, Err(Error::TaskFailed)));
+    fn cpu_work_runs_on_the_pool_and_reports_panics() {
+        // phase: cpu_work_runs_on_the_cpu_pool_not_the_runtime
+        {
+            let (name, in_runtime) = crate::block_on(cpu(|| {
+                (
+                    std::thread::current().name().map(str::to_owned),
+                    crate::in_runtime(),
+                )
+            }))
+            .unwrap()
+            .unwrap();
+            assert!(name.unwrap().starts_with("tilo-cpu-"));
+            assert!(!in_runtime);
+        }
+        // phase: a_panicking_job_reports_failure
+        {
+            let result = crate::block_on(cpu(|| -> u8 { panic!("job failure") })).unwrap();
+            assert!(matches!(result, Err(Error::TaskFailed)));
+        }
     }
 }

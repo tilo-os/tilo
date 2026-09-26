@@ -796,45 +796,49 @@ mod tab_menu_item_tests {
     use super::*;
 
     #[test]
-    fn a_single_tab_group_is_offered_only_close() {
-        let items = tab_context_menu_items(1);
-        assert_eq!(items, vec![Some(TabMenuAction::CloseTab)]);
-        let (menu, _) = build_tab_context_menu(1);
-        assert_eq!(menu.items().len(), 1);
-    }
-
-    #[test]
-    fn a_multi_tab_group_gets_close_then_the_split_pair_after_a_separator() {
-        let items = tab_context_menu_items(3);
-        assert_eq!(
-            items,
-            vec![
-                Some(TabMenuAction::CloseTab),
-                None,
-                Some(TabMenuAction::SplitRight),
-                Some(TabMenuAction::MoveToNewGroup),
-            ]
-        );
-        let (menu, actions) = build_tab_context_menu(3);
-        assert_eq!(menu.items().len(), actions.len(), "one menu row per item");
-        let labels: Vec<_> = menu.items().iter().filter_map(|i| i.label()).collect();
-        assert_eq!(labels, ["Close Tab", "Split Right", "Move to New Group"]);
-    }
-
-    #[test]
-    fn semantic_keys_round_trip_and_are_unique() {
-        for action in [
-            TabMenuAction::CloseTab,
-            TabMenuAction::SplitRight,
-            TabMenuAction::MoveToNewGroup,
-        ] {
-            assert_eq!(
-                TabMenuAction::from_semantic_key(action.semantic_key()),
-                Some(action)
-            );
-            assert!(action.semantic_key().starts_with("tabmenu:"));
+    fn tab_menu_items_depend_on_group_size_and_keys_round_trip() {
+        fn a_single_tab_group_is_offered_only_close() {
+            let items = tab_context_menu_items(1);
+            assert_eq!(items, vec![Some(TabMenuAction::CloseTab)]);
+            let (menu, _) = build_tab_context_menu(1);
+            assert_eq!(menu.items().len(), 1);
         }
-        assert_eq!(TabMenuAction::from_semantic_key("tabmenu:nope"), None);
+
+        fn a_multi_tab_group_gets_close_then_the_split_pair_after_a_separator() {
+            let items = tab_context_menu_items(3);
+            assert_eq!(
+                items,
+                vec![
+                    Some(TabMenuAction::CloseTab),
+                    None,
+                    Some(TabMenuAction::SplitRight),
+                    Some(TabMenuAction::MoveToNewGroup),
+                ]
+            );
+            let (menu, actions) = build_tab_context_menu(3);
+            assert_eq!(menu.items().len(), actions.len(), "one menu row per item");
+            let labels: Vec<_> = menu.items().iter().filter_map(|i| i.label()).collect();
+            assert_eq!(labels, ["Close Tab", "Split Right", "Move to New Group"]);
+        }
+
+        fn semantic_keys_round_trip_and_are_unique() {
+            for action in [
+                TabMenuAction::CloseTab,
+                TabMenuAction::SplitRight,
+                TabMenuAction::MoveToNewGroup,
+            ] {
+                assert_eq!(
+                    TabMenuAction::from_semantic_key(action.semantic_key()),
+                    Some(action)
+                );
+                assert!(action.semantic_key().starts_with("tabmenu:"));
+            }
+            assert_eq!(TabMenuAction::from_semantic_key("tabmenu:nope"), None);
+        }
+
+        a_single_tab_group_is_offered_only_close();
+        a_multi_tab_group_gets_close_then_the_split_pair_after_a_separator();
+        semantic_keys_round_trip_and_are_unique();
     }
 }
 
@@ -1736,43 +1740,47 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence:
 mod hosted_app_tests {
     use super::*;
 
-    /// Drag a tab into its own window and the group rebuilds from widgets,
-    /// which knows only the tab's title — if the recovered label isn't
-    /// what the hydration match arms name, the tab comes back as a
-    /// "coming soon" card. This is the failure this table exists to prevent.
     #[test]
-    fn every_hosted_app_round_trips_from_its_tab_title_into_a_live_app() {
-        for (title, label) in HOSTED_OTHER_APPS {
-            let recovered = hosted_label_for_title(title);
-            assert_eq!(
-                &recovered, label,
-                "a tab titled {title:?} must recover the label {label:?}",
-            );
+    fn hosted_app_titles_round_trip_into_live_apps_or_pass_through() {
+        /// Drag a tab into its own window and the group rebuilds from widgets,
+        /// which knows only the tab's title — if the recovered label isn't
+        /// what the hydration match arms name, the tab comes back as a
+        /// "coming soon" card. This is the failure this table exists to prevent.
+        fn every_hosted_app_round_trips_from_its_tab_title_into_a_live_app() {
+            for (title, label) in HOSTED_OTHER_APPS {
+                let recovered = hosted_label_for_title(title);
+                assert_eq!(
+                    &recovered, label,
+                    "a tab titled {title:?} must recover the label {label:?}",
+                );
 
-            let tile = ShellTile::AppPlaceholder {
-                kind: ShellKind::Other(recovered.clone()),
-                label: (*title).to_string(),
-            };
-            assert_eq!(
-                resolve_tile_shape_for_test(&tile),
-                "App",
-                "{title:?} hydrated into a placeholder card instead of the \
-                 app it names",
-            );
-            assert_eq!(
-                to_ui_kind(&ShellKind::Other(recovered)),
-                UiKind::Editor,
-                "{title:?} must wear an editor glyph, not the unknown-kind \
-                 settings cog",
-            );
+                let tile = ShellTile::AppPlaceholder {
+                    kind: ShellKind::Other(recovered.clone()),
+                    label: (*title).to_string(),
+                };
+                assert_eq!(
+                    resolve_tile_shape_for_test(&tile),
+                    "App",
+                    "{title:?} hydrated into a placeholder card instead of the \
+                     app it names",
+                );
+                assert_eq!(
+                    to_ui_kind(&ShellKind::Other(recovered)),
+                    UiKind::Editor,
+                    "{title:?} must wear an editor glyph, not the unknown-kind \
+                     settings cog",
+                );
+            }
         }
-    }
 
-    /// A title the shell does not host carries through untouched, so a
-    /// foreign or future app is not silently renamed into one of ours.
-    #[test]
-    fn an_unhosted_title_is_carried_through_unchanged() {
-        assert_eq!(hosted_label_for_title("Inkscape"), "Inkscape");
-        assert_eq!(hosted_label_for_title("report.odt"), "report.odt");
+        /// A title the shell does not host carries through untouched, so a
+        /// foreign or future app is not silently renamed into one of ours.
+        fn an_unhosted_title_is_carried_through_unchanged() {
+            assert_eq!(hosted_label_for_title("Inkscape"), "Inkscape");
+            assert_eq!(hosted_label_for_title("report.odt"), "report.odt");
+        }
+
+        every_hosted_app_round_trips_from_its_tab_title_into_a_live_app();
+        an_unhosted_title_is_carried_through_unchanged();
     }
 }

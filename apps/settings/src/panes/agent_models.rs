@@ -1647,201 +1647,213 @@ mod tests {
         }
     }
 
+    /// No fabricated recommendations, license-confirmed installs, bounded progress and confirmed removal.
     #[test]
-    fn unavailable_manager_never_fabricates_a_catalog_recommendation() {
-        let fallback = fallback_snapshot();
-        assert!(fallback.recommendation.is_none());
+    fn model_catalog_install_and_removal_are_honest_and_confirmed() {
+        // Case `unavailable_manager_never_fabricates_a_catalog_recommendation`.
+        {
+            let fallback = fallback_snapshot();
+            assert!(fallback.recommendation.is_none());
 
-        let control = Arc::new(MockControl {
-            snapshot: Mutex::new(fallback),
-            calls: Mutex::new(Vec::new()),
-        });
-        let pane = AgentModelsPane::with_control(control);
-        let composition = pane.build_composition();
-        let mut nodes = Vec::new();
-        collect_accessibility(composition.as_ref(), &mut nodes);
-        let setup = nodes
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Set up unavailable"))
-            .expect("disabled setup remains understandable to assistive technology");
-        assert!(setup.state.disabled);
+            let control = Arc::new(MockControl {
+                snapshot: Mutex::new(fallback),
+                calls: Mutex::new(Vec::new()),
+            });
+            let pane = AgentModelsPane::with_control(control);
+            let composition = pane.build_composition();
+            let mut nodes = Vec::new();
+            collect_accessibility(composition.as_ref(), &mut nodes);
+            let setup = nodes
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Set up unavailable"))
+                .expect("disabled setup remains understandable to assistive technology");
+            assert!(setup.state.disabled);
+        }
+
+        // Case `install_requires_visible_license_confirmation`.
+        {
+            let control = Arc::new(MockControl {
+                snapshot: Mutex::new(snapshot(None)),
+                calls: Mutex::new(Vec::new()),
+            });
+            let mut pane = AgentModelsPane::with_control(control.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+
+            let _ = doc.put(&root, SETUP_KEY, true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.confirmation.as_deref(), Some("test/model"));
+            assert!(control.calls.lock().unwrap().is_empty());
+
+            let _ = doc.put(&root, CONFIRM_KEY, true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                control.calls.lock().unwrap().as_slice(),
+                ["install:test/model@0123456789abcdef"]
+            );
+        }
+
+        // Case `progress_is_bounded_and_machine_readable`.
+        {
+            let phase = LocalModelPhase::Downloading {
+                downloaded_bytes: 3,
+                total_bytes: 4,
+            };
+            assert_eq!(phase_progress(&phase), Some(0.75));
+            let progress = ProgressBar::new(phase_progress(&phase).unwrap()).with_label("Download");
+            let access = Widget::accessibility(&progress).expect("labelled progress is accessible");
+            assert_eq!(access.value.as_deref(), Some("75%"));
+        }
+
+        // Case `remove_is_confirmed_before_backend_mutation`.
+        {
+            let control = Arc::new(MockControl {
+                snapshot: Mutex::new(snapshot(Some(LocalModelPhase::Ready {
+                    running: false,
+                    endpoint: None,
+                }))),
+                calls: Mutex::new(Vec::new()),
+            });
+            let mut pane = AgentModelsPane::with_control(control.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let key = model_key("test/model", ModelAction::Remove);
+
+            let _ = doc.put(&root, &key, true);
+            pane.sync(&mut doc, &root);
+            assert!(control.calls.lock().unwrap().is_empty());
+            assert_eq!(pane.remove_confirmation.as_deref(), Some("test/model"));
+
+            let _ = doc.put(&root, &key, true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                control.calls.lock().unwrap().as_slice(),
+                ["remove:test/model"]
+            );
+        }
     }
 
+    /// Terminal receipts, safe lifecycle controls, separate accelerator setup and the manager endpoint.
     #[test]
-    fn install_requires_visible_license_confirmation() {
-        let control = Arc::new(MockControl {
-            snapshot: Mutex::new(snapshot(None)),
-            calls: Mutex::new(Vec::new()),
-        });
-        let mut pane = AgentModelsPane::with_control(control.clone());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn local_model_lifecycle_exposes_only_safe_controls() {
+        // Case `local_start_reports_a_terminal_receipt_only_for_its_matching_operation`.
+        {
+            let control = Arc::new(MockControl {
+                snapshot: Mutex::new(snapshot(Some(LocalModelPhase::Ready {
+                    running: false,
+                    endpoint: None,
+                }))),
+                calls: Mutex::new(Vec::new()),
+            });
+            let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
+            let mut pane =
+                AgentModelsPane::with_control(control.clone()).with_operation_status(&status);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let operation = crate::actions::AgentModelOperation::Start {
+                id: "test/model".into(),
+            };
+            status.set(crate::actions::LocalOperationStatus::Running {
+                token: crate::actions::local_operation_token_for(
+                    crate::actions::AGENT_MODEL_OPERATION_TYPE,
+                    &operation,
+                ),
+            });
+            let _ = doc.put(&root, model_key("test/model", ModelAction::Start), true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                control.calls.lock().unwrap().as_slice(),
+                ["start:test/model"]
+            );
+            assert!(matches!(
+                status.get(),
+                crate::actions::LocalOperationStatus::Succeeded { .. }
+            ));
+        }
 
-        let _ = doc.put(&root, SETUP_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.confirmation.as_deref(), Some("test/model"));
-        assert!(control.calls.lock().unwrap().is_empty());
-
-        let _ = doc.put(&root, CONFIRM_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(
-            control.calls.lock().unwrap().as_slice(),
-            ["install:test/model@0123456789abcdef"]
-        );
-    }
-
-    #[test]
-    fn local_start_reports_a_terminal_receipt_only_for_its_matching_operation() {
-        let control = Arc::new(MockControl {
-            snapshot: Mutex::new(snapshot(Some(LocalModelPhase::Ready {
-                running: false,
-                endpoint: None,
-            }))),
-            calls: Mutex::new(Vec::new()),
-        });
-        let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
-        let mut pane =
-            AgentModelsPane::with_control(control.clone()).with_operation_status(&status);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let operation = crate::actions::AgentModelOperation::Start {
-            id: "test/model".into(),
-        };
-        status.set(crate::actions::LocalOperationStatus::Running {
-            token: crate::actions::local_operation_token_for(
-                crate::actions::AGENT_MODEL_OPERATION_TYPE,
-                &operation,
-            ),
-        });
-        let _ = doc.put(&root, model_key("test/model", ModelAction::Start), true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(
-            control.calls.lock().unwrap().as_slice(),
-            ["start:test/model"]
-        );
-        assert!(matches!(
-            status.get(),
-            crate::actions::LocalOperationStatus::Succeeded { .. }
-        ));
-    }
-
-    #[test]
-    fn lifecycle_exposes_only_safe_controls() {
-        assert_eq!(
-            available_actions(&LocalModelPhase::Ready {
-                running: false,
-                endpoint: None
-            }),
-            [ModelAction::Start, ModelAction::Remove]
-        );
-        assert_eq!(
-            available_actions(&LocalModelPhase::Ready {
-                running: true,
-                endpoint: None
-            }),
-            [ModelAction::Stop, ModelAction::Remove]
-        );
-        assert!(
-            available_actions(&LocalModelPhase::Downloading {
-                downloaded_bytes: 4,
-                total_bytes: 10,
-            })
-            .is_empty()
-        );
-    }
-
-    #[test]
-    fn accelerator_setup_is_separate_from_model_lifecycle() {
-        let control = Arc::new(MockControl {
-            snapshot: Mutex::new(LocalModelSnapshot {
-                accelerator_setup: Some(AcceleratorSetup {
-                    boot_pack_id: "gpu-stack".into(),
-                    status: AcceleratorSetupState::Available,
+        // Case `lifecycle_exposes_only_safe_controls`.
+        {
+            assert_eq!(
+                available_actions(&LocalModelPhase::Ready {
+                    running: false,
+                    endpoint: None
                 }),
-                ..snapshot(None)
-            }),
-            calls: Mutex::new(Vec::new()),
-        });
-        let mut pane = AgentModelsPane::with_control(control.clone());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-
-        let _ = doc.put(&root, ACCELERATOR_SETUP_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(
-            control.calls.lock().unwrap().as_slice(),
-            ["stage-accelerator"]
-        );
-    }
-
-    #[test]
-    fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
-        let mut package = package();
-        package.vision = true;
-        package.face_recognition = true;
-        let model_id = package.id.clone();
-        let models = vec![InstalledLocalModel {
-            package,
-            phase: LocalModelPhase::Ready {
-                running: true,
-                endpoint: Some(LocalModelEndpoint {
-                    url: "http://127.0.0.1:43127/v1".into(),
-                    model_id,
+                [ModelAction::Start, ModelAction::Remove]
+            );
+            assert_eq!(
+                available_actions(&LocalModelPhase::Ready {
+                    running: true,
+                    endpoint: None
                 }),
-            },
-        }];
-        let profile = synced_local_profile(None, &models).expect("ready local profile");
-        assert_eq!(profile.endpoint, "http://127.0.0.1:43127/v1");
-        assert_eq!(profile.default_model.as_deref(), Some("test/model"));
-        assert_eq!(
-            profile.models[0].revision.as_deref(),
-            Some("0123456789abcdef")
-        );
-        assert!(profile.models[0].vision);
-        assert!(profile.models[0].face_recognition);
-        assert!(profile.enabled);
-    }
+                [ModelAction::Stop, ModelAction::Remove]
+            );
+            assert!(
+                available_actions(&LocalModelPhase::Downloading {
+                    downloaded_bytes: 4,
+                    total_bytes: 10,
+                })
+                .is_empty()
+            );
+        }
 
-    #[test]
-    fn progress_is_bounded_and_machine_readable() {
-        let phase = LocalModelPhase::Downloading {
-            downloaded_bytes: 3,
-            total_bytes: 4,
-        };
-        assert_eq!(phase_progress(&phase), Some(0.75));
-        let progress = ProgressBar::new(phase_progress(&phase).unwrap()).with_label("Download");
-        let access = Widget::accessibility(&progress).expect("labelled progress is accessible");
-        assert_eq!(access.value.as_deref(), Some("75%"));
-    }
+        // Case `accelerator_setup_is_separate_from_model_lifecycle`.
+        {
+            let control = Arc::new(MockControl {
+                snapshot: Mutex::new(LocalModelSnapshot {
+                    accelerator_setup: Some(AcceleratorSetup {
+                        boot_pack_id: "gpu-stack".into(),
+                        status: AcceleratorSetupState::Available,
+                    }),
+                    ..snapshot(None)
+                }),
+                calls: Mutex::new(Vec::new()),
+            });
+            let mut pane = AgentModelsPane::with_control(control.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
 
-    #[test]
-    fn remove_is_confirmed_before_backend_mutation() {
-        let control = Arc::new(MockControl {
-            snapshot: Mutex::new(snapshot(Some(LocalModelPhase::Ready {
-                running: false,
-                endpoint: None,
-            }))),
-            calls: Mutex::new(Vec::new()),
-        });
-        let mut pane = AgentModelsPane::with_control(control.clone());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let key = model_key("test/model", ModelAction::Remove);
+            let _ = doc.put(&root, ACCELERATOR_SETUP_KEY, true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                control.calls.lock().unwrap().as_slice(),
+                ["stage-accelerator"]
+            );
+        }
 
-        let _ = doc.put(&root, &key, true);
-        pane.sync(&mut doc, &root);
-        assert!(control.calls.lock().unwrap().is_empty());
-        assert_eq!(pane.remove_confirmation.as_deref(), Some("test/model"));
-
-        let _ = doc.put(&root, &key, true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(
-            control.calls.lock().unwrap().as_slice(),
-            ["remove:test/model"]
-        );
+        // Case `local_profile_uses_the_ready_manager_endpoint_not_port_8000`.
+        {
+            let mut package = package();
+            package.vision = true;
+            package.face_recognition = true;
+            let model_id = package.id.clone();
+            let models = vec![InstalledLocalModel {
+                package,
+                phase: LocalModelPhase::Ready {
+                    running: true,
+                    endpoint: Some(LocalModelEndpoint {
+                        url: "http://127.0.0.1:43127/v1".into(),
+                        model_id,
+                    }),
+                },
+            }];
+            let profile = synced_local_profile(None, &models).expect("ready local profile");
+            assert_eq!(profile.endpoint, "http://127.0.0.1:43127/v1");
+            assert_eq!(profile.default_model.as_deref(), Some("test/model"));
+            assert_eq!(
+                profile.models[0].revision.as_deref(),
+                Some("0123456789abcdef")
+            );
+            assert!(profile.models[0].vision);
+            assert!(profile.models[0].face_recognition);
+            assert!(profile.enabled);
+        }
     }
 }

@@ -409,99 +409,103 @@ mod tests {
         rgba
     }
 
-    /// VP9 (royalty-free, software) so this runs without a GPU and without
-    /// Cisco's binary.
     #[test]
-    fn encoded_units_finish_as_a_demuxable_mp4() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("capture.mp4");
-        let mut encoder = VideoEncoder::new(StreamCodec::Vp9, 64, 48, 30).unwrap();
-        let mut recording =
-            Mp4Recording::new(path.clone(), StreamCodec::Vp9, 64, 48, 30, Vec::new());
-        for n in 0..5u8 {
-            recording
-                .write_access_unit(&encoder.encode(&frame(n)).unwrap())
-                .unwrap();
-        }
-        recording.finish().unwrap();
+    fn mp4_recording_starts_at_a_keyframe_and_demuxes() {
+        // Phase `encoded_units_finish_as_a_demuxable_mp4`.
+        // VP9 (royalty-free, software) so this runs without a GPU and without
+        // Cisco's binary.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("capture.mp4");
+            let mut encoder = VideoEncoder::new(StreamCodec::Vp9, 64, 48, 30).unwrap();
+            let mut recording =
+                Mp4Recording::new(path.clone(), StreamCodec::Vp9, 64, 48, 30, Vec::new());
+            for n in 0..5u8 {
+                recording
+                    .write_access_unit(&encoder.encode(&frame(n)).unwrap())
+                    .unwrap();
+            }
+            recording.finish().unwrap();
 
-        let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&bytes[4..8], b"ftyp");
-        let (caps, frames, duration, audio) = inspect(&path);
-        assert_eq!(caps, "video/x-vp9");
-        assert_eq!(frames, 5);
-        assert!((0.16..0.18).contains(&duration), "{duration}");
-        assert_eq!(audio, 0);
+            let bytes = std::fs::read(&path).unwrap();
+            assert_eq!(&bytes[4..8], b"ftyp");
+            let (caps, frames, duration, audio) = inspect(&path);
+            assert_eq!(caps, "video/x-vp9");
+            assert_eq!(frames, 5);
+            assert!((0.16..0.18).contains(&duration), "{duration}");
+            assert_eq!(audio, 0);
+        }
+        // Phase `a_recording_starts_at_the_first_keyframe`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("recent.mp4");
+            let mut encoder = VideoEncoder::new(StreamCodec::Vp9, 64, 48, 30).unwrap();
+            let units: Vec<Vec<u8>> = (0..6u8)
+                .map(|n| {
+                    if n == 3 {
+                        encoder.force_keyframe();
+                    }
+                    encoder.encode(&frame(n)).unwrap()
+                })
+                .collect();
+            let mut recording =
+                Mp4Recording::new(path.clone(), StreamCodec::Vp9, 64, 48, 30, Vec::new());
+            // Join mid-stream: the two delta frames before the keyframe are skipped.
+            for unit in &units[1..] {
+                recording.write_access_unit(unit).unwrap();
+            }
+            recording.finish().unwrap();
+            let (_, frames, _, _) = inspect(&path);
+            assert_eq!(frames, 3);
+        }
     }
 
     #[test]
-    fn a_recording_starts_at_the_first_keyframe() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("recent.mp4");
-        let mut encoder = VideoEncoder::new(StreamCodec::Vp9, 64, 48, 30).unwrap();
-        let units: Vec<Vec<u8>> = (0..6u8)
-            .map(|n| {
-                if n == 3 {
-                    encoder.force_keyframe();
-                }
-                encoder.encode(&frame(n)).unwrap()
-            })
-            .collect();
-        let mut recording =
-            Mp4Recording::new(path.clone(), StreamCodec::Vp9, 64, 48, 30, Vec::new());
-        // Join mid-stream: the two delta frames before the keyframe are skipped.
-        for unit in &units[1..] {
-            recording.write_access_unit(unit).unwrap();
+    fn mov_keeps_lossless_tracks_and_audio_follows_aligned_video() {
+        // Phase `mov_keeps_lossless_sources_as_synchronized_tracks`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("capture.mov");
+            let mut encoder = VideoEncoder::new(StreamCodec::Vp9, 64, 48, 30).unwrap();
+            let mut recording = Mp4Recording::new(
+                path.clone(),
+                StreamCodec::Vp9,
+                64,
+                48,
+                30,
+                vec!["Desktop sound".into(), "Microphone".into()],
+            );
+            for n in 0..5u8 {
+                recording
+                    .write_access_unit(&encoder.encode(&frame(n)).unwrap())
+                    .unwrap();
+                // 1/30 second of 48 kHz stereo S16LE.
+                recording
+                    .write_pcm_audio(0, &vec![0x11; 1_600 * 4])
+                    .unwrap();
+                recording
+                    .write_pcm_audio(1, &vec![0x22; 1_600 * 4])
+                    .unwrap();
+            }
+            recording.finish().unwrap();
+            let (_, frames, _, audio) = inspect(&path);
+            assert_eq!(frames, 5);
+            assert_eq!(audio, 2, "both audio tracks are in the file");
         }
-        recording.finish().unwrap();
-        let (_, frames, _, _) = inspect(&path);
-        assert_eq!(frames, 3);
-    }
-
-    #[test]
-    fn mov_keeps_lossless_sources_as_synchronized_tracks() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("capture.mov");
-        let mut encoder = VideoEncoder::new(StreamCodec::Vp9, 64, 48, 30).unwrap();
-        let mut recording = Mp4Recording::new(
-            path.clone(),
-            StreamCodec::Vp9,
-            64,
-            48,
-            30,
-            vec!["Desktop sound".into(), "Microphone".into()],
-        );
-        for n in 0..5u8 {
-            recording
-                .write_access_unit(&encoder.encode(&frame(n)).unwrap())
-                .unwrap();
-            // 1/30 second of 48 kHz stereo S16LE.
-            recording
-                .write_pcm_audio(0, &vec![0x11; 1_600 * 4])
-                .unwrap();
-            recording
-                .write_pcm_audio(1, &vec![0x22; 1_600 * 4])
-                .unwrap();
+        // Phase `audio_needs_the_video_track_first_and_aligned_samples`.
+        {
+            let mut recording = Mp4Recording::new(
+                PathBuf::from("unused.mov"),
+                StreamCodec::Vp9,
+                64,
+                48,
+                30,
+                vec!["Microphone".into()],
+            );
+            assert!(recording.write_pcm_audio(0, &[0; 4]).is_err());
+            assert!(recording.write_pcm_audio(1, &[0; 4]).is_err());
+            assert!(recording.write_pcm_audio(0, &[0; 3]).is_err());
+            assert!(recording.finish().is_err(), "nothing was recorded");
         }
-        recording.finish().unwrap();
-        let (_, frames, _, audio) = inspect(&path);
-        assert_eq!(frames, 5);
-        assert_eq!(audio, 2, "both audio tracks are in the file");
-    }
-
-    #[test]
-    fn audio_needs_the_video_track_first_and_aligned_samples() {
-        let mut recording = Mp4Recording::new(
-            PathBuf::from("unused.mov"),
-            StreamCodec::Vp9,
-            64,
-            48,
-            30,
-            vec!["Microphone".into()],
-        );
-        assert!(recording.write_pcm_audio(0, &[0; 4]).is_err());
-        assert!(recording.write_pcm_audio(1, &[0; 4]).is_err());
-        assert!(recording.write_pcm_audio(0, &[0; 3]).is_err());
-        assert!(recording.finish().is_err(), "nothing was recorded");
     }
 }

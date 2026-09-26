@@ -1768,115 +1768,118 @@ mod tests {
     // ---- pure model-op tests (the production path) --------------------
 
     #[test]
-    fn insert_and_read_roundtrip() {
-        let (mut doc, t) = doc_with_table();
-        seed(&mut doc, &t, 2, 2);
-        assert_eq!(dims(&doc, &t), (2, 2));
-        assert_eq!(cell_text(&doc, &t, 0, 0), "00");
-        assert_eq!(cell_text(&doc, &t, 1, 1), "11");
-    }
-
-    #[test]
-    fn insert_column_in_the_middle_preserves_and_shifts_content() {
-        let (mut doc, t) = doc_with_table();
-        // one row, three columns: A B C
-        insert_row(&mut doc, &t, 0);
-        for _ in 0..3 {
-            insert_column(&mut doc, &t, usize::MAX);
+    fn table_model_inserts_removes_and_keeps_stable_ids() {
+        // Case `insert_and_read_roundtrip`.
+        {
+            let (mut doc, t) = doc_with_table();
+            seed(&mut doc, &t, 2, 2);
+            assert_eq!(dims(&doc, &t), (2, 2));
+            assert_eq!(cell_text(&doc, &t, 0, 0), "00");
+            assert_eq!(cell_text(&doc, &t, 1, 1), "11");
         }
-        set_cell_text(&mut doc, &t, 0, 0, "A");
-        set_cell_text(&mut doc, &t, 0, 1, "B");
-        set_cell_text(&mut doc, &t, 0, 2, "C");
 
-        insert_column(&mut doc, &t, 1); // middle, between A and B
+        // Case `insert_column_in_the_middle_preserves_and_shifts_content`.
+        {
+            let (mut doc, t) = doc_with_table();
+            // one row, three columns: A B C
+            insert_row(&mut doc, &t, 0);
+            for _ in 0..3 {
+                insert_column(&mut doc, &t, usize::MAX);
+            }
+            set_cell_text(&mut doc, &t, 0, 0, "A");
+            set_cell_text(&mut doc, &t, 0, 1, "B");
+            set_cell_text(&mut doc, &t, 0, 2, "C");
 
-        assert_eq!(dims(&doc, &t), (1, 4));
-        let texts: Vec<String> = (0..4).map(|c| cell_text(&doc, &t, 0, c)).collect();
-        assert_eq!(
-            texts,
-            vec!["A", "", "B", "C"],
-            "new empty column lands in the middle"
-        );
-    }
+            insert_column(&mut doc, &t, 1); // middle, between A and B
 
-    #[test]
-    fn insert_row_in_the_middle_preserves_and_shifts_content() {
-        let (mut doc, t) = doc_with_table();
-        insert_column(&mut doc, &t, 0);
-        for _ in 0..3 {
-            insert_row(&mut doc, &t, usize::MAX);
+            assert_eq!(dims(&doc, &t), (1, 4));
+            let texts: Vec<String> = (0..4).map(|c| cell_text(&doc, &t, 0, c)).collect();
+            assert_eq!(
+                texts,
+                vec!["A", "", "B", "C"],
+                "new empty column lands in the middle"
+            );
         }
-        set_cell_text(&mut doc, &t, 0, 0, "R0");
-        set_cell_text(&mut doc, &t, 1, 0, "R1");
-        set_cell_text(&mut doc, &t, 2, 0, "R2");
 
-        insert_row(&mut doc, &t, 1);
+        // Case `insert_row_in_the_middle_preserves_and_shifts_content`.
+        {
+            let (mut doc, t) = doc_with_table();
+            insert_column(&mut doc, &t, 0);
+            for _ in 0..3 {
+                insert_row(&mut doc, &t, usize::MAX);
+            }
+            set_cell_text(&mut doc, &t, 0, 0, "R0");
+            set_cell_text(&mut doc, &t, 1, 0, "R1");
+            set_cell_text(&mut doc, &t, 2, 0, "R2");
 
-        assert_eq!(dims(&doc, &t), (4, 1));
-        let texts: Vec<String> = (0..4).map(|r| cell_text(&doc, &t, r, 0)).collect();
-        assert_eq!(texts, vec!["R0", "", "R1", "R2"]);
-    }
+            insert_row(&mut doc, &t, 1);
 
-    #[test]
-    fn remove_row_in_the_middle() {
-        let (mut doc, t) = doc_with_table();
-        insert_column(&mut doc, &t, 0);
-        for i in 0..3 {
-            insert_row(&mut doc, &t, usize::MAX);
-            set_cell_text(&mut doc, &t, i, 0, &format!("R{i}"));
+            assert_eq!(dims(&doc, &t), (4, 1));
+            let texts: Vec<String> = (0..4).map(|r| cell_text(&doc, &t, r, 0)).collect();
+            assert_eq!(texts, vec!["R0", "", "R1", "R2"]);
         }
-        remove_row(&mut doc, &t, 1);
-        assert_eq!(dims(&doc, &t), (2, 1));
-        let texts: Vec<String> = (0..2).map(|r| cell_text(&doc, &t, r, 0)).collect();
-        assert_eq!(texts, vec!["R0", "R2"], "the middle row is the one removed");
-    }
 
-    #[test]
-    fn remove_column_in_the_middle() {
-        let (mut doc, t) = doc_with_table();
-        insert_row(&mut doc, &t, 0);
-        for i in 0..3 {
-            insert_column(&mut doc, &t, usize::MAX);
-            set_cell_text(&mut doc, &t, 0, i, &format!("C{i}"));
+        // Case `remove_row_in_the_middle`.
+        {
+            let (mut doc, t) = doc_with_table();
+            insert_column(&mut doc, &t, 0);
+            for i in 0..3 {
+                insert_row(&mut doc, &t, usize::MAX);
+                set_cell_text(&mut doc, &t, i, 0, &format!("R{i}"));
+            }
+            remove_row(&mut doc, &t, 1);
+            assert_eq!(dims(&doc, &t), (2, 1));
+            let texts: Vec<String> = (0..2).map(|r| cell_text(&doc, &t, r, 0)).collect();
+            assert_eq!(texts, vec!["R0", "R2"], "the middle row is the one removed");
         }
-        remove_column(&mut doc, &t, 1);
-        assert_eq!(dims(&doc, &t), (1, 2));
-        let texts: Vec<String> = (0..2).map(|c| cell_text(&doc, &t, 0, c)).collect();
-        assert_eq!(texts, vec!["C0", "C2"]);
-    }
 
-    #[test]
-    fn set_cell_text_overwrites() {
-        let (mut doc, t) = doc_with_table();
-        seed(&mut doc, &t, 1, 1);
-        set_cell_text(&mut doc, &t, 0, 0, "first");
-        set_cell_text(&mut doc, &t, 0, 0, "second");
-        assert_eq!(cell_text(&doc, &t, 0, 0), "second");
-    }
-
-    #[test]
-    fn stable_ids_survive_a_middle_delete() {
-        // Deleting a middle column must not disturb the identity/content of
-        // the surviving columns (proves the order-list + stable-id design).
-        let (mut doc, t) = doc_with_table();
-        insert_row(&mut doc, &t, 0);
-        for i in 0..4 {
-            insert_column(&mut doc, &t, usize::MAX);
-            set_cell_text(&mut doc, &t, 0, i, &format!("c{i}"));
+        // Case `remove_column_in_the_middle`.
+        {
+            let (mut doc, t) = doc_with_table();
+            insert_row(&mut doc, &t, 0);
+            for i in 0..3 {
+                insert_column(&mut doc, &t, usize::MAX);
+                set_cell_text(&mut doc, &t, 0, i, &format!("C{i}"));
+            }
+            remove_column(&mut doc, &t, 1);
+            assert_eq!(dims(&doc, &t), (1, 2));
+            let texts: Vec<String> = (0..2).map(|c| cell_text(&doc, &t, 0, c)).collect();
+            assert_eq!(texts, vec!["C0", "C2"]);
         }
-        let ids_before = col_ids(&doc, &t);
-        remove_column(&mut doc, &t, 2);
-        let ids_after = col_ids(&doc, &t);
-        assert_eq!(
-            ids_after,
-            vec![
-                ids_before[0].clone(),
-                ids_before[1].clone(),
-                ids_before[3].clone()
-            ]
-        );
-        let texts: Vec<String> = (0..3).map(|c| cell_text(&doc, &t, 0, c)).collect();
-        assert_eq!(texts, vec!["c0", "c1", "c3"]);
+
+        // Case `set_cell_text_overwrites`.
+        {
+            let (mut doc, t) = doc_with_table();
+            seed(&mut doc, &t, 1, 1);
+            set_cell_text(&mut doc, &t, 0, 0, "first");
+            set_cell_text(&mut doc, &t, 0, 0, "second");
+            assert_eq!(cell_text(&doc, &t, 0, 0), "second");
+        }
+
+        // Case `stable_ids_survive_a_middle_delete`.
+        {
+            // Deleting a middle column must not disturb the identity/content of
+            // the surviving columns (proves the order-list + stable-id design).
+            let (mut doc, t) = doc_with_table();
+            insert_row(&mut doc, &t, 0);
+            for i in 0..4 {
+                insert_column(&mut doc, &t, usize::MAX);
+                set_cell_text(&mut doc, &t, 0, i, &format!("c{i}"));
+            }
+            let ids_before = col_ids(&doc, &t);
+            remove_column(&mut doc, &t, 2);
+            let ids_after = col_ids(&doc, &t);
+            assert_eq!(
+                ids_after,
+                vec![
+                    ids_before[0].clone(),
+                    ids_before[1].clone(),
+                    ids_before[3].clone()
+                ]
+            );
+            let texts: Vec<String> = (0..3).map(|c| cell_text(&doc, &t, 0, c)).collect();
+            assert_eq!(texts, vec!["c0", "c1", "c3"]);
+        }
     }
 
     // ---- widget-integration tests (through the real event path) -------
@@ -1986,249 +1989,255 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_middle_boundary_inserts_a_column_there() {
-        let (mut doc, t) = doc_with_table();
-        // 1 row, 2 columns "A","B".
-        insert_row(&mut doc, &t, 0);
-        insert_column(&mut doc, &t, 0);
-        insert_column(&mut doc, &t, 1);
-        set_cell_text(&mut doc, &t, 0, 0, "A");
-        set_cell_text(&mut doc, &t, 0, 1, "B");
+    fn table_affordances_insert_delete_resize_and_create_cells() {
+        // Case `clicking_a_middle_boundary_inserts_a_column_there`.
+        {
+            let (mut doc, t) = doc_with_table();
+            // 1 row, 2 columns "A","B".
+            insert_row(&mut doc, &t, 0);
+            insert_column(&mut doc, &t, 0);
+            insert_column(&mut doc, &t, 1);
+            set_cell_text(&mut doc, &t, 0, 0, "A");
+            set_cell_text(&mut doc, &t, 0, 1, "B");
 
-        let mut table = Table::new("t");
-        let (taffy, node) = layout(&mut table, &mut doc, &t);
+            let mut table = Table::new("t");
+            let (taffy, node) = layout(&mut table, &mut doc, &t);
 
-        // Boundary between col 0 and col 1: xs[1] = LEFT_GUTTER + DEFAULT_COL_W.
-        let bx = LEFT_GUTTER + DEFAULT_COL_W;
-        let mods = Modifiers::default();
-        dispatch(
-            &mut table,
-            &taffy,
-            node,
-            &mut doc,
-            &t,
-            &cursor(bx, TOP_GUTTER / 2.0),
-            mods,
-        );
-        assert_eq!(
-            table.hover,
-            Hover::InsertCol(1),
-            "hover resolves to the middle insert pill"
-        );
-        let (handled, _) = dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
+            // Boundary between col 0 and col 1: xs[1] = LEFT_GUTTER + DEFAULT_COL_W.
+            let bx = LEFT_GUTTER + DEFAULT_COL_W;
+            let mods = Modifiers::default();
+            dispatch(
+                &mut table,
+                &taffy,
+                node,
+                &mut doc,
+                &t,
+                &cursor(bx, TOP_GUTTER / 2.0),
+                mods,
+            );
+            assert_eq!(
+                table.hover,
+                Hover::InsertCol(1),
+                "hover resolves to the middle insert pill"
+            );
+            let (handled, _) = dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
 
-        assert!(handled, "the insert click is consumed");
-        assert_eq!(dims(&doc, &t), (1, 3), "a column was inserted");
-        let texts: Vec<String> = (0..3).map(|c| cell_text(&doc, &t, 0, c)).collect();
-        assert_eq!(
-            texts,
-            vec!["A", "", "B"],
-            "the new column landed between A and B"
-        );
-    }
-
-    #[test]
-    fn clicking_a_row_delete_handle_removes_that_row() {
-        let (mut doc, t) = doc_with_table();
-        insert_column(&mut doc, &t, 0);
-        for i in 0..3 {
-            insert_row(&mut doc, &t, usize::MAX);
-            set_cell_text(&mut doc, &t, i, 0, &format!("R{i}"));
+            assert!(handled, "the insert click is consumed");
+            assert_eq!(dims(&doc, &t), (1, 3), "a column was inserted");
+            let texts: Vec<String> = (0..3).map(|c| cell_text(&doc, &t, 0, c)).collect();
+            assert_eq!(
+                texts,
+                vec!["A", "", "B"],
+                "the new column landed between A and B"
+            );
         }
-        let mut table = Table::new("t");
-        let (taffy, node) = layout(&mut table, &mut doc, &t);
 
-        // Delete handle for row 1 sits in the left gutter at that row's centre.
-        let cy = TOP_GUTTER + 1.5 * ROW_H;
-        let mods = Modifiers::default();
-        dispatch(
-            &mut table,
-            &taffy,
-            node,
-            &mut doc,
-            &t,
-            &cursor(LEFT_GUTTER / 2.0, cy),
-            mods,
-        );
-        assert_eq!(table.hover, Hover::DeleteRow(1));
-        let (handled, _) = dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
+        // Case `clicking_a_row_delete_handle_removes_that_row`.
+        {
+            let (mut doc, t) = doc_with_table();
+            insert_column(&mut doc, &t, 0);
+            for i in 0..3 {
+                insert_row(&mut doc, &t, usize::MAX);
+                set_cell_text(&mut doc, &t, i, 0, &format!("R{i}"));
+            }
+            let mut table = Table::new("t");
+            let (taffy, node) = layout(&mut table, &mut doc, &t);
 
-        assert!(handled);
-        assert_eq!(dims(&doc, &t), (2, 1));
-        let texts: Vec<String> = (0..2).map(|r| cell_text(&doc, &t, r, 0)).collect();
-        assert_eq!(texts, vec!["R0", "R2"]);
-    }
+            // Delete handle for row 1 sits in the left gutter at that row's centre.
+            let cy = TOP_GUTTER + 1.5 * ROW_H;
+            let mods = Modifiers::default();
+            dispatch(
+                &mut table,
+                &taffy,
+                node,
+                &mut doc,
+                &t,
+                &cursor(LEFT_GUTTER / 2.0, cy),
+                mods,
+            );
+            assert_eq!(table.hover, Hover::DeleteRow(1));
+            let (handled, _) = dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
 
-    #[test]
-    fn typing_into_a_focused_cell_writes_through_to_the_doc() {
-        let (mut doc, t) = doc_with_table();
-        seed(&mut doc, &t, 1, 1);
-        // Clear the seeded content so we assert on exactly what we type.
-        set_cell_text(&mut doc, &t, 0, 0, "");
-
-        let mut table = Table::new("t");
-        let (taffy, node) = layout(&mut table, &mut doc, &t);
-
-        // Focus the only cell (emulating the App's focus dispatch).
-        table.cells[0].set_focus(true);
-
-        let mods = Modifiers::default();
-        for ch in ["h", "i"] {
-            dispatch(&mut table, &taffy, node, &mut doc, &t, &char_key(ch), mods);
+            assert!(handled);
+            assert_eq!(dims(&doc, &t), (2, 1));
+            let texts: Vec<String> = (0..2).map(|r| cell_text(&doc, &t, r, 0)).collect();
+            assert_eq!(texts, vec!["R0", "R2"]);
         }
-        assert_eq!(
-            cell_text(&doc, &t, 0, 0),
-            "hi",
-            "keystrokes splice into the cell's Text"
-        );
-    }
 
-    #[test]
-    fn enter_moves_focus_to_the_cell_below() {
-        let (mut doc, t) = doc_with_table();
-        seed(&mut doc, &t, 2, 2);
-        let mut table = Table::new("t");
-        let (taffy, node) = layout(&mut table, &mut doc, &t);
+        // Case `dragging_an_interior_boundary_resizes_the_left_column`.
+        {
+            let (mut doc, t) = doc_with_table();
+            seed(&mut doc, &t, 1, 2);
+            let mut table = Table::new("t");
+            let (taffy, node) = layout(&mut table, &mut doc, &t);
 
-        // Focus the top-left cell (index 0). Cell below is index n_cols == 2.
-        table.cells[0].set_focus(true);
-        let mods = Modifiers::default();
-        let (handled, focus_target) =
-            dispatch(&mut table, &taffy, node, &mut doc, &t, &enter(), mods);
+            let cid0 = col_ids(&doc, &t)[0].clone();
+            let before = col_width(&doc, &t, &cid0);
 
-        assert!(handled, "Enter is consumed for cell navigation");
-        let want = taffy.children(node).unwrap()[2]; // row 1, col 0
-        assert_eq!(
-            focus_target,
-            Some(want),
-            "focus moves straight down one row"
-        );
-    }
+            // Interior boundary between col 0 and col 1 is at xs[1]; the body row
+            // sits below the top gutter.
+            let bx = LEFT_GUTTER + DEFAULT_COL_W;
+            let by = TOP_GUTTER + ROW_H / 2.0;
+            let mods = Modifiers::default();
 
-    #[test]
-    fn dragging_an_interior_boundary_resizes_the_left_column() {
-        let (mut doc, t) = doc_with_table();
-        seed(&mut doc, &t, 1, 2);
-        let mut table = Table::new("t");
-        let (taffy, node) = layout(&mut table, &mut doc, &t);
+            dispatch(
+                &mut table,
+                &taffy,
+                node,
+                &mut doc,
+                &t,
+                &cursor(bx, by),
+                mods,
+            );
+            assert_eq!(
+                table.hover,
+                Hover::ResizeCol(1),
+                "interior boundary hover is a resize"
+            );
+            dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
+            assert!(
+                table.resize.is_some(),
+                "press on the boundary starts a resize drag"
+            );
+            dispatch(
+                &mut table,
+                &taffy,
+                node,
+                &mut doc,
+                &t,
+                &cursor(bx + 40.0, by),
+                mods,
+            );
 
-        let cid0 = col_ids(&doc, &t)[0].clone();
-        let before = col_width(&doc, &t, &cid0);
-
-        // Interior boundary between col 0 and col 1 is at xs[1]; the body row
-        // sits below the top gutter.
-        let bx = LEFT_GUTTER + DEFAULT_COL_W;
-        let by = TOP_GUTTER + ROW_H / 2.0;
-        let mods = Modifiers::default();
-
-        dispatch(
-            &mut table,
-            &taffy,
-            node,
-            &mut doc,
-            &t,
-            &cursor(bx, by),
-            mods,
-        );
-        assert_eq!(
-            table.hover,
-            Hover::ResizeCol(1),
-            "interior boundary hover is a resize"
-        );
-        dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
-        assert!(
-            table.resize.is_some(),
-            "press on the boundary starts a resize drag"
-        );
-        dispatch(
-            &mut table,
-            &taffy,
-            node,
-            &mut doc,
-            &t,
-            &cursor(bx + 40.0, by),
-            mods,
-        );
-
-        let after = col_width(&doc, &t, &cid0);
-        assert!(
-            (after - (before + 40.0)).abs() < 0.5,
-            "column widened by the drag delta: {before} -> {after}"
-        );
-    }
-
-    #[test]
-    fn empty_table_add_affordance_creates_a_cell() {
-        let (mut doc, t) = doc_with_table();
-        let mut table = Table::new("t"); // no seed → empty
-        let (taffy, node) = layout(&mut table, &mut doc, &t);
-        assert!(table.is_empty());
-
-        let mods = Modifiers::default();
-        let r = table.empty_add_rect();
-        let c = r.center();
-        dispatch(
-            &mut table,
-            &taffy,
-            node,
-            &mut doc,
-            &t,
-            &cursor(c.x, c.y),
-            mods,
-        );
-        assert_eq!(table.hover, Hover::EmptyAdd);
-        dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
-
-        assert_eq!(dims(&doc, &t), (1, 1), "empty-add seeds a single cell");
-    }
-
-    #[test]
-    fn typing_into_a_cell_splices_only_the_new_text() {
-        // `set_cell_text` receives the cell's whole contents on every keystroke.
-        // Deleting and reinserting them costs O(len) ops per key and leaves the
-        // tombstones behind forever, so a long cell gets slower as it is typed.
-        let (mut doc, t) = doc_with_table();
-        insert_row(&mut doc, &t, 0);
-        insert_column(&mut doc, &t, 0);
-
-        set_cell_text(&mut doc, &t, 0, 0, "");
-        let baseline = doc.save().len();
-        let mut typed = String::new();
-        for i in 0..300 {
-            typed.push(if i % 9 == 8 { ' ' } else { 'x' });
-            set_cell_text(&mut doc, &t, 0, 0, &typed);
+            let after = col_width(&doc, &t, &cid0);
+            assert!(
+                (after - (before + 40.0)).abs() < 0.5,
+                "column widened by the drag delta: {before} -> {after}"
+            );
         }
-        let grown = doc.save().len() - baseline;
 
-        assert_eq!(
-            cell_text(&doc, &t, 0, 0),
-            typed,
-            "cell must hold what was typed"
-        );
-        assert!(
-            grown < 12 * typed.len(),
-            "typing {} chars grew the document by {grown} bytes — set_cell_text \
+        // Case `empty_table_add_affordance_creates_a_cell`.
+        {
+            let (mut doc, t) = doc_with_table();
+            let mut table = Table::new("t"); // no seed → empty
+            let (taffy, node) = layout(&mut table, &mut doc, &t);
+            assert!(table.is_empty());
+
+            let mods = Modifiers::default();
+            let r = table.empty_add_rect();
+            let c = r.center();
+            dispatch(
+                &mut table,
+                &taffy,
+                node,
+                &mut doc,
+                &t,
+                &cursor(c.x, c.y),
+                mods,
+            );
+            assert_eq!(table.hover, Hover::EmptyAdd);
+            dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
+
+            assert_eq!(dims(&doc, &t), (1, 1), "empty-add seeds a single cell");
+        }
+    }
+
+    #[test]
+    fn cell_editing_splices_only_changed_text_and_moves_focus() {
+        // Case `typing_into_a_focused_cell_writes_through_to_the_doc`.
+        {
+            let (mut doc, t) = doc_with_table();
+            seed(&mut doc, &t, 1, 1);
+            // Clear the seeded content so we assert on exactly what we type.
+            set_cell_text(&mut doc, &t, 0, 0, "");
+
+            let mut table = Table::new("t");
+            let (taffy, node) = layout(&mut table, &mut doc, &t);
+
+            // Focus the only cell (emulating the App's focus dispatch).
+            table.cells[0].set_focus(true);
+
+            let mods = Modifiers::default();
+            for ch in ["h", "i"] {
+                dispatch(&mut table, &taffy, node, &mut doc, &t, &char_key(ch), mods);
+            }
+            assert_eq!(
+                cell_text(&doc, &t, 0, 0),
+                "hi",
+                "keystrokes splice into the cell's Text"
+            );
+        }
+
+        // Case `enter_moves_focus_to_the_cell_below`.
+        {
+            let (mut doc, t) = doc_with_table();
+            seed(&mut doc, &t, 2, 2);
+            let mut table = Table::new("t");
+            let (taffy, node) = layout(&mut table, &mut doc, &t);
+
+            // Focus the top-left cell (index 0). Cell below is index n_cols == 2.
+            table.cells[0].set_focus(true);
+            let mods = Modifiers::default();
+            let (handled, focus_target) =
+                dispatch(&mut table, &taffy, node, &mut doc, &t, &enter(), mods);
+
+            assert!(handled, "Enter is consumed for cell navigation");
+            let want = taffy.children(node).unwrap()[2]; // row 1, col 0
+            assert_eq!(
+                focus_target,
+                Some(want),
+                "focus moves straight down one row"
+            );
+        }
+
+        // Case `typing_into_a_cell_splices_only_the_new_text`.
+        {
+            // `set_cell_text` receives the cell's whole contents on every keystroke.
+            // Deleting and reinserting them costs O(len) ops per key and leaves the
+            // tombstones behind forever, so a long cell gets slower as it is typed.
+            let (mut doc, t) = doc_with_table();
+            insert_row(&mut doc, &t, 0);
+            insert_column(&mut doc, &t, 0);
+
+            set_cell_text(&mut doc, &t, 0, 0, "");
+            let baseline = doc.save().len();
+            let mut typed = String::new();
+            for i in 0..300 {
+                typed.push(if i % 9 == 8 { ' ' } else { 'x' });
+                set_cell_text(&mut doc, &t, 0, 0, &typed);
+            }
+            let grown = doc.save().len() - baseline;
+
+            assert_eq!(
+                cell_text(&doc, &t, 0, 0),
+                typed,
+                "cell must hold what was typed"
+            );
+            assert!(
+                grown < 12 * typed.len(),
+                "typing {} chars grew the document by {grown} bytes — set_cell_text \
              is rewriting the cell instead of splicing the diff",
-            typed.len()
-        );
-    }
-
-    #[test]
-    fn rewriting_a_cell_with_its_current_value_is_free() {
-        let (mut doc, t) = doc_with_table();
-        seed(&mut doc, &t, 1, 1);
-        set_cell_text(&mut doc, &t, 0, 0, "steady");
-        let before = doc.save().len();
-
-        for _ in 0..50 {
-            set_cell_text(&mut doc, &t, 0, 0, "steady");
+                typed.len()
+            );
         }
 
-        assert_eq!(cell_text(&doc, &t, 0, 0), "steady");
-        assert_eq!(
-            doc.save().len(),
-            before,
-            "re-storing an unchanged cell must not grow the document"
-        );
+        // Case `rewriting_a_cell_with_its_current_value_is_free`.
+        {
+            let (mut doc, t) = doc_with_table();
+            seed(&mut doc, &t, 1, 1);
+            set_cell_text(&mut doc, &t, 0, 0, "steady");
+            let before = doc.save().len();
+
+            for _ in 0..50 {
+                set_cell_text(&mut doc, &t, 0, 0, "steady");
+            }
+
+            assert_eq!(cell_text(&doc, &t, 0, 0), "steady");
+            assert_eq!(
+                doc.save().len(),
+                before,
+                "re-storing an unchanged cell must not grow the document"
+            );
+        }
     }
 }

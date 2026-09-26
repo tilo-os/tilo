@@ -345,50 +345,75 @@ mod tests {
     use super::*;
     use ui::collaboration::{NearbyTransferDirection, NearbyTransferPhase, NearbyTransferReply};
 
+    /// Picker and receiver consent follow typed broker results and the receiver decision uses only opaque destination authority.
     #[test]
-    fn picker_and_receiver_consent_are_driven_by_typed_broker_results() {
-        let mut state = NearbySendState::default();
-        state.open_picker();
-        let request = state.take_requests().pop().expect("snapshot request");
-        let CollabRequest::NearbyTransferCommand { request_id, .. } = request else {
-            panic!("wrong request");
-        };
-        let offer = NearbyTransferStatus {
-            handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
-            name: "Photos".into(),
-            device_label: "Travel laptop".into(),
-            direction: NearbyTransferDirection::Receiving,
-            phase: NearbyTransferPhase::AwaitingConsent,
-            transferred_bytes: 0,
-            total_bytes: 42,
-        };
-        let destination = NearbyTransferDestination {
-            handle: NearbyDestinationHandle::from_issued_bytes([6; 16]),
-            label: "Workspace files".into(),
-            remembered_for_session: false,
-        };
-        let effects = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
-            request_id,
-            result: Ok(NearbyTransferReply::Snapshot {
-                snapshot: NearbyTransferSnapshot {
-                    targets: vec![NearbyTransferTarget {
-                        handle: NearbyTargetHandle::from_issued_bytes([4; 16]),
-                        label: "Desk".into(),
-                        online: true,
-                    }],
-                    destinations: vec![destination.clone()],
-                    transfers: vec![offer.clone()],
-                },
-            }),
-        });
-        assert!(matches!(
-            effects.first(),
-            Some(NearbyUiEffect::OpenPicker(_))
-        ));
-        assert!(effects.contains(&NearbyUiEffect::Offer {
-            transfer: offer,
-            destinations: vec![destination],
-        }));
+    fn nearby_send_consent_is_driven_by_typed_opaque_broker_results() {
+        // --- phase: picker_and_receiver_consent_are_driven_by_typed_broker_results ---
+        {
+            let mut state = NearbySendState::default();
+            state.open_picker();
+            let request = state.take_requests().pop().expect("snapshot request");
+            let CollabRequest::NearbyTransferCommand { request_id, .. } = request else {
+                panic!("wrong request");
+            };
+            let offer = NearbyTransferStatus {
+                handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
+                name: "Photos".into(),
+                device_label: "Travel laptop".into(),
+                direction: NearbyTransferDirection::Receiving,
+                phase: NearbyTransferPhase::AwaitingConsent,
+                transferred_bytes: 0,
+                total_bytes: 42,
+            };
+            let destination = NearbyTransferDestination {
+                handle: NearbyDestinationHandle::from_issued_bytes([6; 16]),
+                label: "Workspace files".into(),
+                remembered_for_session: false,
+            };
+            let effects = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Ok(NearbyTransferReply::Snapshot {
+                    snapshot: NearbyTransferSnapshot {
+                        targets: vec![NearbyTransferTarget {
+                            handle: NearbyTargetHandle::from_issued_bytes([4; 16]),
+                            label: "Desk".into(),
+                            online: true,
+                        }],
+                        destinations: vec![destination.clone()],
+                        transfers: vec![offer.clone()],
+                    },
+                }),
+            });
+            assert!(matches!(
+                effects.first(),
+                Some(NearbyUiEffect::OpenPicker(_))
+            ));
+            assert!(effects.contains(&NearbyUiEffect::Offer {
+                transfer: offer,
+                destinations: vec![destination],
+            }));
+        }
+
+        // --- phase: receiver_decision_uses_only_opaque_destination_authority ---
+        {
+            let mut state = NearbySendState::default();
+            let transfer = NearbyTransferHandle::from_issued_bytes([8; 16]);
+            let destination = NearbyDestinationHandle::from_issued_bytes([9; 16]);
+            state.decide(transfer, Some(destination), true);
+            let request = state.take_requests().pop().expect("decision request");
+            let CollabRequest::NearbyTransferCommand { command, .. } = request else {
+                panic!("wrong request");
+            };
+            assert_eq!(
+                command,
+                NearbyTransferCommand::Decide {
+                    handle: transfer,
+                    accept: true,
+                    destination: Some(destination),
+                    remember_for_session: true,
+                }
+            );
+        }
     }
 
     #[test]
@@ -426,26 +451,5 @@ mod tests {
         );
         assert!(state.take_requests().is_empty());
         assert!(state.pending.is_empty());
-    }
-
-    #[test]
-    fn receiver_decision_uses_only_opaque_destination_authority() {
-        let mut state = NearbySendState::default();
-        let transfer = NearbyTransferHandle::from_issued_bytes([8; 16]);
-        let destination = NearbyDestinationHandle::from_issued_bytes([9; 16]);
-        state.decide(transfer, Some(destination), true);
-        let request = state.take_requests().pop().expect("decision request");
-        let CollabRequest::NearbyTransferCommand { command, .. } = request else {
-            panic!("wrong request");
-        };
-        assert_eq!(
-            command,
-            NearbyTransferCommand::Decide {
-                handle: transfer,
-                accept: true,
-                destination: Some(destination),
-                remember_for_session: true,
-            }
-        );
     }
 }

@@ -2136,11 +2136,48 @@ mod tests {
         ],
     }
 
+    fn resource_ctx(
+        title: &str,
+        page_ids: Vec<String>,
+        outline: Vec<(String, usize, u8)>,
+    ) -> PdfResourceCtx {
+        let page_count = page_ids.len();
+        PdfResourceCtx {
+            doc_id: "fixture-document".into(),
+            title: title.into(),
+            page: 1,
+            page_count,
+            page_ids,
+            page_sources: (1..=page_count).collect(),
+            page_imports: vec![None; page_count],
+            page_rotations: Vec::new(),
+            author: "Ada".into(),
+            signature_date: "2026-09-06".into(),
+            created_seed: 0,
+            search_query: String::new(),
+            search_whole_word: false,
+            search_case_sensitive: false,
+            search_token: search_result_token("", false, false),
+            search_pages: Vec::new(),
+            outline,
+        }
+    }
+
+    fn dispatch_encoded(doc: &mut AutoCommit, encoded: EncodedAction) {
+        let decoded = registry().decode(&encoded).expect("decodable action");
+        let mut transport = LocalTransport::new();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut transport)
+            .expect("action applies");
+    }
+
     /// Ctrl+K on the reader yields the full nested tree: the open document →
     /// annotation → comment, plus free-comment resources, each with the actions
-    /// the data model implies. Drives the real resource hook.
+    /// the data model implies. Drives the real resource hook. Large documents
+    /// stay bounded with lazily resolvable omitted children, and outline ids
+    /// survive reordering but fail closed when changed.
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn ctrl_k_publishes_the_nested_tree() {
+    fn document_resources_publish_the_nested_tree_with_bounded_stable_children() {
         let (app, state) = open_with_markup();
         let resources = Widget::resources(&app, &state.doc);
         assert_eq!(resources.len(), 1, "one open document");
@@ -2225,10 +2262,101 @@ mod tests {
             document.children.iter().any(|r| r.kind == "pdf.comment"),
             "a free-comment resource hangs off the document"
         );
+
+        // A large document's snapshot is bounded and omitted pages resolve lazily.
+        let page_count = CONTEXTUAL_CHILD_LIMIT + 9;
+        let ctx = resource_ctx(
+            "Large fixture",
+            (1..=page_count)
+                .map(|page| format!("page-{page}"))
+                .collect(),
+            Vec::new(),
+        );
+        let doc = AutoCommit::new();
+        let snapshot = provide_resources(&ctx, &doc);
+        let eager_pages = snapshot[0]
+            .children
+            .iter()
+            .filter(|resource| resource.kind == "pdf.page")
+            .count();
+        assert_eq!(eager_pages, CONTEXTUAL_CHILD_LIMIT);
+        let omitted = page_resource_id(&ctx.doc_id, &format!("page-{page_count}"));
+        let resolved = resolve_resource(&ctx, &doc, &omitted).expect("lazy page resource");
+        assert_eq!(resolved.id.as_str(), omitted);
+        assert_eq!(resolved.label, format!("Page {page_count}"));
+        let mut find = ctx.clone();
+        find.search_query = "fixture".into();
+        find.search_token = search_result_token("fixture", false, false);
+        find.search_pages = (1..=SEARCH_RESULT_RESOURCE_LIMIT + 9).collect();
+        let find_snapshot = provide_resources(&find, &doc);
+        let find_resource = find_snapshot[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "pdf.search")
+            .expect("non-empty find query has a result resource");
+        assert_eq!(find_resource.children.len(), SEARCH_RESULT_RESOURCE_LIMIT);
+        let omitted_find = format!(
+            "pdf.search-result:{}:{}:{}:{}",
+            find.doc_id,
+            find.search_token,
+            SEARCH_RESULT_RESOURCE_LIMIT,
+            SEARCH_RESULT_RESOURCE_LIMIT + 1
+        );
+        assert!(
+            resolve_resource(&find, &doc, &omitted_find).is_some(),
+            "an omitted find hit remains addressable by its stable query/result id"
+        );
+        let mut stale = ctx;
+        stale.page_ids.pop();
+        stale.page_count -= 1;
+        assert!(resolve_resource(&stale, &doc, &omitted).is_none());
+
+        // Outline resource ids survive reordering but fail closed when changed.
+        let mut ctx = resource_ctx(
+            "Outline fixture",
+            vec!["p-1".into(), "p-2".into(), "p-3".into()],
+            vec![
+                ("Introduction".into(), 1, 0),
+                ("Security model".into(), 2, 0),
+                ("Security model".into(), 2, 0),
+            ],
+        );
+        let introduction = outline_resource_id(&ctx, 0).expect("valid outline entry");
+        let first_security = outline_resource_id(&ctx, 1).expect("valid outline entry");
+        let duplicate_security = outline_resource_id(&ctx, 2).expect("valid duplicate entry");
+        assert_ne!(
+            first_security, duplicate_security,
+            "duplicates retain identities"
+        );
+        for id in [&introduction, &first_security, &duplicate_security] {
+            assert!(
+                resolve_resource(&ctx, &doc, id).is_some(),
+                "outline id {id}"
+            );
+        }
+        ctx.outline.insert(0, ("Preface".into(), 1, 0));
+        assert!(
+            resolve_resource(&ctx, &doc, &first_security).is_some(),
+            "inserting another bookmark does not rebind the saved action"
+        );
+        assert!(resolve_resource(&ctx, &doc, &introduction).is_some());
+        assert!(resolve_resource(&ctx, &doc, &duplicate_security).is_some());
+        ctx.outline[1].1 = 3;
+        assert!(
+            resolve_resource(&ctx, &doc, &introduction).is_none(),
+            "a changed bookmark fails closed rather than opening another section"
+        );
     }
 
+    /// Signature and annotation actions apply through the shared registry;
+    /// deleting an annotation removes every comment pinned to it; and the
+    /// affordance path (`PdfApp::perform_action`) stashes an undo boundary the
+    /// host's recorder attributes to the local user, so their author-scoped
+    /// Ctrl+Z reverts it.
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn signature_actions_round_trip_through_the_registry() {
+    fn markup_actions_apply_through_the_registry_and_undo_as_the_local_author() {
+        // Drawn signatures round-trip through add and delete actions.
         let mut doc = AutoCommit::new();
         let signature = Signature {
             id: "sig-action".into(),
@@ -2241,20 +2369,12 @@ mod tests {
             },
             space: crate::model::GeomSpace::Page,
         };
-        let encoded = encode(&add_signature_action(&signature));
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut transport = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport).unwrap();
+        dispatch_encoded(&mut doc, encode(&add_signature_action(&signature)));
         assert_eq!(PdfDoc::list_signatures(&doc)[0].ink, signature.ink);
-
-        let encoded = encode(&delete_signature_action(&signature.id));
-        let decoded = registry().decode(&encoded).unwrap();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport).unwrap();
+        dispatch_encoded(&mut doc, encode(&delete_signature_action(&signature.id)));
         assert!(PdfDoc::list_signatures(&doc).is_empty());
-    }
 
-    #[test]
-    fn resource_typed_signature_is_replayable_and_uses_the_prompted_signer() {
+        // The resource's typed signature is replayable and uses the prompted signer.
         let (app, mut state) = open_with_markup();
         let expected_page = app.pdf_resource_ctx().expect("open document").page;
         let resources = Widget::resources(&app, &state.doc);
@@ -2263,26 +2383,17 @@ mod tests {
             .iter()
             .find(|action| action.id == "add-typed-signature")
             .expect("typed signature action");
-        let encoded = prompted_encode(action, "Grace Hopper");
-        let decoded = registry().decode(&encoded).expect("decodable action");
-        let mut transport = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut transport)
-            .expect("signature action applies");
+        dispatch_encoded(&mut state.doc, prompted_encode(action, "Grace Hopper"));
         let signature = PdfDoc::list_signatures(&state.doc)
             .into_iter()
             .find(|signature| signature.signer == "Grace Hopper")
             .expect("prompted signer is saved");
         assert_eq!(signature.ink, SignatureInk::Typed);
         assert_eq!(signature.page, expected_page);
-    }
 
-    /// Deleting an annotation through its action removes the annotation *and*
-    /// every comment pinned to it.
-    #[test]
-    fn delete_annotation_removes_its_comments() {
+        // Deleting a seeded annotation that carries a pinned comment.
         let (_app, mut state) = open_with_markup();
         let doc = &mut state.doc;
-        // Find a seeded annotation that carries at least one pinned comment.
         let annos = PdfDoc::list_annotations(doc);
         let comments = PdfDoc::list_comments(doc);
         let target = annos
@@ -2301,13 +2412,7 @@ mod tests {
             pinned >= 1,
             "precondition: the annotation has a pinned comment"
         );
-
-        let action = delete_annotation_action(&target.id);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-
+        dispatch_encoded(doc, encode(&delete_annotation_action(&target.id)));
         assert!(
             PdfDoc::list_annotations(doc)
                 .iter()
@@ -2320,76 +2425,73 @@ mod tests {
                 .all(|c| c.anno_id.as_deref() != Some(target.id.as_str())),
             "and every comment pinned to it went with it"
         );
-    }
 
-    /// The affordance path: dispatched through [`PdfApp::perform_action`] an
-    /// action stashes its undo boundary, which the host's recorder attributes
-    /// to the local user — so their author-scoped Ctrl+Z reverts it.
-    #[test]
-    fn perform_action_undo_is_attributed_to_the_local_author() {
-        let (mut app, mut state) = open_with_markup();
-        let before_len = PdfDoc::list_annotations(&state.doc).len();
-        let before_heads = state.doc.get_heads();
+        // perform_action undo is attributed to the local author.
+        {
+            let (mut app, mut state) = open_with_markup();
+            let before_len = PdfDoc::list_annotations(&state.doc).len();
+            let before_heads = state.doc.get_heads();
 
-        // Add a highlight through the exact path the highlight tool uses.
-        let a = Annotation {
-            id: Annotation::new_id(),
-            page: 1,
-            kind: AnnoKind::highlight(PtRect::new(70.0, 300.0, 120.0, 12.0)),
-            color: Swatch::Green,
-            author: "You".into(),
-            chars: None,
-            created_ms: 0,
-            space: crate::model::GeomSpace::Page,
-        };
-        app.perform_action(&mut state.doc, &add_annotation_action(&a));
+            // Add a highlight through the exact path the highlight tool uses.
+            let a = Annotation {
+                id: Annotation::new_id(),
+                page: 1,
+                kind: AnnoKind::highlight(PtRect::new(70.0, 300.0, 120.0, 12.0)),
+                color: Swatch::Green,
+                author: "You".into(),
+                chars: None,
+                created_ms: 0,
+                space: crate::model::GeomSpace::Page,
+            };
+            app.perform_action(&mut state.doc, &add_annotation_action(&a));
 
-        // The host's own recorder drains the stashed heads and records the
-        // boundary. Going through it rather than pushing an entry by hand is
-        // the point: attribution happens in there, and undo is author-scoped.
-        // The node map is empty because the app widget *is* the root here.
-        let local_author = ui::collaboration::local_user_id();
-        let root: *mut dyn Widget = &mut app;
-        assert!(
-            ui::undo::record_dispatched_action(
-                &mut state,
-                root,
-                &std::collections::HashMap::new(),
-                &local_author,
-            ),
-            "the host recorded an undo boundary for the dispatched action"
-        );
+            // The host's own recorder drains the stashed heads and records the
+            // boundary. Going through it rather than pushing an entry by hand is
+            // the point: attribution happens in there, and undo is author-scoped.
+            // The node map is empty because the app widget *is* the root here.
+            let local_author = ui::collaboration::local_user_id();
+            let root: *mut dyn Widget = &mut app;
+            assert!(
+                ui::undo::record_dispatched_action(
+                    &mut state,
+                    root,
+                    &std::collections::HashMap::new(),
+                    &local_author,
+                ),
+                "the host recorded an undo boundary for the dispatched action"
+            );
 
-        assert_eq!(
-            PdfDoc::list_annotations(&state.doc).len(),
-            before_len + 1,
-            "the action added the highlight"
-        );
-        let entry = state
-            .peek_last_undo()
-            .expect("exactly one undo boundary recorded");
-        assert_eq!(
-            entry.before, before_heads,
-            "the boundary brackets the action"
-        );
-        assert_eq!(
-            entry.author.as_ref(),
-            Some(&local_author),
-            "the host attributed it to the local user, so their Ctrl+Z can reach it"
-        );
+            assert_eq!(
+                PdfDoc::list_annotations(&state.doc).len(),
+                before_len + 1,
+                "the action added the highlight"
+            );
+            let entry = state
+                .peek_last_undo()
+                .expect("exactly one undo boundary recorded");
+            assert_eq!(
+                entry.before, before_heads,
+                "the boundary brackets the action"
+            );
+            assert_eq!(
+                entry.author.as_ref(),
+                Some(&local_author),
+                "the host attributed it to the local user, so their Ctrl+Z can reach it"
+            );
 
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
-        assert_eq!(
-            PdfDoc::list_annotations(&state.doc).len(),
-            before_len,
-            "undo reverted the added highlight and nothing else"
-        );
+            state
+                .undo_as(Some(&local_author), None, None)
+                .expect("an undo entry to pop");
+            assert_eq!(
+                PdfDoc::list_annotations(&state.doc).len(),
+                before_len,
+                "undo reverted the added highlight and nothing else"
+            );
+        }
     }
 
     #[test]
-    fn content_addressed_import_replays_byte_identically() {
+    fn imported_pages_replay_identically_and_bytes_travel_through_the_content_store() {
         let mut a = AutoCommit::new();
         PdfDoc::ensure_page_plan(&mut a, 1);
         a.commit();
@@ -2413,165 +2515,44 @@ mod tests {
         tilo_actions::replay(&mut b, &env, &registry()).unwrap();
         assert_eq!(a.get_heads(), b.get_heads());
         assert_eq!(PdfDoc::list_page_plan(&a), PdfDoc::list_page_plan(&b));
-    }
 
-    #[test]
-    fn imported_bytes_cross_between_content_stores_without_entering_the_action() {
-        let producer = ContentStore::memory();
-        let consumer = ContentStore::new(PeerFetchingBackend::new(producer.clone()));
-        let bytes = b"content that is deliberately not in Automerge";
-        let hash = producer
-            .put(bytes)
-            .expect("test fixture fits the content quota");
-        assert!(producer.has(&hash));
-        assert!(!consumer.has(&hash));
-        assert_eq!(consumer.state(&hash), ContentState::Unavailable);
+        // Phase: imported_bytes_cross_between_content_stores_without_entering_the_action.
+        {
+            let producer = ContentStore::memory();
+            let consumer = ContentStore::new(PeerFetchingBackend::new(producer.clone()));
+            let bytes = b"content that is deliberately not in Automerge";
+            let hash = producer
+                .put(bytes)
+                .expect("test fixture fits the content quota");
+            assert!(producer.has(&hash));
+            assert!(!consumer.has(&hash));
+            assert_eq!(consumer.state(&hash), ContentState::Unavailable);
 
-        // The action names the content by hash only.
-        let pages = vec![PagePlanEntry {
-            id: "imported".into(),
-            source_page: 1,
-            imported: Some(ImportedPage {
-                hash: hash.clone(),
-                kind: "image".into(),
-                page: 1,
-                width_milli: 1_000,
-                height_milli: 1_000,
-            }),
-            rotation: 0,
-        }];
-        let action = import_pages_action(None, pages);
-        let encoded = format!("{action:?}");
-        assert!(encoded.contains(&hash));
-        assert!(!encoded.contains("deliberately not in Automerge"));
+            // The action names the content by hash only.
+            let pages = vec![PagePlanEntry {
+                id: "imported".into(),
+                source_page: 1,
+                imported: Some(ImportedPage {
+                    hash: hash.clone(),
+                    kind: "image".into(),
+                    page: 1,
+                    width_milli: 1_000,
+                    height_milli: 1_000,
+                }),
+                rotation: 0,
+            }];
+            let action = import_pages_action(None, pages);
+            let encoded = format!("{action:?}");
+            assert!(encoded.contains(&hash));
+            assert!(!encoded.contains("deliberately not in Automerge"));
 
-        // First read is intentionally non-blocking; it asks the peer.
-        assert!(consumer.read(&hash).is_none());
-        assert_eq!(consumer.state(&hash), ContentState::Resolved);
-        assert_eq!(consumer.read(&hash).as_deref(), Some(bytes.as_slice()));
-        // Different bytes can never be stored under this address.
-        assert_ne!(consumer.put(b"tampered").ok().as_ref(), Some(&hash));
-        assert_eq!(consumer.read(&hash).as_deref(), Some(bytes.as_slice()));
-    }
-
-    /// Single source of truth: a palette "Edit comment" spec and a directly built
-    /// edit action encode byte-identically, as do the immediate delete specs.
-    #[test]
-    fn large_document_snapshot_is_bounded_and_omitted_pages_resolve_lazily() {
-        let page_count = CONTEXTUAL_CHILD_LIMIT + 9;
-        let ctx = PdfResourceCtx {
-            doc_id: "fixture-document".into(),
-            title: "Large fixture".into(),
-            page: 1,
-            page_count,
-            page_ids: (1..=page_count)
-                .map(|page| format!("page-{page}"))
-                .collect(),
-            page_sources: (1..=page_count).collect(),
-            page_imports: vec![None; page_count],
-            page_rotations: Vec::new(),
-            author: "Ada".into(),
-            signature_date: "2026-09-06".into(),
-            created_seed: 0,
-            search_query: String::new(),
-            search_whole_word: false,
-            search_case_sensitive: false,
-            search_token: search_result_token("", false, false),
-            search_pages: Vec::new(),
-            outline: Vec::new(),
-        };
-        let doc = AutoCommit::new();
-        let snapshot = provide_resources(&ctx, &doc);
-        let eager_pages = snapshot[0]
-            .children
-            .iter()
-            .filter(|resource| resource.kind == "pdf.page")
-            .count();
-        assert_eq!(eager_pages, CONTEXTUAL_CHILD_LIMIT);
-
-        let omitted = page_resource_id(&ctx.doc_id, &format!("page-{page_count}"));
-        let resolved = resolve_resource(&ctx, &doc, &omitted).expect("lazy page resource");
-        assert_eq!(resolved.id.as_str(), omitted);
-        assert_eq!(resolved.label, format!("Page {page_count}"));
-
-        let mut find = ctx.clone();
-        find.search_query = "fixture".into();
-        find.search_token = search_result_token("fixture", false, false);
-        find.search_pages = (1..=SEARCH_RESULT_RESOURCE_LIMIT + 9).collect();
-        let find_snapshot = provide_resources(&find, &doc);
-        let find_resource = find_snapshot[0]
-            .children
-            .iter()
-            .find(|resource| resource.kind == "pdf.search")
-            .expect("non-empty find query has a result resource");
-        assert_eq!(find_resource.children.len(), SEARCH_RESULT_RESOURCE_LIMIT);
-        let omitted_find = format!(
-            "pdf.search-result:{}:{}:{}:{}",
-            find.doc_id,
-            find.search_token,
-            SEARCH_RESULT_RESOURCE_LIMIT,
-            SEARCH_RESULT_RESOURCE_LIMIT + 1
-        );
-        assert!(
-            resolve_resource(&find, &doc, &omitted_find).is_some(),
-            "an omitted find hit remains addressable by its stable query/result id"
-        );
-
-        let mut stale = ctx;
-        stale.page_ids.pop();
-        stale.page_count -= 1;
-        assert!(resolve_resource(&stale, &doc, &omitted).is_none());
-    }
-
-    #[test]
-    fn outline_resource_ids_survive_reordering_but_fail_closed_when_changed() {
-        let mut ctx = PdfResourceCtx {
-            doc_id: "fixture-document".into(),
-            title: "Outline fixture".into(),
-            page: 1,
-            page_count: 3,
-            page_ids: vec!["p-1".into(), "p-2".into(), "p-3".into()],
-            page_sources: vec![1, 2, 3],
-            page_imports: vec![None; 3],
-            page_rotations: Vec::new(),
-            author: "Ada".into(),
-            signature_date: "2026-09-06".into(),
-            created_seed: 0,
-            search_query: String::new(),
-            search_whole_word: false,
-            search_case_sensitive: false,
-            search_token: search_result_token("", false, false),
-            search_pages: Vec::new(),
-            outline: vec![
-                ("Introduction".into(), 1, 0),
-                ("Security model".into(), 2, 0),
-                ("Security model".into(), 2, 0),
-            ],
-        };
-        let doc = AutoCommit::new();
-        let introduction = outline_resource_id(&ctx, 0).expect("valid outline entry");
-        let first_security = outline_resource_id(&ctx, 1).expect("valid outline entry");
-        let duplicate_security = outline_resource_id(&ctx, 2).expect("valid duplicate entry");
-        assert_ne!(
-            first_security, duplicate_security,
-            "duplicates retain identities"
-        );
-        assert!(resolve_resource(&ctx, &doc, &introduction).is_some());
-        assert!(resolve_resource(&ctx, &doc, &first_security).is_some());
-        assert!(resolve_resource(&ctx, &doc, &duplicate_security).is_some());
-
-        ctx.outline.insert(0, ("Preface".into(), 1, 0));
-        assert!(
-            resolve_resource(&ctx, &doc, &first_security).is_some(),
-            "inserting another bookmark does not rebind the saved action"
-        );
-        assert!(resolve_resource(&ctx, &doc, &introduction).is_some());
-        assert!(resolve_resource(&ctx, &doc, &duplicate_security).is_some());
-
-        ctx.outline[1].1 = 3;
-        assert!(
-            resolve_resource(&ctx, &doc, &introduction).is_none(),
-            "a changed bookmark fails closed rather than opening another section"
-        );
+            // First read is intentionally non-blocking; it asks the peer.
+            assert!(consumer.read(&hash).is_none());
+            assert_eq!(consumer.state(&hash), ContentState::Resolved);
+            assert_eq!(consumer.read(&hash).as_deref(), Some(bytes.as_slice()));
+            // Different bytes can never be stored under this address.
+            assert_ne!(consumer.put(b"tampered").ok().as_ref(), Some(&hash));
+            assert_eq!(consumer.read(&hash).as_deref(), Some(bytes.as_slice()));
+        }
     }
 }

@@ -393,332 +393,335 @@ mod tests {
     /// prompts.
     fn ignore_prompts(_: AuthPrompt) {}
 
-    /// Drive a successful Secret-prompt exchange against a mock greetd
-    /// running on the other end of a `UnixStream` pair. Proves the client
-    /// answers the password and completes `StartSession`.
     #[test]
-    fn successful_secret_exchange_completes() {
-        let (client, mut server) = UnixStream::pair().unwrap();
+    fn login_exchange_answers_every_prompt_and_completes() {
+        // Phase `successful_secret_exchange_completes`.
+        // Drive a successful Secret-prompt exchange against a mock greetd
+        // running on the other end of a `UnixStream` pair. Proves the client
+        // answers the password and completes `StartSession`.
+        {
+            let (client, mut server) = UnixStream::pair().unwrap();
 
-        let server_thread = thread::spawn(move || {
-            // 1. CreateSession
-            let req = Request::read_from(&mut server).unwrap();
-            assert!(matches!(req, Request::CreateSession { username } if username == "alice"));
+            let server_thread = thread::spawn(move || {
+                // 1. CreateSession
+                let req = Request::read_from(&mut server).unwrap();
+                assert!(matches!(req, Request::CreateSession { username } if username == "alice"));
 
-            // 2. Ask for the secret.
-            Response::AuthMessage {
-                auth_message_type: AuthMessageType::Secret,
-                auth_message: "Password:".to_string(),
-            }
-            .write_to(&mut server)
-            .unwrap();
+                // 2. Ask for the secret.
+                Response::AuthMessage {
+                    auth_message_type: AuthMessageType::Secret,
+                    auth_message: "Password:".to_string(),
+                }
+                .write_to(&mut server)
+                .unwrap();
 
-            // 3. Receive the password.
-            let req = Request::read_from(&mut server).unwrap();
-            assert!(
-                matches!(req, Request::PostAuthMessageResponse { response } if response == Some("s3cr3t".to_string()))
+                // 3. Receive the password.
+                let req = Request::read_from(&mut server).unwrap();
+                assert!(
+                    matches!(req, Request::PostAuthMessageResponse { response } if response == Some("s3cr3t".to_string()))
+                );
+
+                // 4. Auth complete.
+                Response::Success.write_to(&mut server).unwrap();
+
+                // 5. StartSession with our argv.
+                let req = Request::read_from(&mut server).unwrap();
+                assert!(
+                    matches!(req, Request::StartSession { cmd, .. } if cmd == vec!["/usr/bin/shell".to_string(), "--backend".to_string(), "drm".to_string()])
+                );
+
+                // 6. Session accepted.
+                Response::Success.write_to(&mut server).unwrap();
+            });
+
+            let mut client = client;
+            let cmd = vec![
+                "/usr/bin/shell".to_string(),
+                "--backend".to_string(),
+                "drm".to_string(),
+            ];
+            let result = run_exchange(&mut client, "alice", "s3cr3t", &cmd, &[], ignore_prompts);
+            server_thread.join().unwrap();
+            assert_eq!(result, Ok(()));
+        }
+        // Phase `visible_prompt_is_answered_with_username`.
+        // Some PAM stacks ask for the username via a `Visible` prompt. The
+        // client must answer it with the username (not the password).
+        {
+            let (client, mut server) = UnixStream::pair().unwrap();
+
+            let server_thread = thread::spawn(move || {
+                let _ = Request::read_from(&mut server).unwrap(); // CreateSession
+                Response::AuthMessage {
+                    auth_message_type: AuthMessageType::Visible,
+                    auth_message: "Username:".to_string(),
+                }
+                .write_to(&mut server)
+                .unwrap();
+                let req = Request::read_from(&mut server).unwrap();
+                assert!(
+                    matches!(req, Request::PostAuthMessageResponse { response } if response == Some("bob".to_string())),
+                    "Visible prompt must be answered with the username"
+                );
+                Response::Success.write_to(&mut server).unwrap();
+                let _ = Request::read_from(&mut server).unwrap(); // StartSession
+                Response::Success.write_to(&mut server).unwrap();
+            });
+
+            let mut client = client;
+            let result = run_exchange(&mut client, "bob", "pw", &[], &[], ignore_prompts);
+            server_thread.join().unwrap();
+            assert_eq!(result, Ok(()));
+        }
+        // Phase `info_and_error_prompts_are_surfaced_and_do_not_abort`.
+        // A fingerprint-style conversation: an `Info` prompt ("Place your
+        // finger…"), then an `Error` prompt ("didn't match, try again"), then
+        // `Success`. Proves these conversation messages are SURFACED to the
+        // caller and do NOT abort the loop — the authoritative outcome is the
+        // top-level Success.
+        {
+            let (client, mut server) = UnixStream::pair().unwrap();
+
+            let server_thread = thread::spawn(move || {
+                let _ = Request::read_from(&mut server).unwrap(); // CreateSession
+
+                Response::AuthMessage {
+                    auth_message_type: AuthMessageType::Info,
+                    auth_message: "Place your finger on the reader".to_string(),
+                }
+                .write_to(&mut server)
+                .unwrap();
+                let req = Request::read_from(&mut server).unwrap();
+                assert!(
+                    matches!(req, Request::PostAuthMessageResponse { response } if response.is_none()),
+                    "Info prompt must be acked with None"
+                );
+
+                Response::AuthMessage {
+                    auth_message_type: AuthMessageType::Error,
+                    auth_message: "Swipe didn't match, try again".to_string(),
+                }
+                .write_to(&mut server)
+                .unwrap();
+                let req = Request::read_from(&mut server).unwrap();
+                assert!(
+                    matches!(req, Request::PostAuthMessageResponse { response } if response.is_none()),
+                    "Error-type message must be acked with None and not abort"
+                );
+
+                Response::Success.write_to(&mut server).unwrap();
+                let _ = Request::read_from(&mut server).unwrap(); // StartSession
+                Response::Success.write_to(&mut server).unwrap();
+            });
+
+            let mut client = client;
+            let mut prompts: Vec<AuthPrompt> = Vec::new();
+            let result = run_exchange(&mut client, "alice", "pw", &[], &[], |p| prompts.push(p));
+            server_thread.join().unwrap();
+
+            assert_eq!(result, Ok(()));
+            assert_eq!(prompts.len(), 2, "both conversation prompts surfaced");
+            assert_eq!(prompts[0].text, "Place your finger on the reader");
+            assert!(!prompts[0].is_error, "Info prompt is not a warning");
+            assert_eq!(prompts[1].text, "Swipe didn't match, try again");
+            assert!(prompts[1].is_error, "Error-type prompt is a warning");
+        }
+    }
+
+    #[test]
+    fn greetd_errors_map_to_login_failures_and_cancel() {
+        // Phase `auth_error_maps_to_bad_credentials_and_cancels`.
+        // A bad password yields `Response::Error { AuthError }`; the client
+        // cancels and maps it to [`AuthError::BadCredentials`], whose message
+        // is the vague, non-leaky string.
+        {
+            let (client, mut server) = UnixStream::pair().unwrap();
+
+            let server_thread = thread::spawn(move || {
+                let _ = Request::read_from(&mut server).unwrap(); // CreateSession
+                Response::AuthMessage {
+                    auth_message_type: AuthMessageType::Secret,
+                    auth_message: "Password:".to_string(),
+                }
+                .write_to(&mut server)
+                .unwrap();
+                let _ = Request::read_from(&mut server).unwrap(); // PostAuthMessageResponse
+                Response::Error {
+                    error_type: ErrorType::AuthError,
+                    description: "Login incorrect (pam_unix)".to_string(),
+                }
+                .write_to(&mut server)
+                .unwrap();
+                // The client should send CancelSession to clean up.
+                let req = Request::read_from(&mut server).unwrap();
+                assert!(matches!(req, Request::CancelSession));
+            });
+
+            let mut client = client;
+            let result = run_exchange(&mut client, "alice", "wrong", &[], &[], ignore_prompts);
+            server_thread.join().unwrap();
+
+            assert_eq!(result, Err(AuthError::BadCredentials));
+            // The raw PAM string must NOT leak into the user-facing message.
+            let err = result.unwrap_err();
+            assert_eq!(err.user_message(), "Incorrect username or passcode");
+            assert_eq!(err.detail(), None);
+        }
+        // Phase `generic_error_maps_to_greetd_with_detail`.
+        // A non-auth greetd error (`ErrorType::Error`) maps to
+        // [`AuthError::Greetd`] with the raw description preserved as detail.
+        {
+            let (client, mut server) = UnixStream::pair().unwrap();
+
+            let server_thread = thread::spawn(move || {
+                let _ = Request::read_from(&mut server).unwrap(); // CreateSession
+                Response::Error {
+                    error_type: ErrorType::Error,
+                    description: "session slot busy".to_string(),
+                }
+                .write_to(&mut server)
+                .unwrap();
+                let req = Request::read_from(&mut server).unwrap();
+                assert!(matches!(req, Request::CancelSession));
+            });
+
+            let mut client = client;
+            let result = run_exchange(&mut client, "alice", "pw", &[], &[], ignore_prompts);
+            server_thread.join().unwrap();
+
+            assert_eq!(
+                result,
+                Err(AuthError::Greetd("session slot busy".to_string()))
             );
+            let err = result.unwrap_err();
+            assert_eq!(err.user_message(), "Could not start the session");
+            assert_eq!(err.detail(), Some("session slot busy".to_string()));
+        }
+        // Phase `start_session_failure_is_mapped_and_cancelled`.
+        // A failure during `StartSession` (after a successful auth) is mapped
+        // too, and the client cancels the half-open session.
+        {
+            let (client, mut server) = UnixStream::pair().unwrap();
 
-            // 4. Auth complete.
-            Response::Success.write_to(&mut server).unwrap();
+            let server_thread = thread::spawn(move || {
+                let _ = Request::read_from(&mut server).unwrap(); // CreateSession
+                Response::Success.write_to(&mut server).unwrap(); // auth ok
+                let req = Request::read_from(&mut server).unwrap();
+                assert!(matches!(req, Request::StartSession { .. }));
+                Response::Error {
+                    error_type: ErrorType::Error,
+                    description: "no such session command".to_string(),
+                }
+                .write_to(&mut server)
+                .unwrap();
+                let req = Request::read_from(&mut server).unwrap();
+                assert!(matches!(req, Request::CancelSession));
+            });
 
-            // 5. StartSession with our argv.
-            let req = Request::read_from(&mut server).unwrap();
-            assert!(
-                matches!(req, Request::StartSession { cmd, .. } if cmd == vec!["/usr/bin/shell".to_string(), "--backend".to_string(), "drm".to_string()])
+            let mut client = client;
+            let result = run_exchange(&mut client, "alice", "pw", &[], &[], ignore_prompts);
+            server_thread.join().unwrap();
+            assert_eq!(
+                result,
+                Err(AuthError::Greetd("no such session command".to_string()))
             );
-
-            // 6. Session accepted.
-            Response::Success.write_to(&mut server).unwrap();
-        });
-
-        let mut client = client;
-        let cmd = vec![
-            "/usr/bin/shell".to_string(),
-            "--backend".to_string(),
-            "drm".to_string(),
-        ];
-        let result = run_exchange(&mut client, "alice", "s3cr3t", &cmd, &[], ignore_prompts);
-        server_thread.join().unwrap();
-        assert_eq!(result, Ok(()));
-    }
-
-    /// Some PAM stacks ask for the username via a `Visible` prompt. The
-    /// client must answer it with the username (not the password).
-    #[test]
-    fn visible_prompt_is_answered_with_username() {
-        let (client, mut server) = UnixStream::pair().unwrap();
-
-        let server_thread = thread::spawn(move || {
-            let _ = Request::read_from(&mut server).unwrap(); // CreateSession
-            Response::AuthMessage {
-                auth_message_type: AuthMessageType::Visible,
-                auth_message: "Username:".to_string(),
-            }
-            .write_to(&mut server)
-            .unwrap();
-            let req = Request::read_from(&mut server).unwrap();
-            assert!(
-                matches!(req, Request::PostAuthMessageResponse { response } if response == Some("bob".to_string())),
-                "Visible prompt must be answered with the username"
+        }
+        // Phase `auth_error_message_mapping`.
+        // `AuthError::user_message` / `detail` mapping, checked directly so a
+        // future refactor can't silently change the user-facing copy.
+        {
+            assert_eq!(
+                AuthError::BadCredentials.user_message(),
+                "Incorrect username or passcode"
             );
-            Response::Success.write_to(&mut server).unwrap();
-            let _ = Request::read_from(&mut server).unwrap(); // StartSession
-            Response::Success.write_to(&mut server).unwrap();
-        });
+            assert_eq!(AuthError::BadCredentials.detail(), None);
 
-        let mut client = client;
-        let result = run_exchange(&mut client, "bob", "pw", &[], &[], ignore_prompts);
-        server_thread.join().unwrap();
-        assert_eq!(result, Ok(()));
+            let g = AuthError::Greetd("  boom  ".to_string());
+            assert_eq!(g.user_message(), "Could not start the session");
+            assert_eq!(g.detail(), Some("boom".to_string()), "detail is trimmed");
+
+            let t = AuthError::Transport("connection refused".to_string());
+            assert_eq!(t.user_message(), "Could not reach the login service");
+            assert_eq!(t.detail(), Some("connection refused".to_string()));
+
+            // An all-whitespace description collapses to no detail.
+            assert_eq!(AuthError::Greetd("   ".to_string()).detail(), None);
+        }
     }
 
-    /// A fingerprint-style conversation: an `Info` prompt ("Place your
-    /// finger…"), then an `Error` prompt ("didn't match, try again"), then
-    /// `Success`. Proves these conversation messages are SURFACED to the
-    /// caller and do NOT abort the loop — the authoritative outcome is the
-    /// top-level Success.
     #[test]
-    fn info_and_error_prompts_are_surfaced_and_do_not_abort() {
-        let (client, mut server) = UnixStream::pair().unwrap();
+    fn verify_exchange_checks_credentials_without_starting_a_session() {
+        // Phase `verify_exchange_succeeds_and_never_starts_a_session`.
+        // The verify-only exchange (session-lock unlock) answers the secret,
+        // and on `Success` sends `CancelSession` and returns `Ok` **without**
+        // ever sending `StartSession` — no session is launched by an unlock.
+        {
+            let (client, mut server) = UnixStream::pair().unwrap();
 
-        let server_thread = thread::spawn(move || {
-            let _ = Request::read_from(&mut server).unwrap(); // CreateSession
+            let server_thread = thread::spawn(move || {
+                // 1. CreateSession
+                let req = Request::read_from(&mut server).unwrap();
+                assert!(matches!(req, Request::CreateSession { username } if username == "alice"));
+                // 2. Ask for the secret.
+                Response::AuthMessage {
+                    auth_message_type: AuthMessageType::Secret,
+                    auth_message: "Password:".to_string(),
+                }
+                .write_to(&mut server)
+                .unwrap();
+                // 3. Receive the password.
+                let req = Request::read_from(&mut server).unwrap();
+                assert!(
+                    matches!(req, Request::PostAuthMessageResponse { response } if response == Some("s3cr3t".to_string()))
+                );
+                // 4. Auth complete.
+                Response::Success.write_to(&mut server).unwrap();
+                // 5. The verify path MUST cancel, not StartSession.
+                let req = Request::read_from(&mut server).unwrap();
+                assert!(
+                    matches!(req, Request::CancelSession),
+                    "verify must CancelSession on success, never StartSession"
+                );
+            });
 
-            Response::AuthMessage {
-                auth_message_type: AuthMessageType::Info,
-                auth_message: "Place your finger on the reader".to_string(),
-            }
-            .write_to(&mut server)
-            .unwrap();
-            let req = Request::read_from(&mut server).unwrap();
-            assert!(
-                matches!(req, Request::PostAuthMessageResponse { response } if response.is_none()),
-                "Info prompt must be acked with None"
+            let mut client = client;
+            let result = verify_exchange(&mut client, "alice", "s3cr3t", ignore_prompts);
+            server_thread.join().unwrap();
+            assert_eq!(result, Ok(()));
+        }
+        // Phase `verify_exchange_bad_password_maps_to_bad_credentials`.
+        // A bad password in the verify path maps to the same non-leaky
+        // [`AuthError::BadCredentials`] and cancels the slot.
+        {
+            let (client, mut server) = UnixStream::pair().unwrap();
+
+            let server_thread = thread::spawn(move || {
+                let _ = Request::read_from(&mut server).unwrap(); // CreateSession
+                Response::AuthMessage {
+                    auth_message_type: AuthMessageType::Secret,
+                    auth_message: "Password:".to_string(),
+                }
+                .write_to(&mut server)
+                .unwrap();
+                let _ = Request::read_from(&mut server).unwrap(); // PostAuthMessageResponse
+                Response::Error {
+                    error_type: ErrorType::AuthError,
+                    description: "Login incorrect (pam_unix)".to_string(),
+                }
+                .write_to(&mut server)
+                .unwrap();
+                let req = Request::read_from(&mut server).unwrap();
+                assert!(matches!(req, Request::CancelSession));
+            });
+
+            let mut client = client;
+            let result = verify_exchange(&mut client, "alice", "wrong", ignore_prompts);
+            server_thread.join().unwrap();
+            assert_eq!(result, Err(AuthError::BadCredentials));
+            assert_eq!(
+                result.unwrap_err().user_message(),
+                "Incorrect username or passcode"
             );
-
-            Response::AuthMessage {
-                auth_message_type: AuthMessageType::Error,
-                auth_message: "Swipe didn't match, try again".to_string(),
-            }
-            .write_to(&mut server)
-            .unwrap();
-            let req = Request::read_from(&mut server).unwrap();
-            assert!(
-                matches!(req, Request::PostAuthMessageResponse { response } if response.is_none()),
-                "Error-type message must be acked with None and not abort"
-            );
-
-            Response::Success.write_to(&mut server).unwrap();
-            let _ = Request::read_from(&mut server).unwrap(); // StartSession
-            Response::Success.write_to(&mut server).unwrap();
-        });
-
-        let mut client = client;
-        let mut prompts: Vec<AuthPrompt> = Vec::new();
-        let result = run_exchange(&mut client, "alice", "pw", &[], &[], |p| prompts.push(p));
-        server_thread.join().unwrap();
-
-        assert_eq!(result, Ok(()));
-        assert_eq!(prompts.len(), 2, "both conversation prompts surfaced");
-        assert_eq!(prompts[0].text, "Place your finger on the reader");
-        assert!(!prompts[0].is_error, "Info prompt is not a warning");
-        assert_eq!(prompts[1].text, "Swipe didn't match, try again");
-        assert!(prompts[1].is_error, "Error-type prompt is a warning");
-    }
-
-    /// A bad password yields `Response::Error { AuthError }`; the client
-    /// cancels and maps it to [`AuthError::BadCredentials`], whose message
-    /// is the vague, non-leaky string.
-    #[test]
-    fn auth_error_maps_to_bad_credentials_and_cancels() {
-        let (client, mut server) = UnixStream::pair().unwrap();
-
-        let server_thread = thread::spawn(move || {
-            let _ = Request::read_from(&mut server).unwrap(); // CreateSession
-            Response::AuthMessage {
-                auth_message_type: AuthMessageType::Secret,
-                auth_message: "Password:".to_string(),
-            }
-            .write_to(&mut server)
-            .unwrap();
-            let _ = Request::read_from(&mut server).unwrap(); // PostAuthMessageResponse
-            Response::Error {
-                error_type: ErrorType::AuthError,
-                description: "Login incorrect (pam_unix)".to_string(),
-            }
-            .write_to(&mut server)
-            .unwrap();
-            // The client should send CancelSession to clean up.
-            let req = Request::read_from(&mut server).unwrap();
-            assert!(matches!(req, Request::CancelSession));
-        });
-
-        let mut client = client;
-        let result = run_exchange(&mut client, "alice", "wrong", &[], &[], ignore_prompts);
-        server_thread.join().unwrap();
-
-        assert_eq!(result, Err(AuthError::BadCredentials));
-        // The raw PAM string must NOT leak into the user-facing message.
-        let err = result.unwrap_err();
-        assert_eq!(err.user_message(), "Incorrect username or passcode");
-        assert_eq!(err.detail(), None);
-    }
-
-    /// A non-auth greetd error (`ErrorType::Error`) maps to
-    /// [`AuthError::Greetd`] with the raw description preserved as detail.
-    #[test]
-    fn generic_error_maps_to_greetd_with_detail() {
-        let (client, mut server) = UnixStream::pair().unwrap();
-
-        let server_thread = thread::spawn(move || {
-            let _ = Request::read_from(&mut server).unwrap(); // CreateSession
-            Response::Error {
-                error_type: ErrorType::Error,
-                description: "session slot busy".to_string(),
-            }
-            .write_to(&mut server)
-            .unwrap();
-            let req = Request::read_from(&mut server).unwrap();
-            assert!(matches!(req, Request::CancelSession));
-        });
-
-        let mut client = client;
-        let result = run_exchange(&mut client, "alice", "pw", &[], &[], ignore_prompts);
-        server_thread.join().unwrap();
-
-        assert_eq!(
-            result,
-            Err(AuthError::Greetd("session slot busy".to_string()))
-        );
-        let err = result.unwrap_err();
-        assert_eq!(err.user_message(), "Could not start the session");
-        assert_eq!(err.detail(), Some("session slot busy".to_string()));
-    }
-
-    /// A failure during `StartSession` (after a successful auth) is mapped
-    /// too, and the client cancels the half-open session.
-    #[test]
-    fn start_session_failure_is_mapped_and_cancelled() {
-        let (client, mut server) = UnixStream::pair().unwrap();
-
-        let server_thread = thread::spawn(move || {
-            let _ = Request::read_from(&mut server).unwrap(); // CreateSession
-            Response::Success.write_to(&mut server).unwrap(); // auth ok
-            let req = Request::read_from(&mut server).unwrap();
-            assert!(matches!(req, Request::StartSession { .. }));
-            Response::Error {
-                error_type: ErrorType::Error,
-                description: "no such session command".to_string(),
-            }
-            .write_to(&mut server)
-            .unwrap();
-            let req = Request::read_from(&mut server).unwrap();
-            assert!(matches!(req, Request::CancelSession));
-        });
-
-        let mut client = client;
-        let result = run_exchange(&mut client, "alice", "pw", &[], &[], ignore_prompts);
-        server_thread.join().unwrap();
-        assert_eq!(
-            result,
-            Err(AuthError::Greetd("no such session command".to_string()))
-        );
-    }
-
-    /// The verify-only exchange (session-lock unlock) answers the secret,
-    /// and on `Success` sends `CancelSession` and returns `Ok` **without**
-    /// ever sending `StartSession` — no session is launched by an unlock.
-    #[test]
-    fn verify_exchange_succeeds_and_never_starts_a_session() {
-        let (client, mut server) = UnixStream::pair().unwrap();
-
-        let server_thread = thread::spawn(move || {
-            // 1. CreateSession
-            let req = Request::read_from(&mut server).unwrap();
-            assert!(matches!(req, Request::CreateSession { username } if username == "alice"));
-            // 2. Ask for the secret.
-            Response::AuthMessage {
-                auth_message_type: AuthMessageType::Secret,
-                auth_message: "Password:".to_string(),
-            }
-            .write_to(&mut server)
-            .unwrap();
-            // 3. Receive the password.
-            let req = Request::read_from(&mut server).unwrap();
-            assert!(
-                matches!(req, Request::PostAuthMessageResponse { response } if response == Some("s3cr3t".to_string()))
-            );
-            // 4. Auth complete.
-            Response::Success.write_to(&mut server).unwrap();
-            // 5. The verify path MUST cancel, not StartSession.
-            let req = Request::read_from(&mut server).unwrap();
-            assert!(
-                matches!(req, Request::CancelSession),
-                "verify must CancelSession on success, never StartSession"
-            );
-        });
-
-        let mut client = client;
-        let result = verify_exchange(&mut client, "alice", "s3cr3t", ignore_prompts);
-        server_thread.join().unwrap();
-        assert_eq!(result, Ok(()));
-    }
-
-    /// A bad password in the verify path maps to the same non-leaky
-    /// [`AuthError::BadCredentials`] and cancels the slot.
-    #[test]
-    fn verify_exchange_bad_password_maps_to_bad_credentials() {
-        let (client, mut server) = UnixStream::pair().unwrap();
-
-        let server_thread = thread::spawn(move || {
-            let _ = Request::read_from(&mut server).unwrap(); // CreateSession
-            Response::AuthMessage {
-                auth_message_type: AuthMessageType::Secret,
-                auth_message: "Password:".to_string(),
-            }
-            .write_to(&mut server)
-            .unwrap();
-            let _ = Request::read_from(&mut server).unwrap(); // PostAuthMessageResponse
-            Response::Error {
-                error_type: ErrorType::AuthError,
-                description: "Login incorrect (pam_unix)".to_string(),
-            }
-            .write_to(&mut server)
-            .unwrap();
-            let req = Request::read_from(&mut server).unwrap();
-            assert!(matches!(req, Request::CancelSession));
-        });
-
-        let mut client = client;
-        let result = verify_exchange(&mut client, "alice", "wrong", ignore_prompts);
-        server_thread.join().unwrap();
-        assert_eq!(result, Err(AuthError::BadCredentials));
-        assert_eq!(
-            result.unwrap_err().user_message(),
-            "Incorrect username or passcode"
-        );
-    }
-
-    /// `AuthError::user_message` / `detail` mapping, checked directly so a
-    /// future refactor can't silently change the user-facing copy.
-    #[test]
-    fn auth_error_message_mapping() {
-        assert_eq!(
-            AuthError::BadCredentials.user_message(),
-            "Incorrect username or passcode"
-        );
-        assert_eq!(AuthError::BadCredentials.detail(), None);
-
-        let g = AuthError::Greetd("  boom  ".to_string());
-        assert_eq!(g.user_message(), "Could not start the session");
-        assert_eq!(g.detail(), Some("boom".to_string()), "detail is trimmed");
-
-        let t = AuthError::Transport("connection refused".to_string());
-        assert_eq!(t.user_message(), "Could not reach the login service");
-        assert_eq!(t.detail(), Some("connection refused".to_string()));
-
-        // An all-whitespace description collapses to no detail.
-        assert_eq!(AuthError::Greetd("   ".to_string()).detail(), None);
+        }
     }
 }

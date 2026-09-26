@@ -395,119 +395,121 @@ mod tests {
     }
 
     #[test]
-    fn immediate_store_passes_conformance() {
-        let store = MemoryStore::new();
-        crate::conformance::run(&crate::conformance::Subject {
-            store: &store,
-            settle: &|| {},
-        });
+    fn memory_stores_pass_conformance_with_unique_namespaces() {
+        // Phase `immediate_store_passes_conformance`.
+        {
+            let store = MemoryStore::new();
+            crate::conformance::run(&crate::conformance::Subject {
+                store: &store,
+                settle: &|| {},
+            });
+        }
+        // Phase `queued_store_passes_conformance_with_a_committing_host`.
+        {
+            let store = MemoryStore::queued();
+            let settle = || {
+                for write in store.drain() {
+                    store.acknowledge(write.revision, Ok(())).unwrap();
+                }
+            };
+            crate::conformance::run(&crate::conformance::Subject {
+                store: &store,
+                settle: &settle,
+            });
+        }
+        // Phase `default_namespaces_are_unique_per_store`.
+        {
+            assert_ne!(
+                MemoryStore::new().namespace(),
+                MemoryStore::new().namespace()
+            );
+            assert_eq!(
+                MemoryStore::queued().named("profile").namespace(),
+                "profile"
+            );
+        }
     }
 
     #[test]
-    fn queued_store_passes_conformance_with_a_committing_host() {
-        let store = MemoryStore::queued();
-        let settle = || {
-            for write in store.drain() {
-                store.acknowledge(write.revision, Ok(())).unwrap();
-            }
-        };
-        crate::conformance::run(&crate::conformance::Subject {
-            store: &store,
-            settle: &settle,
-        });
-    }
-
-    #[test]
-    fn queued_writes_are_durable_only_after_their_acknowledgement() {
-        let store = MemoryStore::queued();
-        let first = store
-            .write(&key(), WriteOp::Replace(b"a".to_vec()), Some(b"actor"))
-            .unwrap();
-        assert_eq!(store.durability(&key(), first), Durability::Pending);
-        assert!(matches!(
-            store.flush(Some(&key())),
-            Err(StoreError::Pending(_))
-        ));
-        let second = store
-            .write(&key(), WriteOp::Append(b"b".to_vec()), None)
-            .unwrap();
-        let drained = store.drain();
-        assert_eq!(
-            drained,
-            vec![PendingWrite {
-                key: key(),
-                revision: second,
-                op: WriteOp::Replace(b"ab".to_vec()),
+    fn queued_writes_are_durable_only_after_acknowledgement_and_survive_hydration() {
+        // Phase `queued_writes_are_durable_only_after_their_acknowledgement`.
+        {
+            let store = MemoryStore::queued();
+            let first = store
+                .write(&key(), WriteOp::Replace(b"a".to_vec()), Some(b"actor"))
+                .unwrap();
+            assert_eq!(store.durability(&key(), first), Durability::Pending);
+            assert!(matches!(
+                store.flush(Some(&key())),
+                Err(StoreError::Pending(_))
+            ));
+            let second = store
+                .write(&key(), WriteOp::Append(b"b".to_vec()), None)
+                .unwrap();
+            let drained = store.drain();
+            assert_eq!(
+                drained,
+                vec![PendingWrite {
+                    key: key(),
+                    revision: second,
+                    op: WriteOp::Replace(b"ab".to_vec()),
+                    writer: Some(b"actor".to_vec()),
+                }]
+            );
+            assert_eq!(store.durability(&key(), first), Durability::Pending);
+            store.acknowledge(second, Ok(())).unwrap();
+            assert_eq!(store.durability(&key(), first), Durability::Durable);
+            assert_eq!(store.durability(&key(), second), Durability::Durable);
+            assert!(store.flush(Some(&key())).is_ok());
+            assert!(matches!(
+                store.acknowledge(second, Ok(())),
+                Err(StoreError::UnknownRevision(_))
+            ));
+        }
+        // Phase `failed_acknowledgement_widens_the_next_write_to_a_replacement`.
+        {
+            let store = MemoryStore::queued();
+            let base = store
+                .write(&key(), WriteOp::Replace(b"base".to_vec()), None)
+                .unwrap();
+            store.drain();
+            store.acknowledge(base, Ok(())).unwrap();
+            let tail = store
+                .write(&key(), WriteOp::Append(b"+1".to_vec()), None)
+                .unwrap();
+            store.drain();
+            store.acknowledge(tail, Err("quota".into())).unwrap();
+            assert_eq!(
+                store.durability(&key(), tail),
+                Durability::Failed("quota".into())
+            );
+            assert_eq!(store.durability(&key(), base), Durability::Durable);
+            assert!(matches!(store.flush(None), Err(StoreError::Failed { .. })));
+            let retry = store
+                .write(&key(), WriteOp::Append(b"+2".to_vec()), None)
+                .unwrap();
+            let drained = store.drain();
+            assert_eq!(drained[0].op, WriteOp::Replace(b"base+1+2".to_vec()));
+            store.acknowledge(retry, Ok(())).unwrap();
+            assert_eq!(store.durability(&key(), tail), Durability::Durable);
+            assert!(store.flush(None).is_ok());
+            assert_eq!(store.read(&key()).unwrap().unwrap().bytes, b"base+1+2");
+        }
+        // Phase `hydration_never_discards_unacknowledged_writes`.
+        {
+            let store = MemoryStore::queued();
+            let stored = Stored {
+                bytes: b"host".to_vec(),
                 writer: Some(b"actor".to_vec()),
-            }]
-        );
-        assert_eq!(store.durability(&key(), first), Durability::Pending);
-        store.acknowledge(second, Ok(())).unwrap();
-        assert_eq!(store.durability(&key(), first), Durability::Durable);
-        assert_eq!(store.durability(&key(), second), Durability::Durable);
-        assert!(store.flush(Some(&key())).is_ok());
-        assert!(matches!(
-            store.acknowledge(second, Ok(())),
-            Err(StoreError::UnknownRevision(_))
-        ));
-    }
-
-    #[test]
-    fn failed_acknowledgement_widens_the_next_write_to_a_replacement() {
-        let store = MemoryStore::queued();
-        let base = store
-            .write(&key(), WriteOp::Replace(b"base".to_vec()), None)
-            .unwrap();
-        store.drain();
-        store.acknowledge(base, Ok(())).unwrap();
-        let tail = store
-            .write(&key(), WriteOp::Append(b"+1".to_vec()), None)
-            .unwrap();
-        store.drain();
-        store.acknowledge(tail, Err("quota".into())).unwrap();
-        assert_eq!(
-            store.durability(&key(), tail),
-            Durability::Failed("quota".into())
-        );
-        assert_eq!(store.durability(&key(), base), Durability::Durable);
-        assert!(matches!(store.flush(None), Err(StoreError::Failed { .. })));
-        let retry = store
-            .write(&key(), WriteOp::Append(b"+2".to_vec()), None)
-            .unwrap();
-        let drained = store.drain();
-        assert_eq!(drained[0].op, WriteOp::Replace(b"base+1+2".to_vec()));
-        store.acknowledge(retry, Ok(())).unwrap();
-        assert_eq!(store.durability(&key(), tail), Durability::Durable);
-        assert!(store.flush(None).is_ok());
-        assert_eq!(store.read(&key()).unwrap().unwrap().bytes, b"base+1+2");
-    }
-
-    #[test]
-    fn hydration_never_discards_unacknowledged_writes() {
-        let store = MemoryStore::queued();
-        let stored = Stored {
-            bytes: b"host".to_vec(),
-            writer: Some(b"actor".to_vec()),
-        };
-        store.hydrate(key(), stored.clone()).unwrap();
-        assert_eq!(store.read(&key()).unwrap(), Some(stored));
-        assert!(store.flush(None).is_ok());
-        store
-            .write(&key(), WriteOp::Append(b"!".to_vec()), None)
-            .unwrap();
-        assert!(store.hydrate(key(), Stored::default()).is_err());
-        assert_eq!(store.read(&key()).unwrap().unwrap().bytes, b"host!");
-    }
-
-    #[test]
-    fn default_namespaces_are_unique_per_store() {
-        assert_ne!(
-            MemoryStore::new().namespace(),
-            MemoryStore::new().namespace()
-        );
-        assert_eq!(
-            MemoryStore::queued().named("profile").namespace(),
-            "profile"
-        );
+            };
+            store.hydrate(key(), stored.clone()).unwrap();
+            assert_eq!(store.read(&key()).unwrap(), Some(stored));
+            assert!(store.flush(None).is_ok());
+            store
+                .write(&key(), WriteOp::Append(b"!".to_vec()), None)
+                .unwrap();
+            assert!(store.hydrate(key(), Stored::default()).is_err());
+            assert_eq!(store.read(&key()).unwrap().unwrap().bytes, b"host!");
+        }
     }
 }

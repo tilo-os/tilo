@@ -312,45 +312,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn coalesced_writes_match_applying_them_in_order() {
-        let ops = [
-            WriteOp::Append(b"a".to_vec()),
-            WriteOp::Replace(b"base".to_vec()),
-            WriteOp::Append(b"+1".to_vec()),
-            WriteOp::Append(b"+2".to_vec()),
-        ];
-        for start in 0..ops.len() {
-            let mut sequential = b"old".to_vec();
-            let mut combined = ops[start].clone();
-            ops[start].apply(&mut sequential);
-            for op in &ops[start + 1..] {
-                op.apply(&mut sequential);
-                combined.coalesce(op.clone());
+    fn coalesced_writes_apply_in_order_and_keys_display_every_component() {
+        // Phase `coalesced_writes_match_applying_them_in_order`.
+        {
+            let ops = [
+                WriteOp::Append(b"a".to_vec()),
+                WriteOp::Replace(b"base".to_vec()),
+                WriteOp::Append(b"+1".to_vec()),
+                WriteOp::Append(b"+2".to_vec()),
+            ];
+            for start in 0..ops.len() {
+                let mut sequential = b"old".to_vec();
+                let mut combined = ops[start].clone();
+                ops[start].apply(&mut sequential);
+                for op in &ops[start + 1..] {
+                    op.apply(&mut sequential);
+                    combined.coalesce(op.clone());
+                }
+                let mut folded = b"old".to_vec();
+                combined.apply(&mut folded);
+                assert_eq!(folded, sequential, "starting at {start}");
             }
-            let mut folded = b"old".to_vec();
-            combined.apply(&mut folded);
-            assert_eq!(folded, sequential, "starting at {start}");
         }
-    }
-
-    #[test]
-    fn keys_display_every_identifying_component() {
-        assert_eq!(
-            StorageKey::record("pkg", "room", "rec").to_string(),
-            "record pkg/room/rec"
-        );
-        assert_eq!(
-            StorageKey::view("dev", "room", 7).to_string(),
-            "view dev/room/7"
-        );
-        assert_eq!(StorageKey::package("pkg").to_string(), "package pkg");
-        assert_eq!(
-            StorageKey::room_index("pkg", "room").to_string(),
-            "room pkg/room"
-        );
-        assert_eq!(
-            StorageKey::package_record("pkg", "rec").to_string(),
-            "package record pkg/rec"
-        );
+        // Phase `keys_display_every_identifying_component`.
+        {
+            assert_eq!(
+                StorageKey::record("pkg", "room", "rec").to_string(),
+                "record pkg/room/rec"
+            );
+            assert_eq!(
+                StorageKey::view("dev", "room", 7).to_string(),
+                "view dev/room/7"
+            );
+            assert_eq!(StorageKey::package("pkg").to_string(), "package pkg");
+            assert_eq!(
+                StorageKey::room_index("pkg", "room").to_string(),
+                "room pkg/room"
+            );
+            assert_eq!(
+                StorageKey::package_record("pkg", "rec").to_string(),
+                "package record pkg/rec"
+            );
+        }
     }
 }

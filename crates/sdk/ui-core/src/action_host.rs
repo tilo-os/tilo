@@ -276,212 +276,218 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_applies_the_action_to_the_doc() {
-        let mut doc = AutoCommit::new();
-        let mut host = ActionHost::new();
-        host.dispatch(
-            &mut doc,
-            PUT_TYPE,
-            &Put {
-                key: "score".into(),
-                value: 42,
-            },
-        );
-        assert_eq!(
-            doc.get(&ROOT, "score").unwrap().unwrap().0.as_i64(),
-            Some(42)
-        );
-    }
-
-    #[test]
-    fn direct_actions_keep_the_clicking_documents_actor() {
-        let actor = automerge::ActorId::from(vec![7, 8, 9, 10]);
-        let mut doc = AutoCommit::new().with_actor(actor.clone());
-        let mut host = ActionHost::new();
-        host.dispatch_with_context(
-            &mut doc,
-            PUT_TYPE,
-            &Put {
-                key: "score".into(),
-                value: 42,
-            },
-            ActionContext::for_action(
-                "org.tilo.Test",
-                "Test",
+    fn dispatch_applies_actions_as_one_undo_boundary_with_the_clicking_actor() {
+        // Case `dispatch_applies_the_action_to_the_doc`.
+        {
+            let mut doc = AutoCommit::new();
+            let mut host = ActionHost::new();
+            host.dispatch(
+                &mut doc,
+                PUT_TYPE,
                 &Put {
                     key: "score".into(),
                     value: 42,
                 },
-            ),
-        );
-        let changes = doc.get_changes(&[]);
-        assert_eq!(
-            changes.last().map(automerge::Change::actor_id),
-            Some(&actor)
-        );
-    }
+            );
+            assert_eq!(
+                doc.get(&ROOT, "score").unwrap().unwrap().0.as_i64(),
+                Some(42)
+            );
+        }
 
-    #[test]
-    fn brackets_one_undo_boundary_across_several_actions() {
-        let mut doc = AutoCommit::new();
-        // A pre-existing app write; the bracket must start *after* it.
-        doc.put(&ROOT, "seed", ScalarValue::Str("s".into()))
-            .unwrap();
-        let heads_before_actions = doc.get_heads();
+        // Case `direct_actions_keep_the_clicking_documents_actor`.
+        {
+            let actor = automerge::ActorId::from(vec![7, 8, 9, 10]);
+            let mut doc = AutoCommit::new().with_actor(actor.clone());
+            let mut host = ActionHost::new();
+            host.dispatch_with_context(
+                &mut doc,
+                PUT_TYPE,
+                &Put {
+                    key: "score".into(),
+                    value: 42,
+                },
+                ActionContext::for_action(
+                    "org.tilo.Test",
+                    "Test",
+                    &Put {
+                        key: "score".into(),
+                        value: 42,
+                    },
+                ),
+            );
+            let changes = doc.get_changes(&[]);
+            assert_eq!(
+                changes.last().map(automerge::Change::actor_id),
+                Some(&actor)
+            );
+        }
 
-        let mut host = ActionHost::new();
-        host.dispatch(
-            &mut doc,
-            PUT_TYPE,
-            &Put {
-                key: "a".into(),
-                value: 1,
-            },
-        );
-        host.dispatch(
-            &mut doc,
-            PUT_TYPE,
-            &Put {
-                key: "b".into(),
-                value: 2,
-            },
-        );
+        // Case `brackets_one_undo_boundary_across_several_actions`.
+        {
+            let mut doc = AutoCommit::new();
+            // A pre-existing app write; the bracket must start *after* it.
+            doc.put(&ROOT, "seed", ScalarValue::Str("s".into()))
+                .unwrap();
+            let heads_before_actions = doc.get_heads();
 
-        let committed = host
-            .take_committed()
-            .expect("first dispatch armed the boundary");
-        assert_eq!(
-            committed, heads_before_actions,
-            "bracket covers only the actions"
-        );
-        assert!(
-            host.take_committed().is_none(),
-            "reading clears the boundary"
-        );
-    }
+            let mut host = ActionHost::new();
+            host.dispatch(
+                &mut doc,
+                PUT_TYPE,
+                &Put {
+                    key: "a".into(),
+                    value: 1,
+                },
+            );
+            host.dispatch(
+                &mut doc,
+                PUT_TYPE,
+                &Put {
+                    key: "b".into(),
+                    value: 2,
+                },
+            );
 
-    #[test]
-    fn last_dispatched_records_the_encoded_action() {
-        let mut doc = AutoCommit::new();
-        let mut host = ActionHost::new();
-        assert!(host.last_dispatched().is_none());
-        let action = Put {
-            key: "k".into(),
-            value: 7,
-        };
-        host.dispatch(&mut doc, PUT_TYPE, &action);
-        let enc = host
-            .last_dispatched()
-            .expect("dispatch recorded the action");
-        assert_eq!(enc, &EncodedAction::encode(PUT_TYPE, &action).unwrap());
-    }
+            let committed = host
+                .take_committed()
+                .expect("first dispatch armed the boundary");
+            assert_eq!(
+                committed, heads_before_actions,
+                "bracket covers only the actions"
+            );
+            assert!(
+                host.take_committed().is_none(),
+                "reading clears the boundary"
+            );
+        }
 
-    #[test]
-    fn try_dispatch_refusal_leaves_no_undo_boundary_or_last_payload() {
-        let mut doc = AutoCommit::new();
-        let mut host = ActionHost::new();
-        assert!(matches!(
-            host.try_dispatch(&mut doc, "test.refuse", &Refuse),
-            Err(tilo_actions::ActionError::Refused(_))
-        ));
-        assert!(host.take_committed().is_none());
-        assert!(host.last_dispatched().is_none());
-        assert!(doc.get_heads().is_empty());
-    }
-
-    #[test]
-    fn contextual_dispatch_embeds_activity_in_the_change() {
-        let mut doc = AutoCommit::new();
-        let mut host = ActionHost::new();
-        host.dispatch_with_context(
-            &mut doc,
-            PUT_TYPE,
-            &Put {
-                key: "score".into(),
-                value: 9,
-            },
-            ActionContext::for_resource("Set score", "counter:1", "counter", "Score"),
-        );
-        let heads = doc.get_heads();
-        let change = doc
-            .get_change_by_hash(&heads[0])
-            .expect("contextual action committed");
-        let context = change
-            .message()
-            .and_then(|message| ActionContext::from_change_message(message))
-            .expect("context embedded in change");
-        assert_eq!(context.summary().as_deref(), Some("Set score · Score"));
-    }
-
-    #[test]
-    fn ambient_task_context_enriches_explicit_action_context() {
-        let mut doc = AutoCommit::new();
-        let mut host = ActionHost::new();
-        host.set_ambient_context(Some(
-            ActionContext::default()
-                .with_purpose("Prepare launch")
-                .with_group("issue:42", "Launch", "issue"),
-        ));
-        host.dispatch_with_context(
-            &mut doc,
-            PUT_TYPE,
-            &Put {
+        // Case `last_dispatched_records_the_encoded_action`.
+        {
+            let mut doc = AutoCommit::new();
+            let mut host = ActionHost::new();
+            assert!(host.last_dispatched().is_none());
+            let action = Put {
                 key: "k".into(),
-                value: 1,
-            },
-            ActionContext::for_resource("Set", "counter", "counter", "Counter"),
-        );
-        let heads = doc.get_heads();
-        let change = doc.get_change_by_hash(&heads[0]).unwrap();
-        let context = change
-            .message()
-            .and_then(|message| ActionContext::from_change_message(message))
-            .unwrap();
-        assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
-        assert_eq!(
-            context.group.as_ref().map(|group| group.id.as_str()),
-            Some("issue:42")
-        );
-        assert_eq!(
-            context
-                .resource
-                .as_ref()
-                .map(|resource| resource.id.as_str()),
-            Some("counter")
-        );
+                value: 7,
+            };
+            host.dispatch(&mut doc, PUT_TYPE, &action);
+            let enc = host
+                .last_dispatched()
+                .expect("dispatch recorded the action");
+            assert_eq!(enc, &EncodedAction::encode(PUT_TYPE, &action).unwrap());
+        }
+
+        // Case `try_dispatch_refusal_leaves_no_undo_boundary_or_last_payload`.
+        {
+            let mut doc = AutoCommit::new();
+            let mut host = ActionHost::new();
+            assert!(matches!(
+                host.try_dispatch(&mut doc, "test.refuse", &Refuse),
+                Err(tilo_actions::ActionError::Refused(_))
+            ));
+            assert!(host.take_committed().is_none());
+            assert!(host.last_dispatched().is_none());
+            assert!(doc.get_heads().is_empty());
+        }
     }
 
     #[test]
-    fn optimistic_dispatch_is_visible_and_keeps_the_action_host_contract() {
-        let mut doc = AutoCommit::new();
-        doc.put(&ROOT, "seed", true).unwrap();
-        let before = doc.get_heads();
-        let mut queue = OptimisticQueue::new(&mut doc);
-        let mut host = ActionHost::new();
-        let action = Put {
-            key: "score".into(),
-            value: 42,
-        };
+    fn dispatch_context_and_optimism_keep_the_action_host_contract() {
+        // Case `contextual_dispatch_embeds_activity_in_the_change`.
+        {
+            let mut doc = AutoCommit::new();
+            let mut host = ActionHost::new();
+            host.dispatch_with_context(
+                &mut doc,
+                PUT_TYPE,
+                &Put {
+                    key: "score".into(),
+                    value: 9,
+                },
+                ActionContext::for_resource("Set score", "counter:1", "counter", "Score"),
+            );
+            let heads = doc.get_heads();
+            let change = doc
+                .get_change_by_hash(&heads[0])
+                .expect("contextual action committed");
+            let context = change
+                .message()
+                .and_then(|message| ActionContext::from_change_message(message))
+                .expect("context embedded in change");
+            assert_eq!(context.summary().as_deref(), Some("Set score · Score"));
+        }
 
-        let envelope = host
-            .dispatch_optimistic(&mut doc, &mut queue, PUT_TYPE, &action)
-            .unwrap();
+        // Case `ambient_task_context_enriches_explicit_action_context`.
+        {
+            let mut doc = AutoCommit::new();
+            let mut host = ActionHost::new();
+            host.set_ambient_context(Some(
+                ActionContext::default()
+                    .with_purpose("Prepare launch")
+                    .with_group("issue:42", "Launch", "issue"),
+            ));
+            host.dispatch_with_context(
+                &mut doc,
+                PUT_TYPE,
+                &Put {
+                    key: "k".into(),
+                    value: 1,
+                },
+                ActionContext::for_resource("Set", "counter", "counter", "Counter"),
+            );
+            let heads = doc.get_heads();
+            let change = doc.get_change_by_hash(&heads[0]).unwrap();
+            let context = change
+                .message()
+                .and_then(|message| ActionContext::from_change_message(message))
+                .unwrap();
+            assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
+            assert_eq!(
+                context.group.as_ref().map(|group| group.id.as_str()),
+                Some("issue:42")
+            );
+            assert_eq!(
+                context
+                    .resource
+                    .as_ref()
+                    .map(|resource| resource.id.as_str()),
+                Some("counter")
+            );
+        }
 
-        assert_eq!(
-            doc.get(&ROOT, "score").unwrap().unwrap().0.as_i64(),
-            Some(42),
-            "the UI reads the optimistic value before a reply"
-        );
-        assert_eq!(host.take_committed(), Some(before));
-        assert_eq!(host.last_dispatched(), Some(&envelope.action));
-        assert_eq!(queue.reconnect_batch(), std::slice::from_ref(&envelope));
+        // Case `optimistic_dispatch_is_visible_and_keeps_the_action_host_contract`.
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(&ROOT, "seed", true).unwrap();
+            let before = doc.get_heads();
+            let mut queue = OptimisticQueue::new(&mut doc);
+            let mut host = ActionHost::new();
+            let action = Put {
+                key: "score".into(),
+                value: 42,
+            };
 
-        let mut registry = ActionRegistry::new();
-        registry.register::<Put>(PUT_TYPE);
-        assert_eq!(
-            queue.acknowledge(envelope.id, &registry).unwrap(),
-            tilo_actions::Acknowledgement::Accepted
-        );
-        assert!(queue.is_settled());
+            let envelope = host
+                .dispatch_optimistic(&mut doc, &mut queue, PUT_TYPE, &action)
+                .unwrap();
+
+            assert_eq!(
+                doc.get(&ROOT, "score").unwrap().unwrap().0.as_i64(),
+                Some(42),
+                "the UI reads the optimistic value before a reply"
+            );
+            assert_eq!(host.take_committed(), Some(before));
+            assert_eq!(host.last_dispatched(), Some(&envelope.action));
+            assert_eq!(queue.reconnect_batch(), std::slice::from_ref(&envelope));
+
+            let mut registry = ActionRegistry::new();
+            registry.register::<Put>(PUT_TYPE);
+            assert_eq!(
+                queue.acknowledge(envelope.id, &registry).unwrap(),
+                tilo_actions::Acknowledgement::Accepted
+            );
+            assert!(queue.is_settled());
+        }
     }
 }

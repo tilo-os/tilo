@@ -949,530 +949,731 @@ mod tests {
     }
 
     #[test]
-    fn dark_default_accent_shortcuts_are_the_restrained_blue() {
-        let theme = Theme::dark();
-        assert_eq!(
-            rgb(theme.accent_primary),
-            [0x58, 0x91, 0xE8],
-            "restrained blue"
-        );
-        assert_eq!(
-            rgb(theme.accent_hover),
-            [0x48, 0x7B, 0xD1],
-            "hover one step darker"
-        );
-        assert_ne!(rgb(theme.text_primary), rgb(theme.text_dim));
-        assert_ne!(rgb(theme.text_dim), rgb(theme.text_tertiary));
-    }
+    fn preset_palettes_resolve_to_their_canonical_colours_and_accents() {
+        // Case `dark_default_accent_shortcuts_are_the_restrained_blue`.
+        {
+            let theme = Theme::dark();
+            assert_eq!(
+                rgb(theme.accent_primary),
+                [0x58, 0x91, 0xE8],
+                "restrained blue"
+            );
+            assert_eq!(
+                rgb(theme.accent_hover),
+                [0x48, 0x7B, 0xD1],
+                "hover one step darker"
+            );
+            assert_ne!(rgb(theme.text_primary), rgb(theme.text_dim));
+            assert_ne!(rgb(theme.text_dim), rgb(theme.text_tertiary));
+        }
 
-    #[test]
-    fn tilo_blue_preserves_the_indigo_concept_accent() {
-        let theme = Theme::tilo_blue();
-        assert_eq!(theme.name, "Tilo Blue");
-        assert_eq!(
-            rgb(theme.accent_primary),
-            [0x63, 0x66, 0xf1],
-            "indigo-500 #6366f1"
-        );
-        assert_eq!(
-            rgb(theme.accent_hover),
-            [0x4f, 0x46, 0xe5],
-            "indigo-600 #4f46e5"
-        );
-    }
+        // Case `tilo_blue_preserves_the_indigo_concept_accent`.
+        {
+            let theme = Theme::tilo_blue();
+            assert_eq!(theme.name, "Tilo Blue");
+            assert_eq!(
+                rgb(theme.accent_primary),
+                [0x63, 0x66, 0xf1],
+                "indigo-500 #6366f1"
+            );
+            assert_eq!(
+                rgb(theme.accent_hover),
+                [0x4f, 0x46, 0xe5],
+                "indigo-600 #4f46e5"
+            );
+        }
 
-    #[test]
-    fn accent_indices_pin_to_palette_positions() {
-        // If these drift, every other assertion in this module goes meaningless.
-        assert_eq!(ACCENT_PRIMARY_IDX, 5);
-        assert_eq!(ACCENT_HOVER_IDX, 4);
-    }
+        // Case `accent_indices_pin_to_palette_positions`.
+        {
+            // If these drift, every other assertion in this module goes meaningless.
+            assert_eq!(ACCENT_PRIMARY_IDX, 5);
+            assert_eq!(ACCENT_HOVER_IDX, 4);
+        }
 
-    #[test]
-    fn preset_palettes_read_as_their_real_canonical_colours() {
-        // Canonical upstream hex values, so a preset can't silently drift
-        // into the default.
-        let cases: &[(Theme, [u8; 3], [u8; 3])] = &[
-            (Theme::dracula(), [0x28, 0x2A, 0x36], [0xFF, 0x79, 0xC6]),
-            (Theme::nord(), [0x2E, 0x34, 0x40], [0x88, 0xC0, 0xD0]),
-            (Theme::gruvbox(), [0x28, 0x28, 0x28], [0xFA, 0xBD, 0x2F]),
-            (
-                Theme::gruvbox_light(),
-                [0xFB, 0xF1, 0xC7],
-                [0xD7, 0x99, 0x21],
-            ),
-            (
-                Theme::catppuccin_mocha(),
-                [0x1E, 0x1E, 0x2E],
-                [0x89, 0xB4, 0xFA],
-            ),
-            (
-                Theme::catppuccin_latte(),
-                [0xEF, 0xF1, 0xF5],
-                [0x1E, 0x66, 0xF5],
-            ),
-            (Theme::solarized(), [0x00, 0x2B, 0x36], [0x2A, 0xA1, 0x98]),
-            (Theme::oled(), [0x00, 0x00, 0x00], [0x4C, 0x9A, 0xFF]),
-            (Theme::rose_pine(), [0x19, 0x17, 0x24], [0xEB, 0xBC, 0xBA]),
-        ];
-        for (theme, base, accent) in cases {
-            assert_eq!(rgb(theme.bg_app), *base, "{} ground", theme.name);
-            assert_eq!(rgb(theme.accent_primary), *accent, "{} accent", theme.name);
-            assert_eq!(rgb(theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]), *accent);
+        // Case `preset_palettes_read_as_their_real_canonical_colours`.
+        {
+            // Canonical upstream hex values, so a preset can't silently drift
+            // into the default.
+            let cases: &[(Theme, [u8; 3], [u8; 3])] = &[
+                (Theme::dracula(), [0x28, 0x2A, 0x36], [0xFF, 0x79, 0xC6]),
+                (Theme::nord(), [0x2E, 0x34, 0x40], [0x88, 0xC0, 0xD0]),
+                (Theme::gruvbox(), [0x28, 0x28, 0x28], [0xFA, 0xBD, 0x2F]),
+                (
+                    Theme::gruvbox_light(),
+                    [0xFB, 0xF1, 0xC7],
+                    [0xD7, 0x99, 0x21],
+                ),
+                (
+                    Theme::catppuccin_mocha(),
+                    [0x1E, 0x1E, 0x2E],
+                    [0x89, 0xB4, 0xFA],
+                ),
+                (
+                    Theme::catppuccin_latte(),
+                    [0xEF, 0xF1, 0xF5],
+                    [0x1E, 0x66, 0xF5],
+                ),
+                (Theme::solarized(), [0x00, 0x2B, 0x36], [0x2A, 0xA1, 0x98]),
+                (Theme::oled(), [0x00, 0x00, 0x00], [0x4C, 0x9A, 0xFF]),
+                (Theme::rose_pine(), [0x19, 0x17, 0x24], [0xEB, 0xBC, 0xBA]),
+            ];
+            for (theme, base, accent) in cases {
+                assert_eq!(rgb(theme.bg_app), *base, "{} ground", theme.name);
+                assert_eq!(rgb(theme.accent_primary), *accent, "{} accent", theme.name);
+                assert_eq!(rgb(theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]), *accent);
+            }
+        }
+
+        // Case `oled_ground_is_true_black`.
+        {
+            let t = Theme::oled();
+            assert_eq!(rgb(t.bg_app), [0, 0, 0], "OLED must be pure #000000");
+        }
+
+        // Case `named_resolves_every_preset_to_its_own_theme`.
+        {
+            for name in [
+                "Dark",
+                "Light",
+                "Tilo Blue",
+                "Catppuccin Mocha",
+                "Catppuccin Latte",
+                "Dracula",
+                "Nord",
+                "Gruvbox",
+                "Gruvbox Light",
+                "Solarized",
+                "OLED",
+                "Beige",
+                "Rosé Pine",
+                "High Contrast",
+            ] {
+                let t = Theme::named(name).unwrap_or_else(|| panic!("named({name}) resolves"));
+                assert_eq!(t.name, name, "named({name:?}) returns its own theme");
+            }
+            assert_eq!(
+                Theme::named("gruvbox-light").map(|t| t.name),
+                Some("Gruvbox Light".into())
+            );
+            assert_eq!(
+                Theme::named("catppuccinmocha").map(|t| t.name),
+                Some("Catppuccin Mocha".into())
+            );
+            assert!(Theme::named("not-a-theme").is_none());
         }
     }
 
     #[test]
-    fn oled_ground_is_true_black() {
-        let t = Theme::oled();
-        assert_eq!(rgb(t.bg_app), [0, 0, 0], "OLED must be pure #000000");
-    }
-
-    #[test]
-    fn named_resolves_every_preset_to_its_own_theme() {
-        for name in [
-            "Dark",
-            "Light",
-            "Tilo Blue",
-            "Catppuccin Mocha",
-            "Catppuccin Latte",
-            "Dracula",
-            "Nord",
-            "Gruvbox",
-            "Gruvbox Light",
-            "Solarized",
-            "OLED",
-            "Beige",
-            "Rosé Pine",
-            "High Contrast",
-        ] {
-            let t = Theme::named(name).unwrap_or_else(|| panic!("named({name}) resolves"));
-            assert_eq!(t.name, name, "named({name:?}) returns its own theme");
+    fn preset_ink_and_focus_ring_clear_contrast_on_every_ground() {
+        // Case `preset_default_body_text_clears_aa_on_its_ground`.
+        {
+            use crate::a11y::contrast_ratio;
+            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                let r = contrast_ratio(t.text_primary, t.bg_app);
+                assert!(
+                    r >= 4.5,
+                    "{} primary text on ground = {r:.2}:1 (< AA)",
+                    t.name
+                );
+            }
         }
-        assert_eq!(
-            Theme::named("gruvbox-light").map(|t| t.name),
-            Some("Gruvbox Light".into())
-        );
-        assert_eq!(
-            Theme::named("catppuccinmocha").map(|t| t.name),
-            Some("Catppuccin Mocha".into())
-        );
-        assert!(Theme::named("not-a-theme").is_none());
-    }
 
-    #[test]
-    fn preset_default_body_text_clears_aa_on_its_ground() {
-        use crate::a11y::contrast_ratio;
-        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            let r = contrast_ratio(t.text_primary, t.bg_app);
+        // Case `on_surface_ink_clears_aa_on_any_ground_a_caller_paints_on`:
+        // Both ink tiers clear AA on any surface, not only the window card —
+        // ink can't come from darkening the background by a fixed fraction (a
+        // hand-rolled shade), which produces about the same ratio whatever the
+        // palette: that is how high-contrast ended up *less* legible than
+        // light, 4.37:1 against 4.52:1.
+        {
+            use crate::a11y::contrast_ratio;
+            // Sampled across the light/dark line, including the near-white tints
+            // a paper-like surface produces.
+            let grounds = [
+                ("paper", Color::from_rgb8(0xfc, 0xfc, 0xfa)),
+                ("paper tint", Color::from_rgb8(0xee, 0xee, 0xec)),
+                ("paper tint, cool", Color::from_rgb8(0xdf, 0xdf, 0xe2)),
+                ("mid grey", Color::from_rgb8(0x80, 0x80, 0x80)),
+                ("near black", Color::from_rgb8(0x0a, 0x0a, 0x0a)),
+                ("black", Color::from_rgb8(0, 0, 0)),
+                ("white", Color::from_rgb8(255, 255, 255)),
+            ];
+            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                for (label, ground) in grounds {
+                    let on = t.on_surface(ground);
+                    let r = contrast_ratio(on.ink, ground);
+                    assert!(r >= 4.5, "{} ink on {label} = {r:.2}:1 (< AA)", t.name);
+                    let rd = contrast_ratio(on.ink_dim, ground);
+                    assert!(
+                        rd >= 4.5,
+                        "{} dim ink on {label} = {rd:.2}:1 (< AA) — this is the tier a \
+                     caption or a placeholder label uses",
+                        t.name,
+                    );
+                }
+            }
+        }
+
+        // Case `the_high_contrast_preset_is_not_the_least_legible_one`:
+        // A palette authored for more contrast must deliver more of it — cannot
+        // come out behind the ordinary preset on the same box.
+        {
+            use crate::a11y::contrast_ratio;
+            // A tint of a document's paper, which is light under every preset.
+            let ground = Color::from_rgb8(0xee, 0xee, 0xec);
+            let dim_ratio = |t: &Theme| contrast_ratio(t.on_surface(ground).ink_dim, ground);
+            let hc = dim_ratio(&Theme::high_contrast());
+            for t in [Theme::light(), Theme::dark()] {
+                let r = dim_ratio(&t);
+                assert!(
+                    hc >= r,
+                    "high-contrast reads at {hc:.2}:1 where {} reads at {r:.2}:1",
+                    t.name,
+                );
+            }
+        }
+
+        // Case `on_card_ink_clears_aa_on_every_preset_card`:
+        // Every preset, including the accessibility ones — `high_contrast` and
+        // `oled` are the whole point of the list, since their window card is
+        // black / `#0A0A0A` and ink pulled from the wrong end of the ramp reads
+        // as dark-on-dark (or, on a light preset, near-white-on-white).
+        {
+            use crate::a11y::contrast_ratio;
+            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                let card = t.tokens.colors.surfaces.window_card;
+                let on = t.on_card();
+                let r = contrast_ratio(on.ink, card);
+                assert!(r >= 4.5, "{} on-card ink = {r:.2}:1 (< AA)", t.name);
+                let rd = contrast_ratio(on.ink_dim, card);
+                assert!(rd >= 4.5, "{} on-card dim ink = {rd:.2}:1 (< AA)", t.name);
+                // How quiet the tertiary tier is is a property of the palette's
+                // authorship, not this derivation — Solarized runs at 2.8:1 on
+                // its own ground on purpose, against a large-text-AA target of
+                // 3:1. So the bar is: clear 3:1, or be no worse than the
+                // palette already manages on its own ground.
+                let rt = contrast_ratio(on.ink_tertiary, card);
+                let floor = contrast_ratio(t.text_tertiary, t.bg_app).min(3.0) - 0.01;
+                assert!(
+                    rt >= floor,
+                    "{} on-card tertiary ink = {rt:.2}:1, below the {floor:.2}:1 \
+                 this palette manages on its own ground",
+                    t.name
+                );
+            }
+        }
+
+        // Case `high_contrast_beats_dark_on_fg_bg_contrast`.
+        {
+            use crate::a11y::contrast_ratio;
+            let dark = Theme::dark();
+            let hc = Theme::high_contrast();
+
+            let dark_ratio = contrast_ratio(dark.text_primary, dark.bg_app);
+            let hc_ratio = contrast_ratio(hc.text_primary, hc.bg_app);
+
             assert!(
-                r >= 4.5,
-                "{} primary text on ground = {r:.2}:1 (< AA)",
-                t.name
+                hc_ratio > dark_ratio,
+                "high_contrast fg/bg ({hc_ratio:.2}:1) must exceed dark ({dark_ratio:.2}:1)",
+            );
+            // It should also clear WCAG AAA (7:1) — and in fact hit the 21:1 max
+            // for pure white-on-black.
+            assert!(
+                hc_ratio >= 7.0,
+                "high_contrast must clear WCAG AAA, got {hc_ratio:.2}:1"
+            );
+            assert!(
+                (hc_ratio - 21.0).abs() < 0.01,
+                "white-on-black is the 21:1 maximum"
+            );
+        }
+
+        // Case `high_contrast_uses_a_strong_distinct_focus_ring`.
+        {
+            use crate::a11y::contrast_ratio;
+            let hc = Theme::high_contrast();
+            assert!(
+                contrast_ratio(hc.border_focus, hc.bg_app) >= 7.0,
+                "focus ring must clear AAA against the background",
+            );
+            // Must also differ from the standard border so focus reads as a
+            // distinct state, not just "a border".
+            assert_ne!(
+                (
+                    hc.border_focus.r(),
+                    hc.border_focus.g(),
+                    hc.border_focus.b()
+                ),
+                (
+                    hc.border_standard.r(),
+                    hc.border_standard.g(),
+                    hc.border_standard.b()
+                ),
             );
         }
     }
 
-    /// Both ink tiers clear AA on any surface, not only the window card —
-    /// ink can't come from darkening the background by a fixed fraction (a
-    /// hand-rolled shade), which produces about the same ratio whatever the
-    /// palette: that is how high-contrast ended up *less* legible than
-    /// light, 4.37:1 against 4.52:1.
     #[test]
-    fn on_surface_ink_clears_aa_on_any_ground_a_caller_paints_on() {
-        use crate::a11y::contrast_ratio;
-        // Sampled across the light/dark line, including the near-white tints
-        // a paper-like surface produces.
-        let grounds = [
-            ("paper", Color::from_rgb8(0xfc, 0xfc, 0xfa)),
-            ("paper tint", Color::from_rgb8(0xee, 0xee, 0xec)),
-            ("paper tint, cool", Color::from_rgb8(0xdf, 0xdf, 0xe2)),
-            ("mid grey", Color::from_rgb8(0x80, 0x80, 0x80)),
-            ("near black", Color::from_rgb8(0x0a, 0x0a, 0x0a)),
-            ("black", Color::from_rgb8(0, 0, 0)),
-            ("white", Color::from_rgb8(255, 255, 255)),
-        ];
-        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            for (label, ground) in grounds {
-                let on = t.on_surface(ground);
-                let r = contrast_ratio(on.ink, ground);
-                assert!(r >= 4.5, "{} ink on {label} = {r:.2}:1 (< AA)", t.name);
-                let rd = contrast_ratio(on.ink_dim, ground);
+    fn window_card_and_edge_register_against_their_ground() {
+        // Case `window_edge_registers_against_the_desktop_on_every_preset`:
+        // A constant per palette can only be right about a surface someone
+        // checked; the desktop is the one ground that's always knowable,
+        // unlike the app content a window may sit over.
+        {
+            use crate::a11y::relative_luminance;
+            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                let ground = t.tokens.colors.surfaces.base;
+                let edge = t.window_edge();
+                // What the eye receives where the hairline meets the desktop.
+                let a = f32::from(edge.a()) / 255.0;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "clamped to [0.0, 255.0] immediately above, so the cast to u8 is exact"
+                )]
+                let ch = |o: u8, g: u8| {
+                    (f32::from(o) * a + f32::from(g) * (1.0 - a))
+                        .round()
+                        .clamp(0.0, 255.0) as u8
+                };
+                let seen = Color::from_rgb8(
+                    ch(edge.r(), ground.r()),
+                    ch(edge.g(), ground.g()),
+                    ch(edge.b(), ground.b()),
+                );
+                let moved = (relative_luminance(seen) - relative_luminance(ground)).abs();
                 assert!(
-                    rd >= 4.5,
-                    "{} dim ink on {label} = {rd:.2}:1 (< AA) — this is the tier a \
-                     caption or a placeholder label uses",
+                    moved >= 0.02,
+                    "{}: the window edge composites to within {moved:.4} of the \
+                 desktop it is drawn on — that is not an edge, it is the \
+                 desktop. Edge {:?} on ground {:?}",
                     t.name,
+                    [edge.r(), edge.g(), edge.b(), edge.a()],
+                    [ground.r(), ground.g(), ground.b()],
+                );
+            }
+        }
+
+        // Case `window_edge_flips_a_border_its_ground_would_swallow`:
+        // The derivation has to flip a border that matches its own ground, not
+        // pass it through — without this, the sweep above would be satisfied
+        // by every preset happening to declare a workable border, and the
+        // fallback branch would never be exercised.
+        {
+            let mut t = Theme::dark();
+            // A white hairline on a white desktop — an edge declared without
+            // reference to what it lands on.
+            t.tokens.colors.surfaces.base = Color::WHITE;
+            t.tokens.colors.surfaces.window_card_border = Color::from_rgba8(255, 255, 255, 51);
+            let edge = t.window_edge();
+            assert_eq!(
+                [edge.r(), edge.g(), edge.b()],
+                [0, 0, 0],
+                "a white edge on a white desktop must flip to the dark polarity; \
+             got {:?}",
+                [edge.r(), edge.g(), edge.b(), edge.a()],
+            );
+            assert_eq!(
+                edge.a(),
+                51,
+                "flipping the polarity must keep the declared weight — an edge \
+             that changes strength as well as side stops being the same \
+             design decision",
+            );
+        }
+
+        // Case `on_window_card_repoints_the_three_text_tiers`:
+        // `Theme::on_window_card` is what shared widgets are handed when they
+        // draw onto the card, so its three text tiers have to be the on-card
+        // ink — not the chrome's.
+        {
+            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                let on = t.on_card();
+                let card_theme = t.on_window_card();
+                assert_eq!(card_theme.text_primary, on.ink, "{}", t.name);
+                assert_eq!(card_theme.text_dim, on.ink_dim, "{}", t.name);
+                assert_eq!(card_theme.text_tertiary, on.ink_tertiary, "{}", t.name);
+                // Everything else is the ambient theme, untouched.
+                assert_eq!(card_theme.accent_primary, t.accent_primary, "{}", t.name);
+                assert_eq!(card_theme.bg_app, t.bg_app, "{}", t.name);
+            }
+        }
+
+        // Case `on_card_tint_reads_as_a_tint_not_a_panel`:
+        // The tint is a whisper on the card (a gutter strip, a zebra row), not
+        // a second surface: it must stay far closer to the card than the ink
+        // is, in either direction.
+        {
+            use crate::a11y::contrast_ratio;
+            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                let card = t.tokens.colors.surfaces.window_card;
+                let on = t.on_card();
+                let r = contrast_ratio(on.tint, card);
+                assert!(
+                    r < 1.6,
+                    "{} on-card tint is {r:.2}:1 from the card — that reads as a \
+                 panel, not a tint",
+                    t.name
+                );
+            }
+        }
+
+        // Case `window_card_shares_the_ground_s_colour_family`:
+        // The window card and the app ground fill are the same colour family,
+        // so a window whose app painted nothing (like Notes, which shows the
+        // bare card) does not flip light/dark against a window beside it that
+        // fills its own background. `tilo_blue` is excluded deliberately: its
+        // white card is preserved verbatim from the first design.
+        {
+            use crate::a11y::contrast_ratio;
+            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                if t.name == "Tilo Blue" {
+                    continue;
+                }
+                let card = t.tokens.colors.surfaces.window_card;
+                let r = contrast_ratio(card, t.bg_app);
+                assert!(
+                    r < 3.0,
+                    "{}: window card is {r:.2}:1 from the app ground — an empty \
+                 window would flip the frame's colour family against a \
+                 window that fills its own background",
+                    t.name
                 );
             }
         }
     }
 
-    /// A palette authored for more contrast must deliver more of it — cannot
-    /// come out behind the ordinary preset on the same box.
     #[test]
-    fn the_high_contrast_preset_is_not_the_least_legible_one() {
-        use crate::a11y::contrast_ratio;
-        // A tint of a document's paper, which is light under every preset.
-        let ground = Color::from_rgb8(0xee, 0xee, 0xec);
-        let dim_ratio = |t: &Theme| contrast_ratio(t.on_surface(ground).ink_dim, ground);
-        let hc = dim_ratio(&Theme::high_contrast());
-        for t in [Theme::light(), Theme::dark()] {
-            let r = dim_ratio(&t);
+    fn text_and_ui_scale_multiply_compose_and_clamp() {
+        // Case `text_scale_multiplies_every_type_size`.
+        {
+            let base = Theme::dark();
+            let base_sm = base.tokens.typography.scale.sm;
+            let base_base = base.tokens.typography.scale.base;
+            let base_x4l = base.tokens.typography.scale.x4l;
+            let base_font = base.tokens.font_size_base;
+
+            let scaled = Theme::dark().with_text_scale(1.5);
+            assert_eq!(scaled.text_scale, 1.5);
+            assert!((scaled.tokens.typography.scale.sm - base_sm * 1.5).abs() < 1e-4);
+            assert!((scaled.tokens.typography.scale.base - base_base * 1.5).abs() < 1e-4);
+            assert!((scaled.tokens.typography.scale.x4l - base_x4l * 1.5).abs() < 1e-4);
+            assert!((scaled.tokens.font_size_base - base_font * 1.5).abs() < 1e-4);
+        }
+
+        // Case `text_scale_of_one_is_identity`.
+        {
+            let base = Theme::dark();
+            let same = Theme::dark().with_text_scale(1.0);
+            assert_eq!(same.text_scale, 1.0);
+            assert_eq!(
+                same.tokens.typography.scale.base,
+                base.tokens.typography.scale.base
+            );
+        }
+
+        // Case `text_scale_is_clamped_to_a_sane_range`.
+        {
+            let tiny = Theme::dark().with_text_scale(0.0);
+            assert!(tiny.text_scale >= 0.5);
+            let huge = Theme::dark().with_text_scale(100.0);
+            assert!(huge.text_scale <= 4.0);
+        }
+
+        // Case `ui_scale_multiplies_spacing_radii_and_type_together`.
+        {
+            let base = Theme::dark();
+            let bs = base.tokens.spacing.s3;
+            let br = base.tokens.radii.md;
+            let bt = base.tokens.typography.scale.base;
+            let bfull = base.tokens.radii.full;
+
+            let scaled = Theme::dark().with_ui_scale(1.5);
+            assert_eq!(scaled.ui_scale, 1.5);
             assert!(
-                hc >= r,
-                "high-contrast reads at {hc:.2}:1 where {} reads at {r:.2}:1",
-                t.name,
+                (scaled.tokens.spacing.s3 - bs * 1.5).abs() < 1e-4,
+                "spacing grows"
+            );
+            assert!(
+                (scaled.tokens.radii.md - br * 1.5).abs() < 1e-4,
+                "radii grow"
+            );
+            assert!(
+                (scaled.tokens.typography.scale.base - bt * 1.5).abs() < 1e-4,
+                "type grows"
+            );
+            assert_eq!(
+                scaled.tokens.radii.full, bfull,
+                "radii.full is a sentinel, not scaled"
+            );
+            assert!(
+                (scaled.padding_standard - bs * 1.5).abs() < 1e-4,
+                "padding shortcut tracks spacing"
+            );
+            assert!(
+                (scaled.radius_standard - f64::from(br) * 1.5).abs() < 1e-4,
+                "radius shortcut tracks radii"
+            );
+        }
+
+        // Case `ui_scale_of_one_is_identity`.
+        {
+            let base = Theme::dark();
+            let same = Theme::dark().with_ui_scale(1.0);
+            assert_eq!(same.ui_scale, 1.0);
+            assert_eq!(same.tokens.spacing.s3, base.tokens.spacing.s3);
+            assert_eq!(
+                same.tokens.typography.scale.base,
+                base.tokens.typography.scale.base
+            );
+        }
+
+        // Case `ui_scale_is_clamped_to_a_sane_range`.
+        {
+            assert!(Theme::dark().with_ui_scale(0.0).ui_scale >= 0.5);
+            assert!(Theme::dark().with_ui_scale(100.0).ui_scale <= 3.0);
+        }
+
+        // Case `ui_scale_and_text_scale_compose_on_type`.
+        {
+            // A heading ends up at base × ui × text; spacing only picks up ui.
+            let base = Theme::dark();
+            let base_type = base.tokens.typography.scale.base;
+            let base_gap = base.tokens.spacing.s3;
+
+            let composed = Theme::dark().with_ui_scale(1.25).with_text_scale(1.2);
+            assert_eq!(composed.ui_scale, 1.25);
+            assert_eq!(composed.text_scale, 1.2);
+            assert!(
+                (composed.tokens.typography.scale.base - base_type * 1.25 * 1.2).abs() < 1e-3,
+                "type = base × ui × text",
+            );
+            assert!(
+                (composed.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-3,
+                "spacing only picks up the UI factor, not text",
+            );
+        }
+
+        // Case `responsive_scale_is_ui_scale_times_text_growth_and_never_shrinks`:
+        // HIG §9.6: the one factor the responsive shells apply to an authored,
+        // text-sized breakpoint or width — `ui_scale × text_scale.max(1.0)`.
+        {
+            assert_eq!(Theme::dark().responsive_scale(), 1.0);
+            assert_eq!(Theme::dark().text_growth(), 1.0);
+            assert_eq!(Theme::dark().with_text_scale(2.0).responsive_scale(), 2.0);
+            assert_eq!(
+                Theme::dark().with_text_scale(0.75).responsive_scale(),
+                1.0,
+                "smaller text never shrinks a pane below its authored geometry"
+            );
+            assert_eq!(Theme::dark().with_ui_scale(1.5).responsive_scale(), 1.5);
+            assert!(
+                (Theme::dark()
+                    .with_ui_scale(1.5)
+                    .with_text_scale(2.0)
+                    .responsive_scale()
+                    - 3.0)
+                    .abs()
+                    < 1e-9,
+                "ui and text growth compose"
+            );
+            assert!(
+                (Theme::dark().with_ui_scale(0.5).responsive_scale() - 0.5).abs() < 1e-9,
+                "ui_scale is a density knob and does go below 1"
             );
         }
     }
 
-    /// Every preset, including the accessibility ones — `high_contrast` and
-    /// `oled` are the whole point of the list, since their window card is
-    /// black / `#0A0A0A` and ink pulled from the wrong end of the ramp reads
-    /// as dark-on-dark (or, on a light preset, near-white-on-white).
     #[test]
-    fn on_card_ink_clears_aa_on_every_preset_card() {
-        use crate::a11y::contrast_ratio;
-        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            let card = t.tokens.colors.surfaces.window_card;
-            let on = t.on_card();
-            let r = contrast_ratio(on.ink, card);
-            assert!(r >= 4.5, "{} on-card ink = {r:.2}:1 (< AA)", t.name);
-            let rd = contrast_ratio(on.ink_dim, card);
-            assert!(rd >= 4.5, "{} on-card dim ink = {rd:.2}:1 (< AA)", t.name);
-            // How quiet the tertiary tier is is a property of the palette's
-            // authorship, not this derivation — Solarized runs at 2.8:1 on
-            // its own ground on purpose, against a large-text-AA target of
-            // 3:1. So the bar is: clear 3:1, or be no worse than the
-            // palette already manages on its own ground.
-            let rt = contrast_ratio(on.ink_tertiary, card);
-            let floor = contrast_ratio(t.text_tertiary, t.bg_app).min(3.0) - 0.01;
-            assert!(
-                rt >= floor,
-                "{} on-card tertiary ink = {rt:.2}:1, below the {floor:.2}:1 \
-                 this palette manages on its own ground",
-                t.name
-            );
+    fn a11y_preferences_fold_into_the_theme() {
+        // Case `reduce_motion_flag_threads_onto_the_theme`.
+        {
+            assert!(!Theme::dark().reduce_motion, "default is motion on");
+            assert!(Theme::dark().with_reduce_motion(true).reduce_motion);
+            assert!(!Theme::dark().with_reduce_motion(false).reduce_motion);
         }
-    }
 
-    /// A constant per palette can only be right about a surface someone
-    /// checked; the desktop is the one ground that's always knowable,
-    /// unlike the app content a window may sit over.
-    #[test]
-    fn window_edge_registers_against_the_desktop_on_every_preset() {
-        use crate::a11y::relative_luminance;
-        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            let ground = t.tokens.colors.surfaces.base;
-            let edge = t.window_edge();
-            // What the eye receives where the hairline meets the desktop.
-            let a = f32::from(edge.a()) / 255.0;
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "clamped to [0.0, 255.0] immediately above, so the cast to u8 is exact"
-            )]
-            let ch = |o: u8, g: u8| {
-                (f32::from(o) * a + f32::from(g) * (1.0 - a))
-                    .round()
-                    .clamp(0.0, 255.0) as u8
+        // Case `configured_theme_honours_the_host_reduce_motion_input`.
+        {
+            assert!(Theme::configured_from_text("", true).reduce_motion);
+            assert!(!Theme::configured_from_text("", false).reduce_motion);
+        }
+
+        // Case `with_a11y_picks_high_contrast_track_and_folds_in_scale_and_motion`.
+        {
+            use crate::a11y::{A11ySettings, contrast_ratio};
+            let settings = A11ySettings {
+                high_contrast: true,
+                reduce_motion: true,
+                screen_reader: false,
             };
-            let seen = Color::from_rgb8(
-                ch(edge.r(), ground.r()),
-                ch(edge.g(), ground.g()),
-                ch(edge.b(), ground.b()),
-            );
-            let moved = (relative_luminance(seen) - relative_luminance(ground)).abs();
-            assert!(
-                moved >= 0.02,
-                "{}: the window edge composites to within {moved:.4} of the \
-                 desktop it is drawn on — that is not an edge, it is the \
-                 desktop. Edge {:?} on ground {:?}",
-                t.name,
-                [edge.r(), edge.g(), edge.b(), edge.a()],
-                [ground.r(), ground.g(), ground.b()],
-            );
+            let theme = Theme::dark().with_a11y(&settings, 2.0, 1.0);
+            assert_eq!(theme.name, "High Contrast");
+            assert!(contrast_ratio(theme.text_primary, theme.bg_app) >= 7.0);
+            assert!(theme.reduce_motion);
+            assert_eq!(theme.text_scale, 2.0);
+            let base_sm = Theme::high_contrast().tokens.typography.scale.sm;
+            assert!((theme.tokens.typography.scale.sm - base_sm * 2.0).abs() < 1e-4);
+        }
+
+        // Case `with_a11y_all_off_keeps_base_colours`.
+        {
+            use crate::a11y::A11ySettings;
+            let off = A11ySettings::default();
+            let theme = Theme::dark().with_a11y(&off, 1.0, 1.0);
+            assert_eq!(theme.name, "Dark", "no high contrast → keep the base theme");
+            assert!(!theme.reduce_motion);
+            assert_eq!(theme.text_scale, 1.0);
+            assert_eq!(theme.ui_scale, 1.0);
         }
     }
 
-    /// The derivation has to flip a border that matches its own ground, not
-    /// pass it through — without this, the sweep above would be satisfied
-    /// by every preset happening to declare a workable border, and the
-    /// fallback branch would never be exercised.
     #[test]
-    fn window_edge_flips_a_border_its_ground_would_swallow() {
-        let mut t = Theme::dark();
-        // A white hairline on a white desktop — an edge declared without
-        // reference to what it lands on.
-        t.tokens.colors.surfaces.base = Color::WHITE;
-        t.tokens.colors.surfaces.window_card_border = Color::from_rgba8(255, 255, 255, 51);
-        let edge = t.window_edge();
-        assert_eq!(
-            [edge.r(), edge.g(), edge.b()],
-            [0, 0, 0],
-            "a white edge on a white desktop must flip to the dark polarity; \
-             got {:?}",
-            [edge.r(), edge.g(), edge.b(), edge.a()],
-        );
-        assert_eq!(
-            edge.a(),
-            51,
-            "flipping the polarity must keep the declared weight — an edge \
-             that changes strength as well as side stops being the same \
-             design decision",
-        );
-    }
-
-    /// `Theme::on_window_card` is what shared widgets are handed when they
-    /// draw onto the card, so its three text tiers have to be the on-card
-    /// ink — not the chrome's.
-    #[test]
-    fn on_window_card_repoints_the_three_text_tiers() {
-        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            let on = t.on_card();
-            let card_theme = t.on_window_card();
-            assert_eq!(card_theme.text_primary, on.ink, "{}", t.name);
-            assert_eq!(card_theme.text_dim, on.ink_dim, "{}", t.name);
-            assert_eq!(card_theme.text_tertiary, on.ink_tertiary, "{}", t.name);
-            // Everything else is the ambient theme, untouched.
-            assert_eq!(card_theme.accent_primary, t.accent_primary, "{}", t.name);
-            assert_eq!(card_theme.bg_app, t.bg_app, "{}", t.name);
+    fn custom_theme_materializes_exactly_and_rescales_within_band() {
+        // Case `settings_json_materializes_the_exact_custom_theme`.
+        {
+            let spec = CustomThemeSpec {
+                schema_version: CUSTOM_THEME_SCHEMA_VERSION,
+                id: "quiet-ocean".into(),
+                name: "Quiet Ocean".into(),
+                dark_base: true,
+                accent: [12, 120, 220],
+                accent_hover: [8, 96, 190],
+                surface_base: [9, 18, 30],
+                surface_raised: [18, 32, 48],
+                text_primary: [238, 244, 250],
+                text_dim: [170, 184, 199],
+                border: [48, 68, 88],
+                success: [50, 190, 110],
+                warning: [230, 170, 50],
+                danger: [225, 75, 80],
+                info: [70, 165, 230],
+                radius_px: 13.0,
+                spacing_px: 17.0,
+                font: "Inter".into(),
+            };
+            let json = serde_json::json!({
+                "appearance": {
+                    "theme": "custom:quiet-ocean",
+                    "custom_theme": spec,
+                }
+            });
+            let theme = Theme::from_settings_json(&json.to_string()).unwrap();
+            assert_eq!(theme.name, "Quiet Ocean");
+            assert_eq!(rgb(theme.accent_primary), [12, 120, 220]);
+            assert_eq!(theme.tokens.radii.md, 13.0);
+            assert_eq!(theme.tokens.spacing.s3, 17.0);
+            assert_eq!(theme.tokens.typography.sans_family, "Inter");
         }
-    }
 
-    /// The tint is a whisper on the card (a gutter strip, a zebra row), not
-    /// a second surface: it must stay far closer to the card than the ink
-    /// is, in either direction.
-    #[test]
-    fn on_card_tint_reads_as_a_tint_not_a_panel() {
-        use crate::a11y::contrast_ratio;
-        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            let card = t.tokens.colors.surfaces.window_card;
-            let on = t.on_card();
-            let r = contrast_ratio(on.tint, card);
-            assert!(
-                r < 1.6,
-                "{} on-card tint is {r:.2}:1 from the card — that reads as a \
-                 panel, not a tint",
-                t.name
-            );
-        }
-    }
-
-    /// The window card and the app ground fill are the same colour family,
-    /// so a window whose app painted nothing (like Notes, which shows the
-    /// bare card) does not flip light/dark against a window beside it that
-    /// fills its own background. `tilo_blue` is excluded deliberately: its
-    /// white card is preserved verbatim from the first design.
-    #[test]
-    fn window_card_shares_the_ground_s_colour_family() {
-        use crate::a11y::contrast_ratio;
-        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            if t.name == "Tilo Blue" {
-                continue;
+        // Case `custom_theme_spacing_rescales_the_whole_scale_proportionally`:
+        // A custom theme's `spacing_px` is the `s3` step; every other step
+        // follows in the stock 1:2:3:4:6:8:12:16 proportion, so the scale is a
+        // scale and not three rewritten fields with the rest left at 12 px
+        // defaults.
+        {
+            let theme = Theme::from_custom_spec(&quiet_ocean(8.0, 17.0)).unwrap();
+            let s = theme.tokens.spacing;
+            let unit = 17.0 / 3.0;
+            for (name, value, steps) in [
+                ("s0", s.s0, 0.0),
+                ("s1", s.s1, 1.0),
+                ("s2", s.s2, 2.0),
+                ("s3", s.s3, 3.0),
+                ("s4", s.s4, 4.0),
+                ("s6", s.s6, 6.0),
+                ("s8", s.s8, 8.0),
+                ("s12", s.s12, 12.0),
+                ("s16", s.s16, 16.0),
+            ] {
+                assert!(
+                    (value - unit * steps).abs() < 1e-3,
+                    "{name} = {value}, expected {} (17 px is the s3 step)",
+                    unit * steps
+                );
             }
-            let card = t.tokens.colors.surfaces.window_card;
-            let r = contrast_ratio(card, t.bg_app);
-            assert!(
-                r < 3.0,
-                "{}: window card is {r:.2}:1 from the app ground — an empty \
-                 window would flip the frame's colour family against a \
-                 window that fills its own background",
-                t.name
+            assert_eq!(theme.padding_standard, 17.0);
+            assert_eq!(theme.gap_standard, 17.0);
+            assert_eq!(
+                theme.tokens.metrics,
+                crate::tokens::Metrics::BASE,
+                "a spacing preference never shrinks a pointer target or panel width"
             );
         }
-    }
 
-    #[test]
-    fn high_contrast_beats_dark_on_fg_bg_contrast() {
-        use crate::a11y::contrast_ratio;
-        let dark = Theme::dark();
-        let hc = Theme::high_contrast();
+        // Case `custom_theme_at_stock_values_reproduces_the_stock_scales`:
+        // The stock values reproduce the stock scales exactly — a custom theme
+        // that only recolours must not quietly round every corner differently.
+        {
+            let stock = Theme::dark();
+            let theme = Theme::from_custom_spec(&quiet_ocean(
+                stock.tokens.radii.md,
+                stock.tokens.spacing.s3,
+            ))
+            .unwrap();
+            assert_eq!(theme.tokens.spacing, stock.tokens.spacing);
+            assert_eq!(theme.tokens.radii.sm, stock.tokens.radii.sm);
+            assert_eq!(theme.tokens.radii.md, stock.tokens.radii.md);
+            assert_eq!(theme.tokens.radii.lg, stock.tokens.radii.lg);
+            assert_eq!(
+                theme.tokens.radii.xl, stock.tokens.radii.xl,
+                "the window card's xl corner is the stock 24, not 8 × 2.4 = 19.2"
+            );
+            assert_eq!(theme.tokens.radii.full, stock.tokens.radii.full);
+        }
 
-        let dark_ratio = contrast_ratio(dark.text_primary, dark.bg_app);
-        let hc_ratio = contrast_ratio(hc.text_primary, hc.bg_app);
+        // Case `custom_theme_spacing_is_built_inside_the_usable_band`:
+        // The schema still admits 2..=64 px (a file written by an older build
+        // opens), but the scale is built inside the usable band: 2 px would put
+        // `s1` under a pixel and 64 px `s6` at 128.
+        {
+            let too_dense = quiet_ocean(8.0, 2.0);
+            let too_loose = quiet_ocean(8.0, 64.0);
+            assert!(
+                too_dense.validate().is_ok(),
+                "the schema contract is unchanged"
+            );
+            assert!(too_loose.validate().is_ok());
+            let dense = Theme::from_custom_spec(&too_dense).unwrap();
+            let loose = Theme::from_custom_spec(&too_loose).unwrap();
+            assert_eq!(dense.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MIN);
+            assert_eq!(
+                dense.tokens.spacing.s1,
+                CustomThemeSpec::SPACING_PX_MIN / 3.0
+            );
+            assert_eq!(loose.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MAX);
+            assert_eq!(loose.padding_standard, CustomThemeSpec::SPACING_PX_MAX);
+            let inside = Theme::from_custom_spec(&quiet_ocean(8.0, 17.0)).unwrap();
+            assert_eq!(
+                inside.tokens.spacing.s3, 17.0,
+                "a value inside the band is untouched"
+            );
+            assert!(
+                Theme::from_custom_spec(&quiet_ocean(8.0, 1.0)).is_none(),
+                "below the schema minimum is still rejected, not clamped"
+            );
+        }
 
-        assert!(
-            hc_ratio > dark_ratio,
-            "high_contrast fg/bg ({hc_ratio:.2}:1) must exceed dark ({dark_ratio:.2}:1)",
-        );
-        // It should also clear WCAG AAA (7:1) — and in fact hit the 21:1 max
-        // for pure white-on-black.
-        assert!(
-            hc_ratio >= 7.0,
-            "high_contrast must clear WCAG AAA, got {hc_ratio:.2}:1"
-        );
-        assert!(
-            (hc_ratio - 21.0).abs() < 0.01,
-            "white-on-black is the 21:1 maximum"
-        );
-    }
+        // Case `custom_theme_radius_rescales_the_whole_scale_proportionally`:
+        // `radius_px` is the `md` step; the others follow 1:2:3:6.
+        {
+            let theme = Theme::from_custom_spec(&quiet_ocean(13.0, 12.0)).unwrap();
+            let r = theme.tokens.radii;
+            assert!((r.sm - 6.5).abs() < 1e-4);
+            assert_eq!(r.md, 13.0);
+            assert!((r.lg - 19.5).abs() < 1e-4);
+            assert!((r.xl - 39.0).abs() < 1e-4);
+            assert_eq!(
+                r.full,
+                Radii::default().full,
+                "full stays the pill sentinel"
+            );
+        }
 
-    #[test]
-    fn text_scale_multiplies_every_type_size() {
-        let base = Theme::dark();
-        let base_sm = base.tokens.typography.scale.sm;
-        let base_base = base.tokens.typography.scale.base;
-        let base_x4l = base.tokens.typography.scale.x4l;
-        let base_font = base.tokens.font_size_base;
-
-        let scaled = Theme::dark().with_text_scale(1.5);
-        assert_eq!(scaled.text_scale, 1.5);
-        assert!((scaled.tokens.typography.scale.sm - base_sm * 1.5).abs() < 1e-4);
-        assert!((scaled.tokens.typography.scale.base - base_base * 1.5).abs() < 1e-4);
-        assert!((scaled.tokens.typography.scale.x4l - base_x4l * 1.5).abs() < 1e-4);
-        assert!((scaled.tokens.font_size_base - base_font * 1.5).abs() < 1e-4);
-    }
-
-    #[test]
-    fn text_scale_of_one_is_identity() {
-        let base = Theme::dark();
-        let same = Theme::dark().with_text_scale(1.0);
-        assert_eq!(same.text_scale, 1.0);
-        assert_eq!(
-            same.tokens.typography.scale.base,
-            base.tokens.typography.scale.base
-        );
-    }
-
-    #[test]
-    fn text_scale_is_clamped_to_a_sane_range() {
-        let tiny = Theme::dark().with_text_scale(0.0);
-        assert!(tiny.text_scale >= 0.5);
-        let huge = Theme::dark().with_text_scale(100.0);
-        assert!(huge.text_scale <= 4.0);
-    }
-
-    #[test]
-    fn reduce_motion_flag_threads_onto_the_theme() {
-        assert!(!Theme::dark().reduce_motion, "default is motion on");
-        assert!(Theme::dark().with_reduce_motion(true).reduce_motion);
-        assert!(!Theme::dark().with_reduce_motion(false).reduce_motion);
-    }
-
-    #[test]
-    fn configured_theme_honours_the_host_reduce_motion_input() {
-        assert!(Theme::configured_from_text("", true).reduce_motion);
-        assert!(!Theme::configured_from_text("", false).reduce_motion);
-    }
-
-    #[test]
-    fn with_a11y_picks_high_contrast_track_and_folds_in_scale_and_motion() {
-        use crate::a11y::{A11ySettings, contrast_ratio};
-        let settings = A11ySettings {
-            high_contrast: true,
-            reduce_motion: true,
-            screen_reader: false,
-        };
-        let theme = Theme::dark().with_a11y(&settings, 2.0, 1.0);
-        assert_eq!(theme.name, "High Contrast");
-        assert!(contrast_ratio(theme.text_primary, theme.bg_app) >= 7.0);
-        assert!(theme.reduce_motion);
-        assert_eq!(theme.text_scale, 2.0);
-        let base_sm = Theme::high_contrast().tokens.typography.scale.sm;
-        assert!((theme.tokens.typography.scale.sm - base_sm * 2.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn with_a11y_all_off_keeps_base_colours() {
-        use crate::a11y::A11ySettings;
-        let off = A11ySettings::default();
-        let theme = Theme::dark().with_a11y(&off, 1.0, 1.0);
-        assert_eq!(theme.name, "Dark", "no high contrast → keep the base theme");
-        assert!(!theme.reduce_motion);
-        assert_eq!(theme.text_scale, 1.0);
-        assert_eq!(theme.ui_scale, 1.0);
-    }
-
-    #[test]
-    fn ui_scale_multiplies_spacing_radii_and_type_together() {
-        let base = Theme::dark();
-        let bs = base.tokens.spacing.s3;
-        let br = base.tokens.radii.md;
-        let bt = base.tokens.typography.scale.base;
-        let bfull = base.tokens.radii.full;
-
-        let scaled = Theme::dark().with_ui_scale(1.5);
-        assert_eq!(scaled.ui_scale, 1.5);
-        assert!(
-            (scaled.tokens.spacing.s3 - bs * 1.5).abs() < 1e-4,
-            "spacing grows"
-        );
-        assert!(
-            (scaled.tokens.radii.md - br * 1.5).abs() < 1e-4,
-            "radii grow"
-        );
-        assert!(
-            (scaled.tokens.typography.scale.base - bt * 1.5).abs() < 1e-4,
-            "type grows"
-        );
-        assert_eq!(
-            scaled.tokens.radii.full, bfull,
-            "radii.full is a sentinel, not scaled"
-        );
-        assert!(
-            (scaled.padding_standard - bs * 1.5).abs() < 1e-4,
-            "padding shortcut tracks spacing"
-        );
-        assert!(
-            (scaled.radius_standard - f64::from(br) * 1.5).abs() < 1e-4,
-            "radius shortcut tracks radii"
-        );
-    }
-
-    #[test]
-    fn ui_scale_of_one_is_identity() {
-        let base = Theme::dark();
-        let same = Theme::dark().with_ui_scale(1.0);
-        assert_eq!(same.ui_scale, 1.0);
-        assert_eq!(same.tokens.spacing.s3, base.tokens.spacing.s3);
-        assert_eq!(
-            same.tokens.typography.scale.base,
-            base.tokens.typography.scale.base
-        );
-    }
-
-    #[test]
-    fn ui_scale_is_clamped_to_a_sane_range() {
-        assert!(Theme::dark().with_ui_scale(0.0).ui_scale >= 0.5);
-        assert!(Theme::dark().with_ui_scale(100.0).ui_scale <= 3.0);
-    }
-
-    #[test]
-    fn settings_json_materializes_the_exact_custom_theme() {
-        let spec = CustomThemeSpec {
-            schema_version: CUSTOM_THEME_SCHEMA_VERSION,
-            id: "quiet-ocean".into(),
-            name: "Quiet Ocean".into(),
-            dark_base: true,
-            accent: [12, 120, 220],
-            accent_hover: [8, 96, 190],
-            surface_base: [9, 18, 30],
-            surface_raised: [18, 32, 48],
-            text_primary: [238, 244, 250],
-            text_dim: [170, 184, 199],
-            border: [48, 68, 88],
-            success: [50, 190, 110],
-            warning: [230, 170, 50],
-            danger: [225, 75, 80],
-            info: [70, 165, 230],
-            radius_px: 13.0,
-            spacing_px: 17.0,
-            font: "Inter".into(),
-        };
-        let json = serde_json::json!({
-            "appearance": {
-                "theme": "custom:quiet-ocean",
-                "custom_theme": spec,
-            }
-        });
-        let theme = Theme::from_settings_json(&json.to_string()).unwrap();
-        assert_eq!(theme.name, "Quiet Ocean");
-        assert_eq!(rgb(theme.accent_primary), [12, 120, 220]);
-        assert_eq!(theme.tokens.radii.md, 13.0);
-        assert_eq!(theme.tokens.spacing.s3, 17.0);
-        assert_eq!(theme.tokens.typography.sans_family, "Inter");
+        // Case `custom_theme_id_mismatch_is_rejected`.
+        {
+            let json = r#"{"appearance":{"theme":"custom:wanted","custom_theme":{"schema_version":1,"id":"other","name":"Other","dark_base":true,"accent":[1,2,3],"accent_hover":[1,2,3],"surface_base":[1,2,3],"surface_raised":[1,2,3],"text_primary":[1,2,3],"text_dim":[1,2,3],"border":[1,2,3],"success":[1,2,3],"warning":[1,2,3],"danger":[1,2,3],"info":[1,2,3],"radius_px":8.0,"spacing_px":8.0,"font":"Inter"}}}"#;
+            assert!(Theme::from_settings_json(json).is_none());
+        }
     }
 
     fn quiet_ocean(radius_px: f32, spacing_px: f32) -> CustomThemeSpec {
@@ -1498,137 +1699,6 @@ mod tests {
         }
     }
 
-    /// A custom theme's `spacing_px` is the `s3` step; every other step
-    /// follows in the stock 1:2:3:4:6:8:12:16 proportion, so the scale is a
-    /// scale and not three rewritten fields with the rest left at 12 px
-    /// defaults.
-    #[test]
-    fn custom_theme_spacing_rescales_the_whole_scale_proportionally() {
-        let theme = Theme::from_custom_spec(&quiet_ocean(8.0, 17.0)).unwrap();
-        let s = theme.tokens.spacing;
-        let unit = 17.0 / 3.0;
-        for (name, value, steps) in [
-            ("s0", s.s0, 0.0),
-            ("s1", s.s1, 1.0),
-            ("s2", s.s2, 2.0),
-            ("s3", s.s3, 3.0),
-            ("s4", s.s4, 4.0),
-            ("s6", s.s6, 6.0),
-            ("s8", s.s8, 8.0),
-            ("s12", s.s12, 12.0),
-            ("s16", s.s16, 16.0),
-        ] {
-            assert!(
-                (value - unit * steps).abs() < 1e-3,
-                "{name} = {value}, expected {} (17 px is the s3 step)",
-                unit * steps
-            );
-        }
-        assert_eq!(theme.padding_standard, 17.0);
-        assert_eq!(theme.gap_standard, 17.0);
-        assert_eq!(
-            theme.tokens.metrics,
-            crate::tokens::Metrics::BASE,
-            "a spacing preference never shrinks a pointer target or panel width"
-        );
-    }
-
-    /// The stock values reproduce the stock scales exactly — a custom theme
-    /// that only recolours must not quietly round every corner differently.
-    #[test]
-    fn custom_theme_at_stock_values_reproduces_the_stock_scales() {
-        let stock = Theme::dark();
-        let theme =
-            Theme::from_custom_spec(&quiet_ocean(stock.tokens.radii.md, stock.tokens.spacing.s3))
-                .unwrap();
-        assert_eq!(theme.tokens.spacing, stock.tokens.spacing);
-        assert_eq!(theme.tokens.radii.sm, stock.tokens.radii.sm);
-        assert_eq!(theme.tokens.radii.md, stock.tokens.radii.md);
-        assert_eq!(theme.tokens.radii.lg, stock.tokens.radii.lg);
-        assert_eq!(
-            theme.tokens.radii.xl, stock.tokens.radii.xl,
-            "the window card's xl corner is the stock 24, not 8 × 2.4 = 19.2"
-        );
-        assert_eq!(theme.tokens.radii.full, stock.tokens.radii.full);
-    }
-
-    /// The schema still admits 2..=64 px (a file written by an older build
-    /// opens), but the scale is built inside the usable band: 2 px would put
-    /// `s1` under a pixel and 64 px `s6` at 128.
-    #[test]
-    fn custom_theme_spacing_is_built_inside_the_usable_band() {
-        let too_dense = quiet_ocean(8.0, 2.0);
-        let too_loose = quiet_ocean(8.0, 64.0);
-        assert!(
-            too_dense.validate().is_ok(),
-            "the schema contract is unchanged"
-        );
-        assert!(too_loose.validate().is_ok());
-        let dense = Theme::from_custom_spec(&too_dense).unwrap();
-        let loose = Theme::from_custom_spec(&too_loose).unwrap();
-        assert_eq!(dense.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MIN);
-        assert_eq!(
-            dense.tokens.spacing.s1,
-            CustomThemeSpec::SPACING_PX_MIN / 3.0
-        );
-        assert_eq!(loose.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MAX);
-        assert_eq!(loose.padding_standard, CustomThemeSpec::SPACING_PX_MAX);
-        let inside = Theme::from_custom_spec(&quiet_ocean(8.0, 17.0)).unwrap();
-        assert_eq!(
-            inside.tokens.spacing.s3, 17.0,
-            "a value inside the band is untouched"
-        );
-        assert!(
-            Theme::from_custom_spec(&quiet_ocean(8.0, 1.0)).is_none(),
-            "below the schema minimum is still rejected, not clamped"
-        );
-    }
-
-    /// HIG §9.6: the one factor the responsive shells apply to an authored,
-    /// text-sized breakpoint or width — `ui_scale × text_scale.max(1.0)`.
-    #[test]
-    fn responsive_scale_is_ui_scale_times_text_growth_and_never_shrinks() {
-        assert_eq!(Theme::dark().responsive_scale(), 1.0);
-        assert_eq!(Theme::dark().text_growth(), 1.0);
-        assert_eq!(Theme::dark().with_text_scale(2.0).responsive_scale(), 2.0);
-        assert_eq!(
-            Theme::dark().with_text_scale(0.75).responsive_scale(),
-            1.0,
-            "smaller text never shrinks a pane below its authored geometry"
-        );
-        assert_eq!(Theme::dark().with_ui_scale(1.5).responsive_scale(), 1.5);
-        assert!(
-            (Theme::dark()
-                .with_ui_scale(1.5)
-                .with_text_scale(2.0)
-                .responsive_scale()
-                - 3.0)
-                .abs()
-                < 1e-9,
-            "ui and text growth compose"
-        );
-        assert!(
-            (Theme::dark().with_ui_scale(0.5).responsive_scale() - 0.5).abs() < 1e-9,
-            "ui_scale is a density knob and does go below 1"
-        );
-    }
-
-    /// `radius_px` is the `md` step; the others follow 1:2:3:6.
-    #[test]
-    fn custom_theme_radius_rescales_the_whole_scale_proportionally() {
-        let theme = Theme::from_custom_spec(&quiet_ocean(13.0, 12.0)).unwrap();
-        let r = theme.tokens.radii;
-        assert!((r.sm - 6.5).abs() < 1e-4);
-        assert_eq!(r.md, 13.0);
-        assert!((r.lg - 19.5).abs() < 1e-4);
-        assert!((r.xl - 39.0).abs() < 1e-4);
-        assert_eq!(
-            r.full,
-            Radii::default().full,
-            "full stays the pill sentinel"
-        );
-    }
-
     #[test]
     fn the_automatic_theme_is_light_by_day_and_dark_by_night() {
         use settings_store::day_schedule::LocalMoment;
@@ -1651,56 +1721,6 @@ mod tests {
             Theme::dark().name
         );
     }
-
-    #[test]
-    fn custom_theme_id_mismatch_is_rejected() {
-        let json = r#"{"appearance":{"theme":"custom:wanted","custom_theme":{"schema_version":1,"id":"other","name":"Other","dark_base":true,"accent":[1,2,3],"accent_hover":[1,2,3],"surface_base":[1,2,3],"surface_raised":[1,2,3],"text_primary":[1,2,3],"text_dim":[1,2,3],"border":[1,2,3],"success":[1,2,3],"warning":[1,2,3],"danger":[1,2,3],"info":[1,2,3],"radius_px":8.0,"spacing_px":8.0,"font":"Inter"}}}"#;
-        assert!(Theme::from_settings_json(json).is_none());
-    }
-
-    #[test]
-    fn ui_scale_and_text_scale_compose_on_type() {
-        // A heading ends up at base × ui × text; spacing only picks up ui.
-        let base = Theme::dark();
-        let base_type = base.tokens.typography.scale.base;
-        let base_gap = base.tokens.spacing.s3;
-
-        let composed = Theme::dark().with_ui_scale(1.25).with_text_scale(1.2);
-        assert_eq!(composed.ui_scale, 1.25);
-        assert_eq!(composed.text_scale, 1.2);
-        assert!(
-            (composed.tokens.typography.scale.base - base_type * 1.25 * 1.2).abs() < 1e-3,
-            "type = base × ui × text",
-        );
-        assert!(
-            (composed.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-3,
-            "spacing only picks up the UI factor, not text",
-        );
-    }
-
-    #[test]
-    fn high_contrast_uses_a_strong_distinct_focus_ring() {
-        use crate::a11y::contrast_ratio;
-        let hc = Theme::high_contrast();
-        assert!(
-            contrast_ratio(hc.border_focus, hc.bg_app) >= 7.0,
-            "focus ring must clear AAA against the background",
-        );
-        // Must also differ from the standard border so focus reads as a
-        // distinct state, not just "a border".
-        assert_ne!(
-            (
-                hc.border_focus.r(),
-                hc.border_focus.g(),
-                hc.border_focus.b()
-            ),
-            (
-                hc.border_standard.r(),
-                hc.border_standard.g(),
-                hc.border_standard.b()
-            ),
-        );
-    }
 }
 
 #[cfg(test)]
@@ -1708,31 +1728,34 @@ mod configured_theme {
     use super::*;
 
     #[test]
-    fn a_high_contrast_preference_on_disk_is_the_theme_that_starts() {
-        let dir = tempfile::tempdir().expect("temp config dir");
-        let settings = dir.path().join("settings.json");
-        std::fs::write(
-            &settings,
-            r#"{"version":1,"appearance":{"theme":"high-contrast"}}"#,
-        )
-        .expect("write settings");
+    fn startup_theme_follows_the_settings_file_or_its_absence() {
+        // Case `a_high_contrast_preference_on_disk_is_the_theme_that_starts`.
+        {
+            let dir = tempfile::tempdir().expect("temp config dir");
+            let settings = dir.path().join("settings.json");
+            std::fs::write(
+                &settings,
+                r#"{"version":1,"appearance":{"theme":"high-contrast"}}"#,
+            )
+            .expect("write settings");
 
-        assert_eq!(
-            Theme::configured_from(Some(&settings)).name,
-            Theme::high_contrast().name,
-            "a settings file asking for high contrast must produce it",
-        );
-    }
+            assert_eq!(
+                Theme::configured_from(Some(&settings)).name,
+                Theme::high_contrast().name,
+                "a settings file asking for high contrast must produce it",
+            );
+        }
 
-    /// No preference is not an error, and must not stop a desktop starting.
-    #[test]
-    fn an_absent_settings_file_still_yields_a_usable_theme() {
-        let dir = tempfile::tempdir().expect("temp config dir");
-        let missing = dir.path().join("settings.json");
-        assert_eq!(
-            Theme::configured_from(Some(&missing)).name,
-            Theme::dark().name
-        );
-        assert_eq!(Theme::configured_from(None).name, Theme::dark().name);
+        // Case `an_absent_settings_file_still_yields_a_usable_theme`:
+        // No preference is not an error, and must not stop a desktop starting.
+        {
+            let dir = tempfile::tempdir().expect("temp config dir");
+            let missing = dir.path().join("settings.json");
+            assert_eq!(
+                Theme::configured_from(Some(&missing)).name,
+                Theme::dark().name
+            );
+            assert_eq!(Theme::configured_from(None).name, Theme::dark().name);
+        }
     }
 }

@@ -258,96 +258,95 @@ mod tests {
     }
 
     #[test]
-    fn system_store_entries_are_listed_without_any_user_install() {
-        // The preinstalled case: an image ships a system registry and the user
-        // never installed anything. The palette must still have something to list.
-        let system = store_with(&["so.tilo.notes", "so.tilo.calculator"]);
-        let user = tempfile::tempdir().unwrap();
-        let catalog = catalog(system.path(), user.path());
-        let all = catalog.list().unwrap();
-        let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, vec!["so.tilo.notes", "so.tilo.calculator"]);
-        assert!(all.iter().all(|row| row.system && !row.user_managed()));
-        let found = catalog.find("so.tilo.notes").unwrap().unwrap();
-        assert!(found.payload_root.starts_with(system.path()));
-    }
-
-    #[test]
-    fn both_stores_merge_and_a_user_install_shadows_the_system_one() {
-        let system = store_with(&["so.tilo.notes", "so.tilo.calculator"]);
-        let user = store_with(&["so.tilo.notes", "so.tilo.mine"]);
-        let all = catalog(system.path(), user.path()).list().unwrap();
-        let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec!["so.tilo.notes", "so.tilo.calculator", "so.tilo.mine"],
-            "one row per id: the shadowed system entry must not appear twice",
-        );
-        let notes = all.iter().find(|e| e.id == "so.tilo.notes").unwrap();
-        assert!(notes.payload_root.starts_with(user.path()));
-        assert!(notes.user_managed());
-        let calc = all.iter().find(|e| e.id == "so.tilo.calculator").unwrap();
-        assert!(calc.payload_root.starts_with(system.path()));
-    }
-
-    #[test]
-    fn relocated_system_store_uses_the_developer_payload_root() {
-        let system = tempfile::tempdir().expect("system registry");
-        let user = tempfile::tempdir().expect("user registry");
-        let relocated = tempfile::tempdir().expect("relocated payload");
-        let payload = relocated.path().join("payloads/dev.tilo.chat");
-        std::fs::create_dir_all(&payload).unwrap();
-        let manifest = payload.join("manifest.toml");
-        std::fs::write(&manifest, "").unwrap();
-        std::fs::write(
+    fn system_and_user_stores_merge_into_one_catalog() {
+        // phase: system_store_entries_are_listed_without_any_user_install
+        {
+            // The preinstalled case: an image ships a system registry and the user
+            // never installed anything. The palette must still have something to list.
+            let system = store_with(&["so.tilo.notes", "so.tilo.calculator"]);
+            let user = tempfile::tempdir().unwrap();
+            let catalog = catalog(system.path(), user.path());
+            let all = catalog.list().unwrap();
+            let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
+            assert_eq!(ids, vec!["so.tilo.notes", "so.tilo.calculator"]);
+            assert!(all.iter().all(|row| row.system && !row.user_managed()));
+            let found = catalog.find("so.tilo.notes").unwrap().unwrap();
+            assert!(found.payload_root.starts_with(system.path()));
+        }
+        // phase: both_stores_merge_and_a_user_install_shadows_the_system_one
+        {
+            let system = store_with(&["so.tilo.notes", "so.tilo.calculator"]);
+            let user = store_with(&["so.tilo.notes", "so.tilo.mine"]);
+            let all = catalog(system.path(), user.path()).list().unwrap();
+            let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                vec!["so.tilo.notes", "so.tilo.calculator", "so.tilo.mine"],
+                "one row per id: the shadowed system entry must not appear twice",
+            );
+            let notes = all.iter().find(|e| e.id == "so.tilo.notes").unwrap();
+            assert!(notes.payload_root.starts_with(user.path()));
+            assert!(notes.user_managed());
+            let calc = all.iter().find(|e| e.id == "so.tilo.calculator").unwrap();
+            assert!(calc.payload_root.starts_with(system.path()));
+        }
+        // phase: relocated_system_store_uses_the_developer_payload_root
+        {
+            let system = tempfile::tempdir().expect("system registry");
+            let user = tempfile::tempdir().expect("user registry");
+            let relocated = tempfile::tempdir().expect("relocated payload");
+            let payload = relocated.path().join("payloads/dev.tilo.chat");
+            std::fs::create_dir_all(&payload).unwrap();
+            let manifest = payload.join("manifest.toml");
+            std::fs::write(&manifest, "").unwrap();
+            std::fs::write(
             system.path().join("registry.toml"),
             "[[entry]]\nid='dev.tilo.chat'\npayload_root='/usr/lib/tilo-apps/payloads/dev.tilo.chat'\nmanifest_path='/usr/lib/tilo-apps/payloads/dev.tilo.chat/manifest.toml'\n",
         )
         .unwrap();
-        let catalog = Catalog::at(
-            user.path(),
-            Some(SystemStore {
-                data_dir: system.path().to_path_buf(),
-                payload_dir: relocated.path().to_path_buf(),
-            }),
-        );
-        let entry = catalog
-            .find("dev.tilo.chat")
-            .expect("registry readable")
-            .expect("chat installed");
-        assert_eq!(entry.payload_root, payload);
-        assert_eq!(entry.manifest_path, manifest);
-    }
-
-    #[test]
-    fn a_missing_system_store_is_not_an_error() {
-        // A plain dev machine has no /usr/share/tilo-apps — that reads as
-        // "nothing preinstalled", not a failure hiding the user's own installs.
-        let system = tempfile::tempdir().unwrap();
-        let user = store_with(&["so.tilo.mine"]);
-        let all = catalog(system.path(), user.path()).list().unwrap();
-        let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, vec!["so.tilo.mine"]);
-    }
-
-    #[test]
-    fn a_system_row_pointing_outside_the_image_is_refused() {
-        let system = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        std::fs::write(
-            system.path().join("registry.toml"),
-            format!(
-                "[[entry]]\nid = 'so.tilo.x'\npayload_root = {:?}\nmanifest_path = {:?}\n",
-                outside.path().display().to_string(),
-                outside.path().display().to_string()
-            ),
-        )
-        .unwrap();
-        let user = tempfile::tempdir().unwrap();
-        assert!(matches!(
-            catalog(system.path(), user.path()).list(),
-            Err(CatalogError::Escapes { .. })
-        ));
+            let catalog = Catalog::at(
+                user.path(),
+                Some(SystemStore {
+                    data_dir: system.path().to_path_buf(),
+                    payload_dir: relocated.path().to_path_buf(),
+                }),
+            );
+            let entry = catalog
+                .find("dev.tilo.chat")
+                .expect("registry readable")
+                .expect("chat installed");
+            assert_eq!(entry.payload_root, payload);
+            assert_eq!(entry.manifest_path, manifest);
+        }
+        // phase: a_missing_system_store_is_not_an_error
+        {
+            // A plain dev machine has no /usr/share/tilo-apps — that reads as
+            // "nothing preinstalled", not a failure hiding the user's own installs.
+            let system = tempfile::tempdir().unwrap();
+            let user = store_with(&["so.tilo.mine"]);
+            let all = catalog(system.path(), user.path()).list().unwrap();
+            let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
+            assert_eq!(ids, vec!["so.tilo.mine"]);
+        }
+        // phase: a_system_row_pointing_outside_the_image_is_refused
+        {
+            let system = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            std::fs::write(
+                system.path().join("registry.toml"),
+                format!(
+                    "[[entry]]\nid = 'so.tilo.x'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                    outside.path().display().to_string(),
+                    outside.path().display().to_string()
+                ),
+            )
+            .unwrap();
+            let user = tempfile::tempdir().unwrap();
+            assert!(matches!(
+                catalog(system.path(), user.path()).list(),
+                Err(CatalogError::Escapes { .. })
+            ));
+        }
     }
 
     #[test]

@@ -237,100 +237,257 @@ impl Widget for CountingPublisher {
 include!("../resource_projection_tests.rs");
 
 #[test]
-fn control_refresh_without_action_bindings_does_not_materialize_catalog() {
-    use std::sync::atomic::Ordering;
-    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let mut app = App::new_with_controlled_inputs(
-        State::new(),
-        Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
-    );
-    for _ in 0..3 {
-        app.invalidate_widget_resource_cache();
+fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
+    // Case `control_refresh_without_action_bindings_does_not_materialize_catalog`.
+    {
+        use std::sync::atomic::Ordering;
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
+        );
+        for _ in 0..3 {
+            app.invalidate_widget_resource_cache();
+            app.refresh_control_action_availability();
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        app.actions.last_control_availability = Some((
+            app.resource_cache_key(),
+            app.actions.permission_generation.get(),
+        ));
         app.refresh_control_action_availability();
+        assert!(app.actions.last_control_availability.is_none());
+        // Discovery still sees the complete surface on demand.
+        assert!(
+            app.collect_resources()
+                .iter()
+                .any(|r| r.id.as_str() == "test.cache:1")
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
-    assert_eq!(calls.load(Ordering::Relaxed), 0);
-    app.actions.last_control_availability = Some((
-        app.resource_cache_key(),
-        app.actions.permission_generation.get(),
-    ));
-    app.refresh_control_action_availability();
-    assert!(app.actions.last_control_availability.is_none());
-    // Discovery still sees the complete surface on demand.
-    assert!(
-        app.collect_resources()
-            .iter()
-            .any(|r| r.id.as_str() == "test.cache:1")
-    );
-    assert_eq!(calls.load(Ordering::Relaxed), 1);
-}
 
-#[test]
-fn resource_tree_is_materialized_once_per_exact_generation() {
-    use std::sync::atomic::Ordering;
+    // Case `resource_tree_is_materialized_once_per_exact_generation`.
+    {
+        use std::sync::atomic::Ordering;
 
-    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let mut app = App::new_with_controlled_inputs(
-        State::new(),
-        Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
-    );
-    let _ = app.collect_resources();
-    let _ = app.collect_resources();
-    app.refresh_control_action_availability();
-    app.refresh_control_action_availability();
-    assert_eq!(calls.load(Ordering::Relaxed), 1);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
+        );
+        let _ = app.collect_resources();
+        let _ = app.collect_resources();
+        app.refresh_control_action_availability();
+        app.refresh_control_action_availability();
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
 
-    app.state_mut_for_test()
-        .doc
-        .put(&ROOT, "cache-version", 1_i64)
-        .expect("test document mutation");
-    let _ = app.collect_resources();
-    assert_eq!(calls.load(Ordering::Relaxed), 2);
+        app.state_mut_for_test()
+            .doc
+            .put(&ROOT, "cache-version", 1_i64)
+            .expect("test document mutation");
+        let _ = app.collect_resources();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
 
-    app.invalidate_widget_resource_cache();
-    let _ = app.collect_resources();
-    assert_eq!(calls.load(Ordering::Relaxed), 3);
-}
+        app.invalidate_widget_resource_cache();
+        let _ = app.collect_resources();
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+    }
 
-#[test]
-fn exhausted_resource_generation_evicts_instead_of_reusing_a_snapshot() {
-    use std::sync::atomic::Ordering;
+    // Case `exhausted_resource_generation_evicts_instead_of_reusing_a_snapshot`.
+    {
+        use std::sync::atomic::Ordering;
 
-    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let mut app = App::new_with_controlled_inputs(
-        State::new(),
-        Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
-    );
-    app.actions.resource_generation.set(u64::MAX);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
+        );
+        app.actions.resource_generation.set(u64::MAX);
 
-    let _ = app.collect_resources();
-    app.invalidate_widget_resource_cache();
-    let _ = app.collect_resources();
+        let _ = app.collect_resources();
+        app.invalidate_widget_resource_cache();
+        let _ = app.collect_resources();
 
-    assert_eq!(app.actions.resource_generation.get(), u64::MAX);
-    assert_eq!(
-        calls.load(Ordering::Relaxed),
-        2,
-        "each invalidation at the terminal generation rematerializes"
-    );
-}
+        assert_eq!(app.actions.resource_generation.get(), u64::MAX);
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "each invalidation at the terminal generation rematerializes"
+        );
+    }
 
-#[test]
-fn exhausted_permission_generation_evicts_the_old_authority_projection() {
-    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
-    app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-    assert_eq!(app.collect_local_resources().len(), 1);
-    app.actions.permission_generation.set(u64::MAX);
+    // Case `exhausted_permission_generation_evicts_the_old_authority_projection`.
+    {
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
+        app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+        assert_eq!(app.collect_local_resources().len(), 1);
+        app.actions.permission_generation.set(u64::MAX);
 
-    app.set_permission_ctx(PermissionContext::from_capabilities(
-        collab_types::caps::Actor::person(None, "restricted"),
-        Vec::new(),
-    ));
+        app.set_permission_ctx(PermissionContext::from_capabilities(
+            collab_types::caps::Actor::person(None, "restricted"),
+            Vec::new(),
+        ));
 
-    assert_eq!(app.actions.permission_generation.get(), u64::MAX);
-    assert!(
-        app.collect_local_resources().is_empty(),
-        "the cached write action cannot survive a permission change"
-    );
+        assert_eq!(app.actions.permission_generation.get(), u64::MAX);
+        assert!(
+            app.collect_local_resources().is_empty(),
+            "the cached write action cannot survive a permission change"
+        );
+    }
+
+    // Case `reopening_palette_reuses_live_resource_index_until_state_mutates`.
+    {
+        let mut app = App::new(State::new(), Box::new(Publisher));
+        app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+
+        app.open_action_palette();
+        let first = app
+            .actions
+            .open_resource_search_cache
+            .borrow()
+            .as_ref()
+            .expect("first open builds the live-resource index")
+            .provider
+            .clone();
+        app.close_action_palette();
+        app.open_action_palette();
+        let second = app
+            .actions
+            .open_resource_search_cache
+            .borrow()
+            .as_ref()
+            .expect("second open retains the index")
+            .provider
+            .clone();
+        assert!(first.shares_storage_with(&second));
+
+        app.invalidate_widget_resource_cache();
+        assert!(app.actions.open_resource_search_cache.borrow().is_none());
+    }
+
+    // Case `visible_search_uses_existing_palette_and_fresh_authority`.
+    {
+        for revoke in [false, true] {
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
+            app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+            app.enable_document_history_chrome();
+            app.init_layout();
+            let node = app
+                .history_layout
+                .unwrap()
+                .search
+                .expect("retained Search button");
+            assert!(app.is_history_node(node), "Search is admitted local chrome");
+            let button = app
+                .document_history
+                .search_mut()
+                .expect("palette-capable host shows Search");
+            assert_eq!(button.test_id(), Some("standalone-search-open"));
+            assert!(button.perform_action(
+                &crate::a11y::Action::Activate,
+                &mut app.state.doc,
+                &app.state.root
+            ));
+            assert_eq!(app.dispatch_history_controls(), 1);
+            assert!(
+                app.action_palette().is_some(),
+                "real semantic button opens existing palette"
+            );
+            app.actions
+                .action_palette
+                .as_mut()
+                .unwrap()
+                .set_query("Flip it");
+            assert!(
+                app.action_palette()
+                    .unwrap()
+                    .result_labels()
+                    .iter()
+                    .any(|label| label.contains("Flip it"))
+            );
+            if revoke {
+                app.set_permission_ctx(PermissionContext::from_capabilities(
+                    collab_types::caps::Actor::person(None, "restricted"),
+                    Vec::new(),
+                ));
+            }
+            assert!(app.action_palette_handle_key(&synth_enter()));
+            assert_eq!(
+                app.state.doc.get(&ROOT, "flipped").unwrap().is_some(),
+                !revoke,
+                "activation re-resolves current permission rather than cached row authority"
+            );
+            assert!(
+                !app.collect_resources()
+                    .iter()
+                    .any(|resource| resource.id.as_str()
+                        == crate::standalone_history_host::SEARCH_RESOURCE),
+                "host Search never becomes an application/broker resource"
+            );
+            let address = tilo_actions::ActionAddress::new(
+                crate::standalone_history_host::SEARCH_RESOURCE,
+                "open",
+            );
+            assert!(
+                app.invoke_resource_action(
+                    ResourceInvocation::new(&address, "same-local-name").broker_admitted(true)
+                )
+                .is_err(),
+                "broker admission and matching actor names do not grant host UI locality"
+            );
+        }
+    }
+
+    // Case `denied_lazy_search_action_never_crosses_the_host_permission_door`.
+    {
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
+        app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+        app.set_permission_ctx(PermissionContext::from_capabilities(
+            collab_types::caps::Actor::person(None, "restricted"),
+            Vec::new(),
+        ));
+        app.open_action_palette();
+        app.actions
+            .action_palette
+            .as_mut()
+            .unwrap()
+            .set_query("restricted");
+        // A query advances one provider page immediately; remaining providers
+        // (including the host's open resources) advance on later frames.
+        // Bound the drain so a pagination regression still fails this test.
+        let mut progress = app
+            .actions
+            .action_palette
+            .as_mut()
+            .unwrap()
+            .advance_search_page();
+        for _ in 0..8 {
+            if !progress.pending {
+                break;
+            }
+            progress = app
+                .actions
+                .action_palette
+                .as_mut()
+                .unwrap()
+                .advance_search_page();
+        }
+        assert!(!progress.pending, "the tiny provider set must be exhausted");
+        assert_eq!(
+            app.action_palette().unwrap().result_labels(),
+            vec!["Restricted lazy action"]
+        );
+
+        assert!(app.action_palette_handle_key(&synth_enter()));
+        assert!(
+            app.state.doc.get(&ROOT, "lazy-flipped").unwrap().is_none(),
+            "the provider hit cannot bypass the host's current permission context"
+        );
+        assert!(
+            app.action_palette().is_some(),
+            "a refused row leaves search open instead of pretending it ran"
+        );
+    }
 }
 
 pub(super) fn synth_enter() -> WindowEvent {
@@ -354,474 +511,329 @@ pub(super) fn synth_enter() -> WindowEvent {
 }
 
 #[test]
-fn tab_focused_host_buttons_keep_enter_and_space_out_of_consuming_app() {
-    for open_search in [false, true] {
-        for key in [NamedKey::Enter, NamedKey::Space] {
-            let mut app =
-                App::new_with_controlled_inputs(State::new(), Box::new(ConsumingKeyboardRoot));
-            app.enable_document_history_chrome();
-            app.init_layout();
-            let layout = app.history_layout.unwrap();
-            let target = if open_search {
-                layout.search.unwrap()
-            } else {
-                layout.toolbar
-            };
-            app.set_focused_node(None);
-            let mut tab = synth_enter();
-            if let WindowEvent::KeyboardInput { event, .. } = &mut tab {
-                event.logical_key = Key::Named(NamedKey::Tab);
-            }
-            // Exercise the real native Tab event route, rather than assigning
-            // the target directly or activating the Button as an AT action.
-            for _ in 0..app.focusable_order.len() {
-                assert!(app.handle_tab_navigation(&tab, None));
-                if app.focused_node == Some(target) {
-                    break;
+fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
+    // Case `tab_focused_host_buttons_keep_enter_and_space_out_of_consuming_app`.
+    {
+        for open_search in [false, true] {
+            for key in [NamedKey::Enter, NamedKey::Space] {
+                let mut app =
+                    App::new_with_controlled_inputs(State::new(), Box::new(ConsumingKeyboardRoot));
+                app.enable_document_history_chrome();
+                app.init_layout();
+                let layout = app.history_layout.unwrap();
+                let target = if open_search {
+                    layout.search.unwrap()
+                } else {
+                    layout.toolbar
+                };
+                app.set_focused_node(None);
+                let mut tab = synth_enter();
+                if let WindowEvent::KeyboardInput { event, .. } = &mut tab {
+                    event.logical_key = Key::Named(NamedKey::Tab);
                 }
+                // Exercise the real native Tab event route, rather than assigning
+                // the target directly or activating the Button as an AT action.
+                for _ in 0..app.focusable_order.len() {
+                    assert!(app.handle_tab_navigation(&tab, None));
+                    if app.focused_node == Some(target) {
+                        break;
+                    }
+                }
+                assert_eq!(app.focused_node, Some(target), "Tab reaches host control");
+                let ime = WindowEvent::Ime(winit::event::Ime::Commit("composed text".into()));
+                let mut handled = false;
+                let mut focus = None;
+                assert!(app.presentation_handle_event(&ime, 1.0, &mut handled, &mut focus));
+                assert!(
+                    app.state
+                        .doc
+                        .get(&ROOT, "escaped_keyboard")
+                        .unwrap()
+                        .is_none(),
+                    "IME input focused on host chrome must never reach app content"
+                );
+                let mut event = synth_enter();
+                if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+                    event.logical_key = Key::Named(key);
+                }
+                let mut handled = false;
+                let mut focus = None;
+                assert!(app.presentation_handle_event(&event, 1.0, &mut handled, &mut focus));
+                assert!(
+                    app.state
+                        .doc
+                        .get(&ROOT, "escaped_keyboard")
+                        .unwrap()
+                        .is_none(),
+                    "focused chrome input must never reach consuming app content"
+                );
+                assert!(!handled, "Button leaves activation to the native fallback");
+                app.handle_unconsumed_activation_key(&event, &mut handled);
+                assert!(handled);
+                assert_eq!(app.dispatch_control_invocations(), 1);
+                assert_eq!(app.action_palette().is_some(), open_search);
+                assert_eq!(app.document_history.is_open(), !open_search);
+                assert!(
+                    app.state
+                        .doc
+                        .get(&ROOT, "escaped_keyboard")
+                        .unwrap()
+                        .is_none()
+                );
+                // Positive control: the same fixture consumes and mutates when
+                // its own app node receives this event with chrome unfocused.
+                app.set_focused_node(Some(layout.app));
+                let mut handled = false;
+                app.presentation_handle_event(&event, 1.0, &mut handled, &mut focus);
+                assert!(handled);
+                assert_eq!(
+                    app.state
+                        .doc
+                        .get(&ROOT, "escaped_keyboard")
+                        .unwrap()
+                        .and_then(|(value, _)| value.as_bool()),
+                    Some(true)
+                );
+                app.state.doc.delete(&ROOT, "escaped_keyboard").unwrap();
+                let mut handled = false;
+                app.presentation_handle_event(&ime, 1.0, &mut handled, &mut focus);
+                assert!(
+                    handled,
+                    "app-focused IME reaches the same consuming fixture"
+                );
+                assert_eq!(
+                    app.state
+                        .doc
+                        .get(&ROOT, "escaped_keyboard")
+                        .unwrap()
+                        .and_then(|(value, _)| value.as_bool()),
+                    Some(true)
+                );
             }
-            assert_eq!(app.focused_node, Some(target), "Tab reaches host control");
-            let ime = WindowEvent::Ime(winit::event::Ime::Commit("composed text".into()));
-            let mut handled = false;
-            let mut focus = None;
-            assert!(app.presentation_handle_event(&ime, 1.0, &mut handled, &mut focus));
-            assert!(
-                app.state
-                    .doc
-                    .get(&ROOT, "escaped_keyboard")
-                    .unwrap()
-                    .is_none(),
-                "IME input focused on host chrome must never reach app content"
-            );
-            let mut event = synth_enter();
-            if let WindowEvent::KeyboardInput { event, .. } = &mut event {
-                event.logical_key = Key::Named(key);
-            }
-            let mut handled = false;
-            let mut focus = None;
-            assert!(app.presentation_handle_event(&event, 1.0, &mut handled, &mut focus));
-            assert!(
-                app.state
-                    .doc
-                    .get(&ROOT, "escaped_keyboard")
-                    .unwrap()
-                    .is_none(),
-                "focused chrome input must never reach consuming app content"
-            );
-            assert!(!handled, "Button leaves activation to the native fallback");
-            app.handle_unconsumed_activation_key(&event, &mut handled);
-            assert!(handled);
-            assert_eq!(app.dispatch_control_invocations(), 1);
-            assert_eq!(app.action_palette().is_some(), open_search);
-            assert_eq!(app.document_history.is_open(), !open_search);
-            assert!(
-                app.state
-                    .doc
-                    .get(&ROOT, "escaped_keyboard")
-                    .unwrap()
-                    .is_none()
-            );
-            // Positive control: the same fixture consumes and mutates when
-            // its own app node receives this event with chrome unfocused.
-            app.set_focused_node(Some(layout.app));
-            let mut handled = false;
-            app.presentation_handle_event(&event, 1.0, &mut handled, &mut focus);
-            assert!(handled);
-            assert_eq!(
-                app.state
-                    .doc
-                    .get(&ROOT, "escaped_keyboard")
-                    .unwrap()
-                    .and_then(|(value, _)| value.as_bool()),
-                Some(true)
-            );
-            app.state.doc.delete(&ROOT, "escaped_keyboard").unwrap();
-            let mut handled = false;
-            app.presentation_handle_event(&ime, 1.0, &mut handled, &mut focus);
-            assert!(
-                handled,
-                "app-focused IME reaches the same consuming fixture"
-            );
-            assert_eq!(
-                app.state
-                    .doc
-                    .get(&ROOT, "escaped_keyboard")
-                    .unwrap()
-                    .and_then(|(value, _)| value.as_bool()),
-                Some(true)
-            );
         }
     }
-}
 
-#[test]
-fn visible_search_uses_existing_palette_and_fresh_authority() {
-    for revoke in [false, true] {
+    // Case `ctrl_k_scopes_to_resources_then_dispatch_mutates_doc_and_records_undo`.
+    {
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-        app.enable_document_history_chrome();
-        app.init_layout();
-        let node = app
-            .history_layout
-            .unwrap()
-            .search
-            .expect("retained Search button");
-        assert!(app.is_history_node(node), "Search is admitted local chrome");
-        let button = app
-            .document_history
-            .search_mut()
-            .expect("palette-capable host shows Search");
-        assert_eq!(button.test_id(), Some("standalone-search-open"));
-        assert!(button.perform_action(
-            &crate::a11y::Action::Activate,
-            &mut app.state.doc,
-            &app.state.root
-        ));
-        assert_eq!(app.dispatch_history_controls(), 1);
+
+        let res = app.collect_resources();
+        assert_eq!(res.len(), 1, "one open resource");
+        assert_eq!(res[0].kind, "test.obj");
+
+        // Scopes the palette to those resources AND folds in the widget's
+        // searchable content — one surface, both kinds.
+        app.open_action_palette();
+        let ap = app.action_palette().expect("palette is open");
+        assert!(ap.is_open());
+        let labels = ap.result_labels();
         assert!(
-            app.action_palette().is_some(),
-            "real semantic button opens existing palette"
+            labels.iter().any(|l| l.contains("Flip it")),
+            "palette lists the widget's action: {labels:?}"
         );
+        assert!(
+            labels.iter().any(|l| l == "Ada Lovelace"),
+            "palette folds in the widget's searchable content: {labels:?}"
+        );
+
+        assert!(app.state.doc.get(&ROOT, "flipped").unwrap().is_none());
+        assert!(app.state.peek_last_undo().is_none());
+        app.needs_sync = false;
+        app.layout.layout_dirty = false;
+
+        // Enter selects the top row (the action) and dispatches it.
+        let consumed = app.action_palette_handle_key(&synth_enter());
+        assert!(consumed, "the open palette consumed the Enter key");
+
+        let flipped = app
+            .state
+            .doc
+            .get(&ROOT, "flipped")
+            .unwrap()
+            .and_then(|(v, _)| v.as_bool());
+        assert_eq!(
+            flipped,
+            Some(true),
+            "dispatched action set the flag in the CRDT"
+        );
+        assert!(
+            app.state.peek_last_undo().is_some(),
+            "the dispatched action is undoable"
+        );
+        assert!(app.needs_sync, "dispatch marks the app for re-sync");
+        assert!(
+            app.layout.layout_dirty,
+            "dispatch marks the app for relayout"
+        );
+        assert!(
+            app.action_palette().is_none(),
+            "palette closed after selection"
+        );
+    }
+
+    // Case `synthesized_semantic_action_routes_back_to_its_visible_control`.
+    {
+        let mut app = App::new(
+            State::new(),
+            Box::new(Button::new("complete", "Complete", Some("completed"))),
+        );
+        app.init_layout();
+        let resource = app
+            .collect_resources()
+            .into_iter()
+            .find(|resource| {
+                resource.kind == "tilo.ui.control"
+                    && resource.label == "Complete"
+                    && resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "activate")
+            })
+            .expect("collaborative button publishes a semantic action");
+        let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "activate");
+        let route = app
+            .preferred_action_ui_route(&address)
+            .expect("semantic action resolves to visible UI");
+
+        assert_eq!(route.control_id, "complete");
+        assert!(route.bounds.is_some());
+        assert!(!route.disabled);
+    }
+
+    // Case `exact_widget_palette_request_resolves_only_declared_actions`.
+    {
+        let mut app = App::new(State::new(), Box::new(Publisher));
+        app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+        assert!(
+            app.open_action_palette_at(&tilo_actions::ActionAddress::new("test.obj:1", "flip"))
+        );
+        assert!(
+            !app.open_action_palette_at(&tilo_actions::ActionAddress::new(
+                "test.obj:1",
+                "not-declared"
+            )),
+            "a stale or invented widget request is refused"
+        );
+        assert!(
+            app.action_palette().is_none(),
+            "a refused exact request does not leave an unrelated palette open"
+        );
+    }
+
+    // Case `ctrl_k_content_row_navigates_through_the_app`:
+    // A content row does NOT dispatch — it hands its id back through
+    // [`Widget::activate_search_result`] instead.
+    {
+        let mut app = App::new(State::new(), Box::new(Publisher));
+        app.open_action_palette();
         app.actions
             .action_palette
             .as_mut()
             .unwrap()
-            .set_query("Flip it");
+            .set_query("ada");
+        let labels = app.action_palette().unwrap().result_labels();
         assert!(
-            app.action_palette()
-                .unwrap()
-                .result_labels()
-                .iter()
-                .any(|label| label.contains("Flip it"))
+            labels.iter().any(|l| l == "Ada Lovelace"),
+            "content hit present: {labels:?}"
         );
-        if revoke {
-            app.set_permission_ctx(PermissionContext::from_capabilities(
-                collab_types::caps::Actor::person(None, "restricted"),
-                Vec::new(),
-            ));
-        }
-        assert!(app.action_palette_handle_key(&synth_enter()));
+        assert!(
+            !labels.iter().any(|l| l.contains("Flip it")),
+            "the action row is filtered out by the query: {labels:?}"
+        );
+
+        assert!(app.state.doc.get(&ROOT, "navigated").unwrap().is_none());
+        app.needs_sync = false;
+        app.layout.layout_dirty = false;
+
+        let consumed = app.action_palette_handle_key(&synth_enter());
+        assert!(consumed, "the open palette consumed the Enter key");
+
+        let nav = app
+            .state
+            .doc
+            .get(&ROOT, "navigated")
+            .unwrap()
+            .and_then(|(v, _)| v.as_str().map(str::to_string));
         assert_eq!(
-            app.state.doc.get(&ROOT, "flipped").unwrap().is_some(),
-            !revoke,
-            "activation re-resolves current permission rather than cached row authority"
+            nav,
+            Some("person:Ada Lovelace".to_string()),
+            "the content row's id reached the app to navigate"
         );
         assert!(
-            !app.collect_resources()
-                .iter()
-                .any(|resource| resource.id.as_str()
-                    == crate::standalone_history_host::SEARCH_RESOURCE),
-            "host Search never becomes an application/broker resource"
-        );
-        let address = tilo_actions::ActionAddress::new(
-            crate::standalone_history_host::SEARCH_RESOURCE,
-            "open",
+            app.action_palette().is_none(),
+            "navigation closes the palette"
         );
         assert!(
-            app.invoke_resource_action(
-                ResourceInvocation::new(&address, "same-local-name").broker_admitted(true)
-            )
-            .is_err(),
-            "broker admission and matching actor names do not grant host UI locality"
+            app.needs_sync && app.layout.layout_dirty,
+            "navigation marks a redraw"
         );
     }
-}
 
-#[test]
-fn ctrl_k_scopes_to_resources_then_dispatch_mutates_doc_and_records_undo() {
-    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
-    app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-
-    let res = app.collect_resources();
-    assert_eq!(res.len(), 1, "one open resource");
-    assert_eq!(res[0].kind, "test.obj");
-
-    // Scopes the palette to those resources AND folds in the widget's
-    // searchable content — one surface, both kinds.
-    app.open_action_palette();
-    let ap = app.action_palette().expect("palette is open");
-    assert!(ap.is_open());
-    let labels = ap.result_labels();
-    assert!(
-        labels.iter().any(|l| l.contains("Flip it")),
-        "palette lists the widget's action: {labels:?}"
-    );
-    assert!(
-        labels.iter().any(|l| l == "Ada Lovelace"),
-        "palette folds in the widget's searchable content: {labels:?}"
-    );
-
-    assert!(app.state.doc.get(&ROOT, "flipped").unwrap().is_none());
-    assert!(app.state.peek_last_undo().is_none());
-    app.needs_sync = false;
-    app.layout.layout_dirty = false;
-
-    // Enter selects the top row (the action) and dispatches it.
-    let consumed = app.action_palette_handle_key(&synth_enter());
-    assert!(consumed, "the open palette consumed the Enter key");
-
-    let flipped = app
-        .state
-        .doc
-        .get(&ROOT, "flipped")
-        .unwrap()
-        .and_then(|(v, _)| v.as_bool());
-    assert_eq!(
-        flipped,
-        Some(true),
-        "dispatched action set the flag in the CRDT"
-    );
-    assert!(
-        app.state.peek_last_undo().is_some(),
-        "the dispatched action is undoable"
-    );
-    assert!(app.needs_sync, "dispatch marks the app for re-sync");
-    assert!(
-        app.layout.layout_dirty,
-        "dispatch marks the app for relayout"
-    );
-    assert!(
-        app.action_palette().is_none(),
-        "palette closed after selection"
-    );
-}
-
-#[test]
-fn reopening_palette_reuses_live_resource_index_until_state_mutates() {
-    let mut app = App::new(State::new(), Box::new(Publisher));
-    app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-
-    app.open_action_palette();
-    let first = app
-        .actions
-        .open_resource_search_cache
-        .borrow()
-        .as_ref()
-        .expect("first open builds the live-resource index")
-        .provider
-        .clone();
-    app.close_action_palette();
-    app.open_action_palette();
-    let second = app
-        .actions
-        .open_resource_search_cache
-        .borrow()
-        .as_ref()
-        .expect("second open retains the index")
-        .provider
-        .clone();
-    assert!(first.shares_storage_with(&second));
-
-    app.invalidate_widget_resource_cache();
-    assert!(app.actions.open_resource_search_cache.borrow().is_none());
-}
-
-#[test]
-fn synthesized_semantic_action_routes_back_to_its_visible_control() {
-    let mut app = App::new(
-        State::new(),
-        Box::new(Button::new("complete", "Complete", Some("completed"))),
-    );
-    app.init_layout();
-    let resource = app
-        .collect_resources()
-        .into_iter()
-        .find(|resource| {
-            resource.kind == "tilo.ui.control"
-                && resource.label == "Complete"
-                && resource
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "activate")
-        })
-        .expect("collaborative button publishes a semantic action");
-    let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "activate");
-    let route = app
-        .preferred_action_ui_route(&address)
-        .expect("semantic action resolves to visible UI");
-
-    assert_eq!(route.control_id, "complete");
-    assert!(route.bounds.is_some());
-    assert!(!route.disabled);
-}
-
-#[test]
-fn exact_widget_palette_request_resolves_only_declared_actions() {
-    let mut app = App::new(State::new(), Box::new(Publisher));
-    app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-    assert!(app.open_action_palette_at(&tilo_actions::ActionAddress::new("test.obj:1", "flip")));
-    assert!(
-        !app.open_action_palette_at(&tilo_actions::ActionAddress::new(
-            "test.obj:1",
-            "not-declared"
-        )),
-        "a stale or invented widget request is refused"
-    );
-    assert!(
-        app.action_palette().is_none(),
-        "a refused exact request does not leave an unrelated palette open"
-    );
-}
-
-/// A content row does NOT dispatch — it hands its id back through
-/// [`Widget::activate_search_result`] instead.
-#[test]
-fn ctrl_k_content_row_navigates_through_the_app() {
-    let mut app = App::new(State::new(), Box::new(Publisher));
-    app.open_action_palette();
-    app.actions
-        .action_palette
-        .as_mut()
-        .unwrap()
-        .set_query("ada");
-    let labels = app.action_palette().unwrap().result_labels();
-    assert!(
-        labels.iter().any(|l| l == "Ada Lovelace"),
-        "content hit present: {labels:?}"
-    );
-    assert!(
-        !labels.iter().any(|l| l.contains("Flip it")),
-        "the action row is filtered out by the query: {labels:?}"
-    );
-
-    assert!(app.state.doc.get(&ROOT, "navigated").unwrap().is_none());
-    app.needs_sync = false;
-    app.layout.layout_dirty = false;
-
-    let consumed = app.action_palette_handle_key(&synth_enter());
-    assert!(consumed, "the open palette consumed the Enter key");
-
-    let nav = app
-        .state
-        .doc
-        .get(&ROOT, "navigated")
-        .unwrap()
-        .and_then(|(v, _)| v.as_str().map(str::to_string));
-    assert_eq!(
-        nav,
-        Some("person:Ada Lovelace".to_string()),
-        "the content row's id reached the app to navigate"
-    );
-    assert!(
-        app.action_palette().is_none(),
-        "navigation closes the palette"
-    );
-    assert!(
-        app.needs_sync && app.layout.layout_dirty,
-        "navigation marks a redraw"
-    );
-}
-
-#[test]
-fn denied_lazy_search_action_never_crosses_the_host_permission_door() {
-    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
-    app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-    app.set_permission_ctx(PermissionContext::from_capabilities(
-        collab_types::caps::Actor::person(None, "restricted"),
-        Vec::new(),
-    ));
-    app.open_action_palette();
-    app.actions
-        .action_palette
-        .as_mut()
-        .unwrap()
-        .set_query("restricted");
-    // A query advances one provider page immediately; remaining providers
-    // (including the host's open resources) advance on later frames.
-    // Bound the drain so a pagination regression still fails this test.
-    let mut progress = app
-        .actions
-        .action_palette
-        .as_mut()
-        .unwrap()
-        .advance_search_page();
-    for _ in 0..8 {
-        if !progress.pending {
-            break;
-        }
-        progress = app
-            .actions
+    // Case `projected_view_preserves_pending_edit_and_eventual_attribution`.
+    {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(Button::new("focus-me", "Focus me", None)),
+        );
+        app.init_layout();
+        app.set_focused_node(None);
+        assert!(!app.root_widget.is_focused());
+        let before = app.state.doc.get_heads();
+        app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
+        let pending = app.state.doc.pending_ops();
+        app.open_action_palette();
+        app.actions
             .action_palette
             .as_mut()
             .unwrap()
-            .advance_search_page();
+            .set_query("focus");
+        assert!(app.action_palette_handle_key(&synth_enter()));
+        assert!(app.root_widget.is_focused());
+        assert_eq!(app.state.doc.pending_ops(), pending);
+        assert_eq!(app.state.doc.base_heads(), before);
+        assert!(app.state.peek_last_undo().is_none());
+
+        app.state.doc.put(ROOT, "draft", "finished").unwrap();
+        let context = tilo_actions::ActionContext::for_resource(
+            "Finish draft",
+            "test.draft",
+            "note",
+            "Draft",
+        );
+        assert!(app.state.commit_action_authored_with_context(
+            None,
+            None,
+            Some(app.collaboration.local_author.clone()),
+            Some(context),
+        ));
+        let changes = app.state.doc.get_changes(&before);
+        assert_eq!(changes.len(), 1, "view must not split the pending edit");
+        let context = changes[0]
+            .message()
+            .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+            .unwrap();
+        assert_eq!(context.action_label, "Finish draft");
     }
-    assert!(!progress.pending, "the tiny provider set must be exhausted");
-    assert_eq!(
-        app.action_palette().unwrap().result_labels(),
-        vec!["Restricted lazy action"]
-    );
 
-    assert!(app.action_palette_handle_key(&synth_enter()));
-    assert!(
-        app.state.doc.get(&ROOT, "lazy-flipped").unwrap().is_none(),
-        "the provider hit cannot bypass the host's current permission context"
-    );
-    assert!(
-        app.action_palette().is_some(),
-        "a refused row leaves search open instead of pretending it ran"
-    );
-}
+    // Case `ctrl_k_invokes_a_projected_semantic_view_control`.
+    {
+        let button = Button::new("drive-me", "Drive me", None);
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(button));
+        app.init_layout();
+        app.set_focused_node(None);
+        assert!(!app.root_widget.is_focused());
+        app.open_action_palette();
+        app.actions
+            .action_palette
+            .as_mut()
+            .unwrap()
+            .set_query("focus");
 
-#[test]
-fn projected_view_preserves_pending_edit_and_eventual_attribution() {
-    let mut app = App::new_with_controlled_inputs(
-        State::new(),
-        Box::new(Button::new("focus-me", "Focus me", None)),
-    );
-    app.init_layout();
-    app.set_focused_node(None);
-    assert!(!app.root_widget.is_focused());
-    let before = app.state.doc.get_heads();
-    app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
-    let pending = app.state.doc.pending_ops();
-    app.open_action_palette();
-    app.actions
-        .action_palette
-        .as_mut()
-        .unwrap()
-        .set_query("focus");
-    assert!(app.action_palette_handle_key(&synth_enter()));
-    assert!(app.root_widget.is_focused());
-    assert_eq!(app.state.doc.pending_ops(), pending);
-    assert_eq!(app.state.doc.base_heads(), before);
-    assert!(app.state.peek_last_undo().is_none());
-
-    app.state.doc.put(ROOT, "draft", "finished").unwrap();
-    let context =
-        tilo_actions::ActionContext::for_resource("Finish draft", "test.draft", "note", "Draft");
-    assert!(app.state.commit_action_authored_with_context(
-        None,
-        None,
-        Some(app.collaboration.local_author.clone()),
-        Some(context),
-    ));
-    let changes = app.state.doc.get_changes(&before);
-    assert_eq!(changes.len(), 1, "view must not split the pending edit");
-    let context = changes[0]
-        .message()
-        .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
-        .unwrap();
-    assert_eq!(context.action_label, "Finish draft");
-}
-
-#[test]
-fn ctrl_k_invokes_a_projected_semantic_view_control() {
-    let button = Button::new("drive-me", "Drive me", None);
-    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(button));
-    app.init_layout();
-    app.set_focused_node(None);
-    assert!(!app.root_widget.is_focused());
-    app.open_action_palette();
-    app.actions
-        .action_palette
-        .as_mut()
-        .unwrap()
-        .set_query("focus");
-
-    assert!(app.action_palette_handle_key(&synth_enter()));
-    assert!(
-        app.root_widget.is_focused(),
-        "Ctrl+K reaches the real retained control"
-    );
+        assert!(app.action_palette_handle_key(&synth_enter()));
+        assert!(
+            app.root_widget.is_focused(),
+            "Ctrl+K reaches the real retained control"
+        );
+    }
 }

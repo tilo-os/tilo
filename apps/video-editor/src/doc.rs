@@ -1635,139 +1635,283 @@ mod tests {
     }
 
     #[test]
-    fn a_key_and_a_mask_survive_the_document() {
-        use crate::model::{ChromaKey, Mask, MaskShape};
-        let (mut p, cid) = one_clip();
-        let key = ChromaKey {
-            enabled: true,
-            color: [0.11, 0.68, 0.24],
-            tolerance: 0.27,
-            softness: 0.09,
-            spill: 0.63,
-        };
-        let mask = Mask {
-            shape: MaskShape::Ellipse,
-            x: -0.18,
-            y: 0.24,
-            w: 0.41,
-            h: 0.77,
-            rotation: -22.0,
-            feather: 0.31,
-            invert: true,
-        };
-        {
-            let c = p.clip_mut(cid).unwrap();
-            c.key = key;
-            c.mask = mask;
-        }
-        let back = round_trip(&p);
-        let c = back.clip(cid).unwrap();
-        assert_eq!(c.key, key, "every field of the key, not just the switch");
-        assert_eq!(c.mask, mask, "and every field of the mask");
-    }
-
-    #[test]
-    fn a_tone_curve_survives_the_document_with_every_channel() {
-        use crate::curve::Curve;
-        let (mut p, cid) = one_clip();
-        let mut want = Curve::default();
-        // One point on each channel, all at different heights, so a bake
-        // that dropped or transposed a channel cannot come back equal.
-        want.master.set_point(0.5, 0.72);
-        want.red.set_point(0.3, 0.44);
-        want.green.set_point(0.6, 0.21);
-        want.blue.set_point(0.8, 0.93);
-        want.mix = 0.65;
-        p.clip_mut(cid).unwrap().curves = want.clone();
-
-        let back = round_trip(&p);
-        let c = back.clip(cid).unwrap();
-        assert_eq!(
-            c.curves, want,
-            "every channel and the amount, not just the master"
-        );
-    }
-
-    #[test]
-    fn a_clip_written_before_curves_existed_reads_as_ungraded() {
-        // The `curves` key is simply absent in such a document, and the
-        // default has to be the straight line — a curve that read back as
-        // anything else would re-grade footage nobody touched.
-        let (p, cid) = one_clip();
-        let back = round_trip(&p);
-        let c = back.clip(cid).unwrap();
-        assert!(
-            c.curves.is_identity(),
-            "an untouched clip comes back ungraded"
-        );
-    }
-
-    #[test]
-    fn a_transform_survives_the_document() {
-        let (mut p, cid) = one_clip();
-        let want = Transform {
-            scale_x: 0.4,
-            scale_y: 0.55,
-            pos_x: -0.2,
-            pos_y: 0.31,
-            rotation: -14.5,
-            anchor_x: 0.1,
-            anchor_y: 0.9,
-            crop_left: 0.05,
-            crop_right: 0.06,
-            crop_top: 0.07,
-            crop_bottom: 0.08,
-        };
-        p.clip_mut(cid).unwrap().transform = want;
-        let back = round_trip(&p);
-        assert_eq!(back.clip(cid).unwrap().transform, want);
-    }
-
-    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
     #[expect(
         clippy::float_cmp,
         reason = "a round trip through the document stores the same f64 bits it was given"
     )]
-    fn speed_survives_the_document_in_both_directions() {
-        let (mut p, cid) = one_clip();
-        p.clip_mut(cid).unwrap().speed = Speed::new(2.5, true);
-        let back = round_trip(&p);
-        let got = back.clip(cid).unwrap();
-        assert_eq!(got.speed, Speed::new(2.5, true));
-        assert_eq!(got.duration(), p.clip(cid).unwrap().duration());
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "a round trip through the document stores the same f64 bits it was given"
-    )]
-    fn keyframe_curves_survive_the_document_with_their_interpolation() {
-        let (mut p, cid) = one_clip();
+    fn clip_grading_and_geometry_survive_the_document() {
+        // Case `a_key_and_a_mask_survive_the_document`.
         {
-            let c = p.clip_mut(cid).unwrap();
-            c.set_key_at(Param::Opacity, 0.0, 0.0, Interp::Ease);
-            c.set_key_at(Param::Opacity, 3.0, 1.0, Interp::Hold);
-            c.set_key_at(Param::PosX, 1.0, -0.5, Interp::Linear);
+            use crate::model::{ChromaKey, Mask, MaskShape};
+            let (mut p, cid) = one_clip();
+            let key = ChromaKey {
+                enabled: true,
+                color: [0.11, 0.68, 0.24],
+                tolerance: 0.27,
+                softness: 0.09,
+                spill: 0.63,
+            };
+            let mask = Mask {
+                shape: MaskShape::Ellipse,
+                x: -0.18,
+                y: 0.24,
+                w: 0.41,
+                h: 0.77,
+                rotation: -22.0,
+                feather: 0.31,
+                invert: true,
+            };
+            {
+                let c = p.clip_mut(cid).unwrap();
+                c.key = key;
+                c.mask = mask;
+            }
+            let back = round_trip(&p);
+            let c = back.clip(cid).unwrap();
+            assert_eq!(c.key, key, "every field of the key, not just the switch");
+            assert_eq!(c.mask, mask, "and every field of the mask");
         }
-        let back = round_trip(&p);
-        let got = back.clip(cid).unwrap();
-        assert!(got.anim.is_animated(Param::Opacity));
-        assert!(got.anim.is_animated(Param::PosX));
-        let keys = &got.anim.track(Param::Opacity).unwrap().keys;
-        assert_eq!(keys.len(), 2);
-        assert_eq!(
-            keys[0].interp,
-            Interp::Ease,
-            "the shape of the curve comes back too"
-        );
-        assert_eq!(keys[1].interp, Interp::Hold);
-        // And the sampled value is identical, which is what actually matters.
-        for t in [0.0, 0.7, 1.5, 2.9, 5.0] {
+        // Case `a_tone_curve_survives_the_document_with_every_channel`.
+        {
+            use crate::curve::Curve;
+            let (mut p, cid) = one_clip();
+            let mut want = Curve::default();
+            // One point on each channel, all at different heights, so a bake
+            // that dropped or transposed a channel cannot come back equal.
+            want.master.set_point(0.5, 0.72);
+            want.red.set_point(0.3, 0.44);
+            want.green.set_point(0.6, 0.21);
+            want.blue.set_point(0.8, 0.93);
+            want.mix = 0.65;
+            p.clip_mut(cid).unwrap().curves = want.clone();
+
+            let back = round_trip(&p);
+            let c = back.clip(cid).unwrap();
             assert_eq!(
-                got.param_at(Param::Opacity, t),
-                p.clip(cid).unwrap().param_at(Param::Opacity, t),
-                "the curve reads the same at {t}s",
+                c.curves, want,
+                "every channel and the amount, not just the master"
+            );
+        }
+        // Case `a_clip_written_before_curves_existed_reads_as_ungraded`.
+        {
+            // The `curves` key is simply absent in such a document, and the
+            // default has to be the straight line — a curve that read back as
+            // anything else would re-grade footage nobody touched.
+            let (p, cid) = one_clip();
+            let back = round_trip(&p);
+            let c = back.clip(cid).unwrap();
+            assert!(
+                c.curves.is_identity(),
+                "an untouched clip comes back ungraded"
+            );
+        }
+        // Case `a_transform_survives_the_document`.
+        {
+            let (mut p, cid) = one_clip();
+            let want = Transform {
+                scale_x: 0.4,
+                scale_y: 0.55,
+                pos_x: -0.2,
+                pos_y: 0.31,
+                rotation: -14.5,
+                anchor_x: 0.1,
+                anchor_y: 0.9,
+                crop_left: 0.05,
+                crop_right: 0.06,
+                crop_top: 0.07,
+                crop_bottom: 0.08,
+            };
+            p.clip_mut(cid).unwrap().transform = want;
+            let back = round_trip(&p);
+            assert_eq!(back.clip(cid).unwrap().transform, want);
+        }
+        // Case `speed_survives_the_document_in_both_directions`.
+        {
+            let (mut p, cid) = one_clip();
+            p.clip_mut(cid).unwrap().speed = Speed::new(2.5, true);
+            let back = round_trip(&p);
+            let got = back.clip(cid).unwrap();
+            assert_eq!(got.speed, Speed::new(2.5, true));
+            assert_eq!(got.duration(), p.clip(cid).unwrap().duration());
+        }
+        // Case `keyframe_curves_survive_the_document_with_their_interpolation`.
+        {
+            let (mut p, cid) = one_clip();
+            {
+                let c = p.clip_mut(cid).unwrap();
+                c.set_key_at(Param::Opacity, 0.0, 0.0, Interp::Ease);
+                c.set_key_at(Param::Opacity, 3.0, 1.0, Interp::Hold);
+                c.set_key_at(Param::PosX, 1.0, -0.5, Interp::Linear);
+            }
+            let back = round_trip(&p);
+            let got = back.clip(cid).unwrap();
+            assert!(got.anim.is_animated(Param::Opacity));
+            assert!(got.anim.is_animated(Param::PosX));
+            let keys = &got.anim.track(Param::Opacity).unwrap().keys;
+            assert_eq!(keys.len(), 2);
+            assert_eq!(
+                keys[0].interp,
+                Interp::Ease,
+                "the shape of the curve comes back too"
+            );
+            assert_eq!(keys[1].interp, Interp::Hold);
+            // And the sampled value is identical, which is what actually matters.
+            for t in [0.0, 0.7, 1.5, 2.9, 5.0] {
+                assert_eq!(
+                    got.param_at(Param::Opacity, t),
+                    p.clip(cid).unwrap().param_at(Param::Opacity, t),
+                    "the curve reads the same at {t}s",
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a round trip through the document stores the same f64 bits it was given"
+    )]
+    fn markers_titles_and_links_survive_and_replicate() {
+        // Case `markers_survive_on_both_the_project_and_the_clip`.
+        {
+            let (mut p, cid) = one_clip();
+            p.add_marker(4.0, "act two", 3);
+            p.clip_mut(cid)
+                .unwrap()
+                .add_marker(2.0, "beat", 5)
+                .expect("inside");
+            let back = round_trip(&p);
+            assert_eq!(back.markers.len(), 1);
+            assert_eq!(back.markers[0].name, "act two");
+            assert_eq!(back.markers[0].palette, 3);
+            let cm = &back.clip(cid).unwrap().markers;
+            assert_eq!(cm.len(), 1);
+            assert_eq!(cm[0].name, "beat");
+            assert_eq!(cm[0].t, 2.0, "still clip-local");
+        }
+        // Case `a_title_survives_the_document_with_its_styling`.
+        {
+            let mut p = Project::new("t");
+            let mid = Uuid::new_v4();
+            let text = TextSource {
+                content: "Two\nlines".into(),
+                size: 0.22,
+                color: [0.9, 0.1, 0.4, 0.8],
+                align: TextAlign::Right,
+                font: "Some Family".into(),
+                bold: false,
+                italic: true,
+                backdrop: 0.35,
+            };
+            p.media.push(MediaItem {
+                id: mid,
+                name: "Title".into(),
+                kind: MediaKind::Text,
+                duration: 5.0,
+                text: Some(text.clone()),
+                ..Default::default()
+            });
+            let back = round_trip(&p);
+            let m = back.media(mid).expect("the title is in the bin");
+            assert_eq!(m.kind, MediaKind::Text);
+            assert_eq!(m.text.as_ref(), Some(&text));
+        }
+        // Case `clearing_a_title_replicates_as_a_change_rather_than_as_silence`.
+        {
+            // Turning a title back into a plain reference has to *remove* the
+            // text, or a peer that already has it would keep drawing it.
+            let mut p = Project::new("t");
+            let mid = Uuid::new_v4();
+            p.media.push(MediaItem {
+                id: mid,
+                name: "Title".into(),
+                kind: MediaKind::Text,
+                text: Some(TextSource::new("gone soon")),
+                ..Default::default()
+            });
+            let mut doc = AutoCommit::new();
+            VideoDoc::write_project(&mut doc, &p);
+            assert!(
+                VideoDoc::load_project(&doc)
+                    .media(mid)
+                    .unwrap()
+                    .text
+                    .is_some()
+            );
+
+            p.media[0].text = None;
+            p.media[0].kind = MediaKind::Video;
+            VideoDoc::upsert_media(&mut doc, &p.media[0]);
+            assert_eq!(
+                VideoDoc::load_project(&doc).media(mid).unwrap().text,
+                None,
+                "the title's text is gone from the document, not merely ignored",
+            );
+        }
+        // Case `a_link_survives_the_document_and_breaking_it_replicates`.
+        {
+            let (mut p, cid) = one_clip();
+            let group = Uuid::new_v4();
+            {
+                let c = p.clip_mut(cid).unwrap();
+                c.link = Some(group);
+                c.sound_split = true;
+            }
+            let back = round_trip(&p);
+            let c = back.clip(cid).expect("the clip");
+            assert_eq!(c.link, Some(group), "the group id replicates");
+            assert!(c.sound_split, "and so does where the sound comes from");
+
+            // Unlinking has to *remove* the key, or a peer that already holds the
+            // link would keep drawing the pair and keep moving both halves.
+            let mut doc = AutoCommit::new();
+            VideoDoc::write_project(&mut doc, &p);
+            let mut cut = p.clone();
+            cut.unlink_clips(&[cid]);
+            VideoDoc::upsert_clip(&mut doc, cut.clip(cid).expect("the clip"));
+            // The claim is about the *peer*, not about which key carries it: a
+            // reader of this document must stop following the link. It used to be
+            // spelled "the link key is gone"; the group id now survives a break
+            // so the editor can still find the sound a shot was split from, and
+            // `link_follows` is what a peer reads instead.
+            let seen = VideoDoc::load_project(&doc);
+            assert!(
+                !seen.is_linked(cid),
+                "an unlink that writes nothing is an unlink a peer never sees",
+            );
+            assert!(
+                seen.link_partners(cid).is_empty(),
+                "a peer that still moves both halves has not seen the break",
+            );
+        }
+        // Case `a_clip_written_before_links_existed_reads_as_an_ordinary_clip`.
+        {
+            // The compatibility half: no `link` key and no `sound_split` key must
+            // mean "not linked, and still carrying its own sound" -- which is what
+            // that document's author is already playing.
+            let (p, cid) = one_clip();
+            let mut doc = AutoCommit::new();
+            VideoDoc::write_project(&mut doc, &p);
+            let clips = VideoDoc::map(&mut doc, "clips");
+            let obj = VideoDoc::ensure_child(&mut doc, &clips, &cid.to_string());
+            let _ = doc.delete(&obj, "link");
+            let _ = doc.delete(&obj, "sound_split");
+            let c = VideoDoc::load_project(&doc)
+                .clip(cid)
+                .expect("the clip")
+                .clone();
+            assert!(c.link.is_none());
+            assert!(
+                !c.sound_split,
+                "an old project's picture clip has to keep carrying its sound",
             );
         }
     }
@@ -1777,564 +1921,424 @@ mod tests {
         clippy::float_cmp,
         reason = "a round trip through the document stores the same f64 bits it was given"
     )]
-    fn markers_survive_on_both_the_project_and_the_clip() {
-        let (mut p, cid) = one_clip();
-        p.add_marker(4.0, "act two", 3);
-        p.clip_mut(cid)
-            .unwrap()
-            .add_marker(2.0, "beat", 5)
-            .expect("inside");
-        let back = round_trip(&p);
-        assert_eq!(back.markers.len(), 1);
-        assert_eq!(back.markers[0].name, "act two");
-        assert_eq!(back.markers[0].palette, 3);
-        let cm = &back.clip(cid).unwrap().markers;
-        assert_eq!(cm.len(), 1);
-        assert_eq!(cm[0].name, "beat");
-        assert_eq!(cm[0].t, 2.0, "still clip-local");
-    }
-
-    #[test]
-    fn a_title_survives_the_document_with_its_styling() {
-        let mut p = Project::new("t");
-        let mid = Uuid::new_v4();
-        let text = TextSource {
-            content: "Two\nlines".into(),
-            size: 0.22,
-            color: [0.9, 0.1, 0.4, 0.8],
-            align: TextAlign::Right,
-            font: "Some Family".into(),
-            bold: false,
-            italic: true,
-            backdrop: 0.35,
-        };
-        p.media.push(MediaItem {
-            id: mid,
-            name: "Title".into(),
-            kind: MediaKind::Text,
-            duration: 5.0,
-            text: Some(text.clone()),
-            ..Default::default()
-        });
-        let back = round_trip(&p);
-        let m = back.media(mid).expect("the title is in the bin");
-        assert_eq!(m.kind, MediaKind::Text);
-        assert_eq!(m.text.as_ref(), Some(&text));
-    }
-
-    #[test]
-    fn clearing_a_title_replicates_as_a_change_rather_than_as_silence() {
-        // Turning a title back into a plain reference has to *remove* the
-        // text, or a peer that already has it would keep drawing it.
-        let mut p = Project::new("t");
-        let mid = Uuid::new_v4();
-        p.media.push(MediaItem {
-            id: mid,
-            name: "Title".into(),
-            kind: MediaKind::Text,
-            text: Some(TextSource::new("gone soon")),
-            ..Default::default()
-        });
-        let mut doc = AutoCommit::new();
-        VideoDoc::write_project(&mut doc, &p);
-        assert!(
-            VideoDoc::load_project(&doc)
-                .media(mid)
-                .unwrap()
-                .text
-                .is_some()
-        );
-
-        p.media[0].text = None;
-        p.media[0].kind = MediaKind::Video;
-        VideoDoc::upsert_media(&mut doc, &p.media[0]);
-        assert_eq!(
-            VideoDoc::load_project(&doc).media(mid).unwrap().text,
-            None,
-            "the title's text is gone from the document, not merely ignored",
-        );
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "a round trip through the document stores the same f64 bits it was given"
-    )]
-    fn a_document_written_before_any_of_this_still_loads_unchanged() {
-        // The compatibility contract: every new key is absent in an older
-        // document, and every default is the behaviour that document had.
-        let (p, cid) = one_clip();
-        let mut doc = AutoCommit::new();
-        VideoDoc::write_project(&mut doc, &p);
-        // Strip the new keys, leaving exactly what an older peer wrote.
-        let clips = VideoDoc::map(&mut doc, "clips");
-        let obj = VideoDoc::ensure_child(&mut doc, &clips, &cid.to_string());
-        for key in [
-            "transform",
-            "speed_rate",
-            "speed_reverse",
-            "anim",
-            "markers",
-            "key",
-            "mask",
-        ] {
-            let _ = doc.delete(&obj, key);
-        }
-        let media = VideoDoc::map(&mut doc, "media");
-        let mobj = VideoDoc::ensure_child(&mut doc, &media, &p.media[0].id.to_string());
-        let _ = doc.delete(&mobj, "text");
-        let proj = VideoDoc::map(&mut doc, "project");
-        let _ = doc.delete(&proj, "markers");
-
-        let back = VideoDoc::load_project(&doc);
-        let c = back.clip(cid).expect("the clip still loads");
-        assert!(
-            c.transform.is_identity(),
-            "no geometry means the aspect-fit placement"
-        );
-        assert!(c.speed.is_normal(), "no speed means normal speed");
-        assert!(c.anim.is_empty(), "no curves");
-        assert!(!c.key.is_active(), "no key means nothing is keyed out");
-        assert!(
-            !c.mask.is_active(),
-            "and no mask means the layer is not cut"
-        );
-        assert!(c.markers.is_empty());
-        assert!(back.markers.is_empty());
-        assert_eq!(back.media(p.media[0].id).unwrap().text, None);
-        assert_eq!(
-            c.duration(),
-            p.clip(cid).unwrap().duration(),
-            "and the same length"
-        );
-    }
-
-    #[test]
-    fn a_document_holding_only_imported_media_is_not_empty() {
-        // Import writes the `media` map and nothing else. A document in that
-        // state holds real user content, so it must never report empty — that
-        // is what let a demo seed run over an imported clip.
-        let mut doc = AutoCommit::new();
-        assert!(VideoDoc::is_empty(&doc), "a fresh document is empty");
-        VideoDoc::upsert_media(
-            &mut doc,
-            &MediaItem {
-                id: Uuid::new_v4(),
-                name: "Imported.mp4".into(),
-                kind: MediaKind::Video,
-                duration: 12.0,
-                width: 1920,
-                height: 1080,
-                fps: 25.0,
-                palette: 0,
-                path: "media/Imported.mp4".into(),
-                hydration: Hydration::Local,
-                ..Default::default()
-            },
-        );
-        assert!(
-            !VideoDoc::is_empty(&doc),
-            "a document with imported media is not empty"
-        );
-        // The project map is still absent — emptiness no longer keys on it alone.
-        assert!(
-            !matches!(
-                doc.get(&ROOT, "project"),
-                Ok(Some((Value::Object(ObjType::Map), _)))
-            ),
-            "import wrote no project map"
-        );
-    }
-
-    #[test]
-    fn an_untouched_map_is_not_content() {
-        // `map()` materialises an empty map as a side effect of any read-modify
-        // helper; an empty map is structure, not content, so the document is
-        // still empty.
-        let mut doc = AutoCommit::new();
-        let _ = VideoDoc::map(&mut doc, "media");
-        let _ = VideoDoc::map(&mut doc, "project");
-        assert!(VideoDoc::is_empty(&doc), "empty maps carry no content");
-    }
-
-    #[test]
-    fn sample_round_trips_through_doc() {
-        let mut doc = AutoCommit::new();
-        assert!(VideoDoc::is_empty(&doc));
-        VideoDoc::seed_sample(&mut doc);
-        assert!(!VideoDoc::is_empty(&doc));
-
-        let p = VideoDoc::load_project(&doc);
-        assert_eq!(p.name, "Coastline_Doc_v3");
-        assert_eq!(p.media.len(), 7);
-        assert_eq!(p.tracks.len(), 4);
-        assert_eq!(p.clips.len(), 7);
-        // A clip's source window survived the round-trip.
-        let interview = p
-            .media
-            .iter()
-            .find(|m| m.name == "Interview_A.mp4")
-            .unwrap();
-        let clip = p.clips.iter().find(|c| c.media == interview.id).unwrap();
-        assert!((clip.duration() - 12.0).abs() < 1e-9);
-        assert_eq!(clip.transition, Transition::CrossDissolve);
-    }
-
-    #[test]
-    fn effects_stack_round_trips_through_the_doc() {
-        use crate::model::{ClipEffect, EffectKind};
-        let mut doc = AutoCommit::new();
-        VideoDoc::seed_sample(&mut doc);
-        let mut p = VideoDoc::load_project(&doc);
-        let cid = p.clips[0].id;
+    fn legacy_and_empty_documents_load_and_classify_correctly() {
+        // Case `a_document_written_before_any_of_this_still_loads_unchanged`.
         {
-            let c = p.clip_mut(cid).unwrap();
-            c.effects = vec![
-                ClipEffect {
-                    id: Uuid::new_v4(),
-                    kind: EffectKind::Sepia,
-                    amount: 0.6,
-                },
-                ClipEffect {
-                    id: Uuid::new_v4(),
-                    kind: EffectKind::Invert,
-                    amount: 1.0,
-                },
-            ];
+            // The compatibility contract: every new key is absent in an older
+            // document, and every default is the behaviour that document had.
+            let (p, cid) = one_clip();
+            let mut doc = AutoCommit::new();
+            VideoDoc::write_project(&mut doc, &p);
+            // Strip the new keys, leaving exactly what an older peer wrote.
+            let clips = VideoDoc::map(&mut doc, "clips");
+            let obj = VideoDoc::ensure_child(&mut doc, &clips, &cid.to_string());
+            for key in [
+                "transform",
+                "speed_rate",
+                "speed_reverse",
+                "anim",
+                "markers",
+                "key",
+                "mask",
+            ] {
+                let _ = doc.delete(&obj, key);
+            }
+            let media = VideoDoc::map(&mut doc, "media");
+            let mobj = VideoDoc::ensure_child(&mut doc, &media, &p.media[0].id.to_string());
+            let _ = doc.delete(&mobj, "text");
+            let proj = VideoDoc::map(&mut doc, "project");
+            let _ = doc.delete(&proj, "markers");
+
+            let back = VideoDoc::load_project(&doc);
+            let c = back.clip(cid).expect("the clip still loads");
+            assert!(
+                c.transform.is_identity(),
+                "no geometry means the aspect-fit placement"
+            );
+            assert!(c.speed.is_normal(), "no speed means normal speed");
+            assert!(c.anim.is_empty(), "no curves");
+            assert!(!c.key.is_active(), "no key means nothing is keyed out");
+            assert!(
+                !c.mask.is_active(),
+                "and no mask means the layer is not cut"
+            );
+            assert!(c.markers.is_empty());
+            assert!(back.markers.is_empty());
+            assert_eq!(back.media(p.media[0].id).unwrap().text, None);
+            assert_eq!(
+                c.duration(),
+                p.clip(cid).unwrap().duration(),
+                "and the same length"
+            );
         }
-        VideoDoc::upsert_clip(&mut doc, p.clip(cid).unwrap());
-        let reload = VideoDoc::load_project(&doc);
-        let effects = &reload.clip(cid).unwrap().effects;
-        assert_eq!(
-            effects.len(),
-            2,
-            "the effects stack survived the round-trip in order"
-        );
-        assert_eq!(effects[0].kind, EffectKind::Sepia);
-        assert!((effects[0].amount - 0.6).abs() < 1e-9);
-        assert_eq!(effects[1].kind, EffectKind::Invert);
+        // Case `a_document_holding_only_imported_media_is_not_empty`.
+        {
+            // Import writes the `media` map and nothing else. A document in that
+            // state holds real user content, so it must never report empty — that
+            // is what let a demo seed run over an imported clip.
+            let mut doc = AutoCommit::new();
+            assert!(VideoDoc::is_empty(&doc), "a fresh document is empty");
+            VideoDoc::upsert_media(
+                &mut doc,
+                &MediaItem {
+                    id: Uuid::new_v4(),
+                    name: "Imported.mp4".into(),
+                    kind: MediaKind::Video,
+                    duration: 12.0,
+                    width: 1920,
+                    height: 1080,
+                    fps: 25.0,
+                    palette: 0,
+                    path: "media/Imported.mp4".into(),
+                    hydration: Hydration::Local,
+                    ..Default::default()
+                },
+            );
+            assert!(
+                !VideoDoc::is_empty(&doc),
+                "a document with imported media is not empty"
+            );
+            // The project map is still absent — emptiness no longer keys on it alone.
+            assert!(
+                !matches!(
+                    doc.get(&ROOT, "project"),
+                    Ok(Some((Value::Object(ObjType::Map), _)))
+                ),
+                "import wrote no project map"
+            );
+        }
+        // Case `an_untouched_map_is_not_content`.
+        {
+            // `map()` materialises an empty map as a side effect of any read-modify
+            // helper; an empty map is structure, not content, so the document is
+            // still empty.
+            let mut doc = AutoCommit::new();
+            let _ = VideoDoc::map(&mut doc, "media");
+            let _ = VideoDoc::map(&mut doc, "project");
+            assert!(VideoDoc::is_empty(&doc), "empty maps carry no content");
+        }
+        // Case `sample_round_trips_through_doc`.
+        {
+            let mut doc = AutoCommit::new();
+            assert!(VideoDoc::is_empty(&doc));
+            VideoDoc::seed_sample(&mut doc);
+            assert!(!VideoDoc::is_empty(&doc));
+
+            let p = VideoDoc::load_project(&doc);
+            assert_eq!(p.name, "Coastline_Doc_v3");
+            assert_eq!(p.media.len(), 7);
+            assert_eq!(p.tracks.len(), 4);
+            assert_eq!(p.clips.len(), 7);
+            // A clip's source window survived the round-trip.
+            let interview = p
+                .media
+                .iter()
+                .find(|m| m.name == "Interview_A.mp4")
+                .unwrap();
+            let clip = p.clips.iter().find(|c| c.media == interview.id).unwrap();
+            assert!((clip.duration() - 12.0).abs() < 1e-9);
+            assert_eq!(clip.transition, Transition::CrossDissolve);
+        }
     }
 
     #[test]
-    fn legacy_effect_stack_gets_deterministic_ids_and_a_normal_write_persists_them() {
-        let mut doc = AutoCommit::new();
-        VideoDoc::seed_sample(&mut doc);
-        let clip_id = VideoDoc::load_project(&doc).clips[0].id;
-        let clips = VideoDoc::map(&mut doc, "clips");
-        let Some((Value::Object(ObjType::Map), clip)) =
-            doc.get(&clips, clip_id.to_string()).expect("read clip")
-        else {
-            panic!("fixture clip is a map");
-        };
-        doc.put(
-            &clip,
-            "effects",
-            r#"[{"kind":"Sepia","amount":0.6},{"kind":"Sepia","amount":0.8}]"#,
-        )
-        .expect("write legacy effects");
+    fn effect_stacks_round_trip_with_deterministic_ids() {
+        // Case `effects_stack_round_trips_through_the_doc`.
+        {
+            use crate::model::{ClipEffect, EffectKind};
+            let mut doc = AutoCommit::new();
+            VideoDoc::seed_sample(&mut doc);
+            let mut p = VideoDoc::load_project(&doc);
+            let cid = p.clips[0].id;
+            {
+                let c = p.clip_mut(cid).unwrap();
+                c.effects = vec![
+                    ClipEffect {
+                        id: Uuid::new_v4(),
+                        kind: EffectKind::Sepia,
+                        amount: 0.6,
+                    },
+                    ClipEffect {
+                        id: Uuid::new_v4(),
+                        kind: EffectKind::Invert,
+                        amount: 1.0,
+                    },
+                ];
+            }
+            VideoDoc::upsert_clip(&mut doc, p.clip(cid).unwrap());
+            let reload = VideoDoc::load_project(&doc);
+            let effects = &reload.clip(cid).unwrap().effects;
+            assert_eq!(
+                effects.len(),
+                2,
+                "the effects stack survived the round-trip in order"
+            );
+            assert_eq!(effects[0].kind, EffectKind::Sepia);
+            assert!((effects[0].amount - 0.6).abs() < 1e-9);
+            assert_eq!(effects[1].kind, EffectKind::Invert);
+        }
+        // Case `legacy_effect_stack_gets_deterministic_ids_and_a_normal_write_persists_them`.
+        {
+            let mut doc = AutoCommit::new();
+            VideoDoc::seed_sample(&mut doc);
+            let clip_id = VideoDoc::load_project(&doc).clips[0].id;
+            let clips = VideoDoc::map(&mut doc, "clips");
+            let Some((Value::Object(ObjType::Map), clip)) =
+                doc.get(&clips, clip_id.to_string()).expect("read clip")
+            else {
+                panic!("fixture clip is a map");
+            };
+            doc.put(
+                &clip,
+                "effects",
+                r#"[{"kind":"Sepia","amount":0.6},{"kind":"Sepia","amount":0.8}]"#,
+            )
+            .expect("write legacy effects");
 
-        let first = VideoDoc::load_project(&doc);
-        let second = VideoDoc::load_project(&doc);
-        let ids = first
-            .clip(clip_id)
-            .expect("loaded clip")
-            .effects
-            .iter()
-            .map(|effect| effect.id)
-            .collect::<Vec<_>>();
-        assert_eq!(ids.len(), 2);
-        assert!(ids.iter().all(|id| !id.is_nil()));
-        assert_ne!(ids[0], ids[1]);
-        assert_eq!(
-            second
+            let first = VideoDoc::load_project(&doc);
+            let second = VideoDoc::load_project(&doc);
+            let ids = first
                 .clip(clip_id)
-                .expect("same legacy clip")
+                .expect("loaded clip")
                 .effects
                 .iter()
                 .map(|effect| effect.id)
-                .collect::<Vec<_>>(),
-            ids,
-            "read-only migration is deterministic across peers",
-        );
-
-        VideoDoc::upsert_clip(&mut doc, first.clip(clip_id).expect("migrated clip"));
-        let Some((Value::Object(ObjType::Map), saved)) =
-            doc.get(&clip, "effects").expect("stored effects")
-        else {
-            panic!("a normal edit migrates effects to a keyed map");
-        };
-        assert_eq!(doc.length(&saved), 2, "both durable effect ids are keyed");
-        for id in ids {
-            assert!(
-                doc.get(&saved, id.to_string())
-                    .expect("read effect")
-                    .is_some(),
-                "the migrated map is keyed by the durable instance id"
+                .collect::<Vec<_>>();
+            assert_eq!(ids.len(), 2);
+            assert!(ids.iter().all(|id| !id.is_nil()));
+            assert_ne!(ids[0], ids[1]);
+            assert_eq!(
+                second
+                    .clip(clip_id)
+                    .expect("same legacy clip")
+                    .effects
+                    .iter()
+                    .map(|effect| effect.id)
+                    .collect::<Vec<_>>(),
+                ids,
+                "read-only migration is deterministic across peers",
             );
+
+            VideoDoc::upsert_clip(&mut doc, first.clip(clip_id).expect("migrated clip"));
+            let Some((Value::Object(ObjType::Map), saved)) =
+                doc.get(&clip, "effects").expect("stored effects")
+            else {
+                panic!("a normal edit migrates effects to a keyed map");
+            };
+            assert_eq!(doc.length(&saved), 2, "both durable effect ids are keyed");
+            for id in ids {
+                assert!(
+                    doc.get(&saved, id.to_string())
+                        .expect("read effect")
+                        .is_some(),
+                    "the migrated map is keyed by the durable instance id"
+                );
+            }
         }
     }
 
     #[test]
-    fn upsert_clip_mutates_in_place() {
-        let mut doc = AutoCommit::new();
-        VideoDoc::seed_sample(&mut doc);
-        let mut p = VideoDoc::load_project(&doc);
-        let cid = p.clips[0].id;
-        if let Some(c) = p.clip_mut(cid) {
-            c.start = 99.0;
-        }
-        VideoDoc::upsert_clip(&mut doc, p.clip(cid).unwrap());
-        let reload = VideoDoc::load_project(&doc);
-        assert_eq!(
-            reload.clips.len(),
-            p.clips.len(),
-            "no duplicate clip created"
-        );
-        assert!((reload.clip(cid).unwrap().start - 99.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn remove_clip_deletes_from_doc() {
-        let mut doc = AutoCommit::new();
-        VideoDoc::seed_sample(&mut doc);
-        let p = VideoDoc::load_project(&doc);
-        let cid = p.clips[0].id;
-        VideoDoc::remove_clip(&mut doc, cid);
-        let reload = VideoDoc::load_project(&doc);
-        assert!(reload.clip(cid).is_none());
-        assert_eq!(reload.clips.len(), 6);
-    }
-
-    #[test]
-    fn replacing_a_project_removes_what_the_new_one_does_not_have() {
-        // The difference between opening a project and merging one. Without
-        // the removals a user who opens a second project gets both timelines
-        // stacked on top of each other and no way to tell which is which.
-        let mut doc = AutoCommit::new();
-        VideoDoc::seed_sample(&mut doc);
-        let before = VideoDoc::load_project(&doc);
-        assert!(before.clips.len() > 1 && !before.media.is_empty());
-
-        let mut other = Project::new("Other");
-        let mid = uuid::Uuid::new_v4();
-        other.media.push(MediaItem {
-            id: mid,
-            name: "Only.mp4".into(),
-            kind: MediaKind::Video,
-            duration: 5.0,
-            ..Default::default()
-        });
-        let tid = uuid::Uuid::new_v4();
-        other.tracks.push(Track {
-            id: tid,
-            name: "V1".into(),
-            index: 1,
-            ..Default::default()
-        });
-        let cid = uuid::Uuid::new_v4();
-        other.clips.push(Clip {
-            id: cid,
-            track: tid,
-            media: mid,
-            out_point: 5.0,
-            ..Default::default()
-        });
-
-        VideoDoc::replace_project(&mut doc, &other);
-        let after = VideoDoc::load_project(&doc);
-
-        assert_eq!(after.name, "Other");
-        assert_eq!(after.media.len(), 1, "the old bin is gone, not merged");
-        assert_eq!(after.tracks.len(), 1, "the old tracks are gone");
-        assert_eq!(after.clips.len(), 1, "the old timeline is gone");
-        assert_eq!(after.clips[0].id, cid);
-        for old in &before.clips {
-            assert!(
-                after.clip(old.id).is_none(),
-                "no clip of the old project survives"
-            );
-        }
-    }
-
-    #[test]
-    fn reopening_the_same_project_keeps_its_ids() {
-        // Replace is upsert-plus-remove, not delete-everything-and-recreate.
-        // Ids are the CRDT keys, so re-minting them would turn "two peers
-        // opened the same file" into two disjoint projects that merge into
-        // duplicates rather than converging.
-        let mut doc = AutoCommit::new();
-        VideoDoc::seed_sample(&mut doc);
-        let before = VideoDoc::load_project(&doc);
-
-        VideoDoc::replace_project(&mut doc, &before);
-        let after = VideoDoc::load_project(&doc);
-
-        assert_eq!(after.clips.len(), before.clips.len());
-        for c in &before.clips {
-            let same = after.clip(c.id).expect("the same clip is still here");
-            assert!((same.start - c.start).abs() < 1e-9);
-            assert_eq!(same.media, c.media);
-        }
-    }
-
-    #[test]
-    fn two_peers_converge_on_a_moved_clip() {
-        let mut a = AutoCommit::new();
-        VideoDoc::seed_sample(&mut a);
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-
-        // B moves a clip.
-        let pb = VideoDoc::load_project(&b);
-        let cid = pb.clips[0].id;
-        let mut moved = pb.clip(cid).unwrap().clone();
-        moved.start = 42.0;
-        VideoDoc::upsert_clip(&mut b, &moved);
-
-        let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b_loaded).unwrap();
-        let pa = VideoDoc::load_project(&a);
-        assert!((pa.clip(cid).unwrap().start - 42.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn concurrent_effect_and_marker_adds_keep_both_authored_resources() {
-        let mut a = AutoCommit::new();
-        VideoDoc::seed_sample(&mut a);
-        let mut b = AutoCommit::load(&a.save()).expect("forks the shared base");
-        let clip = VideoDoc::load_project(&a).clips[0].id;
-        let a_effect = ClipEffect {
-            id: Uuid::new_v4(),
-            kind: EffectKind::Sepia,
-            amount: 0.4,
-        };
-        let b_effect = ClipEffect {
-            id: Uuid::new_v4(),
-            kind: EffectKind::Vignette,
-            amount: 0.7,
-        };
-        let a_marker = Marker::new(2.0, "Ada cut", 2);
-        let b_marker = Marker::new(5.0, "Bo beat", 5);
-
-        assert!(VideoDoc::add_clip_effect(&mut a, clip, a_effect, 80));
-        assert!(VideoDoc::add_project_marker(&mut a, &a_marker));
-        assert!(VideoDoc::add_clip_effect(&mut b, clip, b_effect, 81));
-        assert!(VideoDoc::add_project_marker(&mut b, &b_marker));
-
-        let mut b_for_a = AutoCommit::load(&b.save()).expect("loads B change");
-        a.merge_incoming(&mut b_for_a)
-            .expect("merges independent entries");
-        let project = VideoDoc::load_project(&a);
-        assert!(
-            project
-                .clip(clip)
-                .expect("clip survives")
-                .effects
-                .iter()
-                .any(|effect| effect.id == a_effect.id)
-        );
-        assert!(
-            project
-                .clip(clip)
-                .expect("clip survives")
-                .effects
-                .iter()
-                .any(|effect| effect.id == b_effect.id)
-        );
-        assert!(
-            project
-                .markers
-                .iter()
-                .any(|marker| marker.id == a_marker.id)
-        );
-        assert!(
-            project
-                .markers
-                .iter()
-                .any(|marker| marker.id == b_marker.id)
-        );
-    }
-
-    #[test]
-    fn explicit_collection_replacement_tombstones_omitted_effects_and_markers() {
-        let (mut project, clip) = one_clip();
-        let effect = ClipEffect::new(EffectKind::Sepia);
-        let marker = Marker::new(3.0, "cut", 2);
-        project.markers.push(marker.clone());
-        let mut doc = AutoCommit::new();
-        VideoDoc::write_project(&mut doc, &project);
-        assert!(VideoDoc::add_clip_effect(&mut doc, clip, effect, 0));
-
-        assert!(VideoDoc::set_clip_effects(&mut doc, clip, &[]));
-        assert!(
-            !VideoDoc::add_clip_effect(&mut doc, clip, effect, 0),
-            "a delayed add cannot revive an effect omitted by an explicit replacement"
-        );
-
-        project.markers.clear();
-        VideoDoc::write_project(&mut doc, &project);
-        assert!(
-            !VideoDoc::add_project_marker(&mut doc, &marker),
-            "a delayed add cannot revive a project marker omitted by replacement"
-        );
-    }
-
-    #[test]
-    fn a_link_survives_the_document_and_breaking_it_replicates() {
-        let (mut p, cid) = one_clip();
-        let group = Uuid::new_v4();
+    fn clip_upserts_removals_and_project_replacement_edit_in_place() {
+        // Case `upsert_clip_mutates_in_place`.
         {
-            let c = p.clip_mut(cid).unwrap();
-            c.link = Some(group);
-            c.sound_split = true;
+            let mut doc = AutoCommit::new();
+            VideoDoc::seed_sample(&mut doc);
+            let mut p = VideoDoc::load_project(&doc);
+            let cid = p.clips[0].id;
+            if let Some(c) = p.clip_mut(cid) {
+                c.start = 99.0;
+            }
+            VideoDoc::upsert_clip(&mut doc, p.clip(cid).unwrap());
+            let reload = VideoDoc::load_project(&doc);
+            assert_eq!(
+                reload.clips.len(),
+                p.clips.len(),
+                "no duplicate clip created"
+            );
+            assert!((reload.clip(cid).unwrap().start - 99.0).abs() < 1e-9);
         }
-        let back = round_trip(&p);
-        let c = back.clip(cid).expect("the clip");
-        assert_eq!(c.link, Some(group), "the group id replicates");
-        assert!(c.sound_split, "and so does where the sound comes from");
+        // Case `remove_clip_deletes_from_doc`.
+        {
+            let mut doc = AutoCommit::new();
+            VideoDoc::seed_sample(&mut doc);
+            let p = VideoDoc::load_project(&doc);
+            let cid = p.clips[0].id;
+            VideoDoc::remove_clip(&mut doc, cid);
+            let reload = VideoDoc::load_project(&doc);
+            assert!(reload.clip(cid).is_none());
+            assert_eq!(reload.clips.len(), 6);
+        }
+        // Case `replacing_a_project_removes_what_the_new_one_does_not_have`.
+        {
+            // The difference between opening a project and merging one. Without
+            // the removals a user who opens a second project gets both timelines
+            // stacked on top of each other and no way to tell which is which.
+            let mut doc = AutoCommit::new();
+            VideoDoc::seed_sample(&mut doc);
+            let before = VideoDoc::load_project(&doc);
+            assert!(before.clips.len() > 1 && !before.media.is_empty());
 
-        // Unlinking has to *remove* the key, or a peer that already holds the
-        // link would keep drawing the pair and keep moving both halves.
-        let mut doc = AutoCommit::new();
-        VideoDoc::write_project(&mut doc, &p);
-        let mut cut = p.clone();
-        cut.unlink_clips(&[cid]);
-        VideoDoc::upsert_clip(&mut doc, cut.clip(cid).expect("the clip"));
-        // The claim is about the *peer*, not about which key carries it: a
-        // reader of this document must stop following the link. It used to be
-        // spelled "the link key is gone"; the group id now survives a break
-        // so the editor can still find the sound a shot was split from, and
-        // `link_follows` is what a peer reads instead.
-        let seen = VideoDoc::load_project(&doc);
-        assert!(
-            !seen.is_linked(cid),
-            "an unlink that writes nothing is an unlink a peer never sees",
-        );
-        assert!(
-            seen.link_partners(cid).is_empty(),
-            "a peer that still moves both halves has not seen the break",
-        );
+            let mut other = Project::new("Other");
+            let mid = uuid::Uuid::new_v4();
+            other.media.push(MediaItem {
+                id: mid,
+                name: "Only.mp4".into(),
+                kind: MediaKind::Video,
+                duration: 5.0,
+                ..Default::default()
+            });
+            let tid = uuid::Uuid::new_v4();
+            other.tracks.push(Track {
+                id: tid,
+                name: "V1".into(),
+                index: 1,
+                ..Default::default()
+            });
+            let cid = uuid::Uuid::new_v4();
+            other.clips.push(Clip {
+                id: cid,
+                track: tid,
+                media: mid,
+                out_point: 5.0,
+                ..Default::default()
+            });
+
+            VideoDoc::replace_project(&mut doc, &other);
+            let after = VideoDoc::load_project(&doc);
+
+            assert_eq!(after.name, "Other");
+            assert_eq!(after.media.len(), 1, "the old bin is gone, not merged");
+            assert_eq!(after.tracks.len(), 1, "the old tracks are gone");
+            assert_eq!(after.clips.len(), 1, "the old timeline is gone");
+            assert_eq!(after.clips[0].id, cid);
+            for old in &before.clips {
+                assert!(
+                    after.clip(old.id).is_none(),
+                    "no clip of the old project survives"
+                );
+            }
+        }
+        // Case `reopening_the_same_project_keeps_its_ids`.
+        {
+            // Replace is upsert-plus-remove, not delete-everything-and-recreate.
+            // Ids are the CRDT keys, so re-minting them would turn "two peers
+            // opened the same file" into two disjoint projects that merge into
+            // duplicates rather than converging.
+            let mut doc = AutoCommit::new();
+            VideoDoc::seed_sample(&mut doc);
+            let before = VideoDoc::load_project(&doc);
+
+            VideoDoc::replace_project(&mut doc, &before);
+            let after = VideoDoc::load_project(&doc);
+
+            assert_eq!(after.clips.len(), before.clips.len());
+            for c in &before.clips {
+                let same = after.clip(c.id).expect("the same clip is still here");
+                assert!((same.start - c.start).abs() < 1e-9);
+                assert_eq!(same.media, c.media);
+            }
+        }
     }
 
     #[test]
-    fn a_clip_written_before_links_existed_reads_as_an_ordinary_clip() {
-        // The compatibility half: no `link` key and no `sound_split` key must
-        // mean "not linked, and still carrying its own sound" -- which is what
-        // that document's author is already playing.
-        let (p, cid) = one_clip();
-        let mut doc = AutoCommit::new();
-        VideoDoc::write_project(&mut doc, &p);
-        let clips = VideoDoc::map(&mut doc, "clips");
-        let obj = VideoDoc::ensure_child(&mut doc, &clips, &cid.to_string());
-        let _ = doc.delete(&obj, "link");
-        let _ = doc.delete(&obj, "sound_split");
-        let c = VideoDoc::load_project(&doc)
-            .clip(cid)
-            .expect("the clip")
-            .clone();
-        assert!(c.link.is_none());
-        assert!(
-            !c.sound_split,
-            "an old project's picture clip has to keep carrying its sound",
-        );
+    fn concurrent_peers_converge_on_clips_effects_and_markers() {
+        // Case `two_peers_converge_on_a_moved_clip`.
+        {
+            let mut a = AutoCommit::new();
+            VideoDoc::seed_sample(&mut a);
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+
+            // B moves a clip.
+            let pb = VideoDoc::load_project(&b);
+            let cid = pb.clips[0].id;
+            let mut moved = pb.clip(cid).unwrap().clone();
+            moved.start = 42.0;
+            VideoDoc::upsert_clip(&mut b, &moved);
+
+            let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b_loaded).unwrap();
+            let pa = VideoDoc::load_project(&a);
+            assert!((pa.clip(cid).unwrap().start - 42.0).abs() < 1e-9);
+        }
+        // Case `concurrent_effect_and_marker_adds_keep_both_authored_resources`.
+        {
+            let mut a = AutoCommit::new();
+            VideoDoc::seed_sample(&mut a);
+            let mut b = AutoCommit::load(&a.save()).expect("forks the shared base");
+            let clip = VideoDoc::load_project(&a).clips[0].id;
+            let a_effect = ClipEffect {
+                id: Uuid::new_v4(),
+                kind: EffectKind::Sepia,
+                amount: 0.4,
+            };
+            let b_effect = ClipEffect {
+                id: Uuid::new_v4(),
+                kind: EffectKind::Vignette,
+                amount: 0.7,
+            };
+            let a_marker = Marker::new(2.0, "Ada cut", 2);
+            let b_marker = Marker::new(5.0, "Bo beat", 5);
+
+            assert!(VideoDoc::add_clip_effect(&mut a, clip, a_effect, 80));
+            assert!(VideoDoc::add_project_marker(&mut a, &a_marker));
+            assert!(VideoDoc::add_clip_effect(&mut b, clip, b_effect, 81));
+            assert!(VideoDoc::add_project_marker(&mut b, &b_marker));
+
+            let mut b_for_a = AutoCommit::load(&b.save()).expect("loads B change");
+            a.merge_incoming(&mut b_for_a)
+                .expect("merges independent entries");
+            let project = VideoDoc::load_project(&a);
+            assert!(
+                project
+                    .clip(clip)
+                    .expect("clip survives")
+                    .effects
+                    .iter()
+                    .any(|effect| effect.id == a_effect.id)
+            );
+            assert!(
+                project
+                    .clip(clip)
+                    .expect("clip survives")
+                    .effects
+                    .iter()
+                    .any(|effect| effect.id == b_effect.id)
+            );
+            assert!(
+                project
+                    .markers
+                    .iter()
+                    .any(|marker| marker.id == a_marker.id)
+            );
+            assert!(
+                project
+                    .markers
+                    .iter()
+                    .any(|marker| marker.id == b_marker.id)
+            );
+        }
+        // Case `explicit_collection_replacement_tombstones_omitted_effects_and_markers`.
+        {
+            let (mut project, clip) = one_clip();
+            let effect = ClipEffect::new(EffectKind::Sepia);
+            let marker = Marker::new(3.0, "cut", 2);
+            project.markers.push(marker.clone());
+            let mut doc = AutoCommit::new();
+            VideoDoc::write_project(&mut doc, &project);
+            assert!(VideoDoc::add_clip_effect(&mut doc, clip, effect, 0));
+
+            assert!(VideoDoc::set_clip_effects(&mut doc, clip, &[]));
+            assert!(
+                !VideoDoc::add_clip_effect(&mut doc, clip, effect, 0),
+                "a delayed add cannot revive an effect omitted by an explicit replacement"
+            );
+
+            project.markers.clear();
+            VideoDoc::write_project(&mut doc, &project);
+            assert!(
+                !VideoDoc::add_project_marker(&mut doc, &marker),
+                "a delayed add cannot revive a project marker omitted by replacement"
+            );
+        }
     }
 }

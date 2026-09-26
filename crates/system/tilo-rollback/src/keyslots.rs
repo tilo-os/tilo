@@ -791,41 +791,40 @@ Digests:
 ";
 
     #[test]
-    fn keyslots_are_parsed_from_a_real_dump() {
-        assert_eq!(parse_keyslots(DUMP), vec![0, 2]);
-    }
-
-    #[test]
-    fn token_and_digest_sections_are_not_mistaken_for_keyslots() {
-        // The Tokens section also uses "  N: name"; the parser must stop at it.
-        let ks = parse_keyslots(DUMP);
-        assert!(
-            !ks.contains(&1),
-            "token id 1 leaked into the keyslot list: {ks:?}"
-        );
-    }
-
-    #[test]
-    fn an_empty_header_yields_no_keyslots() {
-        assert!(parse_keyslots("LUKS header information\nVersion: 2\n").is_empty());
-    }
-
-    #[test]
-    fn passphrases_are_hex_and_long_enough() {
-        let p = new_passphrase().unwrap();
-        assert_eq!(p.len(), 64);
-        assert!(p.iter().all(u8::is_ascii_hexdigit));
-        // Two calls must not agree.
-        assert_ne!(*p, *new_passphrase().unwrap());
-    }
-
-    #[test]
-    fn unseal_pin_auth_references_a_file_instead_of_exposing_the_pin() {
-        let auth = unseal_auth(
-            Path::new("/run/work/policy.ctx"),
-            Some(Path::new("/run/work/pin")),
-        );
-        assert_eq!(auth, "session:/run/work/policy.ctx+file:/run/work/pin");
-        assert!(!auth.contains("246810"));
+    fn keyslot_dumps_parse_only_keyslots_and_secrets_stay_off_argv() {
+        // Phase `keyslots_are_parsed_from_a_real_dump`.
+        {
+            assert_eq!(parse_keyslots(DUMP), vec![0, 2]);
+        }
+        // Phase `token_and_digest_sections_are_not_mistaken_for_keyslots`.
+        {
+            // The Tokens section also uses "  N: name"; the parser must stop at it.
+            let ks = parse_keyslots(DUMP);
+            assert!(
+                !ks.contains(&1),
+                "token id 1 leaked into the keyslot list: {ks:?}"
+            );
+        }
+        // Phase `an_empty_header_yields_no_keyslots`.
+        {
+            assert!(parse_keyslots("LUKS header information\nVersion: 2\n").is_empty());
+        }
+        // Phase `passphrases_are_hex_and_long_enough`.
+        {
+            let p = new_passphrase().unwrap();
+            assert_eq!(p.len(), 64);
+            assert!(p.iter().all(u8::is_ascii_hexdigit));
+            // Two calls must not agree.
+            assert_ne!(*p, *new_passphrase().unwrap());
+        }
+        // Phase `unseal_pin_auth_references_a_file_instead_of_exposing_the_pin`.
+        {
+            let auth = unseal_auth(
+                Path::new("/run/work/policy.ctx"),
+                Some(Path::new("/run/work/pin")),
+            );
+            assert_eq!(auth, "session:/run/work/policy.ctx+file:/run/work/pin");
+            assert!(!auth.contains("246810"));
+        }
     }
 }

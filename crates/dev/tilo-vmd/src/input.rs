@@ -883,43 +883,55 @@ mod tests {
     }
 
     #[test]
-    fn combos_press_in_order_and_release_in_reverse() {
-        let steps = events(&[InputAction::Key {
-            combos: vec!["ctrl+t".into()],
-        }])
-        .unwrap();
-        assert_eq!(
-            on(&steps, Device::Keyboard, EV_KEY),
-            [(29, 1), (20, 1), (20, 0), (29, 0)]
-        );
-        let evs = emitted(&steps);
-        assert!(evs.iter().all(|e| e.device == Device::Keyboard));
-        assert_eq!(evs.iter().filter(|e| e.kind == EV_SYN).count(), 4);
-    }
-
-    #[test]
-    fn typing_holds_shift_only_for_shifted_characters() {
-        let steps = events(&[InputAction::Type { text: "aB".into() }]).unwrap();
-        assert_eq!(
-            on(&steps, Device::Keyboard, EV_KEY),
-            [(30, 1), (30, 0), (42, 1), (48, 1), (48, 0), (42, 0)]
-        );
-    }
-
-    #[test]
-    fn clicks_move_first_and_use_the_pointer() {
-        let evs = emitted(
-            &events(&[InputAction::Click {
-                button: Button::Right,
-                at: Some((10, 20)),
+    fn input_events_press_type_click_and_route_per_slot() {
+        // Phase `combos_press_in_order_and_release_in_reverse`.
+        {
+            let steps = events(&[InputAction::Key {
+                combos: vec!["ctrl+t".into()],
             }])
-            .unwrap(),
-        );
-        assert!(evs.iter().all(|e| e.device == Device::Pointer));
-        assert_eq!(evs[0], ev(Device::Pointer, EV_ABS, ABS_X, 10));
-        assert_eq!(evs[1], ev(Device::Pointer, EV_ABS, ABS_Y, 20));
-        assert!(evs.contains(&ev(Device::Pointer, EV_KEY, 0x111, 1)));
-        assert_eq!(evs.last(), Some(&ev(Device::Pointer, EV_SYN, 0, 0)));
+            .unwrap();
+            assert_eq!(
+                on(&steps, Device::Keyboard, EV_KEY),
+                [(29, 1), (20, 1), (20, 0), (29, 0)]
+            );
+            let evs = emitted(&steps);
+            assert!(evs.iter().all(|e| e.device == Device::Keyboard));
+            assert_eq!(evs.iter().filter(|e| e.kind == EV_SYN).count(), 4);
+        }
+        // Phase `typing_holds_shift_only_for_shifted_characters`.
+        {
+            let steps = events(&[InputAction::Type { text: "aB".into() }]).unwrap();
+            assert_eq!(
+                on(&steps, Device::Keyboard, EV_KEY),
+                [(30, 1), (30, 0), (42, 1), (48, 1), (48, 0), (42, 0)]
+            );
+        }
+        // Phase `clicks_move_first_and_use_the_pointer`.
+        {
+            let evs = emitted(
+                &events(&[InputAction::Click {
+                    button: Button::Right,
+                    at: Some((10, 20)),
+                }])
+                .unwrap(),
+            );
+            assert!(evs.iter().all(|e| e.device == Device::Pointer));
+            assert_eq!(evs[0], ev(Device::Pointer, EV_ABS, ABS_X, 10));
+            assert_eq!(evs[1], ev(Device::Pointer, EV_ABS, ABS_Y, 20));
+            assert!(evs.contains(&ev(Device::Pointer, EV_KEY, 0x111, 1)));
+            assert_eq!(evs.last(), Some(&ev(Device::Pointer, EV_SYN, 0, 0)));
+        }
+        // Phase `modes_parse`.
+        {
+            assert_eq!(parse_mode("1024x768\n800x600\n"), Some((1024, 768)));
+            assert_eq!(parse_mode("1920x1080i\n"), Some((1920, 1080)));
+            assert_eq!(parse_mode(""), None);
+        }
+        // Phase `unit_and_socket_follow_the_slot`.
+        {
+            assert_eq!(unit_name("a"), "tilo-vm-input-a.service");
+            assert_eq!(socket_path("a"), Path::new("/run/tilo-vm-input/a.sock"));
+        }
     }
 
     #[test]
@@ -1124,18 +1136,5 @@ mod tests {
         assert!(steps.contains(&Step::WaitMs(250)));
         assert_eq!(stick_value(100), STICK_MAX);
         assert_eq!(stick_value(0), 0);
-    }
-
-    #[test]
-    fn modes_parse() {
-        assert_eq!(parse_mode("1024x768\n800x600\n"), Some((1024, 768)));
-        assert_eq!(parse_mode("1920x1080i\n"), Some((1920, 1080)));
-        assert_eq!(parse_mode(""), None);
-    }
-
-    #[test]
-    fn unit_and_socket_follow_the_slot() {
-        assert_eq!(unit_name("a"), "tilo-vm-input-a.service");
-        assert_eq!(socket_path("a"), Path::new("/run/tilo-vm-input/a.sock"));
     }
 }

@@ -107,40 +107,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn container_roundtrips_parts() {
-        let odt = minimal_odt("<text:p>hi</text:p>");
-        let c = OdtContainer::read(&odt).unwrap();
-        assert_eq!(c.parts[0].0, "mimetype", "mimetype must be the first entry");
-        assert_eq!(
-            c.get("mimetype").unwrap(),
-            b"application/vnd.oasis.opendocument.text"
-        );
-        assert!(c.get("content.xml").is_some());
+    fn container_parts_roundtrip_and_replace_in_place() {
+        // Phase `container_roundtrips_parts`.
+        {
+            let odt = minimal_odt("<text:p>hi</text:p>");
+            let c = OdtContainer::read(&odt).unwrap();
+            assert_eq!(c.parts[0].0, "mimetype", "mimetype must be the first entry");
+            assert_eq!(
+                c.get("mimetype").unwrap(),
+                b"application/vnd.oasis.opendocument.text"
+            );
+            assert!(c.get("content.xml").is_some());
 
-        let out = c.write().unwrap();
-        let c2 = OdtContainer::read(&out).unwrap();
-        let names1: Vec<_> = c.parts.iter().map(|(n, _)| n.clone()).collect();
-        let names2: Vec<_> = c2.parts.iter().map(|(n, _)| n.clone()).collect();
-        assert_eq!(names1, names2, "part set + order preserved");
-        assert_eq!(
-            c2.get("content.xml"),
-            c.get("content.xml"),
-            "content preserved verbatim"
-        );
-        assert_eq!(
-            c2.parts[0].0, "mimetype",
-            "mimetype still first after rewrite"
-        );
-    }
-
-    #[test]
-    fn set_replaces_in_place_and_appends() {
-        let mut c = OdtContainer { parts: vec![] };
-        c.set("a", b"1".to_vec());
-        c.set("b", b"2".to_vec());
-        c.set("a", b"3".to_vec());
-        assert_eq!(c.parts.len(), 2);
-        assert_eq!(c.get("a").unwrap(), b"3");
-        assert_eq!(c.parts[0].0, "a");
+            let out = c.write().unwrap();
+            let c2 = OdtContainer::read(&out).unwrap();
+            let names1: Vec<_> = c.parts.iter().map(|(n, _)| n.clone()).collect();
+            let names2: Vec<_> = c2.parts.iter().map(|(n, _)| n.clone()).collect();
+            assert_eq!(names1, names2, "part set + order preserved");
+            assert_eq!(
+                c2.get("content.xml"),
+                c.get("content.xml"),
+                "content preserved verbatim"
+            );
+            assert_eq!(
+                c2.parts[0].0, "mimetype",
+                "mimetype still first after rewrite"
+            );
+        }
+        // Phase `set_replaces_in_place_and_appends`.
+        {
+            let mut c = OdtContainer { parts: vec![] };
+            c.set("a", b"1".to_vec());
+            c.set("b", b"2".to_vec());
+            c.set("a", b"3".to_vec());
+            assert_eq!(c.parts.len(), 2);
+            assert_eq!(c.get("a").unwrap(), b"3");
+            assert_eq!(c.parts[0].0, "a");
+        }
     }
 }

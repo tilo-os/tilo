@@ -866,96 +866,6 @@ mod tests {
         (app, doc)
     }
 
-    /// Camera publishes capture/scanner/settings operations plus at most one
-    /// contextual handoff, never a media library management surface.
-    #[test]
-    fn published_resources_respect_camera_ownership() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        assert!(
-            resources.len() >= 3,
-            "capture, scanner, document scanner, settings, and Camera discovery"
-        );
-        let captures = resources
-            .iter()
-            .find(|resource| resource.id.as_str() == "camera.capture")
-            .expect("capture root");
-        assert_eq!(captures.kind, "camera.capture");
-        let browse = captures
-            .actions
-            .iter()
-            .find(|action| action.id == "open-photos")
-            .expect("capture surface routes browsing to Photos");
-        assert_eq!(
-            browse.operation_type.as_deref(),
-            Some(APPLICATION_LAUNCH_TYPE)
-        );
-        let ActionInput::Immediate(encoded) = &browse.input else {
-            panic!("Photos browse is a zero-argument application handoff");
-        };
-        let browse_payload: serde_json::Value =
-            serde_json::from_slice(&encoded.payload).expect("Photos handoff payload JSON");
-        assert_eq!(browse_payload["app_id"].as_str(), Some("so.tilo.photos"));
-        assert!(browse_payload.get("content_hash").is_none());
-        assert!(captures.children.len() <= 1);
-        for resource in &captures.children {
-            let action = resource
-                .actions
-                .iter()
-                .find(|action| action.id == "open")
-                .expect("capture has its typed open handoff");
-            assert_eq!(
-                action.operation_type.as_deref(),
-                Some(APPLICATION_LAUNCH_TYPE)
-            );
-            assert!(
-                !resource.actions.iter().any(|action| {
-                    matches!(action.id.as_str(), "favorite" | "share" | "delete-file")
-                }),
-                "Camera does not publish media-library management"
-            );
-            let ActionInput::Immediate(encoded) = &action.input else {
-                panic!("zero-argument handoff must be immediate");
-            };
-            let payload: serde_json::Value =
-                serde_json::from_slice(&encoded.payload).expect("handoff payload JSON");
-            assert!(matches!(
-                payload["app_id"].as_str(),
-                Some("so.tilo.photos" | "so.tilo.video-player")
-            ));
-            assert!(
-                payload["content_hash"]
-                    .as_str()
-                    .is_some_and(|hash| hash.len() == 64)
-            );
-        }
-        let ids: Vec<_> = resources
-            .iter()
-            .map(|resource| resource.id.as_str())
-            .collect();
-        assert!(ids.contains(&"camera.scanner"));
-        assert!(ids.contains(&"camera.document-scanner"));
-        assert!(ids.contains(&"camera.settings"));
-        assert!(
-            !ids.iter()
-                .any(|id| { matches!(*id, "so.tilo.photos.app" | "so.tilo.video-player.app") }),
-            "handoff applications are destinations on the current capture, never Camera roots"
-        );
-        assert!(
-            !ids.iter()
-                .any(|id| id.contains("gallery") || id.contains("library"))
-        );
-    }
-
-    #[test]
-    fn capture_handoff_destination_is_typed_and_kind_specific() {
-        assert_eq!(capture_destination(false), ("so.tilo.photos", "Photos"));
-        assert_eq!(
-            capture_destination(true),
-            ("so.tilo.video-player", "Video Player")
-        );
-    }
-
     /// The resource tree a sample Camera publishes once it has synced `doc`.
     fn published(doc: &AutoCommit) -> Vec<Resource> {
         let mut app = CameraApp::sample();
@@ -1019,166 +929,256 @@ mod tests {
     }
 
     #[test]
-    fn legacy_media_management_actions_are_decodable_but_refused() {
-        let mut doc = AutoCommit::new();
-        let action = CameraAction::RemoveCapture {
-            id: "IMG_refuse.jpg".into(),
-        };
-        assert!(matches!(
-            action.apply(&mut doc),
-            Err(ActionError::Refused(message)) if message.contains("Photos or Video Player")
-        ));
-        let favorite = CameraAction::SetFavorite {
-            id: "IMG_refuse.jpg".into(),
-            on: true,
-        };
-        assert!(matches!(
-            favorite.apply(&mut doc),
-            Err(ActionError::Refused(message)) if message.contains("Photos")
-        ));
-    }
-
-    #[test]
-    fn camera_root_is_a_local_reveal_operation_and_discoverable_resource() {
-        let resources = provide_resources(&CameraResourceCtx::default(), &AutoCommit::new());
-        let camera = resources
-            .iter()
-            .find(|resource| resource.id.as_str() == "camera")
-            .expect("camera discovery resource");
-        assert!(camera.actions.iter().any(|spec| spec.id == "open-scanner"));
-        let scanner = camera
-            .actions
-            .iter()
-            .find(|spec| spec.id == "open-scanner")
-            .expect("scanner reveal action");
-        assert_eq!(scanner.kind, OperationKind::View);
-    }
-
-    #[test]
-    fn ctrl_k_exposes_every_capture_preference() {
-        let resources = provide_resources(&CameraResourceCtx::default(), &AutoCommit::new());
-        let settings = resources
-            .iter()
-            .find(|resource| resource.id.as_str() == "camera.settings")
-            .expect("stable settings resource");
-        let ids: Vec<&str> = settings
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        for id in [
-            "resolution-4k",
-            "format-png",
-            "timer-3",
-            "grid",
-            "level",
-            "mirror-front",
-            "geotag",
-            "hdr",
-            "default-lens-front",
-        ] {
-            assert!(ids.contains(&id), "missing settings action {id}: {ids:?}");
+    fn published_resources_hand_captures_to_their_owners_and_refuse_library_management() {
+        // Phase `published_resources_respect_camera_ownership`.
+        // Camera publishes capture/scanner/settings operations plus at most one
+        // contextual handoff, never a media library management surface.
+        {
+            let (app, doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            assert!(
+                resources.len() >= 3,
+                "capture, scanner, document scanner, settings, and Camera discovery"
+            );
+            let captures = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == "camera.capture")
+                .expect("capture root");
+            assert_eq!(captures.kind, "camera.capture");
+            let browse = captures
+                .actions
+                .iter()
+                .find(|action| action.id == "open-photos")
+                .expect("capture surface routes browsing to Photos");
+            assert_eq!(
+                browse.operation_type.as_deref(),
+                Some(APPLICATION_LAUNCH_TYPE)
+            );
+            let ActionInput::Immediate(encoded) = &browse.input else {
+                panic!("Photos browse is a zero-argument application handoff");
+            };
+            let browse_payload: serde_json::Value =
+                serde_json::from_slice(&encoded.payload).expect("Photos handoff payload JSON");
+            assert_eq!(browse_payload["app_id"].as_str(), Some("so.tilo.photos"));
+            assert!(browse_payload.get("content_hash").is_none());
+            assert!(captures.children.len() <= 1);
+            for resource in &captures.children {
+                let action = resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "open")
+                    .expect("capture has its typed open handoff");
+                assert_eq!(
+                    action.operation_type.as_deref(),
+                    Some(APPLICATION_LAUNCH_TYPE)
+                );
+                assert!(
+                    !resource.actions.iter().any(|action| {
+                        matches!(action.id.as_str(), "favorite" | "share" | "delete-file")
+                    }),
+                    "Camera does not publish media-library management"
+                );
+                let ActionInput::Immediate(encoded) = &action.input else {
+                    panic!("zero-argument handoff must be immediate");
+                };
+                let payload: serde_json::Value =
+                    serde_json::from_slice(&encoded.payload).expect("handoff payload JSON");
+                assert!(matches!(
+                    payload["app_id"].as_str(),
+                    Some("so.tilo.photos" | "so.tilo.video-player")
+                ));
+                assert!(
+                    payload["content_hash"]
+                        .as_str()
+                        .is_some_and(|hash| hash.len() == 64)
+                );
+            }
+            let ids: Vec<_> = resources
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect();
+            assert!(ids.contains(&"camera.scanner"));
+            assert!(ids.contains(&"camera.document-scanner"));
+            assert!(ids.contains(&"camera.settings"));
+            assert!(
+                !ids.iter()
+                    .any(|id| { matches!(*id, "so.tilo.photos.app" | "so.tilo.video-player.app") }),
+                "handoff applications are destinations on the current capture, never Camera roots"
+            );
+            assert!(
+                !ids.iter()
+                    .any(|id| id.contains("gallery") || id.contains("library"))
+            );
         }
-    }
-
-    #[test]
-    fn device_effects_are_honest_and_unverified_captures_publish_no_action() {
-        let resources = provide_resources(
-            &CameraResourceCtx {
+        // Phase `capture_handoff_destination_is_typed_and_kind_specific`.
+        {
+            assert_eq!(capture_destination(false), ("so.tilo.photos", "Photos"));
+            assert_eq!(
+                capture_destination(true),
+                ("so.tilo.video-player", "Video Player")
+            );
+        }
+        // Phase `capture_surface_exposes_at_most_one_recent_handoff`.
+        {
+            let ctx = CameraResourceCtx {
                 recent: Some(CaptureItem {
-                    id: "IMG_1.jpg".into(),
-                    label: "Capture".into(),
+                    id: "IMG_latest.jpg".into(),
+                    label: "Latest capture".into(),
                     is_video: false,
-                    media_id: None,
+                    media_id: Some(format!("{}{:064x}", crate::media::MEDIA_PREFIX, 1)),
                 }),
                 ..CameraResourceCtx::default()
-            },
-            &AutoCommit::new(),
-        );
-        let capture = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "capture")
-            .unwrap();
-        assert_eq!(capture.kind, OperationKind::Effect);
-        assert!(
-            !capture.contract.availability.is_available(),
-            "a palette must not claim capture works without a feed"
-        );
-        assert!(resources[0].children[0].actions.is_empty());
-
-        let available = provide_resources(
-            &CameraResourceCtx {
-                feed_available: true,
-                ..CameraResourceCtx::default()
-            },
-            &AutoCommit::new(),
-        );
-        let capture = available[0]
-            .actions
-            .iter()
-            .find(|action| action.id == "capture")
-            .unwrap();
-        assert!(capture.contract.availability.is_available());
-    }
-
-    #[test]
-    fn unavailable_camera_publishes_real_recovery_operations() {
-        let resources = provide_resources(
-            &CameraResourceCtx {
-                camera_permission_denied: true,
-                camera_devices: vec!["/dev/video0".into(), "/dev/video2".into()],
-                ..CameraResourceCtx::default()
-            },
-            &AutoCommit::new(),
-        );
-        let actions = &resources[0].actions;
-        let ids: Vec<&str> = actions.iter().map(|action| action.id.as_str()).collect();
-        for id in [
-            "retry-camera",
-            "open-camera-privacy",
-            "camera-device-/dev/video0",
-            "camera-device-/dev/video2",
-        ] {
-            assert!(ids.contains(&id), "missing recovery action {id}: {ids:?}");
-        }
-        assert!(
-            actions
+            };
+            let doc = AutoCommit::new();
+            let page = provide_resources(&ctx, &doc);
+            assert_eq!(page[0].children.len(), 1);
+            let recent = resolve_resource(&ctx, &doc, "camera.photo:IMG_latest.jpg")
+                .expect("recent capture resolves");
+            let open = recent
+                .actions
                 .iter()
-                .filter(|action| {
-                    matches!(
-                        action.id.as_str(),
-                        "retry-camera"
-                            | "open-camera-privacy"
-                            | "camera-device-/dev/video0"
-                            | "camera-device-/dev/video2"
-                    )
-                })
-                .all(|action| action.kind == OperationKind::Effect)
-        );
+                .find(|action| action.id == "open")
+                .expect("capture has a canonical open action");
+            assert_eq!(open.kind, OperationKind::Effect);
+        }
+        // Phase `legacy_media_management_actions_are_decodable_but_refused`.
+        {
+            let mut doc = AutoCommit::new();
+            let action = CameraAction::RemoveCapture {
+                id: "IMG_refuse.jpg".into(),
+            };
+            assert!(matches!(
+                action.apply(&mut doc),
+                Err(ActionError::Refused(message)) if message.contains("Photos or Video Player")
+            ));
+            let favorite = CameraAction::SetFavorite {
+                id: "IMG_refuse.jpg".into(),
+                on: true,
+            };
+            assert!(matches!(
+                favorite.apply(&mut doc),
+                Err(ActionError::Refused(message)) if message.contains("Photos")
+            ));
+        }
     }
 
     #[test]
-    fn capture_surface_exposes_at_most_one_recent_handoff() {
-        let ctx = CameraResourceCtx {
-            recent: Some(CaptureItem {
-                id: "IMG_latest.jpg".into(),
-                label: "Latest capture".into(),
-                is_video: false,
-                media_id: Some(format!("{}{:064x}", crate::media::MEDIA_PREFIX, 1)),
-            }),
-            ..CameraResourceCtx::default()
-        };
-        let doc = AutoCommit::new();
-        let page = provide_resources(&ctx, &doc);
-        assert_eq!(page[0].children.len(), 1);
-        let recent = resolve_resource(&ctx, &doc, "camera.photo:IMG_latest.jpg")
-            .expect("recent capture resolves");
-        let open = recent
-            .actions
-            .iter()
-            .find(|action| action.id == "open")
-            .expect("capture has a canonical open action");
-        assert_eq!(open.kind, OperationKind::Effect);
+    fn provided_resources_are_honest_about_devices_and_expose_every_preference() {
+        // Phase `camera_root_is_a_local_reveal_operation_and_discoverable_resource`.
+        {
+            let resources = provide_resources(&CameraResourceCtx::default(), &AutoCommit::new());
+            let camera = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == "camera")
+                .expect("camera discovery resource");
+            assert!(camera.actions.iter().any(|spec| spec.id == "open-scanner"));
+            let scanner = camera
+                .actions
+                .iter()
+                .find(|spec| spec.id == "open-scanner")
+                .expect("scanner reveal action");
+            assert_eq!(scanner.kind, OperationKind::View);
+        }
+        // Phase `ctrl_k_exposes_every_capture_preference`.
+        {
+            let resources = provide_resources(&CameraResourceCtx::default(), &AutoCommit::new());
+            let settings = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == "camera.settings")
+                .expect("stable settings resource");
+            let ids: Vec<&str> = settings
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            for id in [
+                "resolution-4k",
+                "format-png",
+                "timer-3",
+                "grid",
+                "level",
+                "mirror-front",
+                "geotag",
+                "hdr",
+                "default-lens-front",
+            ] {
+                assert!(ids.contains(&id), "missing settings action {id}: {ids:?}");
+            }
+        }
+        // Phase `device_effects_are_honest_and_unverified_captures_publish_no_action`.
+        {
+            let resources = provide_resources(
+                &CameraResourceCtx {
+                    recent: Some(CaptureItem {
+                        id: "IMG_1.jpg".into(),
+                        label: "Capture".into(),
+                        is_video: false,
+                        media_id: None,
+                    }),
+                    ..CameraResourceCtx::default()
+                },
+                &AutoCommit::new(),
+            );
+            let capture = resources[0]
+                .actions
+                .iter()
+                .find(|a| a.id == "capture")
+                .unwrap();
+            assert_eq!(capture.kind, OperationKind::Effect);
+            assert!(
+                !capture.contract.availability.is_available(),
+                "a palette must not claim capture works without a feed"
+            );
+            assert!(resources[0].children[0].actions.is_empty());
+
+            let available = provide_resources(
+                &CameraResourceCtx {
+                    feed_available: true,
+                    ..CameraResourceCtx::default()
+                },
+                &AutoCommit::new(),
+            );
+            let capture = available[0]
+                .actions
+                .iter()
+                .find(|action| action.id == "capture")
+                .unwrap();
+            assert!(capture.contract.availability.is_available());
+        }
+        // Phase `unavailable_camera_publishes_real_recovery_operations`.
+        {
+            let resources = provide_resources(
+                &CameraResourceCtx {
+                    camera_permission_denied: true,
+                    camera_devices: vec!["/dev/video0".into(), "/dev/video2".into()],
+                    ..CameraResourceCtx::default()
+                },
+                &AutoCommit::new(),
+            );
+            let actions = &resources[0].actions;
+            let ids: Vec<&str> = actions.iter().map(|action| action.id.as_str()).collect();
+            for id in [
+                "retry-camera",
+                "open-camera-privacy",
+                "camera-device-/dev/video0",
+                "camera-device-/dev/video2",
+            ] {
+                assert!(ids.contains(&id), "missing recovery action {id}: {ids:?}");
+            }
+            assert!(
+                actions
+                    .iter()
+                    .filter(|action| {
+                        matches!(
+                            action.id.as_str(),
+                            "retry-camera"
+                                | "open-camera-privacy"
+                                | "camera-device-/dev/video0"
+                                | "camera-device-/dev/video2"
+                        )
+                    })
+                    .all(|action| action.kind == OperationKind::Effect)
+            );
+        }
     }
 }

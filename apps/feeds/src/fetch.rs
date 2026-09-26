@@ -499,77 +499,84 @@ impl tokio_rustls::rustls::client::danger::ServerCertVerifier for TofuVerifier {
 mod tests {
     use super::*;
 
+    /// Fetching derives site URLs, parses RSS bytes and polls the worker without blocking.
     #[test]
-    fn derive_site_url_drops_path() {
-        assert_eq!(
-            derive_site_url("https://blog.rust-lang.org/feed.xml"),
-            "https://blog.rust-lang.org"
-        );
-        assert_eq!(
-            derive_site_url("gemini://example.org/foo/bar"),
-            "gemini://example.org"
-        );
-    }
-
-    #[test]
-    fn worker_send_is_nonblocking_and_poll_drains() {
-        use std::time::Instant;
-
-        // A worker with no fetch thread. Enqueuing must be instant (no I/O).
-        let (mut w, res_tx) = FetchWorker::for_test();
-        let start = Instant::now();
-        for _ in 0..50 {
-            w.send(FetchRequest::Refresh {
-                feed_id: Uuid::new_v4(),
-                url: "https://example.invalid/feed.xml".into(),
-                kind: FeedKind::Rss,
-            });
+    fn fetch_parses_feeds_and_polls_the_worker_without_blocking() {
+        // --- phase: derive_site_url_drops_path ---
+        {
+            assert_eq!(
+                derive_site_url("https://blog.rust-lang.org/feed.xml"),
+                "https://blog.rust-lang.org"
+            );
+            assert_eq!(
+                derive_site_url("gemini://example.org/foo/bar"),
+                "gemini://example.org"
+            );
         }
-        // 50 enqueues with bogus URLs return in well under a frame budget,
-        // proving `send` never fetches.
-        assert!(start.elapsed().as_millis() < 50, "enqueue must not block");
-        assert_eq!(w.pending(), 50);
 
-        // Nothing drained yet.
-        assert!(w.poll().is_empty());
+        // --- phase: worker_send_is_nonblocking_and_poll_drains ---
+        {
+            fn worker_send_is_nonblocking_and_poll_drains() {
+                use std::time::Instant;
 
-        // A "worker thread" posts a result; the UI drains it non-blockingly.
-        let fid = Uuid::new_v4();
-        res_tx
-            .send(FetchResult::Articles {
-                feed_id: fid,
-                title: Some("T".into()),
-                articles: vec![],
-            })
-            .unwrap();
-        let drained = w.poll();
-        assert_eq!(drained.len(), 1);
-        assert_eq!(w.pending(), 49, "poll decrements the in-flight counter");
-        match &drained[0] {
-            FetchResult::Articles { feed_id, .. } => assert_eq!(*feed_id, fid),
-            _ => panic!("wrong result variant"),
+                // A worker with no fetch thread. Enqueuing must be instant (no I/O).
+                let (mut w, res_tx) = FetchWorker::for_test();
+                let start = Instant::now();
+                for _ in 0..50 {
+                    w.send(FetchRequest::Refresh {
+                        feed_id: Uuid::new_v4(),
+                        url: "https://example.invalid/feed.xml".into(),
+                        kind: FeedKind::Rss,
+                    });
+                }
+                // 50 enqueues with bogus URLs return in well under a frame budget,
+                // proving `send` never fetches.
+                assert!(start.elapsed().as_millis() < 50, "enqueue must not block");
+                assert_eq!(w.pending(), 50);
+
+                // Nothing drained yet.
+                assert!(w.poll().is_empty());
+
+                // A "worker thread" posts a result; the UI drains it non-blockingly.
+                let fid = Uuid::new_v4();
+                res_tx
+                    .send(FetchResult::Articles {
+                        feed_id: fid,
+                        title: Some("T".into()),
+                        articles: vec![],
+                    })
+                    .unwrap();
+                let drained = w.poll();
+                assert_eq!(drained.len(), 1);
+                assert_eq!(w.pending(), 49, "poll decrements the in-flight counter");
+                match &drained[0] {
+                    FetchResult::Articles { feed_id, .. } => assert_eq!(*feed_id, fid),
+                    _ => panic!("wrong result variant"),
+                }
+            }
+            worker_send_is_nonblocking_and_poll_drains();
         }
-    }
 
-    #[test]
-    fn parse_rss_bytes() {
-        let rss = r#"<?xml version="1.0"?>
+        // --- phase: parse_rss_bytes ---
+        {
+            let rss = r#"<?xml version="1.0"?>
         <rss version="2.0"><channel>
           <title>Test Feed</title>
           <item><title>First</title><link>https://x.com/1</link>
             <description>&lt;p&gt;Hello world&lt;/p&gt;</description>
             <pubDate>Mon, 30 Jun 2025 12:00:00 GMT</pubDate></item>
         </channel></rss>"#;
-        let (title, articles) = parse_http_feed(rss.as_bytes()).unwrap();
-        assert_eq!(title.as_deref(), Some("Test Feed"));
-        assert_eq!(articles.len(), 1);
-        assert_eq!(articles[0].title, "First");
-        assert_eq!(articles[0].url, "https://x.com/1");
-        assert!(
-            articles[0]
-                .blocks
-                .iter()
-                .any(|b| b.text.contains("Hello world"))
-        );
+            let (title, articles) = parse_http_feed(rss.as_bytes()).unwrap();
+            assert_eq!(title.as_deref(), Some("Test Feed"));
+            assert_eq!(articles.len(), 1);
+            assert_eq!(articles[0].title, "First");
+            assert_eq!(articles[0].url, "https://x.com/1");
+            assert!(
+                articles[0]
+                    .blocks
+                    .iter()
+                    .any(|b| b.text.contains("Hello world"))
+            );
+        }
     }
 }

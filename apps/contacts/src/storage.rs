@@ -92,34 +92,38 @@ mod tests {
         ))
     }
 
-    /// The migration reader must recover every field an old file carried,
-    /// or upgrading would silently drop half of each contact.
+    /// The legacy reader recovers every field and a missing file loads as empty.
     #[test]
-    fn the_legacy_reader_recovers_every_field() {
-        let dir = scratch_dir();
-        let path = dir.join("addressbook.automerge");
-        let book = sample_contacts();
-        save(&path, &book).expect("save");
+    fn legacy_storage_reader_recovers_fields_and_tolerates_absence() {
+        // --- phase: the_legacy_reader_recovers_every_field ---
+        // The migration reader must recover every field an old file carried,
+        // or upgrading would silently drop half of each contact.
+        {
+            let dir = scratch_dir();
+            let path = dir.join("addressbook.automerge");
+            let book = sample_contacts();
+            save(&path, &book).expect("save");
 
-        let loaded = load(&path);
-        assert_eq!(loaded.len(), book.len());
-        // Match by id (order is not significant on read).
-        for original in &book {
-            let back = loaded
-                .iter()
-                .find(|c| c.id == original.id)
-                .expect("every contact loads back by its stable id");
-            assert_eq!(back.first, original.first);
-            assert_eq!(back.favorite, original.favorite, "favorite flag survives");
-            assert_eq!(back.phones, original.phones);
-            assert_eq!(back.groups, original.groups);
+            let loaded = load(&path);
+            assert_eq!(loaded.len(), book.len());
+            // Match by id (order is not significant on read).
+            for original in &book {
+                let back = loaded
+                    .iter()
+                    .find(|c| c.id == original.id)
+                    .expect("every contact loads back by its stable id");
+                assert_eq!(back.first, original.first);
+                assert_eq!(back.favorite, original.favorite, "favorite flag survives");
+                assert_eq!(back.phones, original.phones);
+                assert_eq!(back.groups, original.groups);
+            }
+            let _ = std::fs::remove_dir_all(&dir);
         }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
-    #[test]
-    fn load_missing_file_is_empty_not_error() {
-        let path = scratch_dir().join("nope.automerge");
-        assert!(load(&path).is_empty());
+        // --- phase: load_missing_file_is_empty_not_error ---
+        {
+            let path = scratch_dir().join("nope.automerge");
+            assert!(load(&path).is_empty());
+        }
     }
 }
