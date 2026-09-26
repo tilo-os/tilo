@@ -368,6 +368,9 @@ impl State {
     }
 
     pub fn set_client_keyboard_focus(&mut self, surface_id: Option<u64>) {
+        // A tile showing a dialog sheet types into the sheet, not the window it belongs to.
+        let surface_id =
+            surface_id.map(|id| crate::compositor::foreign::store().keyboard_target(id));
         if self.client_input.keyboard_focus == surface_id {
             return;
         }
@@ -759,16 +762,24 @@ pub fn touch_target(
     if !state.client_input.surfaces.contains_key(&hit.surface_id) {
         return None;
     }
-    let origin = crate::compositor::foreign::store().surface_origin(hit.surface_id, hit.rect);
-    let local_x = *x - origin.0;
-    let local_y = *y - origin.1;
-    Some(
-        crate::compositor::foreign::store()
-            .child_at(hit.surface_id, local_x, local_y)
-            .map_or((hit.surface_id, origin), |(child, child_x, child_y)| {
-                (child, (*x - child_x, *y - child_y))
-            }),
-    )
+    route_tile_point(hit.surface_id, hit.rect, (*x, *y))
+}
+
+/// The surface a global point on a foreign tile reaches and that surface's
+/// global origin: the tile's toplevel, one of its subsurfaces, or a sheet
+/// over it. `None` when a modal sheet swallows the point.
+fn route_tile_point(root: u64, tile: Rect, (x, y): (f64, f64)) -> Option<(u64, (f64, f64))> {
+    let store = crate::compositor::foreign::store();
+    let origin = store.surface_origin(root, tile);
+    match store.route_point(root, x - origin.0, y - origin.1) {
+        crate::compositor::foreign::PointRoute::Root => Some((root, origin)),
+        crate::compositor::foreign::PointRoute::Surface {
+            surface,
+            x: local_x,
+            y: local_y,
+        } => Some((surface, (x - local_x, y - local_y))),
+        crate::compositor::foreign::PointRoute::Blocked => None,
+    }
 }
 
 /// Direct touch follows the same click-to-focus policy as pointer input.
@@ -1758,16 +1769,7 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
 /// Push the current cursor position at `hit` (or clear client focus when `None`), producing the enter/motion/leave sequence.
 fn deliver_pointer(state: &mut State, hit: Option<TileHit>) {
     let global = state.client_input.cursor();
-    let target = hit.map(|h| {
-        let origin = crate::compositor::foreign::store().surface_origin(h.surface_id, h.rect);
-        let local_x = global.0 - origin.0;
-        let local_y = global.1 - origin.1;
-        crate::compositor::foreign::store()
-            .child_at(h.surface_id, local_x, local_y)
-            .map_or((h.surface_id, origin), |(child, x, y)| {
-                (child, (global.0 - x, global.1 - y))
-            })
-    });
+    let target = hit.and_then(|h| route_tile_point(h.surface_id, h.rect, global));
     if state.selection.dnd_active {
         tracing::debug!(
             target: "shell::selection",
