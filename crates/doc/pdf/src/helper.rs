@@ -5,10 +5,11 @@
 //!
 //! 1. arranges to die with its parent and closes every inherited descriptor
 //!    except the socket and stderr;
-//! 2. loads pdfium (the only file it maps besides system fonts);
+//! 2. loads pdfium;
 //! 3. caps core dumps and descriptors;
-//! 4. confines itself with Landlock — read-only access to the library and
-//!    the system font directories, nothing else, and no TCP;
+//! 4. confines itself with Landlock — read-only access to the library, the
+//!    system font directories and the pinned font catalog appearance text is
+//!    set in, nothing else, and no TCP;
 //! 5. installs the seccomp parser policy — no sockets of any family, no
 //!    connect/bind, no exec, write-xor-execute memory.
 //!
@@ -53,8 +54,12 @@ fn start(channel: &mut Channel) -> Result<Engine, (FailureKind, String)> {
     let library = Library::load().map_err(engine)?;
     let lib_path = library.path().to_path_buf();
     limit_resources().map_err(engine)?;
-    confine_filesystem(&lib_path).map_err(sandbox)?;
+    let catalog = tilo_font_catalog::locate().and_then(|root| root.canonicalize().ok());
+    confine_filesystem(&lib_path, catalog.as_deref()).map_err(sandbox)?;
     confine_syscalls().map_err(sandbox)?;
+    if let Some(root) = catalog {
+        crate::font::use_catalog(root);
+    }
     channel
         .send(&Response::Ready {
             version: PROTOCOL_VERSION,
@@ -105,13 +110,19 @@ fn limit_resources() -> Result<(), String> {
     Ok(())
 }
 
-fn confine_filesystem(lib_path: &std::path::Path) -> Result<(), String> {
+fn confine_filesystem(
+    lib_path: &std::path::Path,
+    catalog: Option<&std::path::Path>,
+) -> Result<(), String> {
     use sandbox_core::landlock::{
         FS_ABI, LandlockOutcome, NetRestriction, RulesetSpec, access_plan, outcome_from_status,
         restrict_self,
     };
     let mut read_only: Vec<PathBuf> = vec![lib_path.to_path_buf()];
     read_only.extend(font_directories().into_iter().filter(|d| d.is_dir()));
+    // The image installs the catalog inside a system font directory, which
+    // already covers it; a development run reads the checkout's copy.
+    read_only.extend(catalog.map(std::path::Path::to_path_buf));
     let spec = RulesetSpec::application(
         access_plan(&read_only, &[], FS_ABI),
         NetRestriction::DenyAll,

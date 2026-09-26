@@ -76,6 +76,7 @@ xdg-paths = { path = "../../system/xdg-paths" }
 private-fs = { path = "../../system/private-fs" }
 advisory-lock = { path = "../../system/advisory-lock" }
 tilo-ui-graph = { path = "../../dev/ui-graph" }
+tilo-font-catalog = { path = "../font-catalog" }
 atomic-file = { path = "../../system/atomic-file" }
 settings-store = { path = "../../system/settings-store" }
 # Parses the portal's returned file URIs. Non-optional:

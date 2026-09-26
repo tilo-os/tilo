@@ -442,10 +442,11 @@ readers = ["crates/doc/qdoc-codecs/src/bulk_equivalence.rs", "crates/doc/qdoc-co
            "crates/doc/qdoc-codecs/tests/binary_inputs.rs"]
 
 [[cargo]]
-package = "tilo-pdf"
-# The helper compiles in the pinned fonts appearance text is set in.
+package = "tilo-font-catalog"
+# Compiles in the catalog's manifest and verifies the checkout's copy; the PDF
+# helper reads the fonts through it.
 inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["crates/doc/pdf/src/bin/tilo-pdf-helper.rs"]
+readers = ["crates/sdk/font-catalog/src/lib.rs"]
 
 [[cargo]]
 package = "pdf-viewer"
