@@ -277,6 +277,8 @@ enum AccessibleOverlay {
     NowPlaying,
     ShortcutHelp,
     DisplayLayouts,
+    /// Keep or revert a display tool's change; above everything while up.
+    DisplayConfirmation,
 }
 
 /// The result of asking whether the global Print Screen shortcut may change
@@ -837,6 +839,8 @@ pub struct ShellOverlayHost {
     /// Numbered cards painted on every display when Settings asks which
     /// screen is which.
     display_identify: crate::shell::display_identify::DisplayIdentify,
+    /// Keep or revert a display change a layout tool made, on every display.
+    display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt,
     /// Shared toolkit capture selector. The shell only hosts it and drains
     /// semantic intents; compositor readback/encoding stays below this layer.
     capture_studio: ui::widget::CaptureStudio,
@@ -1919,6 +1923,9 @@ impl ShellOverlayHost {
     fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
         let mut order = Vec::with_capacity(7);
         let flags = self.overlay_flags();
+        if self.display_confirm.visible() {
+            order.push(AccessibleOverlay::DisplayConfirmation);
+        }
         // The display sheet is modal and drawn above every other overlay.
         if flags.projection {
             order.push(AccessibleOverlay::DisplayLayouts);
@@ -2355,6 +2362,7 @@ impl ShellOverlayHost {
             collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: inputs.projection_overlay,
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
+            display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt::default(),
             followed_peer: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
@@ -3602,6 +3610,50 @@ impl ShellOverlayHost {
             chrome.borrow_mut().bump();
         }
         started
+    }
+
+    /// Ask the person to keep or revert display transaction `transaction`,
+    /// which a layout tool applied. Settings and the Super+P sheet ask in
+    /// their own UI; this is for changes from anywhere else.
+    pub fn show_display_confirmation(
+        &mut self,
+        transaction: u64,
+        tool: Option<settings_store::display_tools::DisplayTool>,
+    ) {
+        self.display_confirm.show(transaction, tool, Instant::now());
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+    }
+
+    /// Whether the keep-or-revert prompt for a tool's display change is up.
+    /// It owns the keyboard and pointer while it is.
+    pub fn display_confirmation_visible(&self) -> bool {
+        self.display_confirm.visible()
+    }
+
+    /// Re-read the transaction the prompt asks about now: close it if it
+    /// was answered elsewhere, revert it if its time ran out. Returns
+    /// whether the prompt closed.
+    pub fn poll_display_confirmation(&mut self) -> bool {
+        let closed = self.display_confirm.poll(Instant::now(), true);
+        if closed && let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+        closed
+    }
+
+    /// Where the prompt's card sits on each display.
+    pub fn display_confirmation_cards(&self) -> Vec<crate::shell::display_confirm::ConfirmCard> {
+        self.display_confirm.cards(&self.display_confirm_outputs())
+    }
+
+    fn display_confirm_outputs(&self) -> Vec<Rect> {
+        if self.outputs.is_empty() {
+            vec![self.rect]
+        } else {
+            self.outputs.iter().map(OutputGeometry::rect).collect()
+        }
     }
 
     /// The identify cards on screen right now, one per display.
@@ -16094,6 +16146,21 @@ impl Widget for ShellOverlayHost {
                 return;
             }
         }
+        // A display tool's change waits for Keep or Revert, possibly with a
+        // screen blanked: the answer comes before any other surface.
+        if self.display_confirm.visible() {
+            let outputs = self.display_confirm_outputs();
+            if self
+                .display_confirm
+                .handle_event(event, self.last_cursor, &outputs)
+            {
+                *handled = true;
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                return;
+            }
+        }
         if let Some((_, display)) = self.personal_display.as_mut() {
             display.handle_event(
                 event,
@@ -17293,6 +17360,14 @@ impl Widget for ShellOverlayHost {
                 AccessibleOverlay::DisplayLayouts => {
                     root.children.push(self.projection_overlay.accessibility());
                 }
+                AccessibleOverlay::DisplayConfirmation => {
+                    if let Some(prompt) = self
+                        .display_confirm
+                        .accessibility(&self.display_confirm_outputs())
+                    {
+                        root.children.push(prompt);
+                    }
+                }
                 AccessibleOverlay::ShortcutHelp => {
                     use settings_store::hardware::ShortcutAction;
                     let shortcuts = &self.shortcut_config;
@@ -17501,7 +17576,8 @@ impl Widget for ShellOverlayHost {
             AccessibleOverlay::NowPlaying => self.now_playing_accessibility_rect(child_path),
             AccessibleOverlay::MemberSheet
             | AccessibleOverlay::ShortcutHelp
-            | AccessibleOverlay::DisplayLayouts => None,
+            | AccessibleOverlay::DisplayLayouts
+            | AccessibleOverlay::DisplayConfirmation => None,
         }
     }
 
@@ -17543,7 +17619,8 @@ impl Widget for ShellOverlayHost {
             AccessibleOverlay::Overview
             | AccessibleOverlay::MemberSheet
             | AccessibleOverlay::ShortcutHelp
-            | AccessibleOverlay::DisplayLayouts => false,
+            | AccessibleOverlay::DisplayLayouts
+            | AccessibleOverlay::DisplayConfirmation => false,
         }
     }
 
@@ -17712,7 +17789,8 @@ impl ShellOverlayHost {
         let room_replay_in_flight = self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
         let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)
-            || self.display_identify.needs_frame(now);
+            || self.display_identify.needs_frame(now)
+            || self.display_confirm.needs_frame();
         let sidebar_frame = self
             .sidebar
             .as_ref()
@@ -18528,6 +18606,14 @@ impl ShellOverlayHost {
         self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
         self.display_identify
             .draw(scene, transform, text_renderer, theme, Instant::now());
+        if self.display_confirm.poll(Instant::now(), false)
+            && let Some(chrome) = self.chrome.as_ref()
+        {
+            chrome.borrow_mut().bump();
+        }
+        let outputs = self.display_confirm_outputs();
+        self.display_confirm
+            .draw(scene, transform, text_renderer, theme, &outputs);
     }
 
     /// Ribbon and rail sit below Quick Settings and every popover.

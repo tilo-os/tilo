@@ -999,7 +999,7 @@ impl ProjectionOverlay {
     /// Height of the Keep/Revert band: a title line and a status line with
     /// the two buttons beside them.
     fn confirm_band_height() -> f64 {
-        76.0
+        crate::shell::display_confirm::BAND_HEIGHT
     }
 
     /// Receiver rows are 56 px with an 8 px gap between them.
@@ -1293,78 +1293,26 @@ impl ProjectionOverlay {
             top + Self::confirm_band_height(),
         );
         if self.confirming() {
-            let radius = ui::chrome::ChromeRole::Control.radius(theme, band.height());
-            let floor = colors.lift(0.35);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                floor,
-                None,
-                &RoundedRect::from_rect(band, radius),
+            let status = crate::shell::display_confirm::countdown_status(
+                self.displays.seconds_left(tilo_clock::unix_now_ms()),
             );
-            text_renderer.draw_text_weighted(
+            let focus = match self.focus {
+                SheetFocus::Keep => Some(crate::shell::display_confirm::BandFocus::Keep),
+                SheetFocus::Revert => Some(crate::shell::display_confirm::BandFocus::Revert),
+                SheetFocus::Layout(_) | SheetFocus::Receivers => None,
+            };
+            let buttons = crate::shell::display_confirm::paint_keep_revert_band(
                 scene,
+                transform,
+                text_renderer,
+                theme,
+                band,
                 &t("display-confirm-title"),
-                type_scale.sm,
-                colors.text_primary,
-                transform.pre_translate((band.x0 + 14.0, band.y0 + 12.0).into()),
-                Some(f64_to_f32_lossy(band.width() - 190.0)),
-                TextWeight::Medium,
-            );
-            let status = self
-                .displays
-                .seconds_left(tilo_clock::unix_now_ms())
-                .map_or_else(
-                    || t("display-confirm-applying"),
-                    |seconds| {
-                        let seconds = f64::from(u32::try_from(seconds).unwrap_or(u32::MAX));
-                        t_args(
-                            "display-confirm-countdown",
-                            &[("seconds", ArgValue::Number(seconds))],
-                        )
-                    },
-                );
-            text_renderer.draw_text(
-                scene,
                 &status,
-                type_scale.xs,
-                colors.text_dim,
-                transform.pre_translate((band.x0 + 14.0, band.y0 + 42.0).into()),
-                Some(f64_to_f32_lossy(band.width() - 190.0)),
+                focus,
             );
-            self.revert_rect = Rect::new(
-                band.x1 - 86.0,
-                band.y0 + 20.0,
-                band.x1 - 12.0,
-                band.y1 - 20.0,
-            );
-            self.keep_rect = Rect::new(
-                self.revert_rect.x0 - 82.0,
-                band.y0 + 20.0,
-                self.revert_rect.x0 - 8.0,
-                band.y1 - 20.0,
-            );
-            let keep = t("display-confirm-keep");
-            let revert = t("display-confirm-revert");
-            ui::widget::Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ui::widget::ButtonFace::new(self.keep_rect, &keep)
-                    .style(ui::widget::ButtonStyle::Primary)
-                    .text_size(type_scale.sm)
-                    .focused(self.focus == SheetFocus::Keep),
-            );
-            ui::widget::Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ui::widget::ButtonFace::new(self.revert_rect, &revert)
-                    .text_size(type_scale.sm)
-                    .focused(self.focus == SheetFocus::Revert),
-            );
+            self.keep_rect = buttons.keep;
+            self.revert_rect = buttons.revert;
         } else if let Some(reason) = self.displays.rejection() {
             let message = t_args("display-rejected", &[("reason", ArgValue::Text(reason))]);
             text_renderer.draw_text(

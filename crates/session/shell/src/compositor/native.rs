@@ -399,6 +399,17 @@ fn wayland_peer_credentials(stream: &UnixStream) -> Option<libc::ucred> {
     (credentials.pid > 0).then_some(credentials)
 }
 
+/// The executable of the process on the other end of `stream`, as the
+/// kernel reports it — the identity a trusted display tool is keyed by.
+fn peer_executable(stream: &UnixStream) -> Option<String> {
+    let credentials = wayland_peer_credentials(stream)?;
+    std::fs::read_link(format!("/proc/{}/exe", credentials.pid))
+        .ok()?
+        .into_os_string()
+        .into_string()
+        .ok()
+}
+
 fn peer_shares_host_security_namespaces(pid: u32) -> bool {
     ["user", "mnt"].into_iter().all(|namespace| {
         let host = std::fs::metadata(format!("/proc/self/ns/{namespace}"));
@@ -5870,9 +5881,10 @@ pub fn run() {
             if let Err(err) = event_loop.handle().insert_source(
                 privileged_socket,
                 move |client_stream, (), state| {
+                    let executable = peer_executable(&client_stream);
                     if let Err(err) = state
                         .display_handle
-                        .insert_client(client_stream, ClientState::privileged_arc())
+                        .insert_client(client_stream, ClientState::privileged_tool_arc(executable))
                     {
                         eprintln!("tilo compositor: failed to insert privileged client: {err}");
                     }
@@ -7152,14 +7164,10 @@ pub fn run() {
         {
             backend.set_device_rotation(Some(rotation));
         }
-        if state.output_management.take_staged_by_tool() {
-            frame_builder.with_chrome(|chrome| {
-                chrome.push_notification(
-                    "Keep the new display layout?",
-                    "A display tool changed your screens. Choose Keep in Settings › Displays \
-                     within 15 seconds, or the previous layout comes back.",
-                );
-            });
+        if let Some(confirmation) = state.output_management.take_confirmation() {
+            frame_builder
+                .host_mut()
+                .show_display_confirmation(confirmation.transaction, confirmation.tool);
         }
 
         // Re-derive everything depending on the output set once, after the whole

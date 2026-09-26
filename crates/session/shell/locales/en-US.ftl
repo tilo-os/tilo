@@ -36,6 +36,12 @@ display-confirm-keep = Keep
 display-confirm-revert = Revert
 display-rejected = Couldn't apply this layout: { $reason }
 
+# Keep or revert a change a display tool (kanshi, wlr-randr) made
+display-confirm-tool-title = Keep the display settings { $tool } applied?
+display-confirm-tool-unknown-title = Keep the display settings a tool applied?
+display-confirm-always = Always keep changes from { $tool }
+display-confirm-a11y-description = A display tool changed your screens. Enter keeps the change, Escape restores the previous layout.
+
 # Wireless receivers, the lower section of the same sheet
 wireless-heading = Wireless displays
 wireless-share-audio = Share audio

@@ -84,7 +84,8 @@ pub fn interval_to_mhz(interval: std::time::Duration) -> Option<u32> {
 /// data leave it empty and the advertiser falls back to generic values.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OutputIdentity {
-    /// Connector name, e.g. `DP-2`; also the `wl_output` name.
+    /// Connector key, e.g. `DP-2` — qualified by card when two GPUs share
+    /// a connector name; also the `wl_output` name and the head name.
     pub connector: String,
     pub make: String,
     pub model: String,

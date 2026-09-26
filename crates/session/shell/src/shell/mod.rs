@@ -50,6 +50,7 @@ pub(crate) mod desktop_continuation;
 pub mod device_fabric;
 pub mod device_fabric_runtime;
 pub mod device_fabric_secrets;
+pub mod display_confirm;
 pub mod display_identify;
 pub mod doc_open;
 pub mod editor_app;

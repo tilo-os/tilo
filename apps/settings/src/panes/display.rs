@@ -634,6 +634,13 @@ impl DisplayPane {
                 let _ = state.put(root, output_key(connector, "x"), i64::from(*x));
                 let _ = state.put(root, output_key(connector, "y"), i64::from(*y));
             }
+            Op::ForgetDisplayTool { executable } => {
+                self.finish_display_operation(
+                    settings_store::display_tools::TrustedDisplayTools::forget(executable)
+                        .map(|()| crate::i18n::t("display-tools-forgotten"))
+                        .map_err(|error| format!("The display tool was not forgotten: {error}")),
+                );
+            }
             Op::Identify => {
                 self.finish_display_operation(
                     settings_store::display_identify::IdentifyRequest::request()
@@ -719,6 +726,9 @@ impl DisplayPane {
             cards.push(self.build_output_card(index, output, &connected));
         }
         cards.push(self.build_safety_card());
+        if let Some(tools) = Self::build_trusted_tools_card() {
+            cards.push(tools);
+        }
         cards.push(brightness);
         crate::widgets::cards(cards)
     }
@@ -1370,6 +1380,33 @@ impl DisplayPane {
                 rows(vec![caption("No unapplied display changes.")]),
             ),
         }
+    }
+
+    /// Layout tools whose display changes are kept without asking, each
+    /// with a way to be asked again. Absent while no tool is trusted.
+    fn build_trusted_tools_card() -> Option<El> {
+        let trusted = settings_store::display_tools::TrustedDisplayTools::load();
+        if trusted.tools.is_empty() {
+            return None;
+        }
+        let mut content = vec![caption(&crate::i18n::t("display-tools-caption"))];
+        for tool in &trusted.tools {
+            let Some(binding) = crate::actions::display_tool_forget_binding(tool) else {
+                continue;
+            };
+            content.push(setting_row(
+                tool.name(),
+                Box::new(
+                    Button::new(
+                        "settings.display.tool.forget",
+                        &crate::i18n::t("display-tools-forget"),
+                        None,
+                    )
+                    .on_action(binding),
+                ),
+            ));
+        }
+        Some(card(&crate::i18n::t("display-tools-title"), rows(content)))
     }
 
     /// Load prefs fresh, apply `f` to the display section, persist.
@@ -2790,6 +2827,34 @@ mod tests {
             Some(settings_store::display_identify::IDENTIFY_MS),
             "a fresh request shows the numbers for the whole identify window"
         );
+    }
+
+    #[test]
+    fn a_trusted_display_tool_is_listed_and_can_be_asked_again() {
+        use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        assert!(DisplayPane::build_trusted_tools_card().is_none());
+        let kanshi = DisplayTool::new("/usr/bin/kanshi");
+        TrustedDisplayTools::trust(kanshi.clone()).expect("trust");
+        assert!(DisplayPane::build_trusted_tools_card().is_some());
+        let section = crate::actions::displays_section(&AutoCommit::new(), &SystemPrefs::default());
+        assert!(
+            section.children.iter().any(|resource| {
+                resource.id.0 == "settings.display-tool:/usr/bin/kanshi"
+                    && resource.actions.iter().any(|action| action.id == "forget")
+            }),
+            "revoking is an action, not only a button"
+        );
+
+        let mut pane = laptop_with_monitor_pane();
+        pane.execute_local_command(
+            &mut AutoCommit::new(),
+            crate::actions::DisplayOperation::ForgetDisplayTool {
+                executable: kanshi.executable.clone(),
+            },
+        );
+        assert!(!TrustedDisplayTools::load().contains(&kanshi));
+        assert!(DisplayPane::build_trusted_tools_card().is_none());
     }
 
     #[test]

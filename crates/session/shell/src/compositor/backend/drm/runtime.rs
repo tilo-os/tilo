@@ -1387,8 +1387,10 @@ impl DrmDispatchState {
                             .filter(|profile| self.color_profiles.contains_key(*profile))
                             .cloned(),
                         refresh_mhz: l.refresh.and_then(crate::compositor::backend::interval_to_mhz),
+                        // The collision-free key, so the `wl_output` name
+                        // is the output-management head's name.
                         identity: OutputIdentity::from_monitor(
-                            &l.connector_name,
+                            &l.config_key,
                             l.monitor.as_ref(),
                             l.physical_mm,
                         ),

@@ -444,6 +444,10 @@ pub enum DisplayOperation {
     Apply,
     Confirm,
     Revert,
+    /// Ask again before keeping display changes from this layout tool.
+    ForgetDisplayTool {
+        executable: String,
+    },
 }
 
 /// Process-local delivery envelope for device effects. This value is never
@@ -2617,7 +2621,7 @@ pub fn audio_stream_bool_binding(
     clippy::too_many_lines,
     reason = "resource tree mirrors display capability hierarchy"
 )]
-fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
+pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
     let mut sec = Resource::new(
         pane_resource_id(Category::Displays),
         "settings.section",
@@ -2993,7 +2997,44 @@ fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
             sec = sec.with_action(action);
         }
     }
+    for tool in settings_store::display_tools::TrustedDisplayTools::load()
+        .tools
+        .iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
+        sec = sec.with_child(display_tool_resource(tool));
+    }
     sec
+}
+
+/// The resource for one trusted display tool, carrying its `forget` action.
+fn display_tool_resource(tool: &settings_store::display_tools::DisplayTool) -> Resource {
+    let resource = Resource::new(
+        format!("settings.display-tool:{}", tool.executable),
+        "settings.display-tool",
+        tool.name().to_string(),
+    );
+    match local_operation_spec(
+        "forget",
+        "Ask before keeping this tool's display changes",
+        OperationKind::Effect,
+        DISPLAY_OPERATION_TYPE,
+        &DisplayOperation::ForgetDisplayTool {
+            executable: tool.executable.clone(),
+        },
+        &["device-local", "display", "trusted-tool"],
+    ) {
+        Some(action) => resource.with_action(action),
+        None => resource,
+    }
+}
+
+/// Binding for a trusted tool's "Ask again" button: the same `forget`
+/// action an agent or script invokes.
+pub fn display_tool_forget_binding(
+    tool: &settings_store::display_tools::DisplayTool,
+) -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(&display_tool_resource(tool), "forget").ok()
 }
 
 fn display_control_resource(action: ActionSpec) -> Resource {
