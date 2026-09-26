@@ -46,11 +46,13 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 pub mod continuity;
+pub mod day_schedule;
 pub mod display_identify;
 pub mod display_mode;
 pub mod hardware;
 pub mod notification_policy;
 pub mod roaming_provenance;
+pub mod system_sounds;
 #[cfg(feature = "watch")]
 pub mod watch;
 

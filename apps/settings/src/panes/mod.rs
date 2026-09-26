@@ -35,6 +35,7 @@ pub mod personal_apps;
 pub mod power;
 pub mod printers;
 pub mod region;
+pub mod speakers;
 pub mod storage;
 pub mod time_date;
 pub mod updates;

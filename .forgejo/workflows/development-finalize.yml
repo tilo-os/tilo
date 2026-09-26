@@ -116,6 +116,14 @@ jobs:
           registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
+      # The build guest pushes with a copy of these credentials, so it gets a
+      # static registry.tilo.so entry: the job's ID token (valid one hour).
+      - name: Log in to registry.tilo.so for the build guest
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Finalize only, with operator-bound external signing
         timeout-minutes: 270
         env:

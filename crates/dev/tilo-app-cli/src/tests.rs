@@ -3851,6 +3851,10 @@ fn dev_restart_filter_ignores_build_and_editor_noise() {
         &changed("assets/new-directory"),
         &roots
     ));
+    assert!(
+        !event_requires_restart(&changed("ui/main.json"), &roots),
+        "serialized screens hot-reload without a process restart"
+    );
     assert!(!event_requires_restart(
         &changed("target/debug/demo"),
         &roots
@@ -3865,6 +3869,15 @@ fn dev_restart_filter_ignores_build_and_editor_noise() {
     let access = Event::new(EventKind::Access(notify::event::AccessKind::Any))
         .add_path(root.join("src/main.rs"));
     assert!(!event_requires_restart(&access, &roots));
+}
+
+#[test]
+fn dev_session_dir_is_stable_and_outside_the_app_tree() {
+    let app = PathBuf::from("/workspace/apps/demo");
+    let session = dev_session_dir(&app);
+    assert_eq!(session, dev_session_dir(&app));
+    assert!(session.starts_with(std::env::temp_dir()));
+    assert_ne!(session, app);
 }
 
 #[test]
@@ -3948,6 +3961,218 @@ fn dev_candidate_build_selects_default_binary_and_reports_failures() {
     })
     .unwrap_err();
     assert!(error.to_string().contains("exit status: 9"), "{error:#}");
+}
+
+#[test]
+#[cfg(unix)]
+fn dev_build_cancels_when_a_newer_source_edit_arrives() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let app = temp.path().join("app");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(
+        app.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\ndefault-run = \"desktop\"\n",
+    )
+    .unwrap();
+    let leader = app.join("leader.pid");
+    let sleeper = app.join("sleeper.pid");
+    let cargo = app.join("slow-cargo");
+    std::fs::write(
+        &cargo,
+        format!(
+            "#!/bin/sh\nset +m\nprintf '%s\\n' $$ > '{}'\nsleep 30 &\nprintf '%s\\n' $! > '{}'\nwait\n",
+            leader.display(),
+            sleeper.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let plan = CargoPlan {
+        app_dir: app.clone(),
+        program: cargo.into_os_string(),
+        args: Vec::new(),
+    };
+    let roots = [app.clone()];
+    let (sender, events) = mpsc::channel();
+    let leader_watch = leader.clone();
+    let sleeper_watch = sleeper.clone();
+    let source = app.join("src/main.rs");
+    std::thread::spawn(move || {
+        let Some(deadline) = Instant::now().checked_add(Duration::from_secs(2)) else {
+            return;
+        };
+        while Instant::now() < deadline {
+            if leader_watch.is_file() && sleeper_watch.is_file() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = sender.send(Ok(Event::new(EventKind::Modify(
+            notify::event::ModifyKind::Any,
+        ))
+        .add_path(source)));
+    });
+    let started = Instant::now();
+    let outcome = build_dev_candidate_interruptible(&plan, Some(&events), &roots, |_| {}).unwrap();
+    assert!(
+        matches!(outcome, DevCandidate::Superseded),
+        "a source edit during the build must cancel it"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "cancelling a stale build took {:?}",
+        started.elapsed()
+    );
+    let leader_pid = std::fs::read_to_string(&leader).unwrap_or_default();
+    let sleeper_pid = std::fs::read_to_string(&sleeper).unwrap_or_default();
+    assert!(
+        !command_still_running(leader_pid.trim(), "sh"),
+        "cargo process {leader_pid} still running"
+    );
+    assert!(
+        !command_still_running(sleeper_pid.trim(), "sleep"),
+        "rustc child {sleeper_pid} still running ({})",
+        command_file_name(sleeper_pid.trim()).unwrap_or_else(|| "gone".into())
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn dev_build_keeps_compiling_through_editor_noise() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let app = temp.path().join("app");
+    std::fs::create_dir_all(app.join("target")).unwrap();
+    let manifest = app.join("Cargo.toml");
+    std::fs::write(
+        &manifest,
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\ndefault-run = \"desktop\"\n",
+    )
+    .unwrap();
+    let manifest = manifest.canonicalize().unwrap();
+    let executable = app.join("target/debug/desktop");
+    let message = serde_json::json!({
+        "reason": "compiler-artifact",
+        "manifest_path": manifest,
+        "target": {"name": "desktop", "kind": ["bin"]},
+        "executable": executable,
+    });
+    let cargo = app.join("noisy-cargo");
+    std::fs::write(
+        &cargo,
+        format!("#!/bin/sh\nsleep 0.2\nprintf '%s\\n' '{message}'\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let plan = CargoPlan {
+        app_dir: app.clone(),
+        program: cargo.into_os_string(),
+        args: Vec::new(),
+    };
+    let roots = [app.clone()];
+    let (sender, events) = mpsc::channel();
+    sender
+        .send(Ok(Event::new(EventKind::Modify(
+            notify::event::ModifyKind::Any,
+        ))
+        .add_path(app.join("target/debug/desktop"))))
+        .unwrap();
+    let outcome = build_dev_candidate_interruptible(&plan, Some(&events), &roots, |_| {}).unwrap();
+    assert_eq!(outcome_path(outcome), executable);
+}
+
+#[test]
+#[cfg(unix)]
+fn dev_restart_hands_the_checkpoint_to_the_next_process() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let app = temp.path().join("app");
+    std::fs::create_dir(&app).unwrap();
+    let executable = app.join("demo");
+    std::fs::write(
+        &executable,
+        "#!/bin/bash\n\
+dir=\"$TILO_DEV_SESSION\"\n\
+if [ -z \"$dir\" ]; then echo missing session >&2; exit 2; fi\n\
+if [ -f \"$dir/checkpoint.bin\" ]; then\n\
+  cp \"$dir/checkpoint.bin\" \"$dir/restored\"\n\
+fi\n\
+trap 'printf document-route-caret > \"$dir/checkpoint.bin\"; exit 0' TERM\n\
+touch \"$dir/ready\"\n\
+while true; do\n\
+  read -t 0.2 || true\n\
+done\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let session = dev_session_dir(&app);
+    let _ = std::fs::remove_dir_all(&session);
+
+    let mut child = Some(spawn_dev_binary(&app, &executable, &[]).unwrap());
+    wait_for_file(&session.join("ready"));
+    stop_dev_child(&mut child);
+    let checkpoint = std::fs::read(session.join("checkpoint.bin")).unwrap_or_default();
+    assert_eq!(checkpoint, b"document-route-caret");
+
+    let mut next = Some(spawn_dev_binary(&app, &executable, &[]).unwrap());
+    wait_for_file(&session.join("restored"));
+    let restored = std::fs::read(session.join("restored")).unwrap_or_default();
+    stop_dev_child(&mut next);
+    let _ = std::fs::remove_dir_all(&session);
+    assert_eq!(restored, b"document-route-caret");
+}
+
+/// True while `pid` is still the named command.
+///
+/// `kill -0` stays true for a zombie and for a pid the next test reused.
+/// An empty `/proc/<pid>/cmdline` is a zombie or a recycled slot, not the
+/// compiler this build started.
+#[cfg(unix)]
+fn command_still_running(pid: &str, name: &str) -> bool {
+    let Some(deadline) = Instant::now().checked_add(Duration::from_millis(500)) else {
+        return true;
+    };
+    loop {
+        if command_file_name(pid).as_deref() != Some(name) {
+            return false;
+        }
+        if Instant::now() >= deadline {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(unix)]
+fn command_file_name(pid: &str) -> Option<String> {
+    let pid = pid.parse::<i32>().ok()?;
+    let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let first = bytes
+        .split(|byte| *byte == 0)
+        .next()
+        .filter(|arg| !arg.is_empty())?;
+    let name = first.rsplit(|byte| *byte == b'/').next().unwrap_or(first);
+    Some(String::from_utf8_lossy(name).into_owned())
+}
+
+#[cfg(unix)]
+fn outcome_path(outcome: DevCandidate) -> PathBuf {
+    match outcome {
+        DevCandidate::Built(path) => path,
+        DevCandidate::Superseded => panic!("editor noise cancelled the build"),
+    }
+}
+
+#[cfg(unix)]
+fn wait_for_file(path: &Path) {
+    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(2)) else {
+        panic!("clock cannot represent the wait deadline");
+    };
+    while Instant::now() < deadline {
+        if path.is_file() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("timed out waiting for {}", path.display());
 }
 
 #[test]

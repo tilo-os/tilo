@@ -450,6 +450,9 @@ pub struct SearchCursor {
     generation: u64,
     normalized_query: String,
     body: Option<BodyCursor>,
+    /// The records holding the whole query as a word were all visited; the
+    /// rest of the field candidates follow.
+    words_done: bool,
 }
 
 impl SearchCursor {
@@ -469,6 +472,7 @@ impl SearchCursor {
             generation,
             normalized_query: normalized_query.into(),
             body: None,
+            words_done: false,
         }
     }
 
@@ -1174,6 +1178,14 @@ struct BodyCursor {
 
 struct InvalidBodyCursor;
 
+/// Where one [`PageState::visit`] stopped.
+#[derive(Default)]
+struct Visit {
+    stopped: bool,
+    last_id: Option<String>,
+    last_browse_ordinal: Option<u64>,
+}
+
 struct PageState {
     query: String,
     generation: u64,
@@ -1193,6 +1205,7 @@ impl PageState {
         after: Option<String>,
         ordinal: Option<u64>,
         body: Option<BodyCursor>,
+        words_done: bool,
     ) -> SearchCursor {
         SearchCursor {
             after_resource_id: after,
@@ -1200,6 +1213,7 @@ impl PageState {
             generation: self.generation,
             normalized_query: self.query.clone(),
             body,
+            words_done,
         }
     }
 
@@ -1214,28 +1228,89 @@ impl PageState {
     /// Exact field matches, ordered within the page by the shared ranker.
     /// Returns the continuation when the page filled before the candidates
     /// ran out.
+    ///
+    /// Records holding the whole query as a word come first: that posting
+    /// is usually tiny, so a unique name is found within any budget. It is
+    /// not complete (`needle` is inside the word `needle.rs` without being
+    /// one), so the complete candidate list follows, skipping what the word
+    /// posting already visited.
     fn fields_phase(
         &mut self,
         inner: &SearchCatalogInner,
         cursor: Option<&SearchCursor>,
     ) -> Option<SearchCursor> {
-        let query = self.query.as_str();
-        let grams = search_grams(query);
-        let candidates = field_candidates(inner, query, &grams)?;
-        let after = cursor.and_then(|cursor| cursor.after_resource_id.as_deref());
-        let after_browse_ordinal = cursor.and_then(|cursor| cursor.after_browse_ordinal);
+        let query = self.query.clone();
+        let grams = search_grams(&query);
+        let words = if query.is_empty() {
+            None
+        } else {
+            inner.tokens.get(query.as_str())
+        };
+        let mut after = cursor.and_then(|cursor| cursor.after_resource_id.clone());
+        let mut after_browse_ordinal = cursor.and_then(|cursor| cursor.after_browse_ordinal);
+        let words_done = words.is_none() || cursor.is_some_and(|cursor| cursor.words_done);
         let mut ranked = Vec::new();
-        let mut last_id = None;
-        let mut last_browse_ordinal = None;
-        let mut stopped = false;
-        for (browse_ordinal, resource_id) in candidates.ids_after(after, after_browse_ordinal) {
+        if let Some(words) = words.filter(|_| !words_done) {
+            let rows = CandidateRows::Posting(words);
+            let visit = self.visit(
+                inner,
+                &query,
+                &grams,
+                rows.ids_after(after.as_deref(), None),
+                None,
+                &mut ranked,
+            );
+            if visit.stopped {
+                self.push_ranked(ranked);
+                return Some(self.cursor(visit.last_id, None, None, false));
+            }
+            after = None;
+            after_browse_ordinal = None;
+        }
+        let Some(candidates) = field_candidates(inner, &query, &grams) else {
+            self.push_ranked(ranked);
+            return None;
+        };
+        let visit = self.visit(
+            inner,
+            &query,
+            &grams,
+            candidates.ids_after(after.as_deref(), after_browse_ordinal),
+            words,
+            &mut ranked,
+        );
+        self.push_ranked(ranked);
+        visit
+            .stopped
+            .then(|| self.cursor(visit.last_id, visit.last_browse_ordinal, None, true))
+    }
+
+    /// Inspect candidates until the budget or the page runs out, collecting
+    /// exact matches with their rank. Ids in `skip` were already inspected
+    /// by the word phase and are passed over without counting twice.
+    fn visit<'a>(
+        &mut self,
+        inner: &SearchCatalogInner,
+        query: &str,
+        grams: &[String],
+        ids: impl Iterator<Item = (Option<u64>, &'a Arc<str>)>,
+        skip: Option<&BTreeSet<Arc<str>>>,
+        ranked: &mut Vec<(i32, SearchResult)>,
+    ) -> Visit {
+        let mut visit = Visit::default();
+        for (browse_ordinal, resource_id) in ids {
+            if skip.is_some_and(|skip| skip.contains(resource_id)) {
+                visit.last_id = Some(resource_id.to_string());
+                visit.last_browse_ordinal = browse_ordinal;
+                continue;
+            }
             if self.inspected == self.work_budget || ranked.len() == self.result_limit {
-                stopped = true;
+                visit.stopped = true;
                 break;
             }
             self.inspected = self.inspected.saturating_add(1);
-            last_id = Some(resource_id.to_string());
-            last_browse_ordinal = browse_ordinal;
+            visit.last_id = Some(resource_id.to_string());
+            visit.last_browse_ordinal = browse_ordinal;
             let Some(entry) = inner.entries.get(resource_id) else {
                 continue;
             };
@@ -1250,12 +1325,15 @@ impl PageState {
                 ranked.push((entry.rank(query), entry.result.clone()));
             }
         }
-        // Stable: equal ranks keep candidate order, so unranked fields page
-        // exactly as they are stored.
+        visit
+    }
+
+    /// Stable: equal ranks keep candidate order, so unranked fields page
+    /// exactly as they are stored.
+    fn push_ranked(&mut self, mut ranked: Vec<(i32, SearchResult)>) {
         ranked.sort_by_key(|(rank, _)| std::cmp::Reverse(*rank));
         self.results
             .extend(ranked.into_iter().map(|(_, result)| result));
-        stopped.then(|| self.cursor(last_id, last_browse_ordinal, None))
     }
 
     /// Body matches, verified a bounded chunk per inspection.
@@ -1295,7 +1373,7 @@ impl PageState {
                         resource: Some(resource_id.to_string()),
                         position,
                     };
-                    return Ok(Some(self.cursor(None, None, Some(resume))));
+                    return Ok(Some(self.cursor(None, None, Some(resume), true)));
                 }
                 self.inspected = self.inspected.saturating_add(1);
                 if !filtered {
@@ -1329,8 +1407,10 @@ impl PageState {
 }
 
 /// Every record whose fields could contain folded `query`: all of them for
-/// browsing, else the smallest complete posting — the whole query as a term,
-/// the rarest of its grams, or a term strictly inside it.
+/// browsing, else the smallest complete posting — the rarest of its grams,
+/// or a term strictly inside it. The whole query's own word posting is not
+/// complete: word segmentation keeps `needle.rs` as one word, so a record
+/// titled `needle.rs` contains `needle` without having it as a word.
 fn field_candidates<'a>(
     inner: &'a SearchCatalogInner,
     query: &str,
@@ -1338,9 +1418,6 @@ fn field_candidates<'a>(
 ) -> Option<CandidateRows<'a>> {
     if query.is_empty() {
         return Some(CandidateRows::Browse(&inner.browse_order));
-    }
-    if let Some(posting) = inner.tokens.get(query) {
-        return Some(CandidateRows::Posting(posting));
     }
     let mut rarest = rarest_posting(&inner.postings, grams)?;
     // A whitespace-delimited term strictly inside the query is a complete
@@ -2752,6 +2829,23 @@ mod tests {
         assert_eq!(session.query_page("share", None, 8, 8).results.len(), 1);
         assert!(catalog.query_page("share", None, 8, 8).results.is_empty());
         assert_eq!(catalog.stats().records, 1);
+    }
+
+    #[test]
+    fn a_query_that_is_a_term_elsewhere_still_finds_it_inside_words() {
+        let catalog = SearchCatalog::new("Documents");
+        for (id, text) in [
+            ("document:1", "needle.rs"),
+            ("document:2", "contains-needle-here"),
+        ] {
+            catalog.upsert(id, text, catalog_hit(id, text)).unwrap();
+        }
+        let page = catalog.query_page("needle", None, 8, 8);
+        assert_eq!(
+            page.results.len(),
+            2,
+            "`needle` is a word of one record and inside a word of the other"
+        );
     }
 
     #[test]

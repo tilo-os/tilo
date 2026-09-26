@@ -54,6 +54,7 @@ pub mod linux_physical_gamepad;
 pub mod linux_virtual_gamepad;
 pub mod modem;
 pub mod network;
+pub mod orientation;
 pub mod peripheral_forwarding;
 pub mod power;
 pub mod printing;
@@ -111,6 +112,9 @@ pub use network::{
     list_hotspot_clients, list_saved_network_profiles, list_vpn_connections, list_wifi_networks,
     portable_wifi_profile_secret, set_airplane_mode, set_hotspot, set_mobile_broadband,
     set_network_autoconnect, set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wired,
+};
+pub use orientation::{
+    AccelSample, DeviceOrientation, OrientationTracker, RotationControl, has_accelerometer,
 };
 pub use peripheral_forwarding::{
     AUTHORIZATION_TTL, ForwardedGamepadEvent, ForwardedPeripheralBroker,

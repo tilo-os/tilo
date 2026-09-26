@@ -3075,6 +3075,9 @@ mod tests {
             }
             Err(error) => panic!("unexpected bridge error: {error:?}"),
         };
+        bridge.warm_renderer_for_test();
+        // The fixture checks restored pixels, not frame latency.
+        bridge.wait_for_gpu_completion_for_test();
         let width = usize::try_from(WIDTH).expect("test width");
         let height = usize::try_from(HEIGHT).expect("test height");
         let pitch = width.checked_mul(4).expect("test pitch") + 16;

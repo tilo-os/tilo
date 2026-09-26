@@ -31,6 +31,9 @@ pub struct RuntimeCapabilities {
     pub mono_output: bool,
     pub channel_test: bool,
     pub microphone_meter: bool,
+    /// The session can run the shipped echo-cancellation client
+    /// ([`ECHO_CANCEL_CONFIG`]).
+    pub echo_cancellation: bool,
 }
 
 pub trait BoundedSession: Send {
@@ -88,6 +91,17 @@ pub trait AudioRuntimeControl: Send + Sync {
         source_name: &str,
         duration: Duration,
     ) -> Result<Box<dyn MicrophoneMeterSession>, String>;
+
+    /// Create the echo-cancelled microphone ([`ECHO_CANCEL_SOURCE_NAME`]).
+    /// It lives until the returned session is stopped or dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic message if the echo-cancellation client cannot be
+    /// started.
+    fn start_echo_cancellation(&self) -> Result<Box<dyn BoundedSession>, String> {
+        Err("Echo cancellation is not supported by the active audio service".into())
+    }
 }
 
 /// The accessibility/output policy the desktop session owns. Settings only
@@ -99,6 +113,8 @@ pub struct PersistentAudioPreferences {
     /// UI-space balance: `0` is left, `0.5` is centred, `1` is right.
     pub balance: f32,
     pub mono_output: bool,
+    /// Offer calls an echo-cancelled microphone.
+    pub echo_cancellation: bool,
 }
 
 impl Default for PersistentAudioPreferences {
@@ -106,6 +122,7 @@ impl Default for PersistentAudioPreferences {
         Self {
             balance: 0.5,
             mono_output: false,
+            echo_cancellation: true,
         }
     }
 }
@@ -122,6 +139,11 @@ pub struct PersistentAudioPolicy {
     mono_session: Option<Box<dyn BoundedSession>>,
     mono_sink: Option<String>,
     last_balance: Option<(String, u32, u32)>,
+    echo_session: Option<Box<dyn BoundedSession>>,
+    /// Consecutive echo-cancellation client exits, used to back off restarts
+    /// of a client that dies on start.
+    echo_failures: u32,
+    echo_retry_at: Option<std::time::Instant>,
 }
 
 impl PersistentAudioPolicy {
@@ -133,6 +155,9 @@ impl PersistentAudioPolicy {
             mono_session: None,
             mono_sink: None,
             last_balance: None,
+            echo_session: None,
+            echo_failures: 0,
+            echo_retry_at: None,
         }
     }
 
@@ -144,9 +169,58 @@ impl PersistentAudioPolicy {
     ///
     /// Returns a diagnostic string if mono output or balance is requested but
     /// unsupported by the runtime, if no physical stereo sink is available,
-    /// or if the underlying runtime call to start the mono session or set
-    /// the balance fails.
+    /// if the underlying runtime call to start the mono session or set the
+    /// balance fails, or if the echo-cancelled microphone cannot be started.
     pub fn reconcile(
+        &mut self,
+        preferences: PersistentAudioPreferences,
+        graph: &crate::audio::AudioGraph,
+    ) -> Result<(), String> {
+        let echo = self.reconcile_echo_cancellation(preferences.echo_cancellation, graph);
+        self.reconcile_output(preferences, graph).and(echo)
+    }
+
+    /// Keep exactly one echo-cancelled microphone while the preference is on
+    /// and a microphone exists. Unsupported runtimes are not an error: the
+    /// preference defaults on, and Settings hides it where it cannot work.
+    fn reconcile_echo_cancellation(
+        &mut self,
+        enabled: bool,
+        graph: &crate::audio::AudioGraph,
+    ) -> Result<(), String> {
+        if self
+            .echo_session
+            .as_mut()
+            .is_some_and(|session| !session.running())
+        {
+            self.echo_session = None;
+            self.echo_failures = self.echo_failures.saturating_add(1);
+            let backoff = ECHO_CANCEL_RESTART_BACKOFF
+                .saturating_mul(self.echo_failures.min(ECHO_CANCEL_MAX_BACKOFF_STEPS));
+            self.echo_retry_at = std::time::Instant::now().checked_add(backoff);
+        }
+        if !enabled || !self.capabilities.echo_cancellation || graph.sources.is_empty() {
+            self.echo_session = None;
+            self.echo_failures = 0;
+            self.echo_retry_at = None;
+            return Ok(());
+        }
+        if self.echo_session.is_some()
+            || self
+                .echo_retry_at
+                .is_some_and(|at| std::time::Instant::now() < at)
+        {
+            return Ok(());
+        }
+        self.echo_session = Some(self.runtime.start_echo_cancellation()?);
+        Ok(())
+    }
+
+    pub fn echo_cancellation_active(&self) -> bool {
+        self.echo_session.is_some()
+    }
+
+    fn reconcile_output(
         &mut self,
         preferences: PersistentAudioPreferences,
         graph: &crate::audio::AudioGraph,
@@ -314,7 +388,24 @@ impl AudioRuntimeControl for RealAudioRuntime {
             mono_output: pulse,
             channel_test: command_works("pw-play", &["--version"]),
             microphone_meter: command_works("pw-record", &["--version"]),
+            echo_cancellation: echo_cancel_config_installed()
+                && command_works("pipewire", &["--version"]),
         }
+    }
+
+    fn start_echo_cancellation(&self) -> Result<Box<dyn BoundedSession>, String> {
+        let child = Command::new("pipewire")
+            .args(["-c", ECHO_CANCEL_CONFIG])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .map_err(|e| format!("pipewire is unavailable: {e}"))?;
+        Ok(Box::new(ChildSession {
+            child: Some(child),
+            deadline: None,
+        }))
     }
 
     fn set_balance(&self, sink_name: &str, base_volume: f32, balance: f32) -> Result<(), String> {
@@ -393,9 +484,11 @@ impl AudioRuntimeControl for RealAudioRuntime {
         drop(input);
         Ok(Box::new(ChildSession {
             child: Some(child),
-            deadline: Instant::now()
-                .checked_add(Duration::from_secs(2))
-                .unwrap_or_else(Instant::now),
+            deadline: Some(
+                Instant::now()
+                    .checked_add(Duration::from_secs(2))
+                    .unwrap_or_else(Instant::now),
+            ),
         }))
     }
 
@@ -494,6 +587,37 @@ impl AudioRuntimeControl for RealAudioRuntime {
 /// real hardware during subsequent graph enumerations.
 pub const ACCESSIBILITY_MONO_SINK_NAME: &str = "tilo_accessibility_mono";
 
+/// The `PipeWire` client configuration, installed in `PipeWire`'s config search
+/// path, that creates the echo-cancelled microphone.
+pub const ECHO_CANCEL_CONFIG: &str = "tilo-echo-cancel.conf";
+
+pub use crate::audio::{ECHO_CANCEL_NODE_PREFIX, ECHO_CANCEL_SOURCE_NAME};
+
+const ECHO_CANCEL_RESTART_BACKOFF: Duration = Duration::from_secs(5);
+const ECHO_CANCEL_MAX_BACKOFF_STEPS: u32 = 12;
+
+/// Whether [`ECHO_CANCEL_CONFIG`] is somewhere `pipewire -c` looks: the
+/// user's and the administrator's override directories, then the system one.
+#[cfg(unix)]
+fn echo_cancel_config_installed() -> bool {
+    let mut dirs = Vec::new();
+    if let Some(dir) = std::env::var_os("PIPEWIRE_CONFIG_DIR") {
+        dirs.push(std::path::PathBuf::from(dir));
+    }
+    if let Some(config) = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".config"))
+        })
+    {
+        dirs.push(config.join("pipewire"));
+    }
+    dirs.push("/etc/pipewire".into());
+    dirs.push("/usr/share/pipewire".into());
+    dirs.iter()
+        .any(|dir| dir.join(ECHO_CANCEL_CONFIG).is_file())
+}
+
 pub fn balance_channel_percent(base_volume: f32, balance: f32) -> (f32, f32) {
     let base = base_volume.clamp(0.0, 1.5) * 100.0;
     let b = balance.clamp(-1.0, 1.0);
@@ -558,12 +682,16 @@ fn pcm_peak(bytes: &[u8]) -> f32 {
 #[cfg(unix)]
 struct ChildSession {
     child: Option<Child>,
-    deadline: Instant,
+    /// `None` for a client that lives until its owner stops it.
+    deadline: Option<Instant>,
 }
 #[cfg(unix)]
 impl BoundedSession for ChildSession {
     fn running(&mut self) -> bool {
-        if Instant::now() >= self.deadline {
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
             self.stop();
             return false;
         }
@@ -681,25 +809,42 @@ mod tests {
         );
     }
 
-    struct TestSession(Arc<Mutex<Vec<String>>>);
+    struct TestSession {
+        calls: Arc<Mutex<Vec<String>>>,
+        label: &'static str,
+        alive: Arc<Mutex<bool>>,
+    }
     impl BoundedSession for TestSession {
         fn running(&mut self) -> bool {
-            true
+            *self.alive.lock().unwrap()
         }
         fn stop(&mut self) {}
     }
     impl Drop for TestSession {
         fn drop(&mut self) {
-            self.0.lock().unwrap().push("mono-drop".into());
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("{}-drop", self.label));
         }
     }
 
     struct RecordingRuntime(Arc<Mutex<Vec<String>>>);
+    impl RecordingRuntime {
+        fn session(&self, label: &'static str) -> Box<dyn BoundedSession> {
+            Box::new(TestSession {
+                calls: self.0.clone(),
+                label,
+                alive: Arc::new(Mutex::new(true)),
+            })
+        }
+    }
     impl AudioRuntimeControl for RecordingRuntime {
         fn capabilities(&self) -> RuntimeCapabilities {
             RuntimeCapabilities {
                 balance: true,
                 mono_output: true,
+                echo_cancellation: true,
                 ..RuntimeCapabilities::default()
             }
         }
@@ -712,7 +857,11 @@ mod tests {
         }
         fn start_mono(&self, sink: &str) -> Result<Box<dyn BoundedSession>, String> {
             self.0.lock().unwrap().push(format!("mono:{sink}"));
-            Ok(Box::new(TestSession(self.0.clone())))
+            Ok(self.session("mono"))
+        }
+        fn start_echo_cancellation(&self) -> Result<Box<dyn BoundedSession>, String> {
+            self.0.lock().unwrap().push("echo".into());
+            Ok(self.session("echo"))
         }
         fn start_channel_test(&self, _: &str, _: bool) -> Result<Box<dyn BoundedSession>, String> {
             unreachable!()
@@ -724,6 +873,120 @@ mod tests {
         ) -> Result<Box<dyn MicrophoneMeterSession>, String> {
             unreachable!()
         }
+    }
+
+    fn microphone() -> AudioDevice {
+        AudioDevice {
+            channels: 1,
+            ..sink("alsa_input.mic", true, 0.5)
+        }
+    }
+
+    #[test]
+    fn echo_cancellation_is_one_session_that_follows_the_preference() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut policy = PersistentAudioPolicy::new(Arc::new(RecordingRuntime(calls.clone())));
+        let graph = AudioGraph {
+            sinks: vec![sink("speakers", true, 0.8)],
+            sources: vec![microphone()],
+            ..AudioGraph::default()
+        };
+        let on = PersistentAudioPreferences::default();
+        assert!(
+            on.echo_cancellation,
+            "calls get echo cancellation by default"
+        );
+        policy.reconcile(on, &graph).unwrap();
+        policy.reconcile(on, &graph).unwrap();
+        assert!(policy.echo_cancellation_active());
+        let off = PersistentAudioPreferences {
+            echo_cancellation: false,
+            ..on
+        };
+        policy.reconcile(off, &graph).unwrap();
+        assert!(!policy.echo_cancellation_active());
+        policy.reconcile(on, &graph).unwrap();
+        let echo: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call.starts_with("echo"))
+            .cloned()
+            .collect();
+        assert_eq!(echo, ["echo", "echo-drop", "echo"]);
+    }
+
+    #[test]
+    fn echo_cancellation_waits_for_a_microphone_and_ends_with_the_policy() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut policy = PersistentAudioPolicy::new(Arc::new(RecordingRuntime(calls.clone())));
+        let prefs = PersistentAudioPreferences::default();
+        policy.reconcile(prefs, &AudioGraph::default()).unwrap();
+        assert!(calls.lock().unwrap().is_empty());
+        let with_mic = AudioGraph {
+            sources: vec![microphone()],
+            ..AudioGraph::default()
+        };
+        policy.reconcile(prefs, &with_mic).unwrap();
+        policy.reconcile(prefs, &AudioGraph::default()).unwrap();
+        policy.reconcile(prefs, &with_mic).unwrap();
+        drop(policy);
+        let recorded = calls.lock().unwrap().clone();
+        assert_eq!(recorded, ["echo", "echo-drop", "echo", "echo-drop"]);
+    }
+
+    #[test]
+    fn a_dead_echo_cancellation_client_is_restarted_after_a_backoff() {
+        struct DyingRuntime(Arc<Mutex<Vec<String>>>);
+        impl AudioRuntimeControl for DyingRuntime {
+            fn capabilities(&self) -> RuntimeCapabilities {
+                RuntimeCapabilities {
+                    echo_cancellation: true,
+                    ..RuntimeCapabilities::default()
+                }
+            }
+            fn set_balance(&self, _: &str, _: f32, _: f32) -> Result<(), String> {
+                Ok(())
+            }
+            fn start_mono(&self, _: &str) -> Result<Box<dyn BoundedSession>, String> {
+                unreachable!()
+            }
+            fn start_channel_test(
+                &self,
+                _: &str,
+                _: bool,
+            ) -> Result<Box<dyn BoundedSession>, String> {
+                unreachable!()
+            }
+            fn start_microphone_meter(
+                &self,
+                _: &str,
+                _: Duration,
+            ) -> Result<Box<dyn MicrophoneMeterSession>, String> {
+                unreachable!()
+            }
+            fn start_echo_cancellation(&self) -> Result<Box<dyn BoundedSession>, String> {
+                self.0.lock().unwrap().push("echo".into());
+                Ok(Box::new(TestSession {
+                    calls: self.0.clone(),
+                    label: "echo",
+                    alive: Arc::new(Mutex::new(false)),
+                }))
+            }
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut policy = PersistentAudioPolicy::new(Arc::new(DyingRuntime(calls.clone())));
+        let graph = AudioGraph {
+            sources: vec![microphone()],
+            ..AudioGraph::default()
+        };
+        let prefs = PersistentAudioPreferences::default();
+        policy.reconcile(prefs, &graph).unwrap();
+        policy.reconcile(prefs, &graph).unwrap();
+        policy.reconcile(prefs, &graph).unwrap();
+        let recorded = calls.lock().unwrap().clone();
+        assert_eq!(recorded, ["echo", "echo-drop"]);
+        assert!(!policy.echo_cancellation_active());
     }
 
     fn sink(name: &str, default: bool, volume: f32) -> AudioDevice {
@@ -771,6 +1034,7 @@ mod tests {
         let prefs = PersistentAudioPreferences {
             balance: 0.75,
             mono_output: true,
+            ..PersistentAudioPreferences::default()
         };
         policy.reconcile(prefs, &graph).unwrap();
         policy.reconcile(prefs, &graph).unwrap();
@@ -881,7 +1145,7 @@ mod tests {
         {
             let _s = ChildSession {
                 child: Some(child),
-                deadline: Instant::now() + Duration::from_secs(30),
+                deadline: Some(Instant::now() + Duration::from_secs(30)),
             };
         }
         let alive = i32::try_from(pid).is_ok_and(|pid| unsafe { libc::kill(pid, 0) } == 0);

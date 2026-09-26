@@ -981,6 +981,7 @@ fn an_ai_step_never_reads_a_secret() {
             mode: RunMode::Unattended,
             trigger: RunTrigger::Manual,
             inputs,
+            consents: Vec::new(),
         },
     ));
     assert!(

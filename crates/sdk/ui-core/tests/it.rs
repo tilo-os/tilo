@@ -96,6 +96,8 @@ mod live_text_sync;
 mod local_identity_is_a_person;
 #[path = "menu_highlight_render.rs"]
 mod menu_highlight_render;
+#[path = "mouse_navigation_test.rs"]
+mod mouse_navigation_test;
 #[path = "multi_user_session.rs"]
 mod multi_user_session;
 #[path = "overlay_test.rs"]
@@ -149,6 +151,8 @@ mod tokens_test;
 mod tooltip_render_test;
 #[path = "tooltip_test.rs"]
 mod tooltip_test;
+#[path = "touch_gestures_test.rs"]
+mod touch_gestures_test;
 #[path = "typography_baseline_geometry.rs"]
 mod typography_baseline_geometry;
 #[path = "typography_visual_regression.rs"]

@@ -32,6 +32,7 @@ pub struct Spacer {
     /// (`fixed(0.0)`, `token(SpacingStep::S0)`) is a legitimate rect.
     laid_out: bool,
     extent: Extent,
+    id: Option<String>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
 }
@@ -49,9 +50,17 @@ impl Spacer {
             rect: Rect::ZERO,
             laid_out: false,
             extent: Extent::Flexible,
+            id: None,
             presence_path: Vec::new(),
             permission_scope: None,
         }
+    }
+
+    /// Address this spacer by a stable graph id.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     /// A fixed gap of exactly `px` logical pixels on both axes, so it reads
@@ -166,6 +175,10 @@ impl Widget for Spacer {
 
     fn name(&self) -> &'static str {
         "Spacer"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
     }
 
     /// `draw` is a no-op, so this is never dirty. With many Spacers in a

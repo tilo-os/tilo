@@ -18,16 +18,49 @@ if [ "$(id -u)" -ne 0 ]; then
   echo 'FAIL  staging reclaim loopback proof must run as root (it cannot observe a real GPT otherwise)' >&2
   exit 1
 fi
-for tool in losetup sfdisk partx lsblk mkfs.btrfs btrfs findmnt python3 truncate; do
+for tool in losetup sfdisk partx lsblk mkfs.btrfs btrfs findmnt python3 truncate mknod stat; do
   command -v "$tool" >/dev/null 2>&1 || { echo "FAIL  missing required tool: $tool" >&2; exit 1; }
 done
 
 tmp="$(mktemp -d)"
 loop=""
 mnt="$tmp/root"
+
+# The kernel registers a partition in sysfs before `partx -u` returns. A
+# devtmpfs /dev shows its node at the same moment, but a container's /dev can
+# be a static snapshot that never does, and a partition number the table reuses
+# can leave a node with another partition's device number. Make /dev match
+# sysfs for this loop device: create or replace each partition's node, and
+# remove nodes whose partition is gone. On a devtmpfs /dev this changes nothing.
+sync_partition_nodes() {
+  local name="${loop##*/}" sys node want have major minor
+  for sys in /sys/class/block/"$name"/"$name"p*; do
+    [ -r "$sys/dev" ] || continue
+    node="/dev/${sys##*/}"
+    want="$(cat "$sys/dev")"
+    have=""
+    if [ -b "$node" ]; then
+      read -r major minor < <(stat -c '%t %T' "$node")
+      have="$((16#$major)):$((16#$minor))"
+    fi
+    [ "$have" = "$want" ] && continue
+    rm -f "$node"
+    mknod "$node" b "${want%%:*}" "${want##*:}" \
+      || { echo "FAIL  cannot create the partition node $node ($want)" >&2; exit 1; }
+  done
+  for node in /dev/"$name"p*; do
+    [ -e "$node" ] || continue
+    [ -e "/sys/class/block/$name/${node##*/}" ] || rm -f "$node"
+  done
+}
+
 cleanup() {
   umount "$mnt" 2>/dev/null || true
-  [ -z "$loop" ] || losetup -d "$loop" 2>/dev/null || true
+  if [ -n "$loop" ]; then
+    losetup -d "$loop" 2>/dev/null || true
+    # Nodes this run made in a static /dev outlive the detached device.
+    sync_partition_nodes 2>/dev/null || true
+  fi
   rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -58,9 +91,8 @@ start=$((4710 * mib)), size=$((2048 * mib)), type=d4c4daf6-f72c-43ee-b8e3-5ba325
 start=$((6758 * mib)), size=$((100 * mib)), type=ebd0a0a2-b9e5-4433-87c0-68b6b72699c7, uuid=$recovery_uuid
 EOF
 partx -u "$loop"
-udevadm settle 2>/dev/null || true
-for _ in {1..50}; do [ -b "${loop}p8" ] && break; sleep 0.1; done
-[ -b "${loop}p8" ] || { echo 'FAIL  loop partitions did not appear' >&2; exit 1; }
+sync_partition_nodes
+[ -b "${loop}p8" ] || { echo 'FAIL  the kernel did not register the loop partitions' >&2; exit 1; }
 
 map() {
   sfdisk --json "$loop" | python3 -c 'import json,sys; t=json.load(sys.stdin)["partitiontable"]; print("\n".join(sorted("{}:{}:{}".format(p["uuid"].lower(),p["start"],p["size"]) for p in t["partitions"])))'
@@ -89,6 +121,7 @@ PY
 # Remove the not-yet-created target partitions so the extent is unallocated again.
 sfdisk --delete "$loop" 3 4 5 >/dev/null
 partx -u "$loop"
+sync_partition_nodes
 # Find the staging root's node from the GPT itself: without a udev database
 # (CI containers) lsblk reports no PARTUUID to match on.
 root_node="$(sfdisk --json "$loop" | python3 -c 'import json,sys; u=sys.argv[1].lower()
@@ -130,9 +163,9 @@ start=$((1382 * mib)), size=$((1024 * mib)), type=0fc63daf-8483-4772-8e79-3d69d8
 start=$((2406 * mib)), size=$((2048 * mib)), type=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab, uuid=$target_root_uuid
 EOF
 partx -u "$loop"
-udevadm settle 2>/dev/null || true
+sync_partition_nodes
 target_root="$(sfdisk --json "$loop" | python3 -c 'import json,sys; u=sys.argv[1]; print(next(p["node"] for p in json.load(sys.stdin)["partitiontable"]["partitions"] if p["uuid"].lower()==u))' "$target_root_uuid")"
-for _ in {1..50}; do [ -b "$target_root" ] && break; sleep 0.1; done
+[ -b "$target_root" ] || { echo "FAIL  the Tilo root partition $target_root has no node" >&2; exit 1; }
 mkfs.btrfs -q -f "$target_root"
 mkdir -p "$mnt"
 mount "$target_root" "$mnt"

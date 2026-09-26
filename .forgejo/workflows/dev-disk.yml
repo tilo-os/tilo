@@ -190,7 +190,6 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
-    enable-openid-connect: true
     env:
       SOURCE_REVISION: ${{ needs.plan.outputs.source }}
       DISK_TOOLING_REVISION: ${{ github.sha }}
@@ -367,20 +366,12 @@ jobs:
             TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_TAG --label org.opencontainers.image.revision=$SOURCE_REVISION --label org.opencontainers.image.base.name=$BASE_REPOSITORY@$BASE_INDEX_DIGEST --label org.opencontainers.image.base.digest=$BASE_INDEX_DIGEST --label org.opencontainers.image.base.child.digest=$BASE_CHILD_DIGEST --label sh.tilo.dev.base-trust=$BASE_TRUST" \
             ./os/dev/build-dev-image.sh
 
-      # Every input is anonymously readable; pushes log in with this workflow
-      # revision's login action, which an older signed source revision may
-      # not carry. Checked out only after the dev image build, so it never
-      # enters a build context.
-      - name: Checkout the reviewed registry login
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          path: .ci-registry-login
-          persist-credentials: false
-          sparse-checkout: .forgejo/actions/tilo-registry-login
-          sparse-checkout-cone-mode: false
       - name: Log in to registry.tilo.so
-        uses: ./.ci-registry-login/.forgejo/actions/tilo-registry-login
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Keep the expensive verified build if disk installation or boot fails.
       # A resumed request accepts only the immutable digest of this native

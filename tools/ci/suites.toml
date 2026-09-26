@@ -166,6 +166,16 @@ suites = [
 ]
 
 [[group]]
+name = "pipewire-echo-cancel"
+# The echo-cancelled microphone's PipeWire config, the node names and config
+# name the session uses for it, and the image COPY that installs it.
+inputs = [
+  "os/usr/share/pipewire/", "os/Containerfile",
+  "crates/media/core/src/audio.rs", "crates/media/core/src/audio_runtime.rs",
+]
+suites = ["os/tests/test_pipewire_echo_cancel.py"]
+
+[[group]]
 name = "containerfile-sources"
 # Every host-side COPY source of every image Containerfile must exist, so a
 # move or deletion anywhere in the build context can break it.

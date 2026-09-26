@@ -114,6 +114,7 @@ mod tests {
                 hdr: false,
                 vrr: false,
                 color_profiles: Vec::new(),
+                monitor: None,
             },
             current_mode: mode,
             builtin,

@@ -279,7 +279,7 @@ else
 fi
 
 fex="registry.tilo.so/tilo/tilo-fex-payload-candidate@sha256:$hex"
-guest="code.tilo.so/tilo/tilo-development-windows-guest@sha256:$(printf 'b%.0s' {1..64})"
+guest="registry.tilo.so/tilo/tilo-development-windows-guest@sha256:$(printf 'b%.0s' {1..64})"
 if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
    KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \

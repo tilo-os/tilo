@@ -54,6 +54,29 @@ fn opaque(domain: &'static str, bytes: &[u8]) -> String {
     hex::encode(digest.get(..16).unwrap_or(&digest))
 }
 
+/// The semantic id of "play this local media session on `target`". Other
+/// chrome names a handoff destination by this id, never by the device or
+/// session identity behind it.
+pub(crate) fn media_handoff_action_id(
+    session_id: &str,
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> String {
+    format!(
+        "media.handoff.{}.{}",
+        opaque("so.tilo.continuity.media-session.v1", session_id.as_bytes()),
+        opaque("so.tilo.continuity.device.v1", target.as_str().as_bytes())
+    )
+}
+
+/// The semantic id of "route local playback to this output". The `PipeWire`
+/// node id stays behind the digest.
+pub(crate) fn audio_route_action_id(node_id: u32) -> String {
+    format!(
+        "audio.route.{}",
+        opaque("so.tilo.continuity.audio-node.v1", &node_id.to_le_bytes())
+    )
+}
+
 /// The shared ranker over an action's title, identity and description.
 fn matches(needle: &str, title: &str, subtitle: &str, id: &str) -> Option<i32> {
     crate::shell::search::rank_fields(
@@ -147,14 +170,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         for target in &media.targets {
             let label = label_for(target);
             actions.push(DeviceAction {
-                id: format!(
-                    "media.handoff.{}.{}",
-                    opaque(
-                        "so.tilo.continuity.media-session.v1",
-                        media.session_id.as_bytes()
-                    ),
-                    opaque("so.tilo.continuity.device.v1", target.as_str().as_bytes())
-                ),
+                id: media_handoff_action_id(&media.session_id, target),
                 title: format!("Play {} on {label}", media.title),
                 subtitle: "Move this live media session to an exact certified device".into(),
                 action: DeviceFabricUiAction::HandoffMedia {
@@ -261,13 +277,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         .filter(|output| !output.is_default)
     {
         actions.push(DeviceAction {
-            id: format!(
-                "audio.route.{}",
-                opaque(
-                    "so.tilo.continuity.audio-node.v1",
-                    &output.node_id.to_le_bytes()
-                )
-            ),
+            id: audio_route_action_id(output.node_id),
             title: format!("Route audio to {}", output.label),
             subtitle: "Choose an exact currently enumerated local audio output".into(),
             action: DeviceFabricUiAction::RouteLocalAudio {

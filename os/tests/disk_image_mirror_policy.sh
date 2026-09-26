@@ -8,7 +8,7 @@ mkdir -p "$work/bin" "$work/out" "$work/udev/data"
 export TILO_TEST_REAL_PYTHON="$(command -v python3)"
 
 digest="sha256:$(printf 'a%.0s' {1..64})"
-authoritative="code.tilo.so/tilo/tilo-development@$digest"
+authoritative="registry.tilo.so/tilo/tilo-development@$digest"
 mirror_repository="172.25.116.162:5000/tilo/tilo-development"
 
 cat >"$work/bin/skopeo" <<EOF
