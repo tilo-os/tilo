@@ -485,6 +485,7 @@ mod tests {
             r.kick_fast_with(|| {
                 QsReading::Fast(Box::new(FastReading {
                     brightness: Some(0.42),
+                    displays: Vec::new(),
                     volume: None,
                     wifi: Some(true),
                     bluetooth: None,
