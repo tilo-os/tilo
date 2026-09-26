@@ -474,7 +474,7 @@ fn is_effect_receipt(entry: &HistoryEntry) -> bool {
         context
             .facets
             .iter()
-            .any(|facet| facet.key == "qos.receipt" && facet.value == "effect")
+            .any(|facet| facet.key == "tilo.receipt" && facet.value == "effect")
     })
 }
 

@@ -63,10 +63,10 @@ class RuntimeAutoAttachProofTests(unittest.TestCase):
 
     def test_expected_apps_rejects_missing_or_duplicate_peers(self):
         expected = {
-            "dev.qos.word-processor",
-            "dev.qos.file-explorer",
-            "dev.qos.photos",
-            "dev.qos.calculator",
+            "dev.tilo.word-processor",
+            "dev.tilo.file-explorer",
+            "dev.tilo.photos",
+            "dev.tilo.calculator",
         }
         apps = [
             {"app_id": app_id, "peer_id": peer_id}

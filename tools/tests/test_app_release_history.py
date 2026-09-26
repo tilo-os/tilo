@@ -218,7 +218,7 @@ class AppReleaseHistory(unittest.TestCase):
         history.prepare_comparison(clone, baseline, source, (2,))
         desired = {
             "source_sha": baseline,
-            "builder_image": "code.sandbox.example/qos/tilo-builder@sha256:" + "d" * 64,
+            "builder_image": "registry.tilo.so/tilo/tilo-builder@sha256:" + "d" * 64,
             "collection": "default",
             "architectures": ["x86_64", "aarch64"],
             "policy_sha256": "f" * 64,

@@ -119,6 +119,9 @@ tagline = "Numbers, connected"
 [apps.slides]
 description = "Create presentations that stay easy to revise and share."
 tagline = "Tell the story clearly"
+[apps.shortcuts]
+description = "Chain the actions your apps offer into shortcuts you can run anywhere."
+tagline = "Do more in one step"
 [apps.snippets]
 description = "Collect useful pieces of text and code for reuse."
 tagline = "Keep the good bits handy"

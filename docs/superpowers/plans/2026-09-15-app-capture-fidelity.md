@@ -6,7 +6,7 @@
 
 **Architecture:** Share screenshot theme resolution between the standard launcher and custom handlers. Thread that Theme into each existing render pipeline, set the renderer scale, and preserve fixture setup. This is the first independently reviewable subproject of the all-app UI balance effort.
 
-**Tech Stack:** Rust, qOS ui, Vello, Taffy, headless FrameHarness.
+**Tech Stack:** Rust, Tilo ui, Vello, Taffy, headless FrameHarness.
 
 **Spec:** `docs/superpowers/specs/2026-09-15-app-ui-balance.md`
 
@@ -28,7 +28,7 @@
 **Interfaces:**
 - Produces `pub fn shot_theme(args: &LaunchArgs) -> Theme` in `ui::launch`.
 - Custom render functions accept a resolved `Theme` or `&Theme`; do not mutate global environment to transmit scale.
-- CLI `args.text_scale` wins over `QOS_SHOTS_TEXT_SCALE`; absent both means1. Existing validated/clamped Theme behavior remains authoritative.
+- CLI `args.text_scale` wins over `TILO_SHOTS_TEXT_SCALE`; absent both means1. Existing validated/clamped Theme behavior remains authoritative.
 - Files honors standard `args.viewport`, retaining `--size` as an explicit compatibility override when provided.
 
 - [ ] Inspect the existing custom fixture setup and renderer-aware layout entry point before changing it. Preserve named palette selection, app-specific defaults, motion options, setup-after-sync and all screenshot scenarios.

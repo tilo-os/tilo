@@ -23,7 +23,7 @@ spec = importlib.util.spec_from_file_location('retained_rootfs', Path(__file__).
 rootfs = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rootfs)
 source = rootfs.source
-REPOSITORY = 'code.sandbox.example/qos/tilo-development-rootfs'
+REPOSITORY = 'registry.tilo.so/tilo/tilo-development-rootfs'
 ANNOTATION = 'tilo.raw-rootfs.receipt-sha256'
 
 

@@ -13,6 +13,7 @@
 //! that seam explicit.
 
 use serde::{Deserialize, Serialize};
+use ui::search::{FieldWeight, RankField};
 
 /// Which upstream feed a [`StoreItem`] came from.
 ///
@@ -364,38 +365,25 @@ impl StoreItem {
         }
     }
 
-    /// Case-insensitive substring match against name + description.
-    /// Empty needle matches everything (so the search bar can start empty).
+    /// Case- and accent-insensitive substring match against name +
+    /// description. Empty needle matches everything (so the search bar can
+    /// start empty).
     pub fn matches_query(&self, needle: &str) -> bool {
-        let n = needle.trim().to_ascii_lowercase();
-        if n.is_empty() {
-            return true;
-        }
-        self.name.to_ascii_lowercase().contains(&n)
-            || self.description.to_ascii_lowercase().contains(&n)
+        needle.trim().is_empty() || self.relevance(needle).is_some()
     }
 
-    /// Fuzzy rank — higher is better. Used to break ties in the item
-    /// list when a search is active. A hit in the name outranks a hit
-    /// in the description; an exact prefix outranks a mid-string hit.
-    pub fn fuzzy_score(&self, needle: &str) -> u32 {
-        let n = needle.trim().to_ascii_lowercase();
-        if n.is_empty() {
-            return 0;
-        }
-        let mut score = 0u32;
-        let name = self.name.to_ascii_lowercase();
-        let desc = self.description.to_ascii_lowercase();
-        if name.starts_with(&n) {
-            score += 100;
-        }
-        if let Some(idx) = name.find(&n) {
-            score += 50u32.saturating_sub(idx as u32);
-        }
-        if let Some(idx) = desc.find(&n) {
-            score += 10u32.saturating_sub((idx / 8) as u32);
-        }
-        score
+    /// The shared search ranker's relevance of this item — higher is better,
+    /// `None` when neither field contains the needle. A hit in the name
+    /// outranks a hit in the description; an exact prefix outranks a
+    /// mid-string hit.
+    pub fn relevance(&self, needle: &str) -> Option<i32> {
+        ui::search::field_rank(
+            needle,
+            &[
+                RankField::new(&self.name, FieldWeight::TITLE),
+                RankField::new(&self.description, FieldWeight::BODY),
+            ],
+        )
     }
 }
 
@@ -623,19 +611,20 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_score_prefers_name_prefix_hits() {
+    fn relevance_prefers_name_prefix_hits() {
         let mut n = tilo_item("Notes", InstalledState::Not, "0.1.0");
         n.description = "great little app".into();
-        let prefix = n.fuzzy_score("no");
-        let mid = n.fuzzy_score("les");
-        let desc = n.fuzzy_score("little");
+        let prefix = n.relevance("no");
+        let mid = n.relevance("tes");
+        let desc = n.relevance("little");
+        assert!(mid.is_some() && desc.is_some());
         assert!(
             prefix > mid,
-            "prefix ({prefix}) should outrank mid-name ({mid})"
+            "prefix ({prefix:?}) should outrank mid-name ({mid:?})"
         );
         assert!(
             prefix > desc,
-            "prefix ({prefix}) should outrank description ({desc})"
+            "prefix ({prefix:?}) should outrank description ({desc:?})"
         );
     }
 

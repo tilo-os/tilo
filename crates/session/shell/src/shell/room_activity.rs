@@ -672,6 +672,10 @@ struct UndoApply {
     partial: bool,
 }
 
+/// Refreshes a finished shortcut run waits for its changes to reach an open
+/// document before it is given up.
+const SHORTCUT_RUN_RECORD_ATTEMPTS: u32 = 240;
+
 /// The room-activity sheet.
 #[allow(
     clippy::struct_excessive_bools,
@@ -778,6 +782,9 @@ pub struct RoomActivityPane {
     task_attachment: Option<WorkspaceTaskResource>,
     task_agent: Option<String>,
     task_broker: Option<crate::shell::collab_broker::AppActionBroker>,
+    /// Shortcut runs the broker finished whose history is not recorded yet,
+    /// with how many refreshes have looked for their changes.
+    pending_shortcut_runs: Vec<(crate::shell::automation_host::FinishedShortcutRun, u32)>,
     task_room: String,
     /// Local process lifecycle only. Broker subscription remains the source
     /// of truth for whether an agent may receive a task lease.
@@ -822,6 +829,28 @@ impl RoomActivityPane {
     /// remain visible but cannot be launched into an imaginary offline queue.
     pub fn attach_task_broker(&mut self, broker: crate::shell::collab_broker::AppActionBroker) {
         self.task_broker = Some(broker);
+    }
+
+    /// Whether `agent` is admitted to `room` and holds a live task
+    /// subscription right now. Without a broker no agent is ever present.
+    pub fn agent_is_present_in(&self, room: &str, agent: &str) -> bool {
+        self.task_broker
+            .as_ref()
+            .is_some_and(|broker| broker.agent_is_live_task_capable(room, agent))
+    }
+
+    /// Dispatch a queued task in `room` to its assigned live agent, for
+    /// surfaces outside Task Center that hand work over directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no broker is attached or the assigned agent
+    /// cannot accept the task.
+    pub fn dispatch_task_in(&self, room: &str, task_id: &str) -> Result<u64, String> {
+        self.task_broker
+            .as_ref()
+            .ok_or_else(|| "agent task dispatch is unavailable".to_string())?
+            .dispatch_task(room, task_id)
     }
 
     fn detail_action_label(&self, action: DetailAction) -> &'static str {
@@ -941,6 +970,7 @@ impl RoomActivityPane {
             task_attachment: None,
             task_agent: None,
             task_broker: None,
+            pending_shortcut_runs: Vec::new(),
             task_room: String::new(),
             agent_startup: HashMap::new(),
             facet_index: HistoryFacetIndex::default(),
@@ -2315,6 +2345,7 @@ impl RoomActivityPane {
             self.timeline
                 .set_named_ranges(self.history_index.origin_safe_named_ranges(&self.named));
         }
+        self.record_finished_shortcut_runs(tree, records);
         self.refresh_agent_runs(tree, records, local);
 
         let workspace = tree.desktop.active.raw();
@@ -2370,6 +2401,56 @@ impl RoomActivityPane {
             &self.named,
         );
         self.reset_narrative();
+    }
+
+    /// Record each shortcut run the broker finished as one undoable run in
+    /// the workspace document, once its changes have reached documents open
+    /// here. A run whose changes never arrive is given up after a while: it
+    /// changed nothing this desktop can undo.
+    fn record_finished_shortcut_runs(&mut self, tree: &mut WorkspaceTree, records: &RecordStore) {
+        if let Some(broker) = &self.task_broker {
+            self.pending_shortcut_runs.extend(
+                broker
+                    .take_finished_shortcut_runs()
+                    .into_iter()
+                    .map(|finished| (finished, 0)),
+            );
+        }
+        if self.pending_shortcut_runs.is_empty() {
+            return;
+        }
+        let open = records.open_records();
+        let mut recorded = false;
+        self.pending_shortcut_runs
+            .retain_mut(|(finished, attempts)| {
+                let shares = open
+                    .iter()
+                    .filter_map(|checkout| {
+                        records
+                            .with(&checkout.id, |doc| {
+                                crate::shell::automation_host::document_share(
+                                    finished.report.run,
+                                    checkout.id.as_str(),
+                                    doc,
+                                )
+                            })
+                            .flatten()
+                    })
+                    .collect();
+                let steps = crate::shell::automation_host::ordered_steps(shares);
+                if crate::shell::automation_host::record_run_steps(&mut tree.doc, finished, &steps)
+                    .is_some()
+                {
+                    recorded = true;
+                    return false;
+                }
+                *attempts = attempts.saturating_add(1);
+                *attempts < SHORTCUT_RUN_RECORD_ATTEMPTS
+                    && !finished.report.invocations().is_empty()
+            });
+        if recorded {
+            tree.commit_room_change();
+        }
     }
 
     fn refresh_agent_runs(
@@ -8083,6 +8164,73 @@ mod tests {
             .expect("receipt is visible after restart");
         assert_eq!(entry.summary, "Completed · Export · Release brief");
         assert!(!entry.is_revertible());
+    }
+
+    /// A shortcut run the broker finished lands in the workspace document
+    /// as one undoable run as soon as a document it changed is open here.
+    #[test]
+    fn a_finished_shortcut_run_is_recorded_once_from_the_documents_it_changed() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let records = RecordStore::in_memory();
+        let record = RecordId::for_file("drafts.qdoc");
+        let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document"));
+        assert!(records.open_record(&checkout));
+        let run = tilo_automation::RunId::new();
+        records.with(&record, |doc| {
+            ui::record::init(doc, &record, &checkout.kind, &room.to_string());
+            doc.put(automerge::ROOT, "draft", "Launch notes").unwrap();
+            let context = ui::tilo_actions::ActionContext::for_resource(
+                "Write draft",
+                "fixture.drafts:inbox",
+                "fixture.drafts",
+                "Inbox",
+            )
+            .with_app("so.tilo.fixture-drafts", "Drafts")
+            .with_group(run.0.to_string(), "Publish a draft", "shortcut");
+            doc.commit_with(
+                CommitOptions::default().with_message(context.change_message().unwrap()),
+            );
+        });
+        let shortcut: tilo_automation::Shortcut = serde_json::from_value(
+            serde_json::json!({"id": "publish", "name": "Publish a draft", "steps": []}),
+        )
+        .unwrap();
+        let mut pane = RoomActivityPane::new();
+        pane.pending_shortcut_runs.push((
+            crate::shell::automation_host::FinishedShortcutRun {
+                room: room.to_string(),
+                shortcut,
+                invoker: "ada".into(),
+                report: tilo_automation::RunReport {
+                    run,
+                    shortcut: "publish".into(),
+                    trigger: "manual".into(),
+                    mode: tilo_automation::RunMode::Unattended,
+                    steps: Vec::new(),
+                    output: None,
+                    outcome: tilo_automation::RunOutcome::Completed,
+                },
+            },
+            0,
+        ));
+
+        pane.refresh_records(&mut tree, &records);
+        pane.refresh_records(&mut tree, &records);
+
+        let runs = ui::read_runs(&tree.doc);
+        assert_eq!(runs.len(), 1, "recorded exactly once");
+        assert_eq!(runs[0].label, "Publish a draft");
+        assert_eq!(runs[0].issued_by.as_deref(), Some("ada"));
+        assert_eq!(runs[0].steps[0].record, record.to_string());
+        assert_eq!(runs[0].steps[0].app, "so.tilo.fixture-drafts");
+        assert!(pane.pending_shortcut_runs.is_empty());
+        assert!(
+            pane.agent_runs
+                .iter()
+                .any(|indexed| indexed.run.label == "Publish a draft"),
+            "Activity lists the run"
+        );
     }
 
     fn pane_over(tree: &mut WorkspaceTree) -> RoomActivityPane {

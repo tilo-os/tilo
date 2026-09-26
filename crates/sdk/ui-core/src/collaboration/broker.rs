@@ -82,7 +82,9 @@ const SDK_DOCUMENT_EVENT_BYTES: usize =
 const SDK_DOCUMENT_EVENT_RETRY: Duration = Duration::from_millis(250);
 const WIFI_CONTINUITY_TIMEOUT: Duration = Duration::from_secs(3);
 
-static WIFI_CONTINUITY_BRIDGE: std::sync::OnceLock<
+/// The connected transport's outbound queue, used by the Settings-only
+/// commands ([`wifi_continuity_command`], [`speaker_command`]).
+static SETTINGS_COMMAND_BRIDGE: std::sync::OnceLock<
     std::sync::Mutex<Option<tokio_mpsc::WeakSender<QueuedSdkCommand>>>,
 > = std::sync::OnceLock::new();
 
@@ -97,7 +99,7 @@ static WIFI_CONTINUITY_BRIDGE: std::sync::OnceLock<
 pub fn wifi_continuity_command(
     command: runtime_collab::WifiContinuityCommand,
 ) -> Result<runtime_collab::WifiContinuityReply, String> {
-    let sender = WIFI_CONTINUITY_BRIDGE
+    let sender = SETTINGS_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .map_err(|_| "Wi-Fi continuity bridge is unavailable".to_string())?
@@ -122,6 +124,44 @@ pub fn wifi_continuity_command(
     reply_rx
         .recv_timeout(WIFI_CONTINUITY_TIMEOUT)
         .map_err(|_| "Wi-Fi continuity service did not respond".to_string())?
+}
+
+const SPEAKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Ask the shell's speaker-group authority over the launcher-authenticated
+/// Settings route. Run it off the frame thread; a lost broker times out into
+/// an ordinary unavailable result.
+///
+/// # Errors
+///
+/// Returns an unavailable message when the collaboration bridge is absent,
+/// its bounded queue rejects the command, or the broker does not reply in time.
+pub fn speaker_command(
+    command: runtime_collab::SpeakerCommand,
+) -> Result<runtime_collab::SpeakerReply, String> {
+    let sender = SETTINGS_COMMAND_BRIDGE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .map_err(|_| "speaker service is unavailable".to_string())?
+        .as_ref()
+        .and_then(tokio_mpsc::WeakSender::upgrade)
+        .ok_or_else(|| "speakers need the certified collaboration service".to_string())?;
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    let state = BridgeState::new();
+    if !enqueue_sdk_command(
+        &sender,
+        SdkCommand::Speakers {
+            app_id: "so.tilo.settings".into(),
+            command,
+            reply: reply_tx,
+        },
+        &state,
+    ) {
+        return Err("speaker command queue is unavailable".into());
+    }
+    reply_rx
+        .recv_timeout(SPEAKER_COMMAND_TIMEOUT)
+        .map_err(|_| "the speaker service did not respond".to_string())?
 }
 
 impl RouteSpec {
@@ -170,7 +210,7 @@ impl BrokerTransport {
 
     /// Route [`wifi_continuity_command`] through this transport.
     fn register_wifi_bridge(&mut self) {
-        if let Ok(mut bridge) = WIFI_CONTINUITY_BRIDGE
+        if let Ok(mut bridge) = SETTINGS_COMMAND_BRIDGE
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
         {
@@ -303,6 +343,11 @@ enum SdkCommand {
         app_id: String,
         command: runtime_collab::WifiContinuityCommand,
         reply: mpsc::SyncSender<Result<runtime_collab::WifiContinuityReply, String>>,
+    },
+    Speakers {
+        app_id: String,
+        command: runtime_collab::SpeakerCommand,
+        reply: mpsc::SyncSender<Result<runtime_collab::SpeakerReply, String>>,
     },
 }
 
@@ -589,6 +634,14 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
             serialized_bytes(command, &mut meter);
             meter.finish()
         }
+        SdkCommand::Speakers {
+            app_id, command, ..
+        } => {
+            let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
+            meter.string_capacity(app_id);
+            serialized_bytes(command, &mut meter);
+            meter.finish()
+        }
     }
 }
 
@@ -724,7 +777,8 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
                 meter.string_capacity(peer_id);
             }
         }
-        CollabEvent::DocumentSnapshotRequested { route } => {
+        CollabEvent::DocumentSnapshotRequested { route }
+        | CollabEvent::ChannelAccess { route, .. } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
                 meter.string_capacity(record);
@@ -1378,6 +1432,13 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
     )
 )]
 trait SdkCertifiedIdentity: Send {
+    fn channel_keys(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        known_generation: u64,
+    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>;
     fn device_certificate(&self) -> Option<&[u8]>;
     fn signing_public_key(&self) -> [u8; 32];
     fn sign_collaboration_join(
@@ -1394,6 +1455,21 @@ trait SdkCertifiedIdentity: Send {
 }
 
 impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
+    fn channel_keys(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        known_generation: u64,
+    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
+        runtime_identity::BrokerSigningIdentity::channel_keys(
+            self,
+            workspace_id,
+            app_id,
+            record_id,
+            known_generation,
+        )
+    }
     fn device_certificate(&self) -> Option<&[u8]> {
         runtime_identity::BrokerSigningIdentity::device_certificate(self)
     }
@@ -1425,6 +1501,21 @@ impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
 
 #[cfg(unix)]
 impl SdkCertifiedIdentity for runtime_identity::SigningIdentity {
+    fn channel_keys(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        known_generation: u64,
+    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
+        runtime_identity::SigningIdentity::channel_keys(
+            self,
+            workspace_id,
+            app_id,
+            record_id,
+            known_generation,
+        )
+    }
     fn device_certificate(&self) -> Option<&[u8]> {
         runtime_identity::SigningIdentity::device_certificate(self)
     }
@@ -2310,6 +2401,11 @@ fn run_shovel(
     state.notify_events();
 }
 
+/// How often an endpoint asks the identity service whether its routes'
+/// channel keys changed. Also bounds how long an edit waits after a new
+/// device is admitted.
+const CHANNEL_KEY_REFRESH: Duration = Duration::from_secs(1);
+
 /// SDK-side event loop: dispatches outbound requests to SDK calls, and
 /// spawns one subscription task per stream on the first `join_channel`.
 // Not `Send`: `client` wraps a capnp-rpc handle (`Rc`-based, `!Send`), and
@@ -2330,6 +2426,15 @@ async fn drive_shovel(
         participant_kind,
         mut signer,
     } = identity;
+    // Every route of a certified endpoint is an encrypted channel whose keys
+    // come from the identity service; only a harness with no such service
+    // stays plaintext.
+    let asks_channel_keys = !matches!(
+        signer,
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_))
+    );
+    let mut key_refresh = tokio::time::interval(CHANNEL_KEY_REFRESH);
+    key_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
     let mut participant_handle: Option<String> = None;
@@ -2338,14 +2443,25 @@ async fn drive_shovel(
     // did not reach the broker, reported to (and cleared by) that barrier.
     let mut unpublished: Option<String> = None;
 
-    while let Some(QueuedSdkCommand {
-        command,
-        _reservation,
-    }) = outbound_rx.recv().await
-    {
+    loop {
+        let queued = tokio::select! {
+            queued = outbound_rx.recv() => queued,
+            _ = key_refresh.tick(), if asks_channel_keys => {
+                refresh_all_route_keys(&routes, &mut signer, &inbound_tx).await;
+                continue;
+            }
+        };
+        let Some(QueuedSdkCommand {
+            command,
+            _reservation,
+        }) = queued
+        else {
+            break;
+        };
         if !inbound_tx.state.is_healthy() {
             break;
         }
+        let routes_before = routes.len();
         let document = command.document_len().is_some();
         let mut published = true;
         match command {
@@ -2372,6 +2488,7 @@ async fn drive_shovel(
                         &inbound_tx,
                         &mut routes,
                         &spec,
+                        asks_channel_keys,
                     ),
                 )
                 .await
@@ -2402,6 +2519,7 @@ async fn drive_shovel(
                     &inbound_tx,
                     &mut routes,
                     &spec,
+                    asks_channel_keys,
                 )
                 .await;
             }
@@ -2415,6 +2533,7 @@ async fn drive_shovel(
                     &inbound_tx,
                     &mut routes,
                     &spec,
+                    asks_channel_keys,
                 )
                 .await;
                 if joined.is_ok()
@@ -2443,6 +2562,7 @@ async fn drive_shovel(
             SdkCommand::InstallEncryption { spec, group, reply } => {
                 let result = install_sdk_encryption(
                     SdkJoinContext {
+                        asks_channel_keys,
                         client: &client,
                         presentation: &presentation,
                         participant_handle: participant_handle.as_deref(),
@@ -2494,9 +2614,32 @@ async fn drive_shovel(
                 };
                 let _ = reply.send(result);
             }
+            SdkCommand::Speakers {
+                app_id,
+                command,
+                reply,
+            } => {
+                let result = if let Some(key) = primary.as_ref()
+                    && let Some(route) = routes.get_mut(key)
+                {
+                    route
+                        .channel
+                        .speaker_command(&app_id, &command)
+                        .await
+                        .map_err(|error| error.to_string())
+                } else {
+                    Err("primary collaboration route is unavailable".into())
+                };
+                let _ = reply.send(result);
+            }
         }
         if document && !published && unpublished.is_none() {
             unpublished = Some("a document mutation did not reach the broker".into());
+        }
+        if asks_channel_keys && routes.len() > routes_before {
+            // A route joined just now learns its keys (or that it waits)
+            // before its first edit rather than at the next tick.
+            refresh_all_route_keys(&routes, &mut signer, &inbound_tx).await;
         }
     }
 }
@@ -2520,20 +2663,22 @@ async fn install_sdk_encryption(
         context.inbound_tx,
         routes,
         &spec,
+        context.asks_channel_keys,
     )
     .await?;
     let route = routes
         .get_mut(&key)
         .ok_or_else(|| "joined MLS route disappeared".to_string())?;
-    *route
+    route
         .encryption
         .lock()
-        .map_err(|_| "MLS endpoint state is unavailable after a poisoned lock".to_string())? =
-        Some(group);
+        .map_err(|_| "MLS endpoint state is unavailable after a poisoned lock".to_string())?
+        .install_group(group);
     Ok(())
 }
 
 struct SdkJoinContext<'a> {
+    asks_channel_keys: bool,
     client: &'a runtime_collab::CollabClient,
     presentation: &'a [u8],
     participant_handle: Option<&'a str>,
@@ -2546,7 +2691,7 @@ struct SdkRoute {
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
-    encryption: std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
+    encryption: SharedRouteKeys,
 }
 
 // Not `Send`: `client`/`channel` wrap capnp-rpc handles, which are
@@ -2565,6 +2710,7 @@ async fn ensure_sdk_route(
     inbound_tx: &InboundBridge,
     routes: &mut std::collections::HashMap<String, SdkRoute>,
     spec: &RouteSpec,
+    asks_channel_keys: bool,
 ) -> Result<(), String> {
     let channel_id = spec.channel_id();
     if routes.contains_key(&channel_id) {
@@ -2588,7 +2734,11 @@ async fn ensure_sdk_route(
         }
     };
 
-    let encryption = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let encryption = std::sync::Arc::new(std::sync::Mutex::new(if asks_channel_keys {
+        super::route_keys::RouteKeys::requested()
+    } else {
+        super::route_keys::RouteKeys::plain()
+    }));
     spawn_op_stream(&channel, inbound_tx, std::sync::Arc::clone(&encryption)).await;
     spawn_context_stream(&channel, spec.clone(), inbound_tx).await;
     spawn_action_stream(&channel, inbound_tx).await;
@@ -2628,7 +2778,7 @@ async fn ensure_sdk_route(
 async fn spawn_op_stream(
     channel: &runtime_collab::ChannelHandle,
     inbound_tx: &InboundBridge,
-    encryption: std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
+    encryption: SharedRouteKeys,
 ) {
     if let Ok(stream) = channel.subscribe().await {
         let tx = inbound_tx.clone();
@@ -2638,6 +2788,7 @@ async fn spawn_op_stream(
                     Ok(envelope) => {
                         match signed_document_event(envelope, event.from_user_id, &encryption) {
                             Ok(event) => event,
+                            Err(UndeliveredDocument::Held) => continue,
                             Err(error) => {
                                 tracing::warn!(
                                     %error,
@@ -2950,8 +3101,12 @@ async fn send_document_mutation(
     true
 }
 
-/// Encrypt (on MLS routes), sign and send one typed document frame.
-/// Returns whether the broker accepted it.
+/// Encrypt, sign and send one typed document frame, or hold it on the
+/// device while the route waits for its channel keys. Returns whether the
+/// frame was sent or held. A frame the broker refuses is sent once more
+/// after a key refresh that found newer keys: a membership change moves the
+/// channel to a new epoch, and the broker refuses content sealed under an
+/// older one.
 #[allow(
     clippy::future_not_send,
     reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet"
@@ -2962,14 +3117,39 @@ async fn send_document_frame(
     cleartext: Vec<u8>,
     bridge_state: &BridgeState,
 ) -> bool {
+    match try_send_frame(route, signer, cleartext.clone(), bridge_state).await {
+        FrameSend::Sent | FrameSend::Held => true,
+        FrameSend::Failed => false,
+        FrameSend::Refused => {
+            refresh_route_keys(route, signer).await
+                && matches!(
+                    try_send_frame(route, signer, cleartext, bridge_state).await,
+                    FrameSend::Sent | FrameSend::Held
+                )
+        }
+    }
+}
+
+#[allow(
+    clippy::future_not_send,
+    clippy::too_many_lines,
+    reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet; sealing, signing and sending one frame stay one auditable path"
+)]
+async fn try_send_frame(
+    route: &SdkRoute,
+    signer: &mut LocalSdkDocumentSigner,
+    cleartext: Vec<u8>,
+    bridge_state: &BridgeState,
+) -> FrameSend {
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
     let artifact = collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, record_id);
-    let Some((payload, encryption_metadata)) =
-        prepare_document_payload(&route.encryption, artifact, cleartext)
-    else {
-        return false;
-    };
+    let (payload, encryption_metadata) =
+        match prepare_document_payload(&route.encryption, artifact, cleartext) {
+            PreparedFrame::Ready(payload, metadata) => (payload, metadata),
+            PreparedFrame::Held => return FrameSend::Held,
+            PreparedFrame::Failed => return FrameSend::Failed,
+        };
     let now = crate::time::wall();
     let author = match signer {
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
@@ -3009,7 +3189,7 @@ async fn send_document_frame(
         Ok(bytes) => bytes,
         Err(error) => {
             tracing::warn!(%error, "collab: unsigned document envelope would not encode; dropping");
-            return false;
+            return FrameSend::Failed;
         }
     };
     let signature = match signer {
@@ -3022,7 +3202,7 @@ async fn send_document_frame(
                     ?error,
                     "collab: identity service denied document operation; dropping"
                 );
-                return false;
+                return FrameSend::Failed;
             }
         },
         LocalSdkDocumentSigner::Host(identity) => match identity
@@ -3038,7 +3218,7 @@ async fn send_document_frame(
                     ?error,
                     "collab: host identity service denied document operation; dropping"
                 );
-                return false;
+                return FrameSend::Failed;
             }
         },
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key)) => {
@@ -3047,7 +3227,7 @@ async fn send_document_frame(
                 Ok(bytes) => bytes,
                 Err(error) => {
                     tracing::warn!(%error, "collab: document op would not canonicalize; dropping");
-                    return false;
+                    return FrameSend::Failed;
                 }
             };
             key.sign(&signing_bytes).to_bytes()
@@ -3056,15 +3236,15 @@ async fn send_document_frame(
     op.signature = collab_types::Signature::from_bytes(signature);
     match postcard::to_stdvec(&op) {
         Ok(bytes) => match route.channel.send(&bytes).await {
-            Ok(()) => true,
+            Ok(()) => FrameSend::Sent,
             Err(error) => {
                 tracing::warn!(%error, "collab: broker refused document operation");
-                false
+                FrameSend::Refused
             }
         },
         Err(error) => {
             tracing::warn!(%error, "collab: signed document envelope would not encode; dropping");
-            false
+            FrameSend::Failed
         }
     }
 }
@@ -3087,24 +3267,145 @@ fn document_frame_retention(cleartext: &[u8]) -> collab_types::ContentRetention 
 }
 
 /// Seal one frame under the route's current channel content key, so every
-/// member — including one added later — can read it from history.
+/// member — including one added later — can read it from history. A route
+/// still waiting for its keys keeps the frame on the device instead.
 fn prepare_document_payload(
-    encryption: &std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
+    encryption: &SharedRouteKeys,
     artifact: collab_types::ArtifactId,
     cleartext: Vec<u8>,
-) -> Option<(Vec<u8>, Option<collab_types::EncryptionMetadata>)> {
-    let Ok(guard) = encryption.lock() else {
-        tracing::warn!("collab: MLS endpoint lock poisoned; dropping mutation");
-        return None;
+) -> PreparedFrame {
+    let Ok(mut keys) = encryption.lock() else {
+        tracing::warn!("collab: route key state lock poisoned; dropping mutation");
+        return PreparedFrame::Failed;
     };
-    let Some(group) = guard.as_ref() else {
-        return Some((cleartext, None));
+    let retention = document_frame_retention(&cleartext);
+    match keys.seal(artifact, retention, cleartext.clone()) {
+        super::route_keys::Sealed::Ready(payload, metadata) => {
+            PreparedFrame::Ready(payload, metadata)
+        }
+        super::route_keys::Sealed::Hold => {
+            if keys.hold_outbound(cleartext) {
+                PreparedFrame::Held
+            } else {
+                tracing::warn!("collab: too many edits waiting for channel access; dropping");
+                PreparedFrame::Failed
+            }
+        }
+        super::route_keys::Sealed::Refused(reason) => {
+            tracing::warn!(%reason, "collab: dropping mutation");
+            PreparedFrame::Failed
+        }
+    }
+}
+
+enum PreparedFrame {
+    Ready(Vec<u8>, Option<collab_types::EncryptionMetadata>),
+    Held,
+    Failed,
+}
+
+/// How one frame's send ended.
+enum FrameSend {
+    Sent,
+    Held,
+    /// Not sealed or not signed; retrying cannot help.
+    Failed,
+    /// The broker refused it, possibly because its keys were stale.
+    Refused,
+}
+
+/// Ask the identity service for `route`'s current keys. Returns whether
+/// the route's state or keys changed.
+#[allow(
+    clippy::future_not_send,
+    reason = "the host identity transport is retained only on the shovel LocalSet"
+)]
+async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigner) -> bool {
+    let Ok(known) = route.encryption.lock().map(|keys| {
+        keys.asks_identity_service()
+            .then(|| (keys.generation(), keys.state()))
+    }) else {
+        return false;
     };
-    match group.seal_content(artifact, document_frame_retention(&cleartext), &cleartext) {
-        Ok((metadata, ciphertext)) => Some((ciphertext, Some(metadata))),
+    let Some((generation, state)) = known else {
+        return false;
+    };
+    let workspace_id = route.spec.cluster_id.to_string();
+    let record_id = route.spec.record.as_deref().unwrap_or("");
+    let reply = match signer {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
+            identity.channel_keys(&workspace_id, &route.spec.app_id, record_id, generation)
+        }
+        LocalSdkDocumentSigner::Host(identity) => {
+            identity
+                .channel_keys(&workspace_id, &route.spec.app_id, record_id, generation)
+                .await
+        }
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_)) => return false,
+    };
+    let reply = match reply {
+        Ok(reply) => reply,
         Err(error) => {
-            tracing::warn!(%error, "collab: content encryption failed; dropping mutation");
-            None
+            tracing::debug!(?error, "collab: identity service refused channel keys");
+            runtime_identity::wire::ChannelKeysReply {
+                access: runtime_identity::wire::ChannelAccess::Unavailable,
+                generation,
+                keys: None,
+            }
+        }
+    };
+    let Ok(mut keys) = route.encryption.lock() else {
+        return false;
+    };
+    keys.update(reply.access, reply.generation, reply.keys.as_deref());
+    keys.generation() != generation || keys.state() != state
+}
+
+/// Bring every route's keys up to date, report access changes to the app,
+/// then send the edits and deliver the ciphertext that waited on them.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+)]
+async fn refresh_all_route_keys(
+    routes: &std::collections::HashMap<String, SdkRoute>,
+    signer: &mut LocalSdkDocumentSigner,
+    inbound_tx: &InboundBridge,
+) {
+    for route in routes.values() {
+        refresh_route_keys(route, signer).await;
+        let (state, outbound, inbound) = {
+            let Ok(mut keys) = route.encryption.lock() else {
+                continue;
+            };
+            (
+                keys.take_state_change(),
+                keys.take_held_outbound(),
+                keys.take_held_inbound(),
+            )
+        };
+        if let Some(state) = state
+            && !inbound_tx.send_durable(CollabEvent::ChannelAccess {
+                route: route.spec.clone(),
+                state,
+            })
+        {
+            return;
+        }
+        for frame in outbound {
+            if !send_document_frame(route, signer, frame, &inbound_tx.state).await {
+                tracing::warn!("collab: an edit that waited for channel access was not sent");
+            }
+        }
+        for (envelope, from_user_id) in inbound {
+            let Ok(event) = signed_document_event(envelope, from_user_id, &route.encryption) else {
+                continue;
+            };
+            if let Some(complete) = complete_document_event(event, &inbound_tx.reassembly.live)
+                && !inbound_tx.send_document(complete).await
+            {
+                return;
+            }
         }
     }
 }
@@ -3410,7 +3711,7 @@ async fn dispatch_sdk_request(
                     let oldest_seq = decoded.iter().map(|op| op.seq).min();
                     let ops = decoded
                         .into_iter()
-                        .filter_map(|op| match decrypt_document_payload(&op, &route.encryption) {
+                        .filter_map(|op| match decrypt_document_payload(&op, &route.encryption, false) {
                             // History pages arrive newest first, so a
                             // transfer split across pages completes when its
                             // oldest segment arrives.
@@ -3423,7 +3724,11 @@ async fn dispatch_sdk_request(
                                 payloads.push(payload);
                                 Box::new(op)
                             }),
-                            Err(error) => {
+                            Err(DecryptFailure::Later) => {
+                                // Paged again once this device holds the key.
+                                None
+                            }
+                            Err(DecryptFailure::Refused(error)) => {
                                 tracing::warn!(%error, "collab: dropping undecryptable scrollback envelope");
                                 None
                             }
@@ -3717,62 +4022,92 @@ fn complete_document_event(
     })
 }
 
+/// Shared per-route key state: the op stream opens with it, sends seal
+/// with it, and key refreshes update it.
+type SharedRouteKeys = std::sync::Arc<std::sync::Mutex<super::route_keys::RouteKeys>>;
+
+/// Why an inbound document envelope was not delivered.
+#[derive(Debug)]
+enum UndeliveredDocument {
+    /// No key for it yet; it was held for when keys arrive.
+    Held,
+    /// Refused: downgrade, wrong channel, tampering, or a malformed frame.
+    Refused(collab_types::DocumentMutationError),
+}
+
+impl std::fmt::Display for UndeliveredDocument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Held => f.write_str("held until this device has the channel's keys"),
+            Self::Refused(error) => error.fmt(f),
+        }
+    }
+}
+
+/// Open a live envelope into a document event, or hold it on the route
+/// while this device waits for the channel's keys.
 fn signed_document_event(
     envelope: SignedOp,
     from_user_id: String,
-    encryption: &std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
-) -> Result<CollabEvent, collab_types::DocumentMutationError> {
-    let decrypted_payload = decrypt_document_payload(&envelope, encryption)?;
-    Ok(CollabEvent::Document {
-        envelope: Box::new(envelope),
-        from_user_id,
-        decrypted_payload,
-    })
+    encryption: &SharedRouteKeys,
+) -> Result<CollabEvent, UndeliveredDocument> {
+    match decrypt_document_payload(&envelope, encryption, true) {
+        Ok(decrypted_payload) => Ok(CollabEvent::Document {
+            envelope: Box::new(envelope),
+            from_user_id,
+            decrypted_payload,
+        }),
+        Err(DecryptFailure::Later) => {
+            if let Ok(mut keys) = encryption.lock() {
+                keys.hold_inbound(envelope, from_user_id);
+            }
+            Err(UndeliveredDocument::Held)
+        }
+        Err(DecryptFailure::Refused(error)) => Err(UndeliveredDocument::Refused(error)),
+    }
 }
 
+enum DecryptFailure {
+    Later,
+    Refused(collab_types::DocumentMutationError),
+}
+
+/// Open an envelope's typed payload. `live` envelopes on an encrypted
+/// route must be ciphertext; history pages may still carry plaintext the
+/// broker admitted before the channel was encrypted.
 fn decrypt_document_payload(
     envelope: &SignedOp,
-    encryption: &std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
-) -> Result<Option<Vec<u8>>, collab_types::DocumentMutationError> {
-    if let Some(metadata) = envelope.encryption {
-        let mut guard = encryption
-            .lock()
-            .map_err(|_| collab_types::DocumentMutationError::RouteMismatch)?;
-        let group = guard
-            .as_mut()
-            .ok_or(collab_types::DocumentMutationError::RouteMismatch)?;
-        if group.channel_id() != metadata.channel {
-            return Err(collab_types::DocumentMutationError::RouteMismatch);
+    encryption: &SharedRouteKeys,
+    live: bool,
+) -> Result<Option<Vec<u8>>, DecryptFailure> {
+    let refused = |error| DecryptFailure::Refused(error);
+    let opened = encryption
+        .lock()
+        .map_err(|_| refused(collab_types::DocumentMutationError::RouteMismatch))?
+        .open(envelope, live);
+    match opened {
+        Ok(Some(plaintext)) => {
+            let plaintext = plaintext.to_vec();
+            collab_types::DocumentFrame::decode(&plaintext).map_err(refused)?;
+            // The clear storage class hosts retained the op under must
+            // describe what it actually contains.
+            if envelope
+                .encryption
+                .and_then(|metadata| metadata.retention())
+                .is_some_and(|retention| retention != document_frame_retention(&plaintext))
+            {
+                return Err(refused(collab_types::DocumentMutationError::RouteMismatch));
+            }
+            Ok(Some(plaintext))
         }
-        // Content-key ops open from any epoch this member holds a key for
-        // (history included); v1 MLS messages only at the current epoch.
-        let plaintext = group
-            .open_content(envelope.artifact, &metadata, &envelope.payload)
-            .map_err(|_| collab_types::DocumentMutationError::RouteMismatch)?
-            .to_vec();
-        drop(guard);
-        let _frame = collab_types::DocumentFrame::decode(&plaintext)?;
-        // The clear storage class hosts retained the op under must describe
-        // what it actually contains.
-        if metadata
-            .retention()
-            .is_some_and(|retention| retention != document_frame_retention(&plaintext))
-        {
-            return Err(collab_types::DocumentMutationError::RouteMismatch);
+        Ok(None) => {
+            collab_types::DocumentFrame::decode(&envelope.payload).map_err(refused)?;
+            Ok(None)
         }
-        Ok(Some(plaintext))
-    } else {
-        if encryption
-            .lock()
-            .map_err(|_| collab_types::DocumentMutationError::RouteMismatch)?
-            .is_some()
-        {
-            // Once provisioned, accepting a plaintext envelope would be an
-            // active downgrade. There is no opportunistic fallback.
-            return Err(collab_types::DocumentMutationError::RouteMismatch);
+        Err(super::route_keys::Unopened::Later) => Err(DecryptFailure::Later),
+        Err(super::route_keys::Unopened::Never) => {
+            Err(refused(collab_types::DocumentMutationError::RouteMismatch))
         }
-        let _frame = collab_types::DocumentFrame::decode(&envelope.payload)?;
-        Ok(None)
     }
 }
 
@@ -3871,6 +4206,18 @@ mod tests {
 
     use super::*;
     use crate::collaboration::{CollaborationState, SignedSendError, SigningIdentity};
+
+    fn plain_route_keys() -> SharedRouteKeys {
+        std::sync::Arc::new(std::sync::Mutex::new(
+            super::super::route_keys::RouteKeys::plain(),
+        ))
+    }
+
+    fn group_route_keys(group: channel_crypto::ChannelGroup) -> SharedRouteKeys {
+        let keys = plain_route_keys();
+        keys.lock().unwrap().install_group(group);
+        keys
+    }
 
     use crate::time::Duration;
     use std::cell::RefCell;
@@ -4417,6 +4764,17 @@ mod tests {
         certificate: Option<Vec<u8>>,
         replies: Vec<runtime_identity::wire::Response>,
     ) -> (tokio::io::DuplexStream, Arc<std::sync::Mutex<Vec<u8>>>) {
+        host_identity_fixture_with_keys(certificate, replies, None)
+    }
+
+    /// A scripted identity service. `ChannelKeys` requests arrive on the
+    /// endpoint's own refresh cadence, so they are answered from `keys`
+    /// (or as unavailable) without consuming the scripted `replies`.
+    fn host_identity_fixture_with_keys(
+        certificate: Option<Vec<u8>>,
+        replies: Vec<runtime_identity::wire::Response>,
+        keys: Option<(u64, Vec<u8>)>,
+    ) -> (tokio::io::DuplexStream, Arc<std::sync::Mutex<Vec<u8>>>) {
         use runtime_identity::wire::Response;
         let mut responses = vec![Response::Metadata {
             display_name: "Host fixture".into(),
@@ -4434,7 +4792,8 @@ mod tests {
         let (client, mut server) = tokio::io::duplex(64 * 1024);
         tokio::task::spawn_local(async move {
             let framing = runtime_identity::wire::FRAMING;
-            for response in responses {
+            let mut responses = responses.into_iter();
+            loop {
                 let Ok(Some(body)) = framing.read_async(&mut server).await else {
                     return;
                 };
@@ -4442,6 +4801,29 @@ mod tests {
                     .lock()
                     .unwrap()
                     .extend_from_slice(&framing.encode(&body).unwrap());
+                let asks_keys = matches!(
+                    postcard::from_bytes::<runtime_identity::wire::Request>(&body),
+                    Ok(runtime_identity::wire::Request::ChannelKeys { .. })
+                );
+                let response = if asks_keys {
+                    match &keys {
+                        Some((generation, keys)) => Response::ChannelKeys {
+                            access: runtime_identity::wire::ChannelAccess::Ready,
+                            generation: *generation,
+                            keys: keys.clone(),
+                        },
+                        None => Response::ChannelKeys {
+                            access: runtime_identity::wire::ChannelAccess::Unavailable,
+                            generation: 0,
+                            keys: Vec::new(),
+                        },
+                    }
+                } else {
+                    let Some(response) = responses.next() else {
+                        return;
+                    };
+                    response
+                };
                 if framing
                     .write_value_async(&mut server, &response)
                     .await
@@ -4623,13 +5005,26 @@ mod tests {
         let broker_captures = captures.clone();
         let (requests_tx, requests_rx) = mpsc::sync_channel(1);
         let cluster_id = Uuid::new_v4();
+        let channel =
+            collab_types::document_channel_id("so.tilo.notes", &cluster_id.to_string(), "note");
+        let keys = channel_crypto::ChannelGroup::create(
+            channel,
+            channel_crypto::MemberKey::generate("device").unwrap(),
+        )
+        .unwrap()
+        .content_keys()
+        .unwrap()
+        .to_bytes()
+        .unwrap()
+        .to_vec();
         let connector = HostSessionConnector::new(move |_| async move {
-            let (identity, requests) = host_identity_fixture(
+            let (identity, requests) = host_identity_fixture_with_keys(
                 Some(b"fixture certificate".to_vec()),
                 vec![
                     runtime_identity::wire::Response::Signature(vec![7; 64]),
                     runtime_identity::wire::Response::Denied("fixture role revoked".into()),
                 ],
+                Some((1, keys)),
             );
             requests_tx.send(requests).unwrap();
             let broker = FakeBroker {
@@ -4681,15 +5076,28 @@ mod tests {
         manager.send(CollabRequest::document_incremental(
             b"fixture document change".to_vec(),
         ));
+        let is_op = |request: &runtime_identity::wire::Request| {
+            matches!(
+                request,
+                runtime_identity::wire::Request::CollaborationOp { .. }
+            )
+        };
         assert!(wait_until(
-            || host_identity_requests(&requests.lock().unwrap()).len() == 3,
+            || host_identity_requests(&requests.lock().unwrap())
+                .iter()
+                .any(is_op),
             HANG_GUARD
         ));
         let requests = host_identity_requests(&requests.lock().unwrap());
         assert!(
             matches!(&requests[1], runtime_identity::wire::Request::CollaborationJoin { workspace_id } if workspace_id == &cluster_id.to_string())
         );
-        match &requests[2] {
+        assert!(
+            matches!(&requests[2], runtime_identity::wire::Request::ChannelKeys { app_id, record_id, .. } if app_id == "so.tilo.notes" && record_id == "note"),
+            "a joined route asks for its channel keys before its first edit"
+        );
+        let op = requests.iter().find(|request| is_op(request)).unwrap();
+        match op {
             runtime_identity::wire::Request::CollaborationOp {
                 workspace_id,
                 app_id,
@@ -4703,6 +5111,12 @@ mod tests {
                 assert_eq!(
                     op.author,
                     collab_types::Ed25519PublicKey::from_bytes([5; 32])
+                );
+                assert_ne!(op.payload, b"fixture document change".to_vec());
+                assert_eq!(
+                    op.encryption.map(|metadata| metadata.channel),
+                    Some(channel),
+                    "a certified endpoint seals under the route's channel"
                 );
             }
             _ => panic!("document must use the broker policy path"),
@@ -5967,12 +6381,7 @@ mod tests {
             crate::time::SystemTime::UNIX_EPOCH,
             43,
         );
-        let event = signed_document_event(
-            op,
-            "peer-alice".into(),
-            &std::sync::Arc::new(std::sync::Mutex::new(None)),
-        )
-        .unwrap();
+        let event = signed_document_event(op, "peer-alice".into(), &plain_route_keys()).unwrap();
         assert!(matches!(
             &event,
             CollabEvent::Document { from_user_id, .. } if from_user_id == "peer-alice"
@@ -6001,9 +6410,12 @@ mod tests {
         let plaintext = DocumentMutation::Incremental(b"secret change".to_vec())
             .encode()
             .unwrap();
-        let alice_endpoint = std::sync::Arc::new(std::sync::Mutex::new(Some(alice)));
-        let (ciphertext, metadata) =
-            prepare_document_payload(&alice_endpoint, artifact, plaintext.clone()).unwrap();
+        let alice_endpoint = group_route_keys(alice);
+        let PreparedFrame::Ready(ciphertext, metadata) =
+            prepare_document_payload(&alice_endpoint, artifact, plaintext.clone())
+        else {
+            panic!("a provisioned endpoint seals at once");
+        };
         let metadata = metadata.expect("a provisioned endpoint never sends plaintext");
         assert_eq!(metadata.channel, channel);
         assert_eq!(
@@ -6023,7 +6435,7 @@ mod tests {
             )
         };
         let op = build(ciphertext.clone(), artifact, metadata);
-        let endpoint = std::sync::Arc::new(std::sync::Mutex::new(Some(bob)));
+        let endpoint = group_route_keys(bob);
         for _ in 0..2 {
             // Live delivery and a later scrollback read of the same op.
             let event = signed_document_event(op.clone(), "alice".into(), &endpoint).unwrap();
@@ -6075,13 +6487,13 @@ mod tests {
 
         // A member added afterwards reads the op from history.
         let carol_key = channel_crypto::MemberKey::generate("carol").unwrap();
-        let addition = alice_endpoint
-            .lock()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .admit(carol_key.fresh_key_package().unwrap())
-            .unwrap();
+        let addition = {
+            let mut keys = alice_endpoint.lock().unwrap();
+            let super::super::route_keys::Keys::Group(group) = &mut keys.keys else {
+                panic!("alice's endpoint holds her group");
+            };
+            group.admit(carol_key.fresh_key_package().unwrap()).unwrap()
+        };
         let carol = channel_crypto::ChannelGroup::process_welcome_with_history(
             channel,
             &addition.welcome,
@@ -6089,7 +6501,7 @@ mod tests {
             carol_key,
         )
         .unwrap();
-        let carol_endpoint = std::sync::Arc::new(std::sync::Mutex::new(Some(carol)));
+        let carol_endpoint = group_route_keys(carol);
         let event = signed_document_event(op, "alice".into(), &carol_endpoint).unwrap();
         assert!(matches!(
             event.document_mutation(),

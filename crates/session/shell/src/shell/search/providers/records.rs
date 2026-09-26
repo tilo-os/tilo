@@ -18,6 +18,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use ui::search::{FieldWeight, RankField};
+
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::room_records::{KnownRecord, RoomRecords};
 use crate::shell::search::{
@@ -355,44 +357,17 @@ fn decode_cursor(token: &str, needle: &str) -> Result<Option<String>, InvalidCur
     Ok((!after.is_empty()).then(|| after.to_string()))
 }
 
-/// How well `needle` names this record. Title first; the identity is
-/// matched last and lowest — a file record's id contains its whole path,
-/// so a directory-name match is a weaker signal than the title matching.
+/// How well `needle` names this record, by the shared ranker. Title first;
+/// the identity is matched last and lowest — a file record's id contains its
+/// whole path, so a directory-name match is a weaker signal than the title.
 fn match_score(needle: &str, title: &str, id: &str) -> Option<i32> {
-    let title = title.to_lowercase();
-    if title == needle {
-        return Some(MAX_SCORE);
-    }
-    if title.starts_with(needle) {
-        return Some(88);
-    }
-    if starts_a_word(&title, needle) {
-        return Some(72);
-    }
-    if title.contains(needle) {
-        return Some(60);
-    }
-    if id.to_lowercase().contains(needle) {
-        return Some(30);
-    }
-    None
-}
-
-/// Does `needle` start a word inside `haystack`? `dune` matches
-/// `the-dune-notes.md` here but not `redundant.md`.
-fn starts_a_word(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() {
-        return false;
-    }
-    haystack.match_indices(needle).any(|(at, _)| {
-        at == 0
-            || haystack.get(..at).is_some_and(|prefix| {
-                !prefix
-                    .chars()
-                    .next_back()
-                    .is_some_and(char::is_alphanumeric)
-            })
-    })
+    crate::shell::search::rank_fields(
+        needle,
+        &[
+            RankField::new(title, FieldWeight::TITLE),
+            RankField::new(id, FieldWeight::IDENTITY),
+        ],
+    )
 }
 
 #[cfg(test)]

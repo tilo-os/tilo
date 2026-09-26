@@ -376,7 +376,7 @@ fn tab_layout_drives_the_client_configure_size() {
     let _ = frame(&mut fb);
 
     let first = store()
-        .take_pending_configure(surface_id, 1.0)
+        .take_pending_configure(surface_id)
         .expect("the first layout must produce a configure");
     let rect = tile_rect(&mut fb, surface_id);
     assert_eq!(
@@ -385,7 +385,7 @@ fn tab_layout_drives_the_client_configure_size() {
         "the configure carries the tab's laid-out size"
     );
     assert_eq!(
-        store().take_pending_configure(surface_id, 1.0),
+        store().take_pending_configure(surface_id),
         None,
         "an unchanged layout must not re-configure the client every frame"
     );
@@ -394,7 +394,7 @@ fn tab_layout_drives_the_client_configure_size() {
     fb.set_viewport((900, 600));
     let _ = frame(&mut fb);
     let resized = store()
-        .take_pending_configure(surface_id, 1.0)
+        .take_pending_configure(surface_id)
         .expect("a resized tab must re-configure the client");
     let rect_after = tile_rect(&mut fb, surface_id);
     assert_eq!(

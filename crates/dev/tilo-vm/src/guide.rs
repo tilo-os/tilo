@@ -195,7 +195,7 @@ mod tests {
         let images = topic("images").unwrap();
         assert!(images.contains("## Pick the fastest loop"));
         assert!(images.contains("--from sha:<commit>"));
-        assert!(images.contains("code.sandbox.example/qos/tilo-ci:main-<sha7>-<arch>"));
+        assert!(images.contains("registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch>"));
     }
 
     #[test]
@@ -209,6 +209,7 @@ mod tests {
                 "`--slot` for `swap`",
                 "cargo install --locked --path crates/dev/tilo-vm",
                 "refusing to deploy",
+                "podman login code.tilo.so",
             ] {
                 assert!(!text.contains(stale), "guide {name} still says `{stale}`");
             }

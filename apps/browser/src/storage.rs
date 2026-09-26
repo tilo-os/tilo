@@ -3,13 +3,13 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 static ROOT: OnceLock<PathBuf> = OnceLock::new();
 static PRIVATE_ROOT: OnceLock<PathBuf> = OnceLock::new();
-pub const PRIVATE_ROOT_PREFIX: &str = "qos-browser-private-";
-pub const PRIVATE_ROOT_MARKER: &str = ".qos-private-root-v1";
-pub const PRIVATE_ROOT_MARKER_CONTENT: &str = "qos-browser-owned-private-root-v1\n";
-pub const PRIVATE_ROOT_LOCK: &str = ".qos-private-root.lock";
-const PRIVATE_ROOT_OWNER: &str = ".qos-private-owner-pid";
+pub const PRIVATE_ROOT_PREFIX: &str = "tilo-browser-private-";
+pub const PRIVATE_ROOT_MARKER: &str = ".tilo-private-root-v1";
+pub const PRIVATE_ROOT_MARKER_CONTENT: &str = "tilo-browser-owned-private-root-v1\n";
+pub const PRIVATE_ROOT_LOCK: &str = ".tilo-private-root.lock";
+const PRIVATE_ROOT_OWNER: &str = ".tilo-private-owner-pid";
 #[cfg(unix)]
-const PRIVATE_ROOT_HELPER: &str = ".qos-private-helper-pid";
+const PRIVATE_ROOT_HELPER: &str = ".tilo-private-helper-pid";
 /// Configure the optional browser data root once for this process.
 ///
 /// # Errors
@@ -17,7 +17,7 @@ const PRIVATE_ROOT_HELPER: &str = ".qos-private-helper-pid";
 pub fn configure(root: Option<&str>) -> Result<(), String> {
     let root = root
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("QOS_BROWSER_APP_ROOT").map(PathBuf::from));
+        .or_else(|| std::env::var_os("TILO_BROWSER_APP_ROOT").map(PathBuf::from));
     if let Some(root) = root {
         if !root.is_absolute() {
             return Err("Browser app root must be an absolute path".into());
@@ -41,17 +41,17 @@ pub fn explicit_root() -> Option<&'static Path> {
 pub fn data_dir() -> Option<PathBuf> {
     ROOT.get()
         .cloned()
-        .or_else(|| xdg_paths::data_dir().map(|p| p.join("qos-browser")))
+        .or_else(|| xdg_paths::data_dir().map(|p| p.join("tilo-browser")))
 }
 pub fn config_dir() -> Option<PathBuf> {
     ROOT.get()
         .cloned()
-        .or_else(|| xdg_paths::config_dir().map(|p| p.join("qos-browser")))
+        .or_else(|| xdg_paths::config_dir().map(|p| p.join("tilo-browser")))
 }
 pub fn cache_dir() -> Option<PathBuf> {
     ROOT.get()
         .map(|p| p.join("cache"))
-        .or_else(|| xdg_paths::cache_dir().map(|p| p.join("qos-browser")))
+        .or_else(|| xdg_paths::cache_dir().map(|p| p.join("tilo-browser")))
 }
 
 /// Create and mark an isolated private-storage directory.

@@ -190,44 +190,17 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
 /// Decode raster cover bytes (JPEG/PNG) into downscaled RGBA. Returns `None`
 /// on any decode failure so a broken cover never breaks the shelf.
 fn decode_cover(bytes: &[u8]) -> Option<Cover> {
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_COVER_DIMENSION);
-    limits.max_image_height = Some(MAX_COVER_DIMENSION);
-    // The pixel check below is strict for every format. Keep the decoder's
-    // temporary allocation budget aligned with it as an additional guard for
-    // codecs that support allocation limits.
-    limits.max_alloc = Some(MAX_COVER_PIXELS * 4);
-    let dimensions_reader = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
-    let mut dimensions_reader = dimensions_reader;
-    dimensions_reader.limits(limits.clone());
-    let (w, h) = dimensions_reader.into_dimensions().ok()?;
-    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_COVER_PIXELS {
-        return None;
-    }
-    // Re-create the reader after the header-only dimensions pass. Decoding is
-    // now safe to do because both the member bytes and decoded dimensions were
-    // bounded before an image buffer was allocated.
-    let mut reader = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
-    reader.limits(limits);
-    let img = reader.decode().ok()?;
-    let scaled = if w.max(h) > COVER_MAX_EDGE {
-        let scale = COVER_MAX_EDGE as f32 / w.max(h) as f32;
-        let nw = ((w as f32 * scale).round() as u32).max(1);
-        let nh = ((h as f32 * scale).round() as u32).max(1);
-        img.resize_exact(nw, nh, image::imageops::FilterType::Triangle)
-    } else {
-        img
+    // The shared preview decoder checks the declared dimensions against these
+    // bounds before an image buffer is allocated.
+    let limits = thumbnail::DecodeLimits {
+        max_pixels: MAX_COVER_PIXELS,
+        max_dimension: MAX_COVER_DIMENSION,
     };
-    let rgba = scaled.to_rgba8();
-    let (width, height) = (rgba.width(), rgba.height());
+    let cover = thumbnail::image_thumb_with(bytes, COVER_MAX_EDGE, limits)?;
     Some(Cover {
-        rgba: Arc::new(rgba.into_raw()),
-        width,
-        height,
+        rgba: Arc::new(cover.rgba),
+        width: cover.width,
+        height: cover.height,
     })
 }
 

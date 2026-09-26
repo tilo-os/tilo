@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 const EFFECT_TYPE: &str = "test.private-navigation";
-const CHILD_ENV: &str = "QOS_LOCAL_APP_PRIVACY_TEST_CHILD";
+const CHILD_ENV: &str = "TILO_LOCAL_APP_PRIVACY_TEST_CHILD";
 
 struct LocalEffectProbe {
     operations: Rc<Cell<usize>>,
@@ -290,7 +290,7 @@ fn local_app_ignores_ambient_services_and_runs_effects() {
         .env("XDG_DATA_HOME", scratch.path().join("data"))
         .env("XDG_CACHE_HOME", scratch.path().join("cache"))
         .env("XDG_STATE_HOME", scratch.path().join("state"))
-        .env("QOS_IDENTITY_ROOT", scratch.path().join("identity"))
+        .env("TILO_IDENTITY_ROOT", scratch.path().join("identity"))
         .env("TILO_PACKAGE_ID", "test.ambient-browser")
         .env("TILO_WORKSPACE_ID", "1c9f7a99-40cb-4a63-a562-3958d1810e65")
         .env("TILO_USER_ID", "ambient-workspace-user")

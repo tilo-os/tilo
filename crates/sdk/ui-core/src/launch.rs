@@ -1055,7 +1055,7 @@ fn run_with_args_with_attachment(
 
     // An automatic host exec resumes the already-selected live branch. Command
     // handlers may have side effects even when returning false; run them once.
-    let resumed_live = std::env::var_os("QOS_RUNTIME_RESUME_LIVE").as_deref()
+    let resumed_live = std::env::var_os("TILO_RUNTIME_RESUME_LIVE").as_deref()
         == Some(std::ffi::OsStr::new(spec.app_id))
         && runtime_portal::service_fd("collab").is_some()
         && runtime_portal::service_fd("identity").is_some();
@@ -1533,8 +1533,8 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
 }
 
 /// Resolve the palette, text scale, and motion policy used by screenshot
-/// capture. An explicit `--text-scale` wins over the compatibility
-/// `QOS_SHOTS_TEXT_SCALE` environment variable.
+/// capture. An explicit `--text-scale` wins over the
+/// `TILO_SHOTS_TEXT_SCALE` environment variable.
 #[must_use]
 pub fn shot_theme(args: &LaunchArgs) -> Theme {
     capture_theme(args.text_scale)
@@ -1560,21 +1560,18 @@ pub fn capture_theme(text_scale: Option<f32>) -> Theme {
 }
 
 /// The screenshot theme for capture frontends that have no [`LaunchArgs`]
-/// (the `ui-shots` examples): `QOS_SHOTS_THEME`, `QOS_SHOTS_TEXT_SCALE` and
+/// (the `ui-shots` examples): `TILO_SHOTS_THEME`, `TILO_SHOTS_TEXT_SCALE` and
 /// the motion preference through the same policy as [`shot_theme`]. An
 /// unknown theme name is an error rather than a silent fall back to dark, so
 /// a mis-typed light capture cannot masquerade as a dark one.
 pub fn shot_theme_from_env() -> Result<Theme, String> {
-    let theme =
-        match std::env::var("TILO_SHOTS_THEME").or_else(|_| std::env::var("QOS_SHOTS_THEME")) {
-            Ok(name) => {
-                Theme::named(&name).ok_or_else(|| format!("unknown QOS_SHOTS_THEME `{name}`"))?
-            }
-            Err(_) => Theme::dark(),
-        };
-    let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
-        .or_else(|_| std::env::var("QOS_SHOTS_TEXT_SCALE"))
-        .ok();
+    let theme = match std::env::var("TILO_SHOTS_THEME") {
+        Ok(name) => {
+            Theme::named(&name).ok_or_else(|| format!("unknown TILO_SHOTS_THEME `{name}`"))?
+        }
+        Err(_) => Theme::dark(),
+    };
+    let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
     Ok(theme
         .with_text_scale(shot_text_scale(None, environment_scale.as_deref()))
         .with_reduce_motion(shot_motion_reduced()))
@@ -1603,9 +1600,6 @@ fn shot_motion_reduced() -> bool {
         "TILO_SHOTS_REDUCE_MOTION",
         "TILO_A11Y_REDUCE_MOTION",
         "TILO_REDUCE_MOTION",
-        "QOS_SHOTS_REDUCE_MOTION",
-        "QOS_A11Y_REDUCE_MOTION",
-        "QOS_REDUCE_MOTION",
     ]
     .into_iter()
     .filter_map(|key| std::env::var(key).ok())
@@ -2361,9 +2355,9 @@ mod tests {
             panic!("validation cannot launch");
         }
         for spec in [
-            LaunchSpec::new("dev.qos.test", dummy_root),
-            LaunchSpec::new("dev.qos.test", dummy_root).live_handler(custom),
-            LaunchSpec::new_with_args("dev.qos.test", |_| panic!("validation cannot construct")),
+            LaunchSpec::new("dev.tilo.test", dummy_root),
+            LaunchSpec::new("dev.tilo.test", dummy_root).live_handler(custom),
+            LaunchSpec::new_with_args("dev.tilo.test", |_| panic!("validation cannot construct")),
             LaunchSpec::from_definition(crate::application_test_support::runner_probe_definition()),
         ] {
             assert_eq!(
@@ -2377,7 +2371,7 @@ mod tests {
     fn history_declaration_gate_accepts_matching_external_policy_and_refuses_foreign_identity() {
         static HISTORY: crate::history_mode::HistoryDefinition =
             crate::history_mode::HistoryDefinition {
-                app_id: "dev.qos.test",
+                app_id: "dev.tilo.test",
                 scopes: &[crate::history_mode::HistoryScopeDefinition {
                     key: "process",
                     title: "Process",
@@ -2394,7 +2388,7 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(
-            LaunchSpec::new("dev.qos.other", dummy_root)
+            LaunchSpec::new("dev.tilo.other", dummy_root)
                 .history(&HISTORY)
                 .validate_history_declaration(),
             Err(crate::history_mode::HistoryRegistrationError::ForeignSource)
@@ -2405,7 +2399,7 @@ mod tests {
     fn managed_standard_native_launch_installs_history_without_detaching_wake_scope() {
         static HISTORY: crate::history_mode::HistoryDefinition =
             crate::history_mode::HistoryDefinition {
-                app_id: "dev.qos.wake-test",
+                app_id: "dev.tilo.wake-test",
                 scopes: &[crate::history_mode::HistoryScopeDefinition {
                     key: "preferences",
                     title: "Preferences",
@@ -2440,7 +2434,7 @@ mod tests {
         use automerge::{ReadDoc, transaction::Transactable};
         static HISTORY: crate::history_mode::HistoryDefinition =
             crate::history_mode::HistoryDefinition {
-                app_id: "dev.qos.argument-test",
+                app_id: "dev.tilo.argument-test",
                 scopes: &[crate::history_mode::HistoryScopeDefinition {
                     key: "photos",
                     title: "Photos",
@@ -2556,7 +2550,7 @@ mod tests {
     fn managed_launch_refuses_undeclared_custom_storage_and_post_configuration_replacement() {
         static HISTORY: crate::history_mode::HistoryDefinition =
             crate::history_mode::HistoryDefinition {
-                app_id: "dev.qos.wake-test",
+                app_id: "dev.tilo.wake-test",
                 scopes: &[crate::history_mode::HistoryScopeDefinition {
                     key: "preferences",
                     title: "Preferences",
@@ -2807,7 +2801,7 @@ mod tests {
     #[test]
     fn custom_live_pipeline_runs_after_standard_mode_dispatch() {
         CUSTOM_LIVE_RAN.store(false, Ordering::SeqCst);
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root).live_handler(custom_live);
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root).live_handler(custom_live);
         run_with_args_with_attachment(&spec, &strings(&["app"]), |_| Ok(())).unwrap();
         assert!(CUSTOM_LIVE_RAN.load(Ordering::SeqCst));
     }
@@ -2828,8 +2822,8 @@ mod tests {
             ))
         }
         let specs = [
-            LaunchSpec::new_with_args("dev.qos.test", fail_root),
-            LaunchSpec::new("dev.qos.test", dummy_root).live_handler(unexpected_live),
+            LaunchSpec::new_with_args("dev.tilo.test", fail_root),
+            LaunchSpec::new("dev.tilo.test", dummy_root).live_handler(unexpected_live),
             LaunchSpec::from_definition(crate::application_test_support::runner_probe_definition())
                 .component_host(fail_prepare),
         ];
@@ -2870,7 +2864,7 @@ mod tests {
                 matches!(result, Err(LaunchError::Operation(message)) if message == "detached preparation")
             );
         }
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root).command_handler(custom_command);
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root).command_handler(custom_command);
         run_with_args_with_attachment(&spec, &strings(&["app"]), |_| {
             panic!("handled command attached runtime")
         })
@@ -2892,8 +2886,8 @@ mod tests {
         fn live(_: &LaunchArgs) -> Result<(), LaunchError> {
             Ok(())
         }
-        if let Ok(mode) = std::env::var("QOS_LAUNCH_REEXEC_TEST") {
-            let spec = LaunchSpec::new("dev.qos.reexec-test", dummy_root)
+        if let Ok(mode) = std::env::var("TILO_LAUNCH_REEXEC_TEST") {
+            let spec = LaunchSpec::new("dev.tilo.reexec-test", dummy_root)
                 .command_handler(command)
                 .live_handler(live);
             if mode == "descendant" {
@@ -2924,16 +2918,16 @@ mod tests {
                     "launch::tests::automatic_reexec_skips_only_the_already_run_command_handler",
                     "--nocapture",
                 ])
-                .env("QOS_LAUNCH_REEXEC_TEST", mode)
+                .env("TILO_LAUNCH_REEXEC_TEST", mode)
                 .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
                 .env("TILO_SVC_IDENTITY_FD", fds[1].to_string())
-                .env_remove("QOS_RUNTIME_RESUME_LIVE");
+                .env_remove("TILO_RUNTIME_RESUME_LIVE");
             if mode == "resumed" || mode == "descendant" {
-                child.env("QOS_RUNTIME_RESUME_LIVE", "dev.qos.reexec-test");
+                child.env("TILO_RUNTIME_RESUME_LIVE", "dev.tilo.reexec-test");
             }
             if mode == "descendant" {
                 child.env(
-                    "QOS_RUNTIME_CONNECTION_OWNER_PID",
+                    "TILO_RUNTIME_CONNECTION_OWNER_PID",
                     std::process::id().to_string(),
                 );
             }
@@ -2955,7 +2949,7 @@ mod tests {
 
     #[test]
     fn explicit_runtime_attachment_policy_skips_bootstrap_for_native_launch() {
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root)
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root)
             .runtime_attachment(|_| false)
             .live_handler(unexpected_live);
         let result = run_with_args_with_attachment(&spec, &strings(&["app"]), |_| {

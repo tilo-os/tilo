@@ -147,6 +147,10 @@ pub enum CaptureDestination {
     File,
     Clipboard,
     FloatingWindow,
+    /// Save to the screenshots folder *and* put the pixels on the
+    /// clipboard: the instant Shift/Alt+Print captures, which have no
+    /// chooser in which to pick one.
+    FileAndClipboard,
 }
 
 /// How far beyond the pixels currently visible on the physical display the
@@ -264,7 +268,24 @@ pub enum ReplayCommand {
     Stop,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Where "Send…" delivers the last screenshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScreenshotSendTarget {
+    /// Save a copy into the active workspace's shared files.
+    Workspace,
+    /// Offer it to one of your certified devices; the receiver still decides.
+    Device(String),
+}
+
+/// One of your online devices, as the shell offers it to "Send…".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenshotSendDevice {
+    /// Opaque device-fabric identity the shell resolves again when sending.
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScreenshotCommand {
     /// Open the exact saved artifact in the shared native markup workspace.
     MarkupLast,
@@ -278,6 +299,8 @@ pub enum ScreenshotCommand {
     /// Copy the already-rendered last screenshot without recapturing a live
     /// scene that may have changed in the meantime.
     CopyLast,
+    /// Deliver the saved artifact itself to a device or the workspace.
+    SendLast(ScreenshotSendTarget),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -417,6 +440,11 @@ pub struct CaptureStudio {
     /// inserted the frozen surface into its own layout tree.
     screenshot_pin_pending: bool,
     screenshot_origin: Option<Point>,
+    /// Online devices "Send…" may offer, refreshed by the shell.
+    send_devices: Vec<ScreenshotSendDevice>,
+    /// The open "Send…" target picker and the target behind each row.
+    send_menu: Option<crate::widget::context_menu::ContextMenu>,
+    send_menu_targets: Vec<Option<ScreenshotSendTarget>>,
     delay_seconds: u8,
     armed_capture: Option<ArmedCapture>,
     /// Content-driven floor for the docked recorder's width above 1× type;
@@ -472,6 +500,9 @@ impl Default for CaptureStudio {
             replay_saved_at: None,
             screenshot_receipt: None,
             screenshot_pin_pending: false,
+            send_devices: Vec::new(),
+            send_menu: None,
+            send_menu_targets: Vec::new(),
             screenshot_origin: None,
             delay_seconds: 0,
             armed_capture: None,
@@ -551,6 +582,131 @@ impl CaptureStudio {
         self.drag = None;
         self.armed_capture = None;
         self.recording_finished_at = None;
+    }
+
+    /// The devices "Send…" lists. Called by the shell whenever a screenshot
+    /// is saved, so the picker names who is online now.
+    pub fn set_screenshot_send_devices(&mut self, devices: Vec<ScreenshotSendDevice>) {
+        self.send_devices = devices;
+    }
+
+    /// Send the last saved screenshot without the picker — the action door
+    /// for automation and assistive clients, and the picker's own result.
+    pub fn send_last_screenshot(&mut self, target: ScreenshotSendTarget) {
+        self.close_send_menu();
+        self.queue_screenshot_command(ScreenshotCommand::SendLast(target), None);
+    }
+
+    /// Whether the "Send…" target picker is open.
+    pub fn send_menu_open(&self) -> bool {
+        self.send_menu.as_ref().is_some_and(|menu| menu.is_open())
+    }
+
+    fn close_send_menu(&mut self) {
+        self.send_menu = None;
+        self.send_menu_targets.clear();
+    }
+
+    /// Open the target picker under the receipt's Send button: the workspace
+    /// first (always available), then each online device.
+    fn open_send_menu(&mut self, anchor: Rect) {
+        use crate::widget::context_menu::{ContextMenu, MenuItem};
+        let mut menu = ContextMenu::new();
+        let mut targets = Vec::new();
+        menu.push(MenuItem::icon_action(
+            Icon::FolderOpen,
+            "Save to this workspace's files",
+            || {},
+        ));
+        targets.push(Some(ScreenshotSendTarget::Workspace));
+        menu.push(MenuItem::separator());
+        targets.push(None);
+        if self.send_devices.is_empty() {
+            menu.push(MenuItem::action("No other device is online", || {}).with_enabled(false));
+            targets.push(None);
+        }
+        for device in &self.send_devices {
+            menu.push(MenuItem::icon_action(
+                Icon::Send,
+                format!("Send to {}", device.label),
+                || {},
+            ));
+            targets.push(Some(ScreenshotSendTarget::Device(device.id.clone())));
+        }
+        menu.open_anchored(anchor, self.status_rect());
+        menu.layout_at_position();
+        menu.focus_first_action();
+        self.send_menu = Some(menu);
+        self.send_menu_targets = targets;
+    }
+
+    /// Route one event to the open target picker. Returns whether it was
+    /// consumed; a pick queues the send and retires the receipt.
+    fn route_send_menu_event(
+        &mut self,
+        e: &WindowEvent,
+        scale: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        let Some(menu) = self.send_menu.as_mut() else {
+            return false;
+        };
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(NamedKey::Escape),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = e
+        {
+            self.close_send_menu();
+            return true;
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = e
+            && !menu.contains([self.cursor.x, self.cursor.y])
+        {
+            // A press outside the picker dismisses it and nothing else.
+            self.close_send_menu();
+            return true;
+        }
+        let mut taffy = TaffyTree::new();
+        let Ok(node) = taffy.new_leaf(Style::default()) else {
+            return true;
+        };
+        let mut handled = false;
+        let mut focus = None;
+        menu.handle_event(
+            e,
+            scale,
+            &modifiers,
+            state,
+            path,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        if let Some(index) = menu.take_selection() {
+            self.choose_send_target(index);
+        }
+        handled
+    }
+
+    fn choose_send_target(&mut self, index: usize) {
+        let Some(Some(target)) = self.send_menu_targets.get(index).cloned() else {
+            return;
+        };
+        self.send_last_screenshot(target);
+        self.screenshot_receipt = None;
+        self.open = false;
     }
 
     pub fn set_screenshot_finished(
@@ -1631,7 +1787,7 @@ impl CaptureStudio {
         };
         let bounds = self.status_rect();
         let compact = bounds.width() < 1000.0;
-        let final_width = if compact { 360.0 } else { 320.0 };
+        let final_width = if compact { 394.0 } else { 354.0 };
         // Begin as a recognizable thumbnail rather than a nearly empty tiny
         // capsule. The object compresses vertically while it gains enough
         // horizontal room for metadata and actions in the top bar.
@@ -1673,6 +1829,11 @@ impl CaptureStudio {
         let copy = Rect::new(reveal.x0 - 34.0, reveal.y0, reveal.x0 - 4.0, reveal.y1);
         let pin = Rect::new(copy.x0 - 34.0, copy.y0, copy.x0 - 4.0, copy.y1);
         (pill, pin, copy, reveal, dismiss)
+    }
+
+    /// The receipt's Send button, left of Pin.
+    fn screenshot_receipt_send_rect(pin: Rect) -> Rect {
+        Rect::new(pin.x0 - 34.0, pin.y0, pin.x0 - 4.0, pin.y1)
     }
 
     fn fit_screenshot_preview(
@@ -2257,6 +2418,8 @@ impl CaptureStudio {
                 self.queue_screenshot_command(ScreenshotCommand::MarkupLast, Some(preview));
                 self.screenshot_receipt = None;
                 self.open = false;
+            } else if !receipt.copied && Self::screenshot_receipt_send_rect(pin).contains(p) {
+                self.open_send_menu(Self::screenshot_receipt_send_rect(pin));
             } else if !receipt.copied && pin.contains(p) {
                 self.queue_screenshot_command(ScreenshotCommand::PinLast, Some(preview));
                 self.screenshot_pin_pending = true;
@@ -3268,6 +3431,16 @@ impl CaptureStudio {
         }
         if self.screenshot_receipt.is_some() {
             self.draw_screenshot_receipt(scene, transform, text_renderer, theme);
+            if let Some(menu) = self.send_menu.as_mut() {
+                menu.layout_within(text_renderer, theme);
+                menu.draw(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &PresenceCtx::default(),
+                );
+            }
             return;
         }
         if self.recording_start_pending {
@@ -3872,6 +4045,13 @@ impl CaptureStudio {
             return;
         };
         let elapsed = receipt.shown_at.elapsed();
+        // Choosing a Send target holds the receipt fully shown.
+        let choosing = self.send_menu.is_some();
+        let elapsed = if choosing {
+            SCREENSHOT_RECEIPT_ENTER
+        } else {
+            elapsed
+        };
         if elapsed >= SCREENSHOT_RECEIPT_DURATION && !self.screenshot_pin_pending {
             self.screenshot_receipt = None;
             self.open = false;
@@ -3988,7 +4168,11 @@ impl CaptureStudio {
         }
 
         let label_x = preview.x1 + 9.0;
-        let action_limit = if receipt.copied { dismiss.x0 } else { pin.x0 };
+        let action_limit = if receipt.copied {
+            dismiss.x0
+        } else {
+            Self::screenshot_receipt_send_rect(pin).x0
+        };
         let status = if receipt.copied { "Copied" } else { "Saved" };
         let dimensions = format!("{} × {}", receipt.width, receipt.height);
         let (status_width, status_height) = text_renderer.measure_weighted(
@@ -4034,6 +4218,27 @@ impl CaptureStudio {
         }
 
         if !receipt.copied {
+            let send = Self::screenshot_receipt_send_rect(pin);
+            let send_active = send.contains(self.cursor) || choosing;
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if send_active {
+                    colors.accent[4].with_alpha_factor(0.20 * content_alpha)
+                } else {
+                    colors.lift(0.35).with_alpha_factor(content_alpha)
+                },
+                None,
+                &RoundedRect::from_rect(send, send.height() / 2.0),
+            );
+            icons::draw_icon(
+                scene,
+                transform,
+                send.inset(-6.0),
+                Icon::Send,
+                colors.text_dim.with_alpha_factor(content_alpha),
+                1.45,
+            );
             let pin_hovered = pin.contains(self.cursor);
             scene.fill(
                 Fill::NonZero,
@@ -5016,8 +5221,8 @@ impl Widget for CaptureStudio {
         e: &WindowEvent,
         scale: f64,
         modifiers: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
+        state: &mut AutoCommit,
+        path: &ObjId,
         handled: &mut bool,
         _: &mut Option<NodeId>,
         _: NodeId,
@@ -5068,9 +5273,15 @@ impl Widget for CaptureStudio {
             return;
         }
         if self.screenshot_receipt.is_some() {
+            if let WindowEvent::CursorMoved { position, .. } = e {
+                self.cursor = Point::new(position.x / scale, position.y / scale);
+            }
+            if self.send_menu.is_some() {
+                *handled = self.route_send_menu_event(e, scale, *modifiers, state, path);
+                return;
+            }
             match e {
-                WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor = Point::new(position.x / scale, position.y / scale);
+                WindowEvent::CursorMoved { .. } => {
                     *handled = self.screenshot_receipt_rects().0.contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
@@ -5322,6 +5533,10 @@ impl Widget for CaptureStudio {
                         receipt.width,
                         receipt.height,
                     ),
+                ));
+                rects.push((
+                    "capture.send-screenshot".into(),
+                    Self::screenshot_receipt_send_rect(pin),
                 ));
                 rects.push(("capture.pin-screenshot".into(), pin));
                 rects.push(("capture.copy-screenshot".into(), copy));
@@ -5920,13 +6135,13 @@ mod tests {
         s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
         assert!(s.modal_capture().is_none());
         let (pill, pin, copy, reveal, dismiss) = s.screenshot_receipt_rects();
-        assert_eq!(pill.width(), 320.0);
+        assert_eq!(pill.width(), 354.0);
         assert!(pill.contains(copy.center()));
         assert!(pill.contains(pin.center()));
         assert!(pill.contains(reveal.center()));
         assert!(pill.contains(dismiss.center()));
         assert_eq!(pill.x0 - (s.rect.center().x + 180.0), 12.0);
-        assert_eq!(s.test_rects().len(), 5);
+        assert_eq!(s.test_rects().len(), 6);
         let preview_rect = CaptureStudio::screenshot_receipt_preview_rect(1.0, pill, 1_584, 716);
         s.click(preview_rect.center());
         assert_eq!(
@@ -5982,7 +6197,7 @@ mod tests {
         s.set_screenshot_finished(true, 800, 600, preview);
         s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
         let (pill, _, _, _, dismiss) = s.screenshot_receipt_rects();
-        assert_eq!(pill.width(), 360.0);
+        assert_eq!(pill.width(), 394.0);
         assert_eq!(pill.height(), 28.0);
         assert_eq!(pill.center().x, 400.0);
         assert_eq!(pill.y0, 6.0);
@@ -5990,6 +6205,94 @@ mod tests {
         s.click(dismiss.center());
         assert!(s.take_intents().is_empty());
         assert!(!s.is_open());
+    }
+
+    #[test]
+    fn send_offers_the_workspace_and_online_devices_and_emits_the_pick() {
+        let mut s = CaptureStudio::default();
+        s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+        s.set_screenshot_send_devices(vec![ScreenshotSendDevice {
+            id: "device-laptop".into(),
+            label: "Ada's laptop".into(),
+        }]);
+        let preview = CapturePreview {
+            columns: 1,
+            rows: 1,
+            pixels: vec![[20, 40, 60, 255]],
+        };
+        s.set_screenshot_finished(false, 800, 600, preview.clone());
+        s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
+        let (pill, pin, ..) = s.screenshot_receipt_rects();
+        let send = CaptureStudio::screenshot_receipt_send_rect(pin);
+        assert!(pill.contains(send.center()), "Send sits inside the receipt");
+        assert!(
+            s.test_rects()
+                .iter()
+                .any(|(name, rect)| name == "capture.send-screenshot" && *rect == send)
+        );
+
+        s.click(send.center());
+        assert!(s.send_menu_open(), "Send opens the target picker");
+        assert!(s.take_intents().is_empty(), "nothing is sent before a pick");
+        let labels: Vec<String> = s
+            .send_menu
+            .as_ref()
+            .unwrap()
+            .items()
+            .iter()
+            .filter_map(|item| item.label().map(str::to_string))
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["Save to this workspace's files", "Send to Ada's laptop"]
+        );
+        // Picking stays alive past the receipt's normal lifetime.
+        s.screenshot_receipt.as_mut().unwrap().shown_at -= SCREENSHOT_RECEIPT_DURATION;
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        s.draw_recording_indicator(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
+        assert!(s.screenshot_receipt.is_some() && s.send_menu_open());
+
+        let device_row = s.send_menu_targets.iter().position(|target| {
+            target == &Some(ScreenshotSendTarget::Device("device-laptop".into()))
+        });
+        s.choose_send_target(device_row.unwrap());
+        let intent = s.take_intents().pop().expect("the pick is an intent");
+        assert_eq!(
+            intent.screenshot_command,
+            Some(ScreenshotCommand::SendLast(ScreenshotSendTarget::Device(
+                "device-laptop".into()
+            )))
+        );
+        assert!(intent.regions.is_empty(), "a send never recaptures");
+        assert!(!s.is_open() && !s.send_menu_open());
+
+        // Without devices the workspace is still offered, and Escape backs
+        // out of the picker without sending.
+        s.set_screenshot_send_devices(Vec::new());
+        s.set_screenshot_finished(false, 800, 600, preview);
+        s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
+        let (_, pin, ..) = s.screenshot_receipt_rects();
+        s.click(CaptureStudio::screenshot_receipt_send_rect(pin).center());
+        assert_eq!(
+            s.send_menu_targets
+                .iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![ScreenshotSendTarget::Workspace]
+        );
+        s.close_send_menu();
+        assert!(
+            s.screenshot_receipt.is_some(),
+            "backing out keeps the receipt"
+        );
+
+        s.send_last_screenshot(ScreenshotSendTarget::Workspace);
+        assert_eq!(
+            s.take_intents().pop().unwrap().screenshot_command,
+            Some(ScreenshotCommand::SendLast(ScreenshotSendTarget::Workspace))
+        );
     }
 
     #[test]

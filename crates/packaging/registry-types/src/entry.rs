@@ -474,7 +474,7 @@ mod tests {
             )])),
             supported_languages: vec!["de".into(), "en".into()],
             categories: vec!["Productivity".into(), "Text".into()],
-            source_url: Some("https://code.sandbox.example/qos/editor".into()),
+            source_url: Some("https://code.tilo.so/tilo/editor".into()),
             homepage: None,
             publisher_pubkey_hex: "aa".repeat(32),
             versions: vec![RegistryVersion {

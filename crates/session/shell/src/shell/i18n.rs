@@ -37,6 +37,11 @@ mod tests {
             "continuity-dismiss-title",
             "continuity-dismiss-subtitle",
             "continuity-other-device",
+            "tab-closed-toast",
+            "tab-closed-group-toast",
+            "tab-closed-undo",
+            "tab-closed-undo-hint",
+            "tab-closed-undo-hint-unbound",
         ] {
             let s = t(key);
             assert_ne!(s, key, "{key} has no entry in the catalogue");
@@ -49,5 +54,21 @@ mod tests {
             ),
             "Continue Notes from Laptop"
         );
+    }
+
+    #[test]
+    fn every_catalogue_entry_resolves_to_a_real_string() {
+        let source = include_str!("../../locales/en-US.ftl");
+        let keys: Vec<&str> = source
+            .lines()
+            .filter(|line| !line.starts_with('#') && !line.starts_with(' '))
+            .filter_map(|line| line.split_once(" = ").map(|(key, _)| key.trim()))
+            .collect();
+        assert!(!keys.is_empty());
+        for key in keys {
+            let value = t(key);
+            assert_ne!(value, key, "{key} has no entry in the catalogue");
+            assert!(!value.trim().is_empty(), "{key} resolves to nothing");
+        }
     }
 }

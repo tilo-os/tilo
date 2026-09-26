@@ -2,7 +2,8 @@
 //! queries them all, merges the hits, and ranks them on a shared footing so the
 //! best matches surface regardless of which provider produced them.
 
-use super::provider::{SearchProvider, SearchResult, fuzzy_score};
+use super::provider::{SearchProvider, SearchResult};
+use super::rank::result_relevance;
 use std::collections::HashSet;
 
 /// Weight applied to a provider's own [`SearchResult::score`] bias relative
@@ -85,43 +86,11 @@ impl SearchRegistry {
         self.providers.iter().map(|p| p.name()).collect()
     }
 
-    /// The provider's bias plus the query-match bonus against the title
-    /// (falling back to the subtitle).
+    /// The provider's bias plus the shared ranker's query relevance.
     fn rank_key(query: &str, r: &SearchResult) -> i32 {
-        let query = query.trim().to_lowercase();
-        let title = r.title.to_lowercase();
-        let lexical = if query.is_empty() {
-            0
-        } else if title == query {
-            2_000
-        } else if title.starts_with(&query) {
-            1_200
-        } else if title
-            .split(|character: char| !character.is_alphanumeric())
-            .any(|word| word.starts_with(&query))
-        {
-            800
-        } else if title.contains(&query) {
-            500
-        } else {
-            r.subtitle.as_deref().map_or(0, |subtitle| {
-                let subtitle = subtitle.to_lowercase();
-                if subtitle == query {
-                    350
-                } else if subtitle.contains(&query) {
-                    200
-                } else {
-                    0
-                }
-            })
-        };
-        let bonus = fuzzy_score(&query, &r.title)
-            .or_else(|| r.subtitle.as_deref().and_then(|s| fuzzy_score(&query, s)))
-            .unwrap_or(0);
         r.score
             .saturating_mul(PROVIDER_BIAS_WEIGHT)
-            .saturating_add(lexical)
-            .saturating_add(bonus)
+            .saturating_add(result_relevance(query, r))
     }
 
     fn dedupe_key(result: &SearchResult) -> String {
@@ -136,7 +105,7 @@ impl SearchRegistry {
         mut results: Vec<SearchResult>,
         limit: usize,
     ) -> Vec<SearchResult> {
-        results.sort_by(|a, b| Self::rank_key(query, b).cmp(&Self::rank_key(query, a)));
+        results.sort_by_cached_key(|result| std::cmp::Reverse(Self::rank_key(query, result)));
         let mut seen = HashSet::new();
         results.retain(|result| seen.insert(Self::dedupe_key(result)));
         results.truncate(limit);

@@ -56,12 +56,16 @@ for architecture in windows_host["architectures"]:
     assert f"            tilo-imager-setup-windows-{architecture}.exe" in imager_workflow
 assert "python3 apps/imager/packaging/generate-winget.py release-assets" in imager_workflow
 
-# Imager's native Windows release includes `ui`. The Wayland clipboard backend
-# consumes Unix file descriptors, so it must never enter non-Linux builds.
-ui_manifest = tomllib.loads((ROOT / "crates/sdk/ui-core/Cargo.toml").read_text())
-assert "smithay-clipboard" not in ui_manifest["dependencies"]
-linux_ui_dependencies = ui_manifest["target"]['cfg(target_os = "linux")']["dependencies"]
-assert "smithay-clipboard" in linux_ui_dependencies
+# Imager's native Windows release includes `ui`, and with it the host
+# services crate that owns the clipboard backends. The Wayland clipboard
+# backend consumes Unix file descriptors, so it must never enter non-Linux
+# builds.
+for manifest in ("crates/sdk/ui-core/Cargo.toml", "crates/sdk/tilo-host/Cargo.toml"):
+    ui_manifest = tomllib.loads((ROOT / manifest).read_text())
+    assert "smithay-clipboard" not in ui_manifest["dependencies"], manifest
+host_manifest = tomllib.loads((ROOT / "crates/sdk/tilo-host/Cargo.toml").read_text())
+linux_host_dependencies = host_manifest["target"]['cfg(target_os = "linux")']["dependencies"]
+assert "smithay-clipboard" in linux_host_dependencies
 
 session_workflow = (ROOT / ".forgejo/workflows/package-desktop.yml").read_text()
 packaging_docs = (ROOT / "docs/packaging.md").read_text()
@@ -72,7 +76,7 @@ rpm_repo_generator = (ROOT / "dist/rpm/make-repo-file.sh").read_text()
 rpm_build_deps = (ROOT / "dist/ci/install-build-deps.sh").read_text()
 rpm_release_verifier = (ROOT / "dist/ci/verify-release-artifacts.sh").read_text()
 rpm_spec = (ROOT / "dist/rpm/tilo-session.spec").read_text()
-assert "https://code.sandbox.example/api/packages/qos/rpm/fedora/44.repo" in packaging_docs
+assert "https://code.tilo.so/api/packages/tilo/rpm/fedora/44.repo" in packaging_docs
 assert "/api/packages/$owner/rpm/fedora/44/upload" in rpm_publisher
 assert "sudo rpm-ostree install tilo-session" in packaging_docs
 assert "sudo rpm-ostree update" in packaging_docs

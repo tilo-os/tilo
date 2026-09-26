@@ -1,7 +1,7 @@
 #pragma once
 #include "credential_worker.h"
 #include <Security/Security.h>
-namespace qos {
+namespace tilo {
 std::string CredentialServiceForProfile(std::string_view canonical_profile);
 std::string CredentialAccountId(std::string_view username);
 struct KeychainFunctions {

@@ -26,13 +26,13 @@ class OwnerVisibilityTests(unittest.TestCase):
         self.assertIn(guard, workflow[workflow.index("if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then", import_step):candidate_push])
         self.assertIn(guard, workflow[promote_step:immutable_copy])
 
-    def test_only_exact_private_qos_owner_passes(self):
-        self.assertTrue(module.owner_is_private({"username": "qos", "visibility": "private"}))
+    def test_only_exact_private_tilo_owner_passes(self):
+        self.assertTrue(module.owner_is_private({"username": "tilo", "visibility": "private"}))
         for owner in (
-            {"username": "qos", "visibility": "public"},
-            {"username": "qos", "visibility": "limited"},
+            {"username": "tilo", "visibility": "public"},
+            {"username": "tilo", "visibility": "limited"},
             {"username": "other", "visibility": "private"},
-            {"username": "qos"},
+            {"username": "tilo"},
             [],
         ):
             with self.subTest(owner=owner):
@@ -46,8 +46,8 @@ class OwnerVisibilityTests(unittest.TestCase):
 
     def test_public_owner_and_redirect_fail_closed(self):
         for status, owner in (
-            (200, {"username": "qos", "visibility": "public"}),
-            (302, {"username": "qos", "visibility": "private"}),
+            (200, {"username": "tilo", "visibility": "public"}),
+            (302, {"username": "tilo", "visibility": "private"}),
         ):
             with self.subTest(status=status):
                 response = type("Response", (), {
@@ -67,7 +67,7 @@ class OwnerVisibilityTests(unittest.TestCase):
     def test_private_owner_passes(self):
         response = type("Response", (), {
             "status": 200,
-            "read": lambda self, count: b'{"username":"qos","visibility":"private"}',
+            "read": lambda self, count: b'{"username":"tilo","visibility":"private"}',
         })()
         with patch.dict(module.os.environ, {"REGISTRY_TOKEN": "test-token"}), \
              patch.object(module, "HTTPSConnection") as connection, \

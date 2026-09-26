@@ -122,7 +122,7 @@ pub fn spawn_filter_loader(engine: SharedEngine) {
                 Err(err) => tracing::warn!("ad blocking unavailable: {err}"),
             }
             #[cfg(test)]
-            if let Some(path) = std::env::var_os("QOS_TEST_FILTER_LOADER_DONE") {
+            if let Some(path) = std::env::var_os("TILO_TEST_FILTER_LOADER_DONE") {
                 let _ = std::fs::write(path, b"done\n");
             }
         });
@@ -357,7 +357,7 @@ pub(crate) fn load_list(name: &str, url: &str) -> Option<String> {
 
 fn load_and_compile() -> Result<(u64, ui::webview::adblock::ChunkedFilter), String> {
     #[cfg(test)]
-    let override_list = std::env::var("QOS_TEST_FILTER_LIST_URL").ok();
+    let override_list = std::env::var("TILO_TEST_FILTER_LIST_URL").ok();
     #[cfg(test)]
     let lists: Vec<(&str, &str)> = override_list
         .as_deref()

@@ -28,6 +28,18 @@
 //! the bar with next-word predictions; tapping a chip commits the word + a
 //! space.
 //!
+//! ## Touch: typing with both thumbs
+//! The key area claims raw touch ([`Widget::claims_raw_touch`]), so every
+//! finger is tracked on its own instead of through the toolkit's single
+//! emulated pointer. A key highlights the moment a finger lands on it and
+//! types when that finger lifts. Rolling two-thumb input types in **press
+//! order**, as iOS does: when a finger lands while another still holds a
+//! key, the held key types at once and its later lift does nothing. So
+//! A-down, B-down, A-up, B-up and A-down, B-down, B-up, A-up both type "ab",
+//! with no key ever dropped or waiting on another finger. Only a finger that
+//! stayed alone on the keys for its whole contact may swipe; once a second
+//! finger lands, the first one's drag is a tap.
+//!
 //! ## Seams
 //! * **Neural swipe:** the decoder is behind the
 //!   [`crate::swipe::SwipeModel`] trait. The shipping model is the geometric
@@ -42,7 +54,7 @@ use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, Touch, TouchPhase, WindowEvent};
 
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 use ui::icons::{self, Icon};
@@ -52,6 +64,7 @@ use ui::theme::Theme;
 use ui::tilo_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
 use ui::widget::Widget;
 
+use crate::autocorrect::{Autocorrector, KeyAdjacency};
 use crate::futo::FutoSwipeModel;
 use crate::imclient::{content_hint, may_learn};
 use crate::inject::Symbol;
@@ -160,6 +173,9 @@ pub struct OskWidget {
     suggestion_geom: Vec<(usize, Rect)>,
     /// The suggestion-bar band (drawn even when empty, for a stable chrome).
     suggestion_area: Rect,
+    /// The band the keys fill; touches that start here are tracked per
+    /// finger (see [`Widget::claims_raw_touch`]).
+    key_area: Rect,
 
     // --- interaction state ---
     hovered_key: Option<KeyId>,
@@ -189,6 +205,10 @@ pub struct OskWidget {
     current_word_overflowed: bool,
     /// The previously committed word, for bigram next-word context.
     prev_word: Option<String>,
+    /// Word-boundary corrector, indexed on first use.
+    autocorrect: Option<Autocorrector>,
+    /// The correction just committed, revertible until the next action.
+    last_correction: Option<Correction>,
     /// Where this user tends to hit each letter; adapts tap resolution.
     touch_model: TouchModel,
     /// Next-letter probabilities for the current typing context.
@@ -198,6 +218,8 @@ pub struct OskWidget {
     /// While the left button is down, the captured pointer path (logical px).
     /// `Some` between press and release; `None` otherwise.
     gesture_path: Option<Vec<Point>>,
+    /// Fingers currently down on the keys, in press order.
+    fingers: Vec<Finger>,
 
     // --- output ---
     mirror: TextMirror,
@@ -272,6 +294,7 @@ impl OskWidget {
             toolbar_geom: Vec::new(),
             suggestion_geom: Vec::new(),
             suggestion_area: Rect::ZERO,
+            key_area: Rect::ZERO,
             hovered_key: None,
             pressed_key: None,
             hovered_tool: None,
@@ -287,10 +310,13 @@ impl OskWidget {
             word_from_swipe: false,
             current_word_overflowed: false,
             prev_word: None,
+            autocorrect: None,
+            last_correction: None,
             touch_model: TouchModel::new(),
             next_key: NextKeyCache::default(),
             pointer: None,
             gesture_path: None,
+            fingers: Vec::new(),
             mirror: TextMirror::new(MAX_PENDING_TEXT_BYTES),
             output: VecDeque::new(),
             dropped_outputs: 0,
@@ -474,6 +500,9 @@ impl OskWidget {
     pub fn clear_personalization(&mut self) {
         self.predictor.clear_learned();
         self.touch_model.clear();
+        if let Some(ac) = &mut self.autocorrect {
+            ac.clear_kept();
+        }
     }
 
     // --- runtime configuration -----------------------------------------
@@ -568,6 +597,7 @@ impl OskWidget {
         if self.visible != visible {
             self.visible = visible;
             self.structure_dirty = true;
+            self.fingers.clear();
         }
     }
 
@@ -798,6 +828,7 @@ impl OskWidget {
     /// punctuation and Return commit it; Backspace edits it while it exists
     /// and becomes a real key press otherwise.
     fn apply_action(&mut self, action: KeyAction) {
+        let correction = self.last_correction.take();
         match &action {
             KeyAction::Char(s) => {
                 // One-shot shift resets after a character; caps is sticky.
@@ -818,13 +849,18 @@ impl OskWidget {
                 self.prev_word = None;
                 self.suggestions.clear();
             }
-            KeyAction::Backspace => self.backspace(),
+            KeyAction::Backspace => match correction {
+                Some(c) => self.revert_correction(c),
+                None => self.backspace(),
+            },
             KeyAction::Shift => {
                 self.shift = self.shift.cycle();
+                self.last_correction = correction;
             }
             KeyAction::SymbolsToggle => {
                 self.showing_symbols = !self.showing_symbols;
                 self.structure_dirty = true;
+                self.last_correction = correction;
             }
             KeyAction::Layout(name) => {
                 self.select_text_layout(name);
@@ -926,7 +962,11 @@ impl OskWidget {
     /// nothing before an editing key). The word becomes the bigram context for
     /// next-word prediction and the bar is refilled with predictions.
     fn finish_word(&mut self, tail: &str) {
-        let word = std::mem::take(&mut self.current_word);
+        let mut word = std::mem::take(&mut self.current_word);
+        let typed = (!tail.is_empty() && !self.word_from_swipe)
+            .then(|| self.correction_for(&word))
+            .flatten()
+            .map(|fixed| std::mem::replace(&mut word, fixed));
         if !word.is_empty() || !tail.is_empty() {
             let mut text = word.clone();
             text.push_str(tail);
@@ -942,6 +982,55 @@ impl OskWidget {
             }
             self.prev_word = Some(committed);
         }
+        self.refresh_next_word_suggestions();
+        if let Some(typed) = typed {
+            // Offer the word as typed first, the way it was before the fix.
+            self.suggestions
+                .insert(0, Suggestion::new(format!("\u{201c}{typed}\u{201d}"), 1.0));
+            self.suggestions.truncate(MAX_SUGGESTIONS);
+            self.last_correction = Some(Correction {
+                typed,
+                corrected: word,
+                tail: tail.to_string(),
+            });
+        }
+    }
+
+    /// Whether the focused field may be autocorrected: ordinary, non-secret
+    /// text with suggestions on. Passwords, addresses and codes are typed
+    /// verbatim.
+    fn autocorrect_allowed(&self) -> bool {
+        self.purpose == InputPurpose::Text && self.suggestions_enabled && !self.is_secret_field()
+    }
+
+    /// The correction for a finished `word`, if autocorrection applies and the
+    /// word is neither known nor one this user has typed or kept before.
+    fn correction_for(&mut self, word: &str) -> Option<String> {
+        if word.is_empty() || !self.autocorrect_allowed() || self.predictor.has_learned(word) {
+            return None;
+        }
+        let adjacency = KeyAdjacency::from_layout(self.current_layout());
+        let dict = self.predictor.dictionary();
+        let ac = self
+            .autocorrect
+            .get_or_insert_with(|| Autocorrector::new(dict, KeyAdjacency::default()));
+        ac.set_adjacency(adjacency);
+        ac.correct(word)
+    }
+
+    /// Undo a just-committed correction: erase it, commit the word as typed
+    /// and never correct that word again.
+    fn revert_correction(&mut self, c: Correction) {
+        for _ in c.corrected.chars().chain(c.tail.chars()) {
+            self.emit(OskOutput::Key(Symbol::BackSpace));
+        }
+        if let Some(ac) = &mut self.autocorrect {
+            ac.keep(&c.typed);
+        }
+        self.prev_word = Some(c.typed.to_lowercase());
+        let mut text = c.typed;
+        text.push_str(&c.tail);
+        self.emit(OskOutput::Commit(text));
         self.refresh_next_word_suggestions();
     }
 
@@ -970,6 +1059,7 @@ impl OskWidget {
     /// (or went away), so none of it belongs to what the user edits next — and
     /// a password typed there must not outlive the field.
     pub fn reset_composition(&mut self) {
+        self.last_correction = None;
         self.current_word.clear();
         self.word_from_swipe = false;
         self.current_word_overflowed = false;
@@ -1028,6 +1118,13 @@ impl OskWidget {
     ///
     /// Returns whether a chip was activated.
     pub fn activate_suggestion(&mut self, index: usize) -> bool {
+        let correction = self.last_correction.take();
+        if index == 0
+            && let Some(c) = correction
+        {
+            self.revert_correction(c);
+            return true;
+        }
         let Some(s) = self.suggestions.get(index).cloned() else {
             return false;
         };
@@ -1058,6 +1155,7 @@ impl OskWidget {
             return false;
         };
         let top = top_cand.word.clone();
+        self.last_correction = None;
         if self.word_from_swipe {
             self.finish_word(" ");
         }
@@ -1120,6 +1218,102 @@ impl OskWidget {
         target
     }
 
+    /// One raw finger event on the keys (see the module docs on touch).
+    fn handle_touch(&mut self, touch: &Touch, scale_factor: f64, handled: &mut bool) {
+        let p = Point::new(
+            touch.location.x / scale_factor,
+            touch.location.y / scale_factor,
+        );
+        match touch.phase {
+            TouchPhase::Started => {
+                // Only contacts that began on the keys are ours; the toolkit
+                // turns every other one into pointer events.
+                if !self.claims_raw_touch(p) {
+                    return;
+                }
+                // Press order: a held key types before the new one can.
+                let held: Vec<Finger> = self
+                    .fingers
+                    .iter_mut()
+                    .filter(|f| !f.spent)
+                    .map(|f| {
+                        f.spent = true;
+                        f.clone()
+                    })
+                    .collect();
+                for f in &mut self.fingers {
+                    f.solo = false;
+                }
+                for f in held {
+                    self.type_finger(&f, false);
+                }
+                self.fingers.retain(|f| f.id != touch.id);
+                self.fingers.push(Finger {
+                    id: touch.id,
+                    key: self.key_at(p),
+                    at: p,
+                    path: vec![p],
+                    solo: self.fingers.is_empty(),
+                    spent: false,
+                });
+                *handled = true;
+            }
+            TouchPhase::Moved => {
+                let key = self.key_at(p);
+                let Some(f) = self.fingers.iter_mut().find(|f| f.id == touch.id) else {
+                    return;
+                };
+                f.at = p;
+                f.key = key;
+                if f.path.last().is_none_or(|&l| l.distance(p) > 1.0) {
+                    if f.path.len() < MAX_GESTURE_POINTS {
+                        f.path.push(p);
+                    } else if let Some(last) = f.path.last_mut() {
+                        *last = p;
+                    }
+                }
+                *handled = true;
+            }
+            TouchPhase::Ended => {
+                let Some(i) = self.fingers.iter().position(|f| f.id == touch.id) else {
+                    return;
+                };
+                let mut f = self.fingers.remove(i);
+                f.at = p;
+                if !f.spent {
+                    let may_swipe = f.solo;
+                    self.type_finger(&f, may_swipe);
+                }
+                *handled = true;
+            }
+            TouchPhase::Cancelled => {
+                // The system took the contact back (e.g. a compositor
+                // gesture): it types nothing.
+                let before = self.fingers.len();
+                self.fingers.retain(|f| f.id != touch.id);
+                *handled |= self.fingers.len() != before;
+            }
+        }
+    }
+
+    /// Type what finger `f` pressed: its swipe when it may swipe and its path
+    /// reads as one, otherwise the key under it (resolved to the letter most
+    /// likely meant).
+    fn type_finger(&mut self, f: &Finger, may_swipe: bool) {
+        if may_swipe
+            && crate::swipe::is_swipe(&f.path, self.key_scale())
+            && self.decode_and_apply_swipe(&f.path)
+        {
+            return;
+        }
+        // Hit-test afresh: a layer switch typed by another finger may have
+        // replaced the keys since this one landed.
+        if let Some(id) = self.key_at(f.at) {
+            let target = self.resolve_letter_tap(id, Some(f.at));
+            self.activate_key(target);
+        }
+    }
+
     fn key_at(&self, p: Point) -> Option<KeyId> {
         self.key_geom
             .iter()
@@ -1140,6 +1334,33 @@ impl OskWidget {
             .find(|(_, r)| r.contains(p))
             .map(|(i, _)| *i)
     }
+}
+
+/// One finger on the keys.
+#[derive(Clone, Debug)]
+struct Finger {
+    /// The contact's `Touch::id`.
+    id: u64,
+    /// The key under the finger, highlighted while it is down.
+    key: Option<KeyId>,
+    /// Latest position (logical px).
+    at: Point,
+    /// The path travelled, for swipe decoding.
+    path: Vec<Point>,
+    /// No other finger touched the keys during this contact, so it may swipe.
+    solo: bool,
+    /// Its key already typed because another finger landed; lifting it types
+    /// nothing more.
+    spent: bool,
+}
+
+/// An autocorrection committed at the last word boundary.
+#[derive(Clone, Debug)]
+struct Correction {
+    typed: String,
+    corrected: String,
+    /// The space or punctuation committed after the word.
+    tail: String,
 }
 
 /// Interaction/visual flags for one drawn cell, bundled so [`draw_cell`]
@@ -1555,6 +1776,7 @@ impl Widget for OskWidget {
         // Stash the suggestion-bar area so an empty bar can still render its
         // background + hit-test correctly (suggestion_rects is empty then).
         self.suggestion_area = suggestion_area;
+        self.key_area = key_area;
         let geom = {
             let layout = self.current_layout();
             key_rects(layout, key_area, self.shift)
@@ -1678,7 +1900,8 @@ impl Widget for OskWidget {
             let is_action = !matches!(&key.action, KeyAction::Char(_));
             let shift_active = matches!(&key.action, KeyAction::Shift) && shift.is_upper();
             let hovered = self.hovered_key == Some(*id);
-            let pressed = self.pressed_key == Some(*id);
+            let pressed = self.pressed_key == Some(*id)
+                || self.fingers.iter().any(|f| !f.spent && f.key == Some(*id));
             // Letters get a larger glyph; multi-char action labels smaller.
             let font_scale = if Key::is_letter(key) { 0.42 } else { 0.30 };
             // The Shift key's icon fills solid while Caps-Lock is latched, so a
@@ -1722,6 +1945,7 @@ impl Widget for OskWidget {
             return;
         }
         match event {
+            WindowEvent::Touch(touch) => self.handle_touch(touch, scale_factor, handled),
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.pointer = Some(p);
@@ -1823,6 +2047,10 @@ impl Widget for OskWidget {
             }
             _ => {}
         }
+    }
+
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        self.visible && self.key_area.contains(point)
     }
 
     fn name(&self) -> &'static str {
@@ -2154,6 +2382,87 @@ mod tests {
             vec![pre("h"), pre("hi"), commit("hi "), pre("m")]
         );
         assert_eq!(osk.pending_text(), "hi m");
+    }
+
+    fn type_word(osk: &mut OskWidget, word: &str) {
+        for c in word.chars() {
+            osk.apply_action(KeyAction::Char(c.to_string()));
+        }
+    }
+
+    #[test]
+    fn space_autocorrects_a_non_word_and_offers_it_as_typed() {
+        let mut osk = OskWidget::new();
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.pending_text(), "the ");
+        assert_eq!(osk.suggestions()[0].word, "\u{201c}teh\u{201d}");
+        type_word(&mut osk, "tge");
+        osk.apply_action(KeyAction::Char(",".into()));
+        assert_eq!(osk.pending_text(), "the the,");
+    }
+
+    #[test]
+    fn backspace_after_a_correction_reverts_it_and_keeps_the_word() {
+        let mut osk = OskWidget::new();
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        osk.take_output();
+        osk.apply_action(KeyAction::Backspace);
+        assert_eq!(
+            osk.take_output(),
+            vec![
+                OskOutput::Key(Symbol::BackSpace),
+                OskOutput::Key(Symbol::BackSpace),
+                OskOutput::Key(Symbol::BackSpace),
+                OskOutput::Key(Symbol::BackSpace),
+                commit("teh "),
+            ]
+        );
+        assert_eq!(osk.pending_text(), "teh ");
+        // Kept as typed: the same word is no longer corrected.
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.pending_text(), "teh teh ");
+        // A second Backspace is an ordinary one.
+        osk.apply_action(KeyAction::Backspace);
+        assert_eq!(osk.pending_text(), "teh teh");
+    }
+
+    #[test]
+    fn as_typed_chip_reverts_a_correction() {
+        let mut osk = OskWidget::new();
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert!(osk.activate_suggestion(0));
+        assert_eq!(osk.pending_text(), "teh ");
+    }
+
+    #[test]
+    fn words_the_user_has_typed_are_never_corrected() {
+        let mut predictor = Predictor::english();
+        predictor.learn_transition(None, "teh");
+        let mut osk = OskWidget::new().with_predictor(predictor);
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.pending_text(), "teh ");
+    }
+
+    #[test]
+    fn password_fields_are_never_autocorrected() {
+        let mut osk = OskWidget::new().with_purpose(InputPurpose::Password);
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.pending_text(), "teh ");
+    }
+
+    #[test]
+    fn sensitive_text_fields_are_never_autocorrected() {
+        let mut osk = OskWidget::new();
+        osk.set_content_hints(content_hint::SENSITIVE_DATA);
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.pending_text(), "teh ");
     }
 
     #[test]

@@ -78,7 +78,7 @@ impl From<std::io::Error> for ExtensionError {
 /// Root directory for unpacked extensions.
 pub fn extensions_dir() -> PathBuf {
     crate::storage::data_dir()
-        .unwrap_or_else(|| std::env::temp_dir().join("qos-browser"))
+        .unwrap_or_else(|| std::env::temp_dir().join("tilo-browser"))
         .join("extensions")
 }
 

@@ -633,12 +633,14 @@ impl ChannelKeyAccess {
         }
     }
 
-    /// See [`ChannelEncryption::access`].
-    pub fn access(&self, room: RoomId, channel: ChannelId) -> ChannelAccess {
+    /// See [`ChannelEncryption::access`]; also returns the service's
+    /// generation, which changes whenever any channel's keys or access do.
+    pub fn access(&self, room: RoomId, channel: ChannelId) -> (ChannelAccess, u64) {
         self.inner
             .lock()
-            .map_or(ChannelAccess::Unavailable, |mut service| {
-                service.access(room, channel, Instant::now())
+            .map_or((ChannelAccess::Unavailable, 0), |mut service| {
+                let access = service.access(room, channel, Instant::now());
+                (access, service.generation())
             })
     }
 
@@ -652,6 +654,35 @@ impl ChannelKeyAccess {
     /// See [`ChannelEncryption::generation`].
     pub fn generation(&self) -> u64 {
         self.inner.lock().map_or(0, |service| service.generation())
+    }
+}
+
+/// Where the identity service finds this session's channel encryption
+/// service. The broker that owns the service can start after the identity
+/// service (onboarding defers it), so the slot is filled when it does.
+#[derive(Clone, Default)]
+pub struct ChannelKeyProvider {
+    slot: Arc<Mutex<Option<ChannelKeyAccess>>>,
+}
+
+impl ChannelKeyProvider {
+    /// The slot of this session: its compositor starts one collaboration
+    /// broker and one identity service, which meet here.
+    pub fn session() -> Self {
+        static SESSION: std::sync::OnceLock<ChannelKeyProvider> = std::sync::OnceLock::new();
+        SESSION.get_or_init(Self::default).clone()
+    }
+
+    /// Point the slot at a broker's service (or at none).
+    pub fn set(&self, access: Option<ChannelKeyAccess>) {
+        if let Ok(mut slot) = self.slot.lock() {
+            *slot = access;
+        }
+    }
+
+    /// The current service, if a broker with one is running.
+    pub fn get(&self) -> Option<ChannelKeyAccess> {
+        self.slot.lock().ok().and_then(|slot| slot.clone())
     }
 }
 
@@ -706,22 +737,34 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// An in-memory room: every endpoint publishes to all the others while
     /// the room is up, and loses what it publishes while it is down.
     #[derive(Default)]
-    struct Room {
+    pub(crate) struct Room {
         queues: Mutex<HashMap<usize, Vec<InboundChannelGovernance>>>,
         down: AtomicBool,
     }
 
-    struct Endpoint {
-        room: Arc<Room>,
-        id: usize,
-        room_id: RoomId,
+    pub(crate) struct Endpoint {
+        pub(crate) room: Arc<Room>,
+        pub(crate) id: usize,
+        pub(crate) room_id: RoomId,
+    }
+
+    impl Endpoint {
+        /// Endpoint `id` of `room`, joined to its broadcast.
+        pub(crate) fn join(room: &Arc<Room>, room_id: RoomId, id: usize) -> Self {
+            room.queues.lock().unwrap().entry(id).or_default();
+            Self {
+                room: Arc::clone(room),
+                id,
+                room_id,
+            }
+        }
     }
 
     impl GovernanceTransport for Endpoint {
@@ -756,14 +799,14 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct Policy {
-        allowed: Arc<Mutex<BTreeSet<Ed25519PublicKey>>>,
+    pub(crate) struct Policy {
+        pub(crate) allowed: Arc<Mutex<BTreeSet<Ed25519PublicKey>>>,
     }
 
-    struct Directory {
-        governs: bool,
-        steward: Ed25519PublicKey,
-        policy: Policy,
+    pub(crate) struct Directory {
+        pub(crate) governs: bool,
+        pub(crate) steward: Ed25519PublicKey,
+        pub(crate) policy: Policy,
     }
 
     impl ChannelDirectory for Directory {
@@ -784,11 +827,11 @@ mod tests {
         endpoint: Endpoint,
     }
 
-    fn key(seed: u8) -> SigningKey {
+    pub(crate) fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
     }
 
-    fn public(seed: u8) -> Ed25519PublicKey {
+    pub(crate) fn public(seed: u8) -> Ed25519PublicKey {
         Ed25519PublicKey::from_bytes(key(seed).verifying_key().to_bytes())
     }
 
@@ -956,5 +999,92 @@ mod tests {
             );
             assert!(ready_epoch(&restarted.service.access(room_id, channel, now)).is_some());
         }
+    }
+
+    /// Key loss: a laptop is lost with all its channel state. Restoring the
+    /// person's identity backup on a replacement machine brings back the
+    /// root identity, not the lost device key; onboarding certifies a new
+    /// device key. Once the room's governor knows that certificate, the
+    /// policy allows the new device, the steward admits it, and its key
+    /// history opens everything written before the loss. The lost device is
+    /// removed, so it cannot read what is written afterwards.
+    #[test]
+    fn a_restored_identity_regains_the_whole_channel_on_its_new_device() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let artifact = collab_types::ArtifactId::new();
+        let policy = Policy::default();
+        policy.allowed.lock().unwrap().insert(public(8));
+        let (owner_dir, lost_dir, new_dir) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        );
+        let mut now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (7, 7), &policy, owner_dir.path());
+        let mut lost = device(&room, room_id, 1, (8, 7), &policy, lost_dir.path());
+        owner.service.access(room_id, channel, now);
+        lost.service.access(room_id, channel, now);
+        run(&mut [&mut owner, &mut lost], &mut now, 5);
+        let ChannelAccess::Ready(keys) = owner.service.access(room_id, channel, now) else {
+            panic!("owner keys");
+        };
+        let before = keys
+            .seal_content(
+                artifact,
+                collab_types::ContentRetention::Delta,
+                b"before the loss",
+            )
+            .unwrap();
+        let ChannelAccess::Ready(lost_keys) = lost.service.access(room_id, channel, now) else {
+            panic!("the laptop was a member");
+        };
+        drop(lost);
+
+        // The replacement machine's new device key replaces the lost one in
+        // the person's certified device set.
+        {
+            let mut allowed = policy.allowed.lock().unwrap();
+            allowed.remove(&public(8));
+            allowed.insert(public(9));
+        }
+        let mut restored = device(&room, room_id, 2, (9, 7), &policy, new_dir.path());
+        assert!(matches!(
+            restored.service.access(room_id, channel, now),
+            ChannelAccess::Waiting
+        ));
+        run(&mut [&mut owner, &mut restored], &mut now, 5);
+        let ChannelAccess::Ready(restored_keys) = restored.service.access(room_id, channel, now)
+        else {
+            panic!("the restored identity's new device is admitted");
+        };
+        assert!(
+            restored_keys
+                .open_content(artifact, &before.0, &before.1)
+                .is_ok(),
+            "its key history opens everything written before the loss"
+        );
+        let ChannelAccess::Ready(keys) = owner.service.access(room_id, channel, now) else {
+            panic!("owner keys");
+        };
+        let after = keys
+            .seal_content(
+                artifact,
+                collab_types::ContentRetention::Delta,
+                b"after the loss",
+            )
+            .unwrap();
+        assert!(
+            restored_keys
+                .open_content(artifact, &after.0, &after.1)
+                .is_ok()
+        );
+        assert!(
+            lost_keys
+                .open_content(artifact, &after.0, &after.1)
+                .is_err(),
+            "the lost device was removed and cannot read what follows"
+        );
     }
 }

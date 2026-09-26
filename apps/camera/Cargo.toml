@@ -42,6 +42,8 @@ anyhow.workspace = true
 # Capture encoding plus portal-selected image decoding for code scanning.
 # Default features are trimmed to formats cameras and image portals provide.
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+# The shared preview pipeline (recent-capture peek) and bounded image decoder.
+thumbnail = { path = "../../crates/media/thumbnail" }
 xdg-paths = { path = "../../crates/system/xdg-paths" }
 tilo-ocr = { path = "../../crates/media/ocr" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }

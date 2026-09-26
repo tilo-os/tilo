@@ -54,6 +54,7 @@ pub mod linux_physical_gamepad;
 pub mod linux_virtual_gamepad;
 pub mod modem;
 pub mod network;
+pub mod orientation;
 pub mod peripheral_forwarding;
 pub mod power;
 pub mod printing;
@@ -112,6 +113,9 @@ pub use network::{
     portable_wifi_profile_secret, set_airplane_mode, set_hotspot, set_mobile_broadband,
     set_network_autoconnect, set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wired,
 };
+pub use orientation::{
+    AccelSample, DeviceOrientation, OrientationTracker, RotationControl, has_accelerometer,
+};
 pub use peripheral_forwarding::{
     AUTHORIZATION_TTL, ForwardedGamepadEvent, ForwardedPeripheralBroker,
     ForwardedPeripheralIdentity, GamepadAxis, GamepadButton, PeripheralAuditEvent,
@@ -124,7 +128,10 @@ pub use privacy::{
     ActiveMediaUse, KillState, MediaKind, PrivacyStatus, active_media_uses, get_privacy_status,
     monitor_media_usage, revoke_media_client,
 };
-pub use session::{SessionAction, perform_session_action, request_logout, take_logout_request};
+pub use session::{
+    SessionAction, perform_session_action, request_logout, take_logout_request,
+    user_switching_supported,
+};
 pub use time::{
     TimeSyncStatus, get_ntp, get_time_sync_status, list_timezones, now_clock, now_date, set_ntp,
     set_timezone, valid_timezone,

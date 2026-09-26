@@ -17,7 +17,6 @@ on:
       - os/dev/install-cached-cosign.sh
       - os/dev/configure-cosign-kms.sh
       - os/dev/require-cosign-authority.sh
-      - os/dev/login-registry-with-retry.sh
       - os/dev/open-snapshot-pr.py
       - ".forgejo/actions/install-cosign/**"
       - keys/cosign.pub
@@ -76,14 +75,12 @@ jobs:
           cache-architecture: ${{ matrix.arch }}
       - name: Load the mirrored Fedora base
         run: grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
-      - name: Log in to code.sandbox.example
-        env:
-          REGISTRY_USERNAME: ${{ github.actor }}
-          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_TOKEN }}
-        run: |
-          printf '%s' "$REGISTRY_PASSWORD" | \
-            os/dev/login-registry-with-retry.sh \
-              docker code.sandbox.example "$REGISTRY_USERNAME"
+      - name: Log in to registry.tilo.so
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: ./.forgejo/actions/setup-buildx
       - name: Resolve, build and publish the native buildroot
         id: buildroot
@@ -98,14 +95,14 @@ jobs:
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
-          tags: code.sandbox.example/qos/tilo-kernel-buildroot:${{ matrix.arch }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          tags: registry.tilo.so/tilo/tilo-kernel-buildroot:${{ matrix.arch }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Audit the immutable buildroot
         env:
           DIGEST: ${{ steps.buildroot.outputs.digest }}
         run: |
           set -euo pipefail
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          ref="code.sandbox.example/qos/tilo-kernel-buildroot@$DIGEST"
+          ref="registry.tilo.so/tilo/tilo-kernel-buildroot@$DIGEST"
           actual_arch="$(docker run --rm --entrypoint cat "$ref" /usr/lib/tilo/kernel-buildroot-arch)"
           test "$actual_arch" = '${{ matrix.arch }}'
           actual_base="$(docker run --rm --entrypoint cat "$ref" /usr/lib/tilo/kernel-buildroot-base)"
@@ -156,7 +153,7 @@ jobs:
           if-no-files-found: error
       - name: Revoke local registry credentials
         if: always()
-        run: docker logout code.sandbox.example || true
+        run: docker logout registry.tilo.so || true
 
   promote:
     timeout-minutes: 60
@@ -171,7 +168,6 @@ jobs:
         os/dev/install-cached-cosign.sh
         os/dev/configure-cosign-kms.sh
         os/dev/require-cosign-authority.sh
-        os/dev/login-registry-with-retry.sh
         os/dev/open-snapshot-pr.py
         .forgejo/actions/install-cosign
         keys/cosign.pub
@@ -189,14 +185,6 @@ jobs:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: refs
-      - name: Log in to code.sandbox.example
-        env:
-          REGISTRY_USERNAME: ${{ github.actor }}
-          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_TOKEN }}
-        run: |
-          printf '%s' "$REGISTRY_PASSWORD" | \
-            os/dev/login-registry-with-retry.sh \
-              docker code.sandbox.example "$REGISTRY_USERNAME"
       # Protected main accepts no direct pushes. Commit both pins on the
       # current main tip, push a branch named after the pin file's digest, and
       # open a pull request so the required checks and merge policy apply.
@@ -214,7 +202,7 @@ jobs:
           . "$x86"
           . "$arm"
           for ref in "$KERNEL_BUILDROOT_X86_64_REF" "$KERNEL_BUILDROOT_AARCH64_REF"; do
-            [[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]
+            [[ "$ref" =~ ^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]
             cosign verify --key keys/cosign.pub "$ref" >/dev/null
           done
           [ "$KERNEL_BUILDROOT_X86_64_REF" != "$KERNEL_BUILDROOT_AARCH64_REF" ] || {
@@ -253,6 +241,3 @@ jobs:
             --branch "$branch" --snapshot-digest "$snapshot_digest" \
             kernel-buildroot --x86-ref "$KERNEL_BUILDROOT_X86_64_REF" \
             --arm-ref "$KERNEL_BUILDROOT_AARCH64_REF" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Revoke local registry credentials
-        if: always()
-        run: docker logout code.sandbox.example || true

@@ -20,11 +20,11 @@ def summarize_worker_handoffs(lines, expected_cpu_ids):
     expected=set(expected_cpu_ids)
     if not expected or len(expected)!=len(expected_cpu_ids) or any(type(i) is not int or i<0 for i in expected):
         raise ValueError('Invalid expected handoff CPU identities')
-    handoffs=rows(lines,'qos-native-worker-handoff ')
+    handoffs=rows(lines,'tilo-native-worker-handoff ')
     if not handoffs:
         return dict(available=False,performance_certified=False,reason='Worker handoff diagnostics unavailable')
     workers={}
-    for row in rows(lines,'qos-native-worker '):
+    for row in rows(lines,'tilo-native-worker '):
         key=_identity(row)
         if key in workers:raise ValueError('Duplicate worker identity')
         workers[key]=row

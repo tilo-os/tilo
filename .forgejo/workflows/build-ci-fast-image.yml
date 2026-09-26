@@ -1,7 +1,7 @@
 name: Snapshot / CI fast images
 
-# Publishes code.sandbox.example/qos/ci-fast (lint, planning and other quick jobs)
-# and code.sandbox.example/qos/ci-control (ci-fast plus the Docker client, for
+# Publishes registry.tilo.so/tilo/ci-fast (lint, planning and other quick jobs)
+# and registry.tilo.so/tilo/ci-control (ci-fast plus the Docker client, for
 # builder resolution). Consumers pin both by digest. Pull requests from this
 # repository and manual dispatches publish candidate tags so the tested digests
 # can be pinned before merge; main publishes source-SHA tags. There is no
@@ -50,15 +50,6 @@ jobs:
       - name: Require a native build host
         run: ./os/dev/assert-native-arch.sh x86_64
 
-      # ci-fast copies its toolchain from the digest-pinned builder.
-      - name: Log in to the registry
-        if: env.PUBLISH == 'true'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: code.sandbox.example
-          username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
-
       - name: Build and exercise both images
         run: |
           set -euo pipefail
@@ -67,8 +58,8 @@ jobs:
           else
             tag="candidate-$SOURCE_REVISION"
           fi
-          fast="code.sandbox.example/qos/ci-fast:$tag"
-          control="code.sandbox.example/qos/ci-control:$tag"
+          fast="registry.tilo.so/tilo/ci-fast:$tag"
+          control="registry.tilo.so/tilo/ci-control:$tag"
           printf 'CI_FAST_REF=%s\nCI_CONTROL_REF=%s\n' "$fast" "$control" >> "$GITHUB_ENV"
           # Neither recipe copies from its context; never send the checkout.
           context=$(mktemp -d)
@@ -88,11 +79,26 @@ jobs:
             cargo machete --version
             for tool in git python3 jq rg node gpg curl diff which; do
               command -v "$tool"
-            done'
+            done
+            # The security-boundary invariants must not skip for a missing tool.
+            for tool in cc modinfo clang ld.lld rpmbuild rpmkeys systemd-escape fc-match; do
+              command -v "$tool"
+            done
+            python3 -c "import PIL"
+            fc-match -f "%{family}" "Noto Sans" | grep -Fq "Noto Sans"
+            test -n "$(find /etc/pki/rpm-gpg -maxdepth 1 -name "RPM-GPG-KEY-fedora-*-primary" -print -quit)"'
           docker run --rm --network=none "$control" bash -euo pipefail -c '
             docker --version
             docker buildx version
             cargo --version'
+
+      - name: Log in to registry.tilo.so
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish the tested images
         if: env.PUBLISH == 'true'

@@ -668,7 +668,7 @@ impl Namespace {
     ) -> automerge::ActorId {
         let original = self.doc.get_actor().clone();
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"qos.namespace.restore-projection.v1\0");
+        hasher.update(b"tilo.namespace.restore-projection.v1\0");
         hasher.update(workspace.as_bytes());
         hasher.update(record.0.as_bytes());
         hasher.update(intent.as_bytes());

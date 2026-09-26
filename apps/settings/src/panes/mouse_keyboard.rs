@@ -20,9 +20,12 @@
 //   `input.mouse_natural_scroll`    — bool
 //   `input.tap_to_click`     — bool
 //   `input.key_repeat`       — f64 in `[0.0, 1.0]`
+//   `input.touchpad_click_method` / `input.touchpad_scroll_method` — choice
+//   `input.scroll_speed`     — multiplier; the slider edits its log position
 //   `input.keyboard_layout`  — active source display label
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use settings_store::hardware::{TouchpadClickMethod, TouchpadScrollMethod};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
@@ -84,6 +87,47 @@ pub const COMPOSE_KEY: &str = "input.compose_key";
 pub const ADD_SOURCE_PICKER_KEY: &str = "input.source.add_picker";
 pub const ADD_SOURCE_KEY: &str = "input.source.add";
 pub const CHECK_SPELLING_KEY: &str = "text.check_spelling";
+
+/// Touchpad click methods as `(label, value)`, in menu order.
+pub const CLICK_METHOD_CHOICES: [(&str, TouchpadClickMethod); 3] = [
+    ("Device default", TouchpadClickMethod::Default),
+    ("Button areas", TouchpadClickMethod::Areas),
+    ("Finger count", TouchpadClickMethod::Clickfinger),
+];
+
+/// Touchpad scroll methods as `(label, value)`, in menu order.
+pub const SCROLL_METHOD_CHOICES: [(&str, TouchpadScrollMethod); 2] = [
+    ("Two fingers", TouchpadScrollMethod::TwoFinger),
+    ("Edge", TouchpadScrollMethod::Edge),
+];
+
+pub fn click_method_label(method: TouchpadClickMethod) -> &'static str {
+    CLICK_METHOD_CHOICES
+        .iter()
+        .find(|(_, value)| *value == method)
+        .map_or("Device default", |(label, _)| label)
+}
+
+pub fn click_method_for_label(label: &str) -> Option<TouchpadClickMethod> {
+    CLICK_METHOD_CHOICES
+        .iter()
+        .find(|(choice, _)| *choice == label)
+        .map(|(_, value)| *value)
+}
+
+pub fn scroll_method_label(method: TouchpadScrollMethod) -> &'static str {
+    SCROLL_METHOD_CHOICES
+        .iter()
+        .find(|(_, value)| *value == method)
+        .map_or("Two fingers", |(label, _)| label)
+}
+
+pub fn scroll_method_for_label(label: &str) -> Option<TouchpadScrollMethod> {
+    SCROLL_METHOD_CHOICES
+        .iter()
+        .find(|(choice, _)| *choice == label)
+        .map(|(_, value)| *value)
+}
 pub const AUTO_CORRECT_KEY: &str = "text.auto_correct";
 
 #[allow(
@@ -232,6 +276,7 @@ impl MouseKeyboardPane {
             self.spell_checker_card(),
             self.input_sources_card(),
             self.pointer_card(),
+            self.touchpad_click_scroll_card(),
             self.pointer_options_card(),
             Self::pen_card(),
         ])
@@ -325,6 +370,62 @@ impl MouseKeyboardPane {
                         Toggle::from_state(&ui::LocalState::new(self.last.touchpad_gestures))
                             .on_action(bool_action("touchpad-gestures"))
                             .with_id("input.touchpad_gestures"),
+                    ),
+                ),
+            ]),
+        )
+    }
+
+    /// How a touchpad turns presses and finger movement into clicks and
+    /// scrolling, plus the scroll distance shared with mouse wheels. Each
+    /// choice is applied only to devices whose libinput driver offers it.
+    fn touchpad_click_scroll_card(&self) -> Box<dyn Widget> {
+        let choices = |labels: &[&str]| labels.iter().map(|l| (*l).to_string()).collect();
+        card(
+            "Clicking & scrolling",
+            rows(vec![
+                choice_row(
+                    "Touchpad click",
+                    Box::new(
+                        Dropdown::from_state(
+                            choices(&CLICK_METHOD_CHOICES.map(|(label, _)| label)),
+                            &ui::LocalState::new(
+                                click_method_label(self.last.touchpad_click_method).to_string(),
+                            ),
+                        )
+                        .on_action(text_action("touchpad-click-method"))
+                        .with_id("input.touchpad_click_method")
+                        .with_placeholder(click_method_label(self.initial.touchpad_click_method)),
+                    ),
+                ),
+                caption(
+                    "Button areas: press the bottom-right corner to right-click. Finger count: press with two fingers to right-click, three to middle-click.",
+                ),
+                choice_row(
+                    "Touchpad scrolling",
+                    Box::new(
+                        Dropdown::from_state(
+                            choices(&SCROLL_METHOD_CHOICES.map(|(label, _)| label)),
+                            &ui::LocalState::new(
+                                scroll_method_label(self.last.touchpad_scroll_method).to_string(),
+                            ),
+                        )
+                        .on_action(text_action("touchpad-scroll-method"))
+                        .with_id("input.touchpad_scroll_method")
+                        .with_placeholder(scroll_method_label(self.initial.touchpad_scroll_method)),
+                    ),
+                ),
+                setting_row_described(
+                    "Scroll speed",
+                    "Distance per wheel click or finger movement",
+                    Box::new(
+                        Slider::from_state(&ui::LocalState::new(
+                            settings_store::hardware::scroll_speed_to_slider(
+                                self.last.scroll_speed,
+                            ),
+                        ))
+                        .on_action(number_action("scroll-speed"))
+                        .with_id("input.scroll_speed"),
                     ),
                 ),
             ]),

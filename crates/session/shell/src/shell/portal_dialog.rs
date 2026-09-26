@@ -95,6 +95,125 @@ pub struct LauncherReviewDecision {
 /// An editable physical-key binding in the shell-owned shortcut editor.
 /// `accelerator` is canonical (for example `CTRL+SHIFT+KEYK`) so it remains
 /// stable across keyboard-layout changes.
+/// A polkit authentication request as the compositor sheet shows it. The
+/// secret typed into it stays in compositor memory until it is handed to
+/// `polkit-agent-helper-1`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthenticationRequest {
+    pub handle: String,
+    /// polkit's message for the action.
+    pub message: String,
+    pub action_id: String,
+    /// User names that may authorise; more than one shows a picker.
+    pub identities: Vec<String>,
+    pub identity: usize,
+    /// PAM's prompt, e.g. "Password:".
+    pub prompt: String,
+    /// Whether the answer is shown as typed.
+    pub echo: bool,
+    /// Why the last attempt failed, or PAM's informational text.
+    pub notice: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthenticationDecision {
+    Answered { identity: usize, secret: String },
+    Cancelled,
+}
+
+/// How a network-secret field checks its value before the sheet may close.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecretFieldRule {
+    /// Anything, including nothing when the field is optional.
+    Any,
+    /// A WPA passphrase: 8–63 characters, or 64 hexadecimal digits.
+    WpaPassphrase,
+}
+
+impl SecretFieldRule {
+    fn accepts(self, value: &str) -> bool {
+        match self {
+            Self::Any => true,
+            Self::WpaPassphrase => {
+                let chars = value.chars().count();
+                (8..=63).contains(&chars)
+                    || (chars == 64 && value.chars().all(|c| c.is_ascii_hexdigit()))
+            }
+        }
+    }
+}
+
+/// One field of a network-secrets sheet, e.g. a Wi-Fi password or an
+/// 802.1X user name. A masked field never carries a starting value.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretFieldSpec {
+    /// NetworkManager's key for the value, e.g. `psk` or `identity`.
+    pub key: String,
+    pub label: String,
+    /// Drawn as bullets and never reported by `state-dump`.
+    pub masked: bool,
+    pub required: bool,
+    /// What the field starts with; always empty for a masked field.
+    pub initial: String,
+    pub rule: SecretFieldRule,
+}
+
+impl std::fmt::Debug for SecretFieldSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretFieldSpec")
+            .field("key", &self.key)
+            .field("label", &self.label)
+            .field("masked", &self.masked)
+            .field("required", &self.required)
+            .field("rule", &self.rule)
+            .finish_non_exhaustive()
+    }
+}
+
+/// NetworkManager needs secrets to connect. Drawn only by the compositor,
+/// so no application can imitate the sheet or read what is typed into it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkSecretsRequest {
+    pub handle: String,
+    pub title: String,
+    pub detail: String,
+    pub fields: Vec<SecretFieldSpec>,
+    /// `Some(default)` offers "Remember on this device", starting ticked
+    /// or not; `None` when these secrets cannot be kept.
+    pub remember: Option<bool>,
+}
+
+/// The answer to a [`NetworkSecretsRequest`]: one value per field, in order.
+pub enum NetworkSecretsDecision {
+    Answered {
+        values: Vec<zeroize::Zeroizing<String>>,
+        remember: bool,
+    },
+    Cancelled,
+}
+
+impl std::fmt::Debug for NetworkSecretsDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Answered { values, remember } => f
+                .debug_struct("Answered")
+                .field("values", &values.len())
+                .field("remember", remember)
+                .finish(),
+            Self::Cancelled => f.write_str("Cancelled"),
+        }
+    }
+}
+
+/// A field of a network-secrets sheet as drawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecretFieldView {
+    pub key: String,
+    pub label: String,
+    pub masked: bool,
+    pub required: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShortcutBindingRow {
     pub id: String,
@@ -137,6 +256,14 @@ enum PendingDialog {
         request: UsbDeviceRequest,
         selected: Vec<bool>,
         reply: oneshot::Sender<UsbDeviceDecision>,
+    },
+    Authentication {
+        request: AuthenticationRequest,
+        reply: oneshot::Sender<AuthenticationDecision>,
+    },
+    NetworkSecrets {
+        request: NetworkSecretsRequest,
+        reply: oneshot::Sender<NetworkSecretsDecision>,
     },
 }
 
@@ -232,6 +359,116 @@ impl PortalDialogQueue {
             PendingDialog::LauncherReview { request, reply },
         );
         Ok(receiver)
+    }
+
+    /// Queue an administrator-authentication sheet. A request with the
+    /// same handle replaces a stale one (a retry after a wrong password).
+    pub fn enqueue_authentication(
+        &self,
+        request: AuthenticationRequest,
+    ) -> Result<oneshot::Receiver<AuthenticationDecision>, String> {
+        if request.identities.is_empty() {
+            return Err("no identity can authorise this request".into());
+        }
+        let (reply, receiver) = oneshot::channel();
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
+        if inner.pending.contains_key(&request.handle) {
+            return Err("duplicate live portal request".into());
+        }
+        inner.order.push_back(request.handle.clone());
+        inner.pending.insert(
+            request.handle.clone(),
+            PendingDialog::Authentication { request, reply },
+        );
+        Ok(receiver)
+    }
+
+    fn finish_authentication(&self, handle: &str, decision: AuthenticationDecision) -> bool {
+        let pending = self
+            .inner
+            .lock()
+            .ok()
+            .and_then(|mut inner| inner.pending.remove(handle));
+        match pending {
+            Some(PendingDialog::Authentication { reply, .. }) => {
+                let _ = reply.send(decision);
+                true
+            }
+            Some(other) => {
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.pending.insert(handle.into(), other);
+                }
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Queue a network-secrets sheet. A masked field's starting value is
+    /// dropped: a secret is never shown back to the person.
+    pub fn enqueue_network_secrets(
+        &self,
+        mut request: NetworkSecretsRequest,
+    ) -> Result<oneshot::Receiver<NetworkSecretsDecision>, String> {
+        if request.fields.is_empty() {
+            return Err("a network-secrets sheet needs at least one field".into());
+        }
+        for field in &mut request.fields {
+            if field.masked {
+                field.initial.clear();
+            }
+        }
+        let (reply, receiver) = oneshot::channel();
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
+        if inner.pending.contains_key(&request.handle) {
+            return Err("duplicate live portal request".into());
+        }
+        inner.order.push_back(request.handle.clone());
+        inner.pending.insert(
+            request.handle.clone(),
+            PendingDialog::NetworkSecrets { request, reply },
+        );
+        Ok(receiver)
+    }
+
+    fn finish_network_secrets(&self, handle: &str, decision: NetworkSecretsDecision) -> bool {
+        let pending = self
+            .inner
+            .lock()
+            .ok()
+            .and_then(|mut inner| inner.pending.remove(handle));
+        match pending {
+            Some(PendingDialog::NetworkSecrets { reply, .. }) => {
+                let _ = reply.send(decision);
+                true
+            }
+            Some(other) => {
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.pending.insert(handle.into(), other);
+                }
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// A live network-secrets sheet's fields as queued.
+    fn network_fields(&self, handle: &str) -> (Vec<SecretFieldSpec>, Option<bool>) {
+        let Ok(inner) = self.inner.lock() else {
+            return (Vec::new(), None);
+        };
+        match inner.pending.get(handle) {
+            Some(PendingDialog::NetworkSecrets { request, .. }) => {
+                (request.fields.clone(), request.remember)
+            }
+            _ => (Vec::new(), None),
+        }
     }
 
     /// Queue a USB sheet with independent device toggles.  The selection
@@ -337,6 +574,34 @@ impl PortalDialogQueue {
                 icon_choices: request.icon_choices.clone(),
                 editable_icon: request.editable_icon,
             }),
+            PendingDialog::Authentication { request, .. } => Some(DialogView::Authentication {
+                handle: request.handle.clone(),
+                title: request.message.clone(),
+                detail: authentication_detail(request),
+                identities: if request.identities.len() > 1 {
+                    request.identities.clone()
+                } else {
+                    Vec::new()
+                },
+                identity: request.identity,
+                echo: request.echo,
+            }),
+            PendingDialog::NetworkSecrets { request, .. } => Some(DialogView::NetworkSecrets {
+                handle: request.handle.clone(),
+                title: request.title.clone(),
+                detail: request.detail.clone(),
+                fields: request
+                    .fields
+                    .iter()
+                    .map(|field| SecretFieldView {
+                        key: field.key.clone(),
+                        label: field.label.clone(),
+                        masked: field.masked,
+                        required: field.required,
+                    })
+                    .collect(),
+                remember_offered: request.remember.is_some(),
+            }),
             PendingDialog::UsbDevices {
                 request, selected, ..
             } => Some(DialogView::UsbDevices {
@@ -409,6 +674,14 @@ impl PortalDialogQueue {
                 true
             }
             Some(PendingDialog::ShortcutBindings { .. }) => true,
+            Some(PendingDialog::Authentication { reply, .. }) => {
+                let _ = reply.send(AuthenticationDecision::Cancelled);
+                true
+            }
+            Some(PendingDialog::NetworkSecrets { reply, .. }) => {
+                let _ = reply.send(NetworkSecretsDecision::Cancelled);
+                true
+            }
             Some(PendingDialog::LauncherReview { request, reply }) => {
                 let _ = reply.send(LauncherReviewDecision {
                     decision: ReviewDecision::Cancelled,
@@ -693,6 +966,26 @@ pub enum DialogView {
         confirm_label: String,
         devices: Vec<UsbDeviceViewRow>,
     },
+    /// Administrator authentication for polkit. Drawn only by the
+    /// compositor, so no application can imitate it or read the secret.
+    Authentication {
+        handle: String,
+        title: String,
+        detail: String,
+        /// Empty unless there is a choice of identity.
+        identities: Vec<String>,
+        identity: usize,
+        echo: bool,
+    },
+    /// Secrets NetworkManager needs to connect. Drawn only by the
+    /// compositor; the typed values live in the controller, not here.
+    NetworkSecrets {
+        handle: String,
+        title: String,
+        detail: String,
+        fields: Vec<SecretFieldView>,
+        remember_offered: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -709,7 +1002,9 @@ impl DialogView {
             | Self::Review { handle, .. }
             | Self::ShortcutBindings { handle, .. }
             | Self::LauncherReview { handle, .. }
-            | Self::UsbDevices { handle, .. } => handle,
+            | Self::UsbDevices { handle, .. }
+            | Self::Authentication { handle, .. }
+            | Self::NetworkSecrets { handle, .. } => handle,
         }
     }
     pub fn title(&self) -> String {
@@ -719,6 +1014,8 @@ impl DialogView {
             Self::ShortcutBindings { .. } => "Set global shortcuts".into(),
             Self::LauncherReview { title, .. } => title.clone(),
             Self::UsbDevices { title, .. } => title.clone(),
+            Self::Authentication { title, .. } => title.clone(),
+            Self::NetworkSecrets { title, .. } => title.clone(),
         }
     }
     pub fn app_name(&self) -> &str {
@@ -728,6 +1025,8 @@ impl DialogView {
             | Self::ShortcutBindings { app_name, .. }
             | Self::LauncherReview { app_name, .. }
             | Self::UsbDevices { app_name, .. } => app_name,
+            Self::Authentication { .. } => "Administrator access",
+            Self::NetworkSecrets { .. } => "Network",
         }
     }
     pub fn detail(&self) -> &str {
@@ -738,15 +1037,19 @@ impl DialogView {
             }
             Self::LauncherReview { detail, .. } => detail,
             Self::UsbDevices { detail, .. } => detail,
+            Self::Authentication { detail, .. } => detail,
+            Self::NetworkSecrets { detail, .. } => detail,
         }
     }
     pub fn choices(&self) -> &[String] {
         match self {
             Self::AppChoice { choices, .. } => choices,
+            Self::Authentication { identities, .. } => identities,
             Self::Review { .. }
             | Self::ShortcutBindings { .. }
             | Self::LauncherReview { .. }
-            | Self::UsbDevices { .. } => &[],
+            | Self::UsbDevices { .. }
+            | Self::NetworkSecrets { .. } => &[],
         }
     }
     pub fn shortcut_rows(&self) -> &[ShortcutBindingRow] {
@@ -755,7 +1058,27 @@ impl DialogView {
             Self::AppChoice { .. }
             | Self::Review { .. }
             | Self::LauncherReview { .. }
-            | Self::UsbDevices { .. } => &[],
+            | Self::UsbDevices { .. }
+            | Self::Authentication { .. }
+            | Self::NetworkSecrets { .. } => &[],
+        }
+    }
+    /// The fields of a network-secrets sheet.
+    pub fn secret_fields(&self) -> &[SecretFieldView] {
+        match self {
+            Self::NetworkSecrets { fields, .. } => fields,
+            _ => &[],
+        }
+    }
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::AppChoice { .. } => "app_choice",
+            Self::Review { .. } => "review",
+            Self::ShortcutBindings { .. } => "shortcut_bindings",
+            Self::LauncherReview { .. } => "launcher_review",
+            Self::UsbDevices { .. } => "usb_devices",
+            Self::Authentication { .. } => "authentication",
+            Self::NetworkSecrets { .. } => "network_secrets",
         }
     }
     pub fn selectable_count(&self) -> usize {
@@ -763,7 +1086,8 @@ impl DialogView {
             Self::ShortcutBindings { rows, .. } => rows.len(),
             Self::AppChoice { choices, .. } => choices.len(),
             Self::UsbDevices { devices, .. } => devices.len(),
-            Self::Review { .. } | Self::LauncherReview { .. } => 0,
+            Self::Authentication { identities, .. } => identities.len(),
+            Self::Review { .. } | Self::LauncherReview { .. } | Self::NetworkSecrets { .. } => 0,
         }
     }
     pub fn confirm_label(&self) -> &str {
@@ -773,6 +1097,8 @@ impl DialogView {
             Self::ShortcutBindings { .. } => "Save shortcuts",
             Self::LauncherReview { confirm_label, .. } => confirm_label,
             Self::UsbDevices { confirm_label, .. } => confirm_label,
+            Self::Authentication { .. } => "Authenticate",
+            Self::NetworkSecrets { .. } => "Connect",
         }
     }
 
@@ -820,6 +1146,21 @@ pub struct DialogLayout {
     pub confirm: Rect,
     pub launcher_name: Option<Rect>,
     pub launcher_icons: Vec<Rect>,
+    /// The secret field of an authentication sheet.
+    pub secret: Option<Rect>,
+    /// The fields of a network-secrets sheet, in order.
+    pub secret_fields: Vec<Rect>,
+    /// The "Remember on this device" row of a network-secrets sheet.
+    pub remember: Option<Rect>,
+}
+
+/// A network-secrets field as drawn: its label and what shows in it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecretFieldDisplay {
+    pub label: String,
+    /// The typed value, or bullets for a masked field.
+    pub shown: String,
+    pub focused: bool,
 }
 
 pub struct PortalDialogController {
@@ -829,6 +1170,18 @@ pub struct PortalDialogController {
     launcher_name: String,
     launcher_icon: usize,
     launcher_field: usize,
+    /// What has been typed into an authentication sheet. Cleared whenever
+    /// the sheet closes, whichever way.
+    secret: String,
+    /// What has been typed into each field of a network-secrets sheet;
+    /// wiped like `secret`.
+    entries: Vec<String>,
+    /// The focused network-secrets field; one past the last is the
+    /// "Remember" row.
+    entry_focus: usize,
+    remember: bool,
+    /// Why the network-secrets sheet refused to close.
+    entry_error: Option<&'static str>,
 }
 
 fn small_count_as_f64(value: usize) -> f64 {
@@ -848,19 +1201,47 @@ impl PortalDialogController {
             launcher_name: String::new(),
             launcher_icon: 0,
             launcher_field: 0,
+            secret: String::new(),
+            entries: Vec::new(),
+            entry_focus: 0,
+            remember: false,
+            entry_error: None,
         }
     }
     pub fn pump(&mut self) -> bool {
+        // A sheet its requester withdrew (a portal `Close`, polkit's or
+        // NetworkManager's cancel) is gone from the queue: let go of it and
+        // of anything typed into it, so the next sheet can show.
+        let withdrawn = self.active.is_some() && self.view().is_none();
+        if withdrawn {
+            self.active = None;
+            self.forget_secret();
+        }
         if self.active.is_none() {
             self.active = self.queue.next_handle();
             self.selected = 0;
             self.launcher_icon = 0;
             self.launcher_field = 0;
+            self.forget_secret();
+            if let Some(DialogView::Authentication { identity, .. }) = self.view() {
+                self.selected = identity;
+            }
+            if let Some(handle) = self.active.clone() {
+                let (fields, remember) = self.queue.network_fields(&handle);
+                // Start on the first field still to fill in.
+                self.entry_focus = fields
+                    .iter()
+                    .position(|field| field.required && field.initial.is_empty())
+                    .or_else(|| fields.iter().position(|field| field.initial.is_empty()))
+                    .unwrap_or(0);
+                self.entries = fields.into_iter().map(|field| field.initial).collect();
+                self.remember = remember.unwrap_or(false);
+            }
             self.launcher_name = self
                 .view()
                 .and_then(|view| view.launcher_editor().map(|editor| editor.name.to_owned()))
                 .unwrap_or_default();
-            self.active.is_some()
+            self.active.is_some() || withdrawn
         } else {
             false
         }
@@ -877,6 +1258,20 @@ impl PortalDialogController {
         let Some(view) = self.view() else {
             return false;
         };
+        if let DialogView::NetworkSecrets {
+            fields,
+            remember_offered,
+            ..
+        } = &view
+        {
+            let len = fields.len() + usize::from(*remember_offered);
+            self.entry_focus = if reverse {
+                (self.entry_focus + len - 1) % len
+            } else {
+                (self.entry_focus + 1) % len
+            };
+            return true;
+        }
         if let Some(editor) = view.launcher_editor()
             && editor.editable_icon
         {
@@ -924,6 +1319,56 @@ impl PortalDialogController {
             DialogView::UsbDevices { .. } => self
                 .queue
                 .finish_usb_devices(view.handle(), ReviewDecision::Confirmed),
+            DialogView::Authentication {
+                identities,
+                identity,
+                ..
+            } => {
+                let identity = if identities.is_empty() {
+                    *identity
+                } else {
+                    self.selected
+                };
+                let secret = std::mem::take(&mut self.secret);
+                self.queue.finish_authentication(
+                    view.handle(),
+                    AuthenticationDecision::Answered { identity, secret },
+                )
+            }
+            DialogView::NetworkSecrets { .. } => {
+                let (fields, _) = self.queue.network_fields(view.handle());
+                let refusal = fields.iter().zip(&self.entries).enumerate().find_map(
+                    |(index, (field, value))| {
+                        if value.is_empty() {
+                            field
+                                .required
+                                .then_some((index, "Fill in every required field."))
+                        } else if !field.rule.accepts(value) {
+                            Some((
+                                index,
+                                "A Wi-Fi password is 8 to 63 characters, or 64 hexadecimal digits.",
+                            ))
+                        } else {
+                            None
+                        }
+                    },
+                );
+                if let Some((index, reason)) = refusal {
+                    self.entry_focus = index;
+                    self.entry_error = Some(reason);
+                    return false;
+                }
+                let values = std::mem::take(&mut self.entries)
+                    .into_iter()
+                    .map(zeroize::Zeroizing::new)
+                    .collect();
+                let remember = self.remember;
+                self.forget_secret();
+                self.queue.finish_network_secrets(
+                    view.handle(),
+                    NetworkSecretsDecision::Answered { values, remember },
+                )
+            }
         };
         if done {
             self.active = None;
@@ -949,6 +1394,16 @@ impl PortalDialogController {
             DialogView::UsbDevices { .. } => self
                 .queue
                 .finish_usb_devices(view.handle(), ReviewDecision::Cancelled),
+            DialogView::Authentication { .. } => {
+                self.forget_secret();
+                self.queue
+                    .finish_authentication(view.handle(), AuthenticationDecision::Cancelled)
+            }
+            DialogView::NetworkSecrets { .. } => {
+                self.forget_secret();
+                self.queue
+                    .finish_network_secrets(view.handle(), NetworkSecretsDecision::Cancelled)
+            }
         };
         if done {
             self.active = None;
@@ -963,7 +1418,19 @@ impl PortalDialogController {
         let launcher_rows = launcher_editor.map_or(0, |editor| {
             usize::from(editor.editable_name) + usize::from(editor.editable_icon)
         });
-        let height = 190.0 + small_count_as_f64(row_count + launcher_rows) * 48.0;
+        let secret_rows = usize::from(matches!(view, DialogView::Authentication { .. }));
+        let (network_fields, remember_row) = match &view {
+            DialogView::NetworkSecrets {
+                fields,
+                remember_offered,
+                ..
+            } => (fields.len().min(6), usize::from(*remember_offered)),
+            _ => (0, 0),
+        };
+        let height = 190.0
+            + small_count_as_f64(
+                row_count + launcher_rows + secret_rows + network_fields + remember_row,
+            ) * 48.0;
         let sheet = Rect::new(
             bounds.center().x - width / 2.0,
             bounds.center().y - height / 2.0,
@@ -1019,6 +1486,16 @@ impl PortalDialogController {
             sheet.x1 - 24.0,
             sheet.y1 - 20.0,
         );
+        let secret = (secret_rows > 0).then(|| {
+            let y = sheet.y0 + 118.0 + small_count_as_f64(row_count) * 48.0;
+            Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
+        });
+        let field_row = |index: usize| {
+            let y = sheet.y0 + 118.0 + small_count_as_f64(row_count + index) * 48.0;
+            Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
+        };
+        let secret_fields = (0..network_fields).map(field_row).collect();
+        let remember = (remember_row > 0).then(|| field_row(network_fields));
         Some(DialogLayout {
             sheet,
             choices,
@@ -1026,9 +1503,25 @@ impl PortalDialogController {
             confirm,
             launcher_name,
             launcher_icons,
+            secret,
+            secret_fields,
+            remember,
         })
     }
     pub fn click(&mut self, point: vello::kurbo::Point, layout: &DialogLayout) -> bool {
+        if let Some(index) = layout
+            .secret_fields
+            .iter()
+            .position(|rect| rect.contains(point))
+        {
+            self.entry_focus = index;
+            return true;
+        }
+        if layout.remember.is_some_and(|rect| rect.contains(point)) {
+            self.entry_focus = self.entries.len();
+            self.remember = !self.remember;
+            return true;
+        }
         if let Some(index) = layout.choices.iter().position(|rect| rect.contains(point)) {
             let visible_start = self.visible_selection_start();
             self.selected = visible_start + index;
@@ -1146,6 +1639,166 @@ impl PortalDialogController {
         }
     }
 
+    /// Type into an authentication sheet's secret field. Consumes every
+    /// printable key while such a sheet is up.
+    pub fn edit_secret(&mut self, logical_key: &winit::keyboard::Key) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+
+        if self.is_network_secrets() {
+            if self.entry_focus >= self.entries.len() {
+                // The "Remember" row: Space toggles it, nothing else types.
+                if matches!(logical_key, Key::Named(NamedKey::Space)) {
+                    self.remember = !self.remember;
+                }
+                return true;
+            }
+            self.entry_error = None;
+            let Some(entry) = self.entries.get_mut(self.entry_focus) else {
+                return true;
+            };
+            edit_text(entry, logical_key);
+            return true;
+        }
+        if !self.is_authentication() {
+            return false;
+        }
+        edit_text(&mut self.secret, logical_key)
+    }
+
+    pub fn is_authentication(&self) -> bool {
+        matches!(self.view(), Some(DialogView::Authentication { .. }))
+    }
+
+    pub fn is_network_secrets(&self) -> bool {
+        matches!(self.view(), Some(DialogView::NetworkSecrets { .. }))
+    }
+
+    /// Whether the sheet up takes typed secrets, so every key belongs to it.
+    pub fn is_secret_entry(&self) -> bool {
+        self.is_authentication() || self.is_network_secrets()
+    }
+
+    /// The fields of a network-secrets sheet as drawn: masked values as
+    /// bullets.
+    pub fn secret_field_displays(&self) -> Vec<SecretFieldDisplay> {
+        let Some(view) = self.view() else {
+            return Vec::new();
+        };
+        view.secret_fields()
+            .iter()
+            .zip(&self.entries)
+            .enumerate()
+            .map(|(index, (field, value))| SecretFieldDisplay {
+                label: field.label.clone(),
+                shown: if field.masked {
+                    "•".repeat(value.chars().count())
+                } else {
+                    value.clone()
+                },
+                focused: index == self.entry_focus,
+            })
+            .collect()
+    }
+
+    /// Whether "Remember on this device" is ticked and focused, when the
+    /// sheet offers it.
+    pub fn remember_display(&self) -> Option<(bool, bool)> {
+        match self.view()? {
+            DialogView::NetworkSecrets {
+                remember_offered: true,
+                ..
+            } => Some((self.remember, self.entry_focus >= self.entries.len())),
+            _ => None,
+        }
+    }
+
+    /// Why the network-secrets sheet did not close, when it refused.
+    pub fn entry_error(&self) -> Option<&'static str> {
+        self.entry_error
+    }
+
+    /// The sheet up, for `state-dump`: what the person sees, with every
+    /// masked value reduced to its length.
+    pub fn state_json(&self) -> serde_json::Value {
+        let Some(view) = self.view() else {
+            return serde_json::Value::Null;
+        };
+        let mut state = serde_json::json!({
+            "kind": view.kind(),
+            "handle": view.handle(),
+            "title": view.title(),
+            "app_name": view.app_name(),
+            "detail": view.detail(),
+            "confirm_label": view.confirm_label(),
+            "choices": view.choices(),
+            "selected": self.selected,
+        });
+        match &view {
+            DialogView::Authentication { echo, .. } => {
+                state["secret_len"] = self.secret.chars().count().into();
+                if *echo {
+                    state["secret"] = self.secret.clone().into();
+                }
+            }
+            DialogView::NetworkSecrets {
+                fields,
+                remember_offered,
+                ..
+            } => {
+                state["fields"] = fields
+                    .iter()
+                    .zip(&self.entries)
+                    .enumerate()
+                    .map(|(index, (field, value))| {
+                        let mut entry = serde_json::json!({
+                            "key": field.key,
+                            "label": field.label,
+                            "masked": field.masked,
+                            "required": field.required,
+                            "length": value.chars().count(),
+                            "focused": index == self.entry_focus,
+                        });
+                        if !field.masked {
+                            entry["value"] = value.clone().into();
+                        }
+                        entry
+                    })
+                    .collect();
+                state["remember"] = if *remember_offered {
+                    self.remember.into()
+                } else {
+                    serde_json::Value::Null
+                };
+                state["error"] = self.entry_error.into();
+            }
+            _ => {}
+        }
+        state
+    }
+
+    /// The secret field as drawn: bullets unless the prompt echoes.
+    pub fn secret_display(&self) -> Option<String> {
+        match self.view()? {
+            DialogView::Authentication { echo: true, .. } => Some(self.secret.clone()),
+            DialogView::Authentication { .. } => Some("•".repeat(self.secret.chars().count())),
+            _ => None,
+        }
+    }
+
+    fn forget_secret(&mut self) {
+        // Overwrite before release so the freed allocation does not keep
+        // the password.
+        let mut bytes = std::mem::take(&mut self.secret).into_bytes();
+        bytes.iter_mut().for_each(|byte| *byte = 0);
+        std::hint::black_box(&bytes);
+        for entry in std::mem::take(&mut self.entries) {
+            drop(zeroize::Zeroizing::new(entry));
+        }
+        self.entry_focus = 0;
+        self.remember = false;
+        self.entry_error = None;
+    }
+
     pub fn launcher_name(&self) -> Option<&str> {
         self.view()
             .is_some_and(|view| view.launcher_editor().is_some())
@@ -1164,6 +1817,52 @@ impl PortalDialogController {
                 .is_some_and(|editor| editor.editable_name && self.launcher_field == 0)
         })
     }
+}
+
+/// Apply one key to a secret being typed; `true` when the key was text.
+fn edit_text(buffer: &mut String, logical_key: &winit::keyboard::Key) -> bool {
+    use winit::keyboard::{Key, NamedKey};
+
+    match logical_key {
+        Key::Named(NamedKey::Backspace) => {
+            if let Some((index, _)) = buffer.char_indices().next_back() {
+                buffer.truncate(index);
+            }
+            true
+        }
+        Key::Named(NamedKey::Space) => {
+            if buffer.len() < 512 {
+                buffer.push(' ');
+            }
+            true
+        }
+        Key::Character(text) => {
+            let accepted: String = text.chars().filter(|ch| !ch.is_control()).collect();
+            if buffer.len().saturating_add(accepted.len()) <= 512 {
+                buffer.push_str(&accepted);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn authentication_detail(request: &AuthenticationRequest) -> String {
+    let mut lines = Vec::new();
+    if let Some(notice) = request
+        .notice
+        .as_deref()
+        .filter(|notice| !notice.is_empty())
+    {
+        lines.push(notice.to_string());
+    }
+    let who = request
+        .identities
+        .get(request.identity)
+        .map_or_else(String::new, |user| format!(" ({user})"));
+    lines.push(format!("{}{who}", request.prompt.trim()));
+    lines.push(request.action_id.clone());
+    lines.join("\n")
 }
 
 fn chooser_detail(request: &ApplicationChoiceRequest) -> String {
@@ -1293,6 +1992,102 @@ mod tests {
         c.pump();
         assert!(c.cancel());
         assert!(matches!(rx.blocking_recv(), Ok(PortalResult::Cancelled)));
+    }
+
+    fn authentication_request(identities: &[&str]) -> AuthenticationRequest {
+        AuthenticationRequest {
+            handle: "polkit:cookie".into(),
+            message: "Authentication is required to install software".into(),
+            action_id: "org.freedesktop.Flatpak.app-install".into(),
+            identities: identities.iter().map(ToString::to_string).collect(),
+            identity: 0,
+            prompt: "Password:".into(),
+            echo: false,
+            notice: Some("Wrong password".into()),
+        }
+    }
+
+    #[test]
+    fn authentication_sheet_hides_the_secret_and_hands_it_over_once() {
+        use winit::keyboard::{Key, NamedKey};
+
+        let queue = PortalDialogQueue::default();
+        let receiver = queue
+            .enqueue_authentication(authentication_request(&["quinn"]))
+            .expect("queued");
+        let mut controller = PortalDialogController::new(queue);
+        assert!(controller.pump());
+        let view = controller.view().expect("visible sheet");
+        assert_eq!(
+            view.title(),
+            "Authentication is required to install software"
+        );
+        assert!(view.detail().contains("Wrong password"));
+        assert!(
+            view.detail()
+                .contains("org.freedesktop.Flatpak.app-install")
+        );
+        assert!(view.choices().is_empty(), "one identity needs no picker");
+        let layout = controller
+            .layout(Rect::new(0.0, 0.0, 1280.0, 800.0))
+            .expect("layout");
+        assert!(layout.secret.is_some());
+        for key in ["h", "u", "n", "t"] {
+            assert!(controller.edit_secret(&Key::Character(key.into())));
+        }
+        assert!(controller.edit_secret(&Key::Named(NamedKey::Backspace)));
+        assert_eq!(controller.secret_display().as_deref(), Some("•••"));
+        assert!(controller.confirm());
+        assert_eq!(
+            receiver.blocking_recv(),
+            Ok(AuthenticationDecision::Answered {
+                identity: 0,
+                secret: "hun".into()
+            })
+        );
+        assert_eq!(controller.secret_display(), None);
+    }
+
+    #[test]
+    fn authentication_sheet_offers_a_choice_of_identity_and_can_be_dismissed() {
+        use winit::keyboard::Key;
+
+        let queue = PortalDialogQueue::default();
+        let receiver = queue
+            .enqueue_authentication(authentication_request(&["quinn", "root"]))
+            .expect("queued");
+        let mut controller = PortalDialogController::new(queue.clone());
+        assert!(controller.pump());
+        assert_eq!(
+            controller.view().expect("sheet").choices(),
+            ["quinn".to_string(), "root".to_string()]
+        );
+        assert!(controller.select_next(false));
+        assert!(controller.edit_secret(&Key::Character("x".into())));
+        assert!(controller.cancel());
+        assert_eq!(
+            receiver.blocking_recv(),
+            Ok(AuthenticationDecision::Cancelled)
+        );
+
+        let receiver = queue
+            .enqueue_authentication(authentication_request(&["quinn", "root"]))
+            .expect("queued again");
+        assert!(controller.pump());
+        assert_eq!(
+            controller.secret_display().as_deref(),
+            Some(""),
+            "nothing carried over"
+        );
+        assert!(controller.select_next(false));
+        assert!(controller.confirm());
+        assert_eq!(
+            receiver.blocking_recv(),
+            Ok(AuthenticationDecision::Answered {
+                identity: 1,
+                secret: String::new()
+            })
+        );
     }
 
     #[test]

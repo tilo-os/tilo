@@ -73,7 +73,6 @@ const RECORD_SUCCESSOR_CLAIM: &str = "successor-claim";
 /// this key existed reads as [`SCHEMA_VERSION`] rather than "unknown", so the
 /// upgrade that added the check doesn't strand every existing document.
 pub const SCHEMA_VERSION_KEY: &str = "tilo:schema_version";
-const LEGACY_SCHEMA_VERSION_KEY: &str = "qos:schema_version";
 
 /// The document layout this build writes and understands. Bump only when a
 /// change makes a document unreadable to an older build in a way that loses
@@ -152,27 +151,18 @@ fn io_err(context: impl Into<String>, source: io::Error) -> StoreError {
 /// this crate is the only writer of the key, so a non-integer is someone
 /// else's key of the same name, not corruption.
 pub fn schema_version_of(doc: &AutoCommit) -> u32 {
-    [SCHEMA_VERSION_KEY, LEGACY_SCHEMA_VERSION_KEY]
-        .into_iter()
-        .filter_map(|key| {
-            doc.get(ROOT, key).ok().flatten().and_then(|(v, _)| {
-                v.as_u64()
-                    .or_else(|| v.as_i64().and_then(|i| u64::try_from(i).ok()))
-                    .and_then(|n| u32::try_from(n).ok())
-            })
+    doc.get(ROOT, SCHEMA_VERSION_KEY)
+        .ok()
+        .flatten()
+        .and_then(|(v, _)| {
+            v.as_u64()
+                .or_else(|| v.as_i64().and_then(|i| u64::try_from(i).ok()))
+                .and_then(|n| u32::try_from(n).ok())
         })
-        .max()
         .unwrap_or(SCHEMA_VERSION)
 }
 
 fn stamp_schema_version(doc: &mut AutoCommit, version: u32) {
-    // Keep an existing old marker in sync so older builds also refuse a
-    // newly migrated document. Do not discard its CRDT history.
-    if matches!(doc.get(ROOT, LEGACY_SCHEMA_VERSION_KEY), Ok(Some(_))) {
-        if let Err(e) = doc.put(ROOT, LEGACY_SCHEMA_VERSION_KEY, u64::from(version)) {
-            tracing::warn!(error = %e, "could not update the legacy schema version");
-        }
-    }
     if let Err(e) = doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(version)) {
         tracing::warn!(error = %e, "could not stamp the document's schema version");
     }
@@ -181,10 +171,7 @@ fn stamp_schema_version(doc: &mut AutoCommit, version: u32) {
 /// Stamp the version only if the document doesn't already carry one, so a
 /// pre-versioning document gets it on first save rather than staying unlabelled.
 fn ensure_schema_version(doc: &mut AutoCommit, version: u32) {
-    if [SCHEMA_VERSION_KEY, LEGACY_SCHEMA_VERSION_KEY]
-        .into_iter()
-        .all(|key| matches!(doc.get(ROOT, key), Ok(None) | Err(_)))
-    {
+    if matches!(doc.get(ROOT, SCHEMA_VERSION_KEY), Ok(None) | Err(_)) {
         stamp_schema_version(doc, version);
     }
 }
@@ -1030,22 +1017,23 @@ pub fn validate_canonical_schema_of(doc: &AutoCommit, label: &Path) -> Result<()
         source: Box::new(source),
     };
     let mut versions = Vec::new();
-    for key in [SCHEMA_VERSION_KEY, LEGACY_SCHEMA_VERSION_KEY] {
-        for (value, _) in doc.get_all(ROOT, key).map_err(automerge_error)? {
-            let raw = match value {
-                automerge::Value::Scalar(value) => match value.as_ref() {
-                    automerge::ScalarValue::Uint(v) => *v,
-                    automerge::ScalarValue::Int(v) => {
-                        u64::try_from(*v).map_err(|_| invalid("negative schema version"))?
-                    }
-                    _ => return Err(invalid("schema version must be an integer")),
-                },
-                automerge::Value::Object(_) => {
-                    return Err(invalid("schema version must be a scalar"));
+    for (value, _) in doc
+        .get_all(ROOT, SCHEMA_VERSION_KEY)
+        .map_err(automerge_error)?
+    {
+        let raw = match value {
+            automerge::Value::Scalar(value) => match value.as_ref() {
+                automerge::ScalarValue::Uint(v) => *v,
+                automerge::ScalarValue::Int(v) => {
+                    u64::try_from(*v).map_err(|_| invalid("negative schema version"))?
                 }
-            };
-            versions.push(u32::try_from(raw).map_err(|_| invalid("schema version exceeds u32"))?);
-        }
+                _ => return Err(invalid("schema version must be an integer")),
+            },
+            automerge::Value::Object(_) => {
+                return Err(invalid("schema version must be a scalar"));
+            }
+        };
+        versions.push(u32::try_from(raw).map_err(|_| invalid("schema version exceeds u32"))?);
     }
     if let Some(found) = versions
         .iter()
@@ -1154,35 +1142,6 @@ fn acquire_gate(path: &Path, exclusive: bool) -> Result<FileLock, StoreError> {
 /// room re-import the still-preserved source, while deleting it after a crash
 /// would make recovery non-deterministic.
 fn claim_legacy_room_migration(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
-    let Some(name) = marker.file_name().and_then(|name| name.to_str()) else {
-        return claim_room_marker(marker, room_key);
-    };
-    let Some(suffix) = name.strip_prefix(".tilo-") else {
-        return claim_room_marker(marker, room_key);
-    };
-    let legacy = marker.with_file_name(format!(".qos-{suffix}"));
-    // Both published spellings (including crash-recovery claims) are durable
-    // authorities. A disagreement must never grant a second room ownership.
-    for candidate in [&legacy, marker] {
-        let state = match read_claim(candidate)? {
-            ClaimState::Malformed => read_claim(&candidate.with_extension("recovered"))?,
-            state => state,
-        };
-        if let ClaimState::Owner(owner) = state {
-            if owner != room_key {
-                return Ok(false);
-            }
-        }
-    }
-    // Claim the old spelling first so pre-rename builds share the same atomic
-    // claim authority. Retain both names for callers using either release.
-    if !claim_room_marker(&legacy, room_key)? {
-        return Ok(false);
-    }
-    claim_room_marker(marker, room_key)
-}
-
-fn claim_room_marker(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
     match read_claim(marker)? {
         ClaimState::Owner(owner) => return Ok(owner == room_key),
         ClaimState::Malformed => {
@@ -1385,88 +1344,9 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
-    fn renamed_room_claim_honours_old_owner_and_recovery() {
-        let tmp = scratch_home();
-        let root = tmp.path().join("dev.qos.notes");
-        fs::create_dir(&root).unwrap();
-        let marker = root.join(".qos-legacy-room-index-claim");
-        fs::write(&marker, b"room-a\n").unwrap();
-        assert!(!DocStore::claim_legacy_package_migration("dev.tilo.notes", "room-b").unwrap());
-        assert!(DocStore::claim_legacy_package_migration("dev.tilo.notes", "room-a").unwrap());
-        fs::write(&marker, b"torn").unwrap();
-        fs::write(marker.with_extension("recovered"), b"room-a\n").unwrap();
-        assert!(!DocStore::claim_legacy_package_migration("dev.tilo.notes", "room-b").unwrap());
-        assert!(DocStore::claim_legacy_package_migration("dev.tilo.notes", "room-a").unwrap());
-    }
-
-    #[test]
-    fn legacy_schema_marker_refuses_newer_documents_without_rewriting() {
-        for current in [None, Some(1_u64)] {
-            let tmp = tempfile::tempdir().unwrap();
-            let mut store = DocStore::open_in("dev.tilo.notes", tmp.path()).unwrap();
-            let mut doc = AutoCommit::new();
-            doc.put(ROOT, "qos:schema_version", 9_u64).unwrap();
-            if let Some(value) = current {
-                doc.put(ROOT, SCHEMA_VERSION_KEY, value).unwrap();
-            }
-            let bytes = doc.save();
-            fs::write(store.document_path(), &bytes).unwrap();
-            assert!(matches!(
-                store.load_complete(),
-                Err(StoreError::NewerSchema { found: 9, .. })
-            ));
-            let mut fallback = store.load_or_new();
-            assert!(store.save(&mut fallback).is_err());
-            assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
-        }
-    }
-
-    #[test]
-    fn canonical_schema_validates_legacy_assignments_too() {
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, SCHEMA_VERSION_KEY, 1_u64).unwrap();
-        doc.put(ROOT, "qos:schema_version", 9_u64).unwrap();
-        assert!(matches!(
-            validate_canonical_schema_of(&doc, Path::new("doc")),
-            Err(StoreError::NewerSchema { found: 9, .. })
-        ));
-        doc.put(ROOT, "qos:schema_version", "invalid").unwrap();
-        assert!(matches!(
-            validate_canonical_schema_of(&doc, Path::new("doc")),
-            Err(StoreError::InvalidSchema { .. })
-        ));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn renamed_package_load_preserves_legacy_heads_actor_and_bytes() {
-        let tmp = scratch_home();
-        let mut original = DocStore::open_for("dev.qos.notes").unwrap();
-        let mut doc = original.new_document();
-        doc.put(ROOT, "qos:schema_version", 1_u64).unwrap();
-        doc.put(ROOT, "body", "first").unwrap();
-        original.save(&mut doc).unwrap();
-        doc.put(ROOT, "body", "second").unwrap();
-        original.append(&mut doc).unwrap();
-        let heads = doc.get_heads();
-        let actor = doc.get_actor().clone();
-        let bytes = fs::read(original.document_path()).unwrap();
-        let path = original.document_path().to_path_buf();
-        drop(original);
-        let mut renamed = DocStore::open_for("dev.tilo.notes").unwrap();
-        let mut restored = renamed.load_complete().unwrap().expect("existing document");
-        assert_eq!(renamed.document_path(), path);
-        assert_eq!(restored.get_heads(), heads);
-        assert_eq!(restored.get_actor(), &actor);
-        assert_eq!(fs::read(&path).unwrap(), bytes);
-        assert!(!tmp.path().join("dev.tilo.notes").exists());
-    }
-
-    #[test]
     fn complete_load_refuses_truncated_increment_without_accepting_or_rewriting_it() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut store = DocStore::open_in("dev.qos.complete-load", tmp.path()).unwrap();
+        let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
         let mut doc = store.new_document();
         doc.put(ROOT, "body", "first").unwrap();
         let mut bytes = doc.save();
@@ -1496,7 +1376,7 @@ mod tests {
     #[test]
     fn complete_load_accepts_full_history_and_distinguishes_missing_from_empty() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut store = DocStore::open_in("dev.qos.complete-load", tmp.path()).unwrap();
+        let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
         assert!(store.load_complete().unwrap().is_none());
         fs::write(store.document_path(), []).unwrap();
         assert!(matches!(

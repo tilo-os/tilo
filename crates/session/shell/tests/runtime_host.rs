@@ -4,7 +4,7 @@
 #[test]
 fn profile_is_exclusive_and_workspace_survives_restart() {
     // Execute in a separate process: identity discovery uses process environment.
-    if std::env::var_os("QOS_RUNTIME_HOST_TEST_CHILD").is_none() {
+    if std::env::var_os("TILO_RUNTIME_HOST_TEST_CHILD").is_none() {
         let root = tempfile::tempdir().unwrap();
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -12,7 +12,7 @@ fn profile_is_exclusive_and_workspace_survives_restart() {
                 "runtime_host_tests::profile_is_exclusive_and_workspace_survives_restart",
                 "--nocapture",
             ])
-            .env("QOS_RUNTIME_HOST_TEST_CHILD", root.path())
+            .env("TILO_RUNTIME_HOST_TEST_CHILD", root.path())
             .env("XDG_CONFIG_HOME", root.path().join("config"))
             .env("TILO_IDENTITY_ROOT", root.path().join("identity"))
             .status()
@@ -20,7 +20,7 @@ fn profile_is_exclusive_and_workspace_survives_restart() {
         assert!(status.success());
         return;
     }
-    let root = std::path::PathBuf::from(std::env::var_os("QOS_RUNTIME_HOST_TEST_CHILD").unwrap());
+    let root = std::path::PathBuf::from(std::env::var_os("TILO_RUNTIME_HOST_TEST_CHILD").unwrap());
     let session = crate::runtime_host::Session::start(&root).unwrap();
     let room_id = session.room.clone();
     assert!(session.broker.capnp_socket().exists());

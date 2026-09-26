@@ -250,6 +250,11 @@ cmd_wait() {
       msg "greeter up (~$((i*2))s)"; return 0
     fi
     vm_running || { boot_diagnose "$TILO_SERIAL" || true
+      # A qemu that exits this early usually said why on stderr, which is
+      # all that reaches its log; CI keeps nothing else of the run dir.
+      if [ -s "$TILO_QEMU_LOG" ]; then
+        warn "last lines of $TILO_QEMU_LOG:"; tail -n 40 "$TILO_QEMU_LOG" >&2
+      fi
       die "qemu exited during boot; see $TILO_QEMU_LOG / $TILO_SERIAL"; }
     sleep 2
   done

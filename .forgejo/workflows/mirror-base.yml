@@ -1,6 +1,6 @@
 name: Snapshot / Fedora base
 
-# Copies the upstream Fedora bootc base into code.sandbox.example and prints the
+# Copies the upstream Fedora bootc base into registry.tilo.so and prints the
 # digest to pin. Sibling of snapshot-rpms: that job freezes the package set,
 # this one freezes the base underneath it — together they are what makes a
 # rebuild months later produce the same image.
@@ -42,15 +42,10 @@ jobs:
       - name: Read the upstream base tag we track
         run: grep '^BASE_SOURCE=' os/base-snapshot.env >> "$GITHUB_ENV"
 
-      - name: Log in to the code.sandbox.example registry
+      - name: Log in to registry.tilo.so
         env:
-          REGISTRY_USER: ${{ github.actor }}
-          REGISTRY_PASS: ${{ secrets.REGISTRY_TOKEN }}
-        run: |
-          printf '%s' "$REGISTRY_PASS" | skopeo login \
-            --username "$REGISTRY_USER" --password-stdin \
-            --authfile /tmp/mirror-auth.json \
-            code.sandbox.example
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: skopeo login registry.tilo.so --username "$GITHUB_ACTOR" --password-stdin <<< "$GITHUB_TOKEN"
 
       - name: Copy the base image (multi-arch index preserved)
         run: |
@@ -66,9 +61,8 @@ jobs:
           # missing blobs.
           # A second mirror on the same day must not take the first one's tag: the
           # registry drops an index that loses its last tag, and BASE_REF pins it.
-          dst="code.sandbox.example/qos/fedora-bootc:${BASE_SOURCE##*:}-$(date -u +%Y%m%d)-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          dst="registry.tilo.so/tilo/fedora-bootc:${BASE_SOURCE##*:}-$(date -u +%Y%m%d)-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           skopeo copy --all --preserve-digests --retry-times 5 \
-            --dest-authfile /tmp/mirror-auth.json \
             "docker://$BASE_SOURCE" "docker://$dst"
           echo "MIRROR_TAG=$dst" >> "$GITHUB_ENV"
           echo "mirrored $BASE_SOURCE -> $dst"
@@ -76,7 +70,7 @@ jobs:
       - name: Verify the mirror resolves, is an index, and is the Fedora we track
         run: |
           set -euo pipefail
-          skopeo inspect --raw --authfile /tmp/mirror-auth.json \
+          skopeo inspect --raw \
             "docker://$MIRROR_TAG" > /tmp/base-index.json
           digest="$(skopeo manifest-digest /tmp/base-index.json)"
 
@@ -98,8 +92,8 @@ jobs:
           # job exists to fix, so assert the release BASE_SOURCE claims — read
           # back through the digest we are about to publish, not the tag.
           want="fc${BASE_SOURCE##*:}"
-          osver="$(skopeo inspect --no-tags --authfile /tmp/mirror-auth.json \
-            "docker://code.sandbox.example/qos/fedora-bootc@${digest}" \
+          osver="$(skopeo inspect --no-tags \
+            "docker://registry.tilo.so/tilo/fedora-bootc@${digest}" \
             | jq -r '.Labels["ostree.linux"] // ""')"
           case "$osver" in
             *"$want"*) ;;
@@ -113,7 +107,7 @@ jobs:
 
       - name: Report the pinned BASE_REF to commit
         run: |
-          ref="code.sandbox.example/qos/fedora-bootc@${BASE_DIGEST}"
+          ref="registry.tilo.so/tilo/fedora-bootc@${BASE_DIGEST}"
           echo "::notice::Base image mirrored. Set os/base-snapshot.env to: BASE_REF=$ref"
           {
             echo "## Base image mirrored"

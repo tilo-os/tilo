@@ -13,7 +13,7 @@ import uuid
 MODULE = importlib.util.spec_from_file_location('native_index', Path(__file__).with_name('promote-native-index.py'))
 native = importlib.util.module_from_spec(MODULE)
 MODULE.loader.exec_module(native)
-REPOSITORY = 'code.sandbox.example/qos/tilo-builder'
+REPOSITORY = 'registry.tilo.so/tilo/tilo-builder'
 FIELDS = {'schema', 'architecture', 'image', 'revision', 'runId', 'coldAttempt', 'namespace'}
 
 

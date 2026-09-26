@@ -69,6 +69,29 @@ pub trait WritePolicy: Send + Sync + 'static {
 pub trait Fetcher: Send + Sync + 'static {
     /// Returns exactly `len` bytes of `content` starting at `offset`.
     fn fetch(&self, content: &[u8; 32], offset: u64, len: u64) -> io::Result<Vec<u8>>;
+
+    /// Writes bytes `range` of `content` into `dest` at the same offsets.
+    /// `ahead` marks read-ahead for a sequential reader rather than a
+    /// blocked access. The default fetches and writes; a fetcher whose
+    /// content lives in files can clone extents instead.
+    fn fill(
+        &self,
+        content: &[u8; 32],
+        range: Range<u64>,
+        dest: BorrowedFd<'_>,
+        ahead: bool,
+    ) -> io::Result<()> {
+        let _ = ahead;
+        let len = range.end.saturating_sub(range.start);
+        let bytes = self.fetch(content, range.start, len)?;
+        if bytes.len() as u64 != len {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "fetcher returned a short range",
+            ));
+        }
+        write_all_at(dest, &bytes, range.start)
+    }
 }
 
 /// Everything a placeholder needs to be indistinguishable from the real file
@@ -457,24 +480,12 @@ impl Shared {
         content: &[u8; 32],
         fd: BorrowedFd<'_>,
         claim: &[Range<u64>],
+        ahead: bool,
     ) -> (Vec<Range<u64>>, io::Result<()>) {
         let mut done = Vec::new();
         for c in claim {
             let len = c.end.saturating_sub(c.start);
-            let r = self
-                .fetcher
-                .fetch(content, c.start, len)
-                .and_then(|bytes| {
-                    if bytes.len() as u64 == len {
-                        Ok(bytes)
-                    } else {
-                        Err(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "fetcher returned a short range",
-                        ))
-                    }
-                })
-                .and_then(|bytes| write_all_at(fd, &bytes, c.start));
+            let r = self.fetcher.fill(content, c.clone(), fd, ahead);
             match r {
                 Ok(()) => {
                     self.stats.fills.fetch_add(1, Ordering::Relaxed);
@@ -543,7 +554,7 @@ impl Shared {
             }
             let content = st.content;
             drop(files);
-            let (done, result) = self.fetch_claims(&content, fd, &claim);
+            let (done, result) = self.fetch_claims(&content, fd, &claim, !block);
             for d in &done {
                 filled = filled.saturating_add(d.end.saturating_sub(d.start));
             }

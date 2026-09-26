@@ -110,6 +110,9 @@ pub fn run_with_full_options(opts: HostedOptions) {
     chrome
         .borrow_mut()
         .set_notification_bridge(notification_bridge.clone());
+    if let Some(store) = crate::shell::notification_history::NotificationHistoryStore::for_user() {
+        chrome.borrow_mut().attach_notification_history_store(store);
+    }
     if let Some(notice) = &state_notice {
         crate::shell::notification::announce_state_notice(&chrome, notice);
     }
@@ -232,7 +235,13 @@ pub fn run_with_full_options(opts: HostedOptions) {
         None
     } else {
         launcher::services::ensure_services_root()
-            .and_then(|_| crate::identity_broker::spawn(identity_socket, tree_handle.clone()))
+            .and_then(|_| {
+                crate::identity_broker::spawn(
+                    identity_socket,
+                    tree_handle.clone(),
+                    crate::shell::channel_encryption::ChannelKeyProvider::session(),
+                )
+            })
             .map_err(|error| tracing::warn!(%error, "identity broker unavailable"))
             .ok()
     };
@@ -610,6 +619,8 @@ fn spawn_collab_broker(
                 socket_path.display(),
                 peer_sync.is_some()
             );
+            crate::shell::channel_encryption::ChannelKeyProvider::session()
+                .set(handle.channel_encryption());
             Some(handle)
         }
         Err(e) => {

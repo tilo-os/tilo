@@ -19,7 +19,7 @@
 - Never resolve conflicts solely by wall-clock timestamps.
 - Normal deletions propagate into recoverable storage with a proposed 30-day retention period, disclosed in connection settings.
 - If recovery space is insufficient, pause deletion propagation rather than discard recoverable data.
-- Disconnecting stops synchronization and retains both the qOS copy and originals.
+- Disconnecting stops synchronization and retains both the Tilo copy and originals.
 - An unavailable source or permission failure must never be interpreted as deletion.
 - Folder migration grants no collaboration sharing or cloud-upload permission.
 

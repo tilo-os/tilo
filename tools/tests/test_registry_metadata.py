@@ -29,14 +29,14 @@ class RegistryMetadataTests(unittest.TestCase):
             output, media = root / "entries", root / "media"
             result = self.run_tool(
                 "build",
-                "--media-base", "https://apps.tilo.so/artifacts/qos/generic/tilo-app-metadata/test",
+                "--media-base", "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/test",
                 "--output", str(output),
                 "--media-output", str(media),
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             entries = sorted(output.glob("*.json"))
-            self.assertEqual(len(entries), 53)
-            self.assertEqual(len(list(media.glob("*"))), 77)
+            self.assertEqual(len(entries), 54)
+            self.assertEqual(len(list(media.glob("*"))), 78)
             for path in entries:
                 entry = json.loads(path.read_text(encoding="utf-8"))
                 with self.subTest(app=path.stem):
@@ -45,7 +45,7 @@ class RegistryMetadataTests(unittest.TestCase):
                     self.assertEqual(entry["supported_languages"], sorted(entry["supported_languages"]))
                     self.assertIn("en", entry["supported_languages"])
                     self.assertTrue(entry["images"]["en"])
-                    self.assertEqual(entry["source_url"], "https://code.sandbox.example/qos/qos")
+                    self.assertEqual(entry["source_url"], "https://code.tilo.so/tilo/tilo")
                     for image in entry["images"]["en"]:
                         self.assertTrue(image["url"].startswith("https://apps.tilo.so/"))
                         self.assertTrue(image["alt"].strip())
@@ -55,7 +55,7 @@ class RegistryMetadataTests(unittest.TestCase):
         result = self.run_tool("audit")
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
-        self.assertEqual(report["count"], 53)
+        self.assertEqual(report["count"], 54)
         self.assertNotIn("browser", report["apps"])
 
 

@@ -15,6 +15,7 @@ on:
   #     - "crates/doc/bounded-zip/**"
   #     - "crates/doc/tilo-automerge/**"
   #     - "crates/media/thumbnail/**"
+  #     - "crates/media/core/**"
   #     - "crates/runtime/runtime-fs/**"
   #     - "crates/runtime/runtime-portal/**"
   #     - "crates/system/advisory-lock/**"
@@ -66,6 +67,7 @@ on:
       - "crates/doc/tilo-automerge/**"
       - "crates/doc/pdf/**"
       - "crates/media/thumbnail/**"
+      - "crates/media/core/**"
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-portal/**"
       - "crates/system/advisory-lock/**"
@@ -92,6 +94,7 @@ on:
       - "crates/sdk/font-catalog/**"
       - "crates/dev/test-env/**"
       - "crates/system/fs-native/**"
+      - "crates/system/fs-content/**"
       - "crates/system/tilo-clock/**"
       - "scripts/ci-run.sh"
       - "tools/ci/focused_test.py"
@@ -142,10 +145,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     outputs:
       applicable: ${{ steps.compare.outputs.applicable }}
     steps:
@@ -177,10 +177,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: code.sandbox.example/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
@@ -191,8 +188,6 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Resolve the CI builder
         id: resolve
-        env:
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: python3 tools/ci/resolve_builder.py
 
   real-fuse:
@@ -208,9 +203,6 @@ jobs:
     timeout-minutes: 60
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
       options: --device /dev/fuse --cap-add SYS_ADMIN
     steps:
       - name: Checkout
@@ -329,9 +321,6 @@ jobs:
       TILO_REQUIRE_FUSE: "0"
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

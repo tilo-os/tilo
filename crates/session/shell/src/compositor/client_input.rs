@@ -68,8 +68,15 @@ pub struct ClientInput {
     surfaces: HashMap<u64, WlSurface>,
     /// Surface currently holding the seat's keyboard focus, or `None` when the shell chrome owns the keyboard.
     keyboard_focus: Option<u64>,
+    /// Toplevel configured with `xdg_toplevel.state.activated` — the focused
+    /// tile, which draws itself as the active window. Unlike
+    /// [`Self::keyboard_focus`] it survives a shell overlay briefly taking the
+    /// keyboard, so opening the palette does not repaint every app inactive.
+    activated: Option<u64>,
     /// Surface the pointer is currently inside (and therefore focused on at the seat), or `None` when the pointer is over chrome.
     pointer_focus: Option<u64>,
+    /// Global origin of the pointer-focused surface, as the router placed it.
+    pointer_focus_origin: Option<(f64, f64)>,
     /// Last known cursor position in global coordinates; `None` until
     /// moved. `Option`, not `(0.0, 0.0)`, since presence is level-triggered — a default would put a peer's cursor at top-left for a session that never moved.
     cursor: Option<(f64, f64)>,
@@ -210,6 +217,10 @@ impl ClientInput {
     }
 
     /// The surface the seat's pointer is currently focused on, if any.
+    pub fn pointer_focus_origin(&self) -> Option<(f64, f64)> {
+        self.pointer_focus_origin
+    }
+
     pub fn pointer_focus(&self) -> Option<u64> {
         self.pointer_focus
     }
@@ -329,7 +340,43 @@ impl State {
     }
 
     /// Point the seat's keyboard at `surface_id` (or nothing when `None`), sending `leave`/`enter` and the keymap; idempotent, so the run loop can call it unconditionally every tick.
+    /// Configure `surface_id` as the activated toplevel and the previous one
+    /// as no longer activated. A toplevel that has not had its opening
+    /// configure keeps the state pending, so it rides that configure.
+    pub fn set_activated_toplevel(&mut self, surface_id: Option<u64>) {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as Xdg;
+        let previous = std::mem::replace(&mut self.client_input.activated, surface_id);
+        if previous == surface_id {
+            return;
+        }
+        for toplevel in self.xdg_shell_state.toplevel_surfaces() {
+            let id = crate::compositor::state::surface_id(toplevel.wl_surface());
+            if Some(id) != previous && Some(id) != surface_id {
+                continue;
+            }
+            let activated = Some(id) == surface_id;
+            toplevel.with_pending_state(|pending| {
+                if activated {
+                    pending.states.set(Xdg::Activated);
+                } else {
+                    pending.states.unset(Xdg::Activated);
+                }
+            });
+            if toplevel.is_initial_configure_sent() {
+                toplevel.send_pending_configure();
+            }
+        }
+    }
+
+    /// The toplevel currently configured as activated.
+    pub fn activated_toplevel(&self) -> Option<u64> {
+        self.client_input.activated
+    }
+
     pub fn set_client_keyboard_focus(&mut self, surface_id: Option<u64>) {
+        // A tile showing a dialog sheet types into the sheet, not the window it belongs to.
+        let surface_id =
+            surface_id.map(|id| crate::compositor::foreign::store().keyboard_target(id));
         if self.client_input.keyboard_focus == surface_id {
             return;
         }
@@ -404,6 +451,12 @@ impl State {
         global: (f64, f64),
         target: Option<(u64, (f64, f64))>,
     ) {
+        // A locked pointer does not move; only relative motion reaches the
+        // client. (The direct backend already holds it; this covers hosts
+        // that keep reporting absolute positions.)
+        if self.pointer_lock.is_locked() {
+            return;
+        }
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
@@ -417,6 +470,9 @@ impl State {
             });
         let previous_focus = self.client_input.pointer_focus;
         self.client_input.pointer_focus = focus.as_ref().and_then(|_| target.map(|(id, _)| id));
+        self.client_input.pointer_focus_origin = focus
+            .as_ref()
+            .and_then(|_| target.map(|(_, origin)| origin));
         let serial = mint_serial(self);
         let time = event_time(self);
         pointer.motion(
@@ -684,22 +740,34 @@ pub fn touch_target(
         && state.osk_surface == Some(surface_id)
         && state.client_input.surfaces.contains_key(&surface_id)
     {
-        return Some((surface_id, (rect.x0, rect.y0)));
+        return Some((
+            surface_id,
+            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+        ));
     }
     if let Some((surface_id, rect)) = fb.transient_surface_hit((*x, *y))
         && state.client_input.surfaces.contains_key(&surface_id)
     {
-        return Some((surface_id, (rect.x0, rect.y0)));
+        return Some((
+            surface_id,
+            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+        ));
     }
     if let Some((surface_id, rect)) = fb.fullscreen_surface_hit((*x, *y))
         && state.client_input.surfaces.contains_key(&surface_id)
     {
-        return Some((surface_id, (rect.x0, rect.y0)));
+        return Some((
+            surface_id,
+            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+        ));
     }
     if let Some((surface_id, rect)) = fb.floating_surface_hit((*x, *y))
         && state.client_input.surfaces.contains_key(&surface_id)
     {
-        return Some((surface_id, (rect.x0, rect.y0)));
+        return Some((
+            surface_id,
+            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+        ));
     }
     let hit = {
         let chrome = fb.chrome();
@@ -709,16 +777,24 @@ pub fn touch_target(
     if !state.client_input.surfaces.contains_key(&hit.surface_id) {
         return None;
     }
-    let local_x = *x - hit.rect.x0;
-    let local_y = *y - hit.rect.y0;
-    Some(
-        crate::compositor::foreign::store()
-            .child_at(hit.surface_id, local_x, local_y)
-            .map_or(
-                (hit.surface_id, (hit.rect.x0, hit.rect.y0)),
-                |(child, child_x, child_y)| (child, (*x - child_x, *y - child_y)),
-            ),
-    )
+    route_tile_point(hit.surface_id, hit.rect, (*x, *y))
+}
+
+/// The surface a global point on a foreign tile reaches and that surface's
+/// global origin: the tile's toplevel, one of its subsurfaces, or a sheet
+/// over it. `None` when a modal sheet swallows the point.
+fn route_tile_point(root: u64, tile: Rect, (x, y): (f64, f64)) -> Option<(u64, (f64, f64))> {
+    let store = crate::compositor::foreign::store();
+    let origin = store.surface_origin(root, tile);
+    match store.route_point(root, x - origin.0, y - origin.1) {
+        crate::compositor::foreign::PointRoute::Root => Some((root, origin)),
+        crate::compositor::foreign::PointRoute::Surface {
+            surface,
+            x: local_x,
+            y: local_y,
+        } => Some((surface, (x - local_x, y - local_y))),
+        crate::compositor::foreign::PointRoute::Blocked => None,
+    }
 }
 
 /// Direct touch follows the same click-to-focus policy as pointer input.
@@ -869,6 +945,7 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
                     && crate::compositor::foreign::store().is_mapped(*id)
             })
         });
+    state.set_activated_toplevel(candidate);
     state.set_client_keyboard_focus(gate_keyboard_focus(candidate, captured));
 }
 
@@ -927,6 +1004,74 @@ pub fn consume_keyboard_while_captured(state: &mut State, event: &WindowEvent) {
     let _ = state.deliver_client_key(code, pressed, true);
 }
 
+/// Decide what the pointer shows this tick: the focused client's request
+/// while the pointer is over its surface, otherwise the cursor the chrome
+/// under the pointer names (the default arrow when it names none). The lock
+/// screen is not chrome and never shows a client's cursor.
+///
+/// Records the result on the frame builder, where captures and the state
+/// dump read it, and returns it only when it changed so the caller hands it
+/// to the backend once.
+pub fn sync_pointer_image(
+    state: &State,
+    fb: &mut FrameBuilder,
+    session_locked: bool,
+) -> Option<crate::compositor::cursor::PointerImage> {
+    use crate::compositor::cursor::{CursorShape, PointerImage};
+    let image = if session_locked {
+        PointerImage::default()
+    } else if state.client_input.pointer_focus().is_some() {
+        state.client_cursor.image()
+    } else {
+        fb.capture_pointer_position()
+            .and_then(|point| fb.chrome_cursor_at(point))
+            .map_or_else(PointerImage::default, |icon| {
+                PointerImage::Shape(CursorShape::from_icon(icon))
+            })
+    };
+    if *fb.pointer_image() == image {
+        return None;
+    }
+    fb.set_pointer_image(image.clone());
+    Some(image)
+}
+
+/// Grant, adjust or withdraw a client's pointer lock/confinement for this
+/// tick. Only the surface that both holds keyboard focus and sits under the
+/// local pointer may hold it, and never while the session is locked or
+/// chrome is taking input. Returns what the backend must apply.
+pub fn sync_pointer_constraint(
+    state: &mut State,
+    fb: &FrameBuilder,
+    session_locked: bool,
+) -> Option<crate::compositor::pointer_lock::ConstraintChange> {
+    let target = (!session_locked && !chrome_captures_input(fb))
+        .then(|| state.client_input.pointer_focus())
+        .flatten()
+        .filter(|surface_id| state.client_input.keyboard_focus() == Some(*surface_id))
+        .and_then(|surface_id| {
+            let rect = {
+                let chrome = fb.chrome();
+                let tree = chrome.tree();
+                foreign_tiles(&tree, fb.host())
+                    .into_iter()
+                    .find(|hit| hit.surface_id == surface_id)
+                    .map(|hit| hit.rect)
+            }
+            .or_else(|| {
+                fb.floating_surface_rects()
+                    .into_iter()
+                    .find(|(id, _)| *id == surface_id)
+                    .map(|(_, rect)| rect)
+            })?;
+            Some(crate::compositor::pointer_lock::GrantTarget {
+                surface_id,
+                rect: (rect.x0, rect.y0, rect.x1, rect.y1),
+            })
+        });
+    state.sync_pointer_constraint(target)
+}
+
 /// Tell the remote-input firewall what is on screen. Called every tick,
 /// immediately after [`sync_keyboard_focus`], so a remote event is judged against what the local user is looking at.
 ///
@@ -959,7 +1104,8 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
         chrome_captures_input(fb),
         fb.host().palette_visible(),
     )
-    .locked(session_locked);
+    .locked(session_locked)
+    .pointer_held(state.pointer_lock.is_engaged());
     state.remote_input_firewall.publish_view(view);
 }
 
@@ -1296,10 +1442,7 @@ fn route_keyboard_input(
     // them again.
     if key.repeat {
         let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
-        let configured_shortcut = fb
-            .host()
-            .configured_shortcut_action(&key.logical_key, modifiers)
-            .is_some();
+        let configured_shortcut = fb.host().owns_configured_chord(&key.logical_key, modifiers);
         let shell_owns = captured
             || configured_shortcut
             || is_shell_chord(event, &modifiers, overlay_open)
@@ -1319,11 +1462,8 @@ fn route_keyboard_input(
     // client-first boundary. Without the host-side check, a valid binding
     // such as Alt+G is shown and saved by Settings but disappears whenever a
     // real app holds focus because that app consumes the press first.
-    let configured_shortcut = pressed
-        && fb
-            .host()
-            .configured_shortcut_action(&key.logical_key, modifiers)
-            .is_some();
+    let configured_shortcut =
+        pressed && fb.host().owns_configured_chord(&key.logical_key, modifiers);
     let shell_chord = configured_shortcut || is_shell_chord(event, &modifiers, overlay_open);
     // An approved GlobalShortcuts grant fires over whatever app holds
     // focus: shell chords win, then the grant, then the client. Its release
@@ -1675,15 +1815,7 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
 /// Push the current cursor position at `hit` (or clear client focus when `None`), producing the enter/motion/leave sequence.
 fn deliver_pointer(state: &mut State, hit: Option<TileHit>) {
     let global = state.client_input.cursor();
-    let target = hit.map(|h| {
-        let local_x = global.0 - h.rect.x0;
-        let local_y = global.1 - h.rect.y0;
-        crate::compositor::foreign::store()
-            .child_at(h.surface_id, local_x, local_y)
-            .map_or((h.surface_id, (h.rect.x0, h.rect.y0)), |(child, x, y)| {
-                (child, (global.0 - x, global.1 - y))
-            })
-    });
+    let target = hit.and_then(|h| route_tile_point(h.surface_id, h.rect, global));
     if state.selection.dnd_active {
         tracing::debug!(
             target: "shell::selection",

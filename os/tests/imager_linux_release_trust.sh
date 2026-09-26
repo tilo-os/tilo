@@ -226,7 +226,7 @@ entry=dict(data["releases"][1]); entry.update(hardware_profile="lenovo-83ed",
     url=f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['TILO_RELEASE_REPOSITORY']}/releases/download/imager-v1.2.3/{board.name}",
     archive_sha256=hashlib.sha256(board.read_bytes()).hexdigest(), archive_size=board.stat().st_size,
     provenance={"source_image_id":"sha256:"+"a"*64,"input_qcow2_sha256":"c"*64,
-                "hardware_profile_sha256":"d"*64,"target_update_ref":"code.sandbox.example/qos/tilo:lenovo-fixture"})
+                "hardware_profile_sha256":"d"*64,"target_update_ref":"code.tilo.so/tilo/tilo:lenovo-fixture"})
 data["releases"].append(entry); catalog.write_text(json.dumps(data))
 PY
 (cd "$(dirname "$catalog")" && sha256sum "$(basename "$catalog")" >"$(basename "$catalog").sha256")

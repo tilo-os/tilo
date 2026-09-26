@@ -18,7 +18,6 @@ import tempfile
 LEGACY = """COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /run/tilo-official-trust/
 COPY os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py /run/tilo-trust-tools/
 COPY os/etc/containers/policy.json /etc/containers/policy.json
-COPY os/etc/containers/registries.d/code.sandbox.example.yaml /etc/containers/registries.d/code.sandbox.example.yaml
 COPY os/etc/containers/registries.d/code.tilo.so.yaml /etc/containers/registries.d/code.tilo.so.yaml
 COPY os/etc/containers/registries.d/registry.tilo.so.yaml /etc/containers/registries.d/registry.tilo.so.yaml
 """

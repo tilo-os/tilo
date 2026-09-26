@@ -13,7 +13,7 @@ token_file="${3:-}"
 }
 
 runner="${TILO_FORGEJO_RUNNER:-/usr/local/bin/forgejo-runner}"
-server="${TILO_FORGEJO_URL:-https://code.sandbox.example}"
+server="${TILO_FORGEJO_URL:-https://code.tilo.so}"
 max_wait="${TILO_RUNNER_MAX_WAIT_SECONDS:-21600}"
 
 stat_owner_mode() {
@@ -161,7 +161,7 @@ trap 'exit 129' HUP
 
 [ "$uuid_file" != "$token_file" ] || { printf 'UUID and token paths must differ\n' >&2; exit 1; }
 case "$server" in
-  https://code.sandbox.example|https://code.sandbox.example/) ;;
+  https://code.tilo.so|https://code.tilo.so/) ;;
   *) printf 'Forgejo URL must be the pinned Tilo origin\n' >&2; exit 1 ;;
 esac
 [[ "$max_wait" =~ ^[1-9][0-9]{0,5}$ ]] && [ "$max_wait" -le 86400 ] || {

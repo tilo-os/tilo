@@ -65,6 +65,7 @@ fn the_service_refuses_a_developer_session_to_a_caller() {
         cols: 80,
         rows: 24,
         term: None,
+        command: Vec::new(),
     })
     .expect_err("dsh was granted over the service socket");
     assert!(err.contains("not a sandbox"), "{err}");
@@ -76,6 +77,7 @@ fn the_service_refuses_a_developer_session_to_a_caller() {
                 cols: 80,
                 rows: 24,
                 term: None,
+                command: Vec::new(),
             })
             .is_ok(),
             "{name:?} should resolve to the sandboxed profile and be allowed"
@@ -197,6 +199,7 @@ fn run_handoff() {
         cols: 100,
         rows: 30,
         term: Some("xterm-256color".into()),
+        command: Vec::new(),
     })
     .unwrap();
     request.push(b'\n');

@@ -5,10 +5,10 @@ from settings_effects import ALL_CATEGORIES, Z_CATEGORIES, validate_settings_typ
 
 class SettingsEffectsTests(unittest.TestCase):
     def fixture(self):
-        a=dict(app='dev.qos.settings',search_id='settings.search',ready=True,
+        a=dict(app='dev.tilo.settings',search_id='settings.search',ready=True,
           local_search_text='',synchronized_search_query='',search_widget_text='',search_caret_byte=0,
           search_focused=True,search_rect=[20,10,780,45],root_rect=[0,0,800,600],selected_category='network',
-          rendered_result_count=22,rendered_category_ids=list(ALL_CATEGORIES),narrow=False,sidebar_open=True,
+          rendered_result_count=23,rendered_category_ids=list(ALL_CATEGORIES),narrow=False,sidebar_open=True,
           document_root='Root',document_actor='ab12',document_witness_kind='effective_heads_on_disposable_clone',
           effective_document_heads=['a'*64],original_pending_ops=3)
         b=dict(a,local_search_text='z',search_widget_text='z',search_caret_byte=1)
@@ -19,7 +19,7 @@ class SettingsEffectsTests(unittest.TestCase):
         frames=[dict(cpu_frame_id=10,input_ids=[0],state=a),dict(cpu_frame_id=11,input_ids=[1],state=c),dict(cpu_frame_id=12,input_ids=[2],state=a)]
         return scenario,copy.deepcopy(effects),copy.deepcopy(frames)
     def lines(self,e,f=(),scale=2):
-        return ['qos-native-window '+json.dumps(dict(scale_factor=scale))]+['qos-native-effect '+json.dumps(v) for v in e]+['qos-native-frame '+json.dumps(v) for v in f]
+        return ['tilo-native-window '+json.dumps(dict(scale_factor=scale))]+['tilo-native-effect '+json.dumps(v) for v in e]+['tilo-native-frame '+json.dumps(v) for v in f]
     def test_fixture_contract_matches_current_production_catalogue(self):
         from pathlib import Path
         import re

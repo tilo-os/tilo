@@ -12,6 +12,7 @@
     )
 )]
 
+pub mod app_icons;
 pub mod bluetooth;
 pub mod bluetooth_prompt;
 pub mod collab;
@@ -25,9 +26,11 @@ pub mod runtime_host;
 
 pub mod identity_registry;
 pub mod network;
+pub mod network_secrets;
 pub mod notifications;
 pub mod onboarding;
 pub mod onboarding_view;
+pub mod polkit_agent;
 pub mod portal;
 pub mod priority_contacts;
 #[cfg(test)]

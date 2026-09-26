@@ -13,21 +13,21 @@ python3 scripts/browser/build-host.py
 ```
 
 Alternatively configure CMake with `CEF_ROOT` pointing to the extracted pinned
-SDK, `QOS_BLOCKER_LIBRARY` pointing to the Rust blocker static library, and
-`QOS_OUTPUT_DIR` to the desired runtime directory. C++20 and CMake 3.21+
+SDK, `TILO_BLOCKER_LIBRARY` pointing to the Rust blocker static library, and
+`TILO_OUTPUT_DIR` to the desired runtime directory. C++20 and CMake 3.21+
 are required. macOS uses the Apple command line tools; Linux needs a supported
 CEF distribution and the system runtime dependencies listed in its README.
 
 The default macOS executable is:
 
 ```
-target/chromium/Browser Engine.app/Contents/MacOS/qos-chromium-host
+target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host
 ```
 
-Linux produces `target/chromium/qos-chromium-host` and adjacent CEF resources.
+Linux produces `target/chromium/tilo-chromium-host` and adjacent CEF resources.
 Linux requires Chromium sandbox support (user namespaces or the distribution's
 correctly installed setuid sandbox). The host never disables the sandbox. The
-primary process skips Chromium first-run UI because qOS owns onboarding; this
+primary process skips Chromium first-run UI because Tilo owns onboarding; this
 also avoids an offscreen initialization stall on Linux.
 Linux packaging is implemented but has not yet been exercised on Linux.
 
@@ -79,15 +79,15 @@ idempotent. Verify a built/rebuilt bundle with
 
 ```sh
 c++ -std=c++17 -Iapps/browser/chromium/src \
-  apps/browser/chromium/tests/protocol_test.cc -o /tmp/qos-protocol-test
-/tmp/qos-protocol-test
+  apps/browser/chromium/tests/protocol_test.cc -o /tmp/tilo-protocol-test
+/tmp/tilo-protocol-test
 python3 apps/browser/chromium/tests/smoke.py \
-  'target/chromium/Browser Engine.app/Contents/MacOS/qos-chromium-host'
+  'target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host'
 python3 apps/browser/chromium/tests/lifecycle.py \
-  'target/chromium/Browser Engine.app/Contents/MacOS/qos-chromium-host'
+  'target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host'
 ```
 
-The smoke test navigates to `https://sandbox.example` by default and requires ready,
+The smoke test navigates to `https://tilo.so` by default and requires ready,
 HTTP 200, a nonempty frame, the closed event and exit 0. `--url` selects another
 HTTPS page. Lifecycle cases test EOF, truncated framing, invalid lengths,
 malformed JSON, wrong packet kinds and malformed command fields. Startup-time
@@ -108,7 +108,7 @@ and Retina frame dimensions/pointer coordinates:
 
 ```sh
 python3 apps/browser/chromium/tests/native_regressions.py \
-  'target/chromium/Browser Engine.app/Contents/MacOS/qos-chromium-host'
+  'target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host'
 ```
 
 ## Native blocking
@@ -135,7 +135,7 @@ The resource bundle is regenerated and verified using:
 ```sh
 python3 scripts/browser/update-blocker-resources.py --check
 python3 apps/browser/chromium/tests/blocking_regressions.py \
-  'target/chromium/Browser Engine.app/Contents/MacOS/qos-chromium-host'
+  'target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host'
 ```
 
 The committed bundle includes pinned source hashes, licenses and provenance in
@@ -151,7 +151,7 @@ The packaged nesting regression is separate from standalone runtime checks:
 
 ```sh
 python3 apps/browser/chromium/tests/nested_bundle.py \
-  'target/browser-package/Browser.app/Contents/Frameworks/Browser Engine.app/Contents/MacOS/qos-chromium-host'
+  'target/browser-package/Browser.app/Contents/Frameworks/Browser Engine.app/Contents/MacOS/tilo-chromium-host'
 ```
 
 It requires the nested location and verifies initialization, local HTTP navigation,

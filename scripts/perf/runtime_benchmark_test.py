@@ -5,7 +5,7 @@ from runtime_benchmark import distribution, measured_rows, present_rows, worker_
 class StatisticsTests(unittest.TestCase):
     def test_occlusion_is_counted_as_skipped_not_presented_work(self):
         import json
-        lines=['qos-render-frame '+json.dumps(dict(frame_ix=i,outcome=outcome,total_us=cost))
+        lines=['tilo-render-frame '+json.dumps(dict(frame_ix=i,outcome=outcome,total_us=cost))
                for i,(outcome,cost) in enumerate([('Presented',40),('Occluded',1),('Skipped',2)])]
         result=worker_summary(lines)
         self.assertEqual(result['outcomes']['Occluded'],1)
@@ -18,7 +18,7 @@ class StatisticsTests(unittest.TestCase):
 
     def test_correlation_uses_explicit_identity_and_keeps_missing_outcomes(self):
         import json
-        lines = ["qos-render-frame " + json.dumps(row) for row in [
+        lines = ["tilo-render-frame " + json.dumps(row) for row in [
             {"frame_ix": 100, "cpu_frame_id": 3, "outcome": "Presented"},
             {"frame_ix": 101, "cpu_frame_id": 4, "outcome": "Skipped"},
             {"frame_ix": 103, "cpu_frame_id": 99, "outcome": "Presented"},
@@ -37,14 +37,14 @@ class StatisticsTests(unittest.TestCase):
 
     def test_correlation_rejects_missing_or_duplicate_identity(self):
         with self.assertRaises(ValueError):
-            correlate_frames([{"frame":3}], ['qos-render-frame {"frame_ix":3,"outcome":"Presented"}'])
-        row = 'qos-render-frame {"cpu_frame_id":3,"outcome":"Presented"}'
+            correlate_frames([{"frame":3}], ['tilo-render-frame {"frame_ix":3,"outcome":"Presented"}'])
+        row = 'tilo-render-frame {"cpu_frame_id":3,"outcome":"Presented"}'
         with self.assertRaises(ValueError):
             correlate_frames([{"frame":3}], [row,row])
 
     def test_resource_cache_hits_do_not_dilute_miss_cost(self):
         import json
-        lines = ["qos-resource-stage " + json.dumps({"stage": "local_cache",
+        lines = ["tilo-resource-stage " + json.dumps({"stage": "local_cache",
             "cache_result": result, "duration_us": duration, "generation": 7,
             "permission_generation": 2}) for result, duration in
             [("hit", 1), ("hit", 2), ("miss", 30)]]
@@ -53,7 +53,7 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual(result["local_cache"]["miss"]["p99_ms"], 0.03)
 
     def test_resource_diagnostics_must_have_valid_samples(self):
-        for lines in [[], ['qos-resource-stage {"stage":"local_cache","cache_result":"miss","duration_us":-1}']]:
+        for lines in [[], ['tilo-resource-stage {"stage":"local_cache","cache_result":"miss","duration_us":-1}']]:
             with self.assertRaises(ValueError):
                 resource_summary(lines)
 
@@ -79,7 +79,7 @@ class StatisticsTests(unittest.TestCase):
 
     def test_skips_are_not_successful_frames(self):
         import json
-        lines = ["qos-render-frame " + json.dumps({"frame_ix": i, "outcome": outcome,
+        lines = ["tilo-render-frame " + json.dumps({"frame_ix": i, "outcome": outcome,
                  "start_us": i * 100, "end_us": i * 100 + elapsed, "total_us": elapsed,
                  "width": 1600, "height": 1200})
                  for i, (outcome, elapsed) in enumerate([("Presented", 40), ("Skipped", 1), ("Presented", 60)])]
@@ -95,7 +95,7 @@ class StatisticsTests(unittest.TestCase):
 
     def test_surface_loss_cannot_pass_as_a_fast_frame(self):
         with self.assertRaises(ValueError):
-            worker_summary(['qos-render-frame {"outcome":"SurfaceGone","total_us":null}'])
+            worker_summary(['tilo-render-frame {"outcome":"SurfaceGone","total_us":null}'])
 
 
 if __name__ == "__main__":

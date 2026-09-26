@@ -17,7 +17,7 @@ import tarfile
 import tempfile
 import time
 
-TOOLS = 'code.sandbox.example/qos/tilo-development-finalization-tools-aarch64@sha256:a8481a3265c2f4e47287a11163ab8cc13f31b070bba3566d62191c173b54d612'
+TOOLS = 'registry.tilo.so/tilo/tilo-development-finalization-tools-aarch64@sha256:a8481a3265c2f4e47287a11163ab8cc13f31b070bba3566d62191c173b54d612'
 CONFIG = 'sha256:61e3f8eee1bc46f54dbc2bdc3ae2111a754bed1689ab54de9db4f6294485aa8f'
 SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
 # Independently reviewed assembly sources; native artifact provenance is separate.
@@ -345,9 +345,9 @@ def main():
                 run('docker', 'cp', str(marker), container + ':/work/' + label + '/' + marker.name)
             run('docker', 'cp', str(stage / 'finalization-request.json'), container + ':/work/finalization-request.json')
             auth_path = Path(os.environ.get('DOCKER_CONFIG', str(Path.home() / '.docker'))) / 'config.json'
-            credentials = json.loads(auth_path.read_text())['auths']['code.sandbox.example']
+            credentials = json.loads(auth_path.read_text())['auths']['code.tilo.so']
             auth = stage / 'registry-auth.json'
-            auth.write_text(json.dumps({'auths': {'code.sandbox.example': credentials}}))
+            auth.write_text(json.dumps({'auths': {'code.tilo.so': credentials}}))
             auth.chmod(0o600)
             run('docker', 'cp', str(auth), container + ':/work/registry-auth.json')
             if bool(args.restore_checkpoint) != bool(args.restore_stage):

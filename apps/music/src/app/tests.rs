@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Cursor;
 use ui::widget::Continuable as _;
 
 fn app_with_doc() -> (MusicApp, AutoCommit) {
