@@ -571,6 +571,9 @@ ARG TILO_REQUIRE_COMPILER_CACHE=0
 # for publications: a shared compiler cache is writable by every CI job, so a
 # signed image must be compiled without one. It runs no wrapper, and refuses
 # compiler-cache credentials or settings so none can reach the compile.
+# `publication` is a publication's own cache: short-lived role credentials
+# (a session token is required, so the shared static key cannot stand in)
+# for a bucket only publication runs can write, under tilo/publication/.
 ARG TILO_COMPILER_CACHE=shared
 ENV CARGO_BUILD_JOBS=${TILO_CARGO_BUILD_JOBS}
 ARG TILO_APP_COLLECTION_PUBLISHER=""
@@ -579,8 +582,11 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/.sccache \
     --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
+    --mount=type=secret,id=aws_session_token \
     export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
     && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)" \
+    && AWS_SESSION_TOKEN="$(cat /run/secrets/aws_session_token 2>/dev/null || true)" \
+    && { [ -z "$AWS_SESSION_TOKEN" ] || export AWS_SESSION_TOKEN; } \
     && phase=rust-setup && started=$(date +%s) \
     && build_phase() { \
          now=$(date +%s); \
@@ -589,10 +595,16 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        } \
     && trap 'status=$?; printf "TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=%s\n" "$phase" "$(( $(date +%s) - started ))" "$status"; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
     && case "$TILO_COMPILER_CACHE:$TILO_REQUIRE_COMPILER_CACHE" in \
-         shared:0|off:0) ;; \
-         shared:1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
-         *) printf '%s\n' 'TILO_COMPILER_CACHE must be shared or off, TILO_REQUIRE_COMPILER_CACHE 0 or 1 (0 when off)' >&2; exit 1 ;; \
+         shared:0|off:0|publication:0) ;; \
+         shared:1|publication:1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
+         *) printf '%s\n' 'TILO_COMPILER_CACHE must be shared, publication or off, TILO_REQUIRE_COMPILER_CACHE 0 or 1 (0 when off)' >&2; exit 1 ;; \
        esac \
+    && if [ "$TILO_COMPILER_CACHE" = publication ]; then \
+         case "${AWS_SESSION_TOKEN:-}:$SCCACHE_S3_KEY_PREFIX" in \
+           ?*:tilo/publication/*) ;; \
+           *) printf '%s\n' 'The publication cache needs role session credentials and a tilo/publication/ prefix' >&2; exit 1 ;; \
+         esac; \
+       fi \
     && if [ "$TILO_COMPILER_CACHE" = off ]; then \
          if [ -n "${AWS_ACCESS_KEY_ID}${AWS_SECRET_ACCESS_KEY}${SCCACHE_BUCKET}${SCCACHE_ENDPOINT}" ]; then \
            printf '%s\n' 'A build without the compiler cache received compiler-cache settings' >&2; exit 1; \
