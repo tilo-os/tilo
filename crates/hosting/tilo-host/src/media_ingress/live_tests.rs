@@ -94,7 +94,7 @@ async fn live_grant_route_issues_host_signed_grants_advertises_live_and_renews()
         LiveNamespace::new(h.f.owner.peer().room(), wanted.device)
     );
     assert!(m.expires_at_ns - m.issued_at_ns <= GRANT_LIFETIME_NS);
-    let (live, _) = h.ingress.live.as_ref().unwrap();
+    let live = &h.ingress.live.as_ref().unwrap().service;
     let session = live
         .try_admit(&bytes)
         .expect("the relay admits the issued grant");

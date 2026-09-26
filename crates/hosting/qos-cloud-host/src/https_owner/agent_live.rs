@@ -15,7 +15,6 @@
 //! accept agent attribution only for the recomputed agent namespace. Only the
 //! host injects into agent namespaces (no grant can name a digest publisher).
 //! The private chat reply never reaches this task.
-use super::live::{live_record, signed_change};
 use crate::agent_live::{AgentLiveEvent, Caret, WRITER_APP};
 use qos_moq::live::LiveRelay;
 use std::{
@@ -27,6 +26,7 @@ use tilo_delivery_protocol::delivery_v3::live_wire::{
     MAX_OBJECT_ID_BYTES, OpsFrame, PresenceFrame, PreviewOp, agent_activity_record,
     agent_publisher, bounded_display_text, room_digest,
 };
+use tilo_host::live_service::{live_record, signed_change};
 use ui::presence::{PathSegment, PresenceKey};
 
 /// Presence heartbeat while an agent is active.

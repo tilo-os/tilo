@@ -1,4 +1,4 @@
-//! LIVE_V1 host authority: issues host-signed live grants on the proof-required
+//! LIVE_V1 host authority, shared by both hosts over the [`HostOwner`] seam: issues host-signed live grants on the proof-required
 //! `POST /peer/v3/live/grant` route, admits them from the carrier's admission
 //! preface on `/moq/live`, rechecks current roster permission
 //! on every relay observation, validates live frames with the canonical wire
@@ -17,6 +17,11 @@
 //!   revision at issue. The relay does not compare it; it re-evaluates the
 //!   device's current room permission (cert, revocation, roster, role, caps)
 //!   every observation, so an unrelated policy edit does not drop sessions.
+//! * Permission observations share one owner turn per [`OBSERVATION_AGE`]
+//!   across every live session, so live never contends with the owner more
+//!   than a few times per 100 ms regardless of session count. An observation
+//!   also pins the owner's continuity: a session admitted under one owner
+//!   continuity is refused once the owner recovers into another.
 //! * Forwarded signed changes are published by the host on behalf of the
 //!   author into the author's own namespace `(room, author device)`, track
 //!   `ops/<record digest>`, as their own groups. The frame carries the exact
@@ -28,13 +33,10 @@
 //!   record [`PACKAGE_PRIMARY_RECORD`]. A forwarded item whose barrier fails
 //!   is not durable; receivers hold forwarded changes as speculative until
 //!   durable replay confirms their digest (browser `peer_live` overlay).
-use crate::{
-    SessionOwner,
-    committed_authority::{CommittedAuthority, Observation},
-};
+use crate::owner_turn::{HostOwner, Observed, OwnerTurn};
 use anyhow::{Context, Result, bail, ensure};
 use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
-use ed25519_dalek::VerifyingKey;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use qos_moq::{
     live::{LiveAuthority, LiveRelay, LiveSession},
     relay::{Admission, AuthorizationStatus},
@@ -42,19 +44,20 @@ use qos_moq::{
 use qos_peer_state::StatePeer;
 use rand::TryRng as _;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tilo_delivery_protocol::delivery_v3::{
     capabilities::PRODUCT_DATA_V1,
-    http_proof::VerifiedRequest,
+    http_proof::{Method, VerifiedRequest},
     live_wire::{
         GRANT_LIFETIME_NS, LIVE_GRANT_TARGET, LIVE_WEBTRANSPORT_PATH, LiveDirections,
-        LiveGrantMetadata, LiveGrantRequest, LiveNamespace, LiveRecord, OpsFrame, PresenceFrame,
-        SignedLiveGrant, room_digest,
+        LiveGrantMetadata, LiveGrantRequest, LiveNamespace, LiveRecord, MAX_STREAM_FRAME_BYTES,
+        OpsFrame, PresenceFrame, SignedLiveGrant, room_digest,
     },
 };
+use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
 /// Live leases retained at once (one per participation).
@@ -63,47 +66,95 @@ const MAX_LEASES: usize = 256;
 const FORWARD_QUEUE: usize = 256;
 /// Recently forwarded canonical digests remembered for de-duplication.
 const RECENT_FORWARDS: usize = 512;
+/// A shared permission observation is reused for at most this long, so the
+/// relay's 100 ms per-session re-check sees state at most this much older.
+const OBSERVATION_AGE: Duration = Duration::from_millis(50);
 
 struct Lease {
     device: [u8; 32],
     expires_at_ns: u64,
 }
 
-struct Shared {
-    committed: CommittedAuthority,
+/// One shared observation of current live permission for every leased device.
+enum Snapshot {
+    /// `None` is a definite current denial for that device.
+    Current {
+        continuity: u64,
+        permissions: HashMap<[u8; 32], Option<LiveDirections>>,
+    },
+    Busy,
+    Denied,
+}
+struct Observation {
+    at: Instant,
+    snapshot: Snapshot,
+}
+
+enum Permission {
+    Current(u64),
+    Busy,
+    Denied,
+}
+
+struct Shared<O: HostOwner> {
+    owner: O,
     /// Governed room authority; must stay current for any live permission.
     authority: [u8; 32],
     /// Pinned workspace host device key (the data session's proved host) that
-    /// signs live grants.
+    /// signs live grants. The Cloud host signs with its room authority.
     host: [u8; 32],
     host_boot: [u8; 32],
     audience: String,
     room: String,
     room_hex: String,
     leases: Mutex<HashMap<[u8; 32], Lease>>,
+    observed: Mutex<Option<Observation>>,
 }
 
-/// Host-private live authority; cloning shares one lease registry and boot.
-#[derive(Clone)]
-pub(crate) struct LiveService(Arc<Shared>);
+/// Live grant authority over one host owner; cloning shares one lease registry
+/// and boot.
+pub struct LiveService<O: HostOwner>(Arc<Shared<O>>);
+impl<O: HostOwner> Clone for LiveService<O> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
 
-/// Queue half of the admitted-change forwarder, installed on the data routes.
+/// Queue half of the admitted-change forwarder, installed as the delivery
+/// admission sink.
 #[derive(Clone)]
-pub(crate) struct LiveForwarder(tokio::sync::mpsc::Sender<([u8; 32], Vec<u8>)>);
+pub struct LiveForwarder(tokio::sync::mpsc::Sender<([u8; 32], Vec<u8>)>);
 impl LiveForwarder {
-    /// Never blocks the owner loop: a full queue drops the item (the durable
-    /// path still delivers it).
-    pub(crate) fn offer(&self, device: [u8; 32], canonical: &[u8]) {
-        if canonical.len() <= tilo_delivery_protocol::delivery_v3::live_wire::MAX_STREAM_FRAME_BYTES
-        {
+    /// Never blocks the owner: a full queue drops the item (the durable path
+    /// still delivers it).
+    pub fn offer(&self, device: [u8; 32], canonical: &[u8]) {
+        if !canonical.is_empty() && canonical.len() <= MAX_STREAM_FRAME_BYTES {
             let _ = self.0.try_send((device, canonical.to_vec()));
         }
     }
 }
 
-fn now_ns() -> u64 {
-    tilo_delivery_protocol::clock::now_ns()
+/// An installed live relay: service, forwarder and its task. Dropping it stops
+/// forwarding; the relay itself stays owned by the transport.
+pub struct InstalledLive<O: HostOwner> {
+    pub service: LiveService<O>,
+    pub forwarder: LiveForwarder,
+    pub relay: LiveRelay,
+    task: tokio::task::JoinHandle<()>,
 }
+impl<O: HostOwner> Drop for InstalledLive<O> {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// The host key that signs grants, with the certificate a data session must
+/// have proved for it.
+pub struct LiveSigner<'a> {
+    pub key: &'a SigningKey,
+    pub certificate: &'a DeviceCert,
+}
+
 fn at(ns: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_nanos(ns)
 }
@@ -137,78 +188,53 @@ fn permitted(
     ))
 }
 
-impl LiveService {
-    /// `origin` is the installed HTTPS origin; the audience appends the live path.
-    pub(crate) fn for_owner(
-        owner: &SessionOwner,
-        committed: CommittedAuthority,
-        origin: &str,
-    ) -> Result<Self> {
-        ensure!(owner.permits_publication(), "live authority unavailable");
+impl<O: HostOwner> LiveService<O> {
+    /// Bind to `owner` under one of its current turns. `host` is the key that
+    /// signs grants; `origin` is the installed HTTPS origin, to which the
+    /// audience appends the live path.
+    pub fn bind(owner: O, turn: &O::Turn<'_>, host: [u8; 32], origin: &str) -> Result<Self> {
         let mut host_boot = [0; 32];
         while host_boot == [0; 32] {
             rand::rngs::SysRng.try_fill_bytes(&mut host_boot)?;
         }
-        let room = owner.peer().room().to_owned();
+        let peer = turn.peer();
+        let room = peer.room().to_owned();
         Ok(Self(Arc::new(Shared {
-            committed,
-            authority: owner.peer().authority().device_public_key,
-            host: owner.host_certificate().device_public_key,
+            owner,
+            authority: peer.authority().device_public_key,
+            host,
             host_boot,
             audience: format!("{origin}{LIVE_WEBTRANSPORT_PATH}"),
             room_hex: hex::encode(room_digest(&room)),
             room,
             leases: Mutex::default(),
+            observed: Mutex::default(),
         })))
     }
 
-    /// Start the forwarder task that turns admitted canonical items into
-    /// `OpsFrame::SignedChange` frames on the relay. Must run inside Tokio.
-    pub(crate) fn forwarder(
-        &self,
-        relay: LiveRelay,
-    ) -> (LiveForwarder, tokio::task::JoinHandle<()>) {
-        let (sender, mut receiver) =
-            tokio::sync::mpsc::channel::<([u8; 32], Vec<u8>)>(FORWARD_QUEUE);
-        let room = self.0.room_hex.clone();
-        let task = tokio::spawn(async move {
-            let mut maintenance = tokio::time::interval(Duration::from_secs(1));
-            // A lost-reply probe re-reports the original acceptance; forward
-            // each canonical item once (receivers also de-duplicate by digest).
-            let mut recent = std::collections::VecDeque::with_capacity(RECENT_FORWARDS);
-            loop {
-                tokio::select! {
-                    item = receiver.recv() => {
-                        let Some((device, canonical)) = item else { break };
-                        let digest = *blake3::hash(&canonical).as_bytes();
-                        if recent.contains(&digest) {
-                            continue;
-                        }
-                        if recent.len() == RECENT_FORWARDS {
-                            recent.pop_front();
-                        }
-                        recent.push_back(digest);
-                        if let Some((record, frame)) = signed_change(&canonical) {
-                            relay.inject_ops(&room, &hex::encode(device), &hex::encode(record.digest()), &frame);
-                        }
-                    }
-                    _ = maintenance.tick() => relay.maintain(),
-                }
-            }
-        });
-        (LiveForwarder(sender), task)
+    /// Relay, forwarder and task for this service. Must run inside Tokio.
+    pub fn install(self) -> InstalledLive<O> {
+        let relay = LiveRelay::new(Arc::new(self.clone()));
+        let (forwarder, task) = forwarder(self.0.room_hex.clone(), relay.clone());
+        InstalledLive {
+            service: self,
+            forwarder,
+            relay,
+            task,
+        }
     }
 
-    /// Serve one verified `POST /peer/v3/live/grant` on the serialized owner.
-    pub(crate) fn issue(
+    /// Issue or renew one grant for an already admitted request, inside one
+    /// current owner turn.
+    pub fn issue(
         &self,
-        owner: &SessionOwner,
+        turn: &O::Turn<'_>,
+        signer: LiveSigner<'_>,
         request: &VerifiedRequest<'_>,
     ) -> Result<Vec<u8>> {
         let shared = &self.0;
         ensure!(
-            request.request().method()
-                == tilo_delivery_protocol::delivery_v3::http_proof::Method::Post
+            request.request().method() == Method::Post
                 && request.request().target() == LIVE_GRANT_TARGET,
             "not the live grant route"
         );
@@ -227,31 +253,28 @@ impl LiveService {
             wanted.device == device,
             "live grant device differs from the data session device"
         );
+        let peer = turn.peer();
         ensure!(
-            wanted.room == shared.room && owner.peer().room() == shared.room,
+            wanted.room == shared.room && peer.room() == shared.room,
             "live grant room mismatch"
         );
         ensure!(
-            owner.identity.host.verifying_key().to_bytes() == shared.host
-                && session.host_certificate() == owner.host_certificate(),
+            signer.key.verifying_key().to_bytes() == shared.host
+                && signer.certificate.device_public_key == shared.host
+                && peer.authority().device_public_key == shared.authority
+                && session.host_certificate() == signer.certificate,
             "live grant signer is not the pinned host"
         );
-        let issued_at_ns = now_ns();
+        let issued_at_ns = turn.fresh_now_ns().context("owner clock unavailable")?;
         let root = session.device_certificate().user_public_key;
-        let (allowed, generation) = {
-            let guard = shared.committed.read().map_err(anyhow::Error::msg)?;
-            let peer = guard.peer();
-            let (allowed, person) = permitted(peer, shared.authority, device, at(issued_at_ns))
-                .context("live grant not permitted")?;
-            ensure!(person == root, "live grant participant root mismatch");
-            let revision = qos_peer_state::owner_commit::governance_revision(peer)
-                .map_err(anyhow::Error::msg)?;
-            let digest = blake3::hash(revision.as_bytes());
-            (
-                allowed,
-                u64::from_le_bytes(digest.as_bytes()[..8].try_into().expect("eight bytes")),
-            )
-        };
+        let (allowed, person) = permitted(peer, shared.authority, device, at(issued_at_ns))
+            .context("live grant not permitted")?;
+        ensure!(person == root, "live grant participant root mismatch");
+        let revision =
+            qos_peer_state::owner_commit::governance_revision(peer).map_err(anyhow::Error::msg)?;
+        let digest = blake3::hash(revision.as_bytes());
+        let generation =
+            u64::from_le_bytes(digest.as_bytes()[..8].try_into().expect("eight bytes"));
         wanted.directions = LiveDirections {
             publish: wanted.directions.publish && allowed.publish,
             subscribe: wanted.directions.subscribe && allowed.subscribe,
@@ -298,11 +321,15 @@ impl LiveService {
             issued_at_ns,
             expires_at_ns,
         };
-        let grant = SignedLiveGrant::sign(metadata, &owner.identity.host)
+        let grant = SignedLiveGrant::sign(metadata, signer.key)
             .map_err(|error| anyhow::anyhow!("live grant signing failed: {error}"))?;
         grant
             .encode()
             .map_err(|error| anyhow::anyhow!("live grant encoding failed: {error}"))
+    }
+
+    fn now_ns(&self) -> Option<u64> {
+        self.0.owner.now_ns()
     }
 
     fn lease_deadline(&self, participation: &[u8; 32], device: [u8; 32]) -> Option<u64> {
@@ -313,51 +340,120 @@ impl LiveService {
             .map(|lease| lease.expires_at_ns)
     }
 
-    /// Monotonic instant for an absolute wall deadline (never extends it).
+    /// Monotonic instant for an absolute deadline on the owner clock (never
+    /// extends it).
     fn instant(&self, deadline_ns: u64) -> Instant {
-        let now = now_ns();
+        let now = self.now_ns().unwrap_or(deadline_ns);
         Instant::now() + Duration::from_nanos(deadline_ns.saturating_sub(now))
     }
 
-    /// One committed observation for `device` and the granted directions.
-    fn observe(
-        &self,
-        device: [u8; 32],
-        directions: LiveDirections,
-        continuity: Option<u64>,
-    ) -> Observed {
+    /// One owner turn observing every currently leased device.
+    fn refresh(&self) -> Snapshot {
         let shared = &self.0;
-        match shared.committed.observe() {
-            Observation::Current(current) => {
-                if continuity.is_some_and(|value| value != current.continuity()) {
-                    return Observed::Denied;
-                }
-                let peer = current.peer();
-                if peer.room() != shared.room
-                    || peer.authority().device_public_key != shared.authority
-                {
-                    return Observed::Denied;
-                }
-                match permitted(peer, shared.authority, device, at(now_ns())) {
-                    Some((allowed, _))
-                        if (!directions.publish || allowed.publish)
-                            && (!directions.subscribe || allowed.subscribe) =>
-                    {
-                        Observed::Current(current.continuity())
-                    }
-                    _ => Observed::Denied,
-                }
+        let devices: Vec<[u8; 32]> = {
+            let now = self.now_ns().unwrap_or(u64::MAX);
+            let leases = shared.leases.lock().unwrap();
+            let mut devices: Vec<_> = leases
+                .values()
+                .filter(|lease| lease.expires_at_ns > now)
+                .map(|lease| lease.device)
+                .collect();
+            devices.sort_unstable();
+            devices.dedup();
+            devices
+        };
+        let observed = shared.owner.with_current(|turn| {
+            let peer = turn.peer();
+            if peer.room() != shared.room || peer.authority().device_public_key != shared.authority
+            {
+                return None;
             }
-            Observation::Updating => Observed::Busy,
-            Observation::Denied => Observed::Denied,
+            let now = at(turn.now_ns());
+            let permissions = devices
+                .iter()
+                .map(|device| {
+                    (
+                        *device,
+                        permitted(peer, shared.authority, *device, now).map(|(allowed, _)| allowed),
+                    )
+                })
+                .collect();
+            Some((turn.continuity(), permissions))
+        });
+        match observed {
+            Observed::Current(Some((continuity, permissions))) => Snapshot::Current {
+                continuity,
+                permissions,
+            },
+            Observed::Current(None) | Observed::Denied => Snapshot::Denied,
+            Observed::Busy => Snapshot::Busy,
+        }
+    }
+
+    /// Current permission of `device` for the granted directions, from a
+    /// shared observation no older than [`OBSERVATION_AGE`].
+    fn observe(&self, device: [u8; 32], directions: LiveDirections) -> Permission {
+        let mut observed = self.0.observed.lock().unwrap();
+        let usable = observed.as_ref().is_some_and(|observed| {
+            observed.at.elapsed() < OBSERVATION_AGE
+                && match &observed.snapshot {
+                    Snapshot::Current { permissions, .. } => permissions.contains_key(&device),
+                    Snapshot::Busy | Snapshot::Denied => true,
+                }
+        });
+        if !usable {
+            *observed = Some(Observation {
+                at: Instant::now(),
+                snapshot: self.refresh(),
+            });
+        }
+        match &observed.as_ref().expect("observed").snapshot {
+            Snapshot::Current {
+                continuity,
+                permissions,
+            } => match permissions.get(&device) {
+                Some(Some(allowed))
+                    if (!directions.publish || allowed.publish)
+                        && (!directions.subscribe || allowed.subscribe) =>
+                {
+                    Permission::Current(*continuity)
+                }
+                _ => Permission::Denied,
+            },
+            Snapshot::Busy => Permission::Busy,
+            Snapshot::Denied => Permission::Denied,
         }
     }
 }
 
-enum Observed {
-    Current(u64),
-    Busy,
-    Denied,
+fn forwarder(room: String, relay: LiveRelay) -> (LiveForwarder, tokio::task::JoinHandle<()>) {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel::<([u8; 32], Vec<u8>)>(FORWARD_QUEUE);
+    let task = tokio::spawn(async move {
+        let mut maintenance = tokio::time::interval(Duration::from_secs(1));
+        // A lost-reply probe re-reports the original acceptance; forward each
+        // canonical item once (receivers also de-duplicate by digest).
+        let mut recent = VecDeque::with_capacity(RECENT_FORWARDS);
+        loop {
+            tokio::select! {
+                item = receiver.recv() => {
+                    let Some((device, canonical)) = item else { break };
+                    let digest = *blake3::hash(&canonical).as_bytes();
+                    if recent.contains(&digest) {
+                        continue;
+                    }
+                    if recent.len() == RECENT_FORWARDS {
+                        recent.pop_front();
+                    }
+                    recent.push_back(digest);
+                    if let Some((record, frame)) = signed_change(&canonical) {
+                        relay.inject_ops(&room, &hex::encode(device), &hex::encode(record.digest()), &frame);
+                    }
+                }
+                _ = maintenance.tick() => relay.maintain(),
+            }
+        }
+    });
+    (LiveForwarder(sender), task)
 }
 
 /// Live record id of an application's record-less (package-primary) document,
@@ -365,13 +461,13 @@ enum Observed {
 /// `ui::record::RecordId::package_primary()`, the id the desktop already uses
 /// for that document, and never a valid durable record id (durable ids are
 /// `file:`, `uuid:`, `tab:` or `derived:`), so the mapping is injective.
-pub(crate) const PACKAGE_PRIMARY_RECORD: &str = "@qos:package-primary";
+pub const PACKAGE_PRIMARY_RECORD: &str = "@qos:package-primary";
 
 /// Stable live record for a durable `(app_id, record_id)`, within the frozen
 /// contract's 1..=128 byte bounds: an empty record id maps to
 /// [`PACKAGE_PRIMARY_RECORD`]; a durable id spelling that sentinel, or out of
 /// bounds, has no live record (it still arrives by durable replay).
-pub(crate) fn live_record(app_id: String, record_id: String) -> Option<LiveRecord> {
+pub fn live_record(app_id: String, record_id: String) -> Option<LiveRecord> {
     let record = match record_id.as_str() {
         "" => PACKAGE_PRIMARY_RECORD.to_owned(),
         PACKAGE_PRIMARY_RECORD => return None,
@@ -385,7 +481,7 @@ pub(crate) fn live_record(app_id: String, record_id: String) -> Option<LiveRecor
 
 /// Bytes of an admitted `AppDocument` item as a signed-change ops frame.
 /// Items whose frame would exceed `MAX_STREAM_FRAME_BYTES` are not forwarded.
-pub(crate) fn signed_change(canonical: &[u8]) -> Option<(LiveRecord, Vec<u8>)> {
+pub fn signed_change(canonical: &[u8]) -> Option<(LiveRecord, Vec<u8>)> {
     let qos_peer_state::NeighbourMsg::AppDocument {
         app_id, record_id, ..
     } = postcard::from_bytes(canonical).ok()?
@@ -403,8 +499,8 @@ pub(crate) fn signed_change(canonical: &[u8]) -> Option<(LiveRecord, Vec<u8>)> {
     Some((record, frame))
 }
 
-struct Permit {
-    service: LiveService,
+struct Permit<O: HostOwner> {
+    service: LiveService<O>,
     device: [u8; 32],
     participation: [u8; 32],
     directions: LiveDirections,
@@ -412,7 +508,7 @@ struct Permit {
     room: String,
     publisher: String,
 }
-impl LiveSession for Permit {
+impl<O: HostOwner> LiveSession for Permit<O> {
     fn room(&self) -> &str {
         &self.room
     }
@@ -433,28 +529,27 @@ impl LiveSession for Permit {
         else {
             return AuthorizationStatus::Denied;
         };
-        if now_ns() >= deadline {
+        if self.service.now_ns().is_none_or(|now| now >= deadline) {
             return AuthorizationStatus::Denied;
         }
-        match self
-            .service
-            .observe(self.device, self.directions, Some(self.continuity))
-        {
-            Observed::Current(_) => AuthorizationStatus::Current,
-            Observed::Busy => AuthorizationStatus::Unavailable {
+        match self.service.observe(self.device, self.directions) {
+            Permission::Current(continuity) if continuity == self.continuity => {
+                AuthorizationStatus::Current
+            }
+            Permission::Busy => AuthorizationStatus::Unavailable {
                 expires_at: self.service.instant(deadline),
             },
-            Observed::Denied => AuthorizationStatus::Denied,
+            Permission::Current(_) | Permission::Denied => AuthorizationStatus::Denied,
         }
     }
 }
 
-impl LiveAuthority for LiveService {
+impl<O: HostOwner> LiveAuthority for LiveService<O> {
     fn try_admit(&self, token: &[u8]) -> std::result::Result<Arc<dyn LiveSession>, Admission> {
         let shared = &self.0;
         let grant = SignedLiveGrant::decode(token).map_err(|_| Admission::Denied)?;
         let host = VerifyingKey::from_bytes(&shared.host).map_err(|_| Admission::Denied)?;
-        let now = now_ns();
+        let now = self.now_ns().ok_or(Admission::Denied)?;
         grant.verify(&host, now).map_err(|_| Admission::Denied)?;
         let m = &grant.metadata;
         let device = m.request.device;
@@ -471,10 +566,10 @@ impl LiveAuthority for LiveService {
         if now >= deadline {
             return Err(Admission::Denied);
         }
-        let continuity = match self.observe(device, m.request.directions, None) {
-            Observed::Current(continuity) => continuity,
-            Observed::Busy => return Err(Admission::Busy),
-            Observed::Denied => return Err(Admission::Denied),
+        let continuity = match self.observe(device, m.request.directions) {
+            Permission::Current(continuity) => continuity,
+            Permission::Busy => return Err(Admission::Busy),
+            Permission::Denied => return Err(Admission::Denied),
         };
         Ok(Arc::new(Permit {
             service: self.clone(),
@@ -497,5 +592,36 @@ impl LiveAuthority for LiveService {
             OpsFrame::Preview { record, .. } | OpsFrame::SignedChange { record, .. } => record,
         };
         hex::encode(named.digest()) == record
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_less_documents_map_to_the_stable_package_primary_live_record() {
+        let chat = live_record("so.tilo.chat".into(), String::new()).unwrap();
+        assert_eq!(chat.record, PACKAGE_PRIMARY_RECORD);
+        assert_eq!(chat.app, "so.tilo.chat");
+        let named = live_record("so.tilo.notes".into(), "tab:0000000000000001".into()).unwrap();
+        assert_eq!(named.record, "tab:0000000000000001");
+        assert_ne!(chat.digest(), named.digest());
+        // Injective and inside the frozen 1..=128 byte bounds.
+        assert!(live_record("so.tilo.chat".into(), PACKAGE_PRIMARY_RECORD.into()).is_none());
+        assert!(live_record("a".into(), "r".repeat(129)).is_none());
+        assert!(live_record(String::new(), "r".into()).is_none());
+        assert!(live_record("a".repeat(128), "r".repeat(128)).is_some());
+    }
+
+    #[test]
+    fn relay_bounds_match_the_frozen_wire_contract() {
+        use qos_moq::live;
+        use tilo_delivery_protocol::delivery_v3::live_wire as wire;
+        assert_eq!(live::LIVE_PATH, wire::LIVE_WEBTRANSPORT_PATH);
+        assert_eq!(live::LIVE_PROTOCOL, wire::LIVE_PROTOCOL);
+        assert_eq!(live::NAMESPACE_ROOT, wire::LIVE_NAMESPACE_ROOT);
+        assert_eq!(live::MAX_TOKEN_BYTES, wire::MAX_GRANT_BYTES);
+        assert_eq!(live::MAX_STREAM_FRAME_BYTES, wire::MAX_STREAM_FRAME_BYTES);
     }
 }

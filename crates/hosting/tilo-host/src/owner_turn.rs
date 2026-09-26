@@ -127,3 +127,14 @@ impl OwnerTurn for NativeTurn<'_> {
         Some(tilo_delivery_protocol::clock::now_ns())
     }
 }
+
+impl<'a> NativeTurn<'a> {
+    /// A turn over an already held committed read on the owner loop.
+    pub(crate) fn held(current: Current<'a>, workspace: u64) -> Self {
+        Self {
+            current,
+            workspace,
+            now_ns: tilo_delivery_protocol::clock::now_ns(),
+        }
+    }
+}

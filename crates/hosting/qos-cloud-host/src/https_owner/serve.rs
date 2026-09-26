@@ -4,7 +4,7 @@
 use super::{
     CloudStoreSource, Current,
     config::OperatorConfig,
-    live::{CloudLiveService, InstalledLive},
+    live::InstalledLive,
     media::CloudMediaService,
     service::{CloudService, PrivateLane, spawn_private_broker},
 };
@@ -181,10 +181,10 @@ async fn live_service(
     source: &CloudStoreSource,
     origin: &str,
     transport: &tilo_host::ingress::RunningTransport,
-) -> Result<InstalledLive> {
+) -> Result<InstalledLive<CloudStoreSource>> {
     let mut bound = None;
     for _ in 0..500 {
-        match source.with_current(|turn| CloudLiveService::bind(source.clone(), turn, origin)) {
+        match source.with_current(|turn| super::live::bind(source.clone(), turn, origin)) {
             Current::Current(service) => {
                 bound = Some(service?);
                 break;
@@ -207,7 +207,7 @@ async fn live_service(
 /// turn); `None` leaves agents on the durable path only.
 fn agent_live_publisher(
     source: &CloudStoreSource,
-    live: &InstalledLive,
+    live: &InstalledLive<CloudStoreSource>,
 ) -> Option<super::agent_live::AgentLivePublisher> {
     let (room, host) = current(source, |turn| {
         (

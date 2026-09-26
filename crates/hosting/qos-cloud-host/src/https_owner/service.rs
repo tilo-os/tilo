@@ -356,7 +356,7 @@ pub(crate) struct CloudService {
     media: Option<Arc<CloudMediaService>>,
     /// LIVE_V1 authority and forwarder; `Some` only when the relay is
     /// installed on this host's QUIC endpoint (then the live bit is signed).
-    live: Option<InstalledLive>,
+    live: Option<InstalledLive<CloudStoreSource>>,
     probe: Option<super::transaction::AggregateProbe>,
     retention_due: Instant,
     failed: bool,
@@ -377,7 +377,7 @@ impl CloudService {
         work: HostWorkInventory,
         private: Option<PrivateLane>,
         media: Option<Arc<CloudMediaService>>,
-        live: Option<InstalledLive>,
+        live: Option<InstalledLive<CloudStoreSource>>,
     ) -> Result<Self> {
         ensure!(
             work.same_pool(&pool),
@@ -921,6 +921,7 @@ impl CloudService {
             .context("live relay not installed")?
             .service
             .clone();
+        let source = self.source.clone();
         let proof = RequestProof::decode(request.proof().context("missing proof")?)?;
         let exact = Request::new(request.method().as_str(), request.target(), request.body())?;
         let pins = self.pins;
@@ -939,13 +940,13 @@ impl CloudService {
                 )?;
                 let admitted = registry.admit_in(&proof, &exact, &context.verification())?;
                 drop(context);
-                live.issue_in(turn, &admitted)
+                super::live::issue_in(&live, &source, turn, &admitted)
             },
         )
     }
     /// Forwarder for durably accepted inline items (never blocks; the durable
     /// path stays the source of truth).
-    pub(super) fn live_forwarder(&self) -> Option<super::live::CloudLiveForwarder> {
+    pub(super) fn live_forwarder(&self) -> Option<super::live::LiveForwarder> {
         self.live.as_ref().map(|live| live.forwarder.clone())
     }
 

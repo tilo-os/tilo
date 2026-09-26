@@ -74,7 +74,7 @@ pub(crate) struct InstalledIngress {
         crate::collaboration::CollaborationService,
     )>,
     /// LIVE_V1 grant authority and its admitted-change forwarder task.
-    live: Option<(crate::live_service::LiveService, LiveForwardTask)>,
+    live: Option<crate::live_service::InstalledLive<crate::owner_turn::NativeOwner>>,
 }
 /// When the owner loop next evaluates delivery retention: after every owner
 /// commit, otherwise at a bounded cadence, and after a failure only after a
@@ -105,13 +105,6 @@ pub(crate) mod test_retention {
         let result = operation();
         ENABLED.with(|enabled| enabled.set(prior));
         result
-    }
-}
-/// Aborts the live forwarder when the installed ingress is dropped.
-struct LiveForwardTask(tokio::task::JoinHandle<()>);
-impl Drop for LiveForwardTask {
-    fn drop(&mut self) {
-        self.0.abort();
     }
 }
 impl std::ops::Deref for InstalledIngress {
@@ -264,18 +257,13 @@ impl InstalledIngress {
         let mut data = crate::delivery_http::serve::DataRoutes::new(transport.host_work());
         // LIVE_V1 is optional: without it the durable path serves everything
         // and the descriptor does not advertise the live bit.
-        let live =
-            crate::live_service::LiveService::for_owner(owner, current.clone(), &live_origin)
-                .ok()
-                .map(|service| {
-                    let relay = qos_moq::live::LiveRelay::new(Arc::new(service.clone()));
-                    let (forwarder, task) = service.forwarder(relay.clone());
-                    transport.install_live(relay);
-                    data.install_admitted_sink(Arc::new(move |device, canonical| {
-                        forwarder.offer(device, canonical)
-                    }));
-                    (service, LiveForwardTask(task))
-                });
+        let live = Self::install_live(owner, &current, &live_origin).inspect(|live| {
+            transport.install_live(live.relay.clone());
+            let forwarder = live.forwarder.clone();
+            data.install_admitted_sink(Arc::new(move |device, canonical| {
+                forwarder.offer(device, canonical)
+            }));
+        });
         let mut installed = Self {
             transport,
             sessions,
@@ -291,6 +279,23 @@ impl InstalledIngress {
         };
         installed.refresh_current(owner)?;
         Ok(installed)
+    }
+    /// LIVE_V1 over the committed owner, signed by the pinned host key.
+    fn install_live(
+        owner: &SessionOwner,
+        current: &CommittedAuthority,
+        origin: &str,
+    ) -> Option<crate::live_service::InstalledLive<crate::owner_turn::NativeOwner>> {
+        if !owner.permits_publication() {
+            return None;
+        }
+        let source = crate::owner_turn::NativeOwner::new(owner, current.clone());
+        let host = owner.host_certificate().device_public_key;
+        let guard = current.read().ok()?;
+        let turn = crate::owner_turn::NativeTurn::held(guard, owner.workspace_id());
+        let service = crate::live_service::LiveService::bind(source, &turn, host, origin).ok()?;
+        drop(turn);
+        Some(service.install())
     }
     pub(crate) fn discovery_hint(
         &self,
@@ -657,14 +662,27 @@ impl InstalledIngress {
                 )?)
             }
             Route::LiveGrant => {
-                let (live, _) = self.live.as_ref().context("live relay not installed")?;
+                let live = &self
+                    .live
+                    .as_ref()
+                    .context("live relay not installed")?
+                    .service;
                 let proof = RequestProof::decode(request.proof().context("missing proof")?)?;
                 let exact =
                     Request::new(request.method().as_str(), request.target(), request.body())?;
                 let verified = self
                     .sessions
                     .admit_current(owner, &self.current, &proof, &exact)?;
-                live.issue(owner, &verified)
+                let guard = self.current.read().map_err(anyhow::Error::msg)?;
+                let turn = crate::owner_turn::NativeTurn::held(guard, owner.workspace_id());
+                live.issue(
+                    &turn,
+                    crate::live_service::LiveSigner {
+                        key: &owner.identity.host,
+                        certificate: owner.host_certificate(),
+                    },
+                    &verified,
+                )
             }
             _ => anyhow::bail!("data handler not installed"),
         }

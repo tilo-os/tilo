@@ -666,7 +666,10 @@ fn caretless_commits_announce_focus_on_their_record_before_the_change() {
     let frame = presences(&sent).pop().unwrap();
     let focus = frame.focus.expect("chat focus");
     assert_eq!(focus.app, "so.tilo.chat");
-    assert_eq!(focus.record, super::super::live::PACKAGE_PRIMARY_RECORD);
+    assert_eq!(
+        focus.record,
+        tilo_host::live_service::PACKAGE_PRIMARY_RECORD
+    );
     assert!(frame.selection.is_none(), "no Writer caret in Chat");
     // Further commits on the same record forward without re-announcing.
     publisher.handle(chat(canonical), now);

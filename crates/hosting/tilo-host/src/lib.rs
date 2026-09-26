@@ -60,7 +60,7 @@ mod media_control;
 mod media_ingress;
 
 #[cfg(feature = "media")]
-mod live_service;
+pub mod live_service;
 
 mod host_bytes;
 
