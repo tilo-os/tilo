@@ -122,6 +122,7 @@ policies! {
         "tilo.audio.chat_leave",
         "tilo.audio.balance",
         "tilo.audio.mono_output",
+        "tilo.audio.echo_cancellation",
         "tilo.display.night_light",
         "tilo.display.night_light_schedule",
         "tilo.display.night_light_temperature",

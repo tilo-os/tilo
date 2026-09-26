@@ -300,6 +300,9 @@ pub enum AudioOperation {
     SetMono {
         enabled: bool,
     },
+    SetEchoCancellation {
+        enabled: bool,
+    },
     SetDeviceProfile {
         device_id: u32,
         profile_index: u32,
@@ -1847,6 +1850,7 @@ fn sound_section(doc: &AutoCommit) -> Resource {
             encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetMono { enabled })
         },
     ));
+    sec = sec.with_action(echo_cancellation_spec());
     sec = sec.with_action(local_number_spec(
         "input-volume",
         "Set input volume",
@@ -2130,6 +2134,21 @@ fn audio_control_resource(action: ActionSpec) -> Resource {
     .with_action(action)
 }
 
+fn echo_cancellation_spec() -> ActionSpec {
+    local_bool_spec(
+        "echo-cancellation",
+        "Reduce echo in calls",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "session"],
+        |enabled| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetEchoCancellation { enabled },
+            )
+        },
+    )
+}
+
 pub fn audio_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
     let action = match action_id {
         "muted" => local_bool_spec(
@@ -2153,6 +2172,7 @@ pub fn audio_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding
                 encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetMono { enabled })
             },
         ),
+        "echo-cancellation" => echo_cancellation_spec(),
         _ => return None,
     };
     bool_binding_for(&audio_control_resource(action), action_id)
@@ -6191,6 +6211,7 @@ mod tests {
             "audio.input_volume",
             "audio.balance",
             "audio.mono",
+            "audio.echo_cancellation",
             "display.brightness",
             "display.auto_brightness",
             "display.scale",
