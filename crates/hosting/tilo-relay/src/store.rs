@@ -19,13 +19,13 @@
 //! + store-and-forward. Pending directories exist regardless of
 //!   pin state — a peer can be offline and still catch up when it reconnects.
 //!
-//! Every queue here is bounded so one busy room cannot fill the disk:
-//! a device's pending queue ([`MAX_PENDING_ENTRIES_PER_DEVICE`],
-//! [`MAX_PENDING_BYTES_PER_DEVICE`]), a channel's retained tail
-//! ([`MAX_RETAINED_TAIL_ENTRIES`], [`MAX_RETAINED_TAIL_BYTES`]) and the audit
-//! log ([`MAX_LOG_BYTES`]). Overflow drops the oldest entries: a pending
-//! delta is also in the pinned document that anti-entropy serves, and a
-//! retained tail is superseded by the next checkpoint a member publishes.
+//! A device's pending queue ([`MAX_PENDING_ENTRIES_PER_DEVICE`],
+//! [`MAX_PENDING_BYTES_PER_DEVICE`]) and the audit log ([`MAX_LOG_BYTES`])
+//! are bounded here and drop their oldest entries on overflow: a pending
+//! delta is also in the pinned document that anti-entropy serves. A retained
+//! tail is never cut here — dropping any entry would leave later changes
+//! without their dependencies — so the workspace runtime trims its front
+//! only once a checkpoint covers it (see `crate::workspace`).
 
 use std::fs;
 use std::io::{self, Write};
@@ -54,12 +54,6 @@ pub const RETAINED_DIR: &str = "retained";
 pub const MAX_PENDING_ENTRIES_PER_DEVICE: u64 = 4096;
 /// Most queued bytes one offline device may hold.
 pub const MAX_PENDING_BYTES_PER_DEVICE: u64 = 64 * 1024 * 1024;
-/// Most incremental deltas retained after one channel's checkpoint. Members
-/// publish a fresh checkpoint whenever they (re)attach to the host, which
-/// resets the tail; the bound only matters for a channel nobody checkpoints.
-pub const MAX_RETAINED_TAIL_ENTRIES: u64 = 16_384;
-/// Most bytes retained after one channel's checkpoint.
-pub const MAX_RETAINED_TAIL_BYTES: u64 = 256 * 1024 * 1024;
 /// Size at which `log.jsonl` is rotated to `log.jsonl.1`, replacing the
 /// previous rotation. The audit trail keeps between one and two of these.
 pub const MAX_LOG_BYTES: u64 = 16 * 1024 * 1024;
@@ -146,19 +140,15 @@ pub struct WorkspaceStore {
     bounds: QueueBounds,
 }
 
-/// Bounds on the per-device pending queues and per-channel retained tails.
-/// Production uses [`QueueBounds::default`]; tests shrink them to exercise
-/// the same eviction path without writing thousands of files.
+/// Bounds on the per-device pending queues. Production uses
+/// [`QueueBounds::default`]; tests shrink them to exercise the same eviction
+/// path without writing thousands of files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QueueBounds {
     /// See [`MAX_PENDING_ENTRIES_PER_DEVICE`].
     pub pending_entries: u64,
     /// See [`MAX_PENDING_BYTES_PER_DEVICE`].
     pub pending_bytes: u64,
-    /// See [`MAX_RETAINED_TAIL_ENTRIES`].
-    pub tail_entries: u64,
-    /// See [`MAX_RETAINED_TAIL_BYTES`].
-    pub tail_bytes: u64,
 }
 
 impl Default for QueueBounds {
@@ -166,10 +156,23 @@ impl Default for QueueBounds {
         Self {
             pending_entries: MAX_PENDING_ENTRIES_PER_DEVICE,
             pending_bytes: MAX_PENDING_BYTES_PER_DEVICE,
-            tail_entries: MAX_RETAINED_TAIL_ENTRIES,
-            tail_bytes: MAX_RETAINED_TAIL_BYTES,
         }
     }
+}
+
+/// One retained document as it is on disk.
+pub struct RetainedChannel {
+    /// Digest of the document route.
+    pub channel: [u8; 32],
+    /// The encoded checkpoint envelope, if one was retained.
+    pub checkpoint: Option<Vec<u8>>,
+    /// The encoded tail envelopes with their sequences, oldest first.
+    pub tail: Vec<(u64, Vec<u8>)>,
+}
+
+/// The sequence a retained tail file is named after.
+fn tail_seq(path: &Path) -> Option<u64> {
+    u64::from_str_radix(path.file_stem()?.to_str()?, 16).ok()
 }
 
 /// Running totals of one bounded queue directory.
@@ -707,51 +710,106 @@ impl WorkspaceStore {
     /// directory can't be removed, or the fresh tail directory can't
     /// be created.
     pub fn retain_checkpoint(&self, channel: &[u8; 32], bytes: &[u8]) -> Result<(), StoreError> {
-        let name = hex::encode(channel);
         atomic_file::write(
-            &self.root.join(RETAINED_DIR).join("checkpoints").join(&name),
+            &self
+                .root
+                .join(RETAINED_DIR)
+                .join("checkpoints")
+                .join(hex::encode(channel)),
             bytes,
         )?;
-        let tail = self.root.join(RETAINED_DIR).join("tails").join(name);
-        if tail.exists() {
-            fs::remove_dir_all(&tail)?;
-        }
-        fs::create_dir_all(&tail)?;
-        self.usage
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(tail, QueueUsage::default());
         Ok(())
     }
 
-    /// Append one encoded relay envelope to the retained tail for `channel`,
-    /// bounded by [`MAX_RETAINED_TAIL_ENTRIES`] and
-    /// [`MAX_RETAINED_TAIL_BYTES`] (oldest dropped first).
+    /// Append one encoded relay envelope to the retained tail for `channel`.
+    /// The tail is never trimmed here: only [`Self::trim_tail`] removes
+    /// entries, and only once a checkpoint covers them.
     ///
     /// # Errors
     ///
-    /// Returns an error if the tail directory can't be created, the
-    /// atomic write fails, or an evicted entry can't be removed.
+    /// Returns an error if the tail directory can't be created or the
+    /// atomic write fails.
     pub fn retain_delta(
         &self,
         channel: &[u8; 32],
         seq: u64,
         bytes: &[u8],
     ) -> Result<(), StoreError> {
-        let tail = self
-            .root
-            .join(RETAINED_DIR)
-            .join("tails")
-            .join(hex::encode(channel));
+        let tail = self.tail_dir(channel);
         fs::create_dir_all(&tail)?;
         atomic_file::write(&tail.join(format!("{seq:016x}.delta")), bytes)?;
-        self.account_and_bound(
-            &tail,
-            bytes.len() as u64,
-            self.bounds.tail_entries,
-            self.bounds.tail_bytes,
-        )?;
         Ok(())
+    }
+
+    /// Remove the front of `channel`'s retained tail: every entry whose
+    /// sequence is at most `through`. The caller guarantees the channel's
+    /// checkpoint covers them, so no later entry loses a dependency.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tail can't be listed or an entry removed.
+    pub fn trim_tail(&self, channel: &[u8; 32], through: u64) -> Result<(), StoreError> {
+        for (path, _) in sorted_deltas(&self.tail_dir(channel))? {
+            if tail_seq(&path).is_none_or(|seq| seq > through) {
+                break;
+            }
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
+    /// Every retained channel with its checkpoint (if any) and its tail
+    /// entries in order, as `(sequence, bytes)`. Used to rebuild the
+    /// relay's tail accounting after a restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a retained directory or file can't be read.
+    pub fn load_retained_channels(&self) -> Result<Vec<RetainedChannel>, StoreError> {
+        let retained = self.root.join(RETAINED_DIR);
+        let mut channels = std::collections::BTreeSet::new();
+        for dir in [retained.join("checkpoints"), retained.join("tails")] {
+            for entry in fs::read_dir(dir)?.flatten() {
+                if let Some(channel) = hex::decode(entry.file_name().to_string_lossy().as_bytes())
+                    .ok()
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                {
+                    channels.insert(channel);
+                }
+            }
+        }
+        channels
+            .into_iter()
+            .map(|channel| {
+                let checkpoint_path = retained.join("checkpoints").join(hex::encode(channel));
+                let checkpoint = if checkpoint_path.is_file() {
+                    Some(fs::read(checkpoint_path)?)
+                } else {
+                    None
+                };
+                let tail = sorted_deltas(&self.tail_dir(&channel))?
+                    .into_iter()
+                    .filter_map(|(path, _)| Some((tail_seq(&path)?, path)))
+                    .map(|(seq, path)| Ok((seq, fs::read(path)?)))
+                    .collect::<Result<_, StoreError>>()?;
+                Ok(RetainedChannel {
+                    channel,
+                    checkpoint,
+                    tail,
+                })
+            })
+            .collect()
+    }
+
+    fn tail_dir(&self, channel: &[u8; 32]) -> PathBuf {
+        self.root
+            .join(RETAINED_DIR)
+            .join("tails")
+            .join(hex::encode(channel))
     }
 
     /// Load every retained checkpoint followed by its post-checkpoint tail.
@@ -937,20 +995,38 @@ mod tests {
     }
 
     #[test]
-    fn retained_checkpoint_replaces_its_old_tail() {
+    fn a_retained_tail_is_only_ever_trimmed_from_its_front() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
         let channel = [9u8; 32];
         store.retain_checkpoint(&channel, b"checkpoint-1").unwrap();
-        store.retain_delta(&channel, 10, b"delta-1").unwrap();
-        assert_eq!(
-            store.load_retained().unwrap(),
-            vec![b"checkpoint-1".to_vec(), b"delta-1".to_vec()]
-        );
+        for seq in 1..=5u64 {
+            store
+                .retain_delta(&channel, seq, format!("tail-{seq}").as_bytes())
+                .unwrap();
+        }
+        // A new checkpoint alone does not discard the tail.
         store.retain_checkpoint(&channel, b"checkpoint-2").unwrap();
+        assert_eq!(store.load_retained().unwrap().len(), 6);
+        store.trim_tail(&channel, 3).unwrap();
         assert_eq!(
             store.load_retained().unwrap(),
-            vec![b"checkpoint-2".to_vec()]
+            vec![
+                b"checkpoint-2".to_vec(),
+                b"tail-4".to_vec(),
+                b"tail-5".to_vec()
+            ]
+        );
+        let channels = store.load_retained_channels().unwrap();
+        assert_eq!(channels.len(), 1);
+        assert_eq!(channels[0].channel, channel);
+        assert_eq!(
+            channels[0].checkpoint.as_deref(),
+            Some(b"checkpoint-2".as_slice())
+        );
+        assert_eq!(
+            channels[0].tail,
+            vec![(4, b"tail-4".to_vec()), (5, b"tail-5".to_vec())]
         );
     }
 
@@ -958,8 +1034,6 @@ mod tests {
         QueueBounds {
             pending_entries: 8,
             pending_bytes: 1024,
-            tail_entries: 8,
-            tail_bytes: 1024,
         }
     }
 
@@ -1026,40 +1100,6 @@ mod tests {
             store.enqueue_pending(&peer, seq, b"x").unwrap();
         }
         assert_eq!(store.count_pending(&peer).unwrap(), 7);
-    }
-
-    #[test]
-    fn retained_tail_is_bounded_and_a_checkpoint_resets_it() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut store = WorkspaceStore::open(tmp.path(), 11, true).unwrap();
-        store.set_bounds(small_bounds());
-        let channel = [3u8; 32];
-        store.retain_checkpoint(&channel, b"checkpoint").unwrap();
-        for seq in 0..9u64 {
-            store
-                .retain_delta(&channel, seq, format!("tail-{seq}").as_bytes())
-                .unwrap();
-        }
-        let retained = store.load_retained().unwrap();
-        assert_eq!(
-            retained[0], b"checkpoint",
-            "the checkpoint is never evicted"
-        );
-        assert_eq!(
-            retained[1..].to_vec(),
-            (3..9u64)
-                .map(|seq| format!("tail-{seq}").into_bytes())
-                .collect::<Vec<_>>()
-        );
-        store.retain_checkpoint(&channel, b"checkpoint-2").unwrap();
-        for seq in 10..18u64 {
-            store.retain_delta(&channel, seq, b"t").unwrap();
-        }
-        assert_eq!(
-            store.load_retained().unwrap().len(),
-            9,
-            "eight tail entries fit after a fresh checkpoint"
-        );
     }
 
     #[test]

@@ -168,6 +168,11 @@ pub enum Envelope {
     /// The relay's response to a `Subscribe`: how many pending
     /// deltas the relay is about to flush from the peer's
     /// store-and-forward queue.
+    ///
+    /// The relay may send it again to a subscribed member, with
+    /// `pending_deltas: 0`, to ask for fresh full checkpoints of the
+    /// documents that member holds — exactly what a member publishes after
+    /// subscribing — when a retained tail has grown past its bound.
     Ready {
         /// Workspace id.
         workspace_id: u64,
