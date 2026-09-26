@@ -764,6 +764,19 @@ impl FrameHarness {
         self.layout_built = false;
     }
 
+    /// Replace the whole root control of this harness. `node_map` holds raw
+    /// pointers into the current tree and `focused` names a node of the
+    /// current Taffy tree, so both are discarded before the old tree is
+    /// dropped; assigning `root` directly would leave the next frame reading
+    /// freed widgets.
+    #[cfg(test)]
+    fn replace_root(&mut self, root: Box<dyn Widget>) {
+        self.discard_layout_tree();
+        self.focused = None;
+        self.focus_before_trap = None;
+        self.root = root;
+    }
+
     /// Force the next frame to recompose from scratch. Inputs that shape
     /// every widget's style at build time (theme, platform conventions,
     /// interaction environment, an installed history host) go through here
