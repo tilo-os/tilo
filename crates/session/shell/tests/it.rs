@@ -121,6 +121,8 @@ mod notification_center;
 mod onboarding_visual;
 #[path = "opening_configure_carries_the_tab_size.rs"]
 mod opening_configure_carries_the_tab_size;
+#[path = "output_management_protocol.rs"]
+mod output_management_protocol;
 #[path = "peer_join_toast_batches.rs"]
 mod peer_join_toast_batches;
 #[path = "peer_sync_test.rs"]
@@ -133,6 +135,8 @@ mod permission_prompt_pump;
 mod permissions_tab_test;
 #[path = "persisted_app_placeholders.rs"]
 mod persisted_app_placeholders;
+#[path = "pointer_lock_protocol.rs"]
+mod pointer_lock_protocol;
 #[path = "portal_file_chooser_e2e.rs"]
 mod portal_file_chooser_e2e;
 #[path = "portal_grant_reaches_sandbox.rs"]

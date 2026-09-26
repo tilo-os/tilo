@@ -38,7 +38,7 @@ case " $zram_algorithm " in
   *) echo "zram0 active compressor is not lz4: $zram_algorithm" >&2; exit 1 ;;
 esac
 active_swaps="$(swapon --noheadings --raw --show=NAME 2>/dev/null)"
-if ! printf '%s\n' "$active_swaps" | grep -Fqx /dev/zram0; then
+if ! grep -Fqx /dev/zram0 <<<"$active_swaps"; then
   echo 'zram0 is not active swap' >&2
   exit 1
 fi

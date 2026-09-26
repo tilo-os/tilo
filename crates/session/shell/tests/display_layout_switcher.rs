@@ -41,6 +41,7 @@ fn output(connector: &str, builtin: bool, modes: &[OutputMode]) -> DisplayOutput
             hdr: false,
             vrr: false,
             color_profiles: Vec::new(),
+            monitor: None,
         },
         current_mode: modes[0],
         builtin,
@@ -305,16 +306,8 @@ fn identify_puts_a_numbered_card_on_every_display() {
     publish_laptop_with_monitor();
     let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&WorkspaceTree::bootstrap_demo());
     let outputs = [
-        OutputGeometry {
-            x: 0.0,
-            width: 2560.0,
-            height: 1600.0,
-        },
-        OutputGeometry {
-            x: 2560.0,
-            width: 3840.0,
-            height: 2160.0,
-        },
+        OutputGeometry::unscaled(0.0, 0.0, 2560.0, 1600.0),
+        OutputGeometry::unscaled(2560.0, 0.0, 3840.0, 2160.0),
     ];
     host.set_output_geometry(&outputs);
     let _layout = layout_host(&mut host);

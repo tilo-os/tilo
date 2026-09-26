@@ -36,14 +36,17 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: runner-large-arm64
     timeout-minutes: 90
-    enable-openid-connect: true
     outputs:
       ref: ${{ steps.publish.outputs.ref }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: ./.forgejo/actions/tilo-registry-login
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: ./.forgejo/actions/setup-buildx
       - name: Build native ARM toolchain candidate
         id: publish
@@ -79,14 +82,17 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: runner-large
     timeout-minutes: 90
-    enable-openid-connect: true
     outputs:
       ref: ${{ steps.publish.outputs.ref }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: ./.forgejo/actions/tilo-registry-login
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: ./.forgejo/actions/setup-buildx
       - name: Build native x86 development SDK candidate
         id: publish
@@ -125,7 +131,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: ./.forgejo/actions/tilo-registry-login
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: ./.forgejo/actions/setup-buildx
       - name: Build verified portable FEX candidate
         id: publish

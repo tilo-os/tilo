@@ -536,7 +536,11 @@ jobs:
       # forge's registry instead.
       - name: Log in to registry.tilo.so
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: ./.forgejo/actions/tilo-registry-login
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Log in to the private board registry
         if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -2050,7 +2054,11 @@ jobs:
             exit 1
           fi
       - name: Authenticate multi-architecture promotion
-        uses: ./.forgejo/actions/tilo-registry-login
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Assemble, sign, attest, and promote the OS index
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
@@ -2340,12 +2348,7 @@ jobs:
     if: needs.plan.outputs.publish != 'true' && needs.plan.outputs.skip != 'true' && github.ref == 'refs/heads/main'
     runs-on: runner
     timeout-minutes: 60
-    enable-openid-connect: true
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          sparse-checkout: .forgejo/actions/tilo-registry-login
-          sparse-checkout-cone-mode: false
       - name: Install OCI index tooling
         run: |
           set -euo pipefail
@@ -2361,7 +2364,11 @@ jobs:
             exit 1
           fi
       - name: Authenticate to the development image registry
-        uses: ./.forgejo/actions/tilo-registry-login
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Verify native children and publish unsigned integration index
         run: |
           set -euo pipefail

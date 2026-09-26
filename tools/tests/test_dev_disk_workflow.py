@@ -70,8 +70,8 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertIn('>> "$GITHUB_ENV"', store)
         self.assertLess(build.index("Expose guest FUSE"), build.index("Use native Podman overlay"))
         self.assertLess(build.index("Use native Podman overlay"), build.index("Log in to registry.tilo.so"))
-        # This workflow revision's login: an older signed source may lack it.
-        self.assertIn("uses: ./.ci-registry-login/.forgejo/actions/tilo-registry-login", login)
+        self.assertIn("registry: registry.tilo.so", login)
+        self.assertIn("password: ${{ secrets.GITHUB_TOKEN }}", login)
 
     def test_architectures_never_wait_for_each_other(self) -> None:
         # No job joins the architectures: each lane publishes itself.
@@ -184,10 +184,7 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertNotIn('TILO_PACKAGE_TOKEN="', self.source)
         self.assertNotIn("TILO_VM_DISK_RELEASE_AUDIENCE", self.source)
         self.assertNotIn("ACTIONS_ID_TOKEN_REQUEST", self.source)
-        # The job's ID token only authenticates image pushes to
-        # registry.tilo.so; it never reaches a signing identity.
-        self.assertEqual(self.source.count("enable-openid-connect: true"), 1)
-        self.assertNotIn("AWS_SIGNING_ROLE_ARN", self.source)
+        self.assertNotIn("enable-openid-connect", self.source)
 
     def test_dev_images_are_never_release_signed(self) -> None:
         for source in (self.source, PUBLISH.read_text(encoding="utf-8"), CHECK.read_text(encoding="utf-8")):

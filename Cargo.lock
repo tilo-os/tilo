@@ -4171,12 +4171,14 @@ dependencies = [
  "anyhow",
  "atomic-file",
  "automerge",
+ "bao-tree",
  "blake3",
  "bounded-command",
  "bytes",
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "fs-content",
  "fs-native",
  "fuser",
  "futures-util",
@@ -4187,6 +4189,7 @@ dependencies = [
  "iroh-base",
  "iroh-blobs",
  "iroh-gossip",
+ "irpc",
  "libc",
  "moka",
  "postcard",
@@ -4194,6 +4197,7 @@ dependencies = [
  "qdoc-codecs",
  "rand 0.10.1",
  "redb",
+ "ref-cast",
  "runtime-fs",
  "serde",
  "serde_bytes",
@@ -4214,11 +4218,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "fs-native"
+name = "fs-content"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "fastcdc",
+ "postcard",
+ "serde",
+]
+
+[[package]]
+name = "fs-native"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "fs-content",
  "libc",
 ]
 
@@ -12722,6 +12736,7 @@ dependencies = [
  "walkdir",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-wlr",
  "wgpu",
  "windows-vm",
  "winit",
@@ -14794,6 +14809,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "settings-store",
  "sha2 0.11.0",
  "tar",
  "tempfile",

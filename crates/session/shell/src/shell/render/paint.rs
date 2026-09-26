@@ -1179,7 +1179,7 @@ impl RetainedGpuTarget {
         height: u32,
     ) -> (wgpu::Texture, wgpu::TextureView) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("quick-desktop-drm-paint-target"),
+            label: Some("tilo-desktop-drm-paint-target"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -1395,6 +1395,61 @@ impl VelloDrmBridge {
         self.xrgb_history_epoch = self
             .xrgb_history_epoch
             .and_then(|epoch| epoch.checked_add(1));
+    }
+
+    /// Compile the renderer's full and sparse pipelines outside any frame deadline, then start
+    /// over from an invalidated target and a new history epoch.
+    ///
+    /// llvmpipe builds compute variants at first dispatch. On a cold shader cache that takes
+    /// longer than the Linux per-phase fence allowance, so a fixture asserting on
+    /// deadline-bound frames warms the renderer first instead of timing the compiler.
+    #[cfg(test)]
+    pub(crate) fn warm_renderer_for_test(&mut self) {
+        use vello::kurbo::{Affine, Rect};
+        use vello::peniko::Fill;
+
+        let (width, height) = self.target.size;
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(0x80, 0x80, 0x80),
+            None,
+            &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+        );
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(60))
+            .expect("warm-up deadline fits Instant");
+        self.target
+            .render_until(
+                &scene,
+                SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: None,
+                },
+                deadline,
+            )
+            .expect("warm-up full render");
+        let region = [vello::FineDamageRect {
+            x: 0,
+            y: 0,
+            width: width.min(16),
+            height: height.min(16),
+        }];
+        self.target
+            .render_until(
+                &scene,
+                SceneDamage {
+                    revision: 2,
+                    previous_revision: Some(1),
+                    regions: Some(&region),
+                },
+                deadline,
+            )
+            .expect("warm-up sparse render");
+        self.invalidate_retained();
+        self.bump_xrgb_history_epoch();
     }
 
     /// Refuse to submit another frame while a timed-out software-rendered submission drains.
@@ -3358,7 +3413,7 @@ impl VelloDrmBridge {
         let padded_bytes_per_row = unpadded.div_ceil(align).saturating_mul(align);
         let readback_size = u64::from(padded_bytes_per_row).saturating_mul(u64::from(height));
         let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("quick-desktop-drm-paint-readback"),
+            label: Some("tilo-desktop-drm-paint-readback"),
             size: readback_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
