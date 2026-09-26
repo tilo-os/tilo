@@ -14380,6 +14380,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "app-registry",
+ "blake3",
  "clap",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.1",
