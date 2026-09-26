@@ -485,9 +485,9 @@ listed in the header of `os/dev/internal-bundle.py`.
 like `snapshot-rpms.yml` and `build-kernel.yml`; it needs no extra secret or
 variable beyond theirs and `TILO_NATIVE_ARM64_RUNNER=true`:
 
-- The job's Forgejo Actions ID token (`enable-openid-connect: true` and
-  `.forgejo/actions/tilo-registry-login`) pushes `tilo/tilo-wpe-buildroot`
-  to `registry.tilo.so`; the mirrored base is anonymously readable there.
+- The job token (`secrets.GITHUB_TOKEN`, logged in with
+  `docker/login-action`) pushes `tilo/tilo-wpe-buildroot` to
+  `registry.tilo.so`; the mirrored base is anonymously readable there.
 - `COSIGN_KEY_REF` (a KMS/HSM URI) and `AWS_SIGNING_ROLE_ARN` sign each native
   buildroot through `os/dev/configure-cosign-kms.sh` and Forgejo OIDC. A
   preflight job refuses to start the multi-hour builds unless the KMS public

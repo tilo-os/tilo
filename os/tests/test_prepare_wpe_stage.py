@@ -72,7 +72,7 @@ class WpeStageTests(unittest.TestCase):
 
     def setUp(self):
         self.args = argparse.Namespace(architecture='x86_64', epoch='0',
-            cache='code.tilo.so/tilo/tilo-development-wpe-cache-x86_64',
+            cache='registry.tilo.so/tilo/tilo-development-wpe-cache-x86_64',
             repo=Path('/private/source tree'), assets=Path('/private/source tree/assets'),
             base='registry.tilo.so/tilo/fedora-bootc@sha256:' + '1' * 64,
             rpms='registry.tilo.so/tilo/rpms@sha256:' + '2' * 64,

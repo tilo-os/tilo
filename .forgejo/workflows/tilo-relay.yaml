@@ -275,7 +275,11 @@ jobs:
       # cache log in.
       - name: Log in to registry.tilo.so
         if: github.event_name != 'pull_request'
-        uses: ./.forgejo/actions/tilo-registry-login
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Same mirrored, digest-pinned base as the OS image — see
       # os/base-snapshot.env for why the base is a mirror and not quay.io.

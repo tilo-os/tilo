@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 
-REPOSITORY = 'code.tilo.so/tilo/tilo-compile-tools-cache'
+REPOSITORY = 'registry.tilo.so/tilo/tilo-compile-tools-cache'
 
 
 def fingerprint(recipe, builder, cosign, platform):
