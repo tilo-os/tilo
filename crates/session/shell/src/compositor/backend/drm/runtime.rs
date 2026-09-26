@@ -1781,7 +1781,15 @@ impl DrmDispatchState {
             return;
         }
         let (x, y) = self.move_pointer_by((dx, dy));
-        self.push(BackendEvent::RelativePointerMotion { dx, dy });
+        // Synthetic motion has no acceleration curve, and libinput stamps
+        // real motion on CLOCK_MONOTONIC, so the keys do the same.
+        self.push(BackendEvent::RelativePointerMotion {
+            dx,
+            dy,
+            dx_unaccel: dx,
+            dy_unaccel: dy,
+            time_usec: crate::shell::network::fabric_monotonic_us(),
+        });
         self.push(BackendEvent::Input(cursor_moved_event(x, y)));
     }
 
