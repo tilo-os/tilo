@@ -1937,6 +1937,7 @@ name = "chat"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "emoji",
  "gstreamer",
  "gstreamer-app",
  "hex",
