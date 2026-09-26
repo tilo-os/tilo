@@ -135,6 +135,21 @@ pub enum Icon {
     Undo2,
     /// Redo — the mirror of [`Icon::Undo2`]. Lucide `redo-2`.
     Redo2,
+    // --- Remark set ---
+    /// Saying something about a thing. Lucide `message-square`.
+    MessageSquare,
+    /// Picking part of an app. Lucide `crosshair`.
+    Crosshair,
+    /// Private: only the addressed can read it. Lucide `lock`.
+    Lock,
+    /// Hidden from what is sent. Lucide `eye-off`.
+    EyeOff,
+    /// Something went wrong. Lucide `triangle-alert`.
+    TriangleAlert,
+    /// One person. Lucide `user`.
+    User,
+    /// An agent. Lucide `bot`.
+    Bot,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -707,6 +722,47 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("m15 14 5-5-5-5"),
             path_from_d("M20 9H9.5A5.5 5.5 0 0 0 4 14.5 5.5 5.5 0 0 0 9.5 20H13"),
         ],
+        Icon::MessageSquare => vec![path_from_d(
+            "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
+        )],
+        Icon::Crosshair => vec![
+            circle_path(12.0, 12.0, 10.0),
+            line_path(22.0, 12.0, 18.0, 12.0),
+            line_path(6.0, 12.0, 2.0, 12.0),
+            line_path(12.0, 6.0, 12.0, 2.0),
+            line_path(12.0, 22.0, 12.0, 18.0),
+        ],
+        Icon::Lock => vec![
+            rect_path(3.0, 11.0, 18.0, 11.0, 2.0),
+            path_from_d("M7 11V7a5 5 0 0 1 10 0v4"),
+        ],
+        Icon::EyeOff => vec![
+            path_from_d(
+                "M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49",
+            ),
+            path_from_d("M14.084 14.158a3 3 0 0 1-4.242-4.242"),
+            path_from_d(
+                "M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143",
+            ),
+            path_from_d("m2 2 20 20"),
+        ],
+        Icon::TriangleAlert => vec![
+            path_from_d("m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"),
+            path_from_d("M12 9v4"),
+            path_from_d("M12 17h.01"),
+        ],
+        Icon::User => vec![
+            path_from_d("M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"),
+            circle_path(12.0, 7.0, 4.0),
+        ],
+        Icon::Bot => vec![
+            path_from_d("M12 8V4H8"),
+            rect_path(4.0, 8.0, 16.0, 12.0, 2.0),
+            path_from_d("M2 14h2"),
+            path_from_d("M20 14h2"),
+            path_from_d("M15 13v2"),
+            path_from_d("M9 13v2"),
+        ],
     }
 }
 
@@ -1096,6 +1152,13 @@ mod tests {
             Icon::CornerDownLeft,
             Icon::Undo2,
             Icon::Redo2,
+            Icon::MessageSquare,
+            Icon::Crosshair,
+            Icon::Lock,
+            Icon::EyeOff,
+            Icon::TriangleAlert,
+            Icon::User,
+            Icon::Bot,
         ] {
             let sub = icon_subpaths(icon);
             assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
