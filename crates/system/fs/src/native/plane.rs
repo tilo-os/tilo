@@ -48,11 +48,12 @@ use crate::hydration::Hydrator;
 use crate::namespace::{ChangesetMark, PosixAttrs};
 use crate::sync::SyncHandle;
 
-/// How often the record plane is re-projected without a change signal.
+/// How often the record plane is re-projected without a change signal. A
+/// projection waiting for records runs again when they are applied (the
+/// sync layer's change signal); this only retries content that could not
+/// be fetched.
 const PROJECT_FALLBACK: Duration = Duration::from_secs(3);
 const LEASE_TICK: Duration = Duration::from_secs(1);
-/// How soon a projection waiting for a version is tried again.
-const WAITING_RETRY: Duration = Duration::from_millis(100);
 /// Delay before a failed publication is tried again.
 const RETRY_AFTER: Duration = Duration::from_secs(2);
 /// A long publication rewrites its open changeset mark this often.
@@ -239,9 +240,12 @@ struct Engine {
     retry_removals: HashSet<PathBuf>,
     /// When to cut an epoch for failed publications even without new changes.
     retry_at: Option<Instant>,
-    /// The last projection stopped at a version not yet verified here.
-    waiting: bool,
+    /// Where the last projection stopped, waiting for a version not yet
+    /// verified here (for the trace).
     waiting_for: Option<PathBuf>,
+    /// The last projection was held back by another device's open
+    /// changeset (for the trace).
+    held_for_changeset: bool,
     /// Log every journal entry and published operation.
     trace: bool,
     /// The changeset mark this device is publishing under.
@@ -395,8 +399,8 @@ impl Engine {
             status,
             retry_removals: HashSet::new(),
             retry_at: None,
-            waiting: false,
             waiting_for: None,
+            held_for_changeset: false,
             trace: std::env::var_os("TILO_FS_NATIVE_TRACE").is_some(),
             mark: None,
             marks_seen: HashMap::new(),
@@ -457,8 +461,7 @@ impl Engine {
             let remote = generation
                 .as_mut()
                 .is_some_and(|g| g.has_changed().unwrap_or(false));
-            let again = self.waiting && last_project.elapsed() >= WAITING_RETRY;
-            if remote || again || last_project.elapsed() >= PROJECT_FALLBACK {
+            if remote || last_project.elapsed() >= PROJECT_FALLBACK {
                 if let Some(g) = generation.as_mut() {
                     g.borrow_and_update();
                 }
@@ -1077,16 +1080,19 @@ impl Engine {
         if let Some(device) = open {
             // Part of another device's changeset may be here already; all
             // of it is once its mark closes.
-            if self.trace && !self.waiting {
+            if self.trace && !self.held_for_changeset {
                 eprintln!(
                     "  projection waits for device {}'s changeset",
                     hex::encode(&device[..8])
                 );
             }
-            self.waiting = true;
+            self.held_for_changeset = true;
             return;
         }
+        self.held_for_changeset = false;
+        let started = Instant::now();
         let tree = self.fs.tree_snapshot();
+        let snapshotted = started.elapsed();
         let fs = Arc::clone(&self.fs);
         let holder_of = move |record: [u8; 16], epoch: u64| fs.lease_holder_of(record, epoch);
         let fencing = project::Fencing {
@@ -1097,6 +1103,14 @@ impl Engine {
         let out = self
             .projector
             .project(&tree, &self.materialized, &spans, &fencing);
+        if self.trace && (!out.written.is_empty() || !out.removed.is_empty()) {
+            eprintln!(
+                "  projection of {} entries: tree {} ms, applied in {} ms",
+                tree.len(),
+                snapshotted.as_millis(),
+                started.elapsed().as_millis()
+            );
+        }
         for (from, to) in &out.moved {
             for old in self.capture.paths_below(from) {
                 self.node_dirty.insert(old);
@@ -1138,7 +1152,6 @@ impl Engine {
                 unavailable.as_deref().unwrap_or("version not verified yet")
             );
         }
-        self.waiting = out.waiting;
         self.waiting_for.clone_from(&out.waiting_for);
         if let Err(error) = self.state.set_materialized(&out.updates) {
             self.note_error(&error);

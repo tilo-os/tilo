@@ -863,10 +863,15 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
         conflict_versions.sort();
         (heads == conflict_versions).then_some((content, history))
     };
-    let (host_content, host_history) = wait_for(PROCESS_TIMEOUT, || converged(&host_mount));
-    eprintln!("barrier: host converged");
-    let (peer_content, peer_history) = wait_for(PROCESS_TIMEOUT, || converged(&peer_mount));
-    eprintln!("barrier: peer converged");
+    // A device shows the conflict as soon as it holds both heads, and the
+    // winner once it has projected them; both converge on the same one.
+    let ((host_content, host_history), (peer_content, peer_history)) =
+        wait_for(PROCESS_TIMEOUT, || {
+            let host = converged(&host_mount)?;
+            let peer = converged(&peer_mount)?;
+            (host == peer).then_some((host, peer))
+        });
+    eprintln!("barrier: host and peer converged");
     assert_eq!(
         host_content, peer_content,
         "the same signed head must win live"
@@ -1049,23 +1054,26 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         });
         let updated_manifest = Hash::from(updated_manifest);
         let replica_workspace_cache = replica_cache.join(original.workspace_id().to_string());
-        let replicated_generation = wait_for(PROCESS_TIMEOUT, || {
+        // The replica advertises a complete generation that is exactly the
+        // namespace it holds durably, and that namespace has the change. The
+        // namespace may move on after the change first lands (the records
+        // that go with it are projected after it); the proof is for the
+        // generation the replica advertises.
+        wait_for(PROCESS_TIMEOUT, || {
             if let Some(exit) = nas.child.try_wait().unwrap() {
                 panic!(
                     "replica exited {exit}; logs:\n{}",
                     nas.logs.lock().unwrap().join("\n")
                 );
             }
+            let current = fs::full_replica::load_status(&status).ok().flatten()?;
             let bytes = std::fs::read(replica_workspace_cache.join("namespace.bin")).ok()?;
             let namespace = Namespace::from_bytes("nas-generation-barrier", &bytes).ok()?;
-            (namespace.entry_at("survivor.txt")?.hash == Some(updated_manifest)
-                && namespace.entry_at("deleted.txt").is_none())
-            .then(|| hex::encode(blake3::hash(&bytes).as_bytes()))
-        });
-        wait_for(PROCESS_TIMEOUT, || {
-            let current = fs::full_replica::load_status(&status).ok().flatten()?;
             (current.full_content_replication
-                && current.namespace_generation.as_deref() == Some(&replicated_generation))
+                && current.namespace_generation.as_deref()
+                    == Some(hex::encode(blake3::hash(&bytes).as_bytes()).as_str())
+                && namespace.entry_at("survivor.txt")?.hash == Some(updated_manifest)
+                && namespace.entry_at("deleted.txt").is_none())
             .then_some(())
         });
         let nas_ticket = fs::Ticket {
