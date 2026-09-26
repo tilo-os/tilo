@@ -18,11 +18,12 @@ type Installed = (fn() -> &'static ApplicationDefinition, RecordScope);
 
 /// Every component application in the browser build. Registering an app here
 /// is all it takes to launch it by id, standalone or on the desktop.
-const INSTALLED: [Installed; 4] = [
+const INSTALLED: [Installed; 5] = [
     (word_processor::definition, RecordScope::Ordinary),
     (chat::definition, RecordScope::PackagePrimary),
     (notes::definition, RecordScope::Ordinary),
     (calculator::definition, RecordScope::Ordinary),
+    (ebook::definition, RecordScope::Ordinary),
 ];
 
 /// Short spellings the Cloud frontend passes to a standalone mount. The
@@ -110,7 +111,9 @@ mod tests {
 
     #[test]
     fn every_installed_app_resolves_by_its_own_id_once() {
-        let catalog = catalog().ok().expect("installed app ids are unique");
+        let Ok(catalog) = catalog() else {
+            panic!("installed app ids are unique");
+        };
         for definition in installed() {
             let resolved = catalog.resolve(definition.app_id).ok().unwrap();
             assert!(std::ptr::eq(resolved, definition));
@@ -127,6 +130,7 @@ mod tests {
         assert_eq!(mounted("writer"), "so.tilo.word-processor");
         assert_eq!(mounted("chat"), "so.tilo.chat");
         assert_eq!(mounted("so.tilo.notes"), "so.tilo.notes");
+        assert_eq!(mounted("so.tilo.ebook"), "so.tilo.ebook");
         assert!(matches!(
             resolve("writer"),
             Err(LaunchError::UnknownApplication(id)) if id == "writer"

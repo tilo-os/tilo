@@ -23,6 +23,7 @@ tilo-desktop = { path = "../../session/desktop" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 notes = { path = "../../../apps/notes" }
 calculator = { path = "../../../apps/calculator" }
+ebook = { path = "../../../apps/ebook" }
 taffy.workspace = true
 word-processor = { path = "../../../apps/word-processor" }
 chat = { path = "../../../apps/chat", default-features = false }
