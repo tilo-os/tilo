@@ -64,10 +64,11 @@ pub const RECENT_BUFFER_SECTION: &str = "feedback";
 pub const RECENT_BUFFER_KEY: &str = "recent_buffer";
 /// How long a capture waits for end-of-window snapshots.
 const CAPTURE_SNAPSHOT_WAIT: Duration = Duration::from_secs(2);
-/// A keyframe is asked of each recorded app at least this often, and kept
-/// only if the tree changed.
-const KEYFRAME_POLL: Duration = Duration::from_secs(2);
-/// A triggered keyframe waits at least this long after the last one.
+/// An app that does not report semantic changes is asked this often
+/// instead, and its answer kept only if the tree changed.
+const KEYFRAME_FALLBACK_POLL: Duration = Duration::from_secs(2);
+/// A keyframe waits at least this long after the previous one of the same
+/// app, so a burst of changes is one keyframe of where it settled.
 const KEYFRAME_MIN_GAP: Duration = Duration::from_millis(250);
 /// Depth of the subtree a keyframe holds.
 const KEYFRAME_DEPTH: u16 = 16;
@@ -187,10 +188,6 @@ struct Capture {
     finishing: Option<Finishing>,
     /// Latest geometry of each app surface in a held room.
     surfaces: Vec<(String, SurfaceGeometry)>,
-    /// Rooms (and optionally the one app in them) whose semantic tree
-    /// likely changed: a View or overlay moved, an action finished, a frame
-    /// was captured. Their keyframe is asked for sooner.
-    keyframe_triggers: BTreeSet<(String, Option<String>)>,
     /// The scale each measured tab's surface renders at: what a captured
     /// frame's pixels are per logical pixel.
     surface_scales: Vec<(crate::shell::state::TabId, f64)>,
@@ -256,10 +253,20 @@ struct Control {
     keyframes: Option<Keyframes>,
 }
 
-/// Semantic-tree keyframes: asked of each inspectable app in a held room,
-/// kept only when the tree changed, on a bounded cadence.
+/// Semantic-tree keyframes: each inspectable app in a held room is asked for
+/// its tree when it reports that the tree changed (or, for an app that does
+/// not report, on a slow poll), debounced, and the answer is kept only when
+/// it differs from the last one.
 struct Keyframes {
     broker: crate::shell::collab_broker::AppActionBroker,
+    /// The broker's push of semantic-tree changes.
+    changes: std::sync::mpsc::Receiver<crate::shell::collab_broker_capnp::SemanticChange>,
+    /// Latest generation each connection reported.
+    reported: BTreeMap<u64, u64>,
+    /// Generation each connection had when it was last asked.
+    inspected: BTreeMap<u64, u64>,
+    /// Connections asked for a keyframe out of turn (a captured frame).
+    triggered: BTreeSet<u64>,
     pending: Vec<PendingKeyframe>,
     asked: BTreeMap<Route, Instant>,
     last: BTreeMap<Route, ui::inspect::InspectReply>,
@@ -273,6 +280,20 @@ struct PendingKeyframe {
 }
 
 impl Keyframes {
+    fn new(broker: crate::shell::collab_broker::AppActionBroker) -> Self {
+        Self {
+            changes: broker.watch_semantic_changes(),
+            broker,
+            reported: BTreeMap::new(),
+            inspected: BTreeMap::new(),
+            triggered: BTreeSet::new(),
+            pending: Vec::new(),
+            asked: BTreeMap::new(),
+            last: BTreeMap::new(),
+            kept: 0,
+        }
+    }
+
     /// Answers that arrived, kept only where the tree changed.
     fn collect(&mut self, now: Instant) -> Vec<session_trace::InspectKeyframe> {
         let mut answered = Vec::new();
@@ -304,21 +325,28 @@ impl Keyframes {
         keep
     }
 
+    /// Take in every change report since the last frame.
+    fn drain_changes(&mut self) {
+        while let Ok(change) = self.changes.try_recv() {
+            let seen = self.reported.entry(change.peer_id).or_insert(0);
+            *seen = (*seen).max(change.generation);
+        }
+    }
+
     fn forget(&mut self) {
+        self.inspected.clear();
+        self.triggered.clear();
         self.asked.clear();
         self.last.clear();
         self.kept = 0;
     }
 
-    /// Ask each inspectable app in `held` whose keyframe is due: every
-    /// [`KEYFRAME_POLL`], or sooner when a trigger names its room.
-    fn ask(
-        &mut self,
-        held: &[String],
-        triggers: &BTreeSet<(String, Option<String>)>,
-        now: Instant,
-        user: &UserId,
-    ) {
+    /// Ask each inspectable app in `held` whose keyframe is due: its tree
+    /// changed since it was last asked (or it was never asked), or a frame
+    /// of it was captured, or — for an app that reports no changes — the
+    /// fallback poll came round; never sooner than [`KEYFRAME_MIN_GAP`].
+    fn ask(&mut self, held: &[String], now: Instant, user: &UserId) {
+        self.drain_changes();
         let caller = crate::shell::collab_broker_capnp::InspectCaller {
             person: user.clone(),
             audience: ui::a11y::Audience::LocalSession,
@@ -331,17 +359,27 @@ impl Keyframes {
             if self.pending.iter().any(|pending| pending.route == route) {
                 continue;
             }
+            let generation = self
+                .reported
+                .get(&app.peer_id)
+                .copied()
+                .unwrap_or(0)
+                .max(app.semantic_generation);
             let since = self
                 .asked
                 .get(&route)
                 .map_or(Duration::MAX, |asked| now.saturating_duration_since(*asked));
-            let triggered = triggers.iter().any(|(room, app_id)| {
-                *room == app.room && app_id.as_ref().is_none_or(|id| *id == app.app_id)
-            });
-            if since < KEYFRAME_POLL && !(triggered && since >= KEYFRAME_MIN_GAP) {
+            if !keyframe_due(
+                generation,
+                self.inspected.get(&app.peer_id).copied(),
+                since,
+                self.triggered.contains(&app.peer_id),
+            ) {
                 continue;
             }
             self.asked.insert(route.clone(), now);
+            self.inspected.insert(app.peer_id, generation);
+            self.triggered.remove(&app.peer_id);
             match self.broker.inspect(
                 app.peer_id,
                 ui::inspect::InspectQuery::Subtree {
@@ -361,6 +399,17 @@ impl Keyframes {
             }
         }
     }
+}
+
+/// Whether an app's keyframe is due: its reported `generation` moved past
+/// the one it was last `inspected` at (or it was never asked), or a frame
+/// of it was captured (`triggered`), or it reports nothing (generation 0)
+/// and the fallback poll came round — and never within [`KEYFRAME_MIN_GAP`]
+/// of the last ask.
+fn keyframe_due(generation: u64, inspected: Option<u64>, since: Duration, triggered: bool) -> bool {
+    let changed = inspected.is_none_or(|inspected| generation > inspected);
+    let fallback = generation == 0 && since >= KEYFRAME_FALLBACK_POLL;
+    since >= KEYFRAME_MIN_GAP && (changed || triggered || fallback)
 }
 
 /// The session recorder. One per session; shared by the frame loop and the
@@ -416,13 +465,7 @@ impl Recorder {
             capture,
             subscription,
             control: Mutex::new(Control {
-                keyframes: broker.app_action_broker().map(|broker| Keyframes {
-                    broker,
-                    pending: Vec::new(),
-                    asked: BTreeMap::new(),
-                    last: BTreeMap::new(),
-                    kept: 0,
-                }),
+                keyframes: broker.app_action_broker().map(Keyframes::new),
                 ..Control::default()
             }),
             limits,
@@ -458,36 +501,19 @@ impl Recorder {
 
     /// Ask for a keyframe of the app showing `surface_id` now — the capture
     /// path calls this with each captured frame so structure and pixels line
-    /// up. A surface outside every held room is ignored.
+    /// up. It still waits out [`KEYFRAME_MIN_GAP`]; a surface outside every
+    /// held room is not asked.
     pub fn inspect_now(&self, surface_id: u64) {
-        let target = {
-            let tree = self.tree.read();
-            tree.desktop.workspaces.iter().find_map(|workspace| {
-                workspace
-                    .strips
-                    .iter()
-                    .flat_map(|strip| &strip.window_groups)
-                    .flat_map(|group| &group.tabs)
-                    .find_map(|tab| match &tab.tile {
-                        crate::shell::state::TileContent::Foreign {
-                            app_id,
-                            surface_id: id,
-                        } if *id == surface_id => {
-                            Some((workspace.room.to_string(), Some(app_id.clone())))
-                        }
-                        _ => None,
-                    })
-            })
-        };
-        if let Some(target) = target {
-            lock(&self.capture).keyframe_triggers.insert(target);
+        if let Some(keyframes) = lock(&self.control).keyframes.as_mut()
+            && let Some(app) = keyframes.broker.inspectable_app_for_surface(surface_id)
+        {
+            keyframes.triggered.insert(app.peer_id);
         }
     }
 
     /// Collect answered keyframes and ask for the ones that are due.
     fn pump_keyframes(&self, now: Instant, user: &UserId) {
         let held = self.subscription.rooms();
-        let triggers = std::mem::take(&mut lock(&self.capture).keyframe_triggers);
         let mut control = lock(&self.control);
         let Some(keyframes) = control.keyframes.as_mut() else {
             return;
@@ -496,7 +522,7 @@ impl Recorder {
         if held.is_empty() {
             keyframes.forget();
         } else {
-            keyframes.ask(&held, &triggers, now, user);
+            keyframes.ask(&held, now, user);
         }
         drop(control);
         if keep.is_empty() {
@@ -1436,13 +1462,6 @@ fn record_presence(
     if !recorded && !buffered {
         return;
     }
-    let reshaped = matches!(key, PresenceKey::View { .. })
-        || matches!(payload, PresencePayload::Interaction(update) if update.phase.is_terminal());
-    if reshaped {
-        capture
-            .keyframe_triggers
-            .insert((route.cluster_id.clone(), None));
-    }
     let Some(update) = presence_update(user, route, key, payload) else {
         return;
     };
@@ -1457,6 +1476,43 @@ fn record_presence(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyframes_follow_reported_changes_debounced_and_poll_only_silent_apps() {
+        let ms = Duration::from_millis;
+        assert!(
+            keyframe_due(0, None, Duration::MAX, false),
+            "the first keyframe"
+        );
+        assert!(
+            !keyframe_due(3, Some(3), ms(5_000), false),
+            "an unchanged tree is not asked again"
+        );
+        assert!(
+            keyframe_due(4, Some(3), ms(300), false),
+            "a reported change is asked"
+        );
+        assert!(
+            !keyframe_due(4, Some(3), ms(100), false),
+            "a burst waits out the gap"
+        );
+        assert!(
+            keyframe_due(3, Some(3), ms(300), true),
+            "a captured frame asks"
+        );
+        assert!(
+            !keyframe_due(3, Some(3), ms(100), true),
+            "a captured frame still waits"
+        );
+        assert!(
+            !keyframe_due(0, Some(0), ms(1_000), false),
+            "a silent app waits for the poll"
+        );
+        assert!(
+            keyframe_due(0, Some(0), ms(2_000), false),
+            "a silent app is polled"
+        );
+    }
 
     #[test]
     fn the_booted_digest_is_read_from_bootc_status() {
