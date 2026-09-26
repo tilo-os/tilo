@@ -118,6 +118,17 @@ pub struct Context<'a> {
     /// compositor's settings watch picks it up. `None` without a config
     /// directory.
     pub settings: Option<&'a Path>,
+    /// Brightness keys adjust the monitor under the pointer.
+    pub brightness: BrightnessKeys<'a>,
+}
+
+/// What a brightness key acts on.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BrightnessKeys<'a> {
+    /// Every monitor with a brightness control and its cached level.
+    pub displays: &'a [os_actions::MonitorLevel],
+    /// Connector of the monitor under the pointer, when known.
+    pub under_pointer: Option<&'a str>,
 }
 
 /// Step per press, as a fraction of full scale.
@@ -192,8 +203,8 @@ pub fn apply(key: MediaKey, cx: &Context<'_>) -> Option<Response> {
         MediaKey::VolumeDown => step_volume(-VOLUME_STEP, cx.actions, cx.status),
         MediaKey::VolumeMute => toggle_mute(cx.actions, cx.status),
         MediaKey::MicMute => toggle_mic_mute(),
-        MediaKey::BrightnessUp => step_brightness(BRIGHTNESS_STEP, cx.actions),
-        MediaKey::BrightnessDown => step_brightness(-BRIGHTNESS_STEP, cx.actions),
+        MediaKey::BrightnessUp => step_brightness(BRIGHTNESS_STEP, cx.actions, &cx.brightness),
+        MediaKey::BrightnessDown => step_brightness(-BRIGHTNESS_STEP, cx.actions, &cx.brightness),
         MediaKey::PlayPause => transport(Command::PlayPause, cx.transport_osd),
         MediaKey::NextTrack => transport(Command::Next, cx.transport_osd),
         MediaKey::PreviousTrack => transport(Command::Previous, cx.transport_osd),
@@ -264,7 +275,20 @@ fn toggle_mic_mute() -> Option<Osd> {
     Some(Osd::mic_mute(muted))
 }
 
-fn step_brightness(delta: f32, actions: &dyn QsActions) -> Option<Osd> {
+fn step_brightness(delta: f32, actions: &dyn QsActions, keys: &BrightnessKeys<'_>) -> Option<Osd> {
+    let target = keys
+        .under_pointer
+        .and_then(|connector| keys.displays.iter().find(|d| d.connector == connector))
+        .or_else(|| keys.displays.first());
+    if let Some(display) = target {
+        // Cached levels: a DDC/CI read takes tens of milliseconds, and a
+        // held key repeats faster than that.
+        let next = (display.level + delta).clamp(0.0, 1.0);
+        actions
+            .set_display_brightness(&display.connector, next * 100.0)
+            .ok()?;
+        return Some(Osd::brightness(next));
+    }
     // No poller: reading sysfs is a file read, not a subprocess, so
     // asking every time is cheap. A machine with nothing to read — an
     // external monitor, a desktop, a VM — says so instead of ignoring
@@ -404,6 +428,7 @@ mod tests {
                 transport_osd: &transport_osd,
                 airplane_mode,
                 settings,
+                brightness: BrightnessKeys::default(),
             },
         )
     }
@@ -480,6 +505,12 @@ mod tests {
     impl QsActions for Recorder {
         fn set_brightness(&self, pct: f32) -> Result<(), String> {
             self.calls.borrow_mut().push(format!("brightness={pct:.1}"));
+            Ok(())
+        }
+        fn set_display_brightness(&self, connector: &str, pct: f32) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("brightness:{connector}={pct:.1}"));
             Ok(())
         }
         fn set_volume(&self, pct: f32) -> Result<(), String> {
@@ -618,6 +649,48 @@ mod tests {
         assert!(
             rec.calls.borrow().is_empty(),
             "nothing is written to a backlight that is not there"
+        );
+    }
+
+    #[test]
+    fn brightness_keys_adjust_the_monitor_under_the_pointer() {
+        let displays = [
+            os_actions::MonitorLevel {
+                connector: "eDP-1".into(),
+                level: 0.5,
+            },
+            os_actions::MonitorLevel {
+                connector: "DP-2".into(),
+                level: 0.3,
+            },
+        ];
+        let rec = Recorder::default();
+        let (transport_osd, _mailbox) = crate::session_runtime::mailbox(std::sync::Arc::new(|| {}));
+        let press = |key, under_pointer| {
+            apply(
+                key,
+                &Context {
+                    actions: &rec,
+                    status: None,
+                    transport_osd: &transport_osd,
+                    airplane_mode: false,
+                    settings: None,
+                    brightness: BrightnessKeys {
+                        displays: &displays,
+                        under_pointer,
+                    },
+                },
+            )
+        };
+        let Some(Response::Osd(osd)) = press(MediaKey::BrightnessUp, Some("DP-2")) else {
+            panic!("an OSD for the adjusted monitor");
+        };
+        assert_eq!(osd.caption(), "Brightness 40%");
+        // A pointer over a monitor without a control adjusts the first.
+        press(MediaKey::BrightnessDown, Some("HDMI-A-1"));
+        assert_eq!(
+            *rec.calls.borrow(),
+            ["brightness:DP-2=40.0", "brightness:eDP-1=40.0"]
         );
     }
 

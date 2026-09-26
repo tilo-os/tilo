@@ -339,6 +339,28 @@ fn read_outputs() -> Vec<DisplayOutput> {
     out
 }
 
+/// External monitors among `outputs` whose brightness the system can set,
+/// keyed by output key, with their current level.
+fn read_output_brightness(outputs: &[DisplayOutput]) -> BTreeMap<String, f32> {
+    output_brightness_from(outputs, &os_actions::BrightnessService::global().levels())
+}
+
+fn output_brightness_from(
+    outputs: &[DisplayOutput],
+    levels: &[os_actions::MonitorLevel],
+) -> BTreeMap<String, f32> {
+    outputs
+        .iter()
+        .filter(|output| output.connected && !output.builtin)
+        .filter_map(|output| {
+            levels
+                .iter()
+                .find(|level| level.connector == output.connector_label)
+                .map(|level| (output.connector.clone(), level.level))
+        })
+        .collect()
+}
+
 /// Display pane widget.
 pub struct DisplayPane {
     dispatcher: Arc<dyn Dispatcher + Send + Sync>,
@@ -349,6 +371,10 @@ pub struct DisplayPane {
     last_brightness: f32,
     last_prefs: DisplayPrefs,
     output_config: DisplayConfig,
+    /// External monitors whose brightness is set over DDC/CI, by output key,
+    /// with their last known level. The built-in panel's backlight is the
+    /// Brightness card's slider.
+    output_brightness: BTreeMap<String, f32>,
     pending_candidate: Option<DisplayConfig>,
     last_seen_transaction: Option<(u64, DisplayTransactionState)>,
     last_snapshot_check: Instant,
@@ -406,8 +432,10 @@ impl DisplayPane {
             .ok();
         let outputs = read_outputs();
         let output_config = DisplayConfig::load_for(&Self::display_set_of(&outputs));
+        let output_brightness = read_output_brightness(&outputs);
         Self {
             dispatcher,
+            output_brightness,
             outputs,
             ambient_sensor_available: false,
             initial_brightness: initial,
@@ -477,6 +505,7 @@ impl DisplayPane {
             last_brightness: initial_brightness,
             last_prefs: DisplayPrefs::default(),
             output_config: DisplayConfig::default(),
+            output_brightness: BTreeMap::new(),
             pending_candidate: None,
             last_seen_transaction: None,
             last_snapshot_check: Instant::now(),
@@ -501,6 +530,13 @@ impl DisplayPane {
     #[must_use]
     pub fn with_outputs(mut self, outputs: Vec<DisplayOutput>) -> Self {
         self.outputs = outputs;
+        self
+    }
+
+    /// Pin which monitors have a brightness control (tests / `--shots`).
+    #[must_use]
+    pub fn with_monitor_brightness(mut self, levels: &[os_actions::MonitorLevel]) -> Self {
+        self.output_brightness = output_brightness_from(&self.outputs, levels);
         self
     }
 
@@ -538,6 +574,7 @@ impl DisplayPane {
         let root = automerge::ROOT;
         self.prepare_running_operation(local, &root, &operation);
         self.sync_brightness(local, &root);
+        self.sync_output_brightness(local, &root);
         self.sync_comfort_prefs(local, &root, true);
         let connected: Vec<_> = self
             .outputs
@@ -617,6 +654,9 @@ impl DisplayPane {
             }
             Op::SetEnabled { connector, enabled } => {
                 let _ = state.put(root, output_key(connector, "enabled"), *enabled);
+            }
+            Op::SetOutputBrightness { connector, value } => {
+                let _ = state.put(root, output_key(connector, "brightness"), *value);
             }
             Op::SetPrimary { connector, primary } => {
                 let _ = state.put(root, output_key(connector, "primary"), *primary);
@@ -959,7 +999,24 @@ impl DisplayPane {
                 x: index as i32 * 1920,
                 ..Default::default()
             });
-        let mut output_rows = Self::build_output_primary_rows(output, connected, &config);
+        let mut output_rows = Vec::new();
+        if self.output_brightness.contains_key(&output.connector) {
+            output_rows.push(setting_row(
+                "Brightness",
+                Box::new(
+                    Slider::new(
+                        &format!("settings.display.{}.brightness", output.connector),
+                        &output_key(&output.connector, "brightness"),
+                    )
+                    .with_id(&output_key(&output.connector, "brightness"))
+                    .on_action(
+                        crate::actions::display_output_brightness_binding(output.connector.clone())
+                            .expect("monitor brightness is part of the resource contract"),
+                    ),
+                ),
+            ));
+        }
+        output_rows.extend(Self::build_output_primary_rows(output, connected, &config));
         output_rows.extend(Self::build_output_mode_and_rotation_rows(output, &config));
         output_rows.extend(Self::build_output_capability_rows(output, &config));
         card(&output.label, rows(output_rows))
@@ -1396,6 +1453,13 @@ impl DisplayPane {
                 });
             let _ = state.put(root, output_key(&output.connector, "enabled"), cfg.enabled);
             let _ = state.put(root, output_key(&output.connector, "primary"), cfg.primary);
+            if let Some(level) = self.output_brightness.get(&output.connector) {
+                let _ = state.put(
+                    root,
+                    output_key(&output.connector, "brightness"),
+                    f64::from(*level),
+                );
+            }
             let _ = state.put(
                 root,
                 output_key(&output.connector, "scale"),
@@ -1470,6 +1534,7 @@ impl Widget for DisplayPane {
         let has_pending_operation = !self.require_operation_token || running_operation.is_some();
         if has_pending_operation {
             self.sync_brightness(&mut state, &root);
+            self.sync_output_brightness(&mut state, &root);
         }
         self.sync_comfort_prefs(&mut state, &root, has_pending_operation);
 
@@ -1654,6 +1719,14 @@ impl DisplayPane {
             self.needs_seed = true;
             self.composed = None;
         }
+        // Monitor probing finishes in the background; a monitor that turns
+        // out to speak DDC/CI gains its slider once the probe lands.
+        let controllable = read_output_brightness(&self.outputs);
+        if controllable.keys().ne(self.output_brightness.keys()) {
+            self.output_brightness = controllable;
+            self.needs_seed = true;
+            self.composed = None;
+        }
     }
 
     /// First-sync seed: writes the initial brightness/comfort preferences
@@ -1795,6 +1868,66 @@ impl DisplayPane {
                             warn!(target: "tilo::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// Each external monitor's slider → its brightness over DDC/CI. The
+    /// write is queued, not awaited: a monitor needs tens of milliseconds
+    /// per command and the slider must keep up with the pointer.
+    fn sync_output_brightness(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let changed: Vec<(String, f32)> = self
+            .output_brightness
+            .iter()
+            .filter_map(|(connector, last)| {
+                let Ok(Some((Value::Scalar(value), _))) =
+                    state.get(root, output_key(connector, "brightness"))
+                else {
+                    return None;
+                };
+                let automerge::ScalarValue::F64(level) = value.as_ref() else {
+                    return None;
+                };
+                let level = (*level as f32).clamp(0.0, 1.0);
+                ((level - last).abs() > 0.001).then(|| (connector.clone(), level))
+            })
+            .collect();
+        for (connector, level) in changed {
+            let Some(label) = self
+                .outputs
+                .iter()
+                .find(|output| output.connector == connector)
+                .map(|output| output.connector_label.clone())
+            else {
+                continue;
+            };
+            match self
+                .dispatcher
+                .set_display_brightness(&label, level * 100.0)
+            {
+                Ok(()) => {
+                    self.output_brightness.insert(connector, level);
+                    self.finish_display_operation(Ok(format!(
+                        "Brightness set to {}%.",
+                        (level * 100.0).round()
+                    )));
+                }
+                Err(error) => {
+                    let previous = self
+                        .output_brightness
+                        .get(&connector)
+                        .copied()
+                        .unwrap_or_default();
+                    let _ = state.put(
+                        root,
+                        output_key(&connector, "brightness"),
+                        f64::from(previous),
+                    );
+                    self.finish_display_operation(Err(format!(
+                        "Brightness could not be changed: {error}"
+                    )));
+                    warn!(target: "tilo::settings", op = "set_display_brightness", %error, "display pane dispatch failed");
                 }
             }
         }
@@ -2655,6 +2788,41 @@ mod tests {
             color_profile_labels: BTreeMap::new(),
             monitor: None,
         }
+    }
+
+    #[test]
+    fn an_external_monitor_card_sets_that_monitors_brightness() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let level = |connector: &str, level: f32| os_actions::MonitorLevel {
+            connector: connector.into(),
+            level,
+        };
+        let mut pane = DisplayPane::with_dispatcher(
+            Arc::clone(&rec) as Arc<dyn Dispatcher + Send + Sync>,
+            0.5,
+        )
+        .with_outputs(vec![
+            display_with_modes("eDP-1", "Built-in display", true, Vec::new()),
+            display_with_modes("DP-2", "Dell U2720Q · DP-2", false, Vec::new()),
+            display_with_modes("DP-3", "LG 27GL850 · DP-3", false, Vec::new()),
+        ])
+        .with_monitor_brightness(&[level("eDP-1", 0.5), level("DP-2", 0.3)]);
+        assert_eq!(
+            pane.output_brightness.keys().collect::<Vec<_>>(),
+            ["DP-2"],
+            "the panel keeps the Brightness card; a monitor without DDC/CI gets no slider"
+        );
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, output_key("DP-2", "brightness"), 0.8);
+        pane.sync(&mut doc, &root);
+        assert!(
+            rec.calls()
+                .contains(&"set_display_brightness(DP-2, 80.00)".to_string()),
+            "{:?}",
+            rec.calls()
+        );
     }
 
     #[test]
