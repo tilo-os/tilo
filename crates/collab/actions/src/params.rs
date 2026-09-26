@@ -736,13 +736,7 @@ pub(crate) fn validate_schema(
         return Err("has a schema that is not an object".into());
     };
     if let Some(alternatives) = schema.get("oneOf").and_then(serde_json::Value::as_array) {
-        let matches = alternatives
-            .iter()
-            .filter(|alternative| validate_schema(value, alternative).is_ok())
-            .count();
-        if matches != 1 {
-            return Err("must match exactly one `oneOf` alternative".into());
-        }
+        validate_one_of(value, alternatives)?;
     }
     validate_schema_type(value, schema)?;
     validate_schema_equality(value, schema)?;
@@ -750,6 +744,107 @@ pub(crate) fn validate_schema(
     validate_schema_string(value, schema)?;
     validate_schema_array(value, schema)?;
     validate_schema_object(value, schema)
+}
+
+/// Exactly one alternative must accept `value`. When none does, the refusal
+/// says why in terms of the alternative the value evidently meant — the one
+/// whose required keys and constants it has (`{"SpliceText": {..}}` meant
+/// the `SpliceText` alternative) — or else names the alternatives, so a
+/// caller can correct the call rather than guess.
+fn validate_one_of(
+    value: &serde_json::Value,
+    alternatives: &[serde_json::Value],
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    let mut matched = 0_usize;
+    for alternative in alternatives {
+        match validate_schema(value, alternative) {
+            Ok(()) => matched = matched.saturating_add(1),
+            Err(reason) => failures.push((alternative, reason)),
+        }
+    }
+    match matched {
+        1 => return Ok(()),
+        0 => {}
+        _ => return Err("matches more than one `oneOf` alternative".into()),
+    }
+    let meant: Vec<_> = failures
+        .iter()
+        .filter(|(alternative, _)| selects(value, alternative))
+        .collect();
+    if let [(alternative, reason)] = meant.as_slice() {
+        return Err(match alternative_name(alternative) {
+            Some(name) => format!("as `{name}`: {reason}"),
+            None => reason.clone(),
+        });
+    }
+    let names: Option<Vec<String>> = alternatives.iter().map(alternative_name).collect();
+    Err(match names {
+        Some(names) if !names.is_empty() => format!("must be one of: {}", names.join(", ")),
+        _ => "must match exactly one `oneOf` alternative".into(),
+    })
+}
+
+/// Whether `value` carries what tells `alternative` apart: the values of its
+/// constant properties (a tag), or else all of its required keys.
+fn selects(value: &serde_json::Value, alternative: &serde_json::Value) -> bool {
+    let Some(schema) = alternative.as_object() else {
+        return false;
+    };
+    if let Some(expected) = schema.get("const") {
+        return value == expected;
+    }
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let tags: Vec<(&String, &serde_json::Value)> = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, property)| Some((key, property.get("const")?)))
+        .collect();
+    if !tags.is_empty() {
+        return tags
+            .iter()
+            .all(|(key, expected)| object.get(key.as_str()) == Some(*expected));
+    }
+    let required = schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    !required.is_empty()
+        && required
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .all(|key| object.contains_key(key))
+}
+
+/// What an alternative is called: its title, its constant, the constant of
+/// its first required property, or its one required key.
+fn alternative_name(alternative: &serde_json::Value) -> Option<String> {
+    let schema = alternative.as_object()?;
+    if let Some(title) = schema.get("title").and_then(serde_json::Value::as_str) {
+        return Some(title.to_owned());
+    }
+    if let Some(constant) = schema.get("const") {
+        return Some(
+            constant
+                .as_str()
+                .map_or_else(|| constant.to_string(), str::to_owned),
+        );
+    }
+    let required = schema.get("required")?.as_array()?;
+    let first = required.first()?.as_str()?;
+    if let Some(constant) = schema
+        .get("properties")
+        .and_then(|properties| properties.get(first))
+        .and_then(|property| property.get("const"))
+        .and_then(serde_json::Value::as_str)
+    {
+        return Some(constant.to_owned());
+    }
+    (required.len() == 1).then(|| first.to_owned())
 }
 
 fn validate_schema_type(

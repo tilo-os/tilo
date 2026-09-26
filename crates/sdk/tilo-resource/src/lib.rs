@@ -57,7 +57,9 @@
 //!   operation with typed parameters, applied deterministically (ids and time
 //!   come from [`ActionCx`]) and replayed byte-identically on every replica;
 //! * **exposure** — the same declarations are what the palette, agents and
-//!   scripts list and invoke ([`publish`]), with permissions per action;
+//!   scripts list and invoke ([`publish`]), with permissions per action, and
+//!   the generic [`APPLY`] operation publishes a JSON Schema of the action
+//!   vocabulary ([`Resource::action_schema`], [`JsonSchema`]);
 //! * **history** — every action is a change attributed to its author with its
 //!   label and time ([`history`]); any version can be read back
 //!   ([`history::read_at`]) and restored, field by field and item by item,
@@ -111,6 +113,7 @@ pub mod order;
 pub mod reader;
 pub mod replica;
 pub mod resource;
+pub mod schema;
 pub mod shape;
 
 pub use action::{
@@ -128,8 +131,9 @@ pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, SearchEntry, build_action, encode,
     origin_now_ms, publish,
 };
+pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
-pub use tilo_resource_macros::{Model, resource};
+pub use tilo_resource_macros::{JsonSchema, Model, resource};
 
 /// Items the generated code refers to. Not part of the public API.
 #[doc(hidden)]
