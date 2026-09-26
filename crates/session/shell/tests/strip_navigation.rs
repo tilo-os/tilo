@@ -1118,3 +1118,47 @@ fn ctrl_alt_t_opens_a_terminal() {
     );
     assert_eq!(terminals(&h), 1, "one press opens one terminal");
 }
+
+/// Super+Alt+= and Super+Alt+- zoom the magnifier one step, Super+Alt+8
+/// turns it off and back on at the zoom it had, and each change shows the
+/// zoom and is saved where the frame and Settings read it.
+#[test]
+fn magnifier_shortcuts_step_the_zoom_show_it_and_save_it() {
+    use settings_store::magnifier::{self, MagnifierState};
+    use shell::shell::osd::OsdKind;
+
+    let config = tempfile::tempdir().expect("temporary config directory");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", config.path());
+    let mut h = Harness::new();
+    let super_alt = ModifiersState::SUPER | ModifiersState::ALT;
+    let shown = |h: &Harness| h.chrome.borrow().osd.map(|osd| osd.kind);
+    let saved = || {
+        let path = settings_store::settings_path().expect("settings path");
+        MagnifierState::from_section(&settings_store::load_section_at(&path, magnifier::SECTION))
+            .zoom
+    };
+
+    h.key(Key::Character("=".into()), super_alt);
+    assert_eq!(shown(&h), Some(OsdKind::Magnifier { zoom: 2 }));
+    h.key(Key::Character("=".into()), super_alt);
+    assert_eq!(shown(&h), Some(OsdKind::Magnifier { zoom: 3 }));
+    assert_eq!(saved(), 3);
+    assert!(
+        h.host.take_magnifier_changed(),
+        "the frame is told to re-read the magnifier now"
+    );
+
+    h.key(Key::Character("-".into()), super_alt);
+    assert_eq!(shown(&h), Some(OsdKind::Magnifier { zoom: 2 }));
+
+    h.key(Key::Character("8".into()), super_alt);
+    assert_eq!(shown(&h), Some(OsdKind::Magnifier { zoom: 1 }));
+    assert_eq!(saved(), 1);
+    h.key(Key::Character("8".into()), super_alt);
+    assert_eq!(
+        shown(&h),
+        Some(OsdKind::Magnifier { zoom: 2 }),
+        "the toggle comes back at the zoom it left"
+    );
+}

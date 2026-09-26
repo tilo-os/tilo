@@ -941,6 +941,7 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "a11y.cursor_size"
         | "a11y.color_filter"
         | "a11y.magnifier"
+        | "a11y.magnifier_view"
         | "a11y.switch_keys"
         | "a11y.bounce_delay"
         | "a11y.switch_scan"
@@ -3925,15 +3926,19 @@ fn accessibility_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         ),
         (
             "magnifier",
-            "Set magnifier lens",
+            "Set magnifier zoom",
             panes::accessibility::MAGNIFIER_KEY,
-            "Off, 2×, 3×",
-            &["Off", "2×", "3×"][..],
-            match d.accessibility.magnifier_zoom {
-                2 => "2×",
-                3 => "3×",
-                _ => "Off",
-            },
+            "Off, 2×, 3×, 4×, 5×, 6×",
+            &settings_store::magnifier::ZOOM_LABELS[..],
+            settings_store::magnifier::zoom_label(d.accessibility.magnifier_zoom),
+        ),
+        (
+            "magnifier-view",
+            "Set magnifier view",
+            panes::accessibility::MAGNIFIER_VIEW_KEY,
+            "Lens, Full screen",
+            &["Lens", "Full screen"][..],
+            d.accessibility.magnifier_view.label(),
         ),
         (
             "bounce-delay",

@@ -8432,6 +8432,7 @@ pub fn run() {
                 native_accessibility.update_if_active(|| {
                     frame_builder.build_a11y_tree_update(test_control_ctx.focus, 1.0)
                 });
+                frame_builder.note_keyboard_focus(test_control_ctx.focus);
             }
             let layout_took = t_layout_start.elapsed();
             metrics.mark_layout(layout_took);
@@ -9198,7 +9199,8 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::NoBacklight
         | crate::shell::osd::OsdKind::Touchpad { .. }
         | crate::shell::osd::OsdKind::PointerHeld { .. }
-        | crate::shell::osd::OsdKind::MouseKeys { .. } => {}
+        | crate::shell::osd::OsdKind::MouseKeys { .. }
+        | crate::shell::osd::OsdKind::Magnifier { .. } => {}
     }
 }
 

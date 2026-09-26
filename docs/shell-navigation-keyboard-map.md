@@ -44,6 +44,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Notifications | Super+A | Quick Settings → Notifications |
 | Power menu | Ctrl+Alt+Delete | Quick Settings power button |
 | Magnifier on/off | Super+Alt+8 | Settings → Accessibility |
+| Magnifier zoom in / out | Super+Alt+= / Super+Alt+- | Settings → Accessibility |
 
 Shift+Print and Alt+Print skip the chooser: the capture is saved to
 `Pictures/Screenshots`, copied to the clipboard and announced by the same
@@ -80,8 +81,14 @@ adjacent-window chord, so notifications take Super+A (the Windows Action
 Center key). Super+F makes a Wayland client full screen through
 `xdg_toplevel`; a Tilo app, which has no protocol fullscreen, maximizes its
 window group instead. Super+1 … 9, Super+E, Ctrl+Alt+T, Super+V, Super+A,
-Super+F, Super+Alt+8 and Ctrl+Alt+Delete are defaults, rebindable in
-Settings → Keyboard shortcuts.
+Super+F, Super+Alt+8, Super+Alt+=, Super+Alt+- and Ctrl+Alt+Delete are
+defaults, rebindable in Settings → Keyboard shortcuts.
+
+The magnifier zooms from 2× to 6×; zooming out of 2× turns it off, and
+Super+Alt+8 turns it back on at the zoom it had. Each change shows the zoom
+on screen. It follows the pointer, or the keyboard focus when that moved
+last, so tabbing through a form keeps the focused control in view. Settings
+→ Accessibility chooses between a lens and full-screen magnification.
 
 Application Ctrl shortcuts stay application-owned; shell-level window actions
 use Super so a browser, terminal or editor does not lose familiar bindings.

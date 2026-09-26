@@ -72,6 +72,7 @@ pub mod identity_provisioning;
 pub mod input_policy;
 pub mod launch_gate;
 pub mod launcher;
+pub mod magnifier;
 pub mod media_keys;
 pub mod mpris;
 pub mod nearby_transfer;

@@ -599,6 +599,19 @@ impl AppearancePrefs {
     }
 }
 
+/// Overwrite `known`'s fields in the `section` object, keeping any other key
+/// in it. A non-object section is replaced by an empty one first.
+fn merge_fields(section: &mut serde_json::Value, known: &serde_json::Value) {
+    if !section.is_object() {
+        *section = serde_json::json!({});
+    }
+    if let (Some(target), Some(fields)) = (section.as_object_mut(), known.as_object()) {
+        for (key, value) in fields {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+}
+
 /// Map a theme preset name to its [`ui::Theme`] constructor, defaulting to the
 /// dark theme for an unrecognised name so a stray value never leaves the UI
 /// unthemed.
@@ -724,9 +737,12 @@ pub struct AccessibilityPrefs {
     /// Whole-desktop colour transform owned by the compositor.
     #[serde(default)]
     pub color_filter: ColorFilter,
-    /// Pointer-following lens magnification. `1` means disabled.
+    /// Desktop magnification factor. `1` means disabled.
     #[serde(default = "default_magnifier_zoom")]
     pub magnifier_zoom: u8,
+    /// A lens around the point of interest, or the whole screen magnified.
+    #[serde(default)]
+    pub magnifier_view: settings_store::magnifier::MagnifierView,
     /// Paint full-screen guide lines through the hardware pointer.
     #[serde(default)]
     pub cursor_crosshair: bool,
@@ -904,6 +920,7 @@ impl Default for AccessibilityPrefs {
             visual_alerts: false,
             color_filter: ColorFilter::None,
             magnifier_zoom: default_magnifier_zoom(),
+            magnifier_view: settings_store::magnifier::MagnifierView::Lens,
             cursor_crosshair: false,
             thick_text_caret: false,
             switch_control: false,
@@ -1032,9 +1049,11 @@ impl SystemPrefs {
     }
 
     /// Serialize to pretty JSON, **merging** into `existing` so foreign
-    /// keys (notably `locale`) survive. The known `appearance` fields are
-    /// merged one level deeper so Theme Studio's nested editable artifact is
-    /// not destroyed when Settings changes text scale or the active preset.
+    /// keys (notably `locale`) survive. The known `appearance` and
+    /// `accessibility` fields are merged one level deeper: Theme Studio keeps
+    /// its nested editable artifact in `appearance`, and the compositor keeps
+    /// the magnifier toggle's remembered zoom in `accessibility`, and neither
+    /// may be destroyed when Settings writes its own fields.
     pub fn to_json_merged(&self, existing: &str) -> String {
         let mut obj = serde_json::from_str::<serde_json::Value>(existing)
             .ok()
@@ -1064,22 +1083,18 @@ impl SystemPrefs {
         let appearance = obj
             .entry("appearance")
             .or_insert_with(|| serde_json::json!({}));
-        if !appearance.is_object() {
-            *appearance = serde_json::json!({});
-        }
         let known = serde_json::to_value(&self.appearance).unwrap_or_default();
-        if let (Some(target), Some(fields)) = (appearance.as_object_mut(), known.as_object()) {
-            for (key, value) in fields {
-                target.insert(key.clone(), value.clone());
-            }
-        }
+        merge_fields(appearance, &known);
         obj.insert(
             "notifications".into(),
             serde_json::to_value(&self.notifications).unwrap_or_default(),
         );
-        obj.insert(
-            "accessibility".into(),
-            serde_json::to_value(self.accessibility).unwrap_or_default(),
+        let accessibility = obj
+            .entry("accessibility")
+            .or_insert_with(|| serde_json::json!({}));
+        merge_fields(
+            accessibility,
+            &serde_json::to_value(self.accessibility).unwrap_or_default(),
         );
         serde_json::to_string_pretty(&serde_json::Value::Object(obj))
             .unwrap_or_else(|_| "{}".into())
@@ -1481,6 +1496,17 @@ mod tests {
             out.contains("\"currency\": \"EUR\""),
             "locale survived: {out}"
         );
+    }
+
+    #[test]
+    fn merge_preserves_the_compositors_accessibility_keys() {
+        let existing = r#"{"accessibility":{"magnifier_zoom":1,"magnifier_last_zoom":4}}"#;
+        let mut p = SystemPrefs::from_json(existing);
+        p.accessibility.sticky_keys = true;
+        let out = p.to_json_merged(existing);
+        let root: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(root["accessibility"]["magnifier_last_zoom"], 4);
+        assert_eq!(root["accessibility"]["sticky_keys"], true);
     }
 
     #[test]
