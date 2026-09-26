@@ -571,6 +571,9 @@ ARG TILO_REQUIRE_COMPILER_CACHE=0
 # for publications: a shared compiler cache is writable by every CI job, so a
 # signed image must be compiled without one. It runs no wrapper, and refuses
 # compiler-cache credentials or settings so none can reach the compile.
+# `publication` is a publication's own cache: short-lived role credentials
+# (a session token is required, so the shared static key cannot stand in)
+# for a bucket only publication runs can write, under tilo/publication/.
 ARG TILO_COMPILER_CACHE=shared
 ENV CARGO_BUILD_JOBS=${TILO_CARGO_BUILD_JOBS}
 ARG TILO_APP_COLLECTION_PUBLISHER=""
@@ -579,8 +582,11 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/.sccache \
     --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
+    --mount=type=secret,id=aws_session_token \
     export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
     && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)" \
+    && AWS_SESSION_TOKEN="$(cat /run/secrets/aws_session_token 2>/dev/null || true)" \
+    && { [ -z "$AWS_SESSION_TOKEN" ] || export AWS_SESSION_TOKEN; } \
     && phase=rust-setup && started=$(date +%s) \
     && build_phase() { \
          now=$(date +%s); \
@@ -589,10 +595,16 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        } \
     && trap 'status=$?; printf "TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=%s\n" "$phase" "$(( $(date +%s) - started ))" "$status"; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
     && case "$TILO_COMPILER_CACHE:$TILO_REQUIRE_COMPILER_CACHE" in \
-         shared:0|off:0) ;; \
-         shared:1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
-         *) printf '%s\n' 'TILO_COMPILER_CACHE must be shared or off, TILO_REQUIRE_COMPILER_CACHE 0 or 1 (0 when off)' >&2; exit 1 ;; \
+         shared:0|off:0|publication:0) ;; \
+         shared:1|publication:1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
+         *) printf '%s\n' 'TILO_COMPILER_CACHE must be shared, publication or off, TILO_REQUIRE_COMPILER_CACHE 0 or 1 (0 when off)' >&2; exit 1 ;; \
        esac \
+    && if [ "$TILO_COMPILER_CACHE" = publication ]; then \
+         case "${AWS_SESSION_TOKEN:-}:$SCCACHE_S3_KEY_PREFIX" in \
+           ?*:tilo/publication/*) ;; \
+           *) printf '%s\n' 'The publication cache needs role session credentials and a tilo/publication/ prefix' >&2; exit 1 ;; \
+         esac; \
+       fi \
     && if [ "$TILO_COMPILER_CACHE" = off ]; then \
          if [ -n "${AWS_ACCESS_KEY_ID}${AWS_SECRET_ACCESS_KEY}${SCCACHE_BUCKET}${SCCACHE_ENDPOINT}" ]; then \
            printf '%s\n' 'A build without the compiler cache received compiler-cache settings' >&2; exit 1; \
@@ -1247,8 +1259,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our
 # Tilo backend (Sandbox Phase 4.3).
+#
+# `dconf` and `gsettings-desktop-schemas` let unsandboxed GTK/GNOME host apps
+# read the OS appearance the compositor mirrors into
+# org.gnome.desktop.interface; without the dconf backend GSettings falls back
+# to an in-memory store and every host app keeps its own defaults.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     xdg-desktop-portal \
+    dconf \
+    gsettings-desktop-schemas \
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # ---------------------------------------------------------------------------
@@ -1382,6 +1401,276 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # ---------------------------------------------------------------------------
+# Packages that no Tilo build output shapes
+# ---------------------------------------------------------------------------
+# Every transaction below, and the SELinux policy load that follows them, reads
+# only the frozen snapshot, the WPE engine and a few configuration files. They
+# come before the first Tilo binary is copied in, so a Rust or /etc change
+# rebuilds none of them; they used to follow it, and every such change reran
+# the Windows packages, the bootloader swap and the policy load. Their order
+# among themselves is unchanged: the ukify transaction removes packages (openssl,
+# ...) that a later one could otherwise require.
+
+# ---- WPE WebKit runtime (browser engine) ------------------------------------
+# Engine libraries + the WebKit helper processes (WPEWebProcess,
+# WPENetworkProcess) from the wpe-builder stage, plus the runtime libraries
+# the engine links that aren't already in this image. GStreamer base/good are
+# installed above.
+#
+# This list has to cover every DT_NEEDED entry of libWPEWebKit-2.0.so or the
+# browser dies at exec with a loader error. atk/at-spi2-atk/libmanette/libxslt
+# are there because the engine is built with accessibility, gamepad and XSLT
+# support, libjxl and flite because it decodes JPEG XL and synthesises speech;
+# they arrive via no other package in this image.
+#
+# Copies nothing under TILO_WITH_BROWSER=0 (the stage is an empty /wpe then). The
+# dnf list below still runs: those are ordinary frozen-repo packages that cost
+# seconds, and installing them either way keeps the two images' package sets —
+# and this layer's cache entry — identical.
+COPY --from=wpe-builder /wpe/ /
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,source=os/scripts/check-wpe-runtime.sh,target=/run/tilo-check-wpe-runtime.sh,ro \
+    dnf install -y --setopt=reposdir=/repo \
+    libepoxy \
+    libsoup3 \
+    enchant2 \
+    hyphen \
+    woff2 \
+    lcms2 \
+    libjxl \
+    flite \
+    openjpeg2 \
+    libavif \
+    libwebp \
+    libgcrypt \
+    libtasn1 \
+    libsecret \
+    atk \
+    at-spi2-atk \
+    libmanette \
+    libxslt \
+    && dnf clean all && ${FINALIZE_RPMDB} \
+    && ldconfig \
+    && gst-inspect-1.0 h264parse >/dev/null \
+    && gst-inspect-1.0 hlssink2 >/dev/null \
+    && gst-inspect-1.0 pulsesrc >/dev/null \
+    && gst-inspect-1.0 avenc_aac >/dev/null \
+    && gst-inspect-1.0 aacparse >/dev/null \
+    && bash /run/tilo-check-wpe-runtime.sh "the rootfs WPE WebKit runtime dnf list above"
+
+# ---------------------------------------------------------------------------
+# Bootloader — swap GRUB for systemd-boot
+# ---------------------------------------------------------------------------
+# systemd-boot is smaller + simpler than GRUB (no menu render step, no module
+# load path, BLS entries loaded straight off the ESP), so cold boot to the
+# kernel handoff is measurably shorter. bootc chooses which bootloader to
+# plant on the ESP at install time based on the `bootloader` key in the
+# /usr/lib/bootc/install/*.toml drop-ins baked into this image (see the
+# 40-tilo.toml file below). The `systemd-boot-unsigned` package supplies the
+# EFI binaries + BLS layout that bootc/bootupd copy across.
+#
+# The GRUB stack (grub2 + shim + bootupd's grub2 side) is pulled in by the
+# fedora-bootc base and would otherwise still ship on the rootfs, wasting
+# ~30 MB and leaving dead code paths in bootupd. Drop it after installing
+# systemd-boot so nothing during install can pick GRUB by accident.
+#
+# dnf5 refuses to remove grub2-efi-x64 / grub2-pc / grub2-tools-minimal /
+# shim-x64 (each ships an `/etc/dnf/protected.d/*.conf` marking itself
+# protected against removal) and won't accept `--allowerasing` on `remove`.
+# The systemd-boot install already satisfies the "some bootloader must
+# exist" invariant, so shell out to `rpm -e --nodeps` for the protected
+# ones — dnf handles the unprotected ones on the same pass.
+#
+# Tilo's narrow Rust crypto tool replaces the trust that removal takes away.
+# Deleting shim and GRUB, and building a custom kernel, leaves nothing on the boot
+# path that a distribution key covers — so the machine has to be able to sign its
+# own artefacts and enrol its own Platform Key. tilo-crypto does the signing,
+# verification, and bounded efivarfs enrollment. See docs/security/boot-chain.md.
+# bootupd goes with them, and that is a requirement of the sealed layout rather
+# than tidiness: bootc refuses to seal an image that still offers a bootupd
+# install path, because bootupd only ever plants GRUB. Its payload directory and
+# the legacy ostree boot dir have to go too — bootc finds the path through either.
+# Nothing on this image needs it: with a UKI there is exactly one PE binary on the
+# boot path, /usr/libexec/tilo-secureboot signs it with tilo-crypto, and
+# tilo-secureboot-sign.path already watches /boot/EFI/Linux for a newly staged one.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+        systemd-boot-unsigned \
+    && rpm -qa | grep -E '^(shim-(x64|aa64)|grub2-)' | xargs -r rpm -e --nodeps \
+    && rpm -e --nodeps bootupd \
+    && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
+    && dnf clean all && ${FINALIZE_RPMDB}
+
+# Keep encrypted-root unlock in the same visual path as the UKI splash.
+# Assets are generated at build time so the source remains reviewable and the
+# initramfs does not depend on a desktop image stack. Copied here, beside their
+# one use, rather than among the package transactions above, whose layers a
+# theme edit would otherwise have invalidated.
+COPY os/usr/share/plymouth/themes/tilo/ /usr/share/plymouth/themes/tilo/
+COPY \
+    os/dev/make-plymouth-assets.py \
+    os/scripts/verify-runtime-crypto-packages.sh \
+    /usr/local/bin/
+
+# Splash rendering needs Pillow once. The frozen snapshot already carries it
+# through the ukify build spec, so use that existing transaction, render the
+# immutable PNGs, then remove both packages in the same layer. UKI construction
+# later uses its own throwaway uki-tools stage.
+# Retain the base's openssh and openssh-clients: virt-viewer requires them later,
+# and the frozen RPM transaction assumes dependencies already in the base remain
+# installed. The SSH server remains forbidden by the runtime crypto policy.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+        systemd-ukify \
+    && python3 /usr/local/bin/make-plymouth-assets.py /usr/share/plymouth/themes/tilo \
+    && plymouth-set-default-theme tilo \
+    && test "$(plymouth-set-default-theme)" = tilo \
+    && dnf --disablerepo='*' remove -y systemd-ukify python3-pillow \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && printf '%s\n' "$installed" | awk '/^(systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh-server)$/' \
+           | xargs -r dnf --disablerepo='*' remove -y \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && ! printf '%s\n' "$installed" | grep -Eq '^(python3-pillow|systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh-server)$' \
+    && rpm -q openssh openssh-clients \
+    && dnf clean all && ${FINALIZE_RPMDB}
+
+# tpm2-tools: the NV counter, the policy sessions and TPM2_NV_Certify are driven
+# through it. Also reachable from recovery mode, which is where someone will need
+# it when automatic unlock has failed.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+        tpm2-tools \
+    && dnf clean all && ${FINALIZE_RPMDB} && rm -rf /var/cache/dnf /var/log/dnf* /var/lib/dnf
+
+# Hardened userspace allocator (scudo, from compiler-rt) LD_PRELOADed into the
+# trusted-base daemon fs.service. Resolve the lib path at build time and bake a
+# drop-in, so a packaging move can't silently leave a dangling LD_PRELOAD that
+# would fail the service. (Base daemons use the system allocator — verified no
+# jemalloc — so the preload is safe.)
+#
+# Alongside it, hardware shadow stacks. Every binary in this image is marked
+# shadow-stack compatible at link time, but Fedora's glibc only switches them on
+# when a process also asks through this tunable — which is precisely what makes
+# the protection scopeable instead of global. fs.service earns it because it
+# parses bytes that arrived from a peer. Measured cost on an allocation-heavy
+# loop: about 8%. If the CPU, the kernel or any loaded library cannot support
+# it, glibc leaves shadow stacks off rather than failing, and
+# tilo-security-audit reports which processes actually got them.
+#
+# Only Scudo has to remain for tilo-launcher's scoped hardening. Copy that one
+# DSO to a stable image-owned path, then erase compiler-rt's other sanitizers,
+# runtimes, headers, and versioned toolchain tree.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo compiler-rt && \
+    scudo="$(find /usr/lib /usr/lib64 -name 'libclang_rt.scudo_standalone.so' 2>/dev/null | head -1)" && \
+    test -n "$scudo" && \
+    install -D -m 0755 "$scudo" /usr/lib/tilo/libclang_rt.scudo_standalone.so && \
+    rpm -e --nodeps compiler-rt clang-resource-filesystem && \
+    ! rpm -q compiler-rt clang-resource-filesystem >/dev/null 2>&1 && \
+    test -s /usr/lib/tilo/libclang_rt.scudo_standalone.so && \
+    dnf clean all && ${FINALIZE_RPMDB} && \
+    scudo=/usr/lib/tilo/libclang_rt.scudo_standalone.so && \
+    mkdir -p /usr/lib/systemd/system/fs.service.d && \
+    printf '[Service]\n# Hardened userspace allocator; path resolved at image build.\nEnvironment=LD_PRELOAD=%s\n# Hardware shadow stacks. The ELF marking alone does not enable them.\nEnvironment=GLIBC_TUNABLES=glibc.cpu.hwcaps=SHSTK\n' "$scudo" \
+      > /usr/lib/systemd/system/fs.service.d/10-hardened-malloc.conf && \
+    echo "scudo wired: $scudo"
+
+# Windows compatibility packages. They are installed here with the other
+# packages; the Windows provider, the compacted VirtIO media and the runners
+# are copied at the end of the rootfs, because rootless Podman rescans a layer
+# that large for every later COPY/RUN.
+# Wine is the tested desktop-program baseline; UMU + its pinned Proton build are
+# copied at the end for non-Steam games. The appliance packages provide one
+# KVM-accelerated, TPM-backed Windows fallback. Changing this list requires
+# refreshing RPMS_REF (see the file header).
+# tilo-rpm-snapshot-package[x86_64]: edk2-ovmf
+# tilo-rpm-snapshot-package[x86_64]: wine
+# tilo-rpm-snapshot-package[x86_64]: wine-dxvk
+# tilo-rpm-snapshot-package[aarch64]: edk2-aarch64
+# Native FEX executable/Qt frontend dependencies and host graphics/audio thunks.
+# tilo-rpm-snapshot-package[aarch64]: glibc
+# tilo-rpm-snapshot-package[aarch64]: libgcc
+# tilo-rpm-snapshot-package[aarch64]: libstdc++
+# tilo-rpm-snapshot-package[aarch64]: libglvnd-glx
+# tilo-rpm-snapshot-package[aarch64]: libglvnd-opengl
+# tilo-rpm-snapshot-package[aarch64]: libglvnd-egl
+# tilo-rpm-snapshot-package[aarch64]: qt6-qtbase
+# tilo-rpm-snapshot-package[aarch64]: qt6-qtbase-gui
+# tilo-rpm-snapshot-package[aarch64]: qt6-qtdeclarative
+# tilo-rpm-snapshot-package[aarch64]: alsa-lib
+# tilo-rpm-snapshot-package[aarch64]: libdrm
+# tilo-rpm-snapshot-package[aarch64]: libwayland-client
+# tilo-rpm-snapshot-package[aarch64]: vulkan-loader
+ARG TILO_WINDOWS_ARCH
+# wine only recommends dosbox-staging, a DOS emulator no Tilo Windows path
+# uses. It would bring opusfile, whose HTTP stream reader links OpenSSL.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    test "$(uname -m)" = "$TILO_WINDOWS_ARCH" && \
+    case "$(uname -m)" in \
+      x86_64) vm_firmware=edk2-ovmf; windows_packages='wine wine-dxvk' ;; \
+      aarch64) vm_firmware=edk2-aarch64; windows_packages='glibc libgcc libstdc++ libglvnd-glx libglvnd-opengl libglvnd-egl qt6-qtbase qt6-qtbase-gui qt6-qtdeclarative alsa-lib libdrm libwayland-client vulkan-loader' ;; \
+      *) echo 'unsupported Windows VM firmware architecture' >&2; exit 1 ;; \
+    esac && dnf install -y --setopt=reposdir=/repo \
+    --exclude=dosbox-staging \
+    $windows_packages \
+    qemu-kvm \
+    libvirt-client \
+    libvirt-daemon-kvm \
+    libvirt-daemon-config-nwfilter \
+    swtpm \
+    swtpm-tools \
+    "$vm_firmware" \
+    freerdp \
+    xwayland-satellite \
+    virt-viewer \
+    xorriso \
+    genisoimage \
+    udftools \
+    && dnf clean all && ${FINALIZE_RPMDB}
+
+# Confine the collaborative filesystem daemon in its own SELinux domain
+# (tilo_fs_t) instead of unconfined_service_t. Shipped permissive so it can't
+# break the working daemon; tightens to enforcing from captured AVCs (see the
+# module header). The drop-in runs fs.service in the domain via SELinuxContext.
+COPY os/usr/share/tilo/selinux/tilo-base.cil /usr/share/tilo/selinux/tilo-base.cil
+COPY os/usr/lib/systemd/system/fs.service.d/20-selinux.conf /usr/lib/systemd/system/fs.service.d/20-selinux.conf
+# `libsemanage` writes a sandbox at /etc/selinux/targeted/tmp during
+# install and fails "File exists" if any prior partial state carried
+# forward (a caching quirk under rootless podman that CI's docker
+# daemon happens to sidestep). Clear it first.
+# libsemanage builds its sandbox by hardlinking the current policy store, and a
+# hardlink to a file that lives in a lower container layer fails EEXIST — which
+# surfaces as "Could not copy files to sandbox /etc/selinux/targeted/tmp (File
+# exists)" while that directory is demonstrably absent. Removing the stale
+# sandbox, which this step already did, addresses the wrong half: the store
+# itself has to exist in this layer. Copy it into place first.
+#
+# Add-on SELinux RPM scriptlets are deliberately non-fatal (`semodule ... || :`).
+# Under the same rootless-overlay failure their policy archives are installed
+# but their modules are absent from `active` (they can also be left only in
+# abandoned `previous`/`tmp` stores). Reinstall and then verify every shipped
+# add-on policy archive after copying up the store. Keeping this generic matters:
+# optional desktop/virtualization packages can add a policy archive without also
+# changing this Containerfile.
+RUN cp -a /etc/selinux/targeted /var/tmp/tilo-sestore \
+ && rm -rf /etc/selinux/targeted \
+ && mv /var/tmp/tilo-sestore /etc/selinux/targeted \
+ && rm -rf /etc/selinux/targeted/tmp \
+ && find /usr/share/selinux/packages -type f \( -name '*.pp' -o -name '*.pp.bz2' \) -print \
+      | sort \
+      | while IFS= read -r policy; do \
+          semodule -n -s targeted -X 200 -i "$policy" || exit 1; \
+        done \
+ && semodule -i /usr/share/tilo/selinux/tilo-base.cil \
+ && semodule -s targeted -lfull > /var/tmp/tilo-active-selinux-modules \
+ && find /usr/share/selinux/packages -type f \( -name '*.pp' -o -name '*.pp.bz2' \) -print \
+      | sort \
+      | while IFS= read -r policy; do \
+          module="$(basename "$policy")"; module="${module%.bz2}"; module="${module%.pp}"; \
+          awk -v module="$module" '$1 == "200" && $2 == module { found=1 } END { exit !found }' \
+            /var/tmp/tilo-active-selinux-modules || exit 1; \
+        done \
+ && semodule -s targeted -lfull | grep -Eq '^400[[:space:]]+tilo-base[[:space:]]' \
+ && rm -f /var/tmp/tilo-active-selinux-modules \
+ && echo "all packaged add-on and tilo-base SELinux modules loaded"
+
+# ---------------------------------------------------------------------------
 # Compiled Tilo binaries (built in the `builder` stage above)
 # ---------------------------------------------------------------------------
 # Compositor, FUSE driver, system apps, settings and model services. The
@@ -1480,53 +1769,6 @@ COPY os/tests/projection-boot-check.sh /usr/libexec/tilo/projection-boot-check.s
 # Native protocol tests and the GStreamer plugin checks above remain required.
 RUN chmod 0755 /usr/libexec/tilo/airplay-encrypted-session-test.sh \
           /usr/libexec/tilo/projection-boot-check.sh
-
-# ---- WPE WebKit runtime (browser engine) ------------------------------------
-# Engine libraries + the WebKit helper processes (WPEWebProcess,
-# WPENetworkProcess) from the wpe-builder stage, plus the runtime libraries
-# the engine links that aren't already in this image. GStreamer base/good are
-# installed above.
-#
-# This list has to cover every DT_NEEDED entry of libWPEWebKit-2.0.so or the
-# browser dies at exec with a loader error. atk/at-spi2-atk/libmanette/libxslt
-# are there because the engine is built with accessibility, gamepad and XSLT
-# support, libjxl and flite because it decodes JPEG XL and synthesises speech;
-# they arrive via no other package in this image.
-#
-# Copies nothing under TILO_WITH_BROWSER=0 (the stage is an empty /wpe then). The
-# dnf list below still runs: those are ordinary frozen-repo packages that cost
-# seconds, and installing them either way keeps the two images' package sets —
-# and this layer's cache entry — identical.
-COPY --from=wpe-builder /wpe/ /
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
-    --mount=type=bind,source=os/scripts/check-wpe-runtime.sh,target=/run/tilo-check-wpe-runtime.sh,ro \
-    dnf install -y --setopt=reposdir=/repo \
-    libepoxy \
-    libsoup3 \
-    enchant2 \
-    hyphen \
-    woff2 \
-    lcms2 \
-    libjxl \
-    flite \
-    openjpeg2 \
-    libavif \
-    libwebp \
-    libgcrypt \
-    libtasn1 \
-    libsecret \
-    atk \
-    at-spi2-atk \
-    libmanette \
-    libxslt \
-    && dnf clean all && ${FINALIZE_RPMDB} \
-    && ldconfig \
-    && gst-inspect-1.0 h264parse >/dev/null \
-    && gst-inspect-1.0 hlssink2 >/dev/null \
-    && gst-inspect-1.0 pulsesrc >/dev/null \
-    && gst-inspect-1.0 avenc_aac >/dev/null \
-    && gst-inspect-1.0 aacparse >/dev/null \
-    && bash /run/tilo-check-wpe-runtime.sh "the rootfs WPE WebKit runtime dnf list above"
 
 # Browser and shell are compiled in one Cargo invocation. The browser's WPE
 # feature can therefore affect shell's dynamic link closure. Check it only
@@ -1757,80 +1999,6 @@ COPY \
     docs/security/rollback.md \
     /usr/share/doc/tilo/
 
-# ---------------------------------------------------------------------------
-# Bootloader — swap GRUB for systemd-boot
-# ---------------------------------------------------------------------------
-# systemd-boot is smaller + simpler than GRUB (no menu render step, no module
-# load path, BLS entries loaded straight off the ESP), so cold boot to the
-# kernel handoff is measurably shorter. bootc chooses which bootloader to
-# plant on the ESP at install time based on the `bootloader` key in the
-# /usr/lib/bootc/install/*.toml drop-ins baked into this image (see the
-# 40-tilo.toml file below). The `systemd-boot-unsigned` package supplies the
-# EFI binaries + BLS layout that bootc/bootupd copy across.
-#
-# The GRUB stack (grub2 + shim + bootupd's grub2 side) is pulled in by the
-# fedora-bootc base and would otherwise still ship on the rootfs, wasting
-# ~30 MB and leaving dead code paths in bootupd. Drop it after installing
-# systemd-boot so nothing during install can pick GRUB by accident.
-#
-# dnf5 refuses to remove grub2-efi-x64 / grub2-pc / grub2-tools-minimal /
-# shim-x64 (each ships an `/etc/dnf/protected.d/*.conf` marking itself
-# protected against removal) and won't accept `--allowerasing` on `remove`.
-# The systemd-boot install already satisfies the "some bootloader must
-# exist" invariant, so shell out to `rpm -e --nodeps` for the protected
-# ones — dnf handles the unprotected ones on the same pass.
-#
-# Tilo's narrow Rust crypto tool replaces the trust that removal takes away.
-# Deleting shim and GRUB, and building a custom kernel, leaves nothing on the boot
-# path that a distribution key covers — so the machine has to be able to sign its
-# own artefacts and enrol its own Platform Key. tilo-crypto does the signing,
-# verification, and bounded efivarfs enrollment. See docs/security/boot-chain.md.
-# bootupd goes with them, and that is a requirement of the sealed layout rather
-# than tidiness: bootc refuses to seal an image that still offers a bootupd
-# install path, because bootupd only ever plants GRUB. Its payload directory and
-# the legacy ostree boot dir have to go too — bootc finds the path through either.
-# Nothing on this image needs it: with a UKI there is exactly one PE binary on the
-# boot path, /usr/libexec/tilo-secureboot signs it with tilo-crypto, and
-# tilo-secureboot-sign.path already watches /boot/EFI/Linux for a newly staged one.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        systemd-boot-unsigned \
-    && rpm -qa | grep -E '^(shim-(x64|aa64)|grub2-)' | xargs -r rpm -e --nodeps \
-    && rpm -e --nodeps bootupd \
-    && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
-    && dnf clean all && ${FINALIZE_RPMDB}
-
-# Keep encrypted-root unlock in the same visual path as the UKI splash.
-# Assets are generated at build time so the source remains reviewable and the
-# initramfs does not depend on a desktop image stack. Copied here, beside their
-# one use, rather than among the package transactions above, whose layers a
-# theme edit would otherwise have invalidated.
-COPY os/usr/share/plymouth/themes/tilo/ /usr/share/plymouth/themes/tilo/
-COPY \
-    os/dev/make-plymouth-assets.py \
-    os/scripts/verify-runtime-crypto-packages.sh \
-    /usr/local/bin/
-
-# Splash rendering needs Pillow once. The frozen snapshot already carries it
-# through the ukify build spec, so use that existing transaction, render the
-# immutable PNGs, then remove both packages in the same layer. UKI construction
-# later uses its own throwaway uki-tools stage.
-# Retain the base's openssh and openssh-clients: virt-viewer requires them later,
-# and the frozen RPM transaction assumes dependencies already in the base remain
-# installed. The SSH server remains forbidden by the runtime crypto policy.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        systemd-ukify \
-    && python3 /usr/local/bin/make-plymouth-assets.py /usr/share/plymouth/themes/tilo \
-    && plymouth-set-default-theme tilo \
-    && test "$(plymouth-set-default-theme)" = tilo \
-    && dnf --disablerepo='*' remove -y systemd-ukify python3-pillow \
-    && installed="$(rpm -qa --qf '%{NAME}\n')" \
-    && printf '%s\n' "$installed" | awk '/^(systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh-server)$/' \
-           | xargs -r dnf --disablerepo='*' remove -y \
-    && installed="$(rpm -qa --qf '%{NAME}\n')" \
-    && ! printf '%s\n' "$installed" | grep -Eq '^(python3-pillow|systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh-server)$' \
-    && rpm -q openssh openssh-clients \
-    && dnf clean all && ${FINALIZE_RPMDB}
-
 # The install-config drop-in that flips bootc's bootloader choice to
 # systemd-boot. Lives at /usr/lib/bootc/install/*.toml — a drop-in dir bootc
 # merges at every `bootc install {to-disk,to-filesystem}` invocation. bib
@@ -1939,13 +2107,6 @@ COPY \
 # The generation this image carries is written near the end of this stage (see
 # "The generation" there).
 
-# tpm2-tools: the NV counter, the policy sessions and TPM2_NV_Certify are driven
-# through it. Also reachable from recovery mode, which is where someone will need
-# it when automatic unlock has failed.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        tpm2-tools \
-    && dnf clean all && ${FINALIZE_RPMDB} && rm -rf /var/cache/dnf /var/log/dnf* /var/lib/dnf
-
 COPY --from=rollback-files / /
 RUN chmod 0755 /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-confirm \
         /usr/libexec/tilo-rollback-initrd-unlock \
@@ -2006,91 +2167,6 @@ COPY --from=codec-pack-files / /
 # prediction sidecars in a /boot-only layer; published builds fail closed if the
 # protected signer is unavailable.
 
-# Hardened userspace allocator (scudo, from compiler-rt) LD_PRELOADed into the
-# trusted-base daemon fs.service. Resolve the lib path at build time and bake a
-# drop-in, so a packaging move can't silently leave a dangling LD_PRELOAD that
-# would fail the service. (Base daemons use the system allocator — verified no
-# jemalloc — so the preload is safe.)
-#
-# Alongside it, hardware shadow stacks. Every binary in this image is marked
-# shadow-stack compatible at link time, but Fedora's glibc only switches them on
-# when a process also asks through this tunable — which is precisely what makes
-# the protection scopeable instead of global. fs.service earns it because it
-# parses bytes that arrived from a peer. Measured cost on an allocation-heavy
-# loop: about 8%. If the CPU, the kernel or any loaded library cannot support
-# it, glibc leaves shadow stacks off rather than failing, and
-# tilo-security-audit reports which processes actually got them.
-#
-# Only Scudo has to remain for tilo-launcher's scoped hardening. Copy that one
-# DSO to a stable image-owned path, then erase compiler-rt's other sanitizers,
-# runtimes, headers, and versioned toolchain tree.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo compiler-rt && \
-    scudo="$(find /usr/lib /usr/lib64 -name 'libclang_rt.scudo_standalone.so' 2>/dev/null | head -1)" && \
-    test -n "$scudo" && \
-    install -D -m 0755 "$scudo" /usr/lib/tilo/libclang_rt.scudo_standalone.so && \
-    rpm -e --nodeps compiler-rt clang-resource-filesystem && \
-    ! rpm -q compiler-rt clang-resource-filesystem >/dev/null 2>&1 && \
-    test -s /usr/lib/tilo/libclang_rt.scudo_standalone.so && \
-    dnf clean all && ${FINALIZE_RPMDB} && \
-    scudo=/usr/lib/tilo/libclang_rt.scudo_standalone.so && \
-    mkdir -p /usr/lib/systemd/system/fs.service.d && \
-    printf '[Service]\n# Hardened userspace allocator; path resolved at image build.\nEnvironment=LD_PRELOAD=%s\n# Hardware shadow stacks. The ELF marking alone does not enable them.\nEnvironment=GLIBC_TUNABLES=glibc.cpu.hwcaps=SHSTK\n' "$scudo" \
-      > /usr/lib/systemd/system/fs.service.d/10-hardened-malloc.conf && \
-    echo "scudo wired: $scudo"
-
-# Windows compatibility is intentionally assembled at the end of the rootfs.
-# The compacted VirtIO media payload is large; placing it earlier makes
-# rootless Podman rescan that immutable layer for every subsequent COPY/RUN and
-# turns safe installer iteration into hours of avoidable layer commits.
-# Wine is the tested desktop-program baseline; UMU + its pinned Proton build are
-# copied below for non-Steam games. The appliance packages provide one
-# KVM-accelerated, TPM-backed Windows fallback. Changing this list requires
-# refreshing RPMS_REF (see the file header).
-# tilo-rpm-snapshot-package[x86_64]: edk2-ovmf
-# tilo-rpm-snapshot-package[x86_64]: wine
-# tilo-rpm-snapshot-package[x86_64]: wine-dxvk
-# tilo-rpm-snapshot-package[aarch64]: edk2-aarch64
-# Native FEX executable/Qt frontend dependencies and host graphics/audio thunks.
-# tilo-rpm-snapshot-package[aarch64]: glibc
-# tilo-rpm-snapshot-package[aarch64]: libgcc
-# tilo-rpm-snapshot-package[aarch64]: libstdc++
-# tilo-rpm-snapshot-package[aarch64]: libglvnd-glx
-# tilo-rpm-snapshot-package[aarch64]: libglvnd-opengl
-# tilo-rpm-snapshot-package[aarch64]: libglvnd-egl
-# tilo-rpm-snapshot-package[aarch64]: qt6-qtbase
-# tilo-rpm-snapshot-package[aarch64]: qt6-qtbase-gui
-# tilo-rpm-snapshot-package[aarch64]: qt6-qtdeclarative
-# tilo-rpm-snapshot-package[aarch64]: alsa-lib
-# tilo-rpm-snapshot-package[aarch64]: libdrm
-# tilo-rpm-snapshot-package[aarch64]: libwayland-client
-# tilo-rpm-snapshot-package[aarch64]: vulkan-loader
-ARG TILO_WINDOWS_ARCH
-# wine only recommends dosbox-staging, a DOS emulator no Tilo Windows path
-# uses. It would bring opusfile, whose HTTP stream reader links OpenSSL.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
-    test "$(uname -m)" = "$TILO_WINDOWS_ARCH" && \
-    case "$(uname -m)" in \
-      x86_64) vm_firmware=edk2-ovmf; windows_packages='wine wine-dxvk' ;; \
-      aarch64) vm_firmware=edk2-aarch64; windows_packages='glibc libgcc libstdc++ libglvnd-glx libglvnd-opengl libglvnd-egl qt6-qtbase qt6-qtbase-gui qt6-qtdeclarative alsa-lib libdrm libwayland-client vulkan-loader' ;; \
-      *) echo 'unsupported Windows VM firmware architecture' >&2; exit 1 ;; \
-    esac && dnf install -y --setopt=reposdir=/repo \
-    --exclude=dosbox-staging \
-    $windows_packages \
-    qemu-kvm \
-    libvirt-client \
-    libvirt-daemon-kvm \
-    libvirt-daemon-config-nwfilter \
-    swtpm \
-    swtpm-tools \
-    "$vm_firmware" \
-    freerdp \
-    xwayland-satellite \
-    virt-viewer \
-    xorriso \
-    genisoimage \
-    udftools \
-    && dnf clean all && ${FINALIZE_RPMDB}
-
 ARG TILO_WITH_WINDOWS
 LABEL org.tilo.with-windows="${TILO_WITH_WINDOWS}"
 COPY --from=windows-provider /out/usr/ /usr/
@@ -2131,53 +2207,6 @@ RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-pr
               /usr/libexec/tilo-windows-rail \
     && systemctl enable tilo-windows-vm-egress-reaper.timer
 
-# Confine the collaborative filesystem daemon in its own SELinux domain
-# (tilo_fs_t) instead of unconfined_service_t. Shipped permissive so it can't
-# break the working daemon; tightens to enforcing from captured AVCs (see the
-# module header). The drop-in runs fs.service in the domain via SELinuxContext.
-COPY os/usr/share/tilo/selinux/tilo-base.cil /usr/share/tilo/selinux/tilo-base.cil
-COPY os/usr/lib/systemd/system/fs.service.d/20-selinux.conf /usr/lib/systemd/system/fs.service.d/20-selinux.conf
-# `libsemanage` writes a sandbox at /etc/selinux/targeted/tmp during
-# install and fails "File exists" if any prior partial state carried
-# forward (a caching quirk under rootless podman that CI's docker
-# daemon happens to sidestep). Clear it first.
-# libsemanage builds its sandbox by hardlinking the current policy store, and a
-# hardlink to a file that lives in a lower container layer fails EEXIST — which
-# surfaces as "Could not copy files to sandbox /etc/selinux/targeted/tmp (File
-# exists)" while that directory is demonstrably absent. Removing the stale
-# sandbox, which this step already did, addresses the wrong half: the store
-# itself has to exist in this layer. Copy it into place first.
-#
-# Add-on SELinux RPM scriptlets are deliberately non-fatal (`semodule ... || :`).
-# Under the same rootless-overlay failure their policy archives are installed
-# but their modules are absent from `active` (they can also be left only in
-# abandoned `previous`/`tmp` stores). Reinstall and then verify every shipped
-# add-on policy archive after copying up the store. Keeping this generic matters:
-# optional desktop/virtualization packages can add a policy archive without also
-# changing this Containerfile.
-RUN cp -a /etc/selinux/targeted /var/tmp/tilo-sestore \
- && rm -rf /etc/selinux/targeted \
- && mv /var/tmp/tilo-sestore /etc/selinux/targeted \
- && rm -rf /etc/selinux/targeted/tmp \
- && find /usr/share/selinux/packages -type f \( -name '*.pp' -o -name '*.pp.bz2' \) -print \
-      | sort \
-      | while IFS= read -r policy; do \
-          semodule -n -s targeted -X 200 -i "$policy" || exit 1; \
-        done \
- && semodule -i /usr/share/tilo/selinux/tilo-base.cil \
- && semodule -s targeted -lfull > /var/tmp/tilo-active-selinux-modules \
- && find /usr/share/selinux/packages -type f \( -name '*.pp' -o -name '*.pp.bz2' \) -print \
-      | sort \
-      | while IFS= read -r policy; do \
-          module="$(basename "$policy")"; module="${module%.bz2}"; module="${module%.pp}"; \
-          awk -v module="$module" '$1 == "200" && $2 == module { found=1 } END { exit !found }' \
-            /var/tmp/tilo-active-selinux-modules || exit 1; \
-        done \
- && semodule -s targeted -lfull | grep -Eq '^400[[:space:]]+tilo-base[[:space:]]' \
- && rm -f /var/tmp/tilo-active-selinux-modules \
- && restorecon -v /usr/lib/systemd/user/tilo-graphical-session.target \
- && echo "all packaged add-on and tilo-base SELinux modules loaded"
-
 # ---------------------------------------------------------------------------
 # Enable services
 # ---------------------------------------------------------------------------
@@ -2202,6 +2231,7 @@ RUN cp -a /etc/selinux/targeted /var/tmp/tilo-sestore \
 # modem, power, homed, hardening, boot assessment, automatic bootc updates and
 # NetworkManager are system services/timers.
 RUN systemctl enable greetd.service && \
+    restorecon -v /usr/lib/systemd/user/tilo-graphical-session.target && \
     systemctl disable NetworkManager.service firewalld.service chronyd.service && \
     systemctl enable tilo-device-key-init.service && \
     systemctl set-default graphical.target && \

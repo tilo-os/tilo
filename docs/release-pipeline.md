@@ -103,7 +103,7 @@ compatibility channel.
 
 App publication requires `TILO_PACKAGE_PUBLIC_BASE_URL`, set to the public
 HTTPS generic-package base (currently
-`https://code.sandbox.example/api/packages/qos/generic`). Registry traffic may use
+`https://code.sandbox.example/api/packages/tilo/generic`). Registry traffic may use
 the runner's internal endpoint, but receipts and persisted collection-channel
 URLs always derive from this public base.
 
@@ -331,7 +331,7 @@ tag, `<series>-ci` for an integration build (`main-<sha7>-ci` on `main`), and
 To fetch a disk, use a Forgejo token with package read access:
 
 ```sh
-base=https://code.sandbox.example/api/packages/qos/generic/tilo-vm-disk/$TAG
+base=https://code.sandbox.example/api/packages/tilo/generic/tilo-vm-disk/$TAG
 curl -fsSL -H "Authorization: token $FORGEJO_TOKEN" "$base/tilo-vm-disk-x86_64.json" -o tilo-vm-disk.json
 url=$(jq -er '.disks[] | select(.format == "qcow2") | .url' tilo-vm-disk.json)
 sha=$(jq -er '.disks[] | select(.format == "qcow2") | .sha256' tilo-vm-disk.json)

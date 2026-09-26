@@ -1066,7 +1066,7 @@ impl ui::widget::Widget for SnippetsApp {
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its action, so it records one undo boundary for it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
         self.actions.take_committed()
     }

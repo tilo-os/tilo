@@ -6,8 +6,8 @@
 //!
 //! The data is bundled at build time from `apps/osk/data/words.txt`
 //! (`word<TAB>weight`, sorted by frequency descending). See that directory's
-//! `README.md` for provenance and license (derived from Peter Norvig's
-//! MIT-licensed n-gram subset of the Google Web Trillion Word Corpus).
+//! `README.md` for provenance and licences (SCOWL vocabulary ranked by
+//! Google Books Ngram fiction counts).
 //!
 //! ## What it exposes
 //! * [`Dictionary::contains`] / [`Dictionary::weight`] — membership + freq.

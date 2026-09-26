@@ -8,7 +8,7 @@
 //!
 //! The model is deliberately decoupled from `git2`: the [`crate::repo`]
 //! backend fills it from an on-disk repository, and
-//! [`RepoModel::sample`] fills it from a bundled fixture so the headless
+//! `RepoModel::sample` fills it from a bundled fixture so the headless
 //! screenshot renders a populated state with no repository
 //! present. Nothing in this file performs IO.
 

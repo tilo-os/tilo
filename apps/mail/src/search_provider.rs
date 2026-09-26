@@ -1,6 +1,6 @@
 //! Mail as a Tilo global-search source.
 //!
-//! Mirrors the reference wiring in [`apps/contacts`]: Mail declares its
+//! Mirrors the reference wiring in `apps/contacts`: Mail declares its
 //! searchable type by implementing [`SearchProvider`] over a retained catalogue
 //! of the in-memory mailbox, so a message is findable from the unified Ctrl+K
 //! palette by subject, sender or body. Messages and folders name stable exported

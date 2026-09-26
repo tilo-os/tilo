@@ -4575,7 +4575,7 @@ impl Widget for FeedsApp {
     }
 
     /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the [`ResourceProvider`]
+    /// action palette scopes to them. Delegates to the `ResourceProvider`
     /// (`tilo_actions::ResourceProvider`) impl in [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
@@ -4701,7 +4701,7 @@ impl Widget for FeedsApp {
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its action, so it records one undo boundary for it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }

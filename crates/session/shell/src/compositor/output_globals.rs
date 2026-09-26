@@ -24,6 +24,7 @@ use smithay::output::{
 };
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::GlobalId;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Size, Transform};
 
 use super::backend::{Output, OutputId};
@@ -49,6 +50,7 @@ pub struct AdvertisedState {
     pub position: (i32, i32),
     pub scale: f32,
     pub transform: settings_store::hardware::OutputTransform,
+    pub refresh_mhz: Option<u32>,
 }
 
 impl From<&Output> for AdvertisedState {
@@ -58,6 +60,7 @@ impl From<&Output> for AdvertisedState {
             position: o.position,
             scale: o.scale,
             transform: o.transform,
+            refresh_mhz: o.refresh_mhz,
         }
     }
 }
@@ -138,6 +141,49 @@ impl OutputGlobals {
             .find_map(|(id, live)| (live.handle == requested).then_some(*id))
     }
 
+    /// Send the `wl_surface.enter`/`leave` events a membership reconcile
+    /// decided on, on each output's own `wl_output`.
+    ///
+    /// Call ordering matters: removed outputs' leaves go out before
+    /// [`Self::sync`] withdraws their globals, and current outputs' enters
+    /// after it created them — otherwise there is no client-side output
+    /// object to name in the event.
+    pub fn send_surface_changes(
+        &self,
+        surfaces: &HashMap<u64, WlSurface>,
+        changes: Vec<super::surface_outputs::Change>,
+    ) {
+        use super::surface_outputs::Change;
+        for change in changes {
+            let (surface_id, output_id) = match change {
+                Change::Enter { surface_id, output } | Change::Leave { surface_id, output } => {
+                    (surface_id, output)
+                }
+            };
+            let Some(surface) = surfaces.get(&surface_id) else {
+                // Destruction needs no final protocol leave: the client has
+                // already destroyed the resource. The tracker drops the entry
+                // on its next geometry reconciliation.
+                continue;
+            };
+            let Some(output) = self.handle(output_id) else {
+                // An invariant breach rather than a retryable state (see the
+                // ordering above): there is no client-side output object on
+                // which the event could be sent.
+                tracing::error!(
+                    surface_id,
+                    output = output_id.0,
+                    "wl_surface output transition has no advertised wl_output handle"
+                );
+                continue;
+            };
+            match change {
+                Change::Enter { .. } => output.enter(surface),
+                Change::Leave { .. } => output.leave(surface),
+            }
+        }
+    }
+
     /// Snapshot of what is advertised, in the shape [`plan`] compares.
     fn snapshot(&self) -> Vec<(OutputId, AdvertisedState)> {
         let mut v: Vec<(OutputId, AdvertisedState)> =
@@ -152,19 +198,22 @@ impl OutputGlobals {
     /// nothing moved, because [`plan`] returns an empty list then and no
     /// wire traffic is generated.
     ///
-    /// `refresh_mhz` is the presentation rate to advertise, in
-    /// millihertz. Clients use it for frame pacing; `None` advertises the
-    /// conventional 60 Hz rather than zero, which some toolkits divide by.
-    pub fn sync<D>(&mut self, dh: &DisplayHandle, desired: &[Output], refresh_mhz: Option<u32>)
-    where
+    /// Each output advertises its own mode's refresh rate, in millihertz;
+    /// clients pace their frames to it. An output that reports none gets
+    /// `fallback_refresh_mhz` (the compositor's pacing rate), and failing
+    /// that the conventional 60 Hz rather than zero, which some toolkits
+    /// divide by.
+    pub fn sync<D>(
+        &mut self,
+        dh: &DisplayHandle,
+        desired: &[Output],
+        fallback_refresh_mhz: Option<u32>,
+    ) where
         D: smithay::reexports::wayland_server::GlobalDispatch<
                 smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
                 smithay::wayland::output::WlOutputData,
             > + 'static,
     {
-        // A wl_output mode's refresh rate is i32; clamp rather than wrap on
-        // the (unrealistic) chance a reported rate exceeds i32::MAX.
-        let refresh = i32::try_from(refresh_mhz.unwrap_or(60_000)).unwrap_or(i32::MAX);
         for change in plan(&self.snapshot(), desired) {
             match change {
                 GlobalChange::Create(id) => {
@@ -185,7 +234,7 @@ impl OutputGlobals {
                             model: format!("Output {}", id.0),
                         },
                     );
-                    let mode = mode_for(out, refresh);
+                    let mode = mode_for(out, fallback_refresh_mhz);
                     handle.change_current_state(
                         Some(mode),
                         Some(wayland_transform(out.transform)),
@@ -217,7 +266,7 @@ impl OutputGlobals {
                     let Some(live) = self.live.get_mut(&id) else {
                         continue;
                     };
-                    let mode = mode_for(out, refresh);
+                    let mode = mode_for(out, fallback_refresh_mhz);
                     live.handle.change_current_state(
                         Some(mode),
                         Some(wayland_transform(out.transform)),
@@ -245,7 +294,20 @@ impl OutputGlobals {
     }
 }
 
-fn mode_for(out: &Output, refresh: i32) -> OutputMode {
+/// The rate an output's `wl_output` mode advertises, in millihertz: its own
+/// mode's, else the compositor-wide fallback, else 60 Hz.
+fn advertised_refresh(out: &Output, fallback_refresh_mhz: Option<u32>) -> i32 {
+    let mhz = out
+        .refresh_mhz
+        .filter(|mhz| *mhz > 0)
+        .or_else(|| fallback_refresh_mhz.filter(|mhz| *mhz > 0))
+        .unwrap_or(60_000);
+    // A wl_output mode's refresh rate is i32; clamp rather than wrap on the
+    // (unrealistic) chance a reported rate exceeds i32::MAX.
+    i32::try_from(mhz).unwrap_or(i32::MAX)
+}
+
+fn mode_for(out: &Output, fallback_refresh_mhz: Option<u32>) -> OutputMode {
     let physical = out.physical_size();
     // A wl_output mode's dimensions are i32; clamp rather than wrap if a
     // backend ever reports something absurd, since wrapping could turn a
@@ -254,7 +316,7 @@ fn mode_for(out: &Output, refresh: i32) -> OutputMode {
     let height = i32::try_from(physical.1).unwrap_or(i32::MAX);
     OutputMode {
         size: Size::from((width, height)),
-        refresh,
+        refresh: advertised_refresh(out, fallback_refresh_mhz),
     }
 }
 
@@ -280,6 +342,7 @@ mod tests {
             scale,
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
+            refresh_mhz: None,
         }
     }
 
@@ -400,6 +463,40 @@ mod tests {
                 GlobalChange::Destroy(OutputId(0)),
                 GlobalChange::Destroy(OutputId(1))
             ]
+        );
+    }
+
+    #[test]
+    fn each_output_advertises_its_own_refresh_rate() {
+        // One compositor-wide rate would tell a client on a 144 Hz monitor
+        // to pace at the laptop panel's 60 Hz, or the reverse.
+        let mut laptop = out(0, (0, 0), (2560, 1600), 2.0);
+        laptop.refresh_mhz = Some(60_000);
+        let mut external = out(1, (1280, 0), (2560, 1440), 1.0);
+        external.refresh_mhz = Some(143_912);
+        assert_eq!(mode_for(&laptop, Some(143_912)).refresh, 60_000);
+        assert_eq!(mode_for(&external, Some(60_000)).refresh, 143_912);
+    }
+
+    #[test]
+    fn an_output_without_a_rate_falls_back_to_pacing_then_sixty_hertz() {
+        let o = out(0, (0, 0), (1920, 1080), 1.0);
+        assert_eq!(mode_for(&o, Some(59_940)).refresh, 59_940);
+        assert_eq!(mode_for(&o, None).refresh, 60_000);
+        // Zero is no rate at all; some toolkits divide by it.
+        let mut zero = o;
+        zero.refresh_mhz = Some(0);
+        assert_eq!(mode_for(&zero, Some(0)).refresh, 60_000);
+    }
+
+    #[test]
+    fn a_refresh_change_updates_the_global() {
+        let before = out(0, (0, 0), (2560, 1440), 1.0);
+        let mut after = before.clone();
+        after.refresh_mhz = Some(144_000);
+        assert_eq!(
+            plan(&[advertised(&before)], &[after]),
+            vec![GlobalChange::Update(OutputId(0))]
         );
     }
 

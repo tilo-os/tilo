@@ -32,7 +32,7 @@
 //! ## What genuinely lives in the shared document as authored config
 //!
 //! That leaves exactly one thing: the **guided-customization install profile**
-//! (see [`InstallProfile`](crate::model::InstallProfile)) — the non-secret
+//! (see [`InstallProfile`]) — the non-secret
 //! identity / region fields that the live installer actually consumes
 //! (hostname, full name, username, locale, timezone, keyboard, filesystem). These are
 //! user-authored, they survive restarts, and they replicate to collaborators,

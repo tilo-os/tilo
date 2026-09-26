@@ -97,6 +97,8 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       clippy_matrix: ${{ steps.plan.outputs.clippy_matrix }}
+      check_matrix: ${{ steps.plan.outputs.check_matrix }}
+      check_required: ${{ steps.plan.outputs.check_required }}
       base: ${{ steps.plan.outputs.base }}
       full: ${{ steps.plan.outputs.full }}
       rust_required: ${{ steps.plan.outputs.rust_required }}
@@ -264,10 +266,12 @@ jobs:
           bash tools/ci/measure.sh "path-selected suites" -- \
             python3 tools/ci/suites.py run --jobs 2 $SUITES
 
-  # Each shard runs its tests, its all-target check and its Clippy diff as
-  # three parallel jobs rather than one after another on one runner. They share
-  # compiler outputs through sccache; each keeps its own target tree. The
-  # `checks` aggregate below requires all three.
+  # Each shard runs its tests and its Clippy gate as parallel jobs rather than
+  # one after another on one runner. Clippy type-checks every target it lints,
+  # so on x86_64 it is also the shard's all-target check; architectures that
+  # are not linted run a standalone check job instead. The jobs share compiler
+  # outputs through sccache; each keeps its own target tree. The `checks`
+  # aggregate below requires all of them.
   test:
     if: needs.select.outputs.rust_required == 'true'
     needs: [builder, select]
@@ -403,10 +407,11 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   # Type-checks every target of the shard's complete reverse-dependency
-  # closure. It links nothing, so it uses the architecture's ordinary runner
-  # even when the shard's test links need the large one.
+  # closure on architectures that Clippy does not lint (x86_64 gets the same
+  # check from Clippy). It links nothing, so it uses the architecture's
+  # ordinary runner even when the shard's test links need the large one.
   check:
-    if: needs.select.outputs.rust_required == 'true'
+    if: needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true'
     needs: [builder, select]
     runs-on: ${{ matrix.check_runner }}
     timeout-minutes: 120
@@ -415,7 +420,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 4
-      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
+      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' && needs.select.outputs.check_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
       credentials:
@@ -429,7 +434,6 @@ jobs:
           fetch-depth: 1
 
       - name: Prepare Rust build caches
-        id: rust-build
         uses: ./.forgejo/actions/prepare-rust-build
 
       - name: Prepare build runtime
@@ -475,22 +479,11 @@ jobs:
           bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      # One writer avoids shards and jobs racing to create the same immutable key.
-      - name: Save Cargo downloads
-        if: always() && matrix.shard == 1 && steps.rust-build.outputs.cargo-cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
-
   # Clippy's Rust-level analysis is authoritative once per selected package
-  # set on x86_64; ARM still runs the complete native test and all-target
-  # check jobs above, without compiling two more isolated lint graphs. The
-  # selector's clippy_matrix therefore holds only the x86_64 rows.
+  # set on x86_64, and it is also that shard's all-target check; ARM still runs
+  # the complete native test and all-target check jobs above, without
+  # compiling two more isolated lint graphs. The selector's clippy_matrix
+  # therefore holds only the x86_64 rows.
   clippy:
     if: needs.select.outputs.rust_required == 'true'
     needs: [builder, select]
@@ -515,6 +508,7 @@ jobs:
           fetch-depth: 1
 
       - name: Prepare Rust build caches
+        id: rust-build
         uses: ./.forgejo/actions/prepare-rust-build
 
       - name: Prepare build runtime
@@ -541,6 +535,16 @@ jobs:
           bash scripts/ci-run.sh "Clippy (affected shard ${{ matrix.shard }})" --
           tools/ci/clippy-check.sh ${{ matrix.packages }}
 
+      # Without its default `native` feature, tilo-ui is the portable toolkit
+      # that another host embeds with its own services. Keep that build
+      # compiling whenever the toolkit is affected.
+      - name: Check the portable toolkit build
+        if: contains(format('{0} ', matrix.packages), '-p tilo-ui ')
+        run: >-
+          bash tools/ci/measure.sh "check portable tilo-ui" --
+          bash scripts/ci-run.sh "cargo check (tilo-ui without native)" --
+          cargo check --locked -p tilo-ui --no-default-features --lib
+
       - name: Save observed Clippy inputs
         if: always()
         continue-on-error: true
@@ -558,6 +562,18 @@ jobs:
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # One writer avoids shards and jobs racing to create the same immutable key.
+      - name: Save Cargo downloads
+        if: always() && matrix.shard == 1 && steps.rust-build.outputs.cargo-cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
 
   # A pull request that changes only snapshot pins (os/rpms-snapshot.env,
   # os/kernel-snapshot.env) changes no code. Instead of the Rust and security
@@ -617,6 +633,7 @@ jobs:
           TEST_RESULT: ${{ needs.test.result }}
           CHECK_RESULT: ${{ needs.check.result }}
           CLIPPY_RESULT: ${{ needs.clippy.result }}
+          CHECK_REQUIRED: ${{ needs.select.outputs.check_required }}
           SUITES_RESULT: ${{ needs.suites.result }}
           SUITES_REQUIRED: ${{ needs.select.outputs.suites_required }}
           PINS_RESULT: ${{ needs.pins.result }}
@@ -628,11 +645,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # The shard's test, check and Clippy jobs pass together or are
-          # skipped together; any other combination is a failure.
-          case "$TEST_RESULT:$CHECK_RESULT:$CLIPPY_RESULT" in
-            success:success:success) AFFECTED_RESULT=success ;;
-            skipped:skipped:skipped) AFFECTED_RESULT=skipped ;;
+          # The shard's test and Clippy jobs, and the standalone check where
+          # the selector requires one, pass together or are skipped together;
+          # any other combination is a failure.
+          case "$TEST_RESULT:$CLIPPY_RESULT:$CHECK_REQUIRED:$CHECK_RESULT" in
+            success:success:true:success|success:success:false:skipped) AFFECTED_RESULT=success ;;
+            skipped:skipped:false:skipped) AFFECTED_RESULT=skipped ;;
             *) AFFECTED_RESULT=failure ;;
           esac
           test "$BUILDER_RESULT" = success

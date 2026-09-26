@@ -47,6 +47,29 @@ pub struct Output {
     /// Canonical ICC path selected from the compositor-discovered profile
     /// set. Presenter re-validates/parses it with qcms before use.
     pub color_profile: Option<String>,
+    /// The rate this output's mode scans out at, in millihertz, when the
+    /// backend drives a real display. Advertised on this output's own
+    /// `wl_output`, so a client on a 144 Hz monitor beside a 60 Hz panel
+    /// paces to 144. `None` falls back to the compositor's pacing rate.
+    pub refresh_mhz: Option<u32>,
+}
+
+/// A presentation interval as the millihertz a `wl_output` mode carries.
+/// `None` for a zero interval, which has no rate.
+pub fn interval_to_mhz(interval: std::time::Duration) -> Option<u32> {
+    if interval.is_zero() {
+        return None;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to [0.0, u32::MAX] and .round()-ed first, so the cast to u32 \
+                  neither truncates a fraction nor loses a sign"
+    )]
+    let mhz = (1000.0 / interval.as_secs_f64())
+        .round()
+        .clamp(0.0, f64::from(u32::MAX)) as u32;
+    Some(mhz)
 }
 
 impl Output {
@@ -62,6 +85,7 @@ impl Output {
             scale,
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
+            refresh_mhz: None,
         }
     }
 
@@ -97,6 +121,23 @@ pub fn combined_geometry(outputs: &[Output]) -> (u32, u32) {
     let w = u32::try_from(w.max(0)).unwrap_or(u32::MAX);
     let h = u32::try_from(h.max(0)).unwrap_or(u32::MAX);
     (w, h)
+}
+
+/// Translate the backend's output list into the geometry the shell's
+/// strips resolve window widths against.
+///
+/// Outputs with a zero dimension are dropped: a connector mid-modeset
+/// reports 0×0, which would hand a strip a display it can't place a window on.
+pub fn output_geometry(outputs: &[Output]) -> Vec<crate::shell::overlay_host::OutputGeometry> {
+    outputs
+        .iter()
+        .filter(|o| o.size.0 > 0 && o.size.1 > 0)
+        .map(|o| crate::shell::overlay_host::OutputGeometry {
+            x: f64::from(o.position.0),
+            width: f64::from(o.size.0),
+            height: f64::from(o.size.1),
+        })
+        .collect()
 }
 
 /// A touchpad gesture, in the shape `zwp_pointer_gestures_v1` carries.
@@ -187,10 +228,17 @@ pub enum BackendEvent {
     /// navigation it means. Never also delivered as [`Self::Gesture`].
     ShellGesture(crate::compositor::backend::drm::gestures::GestureAction),
     /// A touch point, for forwarding to the focused client over
-    /// `wl_touch`. The same touch is *also* delivered as pointer
-    /// [`Self::Input`] events so the shell chrome — which has no touch
-    /// path — responds to a finger.
+    /// `wl_touch`. The shell receives the same contact as raw
+    /// `WindowEvent::Touch` through [`Self::Input`].
     Touch(TouchEvent),
+    /// A confirmed one-finger tap ended at this global position. The
+    /// compositor turns it into a pointer click only when the tap's touch
+    /// sequence did not already reach a client over `wl_touch`; otherwise
+    /// the client would be activated once per protocol.
+    TouchTap {
+        x: f64,
+        y: f64,
+    },
     Redraw,
     Focus(bool),
 }
@@ -331,6 +379,7 @@ mod tests {
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
+                refresh_mhz: None,
             },
             Output {
                 id: OutputId(1),
@@ -339,6 +388,7 @@ mod tests {
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
+                refresh_mhz: None,
             },
         ];
         // Combined width = 1920 + 1280 = 3200; height = max(1080, 1024).

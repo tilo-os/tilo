@@ -642,6 +642,9 @@ impl ScreenshotService for NoScreenshot {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PortalSetting {
     Unsigned(u32),
+    Int(i32),
+    Double(f64),
+    Bool(bool),
     Color(f64, f64, f64),
     Text(String),
 }
@@ -649,6 +652,9 @@ impl PortalSetting {
     pub fn to_owned_value(&self) -> zbus::zvariant::OwnedValue {
         match self {
             Self::Unsigned(v) => zbus::zvariant::OwnedValue::from(*v),
+            Self::Int(v) => zbus::zvariant::OwnedValue::from(*v),
+            Self::Double(v) => zbus::zvariant::OwnedValue::from(*v),
+            Self::Bool(v) => zbus::zvariant::OwnedValue::from(*v),
             Self::Color(r, g, b) => {
                 zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::new((*r, *g, *b)))
                     .unwrap_or_else(|_| zbus::zvariant::OwnedValue::from(0_u32))
@@ -668,22 +674,13 @@ struct SettingsService {
 pub struct SettingsServiceHandle(Arc<SettingsService>);
 impl Default for SettingsServiceHandle {
     fn default() -> Self {
-        let settings = BTreeMap::from([
-            (
-                ("org.freedesktop.appearance".into(), "color-scheme".into()),
-                // Tilo chrome currently ships a dark palette. `1` is the
-                // standard "prefer dark" value.
-                PortalSetting::Unsigned(1),
-            ),
-            (
-                ("org.freedesktop.appearance".into(), "contrast".into()),
-                PortalSetting::Unsigned(0),
-            ),
-            (
-                ("org.freedesktop.appearance".into(), "accent-color".into()),
-                PortalSetting::Color(0.36, 0.48, 0.98),
-            ),
-        ]);
+        // Every key exists from the first call: the dark default the shell
+        // starts with, until the appearance monitor reads the settings file.
+        let settings = super::appearance::LegacyAppearance::from_settings_text("", false)
+            .portal_settings()
+            .into_iter()
+            .map(|(namespace, key, value)| ((namespace.to_owned(), key.to_owned()), value))
+            .collect();
         let (changes, _) = tokio::sync::broadcast::channel(64);
         Self(Arc::new(SettingsService {
             values: Mutex::new(settings),
