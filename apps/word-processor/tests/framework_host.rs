@@ -190,3 +190,54 @@ fn a_keystroke_in_a_long_document_costs_what_it_costs_in_a_short_one() {
         "a keystroke cost {long_cost:?} in 4000 paragraphs against {short_cost:?} in 200"
     );
 }
+
+/// The document as stored, formatting included.
+fn snapshot(app: &TestApp<WordProcessorApp>) -> qdoc::DocSnapshot {
+    app.read_document(|doc| {
+        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
+        qdoc::model::materialize(doc, &c)
+    })
+}
+
+#[test]
+fn undoing_a_mark_over_several_paragraphs_clears_it_from_every_one() {
+    use qdoc_rich_text::action::{MarkVal, RegionKind, RichTextAction, Span};
+    use ui::tilo_resource::Invoke;
+    let mut app = open();
+    let load = RichTextAction::ReplaceBody {
+        markdown: "Background\n\nMethod\n\nResults\n".into(),
+    };
+    app.invoke_confirmed(Invoke::<RichText>::apply(&load).unwrap())
+        .unwrap();
+    let before = snapshot(&app);
+    let spans = before
+        .blocks
+        .iter()
+        .map(|block| Span {
+            block: block.id.clone(),
+            start: 0,
+            end: block.text.chars().count(),
+        })
+        .collect();
+    let bold = RichTextAction::SetMark {
+        region: RegionKind::Body,
+        spans,
+        name: "bold".into(),
+        value: Some(MarkVal::Bool(true)),
+        also_clear: Vec::new(),
+    };
+    // Through `group`, the door an agent uses for a multi-part edit.
+    app.invoke_confirmed(Invoke::group([Invoke::<RichText>::apply(&bold).unwrap()]))
+        .unwrap();
+    let marked = snapshot(&app);
+    assert_eq!(marked.blocks.len(), 3);
+    for block in &marked.blocks {
+        assert!(
+            block.marks.iter().any(|mark| mark.name == "bold"),
+            "{block:?}"
+        );
+    }
+
+    assert!(app.undo());
+    assert_eq!(snapshot(&app).blocks, before.blocks);
+}
