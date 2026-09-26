@@ -6841,6 +6841,7 @@ pub fn run() {
             frame_builder.host_mut().set_desktop_controls_config(
                 settings_store::hardware::DesktopControlsConfig::load(),
             );
+            frame_builder.host_mut().poll_display_identify();
             let policy = tilo_power_mgmt::config::load_policy();
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
