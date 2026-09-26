@@ -1347,16 +1347,19 @@ enum PrintScreenArbitration {
     Blocked(&'static str),
 }
 
+/// Where the desktop-control preferences come from. The persisted variant
+/// caches the last snapshot read from settings storage; the compositor
+/// refreshes it at its settings reload point, so key dispatch and paint
+/// never read the file.
 enum DesktopControlsSource {
-    Persisted,
+    Persisted(settings_store::hardware::DesktopControlsConfig),
     Explicit(settings_store::hardware::DesktopControlsConfig),
 }
 
 impl DesktopControlsSource {
     fn config(&self) -> settings_store::hardware::DesktopControlsConfig {
         match self {
-            Self::Persisted => settings_store::hardware::DesktopControlsConfig::load(),
-            Self::Explicit(config) => *config,
+            Self::Persisted(config) | Self::Explicit(config) => *config,
         }
     }
 
@@ -3052,7 +3055,9 @@ impl ShellOverlayHost {
                 room_records,
                 collaboration_preferences: CollaborationPreferences::load(),
                 shortcut_config: settings_store::hardware::ShortcutConfig::load(),
-                desktop_controls: DesktopControlsSource::Persisted,
+                desktop_controls: DesktopControlsSource::Persisted(
+                    settings_store::hardware::DesktopControlsConfig::load(),
+                ),
                 qs_root: QuickSettingsRoot::load_persisted(),
                 qs_refresh: crate::shell::quick_settings::refresh::QsRefresh::new(),
                 qs_actions,
@@ -11307,6 +11312,25 @@ impl ShellOverlayHost {
         config.validate()?;
         self.shortcut_config = settings_store::hardware::ShortcutConfig::normalise(config);
         Ok(())
+    }
+
+    /// The effective shortcut table. Pre-routing checks that run for every
+    /// input event (the session-lock chord) read this snapshot instead of
+    /// settings storage.
+    pub(crate) fn shortcut_config(&self) -> &settings_store::hardware::ShortcutConfig {
+        &self.shortcut_config
+    }
+
+    /// Replace the cached desktop-control preferences after settings
+    /// storage changed. A host constructed with explicit preferences keeps
+    /// them: it does not follow the settings file.
+    pub fn set_desktop_controls_config(
+        &mut self,
+        config: settings_store::hardware::DesktopControlsConfig,
+    ) {
+        if let DesktopControlsSource::Persisted(cached) = &mut self.desktop_controls {
+            *cached = config;
+        }
     }
 
     /// Resolve a press against the effective user-edited shortcut table.
@@ -26185,8 +26209,25 @@ mod palette_dispatch_tests {
 
     fn host_with_launch_polling() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
         let (mut host, chrome) = host_with_chrome();
-        host.desktop_controls = DesktopControlsSource::Persisted;
+        host.desktop_controls = DesktopControlsSource::Persisted(
+            settings_store::hardware::DesktopControlsConfig::default(),
+        );
         (host, chrome)
+    }
+
+    #[test]
+    fn desktop_controls_refresh_only_replaces_a_persisted_snapshot() {
+        let enabled = settings_store::hardware::DesktopControlsConfig { vim_mode: true };
+        let (mut persisted, _chrome) = host_with_launch_polling();
+        persisted.set_desktop_controls_config(enabled);
+        assert!(persisted.desktop_controls.config().vim_mode);
+
+        let (mut explicit, _chrome) = host_with_chrome();
+        explicit.set_desktop_controls_config(enabled);
+        assert!(
+            !explicit.desktop_controls.config().vim_mode,
+            "a host given explicit preferences must not follow the settings file"
+        );
     }
 
     #[test]
