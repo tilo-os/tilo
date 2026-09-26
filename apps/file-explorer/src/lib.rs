@@ -52,6 +52,7 @@ pub mod remote_accounts;
 pub mod remote_dav;
 pub mod search_provider;
 pub mod sharing;
+pub mod shortcut_menu;
 pub mod sidebar;
 pub mod templates;
 pub mod text_layout;
