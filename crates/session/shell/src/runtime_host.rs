@@ -200,7 +200,3 @@ impl Drop for MediaHost {
         .join();
     }
 }
-
-#[cfg(test)]
-#[path = "runtime_host/daemon_process_tests.rs"]
-mod daemon_process_tests;

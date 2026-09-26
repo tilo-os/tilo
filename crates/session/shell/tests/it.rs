@@ -131,6 +131,8 @@ mod qs_actions_click_routing;
 mod real_apps_visual;
 #[path = "remote_cursors_test.rs"]
 mod remote_cursors_test;
+#[path = "runtime_daemon_process.rs"]
+mod runtime_daemon_process;
 #[path = "sandbox_check.rs"]
 mod sandbox_check;
 #[path = "server_side_decorations.rs"]
