@@ -13,6 +13,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
+use settings_store::hardware::{TouchpadClickMethod, TouchpadScrollMethod};
+
 /// Settings section these values live in.
 pub const SECTION: &str = "input";
 
@@ -69,7 +71,7 @@ impl KeyboardSettings {
                 let options = config.xkb_options();
                 (!options.is_empty()).then(|| options.join(","))
             },
-            active_index: config.active_source_index(),
+            active_index: config.active_layout_index(),
         }
     }
 
@@ -86,6 +88,14 @@ impl KeyboardSettings {
 pub struct AccessibilityInputSettings {
     pub sticky_keys: bool,
     pub slow_keys: bool,
+    /// Ignore a second press of the same key shortly after its release.
+    pub bounce_keys: bool,
+    /// The bounce-keys window in milliseconds.
+    pub bounce_keys_delay_ms: u32,
+    /// Flash the visual alert whenever bounce keys swallows a press.
+    pub bounce_keys_alert: bool,
+    /// The numeric keypad drives the pointer.
+    pub mouse_keys: bool,
     pub large_cursor: bool,
     pub cursor_size: u32,
     pub on_screen_keyboard: bool,
@@ -96,6 +106,10 @@ impl Default for AccessibilityInputSettings {
         Self {
             sticky_keys: false,
             slow_keys: false,
+            bounce_keys: false,
+            bounce_keys_delay_ms: settings_store::hardware::BOUNCE_KEYS_DEFAULT_DELAY_MS,
+            bounce_keys_alert: false,
+            mouse_keys: false,
             large_cursor: false,
             cursor_size: 24,
             on_screen_keyboard: false,
@@ -103,33 +117,56 @@ impl Default for AccessibilityInputSettings {
     }
 }
 
+/// `accessibility` key the Shift+Alt+Num Lock chord flips.
+pub const MOUSE_KEYS_KEY: &str = "mouse_keys";
+
 impl AccessibilityInputSettings {
     pub fn load() -> Self {
-        let section = settings_store::load_section("accessibility");
+        Self::from_section(&settings_store::load_section("accessibility"))
+    }
+
+    /// Parse the `accessibility` section; every field falls back to its
+    /// default on its own.
+    pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let d = Self::default();
+        let bool_at = |key: &str, fallback: bool| {
+            section
+                .get(key)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(fallback)
+        };
         Self {
-            sticky_keys: section
-                .get("sticky_keys")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(d.sticky_keys),
-            slow_keys: section
-                .get("slow_keys")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(d.slow_keys),
-            large_cursor: section
-                .get("large_cursor")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(d.large_cursor),
+            sticky_keys: bool_at("sticky_keys", d.sticky_keys),
+            slow_keys: bool_at("slow_keys", d.slow_keys),
+            bounce_keys: bool_at("bounce_keys", d.bounce_keys),
+            bounce_keys_delay_ms: section
+                .get("bounce_keys_delay_ms")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok())
+                .unwrap_or(d.bounce_keys_delay_ms)
+                .clamp(
+                    settings_store::hardware::BOUNCE_KEYS_MIN_DELAY_MS,
+                    settings_store::hardware::BOUNCE_KEYS_MAX_DELAY_MS,
+                ),
+            bounce_keys_alert: bool_at("bounce_keys_alert", d.bounce_keys_alert),
+            mouse_keys: bool_at(MOUSE_KEYS_KEY, d.mouse_keys),
+            large_cursor: bool_at("large_cursor", d.large_cursor),
             cursor_size: section
                 .get("cursor_size")
                 .and_then(serde_json::Value::as_u64)
                 .and_then(|v| u32::try_from(v).ok())
                 .unwrap_or(d.cursor_size)
                 .clamp(24, 64),
-            on_screen_keyboard: section
-                .get("on_screen_keyboard")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(d.on_screen_keyboard),
+            on_screen_keyboard: bool_at("on_screen_keyboard", d.on_screen_keyboard),
+        }
+    }
+
+    /// The bounce-keys window, or zero when bounce keys is off.
+    pub fn bounce_window(self) -> Duration {
+        if self.bounce_keys {
+            Duration::from_millis(u64::from(self.bounce_keys_delay_ms))
+        } else {
+            Duration::ZERO
         }
     }
 
@@ -182,6 +219,15 @@ pub struct InputSettings {
     pub left_handed: bool,
     pub flat_acceleration: bool,
     pub touchpad_gestures: bool,
+    /// Whether touchpads send events at all; the touchpad-toggle key flips it.
+    pub touchpad_enabled: bool,
+    /// Which button a clickpad press means.
+    pub touchpad_click_method: TouchpadClickMethod,
+    /// Two-finger or edge scrolling on touchpads.
+    pub touchpad_scroll_method: TouchpadScrollMethod,
+    /// Multiplier on every scroll distance, wheel and finger alike. Applied by
+    /// the compositor rather than libinput, which has no such setting.
+    pub scroll_speed: f64,
 }
 
 impl Default for InputSettings {
@@ -205,6 +251,10 @@ impl Default for InputSettings {
             left_handed: false,
             flat_acceleration: false,
             touchpad_gestures: true,
+            touchpad_enabled: true,
+            touchpad_click_method: TouchpadClickMethod::Default,
+            touchpad_scroll_method: TouchpadScrollMethod::TwoFinger,
+            scroll_speed: 1.0,
         }
     }
 }
@@ -274,6 +324,22 @@ impl InputSettings {
                 .and_then(serde_json::Value::as_str)
                 == Some("flat"),
             touchpad_gestures: bool_at("touchpad_gestures", d.touchpad_gestures),
+            touchpad_enabled: bool_at(
+                settings_store::hardware::TOUCHPAD_ENABLED_KEY,
+                d.touchpad_enabled,
+            ),
+            touchpad_click_method: section
+                .get("touchpad_click_method")
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+                .unwrap_or(d.touchpad_click_method),
+            touchpad_scroll_method: section
+                .get("touchpad_scroll_method")
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+                .unwrap_or(d.touchpad_scroll_method),
+            scroll_speed: section
+                .get(settings_store::hardware::SCROLL_SPEED_KEY)
+                .and_then(serde_json::Value::as_f64)
+                .map_or(d.scroll_speed, settings_store::hardware::clamp_scroll_speed),
         }
     }
 
@@ -426,6 +492,29 @@ pub struct DeviceCaps {
     pub is_pointer: bool,
     pub supports_left_handed: bool,
     pub supports_flat_acceleration: bool,
+    /// libinput lists software button areas among the click methods.
+    pub supports_click_areas: bool,
+    /// libinput lists clickfinger among the click methods.
+    pub supports_clickfinger: bool,
+    /// The click method libinput would use untouched, if the device has any.
+    pub default_click_method: Option<ClickMethod>,
+    pub supports_two_finger_scroll: bool,
+    pub supports_edge_scroll: bool,
+}
+
+/// A libinput click method, independent of the libinput bindings so the plan
+/// stays a pure value.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ClickMethod {
+    ButtonAreas,
+    Clickfinger,
+}
+
+/// A libinput touchpad scroll method this module can choose.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ScrollMethod {
+    TwoFinger,
+    Edge,
 }
 
 impl DeviceCaps {
@@ -448,6 +537,13 @@ pub struct DevicePlan {
     pub accel_speed_milli: Option<i32>,
     pub left_handed: Option<bool>,
     pub flat_acceleration: Option<bool>,
+    /// Whether the device sends events. Asked only of touchpads: a mouse or
+    /// keyboard is never switched off by the touchpad key.
+    pub send_events: Option<bool>,
+    /// Always a method the device listed; `Default` resolves to the device's
+    /// own default so switching back really undoes an earlier choice.
+    pub click_method: Option<ClickMethod>,
+    pub scroll_method: Option<ScrollMethod>,
 }
 
 impl DevicePlan {
@@ -488,6 +584,22 @@ pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
         flat_acceleration: caps
             .supports_flat_acceleration
             .then_some(settings.flat_acceleration),
+        send_events: caps.is_touchpad().then_some(settings.touchpad_enabled),
+        click_method: match settings.touchpad_click_method {
+            TouchpadClickMethod::Default => caps.default_click_method,
+            TouchpadClickMethod::Areas => caps
+                .supports_click_areas
+                .then_some(ClickMethod::ButtonAreas),
+            TouchpadClickMethod::Clickfinger => caps
+                .supports_clickfinger
+                .then_some(ClickMethod::Clickfinger),
+        },
+        scroll_method: match settings.touchpad_scroll_method {
+            TouchpadScrollMethod::TwoFinger => caps
+                .supports_two_finger_scroll
+                .then_some(ScrollMethod::TwoFinger),
+            TouchpadScrollMethod::Edge => caps.supports_edge_scroll.then_some(ScrollMethod::Edge),
+        },
     }
 }
 
@@ -532,6 +644,11 @@ mod tests {
             is_pointer: true,
             supports_left_handed: true,
             supports_flat_acceleration: true,
+            supports_click_areas: true,
+            supports_clickfinger: true,
+            default_click_method: Some(ClickMethod::ButtonAreas),
+            supports_two_finger_scroll: true,
+            supports_edge_scroll: true,
         }
     }
 
@@ -545,6 +662,7 @@ mod tests {
             is_pointer: true,
             supports_left_handed: true,
             supports_flat_acceleration: true,
+            ..DeviceCaps::default()
         }
     }
 
@@ -702,6 +820,24 @@ mod tests {
     }
 
     #[test]
+    fn the_touchpad_toggle_switches_off_touchpads_and_nothing_else() {
+        assert_eq!(
+            plan_for(&InputSettings::default(), &touchpad()).send_events,
+            Some(true),
+            "an absent preference leaves the touchpad on"
+        );
+        let off = InputSettings::from_section(&section(json!({"touchpad_enabled": false})));
+        assert!(!off.touchpad_enabled);
+        assert_eq!(plan_for(&off, &touchpad()).send_events, Some(false));
+        assert_eq!(
+            plan_for(&off, &mouse()).send_events,
+            None,
+            "a mouse is never switched off by the touchpad key"
+        );
+        assert_eq!(plan_for(&off, &keyboard()).send_events, None);
+    }
+
+    #[test]
     fn turning_tap_off_turns_tap_drag_off_with_it() {
         let s = InputSettings {
             tap_to_click: false,
@@ -816,6 +952,33 @@ mod tests {
     }
 
     #[test]
+    fn input_method_sources_compile_no_group_and_select_the_primary_layout() {
+        let section = serde_json::json!({
+            "keyboard_layout": "ime/pinyin",
+            "keyboard_layouts": ["de", "ime/pinyin", "fr"]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let settings = KeyboardSettings::from_section(&section);
+        assert_eq!(settings.source_ids, ["de", "fr"]);
+        assert_eq!(settings.layouts, "de,fr");
+        assert_eq!(
+            settings.active_index, 0,
+            "the engine types on the primary layout"
+        );
+
+        let section = serde_json::json!({
+            "keyboard_layout": "fr",
+            "keyboard_layouts": ["de", "ime/pinyin", "fr"]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(KeyboardSettings::from_section(&section).active_index, 1);
+    }
+
+    #[test]
     fn keyboard_settings_migrate_the_single_legacy_layout() {
         let section = serde_json::json!({ "keyboard_layout": "gb" })
             .as_object()
@@ -846,6 +1009,129 @@ mod tests {
         assert!(touchpad().is_touchpad());
         assert!(!mouse().is_touchpad());
         assert!(!keyboard().is_touchpad());
+    }
+
+    // touchpad click and scroll methods
+
+    #[test]
+    fn click_method_choices_map_onto_libinput_methods() {
+        for (choice, expected) in [
+            (TouchpadClickMethod::Areas, Some(ClickMethod::ButtonAreas)),
+            (
+                TouchpadClickMethod::Clickfinger,
+                Some(ClickMethod::Clickfinger),
+            ),
+            (TouchpadClickMethod::Default, Some(ClickMethod::ButtonAreas)),
+        ] {
+            let settings = InputSettings {
+                touchpad_click_method: choice,
+                ..Default::default()
+            };
+            assert_eq!(plan_for(&settings, &touchpad()).click_method, expected);
+        }
+    }
+
+    #[test]
+    fn default_click_method_follows_the_device_not_a_fixed_value() {
+        // An Apple-style clickpad defaults to clickfinger; "Default" must
+        // restore that rather than forcing button areas on it.
+        let apple = DeviceCaps {
+            default_click_method: Some(ClickMethod::Clickfinger),
+            ..touchpad()
+        };
+        assert_eq!(
+            plan_for(&InputSettings::default(), &apple).click_method,
+            Some(ClickMethod::Clickfinger)
+        );
+    }
+
+    #[test]
+    fn unsupported_click_methods_are_never_requested() {
+        let areas_only = DeviceCaps {
+            supports_clickfinger: false,
+            ..touchpad()
+        };
+        let settings = InputSettings {
+            touchpad_click_method: TouchpadClickMethod::Clickfinger,
+            ..Default::default()
+        };
+        assert_eq!(plan_for(&settings, &areas_only).click_method, None);
+        assert_eq!(plan_for(&settings, &mouse()).click_method, None);
+        assert_eq!(
+            plan_for(&InputSettings::default(), &mouse()).click_method,
+            None,
+            "a mouse has no default click method to restore"
+        );
+    }
+
+    #[test]
+    fn scroll_method_is_capability_checked() {
+        let edge = InputSettings {
+            touchpad_scroll_method: TouchpadScrollMethod::Edge,
+            ..Default::default()
+        };
+        assert_eq!(
+            plan_for(&InputSettings::default(), &touchpad()).scroll_method,
+            Some(ScrollMethod::TwoFinger)
+        );
+        assert_eq!(
+            plan_for(&edge, &touchpad()).scroll_method,
+            Some(ScrollMethod::Edge)
+        );
+        let single_touch = DeviceCaps {
+            supports_two_finger_scroll: false,
+            ..touchpad()
+        };
+        assert_eq!(
+            plan_for(&InputSettings::default(), &single_touch).scroll_method,
+            None
+        );
+        assert_eq!(plan_for(&edge, &mouse()).scroll_method, None);
+        assert_eq!(plan_for(&edge, &keyboard()).scroll_method, None);
+    }
+
+    #[test]
+    fn touchpad_choices_and_scroll_speed_are_read_from_the_section() {
+        let s = InputSettings::from_section(&section(json!({
+            "touchpad_click_method": "clickfinger",
+            "touchpad_scroll_method": "edge",
+            "scroll_speed": 2.5,
+        })));
+        assert_eq!(s.touchpad_click_method, TouchpadClickMethod::Clickfinger);
+        assert_eq!(s.touchpad_scroll_method, TouchpadScrollMethod::Edge);
+        assert_eq!(s.scroll_speed, 2.5);
+
+        let odd = InputSettings::from_section(&section(json!({
+            "touchpad_click_method": 3,
+            "scroll_speed": -1.0,
+        })));
+        assert_eq!(odd.touchpad_click_method, TouchpadClickMethod::Default);
+        assert_eq!(
+            odd.scroll_speed,
+            settings_store::hardware::SCROLL_SPEED_MIN,
+            "out-of-range speeds clamp into the slider"
+        );
+        assert_eq!(InputSettings::default().scroll_speed, 1.0);
+    }
+
+    // accessibility keyboard filters
+
+    #[test]
+    fn bounce_keys_window_defaults_to_300ms_and_is_off_until_enabled() {
+        let d = AccessibilityInputSettings::default();
+        assert_eq!(d.bounce_window(), Duration::ZERO);
+        let on = AccessibilityInputSettings::from_section(&section(json!({
+            "bounce_keys": true,
+        })));
+        assert_eq!(on.bounce_window(), Duration::from_millis(300));
+        let clamped = AccessibilityInputSettings::from_section(&section(json!({
+            "bounce_keys": true,
+            "bounce_keys_delay_ms": 60_000,
+            "mouse_keys": true,
+        })));
+        assert_eq!(clamped.bounce_window(), Duration::from_millis(1_000));
+        assert!(clamped.mouse_keys);
+        assert!(!clamped.sticky_keys);
     }
 
     // settings watch

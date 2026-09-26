@@ -1,0 +1,43 @@
+# Third-party apps `tilo-vm slot apps install --set <name>` puts into a dev
+# VM, to check desktop features against software Tilo did not write.
+#
+# They are never part of an image. tilo-vmd installs them with the VM's own
+# package manager line (dnf on the Fedora bootc dev image, into a transient
+# /usr overlay that the next reboot discards), then restarts the slot's
+# session so it sees them. Each app is one package; `checks` says what it is
+# for and `try` how to start it once installed. Keep sets small: every
+# package here is downloaded into every VM that asks for the set.
+
+[[set]]
+name = "verification"
+summary = "X11 and GTK clients, dialogs, a PDF viewer and a tray item"
+
+[[set.app]]
+package = "xterm"
+checks = "XWayland: an X11 client in its workspace's rootless Xwayland, X11 input and clipboard"
+try = "xterm"
+
+[[set.app]]
+package = "xeyes"
+checks = "XWayland pointer tracking across windows and outputs"
+try = "xeyes"
+
+[[set.app]]
+package = "gtk4-devel-tools"
+checks = "GTK theming, widgets, popovers and file choosers (gtk4-demo, gtk4-widget-factory)"
+try = "gtk4-widget-factory"
+
+[[set.app]]
+package = "zenity"
+checks = "dialogs as sheets: modal GTK dialogs attached to a parent"
+try = "zenity --question --text 'Keep this?'"
+
+[[set.app]]
+package = "mupdf"
+checks = "mimeapps: a PDF handler that is not a Tilo app"
+try = "mupdf /path/to/file.pdf"
+
+[[set.app]]
+package = "network-manager-applet"
+checks = "tray: a StatusNotifierItem with a menu"
+try = "nm-applet --indicator"

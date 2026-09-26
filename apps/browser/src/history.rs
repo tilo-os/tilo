@@ -4,8 +4,7 @@
 //! navigation calls [`History::record`], which de-duplicates by URL
 //! (bumping the visit count and refreshing the title + timestamp) so the
 //! list stays one-row-per-page. It persists as a JSON array under
-//! `xdg_paths::data_dir()/qos-browser/history.json`. The legacy directory name is
-//! retained so an upgrade does not strand a user's existing history.
+//! `xdg_paths::data_dir()/tilo-browser/history.json`.
 //!
 //! [`History::suggest`] powers the address-bar overlay. It fuzzy-matches
 //! the query as a case-insensitive *subsequence* of each entry's title
@@ -33,6 +32,7 @@
 
 use std::path::PathBuf;
 use tilo_clock::unix_now;
+use ui::search::{FieldWeight, RankField};
 
 /// Keep history useful without letting a long-lived profile turn every
 /// address-bar query, resource snapshot, or persisted JSON write into an
@@ -185,7 +185,7 @@ impl History {
     /// most-visited, then URL — a total order so results never jitter
     /// between frames for the same inputs.
     pub fn suggest_at(&self, query: &str, limit: usize, now: u64) -> Vec<HistoryEntry> {
-        let needle = query.trim().to_lowercase();
+        let needle = query.trim();
         let mut scored: Vec<(f64, &HistoryEntry)> = Vec::new();
 
         for entry in &self.entries {
@@ -193,9 +193,7 @@ impl History {
                 // No text signal — rank purely on recency + frequency.
                 0.0
             } else {
-                let title_score = fuzzy_score(&entry.title.to_lowercase(), &needle);
-                let url_score = fuzzy_score(&entry.url.to_lowercase(), &needle);
-                match best(title_score, url_score) {
+                match match_score(needle, entry) {
                     Some(s) => s,
                     None => continue, // matches neither field — drop it
                 }
@@ -362,7 +360,7 @@ fn bounded_text(value: &str, limit: usize) -> String {
 }
 
 /// Absolute path to the history file:
-/// `xdg_paths::data_dir()/qos-browser/history.json`. `None` when the platform
+/// `xdg_paths::data_dir()/tilo-browser/history.json`. `None` when the platform
 /// exposes no data directory. The legacy directory remains the canonical
 /// default until storage migration is explicit and crash-safe.
 pub fn history_path() -> Option<PathBuf> {
@@ -385,96 +383,17 @@ fn frequency_score(visit_count: u32) -> f64 {
     1.0 - 1.0 / (1.0 + n)
 }
 
-/// The larger of two optional scores (`None` = no match).
-fn best(a: Option<f64>, b: Option<f64>) -> Option<f64> {
-    match (a, b) {
-        (Some(x), Some(y)) => Some(x.max(y)),
-        (x, None) => x,
-        (None, y) => y,
-    }
-}
-
-/// Case-insensitive fuzzy subsequence score of `needle` within
-/// `haystack` (both expected already lowercased), or `None` when
-/// `needle` is not a subsequence of `haystack`.
-///
-/// The score lands in `[0, 1]` and rewards *contiguity* and a *strong
-/// start*:
-///  * a base credit for matching at all,
-///  * a contiguity bonus proportional to how many matched characters are
-///    adjacent (a full substring match maxes this out),
-///  * a start bonus when the first matched character begins the string
-///    (a prefix) or follows a word boundary (`.`, `/`, `-`, `_`, space,
-///    `:`) — so `git` scores higher against `github.com` than against a
-///    string where the `g` sits mid-word.
-///
-/// An empty needle scores `1.0` (everything "matches" the empty query);
-/// callers that want the recency/frequency-only default filter the empty
-/// query out before calling this.
-fn fuzzy_score(haystack: &str, needle: &str) -> Option<f64> {
-    // Blend weight: matching at all is worth this base, contiguity and start
-    // each add up to the remainder, so a contiguous prefix ≈ 1.0 and a
-    // scattered mid-word match ≈ the base.
-    const BASE: f64 = 0.3;
-
-    if needle.is_empty() {
-        return Some(1.0);
-    }
-    let hay: Vec<char> = haystack.chars().collect();
-    let need: Vec<char> = needle.chars().collect();
-
-    // Greedy left-to-right subsequence match, recording matched indices.
-    let mut matched: Vec<usize> = Vec::with_capacity(need.len());
-    let mut hi = 0usize;
-    for &nc in &need {
-        let mut found = None;
-        while hi < hay.len() {
-            if hay.get(hi) == Some(&nc) {
-                found = Some(hi);
-                hi += 1;
-                break;
-            }
-            hi += 1;
-        }
-        {
-            let idx = found?;
-            matched.push(idx);
-        }
-    }
-
-    // Contiguity: fraction of the matched characters that are adjacent to
-    // their predecessor. 1.0 for a pure substring, 0.0 for all-gaps.
-    let contiguity = if need.len() > 1 {
-        let adjacent = matched
-            .iter()
-            .zip(matched.iter().skip(1))
-            .filter(|pair| *pair.1 == *pair.0 + 1)
-            .count() as f64;
-        adjacent / (need.len() - 1) as f64
-    } else {
-        // A single matched char is trivially "contiguous".
-        1.0
-    };
-
-    // Start strength: prefix (index 0) beats a word-boundary start, which
-    // beats a mid-word start.
-    let &first = matched.first()?;
-    let start_bonus = if first == 0 {
-        1.0
-    } else if hay.get(first - 1).is_some_and(|&c| is_boundary(c)) {
-        0.6
-    } else {
-        0.0
-    };
-
-    let score = BASE + 0.45 * contiguity + 0.25 * start_bonus;
-    Some(score.min(1.0))
-}
-
-/// Whether `c` is a word-boundary separator commonly found in URLs and
-/// titles, so a match starting right after it reads as a "word start".
-fn is_boundary(c: char) -> bool {
-    matches!(c, '.' | '/' | '-' | '_' | ' ' | ':' | '?' | '&' | '=' | '#')
+/// The shared search ranker's relevance of `entry` to `needle` in `[0, 1]`,
+/// or `None` when neither its title nor its URL matches. Title and URL are
+/// both things a person types from memory, so they weigh the same.
+fn match_score(needle: &str, entry: &HistoryEntry) -> Option<f64> {
+    ui::search::relevance_fraction(
+        needle,
+        &[
+            RankField::new(&entry.title, FieldWeight::TITLE),
+            RankField::new(&entry.url, FieldWeight::TITLE),
+        ],
+    )
 }
 
 #[cfg(test)]
@@ -549,11 +468,16 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_matches_lowercased_subsequence() {
-        // `fuzzy_score` assumes its inputs are already lowercased (the
-        // caller folds case); a subsequence then matches.
-        let s = fuzzy_score("github.com", "git");
-        assert!(s.is_some(), "'git' is a subsequence of 'github.com'");
+    fn subsequences_of_a_title_or_url_match() {
+        let row = entry("https://github.com", "Code hosting", 1_000, 1);
+        assert!(
+            match_score("ghcm", &row).is_some(),
+            "a URL subsequence matches"
+        );
+        assert!(
+            match_score("hosting", &row).is_some(),
+            "a title substring matches"
+        );
     }
 
     #[test]
@@ -568,23 +492,21 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_rejects_non_subsequence() {
+    fn non_subsequences_do_not_match() {
         assert!(
-            fuzzy_score("example.com", "zzz").is_none(),
+            match_score("zzz", &entry("https://example.com", "", 1, 1)).is_none(),
             "characters absent from the haystack do not match"
         );
         assert!(
-            fuzzy_score("abc", "acb").is_none(),
+            match_score("acb", &entry("abc", "", 1, 1)).is_none(),
             "out-of-order characters are not a subsequence"
         );
     }
 
     #[test]
-    fn fuzzy_prefix_scores_above_scattered() {
-        // 'git' is a contiguous prefix of the first and scattered in the
-        // second, so the prefix must score strictly higher.
-        let prefix = fuzzy_score("github", "git").unwrap();
-        let scattered = fuzzy_score("goldieturtle", "git").unwrap(); // g..i..t
+    fn prefix_scores_above_scattered() {
+        let prefix = match_score("git", &entry("github", "", 1, 1)).unwrap();
+        let scattered = match_score("git", &entry("goldieturtle", "", 1, 1)).unwrap();
         assert!(
             prefix > scattered,
             "contiguous prefix ({prefix}) must beat a scattered match ({scattered})"
@@ -728,7 +650,7 @@ mod tests {
     fn history_path_preserves_the_existing_browser_data_root() {
         // Only assert the tail so the test is host-agnostic.
         if let Some(p) = history_path() {
-            assert!(p.ends_with("qos-browser/history.json"), "path was {p:?}");
+            assert!(p.ends_with("tilo-browser/history.json"), "path was {p:?}");
         }
     }
 }

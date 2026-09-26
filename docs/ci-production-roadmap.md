@@ -119,7 +119,7 @@ nightly workspace run fell from 573.0 s at a 20.61% sccache hit rate to 436.71 s
 at 93.35%; [`ci-performance.md`](ci-performance.md) records the counters and CPU
 cost. These are comparison points, not current guarantees.
 
-On 2026-09-20, [agent-platform smoke 834](https://code.sandbox.example/PodestaAI/agent-platform/actions/runs/834)
+On 2026-09-20, [agent-platform smoke 834](https://code.tilo.so/tilo/agent-platform/actions/runs/834)
 passed all four jobs after the shared Actions cache route was deployed. One runner
 saved a 274-byte cache at 12:41:45.755 UTC; another restored it at 12:41:52.949 UTC.
 The same smoke recorded a Rust sccache hit. This proves cross-runner connectivity

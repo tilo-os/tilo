@@ -90,6 +90,23 @@ impl ResourceKind {
         self.0.strip_prefix("scheme:")
     }
 
+    /// The key `mimeapps.list` and `MimeType=` use for this resource: the MIME type
+    /// itself, or `x-scheme-handler/<scheme>`. Extensions have none.
+    pub fn mimeapps_type(&self) -> Option<String> {
+        self.mime_name()
+            .map(str::to_string)
+            .or_else(|| self.scheme_name().map(|s| format!("x-scheme-handler/{s}")))
+    }
+
+    /// The inverse of [`Self::mimeapps_type`]: a `MimeType=` entry as a resource.
+    pub fn from_mimeapps_type(value: &str) -> Option<Self> {
+        let value = value.trim();
+        match value.to_ascii_lowercase().strip_prefix("x-scheme-handler/") {
+            Some(scheme) => Self::scheme(scheme).ok(),
+            None => Self::mime(value).ok(),
+        }
+    }
+
     pub fn display_label(&self) -> String {
         if let Some(ext) = self.extension_name() {
             format!(".{ext} files")
@@ -125,6 +142,11 @@ pub struct AppCandidate {
 impl AppCandidate {
     pub fn handles(&self, resource: &ResourceKind) -> bool {
         self.resources.contains(resource)
+    }
+
+    /// A host desktop entry rather than a Tilo package; see [`crate::mimeapps`].
+    pub fn is_host(&self) -> bool {
+        crate::mimeapps::host_desktop_id(&self.package_id).is_some()
     }
 }
 
@@ -175,6 +197,8 @@ pub enum SelectionSource {
     PersonalOverride,
     WorkspacePolicy,
     PersonalDefault,
+    /// The host's `mimeapps.list` chain named this host application.
+    SystemDefault,
     DeterministicFallback,
 }
 
@@ -197,11 +221,23 @@ pub enum DefaultAppError {
 
 pub struct DefaultAppResolver<'a> {
     candidates: &'a [AppCandidate],
+    system_defaults: Option<&'a crate::mimeapps::MimeAppsChain>,
 }
 
 impl<'a> DefaultAppResolver<'a> {
     pub fn new(candidates: &'a [AppCandidate]) -> Self {
-        Self { candidates }
+        Self {
+            candidates,
+            system_defaults: None,
+        }
+    }
+
+    /// Consult the host's `mimeapps.list` chain when choosing among host applications that
+    /// no personal or workspace choice names.
+    #[must_use]
+    pub fn with_system_defaults(mut self, chain: &'a crate::mimeapps::MimeAppsChain) -> Self {
+        self.system_defaults = Some(chain);
+        self
     }
 
     /// # Errors
@@ -288,6 +324,9 @@ impl<'a> DefaultAppResolver<'a> {
         self.fallback(resource)
     }
 
+    /// Without an explicit choice: a Tilo package first, since it runs sandboxed and
+    /// collaborative; then the host's own `mimeapps.list` default; then any host
+    /// application, deterministically by name.
     fn fallback(&self, resource: &ResourceKind) -> Option<DefaultAppSelection> {
         let mut candidates: Vec<&AppCandidate> = self
             .candidates
@@ -295,12 +334,30 @@ impl<'a> DefaultAppResolver<'a> {
             .filter(|app| app.handles(resource))
             .collect();
         candidates.sort_by(|a, b| {
-            a.display_name
-                .cmp(&b.display_name)
+            a.is_host()
+                .cmp(&b.is_host())
+                .then_with(|| a.display_name.cmp(&b.display_name))
                 .then_with(|| a.package_id.cmp(&b.package_id))
         });
-        candidates.first().map(|app| DefaultAppSelection {
-            package_id: app.package_id.clone(),
+        let first = candidates.first()?;
+        if !first.is_host() {
+            return Some(DefaultAppSelection {
+                package_id: first.package_id.clone(),
+                source: SelectionSource::DeterministicFallback,
+            });
+        }
+        if let (Some(chain), Some(mime)) = (self.system_defaults, resource.mimeapps_type())
+            && let Some(id) = chain.default_for(&mime, |id| {
+                candidates.iter().any(|app| app.package_id == id)
+            })
+        {
+            return Some(DefaultAppSelection {
+                package_id: id.to_string(),
+                source: SelectionSource::SystemDefault,
+            });
+        }
+        Some(DefaultAppSelection {
+            package_id: first.package_id.clone(),
             source: SelectionSource::DeterministicFallback,
         })
     }
@@ -506,6 +563,75 @@ mod tests {
         let selected = resolver.resolve(&pdf, "ada", &personal, Some(&ws)).unwrap();
         assert_eq!(selected.package_id, "so.tilo.a");
         assert_eq!(selected.source, SelectionSource::DeterministicFallback);
+    }
+
+    fn host(desktop_id: &str, name: &str, resource: &ResourceKind) -> AppCandidate {
+        AppCandidate {
+            package_id: crate::mimeapps::host_app_id(desktop_id),
+            display_name: name.into(),
+            resources: [resource.clone()].into(),
+        }
+    }
+
+    #[test]
+    fn tilo_packages_outrank_host_apps_and_the_host_default_orders_host_apps() {
+        let pdf = ResourceKind::mime("application/pdf").unwrap();
+        let chain =
+            crate::mimeapps::MimeAppsChain::new(vec![crate::mimeapps::MimeAppsList::parse(
+                "[Default Applications]\napplication/pdf=gone.desktop;org.gnome.Evince.desktop;\n",
+            )]);
+        let hosts = [
+            host("okular", "Aardvark PDF", &pdf),
+            host("org.gnome.Evince", "Evince", &pdf),
+        ];
+        let selected = DefaultAppResolver::new(&hosts)
+            .with_system_defaults(&chain)
+            .resolve(&pdf, "ada", &PersonalDefaults::default(), None)
+            .unwrap();
+        assert_eq!(selected.package_id, "org.gnome.Evince.desktop");
+        assert_eq!(selected.source, SelectionSource::SystemDefault);
+
+        let mut with_package = hosts.to_vec();
+        with_package.push(AppCandidate {
+            package_id: "so.tilo.pdf-viewer".into(),
+            display_name: "PDF Viewer".into(),
+            resources: [pdf.clone()].into(),
+        });
+        let selected = DefaultAppResolver::new(&with_package)
+            .with_system_defaults(&chain)
+            .resolve(&pdf, "ada", &PersonalDefaults::default(), None)
+            .unwrap();
+        assert_eq!(selected.package_id, "so.tilo.pdf-viewer");
+
+        let personal = PersonalDefaults {
+            handlers: [(pdf.clone(), "okular.desktop".into())].into(),
+        };
+        let selected = DefaultAppResolver::new(&with_package)
+            .with_system_defaults(&chain)
+            .resolve(&pdf, "ada", &personal, None)
+            .unwrap();
+        assert_eq!(
+            selected.package_id, "okular.desktop",
+            "a personal choice of a host app wins over a package"
+        );
+    }
+
+    #[test]
+    fn scheme_handlers_use_the_x_scheme_handler_spelling() {
+        let https = ResourceKind::scheme("https").unwrap();
+        assert_eq!(
+            https.mimeapps_type().as_deref(),
+            Some("x-scheme-handler/https")
+        );
+        assert_eq!(
+            ResourceKind::from_mimeapps_type("x-scheme-handler/HTTPS"),
+            Some(https)
+        );
+        assert_eq!(
+            ResourceKind::from_mimeapps_type("text/plain"),
+            ResourceKind::mime("text/plain").ok()
+        );
+        assert_eq!(r("pdf").mimeapps_type(), None);
     }
 
     #[test]

@@ -144,7 +144,7 @@ impl PhotosDoc {
     ///
     /// Reads **every** value the key holds, not only the one Automerge would
     /// hand back, and a photograph beats no photograph. See
-    /// [`Self::conflicting`] for why that is the difference between a
+    /// `Self::conflicting` for why that is the difference between a
     /// collaborator's picture surviving and a collaborator's picture being
     /// closed by somebody else's app starting up.
     pub fn image(doc: &AutoCommit) -> Option<OpenImage> {

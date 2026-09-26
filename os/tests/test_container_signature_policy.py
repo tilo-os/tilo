@@ -123,6 +123,13 @@ class ContainerSignaturePolicyTests(unittest.TestCase):
         text = RELEASE_WORKFLOW.read_text(encoding='utf-8')
         targets = set(re.findall(r'cosign sign --yes --key "\$COSIGN_KEY_REF" \\\s*"([^"@]+)@', text))
         self.assertTrue(targets, 'release workflow no longer signs the OS image')
+        # The OS repository is the public one, or the private one for board
+        # images; both must be signature-required.
+        if '$TILO_OS_REPOSITORY' in targets:
+            targets.remove('$TILO_OS_REPOSITORY')
+            selection = re.search(r'TILO_OS_REPOSITORY: \$\{\{(.*)\}\}', text).group(1)
+            targets.update(re.findall(r"'([a-z0-9.-]+/tilo/tilo)'", selection))
+            self.assertEqual(len(targets), 2)
         for target in targets:
             with self.subTest(target=target):
                 self.assertIn(target, signed_repositories())

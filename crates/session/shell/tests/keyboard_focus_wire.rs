@@ -711,3 +711,133 @@ fn lock_capture_boundary_hides_held_keys_and_restores_a_clean_seat() {
         "typing after unlock must be a normal, balanced new key sequence"
     );
 }
+
+/// A key event carrying a real physical position, as the DRM and winit
+/// backends deliver it; `GlobalShortcuts` grants match physical keys.
+fn physical_key_event(logical: Key, code: winit::keyboard::KeyCode, pressed: bool) -> WindowEvent {
+    let mut event = captured_key_event(logical, pressed);
+    if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+        event.physical_key = PhysicalKey::Code(code);
+    }
+    event
+}
+
+fn drain_edges(
+    events: &shell::portal::global_shortcuts::GlobalShortcutsHandle,
+) -> Vec<(String, shell::portal::global_shortcuts::ShortcutEdge)> {
+    events
+        .drain_activations()
+        .into_iter()
+        .map(|event| (event.shortcut_id, event.edge))
+        .collect()
+}
+
+/// An approved `GlobalShortcuts` grant must fire while an app holds keyboard
+/// focus: the compositor claims the press before the focused client sees
+/// it, queues `Activated`, and on release queues `Deactivated` (which
+/// push-to-talk clients wait for) without ever showing the client either
+/// edge.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the grant, the focused client and both key edges form one wire transcript"
+)]
+#[test]
+fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_release() {
+    use shell::portal::global_shortcuts::{
+        GlobalShortcut, GlobalShortcutBindingRequest, GlobalShortcutsHandle,
+        GlobalShortcutsService as _, ShellGlobalShortcutsService, ShortcutEdge,
+    };
+
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h
+        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
+        .expect("compositor");
+    let wm = h
+        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
+        .expect("xdg shell");
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id("org.example.Focused".into());
+    h.pump();
+    let focused = foreign_id(&h.state, "org.example.Focused");
+    h.state.set_client_keyboard_focus(Some(focused));
+    h.pump();
+    h.client.keyboard.clear();
+
+    // Grant Ctrl+Shift+T to another app through the reviewed consent path.
+    let session = "/org/freedesktop/portal/desktop/session/talk";
+    let dialogs = shell::shell::portal_dialog::PortalDialogQueue::default();
+    let service = ShellGlobalShortcutsService::with_dialogs(dialogs.clone());
+    let events =
+        GlobalShortcutsHandle::with_bound_session_for_tests(session, "org.example.Talk", &["talk"]);
+    service.attach_event_bridge(events.clone());
+    h.state.global_shortcuts = service.clone();
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    runtime.block_on(async {
+        let (reply, approved) = tokio::sync::oneshot::channel();
+        let _ = service.request_bind(
+            GlobalShortcutBindingRequest {
+                handle: "/request/talk".into(),
+                session: session.into(),
+                app_id: "org.example.Talk".into(),
+                parent_window: String::new(),
+                shortcuts: vec![GlobalShortcut {
+                    id: "talk".into(),
+                    description: Some("Push to talk".into()),
+                    preferred_trigger: Some("Ctrl+Shift+T".into()),
+                }],
+            },
+            reply,
+        );
+        let mut review = shell::shell::portal_dialog::PortalDialogController::new(dialogs);
+        assert!(review.pump(), "the grant is reviewed by the shell");
+        assert!(review.confirm());
+        approved.await.expect("the review resolves");
+    });
+
+    let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+    let chord = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
+    let press = physical_key_event(
+        Key::Character("T".into()),
+        winit::keyboard::KeyCode::KeyT,
+        true,
+    );
+    let release = physical_key_event(
+        Key::Character("T".into()),
+        winit::keyboard::KeyCode::KeyT,
+        false,
+    );
+    assert!(
+        !shell::compositor::client_input::route_input(&mut h.state, &mut frame, &press, &chord),
+        "the granted chord must be claimed before the focused client"
+    );
+    h.pump();
+    assert!(
+        h.client.keyboard.is_empty(),
+        "the focused client must not see the granted press"
+    );
+    assert_eq!(
+        drain_edges(&events),
+        vec![("talk".to_string(), ShortcutEdge::Activated)]
+    );
+
+    assert!(
+        !shell::compositor::client_input::route_input(&mut h.state, &mut frame, &release, &chord),
+        "the release of a granted press stays with the grant"
+    );
+    h.pump();
+    assert!(
+        h.client.keyboard.is_empty(),
+        "the focused client must not see an unmatched release"
+    );
+    assert_eq!(
+        drain_edges(&events),
+        vec![("talk".to_string(), ShortcutEdge::Deactivated)]
+    );
+}

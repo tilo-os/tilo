@@ -10,6 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
 
+mod profiles;
+
+pub use profiles::{AttachedOutput, DisplayProfile, DisplayProfiles, DisplaySet};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputTransform {
@@ -18,6 +22,41 @@ pub enum OutputTransform {
     Rotate90,
     Rotate180,
     Rotate270,
+}
+
+/// An output's extent in the logical desktop layout: its `mode` divided by
+/// its UI `scale`, then rotated. [`OutputConfig::x`]/[`OutputConfig::y`] are
+/// in these units, so outputs placed edge to edge use this extent — not the
+/// mode — or a 2x panel leaves a gap as wide as itself beside it.
+///
+/// Rounded the way `zxdg_output_v1.logical_size` is (nearest pixel per
+/// axis), so the stored layout and what clients are told agree exactly. A
+/// non-positive or non-finite scale counts as 1.
+pub fn logical_extent(mode: (u32, u32), scale: f64, transform: OutputTransform) -> (u32, u32) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "rounded and clamped to [0, u32::MAX] first"
+    )]
+    let axis = |px: u32| {
+        (f64::from(px) / scale)
+            .round()
+            .clamp(0.0, f64::from(u32::MAX)) as u32
+    };
+    let (w, h) = (axis(mode.0), axis(mode.1));
+    if matches!(
+        transform,
+        OutputTransform::Rotate90 | OutputTransform::Rotate270
+    ) {
+        (h, w)
+    } else {
+        (w, h)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +78,44 @@ impl OutputMode {
     }
 }
 
+/// What a sink's EDID says it is. Empty strings mean the EDID did not say.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MonitorIdentity {
+    /// Manufacturer name, or its three-letter PNP id when the name is not
+    /// known, e.g. `Dell` or `XYZ`.
+    pub make: String,
+    /// The monitor-name descriptor, else the product code, e.g.
+    /// `DELL U2720Q` or `0x40a4`.
+    pub model: String,
+    /// The serial-string descriptor, else the numeric serial when non-zero.
+    pub serial: String,
+    pub physical_size_mm: Option<(u32, u32)>,
+}
+
+impl MonitorIdentity {
+    /// The name a person recognises, e.g. `Dell U2720Q`. Monitor-name
+    /// descriptors usually already start with the brand, so it is not
+    /// repeated.
+    pub fn display_name(&self) -> String {
+        let make = self.make.trim();
+        let model = self.model.trim();
+        let model_names_make = model
+            .split_whitespace()
+            .next()
+            .is_some_and(|first| first.eq_ignore_ascii_case(make));
+        match (make.is_empty(), model.is_empty()) {
+            (_, true) => make.to_owned(),
+            (true, false) => model.to_owned(),
+            (false, false) if model_names_make => {
+                let rest = model.get(make.len()..).unwrap_or_default();
+                format!("{make}{rest}")
+            }
+            (false, false) => format!("{make} {model}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputDescriptor {
     /// Collision-free output key used by persisted display intent. This is
@@ -54,6 +131,8 @@ pub struct OutputDescriptor {
     pub hdr: bool,
     pub vrr: bool,
     pub color_profiles: Vec<String>,
+    /// EDID identity, `None` for a sink that exposes no readable EDID.
+    pub monitor: Option<MonitorIdentity>,
 }
 
 impl OutputDescriptor {
@@ -113,6 +192,20 @@ pub struct DisplayHardwareSnapshot {
     /// stale runtime file cannot become trusted after PID reuse.
     pub publisher_start_ticks: u64,
     pub outputs: Vec<DisplayOutputSnapshot>,
+    /// Where each enabled output sits in the compositor's combined desktop
+    /// coordinates right now, after arrangement, mirroring and rotation.
+    pub layout: Vec<LiveOutputPlacement>,
+}
+
+/// One enabled output's live rectangle in combined desktop coordinates.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveOutputPlacement {
+    /// Collision-free output key, as in [`OutputDescriptor::connector`].
+    pub connector: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl DisplayHardwareSnapshot {
@@ -169,6 +262,9 @@ pub enum DisplayTransactionState {
 pub struct DisplayTransaction {
     pub id: u64,
     pub state: DisplayTransactionState,
+    /// The monitors the candidate was arranged for. It applies only while
+    /// exactly this set is attached, and is remembered as its layout.
+    pub set: DisplaySet,
     pub previous: DisplayConfig,
     pub candidate: DisplayConfig,
     pub deadline_unix_ms: Option<u64>,
@@ -180,6 +276,7 @@ impl Default for DisplayTransaction {
         Self {
             id: 0,
             state: DisplayTransactionState::Requested,
+            set: DisplaySet::default(),
             previous: DisplayConfig::default(),
             candidate: DisplayConfig::default(),
             deadline_unix_ms: None,
@@ -194,12 +291,13 @@ impl DisplayTransaction {
     /// # Errors
     ///
     /// Returns an error if the transaction can't be serialised or written.
-    pub fn request(candidate: DisplayConfig) -> std::io::Result<Self> {
+    pub fn request(set: DisplaySet, candidate: DisplayConfig) -> std::io::Result<Self> {
         let now = unix_now_ms();
         let transaction = Self {
             id: now,
             state: DisplayTransactionState::Requested,
-            previous: DisplayConfig::load(),
+            previous: DisplayConfig::load_for(&set),
+            set,
             candidate,
             deadline_unix_ms: None,
             message: None,
@@ -456,22 +554,25 @@ impl DisplayConfig {
         Ok(())
     }
 
-    pub fn load() -> Self {
-        serde_json::from_value(serde_json::Value::Object(super::load_section(
-            "display_outputs",
-        )))
-        .unwrap_or_default()
+    /// The committed layout for this set of monitors, empty for a set never
+    /// arranged before.
+    pub fn load_for(set: &DisplaySet) -> Self {
+        DisplayProfiles::load().layout_for(set).unwrap_or_default()
     }
 
     /// Configuration the compositor should apply right now. A staged
-    /// transaction temporarily overrides committed intent while the user can
-    /// still see and confirm the result; rejection/revert always resolves to
-    /// the last known-good configuration.
-    pub fn load_effective() -> Self {
-        let committed = Self::load();
+    /// transaction for this same set temporarily overrides committed intent
+    /// while the user can still see and confirm the result;
+    /// rejection/revert always resolves to the last known-good
+    /// configuration. A transaction staged for other monitors never applies.
+    pub fn load_effective(set: &DisplaySet) -> Self {
+        let committed = Self::load_for(set);
         let Some(transaction) = DisplayTransaction::load() else {
             return committed;
         };
+        if transaction.set.key != set.key {
+            return committed;
+        }
         match transaction.state {
             DisplayTransactionState::Requested
             | DisplayTransactionState::AwaitingConfirmation
@@ -483,16 +584,15 @@ impl DisplayConfig {
         }
     }
 
+    /// Remember this as the layout for `set`.
+    ///
     /// # Errors
     ///
-    /// Returns an error if `self` can't be serialised or the section can't
-    /// be written.
-    pub fn save(&self) -> std::io::Result<()> {
-        let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
-        super::update_section(
-            "display_outputs",
-            value.as_object().cloned().unwrap_or_default(),
-        )
+    /// Returns an error if the profiles can't be serialised or written.
+    pub fn save_for(&self, set: &DisplaySet) -> std::io::Result<()> {
+        let mut profiles = DisplayProfiles::load();
+        profiles.remember(set, self);
+        profiles.save()
     }
 }
 
@@ -512,6 +612,100 @@ pub enum AccelProfile {
 /// while physical mouse wheels retain their conventional direction.
 pub const DEFAULT_TOUCHPAD_NATURAL_SCROLL: bool = true;
 pub const DEFAULT_MOUSE_NATURAL_SCROLL: bool = false;
+/// `input` key for whether touchpads send events at all. Absent means on;
+/// the touchpad-toggle hardware key flips it and the compositor applies it
+/// to every touchpad through libinput's send-events mode.
+pub const TOUCHPAD_ENABLED_KEY: &str = "touchpad_enabled";
+
+/// How a clickpad (a touchpad whose whole surface is the button) decides
+/// which button a physical press means. libinput decides per device which of
+/// these it supports; the compositor asks only for a supported one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TouchpadClickMethod {
+    /// The bottom strip is split into left, middle and right button areas.
+    Areas,
+    /// One finger is a left click, two a right click, three a middle click,
+    /// wherever they rest.
+    Clickfinger,
+    /// Whatever libinput picks for the device (areas on most PC clickpads,
+    /// finger count on Apple-style ones). Also what an unknown value reads
+    /// as, so one odd string never discards the rest of the section.
+    #[default]
+    #[serde(other)]
+    Default,
+}
+
+impl TouchpadClickMethod {
+    pub const ALL: [Self; 3] = [Self::Default, Self::Areas, Self::Clickfinger];
+}
+
+/// When a touchpad produces scrolling instead of pointer motion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TouchpadScrollMethod {
+    /// One finger along the right or bottom edge scrolls.
+    Edge,
+    /// Two fingers moving together scroll; also what an unknown value reads
+    /// as.
+    #[default]
+    #[serde(other)]
+    TwoFinger,
+}
+
+impl TouchpadScrollMethod {
+    pub const ALL: [Self; 2] = [Self::TwoFinger, Self::Edge];
+}
+
+/// `input` key for the scroll-distance multiplier applied to wheel and
+/// finger scrolling alike.
+pub const SCROLL_SPEED_KEY: &str = "scroll_speed";
+/// Slowest scroll multiplier the Settings slider can reach.
+pub const SCROLL_SPEED_MIN: f64 = 0.25;
+/// Fastest scroll multiplier the Settings slider can reach.
+pub const SCROLL_SPEED_MAX: f64 = 4.0;
+
+/// Clamp a persisted scroll multiplier into the supported range; anything
+/// non-finite is the neutral `1.0`.
+pub fn clamp_scroll_speed(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(SCROLL_SPEED_MIN, SCROLL_SPEED_MAX)
+    } else {
+        1.0
+    }
+}
+
+/// The scroll multiplier for a `0.0 … 1.0` slider position. The scale is
+/// logarithmic so the midpoint is exactly `1.0` and halving feels as large a
+/// step as doubling.
+pub fn scroll_speed_from_slider(position: f64) -> f64 {
+    let position = if position.is_finite() {
+        position.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    let span = SCROLL_SPEED_MAX.log2();
+    clamp_scroll_speed((span * (2.0 * position - 1.0)).exp2())
+}
+
+/// The slider position for a persisted multiplier; the inverse of
+/// [`scroll_speed_from_slider`].
+pub fn scroll_speed_to_slider(speed: f64) -> f64 {
+    let span = SCROLL_SPEED_MAX.log2();
+    f64::midpoint(clamp_scroll_speed(speed).log2() / span, 1.0).clamp(0.0, 1.0)
+}
+
+/// Default bounce-keys window: a second press of the same key this soon
+/// after its release is treated as a bounce, not a keystroke.
+pub const BOUNCE_KEYS_DEFAULT_DELAY_MS: u32 = 300;
+/// Shortest bounce-keys window Settings offers.
+pub const BOUNCE_KEYS_MIN_DELAY_MS: u32 = 50;
+/// Longest bounce-keys window Settings offers.
+pub const BOUNCE_KEYS_MAX_DELAY_MS: u32 = 1_000;
+
+fn default_scroll_speed() -> f64 {
+    1.0
+}
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -550,6 +744,12 @@ pub struct RichInputConfig {
     pub keyboard_layouts: Vec<String>,
     pub compose_key: Option<String>,
     pub touchpad_gestures: bool,
+    pub touchpad_click_method: TouchpadClickMethod,
+    pub touchpad_scroll_method: TouchpadScrollMethod,
+    /// Scroll-distance multiplier for wheels and touchpads, within
+    /// [`SCROLL_SPEED_MIN`] … [`SCROLL_SPEED_MAX`].
+    #[serde(default = "default_scroll_speed")]
+    pub scroll_speed: f64,
     pub pen_output: Option<String>,
 }
 
@@ -575,6 +775,9 @@ impl Default for RichInputConfig {
             keyboard_layouts: vec!["us".into()],
             compose_key: None,
             touchpad_gestures: true,
+            touchpad_click_method: TouchpadClickMethod::Default,
+            touchpad_scroll_method: TouchpadScrollMethod::TwoFinger,
+            scroll_speed: default_scroll_speed(),
             pen_output: None,
         }
     }
@@ -623,6 +826,89 @@ impl KeyboardInputSource {
             layout: layout.to_string(),
             variant,
         })
+    }
+}
+
+/// An input-method engine the user can pick as an input source, next to the
+/// XKB layouts. Engines compose text (Chinese, Japanese, Korean) instead of
+/// mapping one key to one character; the session's trusted input method
+/// provides them. Only one engine owns the seat at a time, and it types on
+/// the primary (first) keyboard layout of the source list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InputMethodEngine {
+    /// Simplified Chinese, Pinyin.
+    Pinyin,
+    /// Japanese, Mozc.
+    Mozc,
+    /// Korean, Hangul.
+    Hangul,
+}
+
+/// Source ids naming an input-method engine start with this prefix. `/` is
+/// never part of an XKB name, so an engine id cannot be mistaken for a layout.
+pub const INPUT_METHOD_SOURCE_PREFIX: &str = "ime/";
+
+impl InputMethodEngine {
+    pub const ALL: [Self; 3] = [Self::Pinyin, Self::Mozc, Self::Hangul];
+
+    /// The engine's name in the input-method framework (and in its source id).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Pinyin => "pinyin",
+            Self::Mozc => "mozc",
+            Self::Hangul => "hangul",
+        }
+    }
+
+    /// The durable source id, e.g. `ime/pinyin`.
+    pub fn source_id(self) -> String {
+        format!("{INPUT_METHOD_SOURCE_PREFIX}{}", self.name())
+    }
+
+    /// Human-readable source name for choosers and the switcher readout.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pinyin => "Chinese (Simplified) — Pinyin",
+            Self::Mozc => "Japanese — Mozc",
+            Self::Hangul => "Korean — Hangul",
+        }
+    }
+
+    /// Whether this image ships the engine, so Settings offers and the
+    /// compositor starts only engines that can actually run.
+    pub fn is_installed(self) -> bool {
+        std::path::Path::new("/usr/share/fcitx5/inputmethod")
+            .join(format!("{}.conf", self.name()))
+            .is_file()
+    }
+
+    pub fn from_source_id(id: &str) -> Option<Self> {
+        let name = id.trim().strip_prefix(INPUT_METHOD_SOURCE_PREFIX)?;
+        Self::ALL.into_iter().find(|engine| engine.name() == name)
+    }
+}
+
+/// One entry of the ordered input-source list: an XKB layout or an
+/// input-method engine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InputSource {
+    Layout(KeyboardInputSource),
+    InputMethod(InputMethodEngine),
+}
+
+impl InputSource {
+    pub fn parse(value: &str) -> Option<Self> {
+        if let Some(engine) = InputMethodEngine::from_source_id(value) {
+            return Some(Self::InputMethod(engine));
+        }
+        KeyboardInputSource::parse(value).map(Self::Layout)
+    }
+
+    pub fn id(&self) -> String {
+        match self {
+            Self::Layout(source) => source.id.clone(),
+            Self::InputMethod(engine) => engine.source_id(),
+        }
     }
 }
 
@@ -684,52 +970,87 @@ impl RichInputConfig {
             .get("compose_key")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+        // Likewise for the touchpad choices: each is read on its own so one
+        // unexpected value only resets itself.
+        config.touchpad_click_method = section
+            .get("touchpad_click_method")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default();
+        config.touchpad_scroll_method = section
+            .get("touchpad_scroll_method")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default();
+        config.scroll_speed = section
+            .get(SCROLL_SPEED_KEY)
+            .and_then(serde_json::Value::as_f64)
+            .map_or(1.0, clamp_scroll_speed);
         config.normalise_sources();
         config
     }
 
     pub fn normalise_sources(&mut self) {
-        // The fallback is `KeyboardInputSource::parse("us")`'s output written out by hand,
-        // rather than re-parsing a literal we already know is valid XKB.
-        let active = KeyboardInputSource::parse(&self.keyboard_layout).unwrap_or_else(|| {
-            KeyboardInputSource {
-                id: "us".to_string(),
-                layout: "us".to_string(),
-                variant: None,
-            }
-        });
+        let active = InputSource::parse(&self.keyboard_layout).or_else(|| InputSource::parse("us"));
         let mut sources = Vec::<String>::new();
+        let mut layouts = 0_usize;
         for source in &self.keyboard_layouts {
-            let Some(source) = KeyboardInputSource::parse(source) else {
+            let Some(source) = InputSource::parse(source) else {
                 continue;
             };
-            if !sources.contains(&source.id) {
-                sources.push(source.id);
+            let id = source.id();
+            if sources.contains(&id) {
+                continue;
             }
-            if sources.len() == MAX_KEYBOARD_INPUT_SOURCES {
-                break;
+            if matches!(source, InputSource::Layout(_)) {
+                if layouts == MAX_KEYBOARD_INPUT_SOURCES {
+                    continue;
+                }
+                layouts = layouts.saturating_add(1);
             }
+            sources.push(id);
         }
-        if !sources.contains(&active.id) {
-            if sources.len() == MAX_KEYBOARD_INPUT_SOURCES {
-                sources.pop();
+        let active = match active {
+            Some(source) if sources.contains(&source.id()) => source.id(),
+            Some(InputSource::Layout(source)) => {
+                if layouts == MAX_KEYBOARD_INPUT_SOURCES
+                    && let Some(last) = sources
+                        .iter()
+                        .rposition(|id| InputMethodEngine::from_source_id(id).is_none())
+                {
+                    sources.remove(last);
+                }
+                sources.insert(0, source.id.clone());
+                source.id
             }
-            sources.insert(0, active.id.clone());
+            Some(InputSource::InputMethod(engine)) => {
+                sources.push(engine.source_id());
+                engine.source_id()
+            }
+            None => "us".into(),
+        };
+        // An engine types on a layout, so the list always keeps one.
+        if !sources
+            .iter()
+            .any(|id| InputMethodEngine::from_source_id(id).is_none())
+        {
+            sources.insert(0, "us".into());
         }
-        if sources.is_empty() {
-            sources.push("us".into());
-        }
-        self.keyboard_layout = active.id;
+        self.keyboard_layout = active;
         self.keyboard_layouts = sources;
     }
 
+    /// The XKB layouts of the source list, in order: the groups the keymap
+    /// is compiled from. Input-method engines are not XKB groups.
     pub fn sources(&self) -> Vec<KeyboardInputSource> {
         self.keyboard_layouts
             .iter()
-            .filter_map(|value| KeyboardInputSource::parse(value))
+            .filter_map(|value| match InputSource::parse(value)? {
+                InputSource::Layout(source) => Some(source),
+                InputSource::InputMethod(_) => None,
+            })
             .collect()
     }
 
+    /// Position of the active source in the full source list.
     pub fn active_source_index(&self) -> usize {
         self.keyboard_layouts
             .iter()
@@ -737,12 +1058,38 @@ impl RichInputConfig {
             .unwrap_or(0)
     }
 
+    /// The XKB group to select: the active layout's position among the
+    /// layouts, or the primary layout (group 0) while an input-method engine
+    /// is active, since the engine types on it.
+    pub fn active_layout_index(&self) -> usize {
+        self.sources()
+            .iter()
+            .position(|source| source.id == self.keyboard_layout)
+            .unwrap_or(0)
+    }
+
+    /// The input-method engine that owns typing, if the active source is one.
+    pub fn active_input_method(&self) -> Option<InputMethodEngine> {
+        InputMethodEngine::from_source_id(&self.keyboard_layout)
+    }
+
+    /// Whether `id` may join the list: layouts are bounded by the XKB group
+    /// limit, engines only by being distinct.
+    pub fn can_add_source(&self, id: &str) -> bool {
+        match InputSource::parse(id) {
+            None => false,
+            Some(source) if self.keyboard_layouts.contains(&source.id()) => false,
+            Some(InputSource::InputMethod(_)) => true,
+            Some(InputSource::Layout(_)) => self.sources().len() < MAX_KEYBOARD_INPUT_SOURCES,
+        }
+    }
+
     /// XKB option fragments owned by this preference section. Layout
     /// switching is Alt+Shift because Super+Space is Tilo global search;
     /// Compose remains independently configurable.
     pub fn xkb_options(&self) -> Vec<String> {
         let mut options = Vec::new();
-        if self.keyboard_layouts.len() > 1 {
+        if self.sources().len() > 1 {
             options.push("grp:alt_shift_toggle".into());
         }
         if let Some(option) = match self.compose_key.as_deref() {
@@ -783,6 +1130,45 @@ pub enum ShortcutAction {
     MoveGroupRight,
     ResizeNarrower,
     ResizeWider,
+    /// Bring back the most recently closed tab in the current workspace.
+    ReopenClosedTab,
+    /// Focus the Nth window group of the current strip (Super+1 … Super+9).
+    FocusGroup1,
+    FocusGroup2,
+    FocusGroup3,
+    FocusGroup4,
+    FocusGroup5,
+    FocusGroup6,
+    FocusGroup7,
+    FocusGroup8,
+    FocusGroup9,
+    OpenFiles,
+    OpenTerminal,
+    ClipboardHistory,
+    Notifications,
+    ToggleFullscreen,
+    ToggleMagnifier,
+    MagnifierZoomIn,
+    MagnifierZoomOut,
+    PowerMenu,
+}
+
+impl ShortcutAction {
+    /// The strip position a `FocusGroupN` action selects, counting from 0.
+    pub fn focus_group_index(self) -> Option<usize> {
+        Some(match self {
+            Self::FocusGroup1 => 0,
+            Self::FocusGroup2 => 1,
+            Self::FocusGroup3 => 2,
+            Self::FocusGroup4 => 3,
+            Self::FocusGroup5 => 4,
+            Self::FocusGroup6 => 5,
+            Self::FocusGroup7 => 6,
+            Self::FocusGroup8 => 7,
+            Self::FocusGroup9 => 8,
+            _ => return None,
+        })
+    }
 }
 
 /// Desktop-navigation preferences consumed directly by the shell.
@@ -811,12 +1197,25 @@ pub enum QuickSettingsControl {
     NightLight,
     AirplaneMode,
     MobileData,
+    DoNotDisturb,
+    /// Stop a convertible's screen following the device. Shown only where
+    /// an accelerometer exists.
+    RotationLock,
 }
 
 impl QuickSettingsControl {
-    /// A small, useful surface for a typical laptop.  Airplane mode is an
-    /// available extra, not an always-visible destination.
-    pub const DEFAULT: [Self; 4] = [Self::Wifi, Self::Bluetooth, Self::Vpn, Self::NightLight];
+    /// A small, useful surface for a typical laptop.  Airplane mode and Do
+    /// Not Disturb are available extras, not always-visible destinations:
+    /// the compact root must still fit a small display with a VPN present.
+    /// Rotation lock is hidden on machines that cannot rotate, so it costs
+    /// room only on a convertible.
+    pub const DEFAULT: [Self; 5] = [
+        Self::Wifi,
+        Self::Bluetooth,
+        Self::Vpn,
+        Self::NightLight,
+        Self::RotationLock,
+    ];
 
     /// Wi-Fi remains reachable even after customisation: it is the recovery
     /// path for connecting a newly installed desktop to a network.
@@ -1012,6 +1411,32 @@ mod quick_settings_tests {
 }
 
 #[cfg(test)]
+mod logical_extent_tests {
+    use super::{OutputTransform, logical_extent};
+
+    #[test]
+    fn the_logical_extent_is_the_mode_over_the_scale_rotated() {
+        assert_eq!(
+            logical_extent((2560, 1600), 2.0, OutputTransform::Normal),
+            (1280, 800)
+        );
+        assert_eq!(
+            logical_extent((1920, 1200), 1.25, OutputTransform::Rotate90),
+            (960, 1536)
+        );
+        // 2560 / 1.5 = 1706.67: nearest pixel, as zxdg_output_v1 reports.
+        assert_eq!(
+            logical_extent((2560, 1440), 1.5, OutputTransform::Rotate180),
+            (1707, 960)
+        );
+        assert_eq!(
+            logical_extent((1920, 1080), f64::NAN, OutputTransform::Normal),
+            (1920, 1080)
+        );
+    }
+}
+
+#[cfg(test)]
 mod top_bar_widgets_tests {
     use super::{TopBarWidget, TopBarWidgetsConfig};
 
@@ -1124,6 +1549,7 @@ impl KeyChord {
             "enter" => "Enter",
             "escape" => "Escape",
             "space" => "Space",
+            "delete" => "Delete",
             "f1" => "F1",
             other => other,
         };
@@ -1141,6 +1567,28 @@ impl KeyChord {
 #[serde(default)]
 pub struct ShortcutConfig {
     pub bindings: BTreeMap<ShortcutAction, KeyChord>,
+    /// Chords bound to published actions: anything the action door offers,
+    /// a saved shortcut's `run` included.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ActionChord>,
+}
+
+/// A published action, addressed the way the action door addresses it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ActionChordTarget {
+    /// The provider token (`workspace:<room>` for a workspace's own actions).
+    pub provider: String,
+    pub resource: String,
+    pub action: String,
+}
+
+/// One chord bound to one published action.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionChord {
+    pub chord: KeyChord,
+    pub target: ActionChordTarget,
+    /// What the guide and Settings call it, e.g. "Run Publish a draft".
+    pub label: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1148,6 +1596,70 @@ pub enum ShortcutConfigError {
     ReservedSystemKey,
     InvalidChord,
     Conflict(ShortcutAction),
+    /// The chord is one of the shell's own fixed chords, named here.
+    Fixed(&'static str),
+    /// The chord already runs another published action.
+    TakenByAction,
+}
+
+impl std::fmt::Display for ShortcutConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReservedSystemKey => {
+                f.write_str("F1 and Print Screen are reserved by the desktop")
+            }
+            Self::InvalidChord => f.write_str("that chord is not supported"),
+            Self::Conflict(action) => write!(f, "the chord is already bound to {action:?}"),
+            Self::Fixed(label) => write!(f, "the chord is the desktop's own “{label}”"),
+            Self::TakenByAction => f.write_str("the chord already runs another action"),
+        }
+    }
+}
+
+impl std::error::Error for ShortcutConfigError {}
+
+/// The shell's own chords that no setting can rebind, with what they do.
+/// Configurable [`ShortcutAction`] chords are not listed: they move when
+/// rebound.
+#[must_use]
+pub fn fixed_shell_chords() -> Vec<(&'static str, KeyChord)> {
+    fn chord(modifiers: &[&str], key: &str) -> KeyChord {
+        KeyChord {
+            modifiers: modifiers.iter().map(|m| (*m).to_string()).collect(),
+            key: key.to_string(),
+        }
+    }
+    let mut fixed = vec![
+        ("Switch windows", chord(&["Alt"], "tab")),
+        ("Switch windows", chord(&["Alt", "Shift"], "tab")),
+        ("Close tab", chord(&["Alt"], "f4")),
+        ("Close tab", chord(&["Super"], "w")),
+        ("Previous workspace", chord(&["Super"], "pageup")),
+        ("Next workspace", chord(&["Super"], "pagedown")),
+        ("Lock", chord(&["Super"], "l")),
+        ("Global search", chord(&["Super"], "space")),
+        ("New window", chord(&["Super"], "n")),
+        ("Add tab here", chord(&["Super"], "t")),
+        ("Duplicate tab", chord(&["Super"], "d")),
+        ("Workspace wheel", chord(&["Super"], "s")),
+        ("Workspace activity", chord(&["Super"], "h")),
+        ("Workspace activity", chord(&["Super", "Shift"], "h")),
+        ("Wireless display", chord(&["Super"], "p")),
+        ("Picture in picture", chord(&["Super", "Shift"], "p")),
+        ("Save recent replay", chord(&["Super", "Shift"], "r")),
+        ("Capture screenshot", chord(&["Super", "Shift"], "s")),
+        ("Open terminal", chord(&["Super"], "enter")),
+        ("Desktop help", chord(&[], "f1")),
+        ("Screenshot", chord(&[], "printscreen")),
+        ("Dismiss", chord(&[], "escape")),
+    ];
+    for key in ["h", "j", "k", "l"] {
+        fixed.push(("Vim navigation", chord(&["Super", "Ctrl"], key)));
+    }
+    for key in ["h", "l"] {
+        fixed.push(("Vim navigation", chord(&["Super", "Ctrl", "Shift"], key)));
+    }
+    fixed
 }
 
 impl Default for ShortcutConfig {
@@ -1175,6 +1687,18 @@ impl Default for ShortcutConfig {
         fn ctrl_shift_chord(key: &str) -> KeyChord {
             KeyChord {
                 modifiers: BTreeSet::from(["Ctrl".to_string(), "Shift".to_string()]),
+                key: key.to_string(),
+            }
+        }
+        fn ctrl_alt_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Alt".to_string(), "Ctrl".to_string()]),
+                key: key.to_string(),
+            }
+        }
+        fn super_alt_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Alt".to_string(), "Super".to_string()]),
                 key: key.to_string(),
             }
         }
@@ -1208,10 +1732,41 @@ impl Default for ShortcutConfig {
             (ShortcutAction::MoveGroupRight, super_shift_chord("right")),
             (ShortcutAction::ResizeNarrower, super_chord("-")),
             (ShortcutAction::ResizeWider, super_chord("=")),
+            // Browsers' reopen-closed-tab chord, on the desktop's own
+            // modifier; plain Super+T keeps adding a tab.
+            (ShortcutAction::ReopenClosedTab, super_shift_chord("t")),
+            (ShortcutAction::FocusGroup1, super_chord("1")),
+            (ShortcutAction::FocusGroup2, super_chord("2")),
+            (ShortcutAction::FocusGroup3, super_chord("3")),
+            (ShortcutAction::FocusGroup4, super_chord("4")),
+            (ShortcutAction::FocusGroup5, super_chord("5")),
+            (ShortcutAction::FocusGroup6, super_chord("6")),
+            (ShortcutAction::FocusGroup7, super_chord("7")),
+            (ShortcutAction::FocusGroup8, super_chord("8")),
+            (ShortcutAction::FocusGroup9, super_chord("9")),
+            (ShortcutAction::OpenFiles, super_chord("e")),
+            (ShortcutAction::OpenTerminal, ctrl_alt_chord("t")),
+            (ShortcutAction::ClipboardHistory, super_chord("v")),
+            // Super+N already opens an app as an adjacent window, so the
+            // notification list takes Windows' other Action Center key.
+            (ShortcutAction::Notifications, super_chord("a")),
+            (ShortcutAction::ToggleFullscreen, super_chord("f")),
+            // GNOME's and Windows' magnifier keys (Super+Alt+8, Super+Plus)
+            // — the second is already the resize-wider default.
+            (ShortcutAction::ToggleMagnifier, super_alt_chord("8")),
+            // GNOME's zoom keys; Super+= and Super+- already resize windows.
+            (ShortcutAction::MagnifierZoomIn, super_alt_chord("=")),
+            (ShortcutAction::MagnifierZoomOut, super_alt_chord("-")),
+            // The session action sheet: the chord every PC user tries when
+            // something has hung.
+            (ShortcutAction::PowerMenu, ctrl_alt_chord("delete")),
         ]
         .into_iter()
         .collect();
-        Self { bindings }
+        Self {
+            bindings,
+            actions: Vec::new(),
+        }
     }
 }
 
@@ -1242,7 +1797,90 @@ impl ShortcutConfig {
                 return Err(ShortcutConfigError::Conflict(other));
             }
         }
+        for (index, bound) in self.actions.iter().enumerate() {
+            self.check_action_chord(&bound.chord, Some(&bound.target))?;
+            if self
+                .actions
+                .iter()
+                .skip(index.saturating_add(1))
+                .any(|other| other.target == bound.target)
+            {
+                return Err(ShortcutConfigError::TakenByAction);
+            }
+        }
         Ok(())
+    }
+
+    /// Whether `chord` may run the published action `target`: a valid,
+    /// unreserved chord that is neither one of the shell's fixed chords, nor
+    /// bound to a configurable desktop action, nor running another action.
+    ///
+    /// # Errors
+    ///
+    /// Why the chord cannot be bound.
+    pub fn check_action_chord(
+        &self,
+        chord: &KeyChord,
+        target: Option<&ActionChordTarget>,
+    ) -> Result<(), ShortcutConfigError> {
+        if chord.is_reserved_system_key() {
+            return Err(ShortcutConfigError::ReservedSystemKey);
+        }
+        if !chord.is_valid_configurable() {
+            return Err(ShortcutConfigError::InvalidChord);
+        }
+        if let Some((label, _)) = fixed_shell_chords()
+            .into_iter()
+            .find(|(_, fixed)| fixed == chord)
+        {
+            return Err(ShortcutConfigError::Fixed(label));
+        }
+        if let Some((action, _)) = self.bindings.iter().find(|(_, bound)| *bound == chord) {
+            return Err(ShortcutConfigError::Conflict(*action));
+        }
+        if self
+            .actions
+            .iter()
+            .any(|bound| bound.chord == *chord && Some(&bound.target) != target)
+        {
+            return Err(ShortcutConfigError::TakenByAction);
+        }
+        Ok(())
+    }
+
+    /// Bind `chord` to the published action `target`, replacing the chord
+    /// it had.
+    ///
+    /// # Errors
+    ///
+    /// Why the chord cannot be bound; the table is then unchanged.
+    pub fn set_action(
+        &mut self,
+        chord: KeyChord,
+        target: ActionChordTarget,
+        label: impl Into<String>,
+    ) -> Result<(), ShortcutConfigError> {
+        self.check_action_chord(&chord, Some(&target))?;
+        self.actions.retain(|bound| bound.target != target);
+        self.actions.push(ActionChord {
+            chord,
+            target,
+            label: label.into(),
+        });
+        Ok(())
+    }
+
+    /// Unbind whatever chord runs `target`. `false` when none did.
+    pub fn remove_action(&mut self, target: &ActionChordTarget) -> bool {
+        let before = self.actions.len();
+        self.actions.retain(|bound| bound.target != *target);
+        self.actions.len() != before
+    }
+
+    /// The action `chord` runs, when it runs one.
+    #[must_use]
+    pub fn action_for(&self, chord: &KeyChord) -> Option<&ActionChord> {
+        self.actions.iter().find(|bound| bound.chord == *chord)
     }
 
     /// # Errors
@@ -1272,6 +1910,9 @@ impl ShortcutConfig {
             .find(|(a, c)| **a != action && **c == chord)
         {
             return Err(ShortcutConfigError::Conflict(*other));
+        }
+        if self.actions.iter().any(|bound| bound.chord == chord) {
+            return Err(ShortcutConfigError::TakenByAction);
         }
         self.bindings.insert(action, chord);
         Ok(())
@@ -1319,6 +1960,17 @@ impl ShortcutConfig {
             }
             effective.bindings.insert(action, chord);
         }
+        for bound in loaded.actions {
+            // The same rule as a live edit: an action chord never takes a
+            // desktop chord, and the first binding of a chord or target wins.
+            if effective
+                .actions
+                .iter()
+                .all(|other| other.target != bound.target)
+            {
+                let _ = effective.set_action(bound.chord, bound.target, bound.label);
+            }
+        }
         effective
     }
     /// # Errors
@@ -1360,6 +2012,7 @@ mod tests {
             hdr: false,
             vrr: false,
             color_profiles: vec![],
+            monitor: None,
         }
     }
     #[test]
@@ -1391,6 +2044,7 @@ mod tests {
             hdr: false,
             vrr: false,
             color_profiles: vec![],
+            monitor: None,
         };
         let second = OutputDescriptor {
             connector: "pci:0000:03:00.0/HDMI-A-1".into(),
@@ -1399,6 +2053,7 @@ mod tests {
             hdr: false,
             vrr: false,
             color_profiles: vec![],
+            monitor: None,
         };
         let mut config = DisplayConfig::default();
         config.outputs.insert(
@@ -1518,6 +2173,22 @@ mod tests {
     }
 
     #[test]
+    fn a_monitor_is_named_by_brand_and_model_once() {
+        let named = |make: &str, model: &str| {
+            MonitorIdentity {
+                make: make.into(),
+                model: model.into(),
+                ..MonitorIdentity::default()
+            }
+            .display_name()
+        };
+        assert_eq!(named("Dell", "DELL U2720Q"), "Dell U2720Q");
+        assert_eq!(named("LG", "27GL850"), "LG 27GL850");
+        assert_eq!(named("", "Q27G2"), "Q27G2");
+        assert_eq!(named("BOE", ""), "BOE");
+    }
+
+    #[test]
     fn missing_transaction_section_does_not_create_a_phantom_request() {
         assert!(DisplayTransaction::from_section(serde_json::Map::new()).is_none());
     }
@@ -1533,7 +2204,7 @@ mod tests {
             backend: "test".into(),
             publisher_pid: std::process::id(),
             publisher_start_ticks: current.saturating_add(1),
-            outputs: Vec::new(),
+            ..DisplayHardwareSnapshot::default()
         };
         assert_ne!(
             process_start_ticks(stale.publisher_pid),
@@ -1580,6 +2251,51 @@ mod tests {
         );
         assert!(cfg.validate().is_ok());
     }
+
+    #[test]
+    fn reopen_closed_tab_defaults_to_super_shift_t_without_colliding() {
+        let cfg = ShortcutConfig::default();
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::ReopenClosedTab],
+            KeyChord::parse("Super+Shift+T").unwrap()
+        );
+        assert!(cfg.validate().is_ok(), "no other default claims the chord");
+    }
+
+    #[test]
+    fn standard_desktop_chords_have_their_conventional_defaults() {
+        let cfg = ShortcutConfig::default();
+        let shown = |action| cfg.bindings[&action].display();
+        for (n, action) in [
+            ShortcutAction::FocusGroup1,
+            ShortcutAction::FocusGroup2,
+            ShortcutAction::FocusGroup3,
+            ShortcutAction::FocusGroup4,
+            ShortcutAction::FocusGroup5,
+            ShortcutAction::FocusGroup6,
+            ShortcutAction::FocusGroup7,
+            ShortcutAction::FocusGroup8,
+            ShortcutAction::FocusGroup9,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(shown(action), format!("Super+{}", n + 1));
+            assert_eq!(action.focus_group_index(), Some(n));
+        }
+        assert_eq!(shown(ShortcutAction::OpenFiles), "Super+e");
+        assert_eq!(shown(ShortcutAction::OpenTerminal), "Ctrl+Alt+t");
+        assert_eq!(shown(ShortcutAction::ClipboardHistory), "Super+v");
+        assert_eq!(shown(ShortcutAction::Notifications), "Super+a");
+        assert_eq!(shown(ShortcutAction::ToggleFullscreen), "Super+f");
+        assert_eq!(shown(ShortcutAction::ToggleMagnifier), "Super+Alt+8");
+        assert_eq!(shown(ShortcutAction::MagnifierZoomIn), "Super+Alt+=");
+        assert_eq!(shown(ShortcutAction::MagnifierZoomOut), "Super+Alt+-");
+        assert_eq!(shown(ShortcutAction::PowerMenu), "Ctrl+Alt+Delete");
+        assert_eq!(ShortcutAction::OpenFiles.focus_group_index(), None);
+        assert!(cfg.validate().is_ok(), "no two defaults share a chord");
+    }
+
     #[test]
     fn shortcut_conflicts_are_rejected_without_overwriting() {
         let mut cfg = ShortcutConfig::default();
@@ -1677,9 +2393,60 @@ mod tests {
     }
 
     #[test]
+    fn a_chord_runs_any_published_action_but_never_takes_a_desktop_chord() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tilo/settings.json");
+        let target = |resource: &str| ActionChordTarget {
+            provider: "workspace:room".into(),
+            resource: resource.into(),
+            action: "run".into(),
+        };
+        let mut cfg = ShortcutConfig::default();
+        let chord = KeyChord::parse("Super+Shift+N").unwrap();
+        cfg.set_action(chord.clone(), target("shortcuts.shortcut:a"), "Run A")
+            .unwrap();
+        assert_eq!(
+            cfg.action_for(&chord).map(|bound| bound.label.as_str()),
+            Some("Run A")
+        );
+        assert_eq!(
+            cfg.set_action(chord.clone(), target("shortcuts.shortcut:b"), "Run B"),
+            Err(ShortcutConfigError::TakenByAction),
+            "one chord runs one action"
+        );
+        assert_eq!(
+            cfg.set_action(
+                KeyChord::parse("Alt+Tab").unwrap(),
+                target("shortcuts.shortcut:b"),
+                "Run B"
+            ),
+            Err(ShortcutConfigError::Fixed("Switch windows"))
+        );
+        assert_eq!(
+            cfg.set_action(
+                KeyChord::parse("Super+K").unwrap(),
+                target("shortcuts.shortcut:b"),
+                "Run B"
+            ),
+            Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
+        );
+        assert_eq!(
+            cfg.set(ShortcutAction::Search, chord.clone()),
+            Err(ShortcutConfigError::TakenByAction),
+            "a desktop action cannot take an action's chord either"
+        );
+        cfg.save_at(&path).unwrap();
+        let reloaded = ShortcutConfig::load_at(&path);
+        assert_eq!(reloaded, cfg);
+        assert!(reloaded.validate().is_ok());
+        assert!(cfg.remove_action(&target("shortcuts.shortcut:a")));
+        assert!(cfg.action_for(&chord).is_none());
+    }
+
+    #[test]
     fn desktop_navigation_defaults_are_complete_and_conflict_free() {
         let cfg = ShortcutConfig::default();
-        assert_eq!(cfg.bindings.len(), 21);
+        assert_eq!(cfg.bindings.len(), 40);
         let unique: BTreeSet<_> = cfg.bindings.values().collect();
         assert_eq!(unique.len(), cfg.bindings.len());
         assert_eq!(
@@ -1766,5 +2533,148 @@ mod tests {
         let cfg = RichInputConfig::from_section(&section);
         assert_eq!(cfg.keyboard_layouts, ["us", "de"]);
         assert_eq!(cfg.active_source_index(), 1);
+    }
+
+    #[test]
+    fn touchpad_click_and_scroll_choices_round_trip_through_the_section() {
+        let config = RichInputConfig {
+            touchpad_click_method: TouchpadClickMethod::Clickfinger,
+            touchpad_scroll_method: TouchpadScrollMethod::Edge,
+            scroll_speed: 2.0,
+            ..Default::default()
+        };
+        let section = serde_json::to_value(&config)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(section["touchpad_click_method"], "clickfinger");
+        assert_eq!(section["touchpad_scroll_method"], "edge");
+        let back = RichInputConfig::from_section(&section);
+        assert_eq!(back.touchpad_click_method, TouchpadClickMethod::Clickfinger);
+        assert_eq!(back.touchpad_scroll_method, TouchpadScrollMethod::Edge);
+        assert!((back.scroll_speed - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn unknown_touchpad_choices_reset_only_themselves() {
+        let section = serde_json::json!({
+            "touchpad_click_method": "three_finger_magic",
+            "touchpad_scroll_method": "sideways",
+            "scroll_speed": 99.0,
+            "tap_to_click": false
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let cfg = RichInputConfig::from_section(&section);
+        assert_eq!(cfg.touchpad_click_method, TouchpadClickMethod::Default);
+        assert_eq!(cfg.touchpad_scroll_method, TouchpadScrollMethod::TwoFinger);
+        assert!((cfg.scroll_speed - SCROLL_SPEED_MAX).abs() < f64::EPSILON);
+        assert!(!cfg.tap_to_click, "the rest of the section survives");
+    }
+
+    #[test]
+    fn scroll_slider_midpoint_is_neutral_and_the_mapping_inverts() {
+        assert!((scroll_speed_from_slider(0.5) - 1.0).abs() < 1e-12);
+        assert!((scroll_speed_from_slider(0.0) - SCROLL_SPEED_MIN).abs() < 1e-12);
+        assert!((scroll_speed_from_slider(1.0) - SCROLL_SPEED_MAX).abs() < 1e-12);
+        for position in [0.0, 0.1, 0.25, 0.5, 0.8, 1.0] {
+            let back = scroll_speed_to_slider(scroll_speed_from_slider(position));
+            assert!((back - position).abs() < 1e-9, "{position} -> {back}");
+        }
+        assert!((clamp_scroll_speed(f64::NAN) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn input_method_engines_share_the_source_list_without_taking_xkb_groups() {
+        let section = serde_json::json!({
+            "keyboard_layout": "ime/pinyin",
+            "keyboard_layouts": [
+                "us", "ime/pinyin", "de", "ime/pinyin", "ime/unknown", "fr", "es", "gb", "ime/mozc"
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let cfg = RichInputConfig::from_section(&section);
+        assert_eq!(
+            cfg.keyboard_layouts,
+            ["us", "ime/pinyin", "de", "fr", "es", "ime/mozc"],
+            "engines do not count against the four XKB groups; unknown engines are dropped"
+        );
+        assert_eq!(
+            cfg.sources()
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            ["us", "de", "fr", "es"]
+        );
+        assert_eq!(cfg.active_source_index(), 1);
+        assert_eq!(cfg.active_input_method(), Some(InputMethodEngine::Pinyin));
+        assert_eq!(
+            cfg.active_layout_index(),
+            0,
+            "an engine types on the primary layout"
+        );
+        assert_eq!(cfg.xkb_options(), ["grp:alt_shift_toggle"]);
+    }
+
+    #[test]
+    fn an_active_layout_maps_to_its_group_past_interleaved_engines() {
+        let mut cfg = RichInputConfig {
+            keyboard_layout: "de".into(),
+            keyboard_layouts: vec!["us".into(), "ime/hangul".into(), "de".into()],
+            ..Default::default()
+        };
+        cfg.normalise_sources();
+        assert_eq!(cfg.active_source_index(), 2);
+        assert_eq!(cfg.active_layout_index(), 1);
+        assert_eq!(cfg.active_input_method(), None);
+    }
+
+    #[test]
+    fn an_engine_only_list_keeps_a_layout_to_type_on() {
+        let mut cfg = RichInputConfig {
+            keyboard_layout: "ime/mozc".into(),
+            keyboard_layouts: vec!["ime/mozc".into()],
+            ..Default::default()
+        };
+        cfg.normalise_sources();
+        assert_eq!(cfg.keyboard_layouts, ["us", "ime/mozc"]);
+        assert_eq!(cfg.keyboard_layout, "ime/mozc");
+        assert!(
+            cfg.xkb_options().is_empty(),
+            "one layout needs no group toggle"
+        );
+    }
+
+    #[test]
+    fn engine_ids_never_parse_as_xkb_layouts() {
+        assert!(KeyboardInputSource::parse("ime/pinyin").is_none());
+        assert_eq!(
+            InputSource::parse("ime/hangul"),
+            Some(InputSource::InputMethod(InputMethodEngine::Hangul))
+        );
+        assert!(InputSource::parse("ime/../pinyin").is_none());
+        for engine in InputMethodEngine::ALL {
+            assert_eq!(
+                InputMethodEngine::from_source_id(&engine.source_id()),
+                Some(engine)
+            );
+        }
+    }
+
+    #[test]
+    fn adding_sources_bounds_layouts_but_not_engines() {
+        let mut cfg = RichInputConfig {
+            keyboard_layouts: vec!["us".into(), "de".into(), "fr".into(), "es".into()],
+            ..Default::default()
+        };
+        cfg.normalise_sources();
+        assert!(!cfg.can_add_source("gb"));
+        assert!(cfg.can_add_source("ime/pinyin"));
+        assert!(!cfg.can_add_source("de"), "already present");
+        assert!(!cfg.can_add_source("ime/nope"));
     }
 }

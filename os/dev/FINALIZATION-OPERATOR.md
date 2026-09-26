@@ -41,7 +41,7 @@ python3 "$operator" --operation "$operation" init \
   --tools-image-id "$tools_image_id" \
   --hardware-profile "$hardware_profile" \
   --initial-free-bytes "$initial_free_bytes" \
-  --forgejo-host code.sandbox.example --repository qos/qos \
+  --forgejo-host code.tilo.so --repository tilo/tilo \
   --dispatch-ref "$controller_branch"
 ```
 

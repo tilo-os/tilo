@@ -849,15 +849,29 @@ fi
 # do not silently export from the temporary WSL ESP staging copy.
 if [ -n "$DIRECT_BOOT_DIR" ]; then
   [ "$ESP_STAGED" = 0 ] || die "direct boot bundle needs the installed ESP mounted as vfat"
-  mapfile -t installed_ukis < <(sudo -n find "$ESP_AT/EFI/Linux" -type f -name '*.efi' -print)
-  [ "${#installed_ukis[@]}" -eq 1 ] \
-    || die "direct boot bundle requires exactly one installed UKI; found ${#installed_ukis[@]}"
   esp_partuuid="$(sudo -n blkid -s PARTUUID -o value "${LOOP}p1")"
   [ -n "$esp_partuuid" ] || die "installed ESP has no GPT partition UUID"
-  sudo -n bash "$(dirname "${BASH_SOURCE[0]}")/export-direct-boot-bundle.sh" \
-    "${installed_ukis[0]}" "$esp_partuuid" "$DIRECT_BOOT_DIR"
+  # A sealed image boots its one UKI; an unsealed one (the dev image) boots
+  # the kernel and initrd its one BLS entry names, on the same ESP.
+  if [ "$HAS_UKI" = yes ]; then
+    mapfile -t installed_ukis < <(sudo -n find "$ESP_AT/EFI/Linux" -type f -name '*.efi' -print)
+    [ "${#installed_ukis[@]}" -eq 1 ] \
+      || die "direct boot bundle requires exactly one installed UKI; found ${#installed_ukis[@]}"
+    sudo -n bash "$(dirname "${BASH_SOURCE[0]}")/export-direct-boot-bundle.sh" \
+      "${installed_ukis[0]}" "$esp_partuuid" "$DIRECT_BOOT_DIR"
+    bundle_source="UKI"
+  else
+    [ "$BOOT_IS_ESP" = yes ] \
+      || die "direct boot bundle of an unsealed image needs its boot entries on the ESP (composefs layout)"
+    mapfile -t installed_entries < <(sudo -n find "$ESP_AT/loader/entries" -maxdepth 1 -type f -name '*.conf' -print)
+    [ "${#installed_entries[@]}" -eq 1 ] \
+      || die "direct boot bundle requires exactly one installed boot entry; found ${#installed_entries[@]}"
+    sudo -n bash "$(dirname "${BASH_SOURCE[0]}")/export-direct-boot-bundle.sh" --bls \
+      "${installed_entries[0]}" "$ESP_AT" "$esp_partuuid" "$DIRECT_BOOT_DIR"
+    bundle_source="boot entry"
+  fi
   sudo -n chown -R "$(id -u):$(id -g)" "$DIRECT_BOOT_DIR"
-  msg "exported installed UKI direct boot bundle -> $DIRECT_BOOT_DIR"
+  msg "exported installed $bundle_source direct boot bundle -> $DIRECT_BOOT_DIR"
 fi
 
 cleanup

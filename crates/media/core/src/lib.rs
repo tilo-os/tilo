@@ -53,6 +53,13 @@
 //!   frames stamped on the leader's clock play at a shared presentation time
 //!   through a jitter buffer and a drift-steered resampler, mapped to the
 //!   member's channel role.
+//! * [`pw_stream`] — native `PipeWire` playback and capture streams: playback
+//!   pulled from a [`sync_playout`] renderer at the device's presentation
+//!   time, capture pinned to one chosen node that fails rather than fall back
+//!   to the default source.
+//! * [`calibration`] — acoustic calibration of a speaker group: a log sweep,
+//!   its deconvolution into each speaker's impulse response, and the delay,
+//!   level and room-EQ trims that make the members sound as one.
 
 #![cfg_attr(
     test,
@@ -70,17 +77,19 @@
 pub mod audio;
 pub mod audio_runtime;
 pub mod cache;
+pub mod calibration;
 pub mod dmabuf;
 pub mod encode;
 pub mod engine;
 pub mod event;
+pub mod event_sound;
 /// Registry refresh when system extensions (the codec pack) merge or unmerge.
 #[cfg(any(feature = "decode", feature = "encode", feature = "realtime"))]
 pub mod extensions;
 pub mod frame;
 pub mod handoff;
 pub mod hw;
-pub mod notification_sound;
+pub mod pw_stream;
 pub mod realtime;
 pub mod ring;
 pub mod session;

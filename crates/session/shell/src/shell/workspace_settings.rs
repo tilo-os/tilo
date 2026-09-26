@@ -1975,6 +1975,9 @@ pub struct AgentRow {
     /// A human-readable summary of the *scoped* authority, not a role.
     /// Agents never inherit their admission capability as ambient access.
     pub preset: AgentAuthorityPreset,
+    /// Set when the agent is a service member: a cloud or relay identity
+    /// admitted to the room's encrypted channels with a stated purpose.
+    pub service: Option<crate::shell::service_members::ServiceMember>,
     pub row_rect: Rect,
     pub role_rect: Rect,
     pub review_rect: Rect,
@@ -2197,11 +2200,14 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
             })
             .count();
         let preset = agent_authority_preset(ws, &agent);
+        let service =
+            crate::shell::service_members::service_purpose(ws, &agent, tilo_clock::unix_now());
         rows.push(AgentRow {
             agent,
             role,
             grant_count,
             preset,
+            service,
             row_rect,
             role_rect,
             review_rect,
@@ -2756,6 +2762,29 @@ pub fn draw_agents_pane(
     }
 }
 
+/// One line on what a service member may do in the room and for how long.
+fn service_member_detail(service: &crate::shell::service_members::ServiceMember) -> String {
+    let scope = match service.verb {
+        Verb::Admin => "administers",
+        Verb::Write | Verb::Invite => "reads and edits",
+        Verb::Comment => "reads and comments",
+        Verb::Read => "reads",
+    };
+    let device = hex::encode(service.device.as_bytes().get(..4).unwrap_or_default());
+    let until = service.expires_at.map_or_else(
+        || "until removed".to_string(),
+        |deadline| {
+            let remaining = deadline.saturating_sub(tilo_clock::unix_now());
+            match remaining {
+                0..60 => "access ends within a minute".to_string(),
+                60..3_600 => format!("access ends in {} min", remaining / 60),
+                _ => format!("access ends in {} h", remaining / 3_600),
+            }
+        },
+    );
+    format!("Service member · {scope} end-to-end encrypted content · {until} · device {device}")
+}
+
 fn draw_agent_row(
     scene: &mut Scene,
     transform: Affine,
@@ -2774,13 +2803,20 @@ fn draw_agent_row(
         row.row_rect.x0 + 12.0 + avatar_size,
         row.row_rect.center().y + avatar_size / 2.0,
     );
-    let name = short_id(&row.agent);
+    let name = match &row.service {
+        Some(service) if !service.purpose.is_empty() => service.purpose.clone(),
+        _ => short_id(&row.agent),
+    };
     draw_avatar(scene, transform, avatar, &name, true, text_renderer, theme);
     let badge = draw_pill(
         scene,
         transform,
         Point::new(row.role_rect.x0 - 12.0, row.row_rect.center().y),
-        "AGENT",
+        if row.service.is_some() {
+            "SERVICE"
+        } else {
+            "AGENT"
+        },
         Tint {
             color: colors.accent[5],
             alpha: 1.0,
@@ -2801,16 +2837,20 @@ fn draw_agent_row(
         None,
     );
     let admission = agent_admission_label(row.role);
-    let detail = match row.grant_count {
-        0 => format!("{admission} · no scoped permissions — review required"),
-        1 => format!(
-            "{admission} · {} profile · 1 scoped permission",
-            row.preset.label()
-        ),
-        n => format!(
-            "{admission} · {} profile · {n} scoped permissions",
-            row.preset.label()
-        ),
+    let detail = if let Some(service) = &row.service {
+        service_member_detail(service)
+    } else {
+        match row.grant_count {
+            0 => format!("{admission} · no scoped permissions — review required"),
+            1 => format!(
+                "{admission} · {} profile · 1 scoped permission",
+                row.preset.label()
+            ),
+            n => format!(
+                "{admission} · {} profile · {n} scoped permissions",
+                row.preset.label()
+            ),
+        }
     };
     let detail_size = tokens.typography.scale.xs;
     let detail = elide(&detail, detail_size, text_max, text_renderer);

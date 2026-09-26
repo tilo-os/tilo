@@ -51,6 +51,26 @@ const PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY: usize = 256;
 const PERSONAL_FABRIC_DATA_QUEUE_CAPACITY: usize = 192;
 const PERSONAL_DISPLAY_QUEUE_CAPACITY: usize = 16;
 
+/// Why a personal fabric action did not reach the transport.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PersonalFabricSendError {
+    /// The transport command queue is momentarily full. The action was not
+    /// sent, but the same call can succeed once the actor drains the queue.
+    Backpressure,
+    /// Identity, enrollment, wire validation or a closed transport refused
+    /// the action; retrying it unchanged cannot succeed.
+    Rejected(String),
+}
+
+impl std::fmt::Display for PersonalFabricSendError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Backpressure => formatter.write_str("personal fabric transport is busy"),
+            Self::Rejected(reason) => formatter.write_str(reason),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PersonalFabricQueueOutcome {
     Queued,
@@ -133,6 +153,10 @@ fn personal_fabric_terminal_matches_data(
             PersonalFabricAction::RemoteAudioFrame {
                 session_id: queued_session,
                 ..
+            }
+            | PersonalFabricAction::RemoteAudioKeepalive {
+                session_id: queued_session,
+                ..
             },
         ) => session_id == queued_session,
         (
@@ -147,8 +171,9 @@ fn personal_fabric_terminal_matches_data(
 
 /// Apply backpressure without allowing untrusted bulk producers to evict
 /// queued authority decisions. Distinct media sequences are never collapsed:
-/// dropping an intermediate sequence lets the runtime's existing sequence
-/// checks fail closed instead of presenting corrupted media as contiguous.
+/// a dropped intermediate sequence stays visible to the runtime's sequence
+/// checks (live audio conceals it as a bounded gap) instead of presenting
+/// corrupted media as contiguous.
 fn queue_personal_fabric_action<T: PersonalFabricEnvelopeRef>(
     queue: &mut VecDeque<T>,
     envelope: T,
@@ -589,6 +614,30 @@ impl AuthenticatedPersonalRoute {
 pub(crate) struct ReceivedPersonalFabricAction {
     pub(crate) envelope: crate::shell::device_fabric::PersonalFabricActionEnvelope,
     pub(crate) route: AuthenticatedPersonalRoute,
+    /// [`fabric_monotonic_us`] when the bytes came off the connection, before
+    /// validation and queueing, so clock probes exclude local queueing time.
+    pub(crate) received_monotonic_us: u64,
+}
+
+/// This device's `CLOCK_MONOTONIC` in microseconds: the clock the device
+/// fabric exchanges for peer clock estimation, and the one `PipeWire` schedules
+/// audio against.
+#[must_use]
+pub fn fabric_monotonic_us() -> u64 {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `time` is a valid, writable timespec for the duration of the
+    // call, and CLOCK_MONOTONIC is always available on Linux.
+    let status = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut time) };
+    if status != 0 {
+        return 0;
+    }
+    u64::try_from(time.tv_sec)
+        .unwrap_or_default()
+        .saturating_mul(1_000_000)
+        .saturating_add(u64::try_from(time.tv_nsec).unwrap_or_default() / 1_000)
 }
 
 impl PersonalFabricEnvelopeRef for ReceivedPersonalFabricAction {
@@ -1111,6 +1160,9 @@ pub struct ShellNetwork {
     personal_continuity_counter: Mutex<u64>,
     personal_continuity_fingerprint: Mutex<Option<[u8; 32]>>,
     personal_continuity_path: Option<PathBuf>,
+    /// When each of this person's other devices last moved focus, for the
+    /// "continue from another device" offer.
+    personal_focus_recency: Mutex<crate::shell::continuity_suggestion::FocusRecency>,
     #[cfg(test)]
     continuity_policy_override: Option<crate::shell::continuity_policy::ContinuityPolicySnapshot>,
     /// Convergent same-person device state, persisted separately from app
@@ -1532,6 +1584,11 @@ impl ShellNetwork {
             registered_home_device_ids: Mutex::new(home_device_ids),
             last_home_peer_refresh: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
+            personal_focus_recency: Mutex::new(
+                crate::shell::continuity_suggestion::FocusRecency::seeded(
+                    &persisted_continuity.continuity,
+                ),
+            ),
             personal_continuity: Mutex::new(persisted_continuity.continuity),
             personal_continuity_user,
             personal_continuity_device,
@@ -3087,6 +3144,9 @@ impl ShellNetwork {
         if let Ok(mut continuity) = self.personal_continuity.lock() {
             *continuity = crate::shell::personal_continuity::PersonalContinuity::default();
         }
+        if let Ok(mut recency) = self.personal_focus_recency.lock() {
+            recency.clear();
+        }
         if let Ok(mut fingerprint) = self.personal_continuity_fingerprint.lock() {
             *fingerprint = None;
         }
@@ -3229,6 +3289,39 @@ impl ShellNetwork {
                 continuity: continuity.clone(),
             },
         )
+    }
+
+    /// What chrome needs to offer continuing another device's focused tab:
+    /// each device's focus and when it moved, plus the certified devices of
+    /// this identity with their display labels.
+    pub fn continuity_feed(&self) -> crate::shell::continuity_suggestion::ContinuityFeed {
+        let observations = self
+            .personal_focus_recency
+            .lock()
+            .map(|recency| recency.observations())
+            .unwrap_or_default();
+        let certified = self.certified_secret_recipients();
+        let fabric = self.device_fabric.lock().ok();
+        let devices = certified
+            .into_iter()
+            .filter(|device| self.personal_continuity_device.as_ref() != Some(device))
+            .map(|device| {
+                let label = fabric
+                    .as_ref()
+                    .and_then(|fabric| fabric.snapshots().get(&device))
+                    .map_or_else(
+                        || crate::shell::i18n::t("continuity-other-device"),
+                        |snapshot| snapshot.presence.label.clone(),
+                    );
+                (device, label)
+            })
+            .collect();
+        drop(fabric);
+        crate::shell::continuity_suggestion::ContinuityFeed {
+            local_device: self.personal_continuity_device.clone(),
+            observations,
+            devices,
+        }
     }
 
     /// Return the locally retained, convergent view of this person's devices.
@@ -3490,12 +3583,48 @@ impl ShellNetwork {
     /// # Errors
     ///
     /// Returns an error when personal identity is unavailable, the target is
-    /// malformed/local, or the action fails the bounded wire contract.
+    /// malformed/local, the action fails the bounded wire contract, or the
+    /// transport cannot take it right now.
     pub fn send_personal_fabric_action(
         &self,
         target: &crate::shell::personal_continuity::DeviceId,
         action: crate::shell::device_fabric::PersonalFabricAction,
     ) -> Result<[u8; 16], String> {
+        self.try_send_personal_fabric_action(target, action)
+            .map_err(|error| error.to_string())
+    }
+
+    /// [`Self::send_personal_fabric_action`] that tells a momentarily full
+    /// transport queue apart from a failure retrying cannot fix, so
+    /// loss-tolerant media can drop one message and keep its route.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersonalFabricSendError::Backpressure`] when the transport
+    /// command queue is full, and [`PersonalFabricSendError::Rejected`] for
+    /// every other failure.
+    pub fn try_send_personal_fabric_action(
+        &self,
+        target: &crate::shell::personal_continuity::DeviceId,
+        action: crate::shell::device_fabric::PersonalFabricAction,
+    ) -> Result<[u8; 16], PersonalFabricSendError> {
+        let (request_id, command) = self
+            .personal_fabric_command(target, action)
+            .map_err(PersonalFabricSendError::Rejected)?;
+        self.cmd_tx.try_send(command).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => PersonalFabricSendError::Backpressure,
+            mpsc::error::TrySendError::Closed(_) => {
+                PersonalFabricSendError::Rejected("personal fabric transport is closed".into())
+            }
+        })?;
+        Ok(request_id)
+    }
+
+    fn personal_fabric_command(
+        &self,
+        target: &crate::shell::personal_continuity::DeviceId,
+        action: crate::shell::device_fabric::PersonalFabricAction,
+    ) -> Result<([u8; 16], NetCmd), String> {
         let user_public_key = self
             .personal_continuity_user
             .ok_or_else(|| "this device has no certified personal identity".to_string())?;
@@ -3536,15 +3665,15 @@ impl ShellNetwork {
         if !self.join_topic(ws) {
             return Err("personal fabric transport is unavailable".into());
         }
-        self.cmd_tx
-            .try_send(NetCmd::PublishPersonalFabricTarget {
+        Ok((
+            request_id,
+            NetCmd::PublishPersonalFabricTarget {
                 ws,
                 user_public_key,
                 target: transport_target,
                 payload: PersonalFabricPayload::Action(bytes),
-            })
-            .map_err(|error| error.to_string())?;
-        Ok(request_id)
+            },
+        ))
     }
 
     /// Send only while the exact actor membership authenticated by the caller
@@ -4659,6 +4788,7 @@ impl ShellNetwork {
         route: AuthenticatedPersonalRoute,
         bytes: &[u8],
     ) {
+        let received_monotonic_us = fabric_monotonic_us();
         if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_ACTION_BYTES {
             tracing::warn!(peer = %peer, "dropping oversized personal fabric action");
             return;
@@ -4712,7 +4842,11 @@ impl ShellNetwork {
         };
         let outcome = queue_personal_fabric_action(
             &mut actions,
-            ReceivedPersonalFabricAction { envelope, route },
+            ReceivedPersonalFabricAction {
+                envelope,
+                route,
+                received_monotonic_us,
+            },
         );
         if outcome == PersonalFabricQueueOutcome::Saturated {
             tracing::warn!(
@@ -5185,6 +5319,12 @@ impl ShellNetwork {
                 }
             }
             merged = Some(continuity.clone());
+        }
+        if changed
+            && let Some(merged) = merged.as_ref()
+            && let Ok(mut recency) = self.personal_focus_recency.lock()
+        {
+            recency.observe(merged, std::time::Instant::now());
         }
         if changed {
             if !self.enforce_app_continuations_policy() {
@@ -5893,6 +6033,9 @@ pub(crate) fn shell_network_for_test(
         personal_continuity_counter: Mutex::new(0),
         personal_continuity_fingerprint: Mutex::new(None),
         personal_continuity_path: None,
+        personal_focus_recency: Mutex::new(
+            crate::shell::continuity_suggestion::FocusRecency::default(),
+        ),
         continuity_policy_override: Some(
             crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
                 serde_json::json!({
@@ -6926,6 +7069,7 @@ mod tests {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
+            speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         }
     }
 
@@ -7228,6 +7372,8 @@ mod tests {
                     session_id: audio_session,
                     authorization: [6; 16],
                     sequence,
+                    media_ts: 0,
+                    presentation_ns: 0,
                     pcm_s16le: vec![0, 0],
                 }
             } else {
@@ -7262,6 +7408,8 @@ mod tests {
                 session_id: audio_session,
                 authorization: [6; 16],
                 sequence: 0,
+                media_ts: 0,
+                presentation_ns: 0,
                 pcm_s16le: vec![9, 9],
             },
         );
@@ -7277,6 +7425,8 @@ mod tests {
                 session_id: audio_session,
                 authorization: [6; 16],
                 sequence: 1_000,
+                media_ts: 0,
+                presentation_ns: 0,
                 pcm_s16le: vec![0, 0],
             },
         );
@@ -7388,6 +7538,8 @@ mod tests {
                 session_id,
                 authorization: [26; 16],
                 sequence: index as u64,
+                media_ts: 0,
+                presentation_ns: 0,
                 pcm_s16le: vec![0, 0],
             };
             let capture = PersonalFabricAction::RemoteCaptureChunk {

@@ -154,7 +154,7 @@ fn requested_browsing_mode(
 fn launch_browsing_mode(args: &LaunchArgs) -> BrowsingMode {
     requested_browsing_mode(
         args.has("--private"),
-        std::env::var_os("QOS_BROWSER_PRIVATE").as_deref(),
+        std::env::var_os("TILO_BROWSER_PRIVATE").as_deref(),
     )
 }
 
@@ -502,8 +502,8 @@ fn render_overlay_shot(
     let mut widget = BrowserWidget::new_headless();
     widget.debug_force_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/qos/qos".into(),
-            title: "Tilo on code.sandbox.example".into(),
+            url: "https://github.com/tilo/tilo".into(),
+            title: "Tilo on code.tilo.so".into(),
             last_visit: 3,
             visit_count: 12,
         },
@@ -538,8 +538,8 @@ fn render_suggestions_shot(out: &std::path::Path, args: &LaunchArgs) {
     let mut overlay = AddressSuggestions::new();
     overlay.set_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/qos/qos".into(),
-            title: "Tilo — code.sandbox.example".into(),
+            url: "https://github.com/tilo/tilo".into(),
+            title: "Tilo — code.tilo.so".into(),
             last_visit: 3,
             visit_count: 12,
         },

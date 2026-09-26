@@ -120,7 +120,6 @@ fn is_modifier_key(key: &Key) -> bool {
                 | NamedKey::Meta
                 | NamedKey::CapsLock
                 | NamedKey::AltGraph
-                | NamedKey::NumLock
         )
     )
 }
@@ -168,8 +167,13 @@ pub enum ChordKey {
     ArrowDown,
     Escape,
     Delete,
+    Enter,
     /// `F1`..`F12`, numbered from 1.
     Function(u8),
+    /// Num Lock. A lock key rather than a held modifier, so unlike Shift it
+    /// can carry a chord (Shift+Alt+Num Lock toggles mouse keys); on its own
+    /// it always reaches the focused client.
+    NumLock,
     /// A single printable character, already lowercased.
     Char(char),
     /// A bare modifier. Never a chord on its own — a client's xkb state has to see modifier transitions or it desynchronises from the seat.
@@ -230,41 +234,22 @@ impl From<&Modifiers> for ChordMods {
 /// are resolved from `ShortcutConfig` by the host before client delivery; do
 /// not add their defaults here or rebinding would leave the old app chord
 /// blocked forever.
+///
+/// Pure over its inputs and never touches settings storage: it runs for
+/// nearly every local and remote keystroke.
 pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> bool {
     if key == ChordKey::Modifier {
         return false;
     }
-    // Alt+Tab is the conventional, immutable window ring alias. It must be
-    // withheld before a focused client sees it even though the editable
-    // spatial bindings default to Super+Left/Right.
-    if key == ChordKey::Tab && mods.alt && !mods.logo && !mods.ctrl {
+    // The fixed chords (Alt+Tab, Alt+F4, Super+Page Up/Down, F1, ...) are
+    // withheld before a focused client sees them. They live in one table
+    // shared with the shortcut guide, the portal and the keyboard map.
+    if crate::shell::fixed_chords::fixed_action(key, mods).is_some() {
         return true;
     }
-    // These desktop conventions are deliberately immutable aliases. They
-    // must be withheld before a focused client can consume them: Alt+F4 is
-    // the universal close gesture, while Super+PageUp/PageDown is the GNOME
-    // workspace convention people retain when moving between sessions.
-    if (key == ChordKey::Function(4) && mods.alt && !mods.logo && !mods.ctrl && !mods.shift)
-        || (matches!(key, ChordKey::PageUp | ChordKey::PageDown)
-            && mods.logo
-            && !mods.ctrl
-            && !mods.alt
-            && !mods.shift)
-    {
-        return true;
-    }
-    // Vim navigation is an explicitly enabled desktop layer. Its complete
-    // Super+Ctrl mask cannot collide with ordinary text editing, and keeping
-    // this ownership decision beside the static aliases prevents a focused
-    // client from consuming H/J/K/L before the host can dispatch them.
-    if settings_store::hardware::DesktopControlsConfig::load().vim_mode
-        && mods.logo
-        && mods.ctrl
-        && !mods.alt
-        && matches!(key, ChordKey::Char('h' | 'j' | 'k' | 'l'))
-    {
-        return true;
-    }
+    // The optional Vim navigation layer (Super+Ctrl+H/J/K/L) needs no
+    // separate check: every Super+Ctrl chord reaches the `mods.logo` arm
+    // below, so ownership does not depend on whether the layer is enabled.
     // These are defaults for editable actions.  They intentionally fall
     // through when the effective configuration no longer assigns them.
     if matches!(
@@ -274,7 +259,7 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
             | ChordKey::ArrowRight
             | ChordKey::ArrowUp
             | ChordKey::ArrowDown
-            | ChordKey::Char('k' | 'q' | '/' | '-' | '=')
+            | ChordKey::Char('k' | 'q' | '/' | '-' | '=' | '1'..='9' | 'e' | 'v' | 'a' | 'f')
     ) && ((mods.logo && !mods.ctrl && !mods.alt)
         || (matches!(key, ChordKey::Tab) && (mods.ctrl || mods.alt)))
     {
@@ -284,10 +269,10 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
         return true;
     }
     match key {
-        // The shell visibly advertises F1 as the hardware-neutral route to
-        // its desktop guide. Reserving it here is essential: otherwise a
-        // focused client consumes the event before the guide dispatcher can
-        // see it. Other function keys remain application-owned.
+        // Print Screen and the F1 guide are fixed chords in their bare form;
+        // under Ctrl/Alt/Shift they stay shell-owned too, so a modifier held
+        // by accident cannot hand them to a focused client. Other function
+        // keys remain application-owned.
         ChordKey::PrintScreen | ChordKey::Function(1) => true,
         ChordKey::Escape => overlay_open,
         // Alt+Space has no desktop action; reserving it here silently ate
@@ -302,7 +287,9 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
         | ChordKey::ArrowDown
         | ChordKey::Char(_)
         | ChordKey::Delete
+        | ChordKey::Enter
         | ChordKey::Function(_)
+        | ChordKey::NumLock
         | ChordKey::Other
         | ChordKey::Modifier => false,
     }
@@ -325,6 +312,8 @@ pub fn chord_key_for_logical(key: &Key) -> ChordKey {
         Key::Named(NamedKey::ArrowDown) => ChordKey::ArrowDown,
         Key::Named(NamedKey::Escape) => ChordKey::Escape,
         Key::Named(NamedKey::Delete) => ChordKey::Delete,
+        Key::Named(NamedKey::Enter) => ChordKey::Enter,
+        Key::Named(NamedKey::NumLock) => ChordKey::NumLock,
         Key::Named(NamedKey::F1) => ChordKey::Function(1),
         Key::Named(NamedKey::F2) => ChordKey::Function(2),
         Key::Named(NamedKey::F3) => ChordKey::Function(3),
@@ -359,8 +348,9 @@ pub fn chord_key_for_evdev(code: u32) -> ChordKey {
         104 => ChordKey::PageUp,
         109 => ChordKey::PageDown,
         99 => ChordKey::PrintScreen,
-        // left/right Ctrl, left/right Shift, Alt/AltGr, CapsLock, NumLock, left/right Super
-        29 | 97 | 42 | 54 | 56 | 100 | 58 | 69 | 125 | 126 => ChordKey::Modifier,
+        // left/right Ctrl, left/right Shift, Alt/AltGr, CapsLock, left/right Super
+        29 | 97 | 42 | 54 | 56 | 100 | 58 | 125 | 126 => ChordKey::Modifier,
+        69 => ChordKey::NumLock,
         57 => ChordKey::Space,
         59..=68 => ChordKey::Function(u8::try_from(code.saturating_sub(58)).unwrap_or(0)),
         87 => ChordKey::Function(11),
@@ -370,6 +360,7 @@ pub fn chord_key_for_evdev(code: u32) -> ChordKey {
         103 => ChordKey::ArrowUp,
         108 => ChordKey::ArrowDown,
         111 => ChordKey::Delete,
+        28 => ChordKey::Enter,
         _ => match char_from_evdev(code) {
             Some(c) => ChordKey::Char(c),
             None => ChordKey::Other,
@@ -575,6 +566,7 @@ pub fn evdev_from_logical(key: &Key) -> Option<u32> {
             NamedKey::F8 => Some(66),
             NamedKey::F9 => Some(67),
             NamedKey::F10 => Some(68),
+            NamedKey::NumLock => Some(69),
             NamedKey::F11 => Some(87),
             NamedKey::F12 => Some(88),
             NamedKey::PrintScreen => Some(99),
@@ -797,6 +789,11 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().palette_visible() {
         return true;
     }
+    // Keep or revert a display tool's change: Enter and Escape answer it
+    // whichever window had focus.
+    if fb.host().display_confirmation_visible() {
+        return true;
+    }
     // The portal's file chooser, for the same reason as the peer-sync card
     // below: modal, drawn over a scrim, but "drawn above" and "receives the click" are separate — without this it was unreachable with mouse or keyboard.
     if fb.host().file_picker().is_some() {
@@ -980,6 +977,136 @@ pub fn track_forwarded_key<S: std::hash::BuildHasher>(
         press_can_forward
     } else {
         forwarded.remove(&code)
+    }
+}
+
+/// Super pressed and released with nothing in between: the tap that opens
+/// global search on every mainstream desktop.
+///
+/// Fed every input event ahead of chord routing, so a Super chord the
+/// shell handles (Super+L, Super+Left) disarms it exactly like one a
+/// client receives, and a Super-click or Super-scroll does too.
+#[derive(Debug, Default)]
+pub struct SuperTap {
+    armed: bool,
+}
+
+impl SuperTap {
+    /// `true` on the release that completes a lone tap.
+    pub fn observe(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                let is_super = matches!(
+                    key.logical_key,
+                    Key::Named(NamedKey::Super | NamedKey::Meta)
+                );
+                match (is_super, key.state) {
+                    (true, ElementState::Pressed) => {
+                        // Autorepeat of the held key keeps the tap alive;
+                        // a fresh press starts one.
+                        if !key.repeat {
+                            self.armed = true;
+                        }
+                        false
+                    }
+                    (true, ElementState::Released) => std::mem::take(&mut self.armed),
+                    (false, ElementState::Pressed) => {
+                        self.armed = false;
+                        false
+                    }
+                    (false, ElementState::Released) => false,
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::Touch(_) => {
+                self.armed = false;
+                false
+            }
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod super_tap_tests {
+    use super::*;
+    use winit::keyboard::{KeyLocation, PhysicalKey};
+
+    fn key(logical: Key, state: ElementState) -> WindowEvent {
+        // winit's `KeyEvent` has a private platform field, so the struct is
+        // zero-initialised and every public field overwritten.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical;
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Left;
+        ev.state = state;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn super_key(state: ElementState) -> WindowEvent {
+        key(Key::Named(NamedKey::Super), state)
+    }
+
+    #[test]
+    fn a_lone_super_tap_fires_on_release() {
+        let mut tap = SuperTap::default();
+        assert!(!tap.observe(&super_key(ElementState::Pressed)));
+        assert!(tap.observe(&super_key(ElementState::Released)));
+        assert!(
+            !tap.observe(&super_key(ElementState::Released)),
+            "one tap, one search"
+        );
+    }
+
+    #[test]
+    fn any_key_in_between_makes_it_a_chord_not_a_tap() {
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&key(Key::Character("l".into()), ElementState::Pressed));
+        tap.observe(&key(Key::Character("l".into()), ElementState::Released));
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+
+        tap.observe(&key(Key::Named(NamedKey::Shift), ElementState::Pressed));
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&key(Key::Named(NamedKey::Tab), ElementState::Pressed));
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+    }
+
+    #[test]
+    fn a_super_click_or_scroll_is_not_a_tap() {
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&WindowEvent::MouseWheel {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+            phase: winit::event::TouchPhase::Moved,
+        });
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+    }
+
+    #[test]
+    fn a_modifier_released_alone_is_not_super() {
+        let mut tap = SuperTap::default();
+        tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Pressed));
+        assert!(!tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Released)));
     }
 }
 
@@ -1846,6 +1973,7 @@ mod tests {
             NamedKey::F8,
             NamedKey::F9,
             NamedKey::F10,
+            NamedKey::NumLock,
             NamedKey::F11,
             NamedKey::F12,
             NamedKey::PrintScreen,
@@ -1932,6 +2060,28 @@ mod tests {
         ));
     }
     #[test]
+    fn vim_navigation_chords_are_shell_owned_without_reading_settings() {
+        let super_ctrl = ChordMods {
+            logo: true,
+            ctrl: true,
+            ..Default::default()
+        };
+        for key in ['h', 'j', 'k', 'l'] {
+            assert!(
+                shell_owns_chord(ChordKey::Char(key), super_ctrl, false),
+                "Super+Ctrl+{key} must be withheld from a focused client"
+            );
+        }
+        let ctrl = ChordMods {
+            ctrl: true,
+            ..Default::default()
+        };
+        assert!(
+            !shell_owns_chord(ChordKey::Char('h'), ctrl, false),
+            "Ctrl+H stays an application text chord"
+        );
+    }
+    #[test]
     fn a_shell_owned_press_never_produces_an_unmatched_client_release() {
         let mut forwarded = std::collections::HashSet::new();
         assert!(!track_forwarded_key(&mut forwarded, 34, true, false));
@@ -2007,15 +2157,47 @@ pub fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: Modifiers) ->
         && matches!(event.logical_key, Key::Named(NamedKey::Escape))
 }
 
-pub fn is_lock_chord(event: &WindowEvent, modifiers: Modifiers) -> bool {
-    let config = settings_store::hardware::ShortcutConfig::load();
-    let Some(chord) = config
-        .bindings
-        .get(&settings_store::hardware::ShortcutAction::Lock)
-    else {
+/// Is `event` a press of the fixed mouse-keys chord, Shift+Alt+Num Lock?
+/// Held-key repeats are ignored so holding the chord flips it once.
+pub fn is_mouse_keys_toggle(event: &WindowEvent, modifiers: Modifiers) -> bool {
+    let WindowEvent::KeyboardInput { event: key, .. } = event else {
         return false;
     };
-    lock_chord_matches(event, modifiers, chord)
+    key.state == ElementState::Pressed
+        && !key.repeat
+        && crate::shell::fixed_chords::fixed_action(
+            chord_key_for_logical(&key.logical_key),
+            ChordMods::from(&modifiers),
+        ) == Some(crate::shell::fixed_chords::FixedChordAction::ToggleMouseKeys)
+}
+
+/// Is `event` a press of the configured session-lock binding?
+///
+/// Called for every input event the compositor takes off the backend,
+/// pointer motion included, so it rejects non-keyboard events first and
+/// reads the host's cached `shortcuts` rather than the settings file.
+pub fn is_lock_chord(
+    event: &WindowEvent,
+    modifiers: Modifiers,
+    shortcuts: &settings_store::hardware::ShortcutConfig,
+) -> bool {
+    let WindowEvent::KeyboardInput { event: key, .. } = event else {
+        return false;
+    };
+    // Super+L is a fixed alias: it locks whatever the editable Lock
+    // binding is, exactly as the shell dispatcher behind the router does.
+    if key.state == ElementState::Pressed
+        && crate::shell::fixed_chords::fixed_action(
+            chord_key_for_logical(&key.logical_key),
+            ChordMods::from(&modifiers),
+        ) == Some(crate::shell::fixed_chords::FixedChordAction::LockSession)
+    {
+        return true;
+    }
+    shortcuts
+        .bindings
+        .get(&settings_store::hardware::ShortcutAction::Lock)
+        .is_some_and(|chord| lock_chord_matches(event, modifiers, chord))
 }
 
 /// Session-lock bindings run before client routing, so their matching must
@@ -2079,29 +2261,64 @@ mod lock_chord_tests {
         Modifiers::from(mask)
     }
 
+    /// The lock chord against the default shortcut table.
+    fn locks(event: &WindowEvent, modifiers: Modifiers) -> bool {
+        is_lock_chord(
+            event,
+            modifiers,
+            &settings_store::hardware::ShortcutConfig::default(),
+        )
+    }
+
+    #[test]
+    fn lock_chord_follows_the_passed_shortcut_snapshot() {
+        use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
+        let mut rebound = ShortcutConfig::default();
+        rebound.bindings.insert(
+            ShortcutAction::Lock,
+            KeyChord::parse("Ctrl+Alt+L").expect("a valid chord"),
+        );
+        let l = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
+        let ctrl_alt = Modifiers::from(ModifiersState::CONTROL | ModifiersState::ALT);
+        assert!(is_lock_chord(&l, ctrl_alt, &rebound));
+        assert!(
+            !is_lock_chord(&l, ctrl_alt, &ShortcutConfig::default()),
+            "a custom lock chord only locks while the snapshot assigns it"
+        );
+        assert!(
+            is_lock_chord(&l, mods_with_super(true), &rebound),
+            "Super+L is a fixed lock alias alongside the editable binding"
+        );
+
+        let mut unbound = ShortcutConfig::default();
+        unbound.bindings.remove(&ShortcutAction::Lock);
+        assert!(is_lock_chord(&l, mods_with_super(true), &unbound));
+        assert!(!is_lock_chord(&l, ctrl_alt, &unbound));
+    }
+
     /// Super+L on key press is the lock chord.
     #[test]
     fn super_l_press_is_lock_chord() {
         let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
-        assert!(is_lock_chord(&ev, mods_with_super(true)));
+        assert!(locks(&ev, mods_with_super(true)));
         // A layout/caps state may report an upper-case logical key without an
         // extra Shift modifier; key comparison remains case-insensitive.
         let ev_upper = keyboard_input_event(&Key::Character(SmolStr::new("L")), true);
-        assert!(is_lock_chord(&ev_upper, mods_with_super(true)));
+        assert!(locks(&ev_upper, mods_with_super(true)));
     }
 
     #[test]
     fn other_super_chords_and_extra_modifiers_do_not_lock() {
         let search = keyboard_input_event(&Key::Character(SmolStr::new("k")), true);
         assert!(
-            !is_lock_chord(&search, mods_with_super(true)),
+            !locks(&search, mods_with_super(true)),
             "Super+K must reach Search instead of locking the session"
         );
 
         let lock = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
         let shifted = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
         assert!(
-            !is_lock_chord(&lock, shifted),
+            !locks(&lock, shifted),
             "an extra modifier must not broaden Super+L into a lock chord"
         );
     }
@@ -2110,14 +2327,14 @@ mod lock_chord_tests {
     #[test]
     fn l_without_super_is_not_lock_chord() {
         let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
-        assert!(!is_lock_chord(&ev, mods_with_super(false)));
+        assert!(!locks(&ev, mods_with_super(false)));
     }
 
     /// The lock chord only fires on press, not release — else key-up would re-trigger and toggle twice.
     #[test]
     fn super_l_release_is_not_lock_chord() {
         let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), false);
-        assert!(!is_lock_chord(&ev, mods_with_super(true)));
+        assert!(!locks(&ev, mods_with_super(true)));
     }
 
     #[test]
@@ -2192,7 +2409,7 @@ mod lock_chord_tests {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(10.0, 10.0),
         };
-        assert!(!is_lock_chord(&ev, mods_with_super(true)));
+        assert!(!locks(&ev, mods_with_super(true)));
     }
 
     /// Enter and Escape on press are the explicit unlock action.

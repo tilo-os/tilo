@@ -642,6 +642,9 @@ impl ScreenshotService for NoScreenshot {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PortalSetting {
     Unsigned(u32),
+    Int(i32),
+    Double(f64),
+    Bool(bool),
     Color(f64, f64, f64),
     Text(String),
 }
@@ -649,6 +652,9 @@ impl PortalSetting {
     pub fn to_owned_value(&self) -> zbus::zvariant::OwnedValue {
         match self {
             Self::Unsigned(v) => zbus::zvariant::OwnedValue::from(*v),
+            Self::Int(v) => zbus::zvariant::OwnedValue::from(*v),
+            Self::Double(v) => zbus::zvariant::OwnedValue::from(*v),
+            Self::Bool(v) => zbus::zvariant::OwnedValue::from(*v),
             Self::Color(r, g, b) => {
                 zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::new((*r, *g, *b)))
                     .unwrap_or_else(|_| zbus::zvariant::OwnedValue::from(0_u32))
@@ -668,22 +674,13 @@ struct SettingsService {
 pub struct SettingsServiceHandle(Arc<SettingsService>);
 impl Default for SettingsServiceHandle {
     fn default() -> Self {
-        let settings = BTreeMap::from([
-            (
-                ("org.freedesktop.appearance".into(), "color-scheme".into()),
-                // Tilo chrome currently ships a dark palette. `1` is the
-                // standard "prefer dark" value.
-                PortalSetting::Unsigned(1),
-            ),
-            (
-                ("org.freedesktop.appearance".into(), "contrast".into()),
-                PortalSetting::Unsigned(0),
-            ),
-            (
-                ("org.freedesktop.appearance".into(), "accent-color".into()),
-                PortalSetting::Color(0.36, 0.48, 0.98),
-            ),
-        ]);
+        // Every key exists from the first call: the dark default the shell
+        // starts with, until the appearance monitor reads the settings file.
+        let settings = super::appearance::LegacyAppearance::from_settings_text("", false)
+            .portal_settings()
+            .into_iter()
+            .map(|(namespace, key, value)| ((namespace.to_owned(), key.to_owned()), value))
+            .collect();
         let (changes, _) = tokio::sync::broadcast::channel(64);
         Self(Arc::new(SettingsService {
             values: Mutex::new(settings),
@@ -775,6 +772,84 @@ impl WallpaperService for NoWallpaper {
         PortalResult::Unavailable("wallpaper service is not attached".into())
     }
     fn discard_staged_wallpaper(&self, _: &WallpaperRequest, _: &StagedWallpaper) {}
+}
+
+/// The `workspace_id` of a wallpaper shown on every workspace that has none of
+/// its own.
+pub const EVERY_WORKSPACE: &str = "*";
+
+/// Which workspaces a newly applied wallpaper covers. A workspace is a unit of
+/// collaboration, so a picture of its own tells at a glance which shared
+/// context is on screen; the Appearance pane stores the choice as
+/// `appearance.wallpaper_scope`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WallpaperScope {
+    /// Only the workspace the request came from.
+    Workspace,
+    /// Every workspace, replacing any workspace's own picture.
+    All,
+}
+
+impl WallpaperScope {
+    /// Parse the persisted value; anything but `"all"` is this workspace.
+    pub fn parse(value: Option<&str>) -> Self {
+        if value == Some("all") {
+            Self::All
+        } else {
+            Self::Workspace
+        }
+    }
+
+    /// The scope the user chose in Settings.
+    pub fn configured() -> Self {
+        Self::parse(settings_store::str_at(
+            &settings_store::load(),
+            "appearance",
+            "wallpaper_scope",
+        ))
+    }
+}
+
+/// Record `cache_file` as the wallpaper for `targets`, on `workspace_id` alone
+/// or on every workspace.
+pub fn place_wallpaper(
+    records: &mut Vec<WallpaperRecord>,
+    workspace_id: &str,
+    scope: WallpaperScope,
+    targets: &[&str],
+    cache_file: &str,
+) {
+    let owner = match scope {
+        WallpaperScope::Workspace => workspace_id,
+        WallpaperScope::All => EVERY_WORKSPACE,
+    };
+    records.retain(|old| {
+        let replaced = match scope {
+            WallpaperScope::Workspace => old.workspace_id == workspace_id,
+            WallpaperScope::All => true,
+        };
+        !(replaced && targets.iter().any(|target| old.target == *target))
+    });
+    records.extend(targets.iter().map(|target| WallpaperRecord {
+        workspace_id: owner.to_string(),
+        cache_file: cache_file.to_string(),
+        target: (*target).into(),
+    }));
+}
+
+/// The record a workspace shows for `target`: its own, else the one for every
+/// workspace.
+pub fn wallpaper_record_for<'a>(
+    records: &'a [WallpaperRecord],
+    workspace_id: &str,
+    target: &str,
+) -> Option<&'a WallpaperRecord> {
+    let find = |owner: &str| {
+        records
+            .iter()
+            .find(|record| record.workspace_id == owner && record.target == target)
+    };
+    find(workspace_id).or_else(|| find(EVERY_WORKSPACE))
 }
 
 /// Local-only wallpaper selection.  Collaborative workspace state must never
@@ -881,24 +956,19 @@ impl WallpaperService for ShellWallpaperService {
             "both" => &["background", "lockscreen"],
             _ => return PortalResult::Failed("invalid wallpaper target".into()),
         };
-        let new_records: Vec<WallpaperRecord> = targets
-            .iter()
-            .map(|target| WallpaperRecord {
-                workspace_id: workspace_id.clone(),
-                cache_file: staged.cache_file.clone(),
-                target: (*target).into(),
-            })
-            .collect();
+        let scope = WallpaperScope::configured();
         let Ok(mut records) = self.records.lock() else {
             self.discard_staged_wallpaper(request, staged);
             return PortalResult::Unavailable("Tilo wallpaper registry is unavailable".into());
         };
         let before = records.clone();
-        records.retain(|old| {
-            !(old.workspace_id == workspace_id
-                && targets.iter().any(|target| old.target == *target))
-        });
-        records.extend(new_records);
+        place_wallpaper(
+            &mut records,
+            &workspace_id,
+            scope,
+            targets,
+            &staged.cache_file,
+        );
         if let Err(error) = write_private_json(self.path.as_ref(), &*records) {
             *records = before;
             // We still hold `records`; do cleanup inline rather than calling
@@ -1371,6 +1441,56 @@ mod tests {
         let file = cache.path().join("private.png");
         write_private_bytes(&file, b"private").unwrap();
         assert_eq!(fs::metadata(file).unwrap().permissions().mode() & 0o077, 0);
+    }
+
+    #[test]
+    fn a_wallpaper_for_one_workspace_leaves_the_others_alone() {
+        let hash = |c: char| format!("{}.png", c.to_string().repeat(64));
+        let mut records = Vec::new();
+        place_wallpaper(
+            &mut records,
+            "a",
+            WallpaperScope::All,
+            &["background"],
+            &hash('1'),
+        );
+        place_wallpaper(
+            &mut records,
+            "b",
+            WallpaperScope::Workspace,
+            &["background"],
+            &hash('2'),
+        );
+        assert_eq!(
+            wallpaper_record_for(&records, "b", "background").map(|r| r.cache_file.clone()),
+            Some(hash('2')),
+            "a workspace's own picture tells you which shared context you are in"
+        );
+        assert_eq!(
+            wallpaper_record_for(&records, "a", "background").map(|r| r.cache_file.clone()),
+            Some(hash('1')),
+            "the rest show the picture chosen for every workspace"
+        );
+        assert!(wallpaper_record_for(&records, "a", "lockscreen").is_none());
+
+        place_wallpaper(
+            &mut records,
+            "c",
+            WallpaperScope::All,
+            &["background"],
+            &hash('3'),
+        );
+        assert_eq!(
+            records.len(),
+            1,
+            "every workspace replaces the per-workspace pictures"
+        );
+        assert_eq!(
+            wallpaper_record_for(&records, "b", "background").map(|r| r.cache_file.clone()),
+            Some(hash('3'))
+        );
+        assert_eq!(WallpaperScope::parse(Some("all")), WallpaperScope::All);
+        assert_eq!(WallpaperScope::parse(None), WallpaperScope::Workspace);
     }
 
     #[test]

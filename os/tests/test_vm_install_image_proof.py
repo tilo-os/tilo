@@ -26,7 +26,7 @@ class ProofTests(unittest.TestCase):
         deploy_etc.mkdir(parents=True)
         origin = deploy_etc.parent / (COMPOSEFS + ".origin")
         origin.write_text("[image]\nmanifest_digest=" + DIGEST + "\n"
-                          "[origin]\ncontainer-image-reference=ostree-unverified-image:docker://code.sandbox.example/qos/tilo:latest\n",
+                          "[origin]\ncontainer-image-reference=ostree-unverified-image:docker://registry.tilo.so/tilo/tilo:latest\n",
                           encoding="utf-8")
         efi = Path(directory) / "efi"
         uki = efi / "EFI/Linux/target.efi"
@@ -73,7 +73,7 @@ class ProofTests(unittest.TestCase):
                     proof.build_proof(args)
             status["status"]["booted"]["image"]["imageDigest"] = DIGEST
             origin.write_text("[image]\nmanifest_digest=sha256:" + "c" * 64 + "\n"
-                              "[origin]\ncontainer-image-reference=ostree-unverified-image:docker://code.sandbox.example/qos/tilo:latest\n")
+                              "[origin]\ncontainer-image-reference=ostree-unverified-image:docker://registry.tilo.so/tilo/tilo:latest\n")
             with patch.object(proof, "command", side_effect=command):
                 with self.assertRaisesRegex(ValueError, "does not match"):
                     proof.build_proof(args)
@@ -107,11 +107,12 @@ class ProofTests(unittest.TestCase):
             args, status, origin, command = self.fixture(directory)
             status["status"]["booted"]["image"]["imageDigest"] = "sha256:" + "c" * 64
             status["status"]["booted"]["composefs"]["verity"] = "d" * 128
-            target_ref = "code.sandbox.example/qos/tilo@" + DIGEST
-            update_origin = "code.sandbox.example/qos/tilo:lenovo-83ed-" + "e" * 40
+            target_ref = "code.tilo.so/tilo/tilo@" + DIGEST
+            update_origin = "code.tilo.so/tilo/tilo:lenovo-83ed-" + "e" * 40
             receipt = Path(directory) / "offline-target.json"
             receipt.write_text(json.dumps({"schema": "tilo.installer-offline-target.v1",
                                            "target_ref": target_ref, "target_digest": DIGEST,
+                                           "hardware_profile": "lenovo-83ed",
                                            "update_origin": update_origin}))
             args.offline_target_receipt = receipt
             origin.write_text("[image]\nmanifest_digest=" + DIGEST + "\n"
@@ -125,7 +126,7 @@ class ProofTests(unittest.TestCase):
             self.assertEqual(result["installed_update_origin"],
                              "ostree-unverified-image:docker://" + update_origin)
             origin.write_text("[image]\nmanifest_digest=" + DIGEST + "\n"
-                              "[origin]\ncontainer-image-reference=ostree-unverified-image:docker://code.sandbox.example/qos/tilo:latest\n")
+                              "[origin]\ncontainer-image-reference=ostree-unverified-image:docker://registry.tilo.so/tilo/tilo:latest\n")
             with patch.object(proof, "command", side_effect=command):
                 with self.assertRaisesRegex(ValueError, "signed offline target"):
                     proof.build_proof(args)

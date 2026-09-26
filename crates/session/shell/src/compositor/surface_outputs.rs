@@ -93,22 +93,26 @@ impl Memberships {
     }
 }
 
+/// Whether a surface's logical rectangle overlaps the output's.
 fn intersects_output(rect: Rect, output: &Output) -> bool {
     if output.size.0 == 0 || output.size.1 == 0 {
         return false;
     }
-    let x0 = f64::from(output.position.0);
-    let y0 = f64::from(output.position.1);
-    let x1 = x0 + f64::from(output.size.0);
-    let y1 = y0 + f64::from(output.size.1);
-    rect.x0 < x1 && rect.x1 > x0 && rect.y0 < y1 && rect.y1 > y0
+    let o = output.logical_rect();
+    rect.x0 < o.x1 && rect.x1 > o.x0 && rect.y0 < o.y1 && rect.y1 > o.y0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn output(id: u32, position: (i32, i32), size: (u32, u32), scale: f32) -> Output {
+    fn output(
+        id: u32,
+        position: (i32, i32),
+        logical_position: (i32, i32),
+        size: (u32, u32),
+        scale: f32,
+    ) -> Output {
         Output {
             id: OutputId(id),
             position,
@@ -116,13 +120,17 @@ mod tests {
             scale,
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
+            refresh_mhz: None,
+            logical_position,
+            identity: crate::compositor::backend::OutputIdentity::default(),
         }
     }
 
+    /// A 2x panel 100 logical pixels wide and a 1x one beside it.
     fn outputs() -> [Output; 2] {
         [
-            output(0, (0, 0), (100, 100), 2.0),
-            output(1, (100, 0), (100, 100), 1.0),
+            output(0, (0, 0), (0, 0), (200, 200), 2.0),
+            output(1, (200, 0), (100, 0), (100, 100), 1.0),
         ]
     }
 

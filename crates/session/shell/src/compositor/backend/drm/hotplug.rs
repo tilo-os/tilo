@@ -89,6 +89,10 @@ pub fn plan(live: &[LiveOutput], connected: &[ConnectedOutput]) -> HotplugPlan {
 /// Lay output sizes out left-to-right at `y = 0`: each output's left edge
 /// is the sum of the prior outputs' widths.
 ///
+/// The runtime passes logical sizes (mode over scale, rotated) — the
+/// arrangement's own units — and derives scene placement from the result
+/// with [`crate::compositor::backend::layout::scene_positions`].
+///
 /// Re-packing (rather than leaving the survivors where they were) is what
 /// closes the hole an unplugged middle monitor leaves. A gap in the
 /// combined space is a rectangle the compositor paints, no panel shows,
@@ -120,7 +124,9 @@ pub fn combined_extent(positions: &[(i32, i32)], sizes: &[(u32, u32)]) -> (i32, 
         })
 }
 
-/// Keep a pointer on the union of the live output rectangles.
+/// Keep a pointer on the union of the live output rectangles, all in one
+/// coordinate space (the runtime clamps in the logical layout, where the
+/// pointer moves).
 ///
 /// Clamping only to the combined bounding box is insufficient once display
 /// settings can describe vertical offsets or an L-shaped monitor island: the
@@ -190,6 +196,19 @@ mod tests {
             size,
             mm: None,
         }
+    }
+
+    #[test]
+    fn packing_logical_sizes_leaves_no_gap_after_a_hidpi_panel() {
+        // A 2560x1600 panel at 2x is 1280 logical wide; packing its mode
+        // width instead would strand a 1280-wide dead band before the
+        // monitor that clients (and the pointer) could fall into.
+        let panel = crate::compositor::backend::layout::logical_extent(
+            (2560, 1600),
+            2.0,
+            settings_store::hardware::OutputTransform::Normal,
+        );
+        assert_eq!(layout(&[panel, (1920, 1080)]), vec![(0, 0), (1280, 0)]);
     }
 
     #[test]

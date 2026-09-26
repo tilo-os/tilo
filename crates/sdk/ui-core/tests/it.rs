@@ -71,6 +71,8 @@ mod fractional_scale_render;
 mod ghost_cursor_render_test;
 #[path = "group_row_visual_journey.rs"]
 mod group_row_visual_journey;
+#[path = "host_entry_points.rs"]
+mod host_entry_points;
 #[path = "icon_grid_test.rs"]
 mod icon_grid_test;
 #[path = "identity_flow_layout.rs"]
@@ -94,6 +96,8 @@ mod live_text_sync;
 mod local_identity_is_a_person;
 #[path = "menu_highlight_render.rs"]
 mod menu_highlight_render;
+#[path = "mouse_navigation_test.rs"]
+mod mouse_navigation_test;
 #[path = "multi_user_session.rs"]
 mod multi_user_session;
 #[path = "overlay_test.rs"]
@@ -147,6 +151,8 @@ mod tokens_test;
 mod tooltip_render_test;
 #[path = "tooltip_test.rs"]
 mod tooltip_test;
+#[path = "touch_gestures_test.rs"]
+mod touch_gestures_test;
 #[path = "typography_baseline_geometry.rs"]
 mod typography_baseline_geometry;
 #[path = "typography_visual_regression.rs"]

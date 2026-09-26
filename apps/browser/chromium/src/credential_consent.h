@@ -1,6 +1,6 @@
 #pragma once
 #include "credential_worker.h"
-namespace qos {
+namespace tilo {
 struct CapturedCredential {std::string form, username;CredentialSecret secret;};
 // One pending Save/Update consent per tab. Values remain native, never in the
 // Rust metadata event. The owner must Clear on navigation/cancel and at expiry.

@@ -59,8 +59,10 @@ on:
       - "crates/system/tilo-native-certs/**"
       - "crates/system/tilo-net/**"
       - "crates/media/thumbnail/**"
+      - "crates/media/core/**"
       - "crates/system/fs/**"
       - "crates/system/fs-native/**"
+      - "crates/system/fs-content/**"
       - "crates/packaging/package-store/**"
       - "crates/system/tilo-clock/**"
       - "os/dev/cache-github-assets.sh"
@@ -119,8 +121,10 @@ on:
       - "crates/system/tilo-native-certs/**"
       - "crates/system/tilo-net/**"
       - "crates/media/thumbnail/**"
+      - "crates/media/core/**"
       - "crates/system/fs/**"
       - "crates/system/fs-native/**"
+      - "crates/system/fs-content/**"
       - "crates/packaging/package-store/**"
       - "crates/system/tilo-clock/**"
       - "os/dev/cache-github-assets.sh"
@@ -147,10 +151,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     outputs:
       applicable: ${{ steps.compare.outputs.applicable }}
     steps:
@@ -272,12 +273,15 @@ jobs:
       # Login is required on every build (build-only or push): the
       # Containerfile FROMs the private frozen RPM repo, which needs
       # registry auth to pull.
-      - name: Log in to the code.sandbox.example registry
+      # Anyone may pull the base; only runs that push the image or its layer
+      # cache log in.
+      - name: Log in to registry.tilo.so
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.sandbox.example
+          registry: registry.tilo.so
           username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Same mirrored, digest-pinned base as the OS image — see
       # os/base-snapshot.env for why the base is a mirror and not quay.io.
@@ -331,7 +335,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: code.sandbox.example/qos/tilo-relay
+          images: registry.tilo.so/tilo/tilo-relay
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
@@ -357,7 +361,7 @@ jobs:
           # keeps each pushed digest reachable after they do.
           tags: |
             ${{ steps.meta.outputs.tags }}
-            code.sandbox.example/qos/tilo-relay:run-${{ github.run_id }}-${{ github.run_attempt }}
+            registry.tilo.so/tilo/tilo-relay:run-${{ github.run_id }}-${{ github.run_attempt }}
           labels: ${{ steps.meta.outputs.labels }}
           # Source bytes and pinned base/RPM refs invalidate the build. A
           # commit timestamp is not an artifact input and changes on rebase.
@@ -382,8 +386,8 @@ jobs:
           # PR validation must be independent of the mutable publication cache:
           # a partial/corrupt registry export must not prevent source validation,
           # and untrusted heads must never mutate the shared `latest` cache.
-          cache-from: ${{ github.event_name != 'pull_request' && 'type=registry,ref=code.sandbox.example/qos/tilo-relay-buildcache:latest' || '' }}
-          cache-to: ${{ github.event_name != 'pull_request' && 'type=registry,ref=code.sandbox.example/qos/tilo-relay-buildcache:latest,mode=max' || '' }}
+          cache-from: ${{ github.event_name != 'pull_request' && 'type=registry,ref=registry.tilo.so/tilo/tilo-relay-buildcache:latest' || '' }}
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=registry,ref=registry.tilo.so/tilo/tilo-relay-buildcache:latest,mode=max' || '' }}
           provenance: false
 
       # Optional signing reuses the same key as the OS image so `bootc
@@ -403,6 +407,6 @@ jobs:
         run: |
           set -euo pipefail
           . os/dev/configure-cosign-kms.sh
-          ref="code.sandbox.example/qos/tilo-relay@${{ steps.build.outputs.digest }}"
+          ref="registry.tilo.so/tilo/tilo-relay@${{ steps.build.outputs.digest }}"
           cosign sign --yes --key "$COSIGN_KEY_REF" "$ref"
           cosign verify --key keys/cosign.pub "$ref" >/dev/null

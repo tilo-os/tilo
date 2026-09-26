@@ -225,6 +225,7 @@ fn clean_exit_removes_runtime_endpoints_and_allows_canonical_rebind() {
                 assert!(
                     !name.starts_with("wayland-")
                         && !name.starts_with("tilo-osk-")
+                        && !name.starts_with("tilo-im-")
                         && !name.starts_with("tilo-privileged-")
                         && !std::path::Path::new(&name)
                             .extension()

@@ -1,6 +1,6 @@
 #pragma once
 
-namespace qos {
+namespace tilo {
 
 // Edge filter for CEF's content-fullscreen callback. Renderer termination
 // clears native ownership even when CEF cannot publish a matching false edge.
@@ -18,4 +18,4 @@ class FullscreenState {
   bool active_ = false;
 };
 
-}  // namespace qos
+}  // namespace tilo

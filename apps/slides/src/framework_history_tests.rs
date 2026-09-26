@@ -432,7 +432,7 @@ fn navigation_clamps_effective_scroll_reverses_and_recreates_at_both_widths() {
 
 #[test]
 fn empty_restore_uses_real_autosaver_and_fresh_process_opener() {
-    if let Ok(stage) = std::env::var("QOS_SLIDES_EMPTY_STAGE") {
+    if let Ok(stage) = std::env::var("TILO_SLIDES_EMPTY_STAGE") {
         let (mut state, mut saver) = ui::persist::try_open("so.tilo.slides").unwrap();
         if stage == "write" {
             let mut deck = crate::model::seed_deck();
@@ -480,7 +480,7 @@ fn empty_restore_uses_real_autosaver_and_fresh_process_opener() {
     let dir = std::env::temp_dir().join(format!("slides-empty-history-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     for stage in ["write", "read"] {
-        let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::empty_restore_uses_real_autosaver_and_fresh_process_opener","--nocapture"]).env("QOS_SLIDES_EMPTY_STAGE",stage).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).env("TILO_PACKAGE_ID","so.tilo.slides").output().unwrap();
+        let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::empty_restore_uses_real_autosaver_and_fresh_process_opener","--nocapture"]).env("TILO_SLIDES_EMPTY_STAGE",stage).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).env("TILO_PACKAGE_ID","so.tilo.slides").output().unwrap();
         assert!(
             out.status.success(),
             "{stage}: {} {}",

@@ -19,3 +19,12 @@ chat-call-undeafen = Undeafen
 chat-call-audio-only = Audio only
 chat-call-collapse = Collapse
 chat-call-leave = Leave
+
+# Emoji picker: its title when inserting into the composer or reacting to a
+# message, the search field's placeholder and the grid's section headings.
+chat-emoji-title = Emoji
+chat-emoji-add-reaction = Add reaction
+chat-emoji-search = Search emoji
+chat-emoji-recent = Recently used
+chat-emoji-results = Results
+chat-emoji-no-results = No emoji found

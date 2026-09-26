@@ -47,7 +47,7 @@ def decode_reply(reply, request_id):
 def short_profile():
     # Darwin's Unix-domain socket addresses are bounded independently of the
     # artifact directory. Never put the live sockets under a long output path.
-    with tempfile.TemporaryDirectory(prefix='qos-mcp-', dir='/tmp') as directory:
+    with tempfile.TemporaryDirectory(prefix='tilo-mcp-', dir='/tmp') as directory:
         yield pathlib.Path(directory)
 
 
@@ -63,7 +63,7 @@ def browse_rows(tool, peer_id):
             pages += 1
             if pages > 128:
                 raise ProofError('Directory traversal exceeded 128-page proof budget')
-            page = tool('qos_query', dict(peer_id=peer_id, parent_resource=parent,
+            page = tool('tilo_query', dict(peer_id=peer_id, parent_resource=parent,
                                         revision=revision, cursor=cursor))
             if page.get('stale_cursor'):
                 raise StaleDiscovery('Directory revision changed during read-only discovery')
@@ -88,7 +88,7 @@ def resolve_action(tool, peer_id, action, timeout=10, interval=.1):
             for revision, row in browse_rows(tool, peer_id):
                 if row.get('action') == action and row.get('descriptor'):
                     target = dict(peer_id=peer_id, revision=revision, resource=row['resource'], action=action)
-                    return target, tool('qos_resolve', target)['row']['descriptor']
+                    return target, tool('tilo_resolve', target)['row']['descriptor']
             raise PublicationPending(f'Action absent: {action}')
         except (StaleDiscovery, PublicationPending):
             # Only query/resolve have happened here. Never catch an uncertain
@@ -112,12 +112,12 @@ def observe_terminal(tool, result, timeout=30, interval=.1):
         if time.monotonic() >= deadline:
             raise ProofError(f'Observation timeout; do not replay invocation: {result}')
         time.sleep(interval)
-        result = tool('qos_status', {'invocation_id': invocation_id})
+        result = tool('tilo_status', {'invocation_id': invocation_id})
     return result
 
 
 def invoke(tool, target, arguments, timeout=30, interval=.1):
-    result = observe_terminal(tool, tool('qos_invoke', dict(target, arguments=arguments)), timeout, interval)
+    result = observe_terminal(tool, tool('tilo_invoke', dict(target, arguments=arguments)), timeout, interval)
     if result['update']['state'] != 'succeeded':
         raise ProofError(f'Invocation terminal failure: {result}')
     return result['update']['output']
@@ -136,7 +136,7 @@ class Client:
     def __init__(self, command, root):
         self.transcript = (root / 'transcript.jsonl').open('w')
         self.stderr = (root / 'runtime.stderr.log').open('w')
-        env = {key: value for key, value in os.environ.items() if not key.startswith(('QOS_', 'QUICK_'))}
+        env = {key: value for key, value in os.environ.items() if not key.startswith(('TILO_', 'QUICK_'))}
         self.process = subprocess.Popen(command, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr, text=True, bufsize=1)
         self.replies = queue.Queue()
         self.next_id = 0
@@ -231,7 +231,7 @@ def main():
 
 
 def run_proof(args, root, profile):
-    binaries = {name: (args.bin_dir / name).resolve() for name in ('qos-runtime-mcp', 'photos', 'word-processor', 'calculator')}
+    binaries = {name: (args.bin_dir / name).resolve() for name in ('tilo-runtime-mcp', 'photos', 'word-processor', 'calculator')}
     originals = dict(binaries, inspector=(args.bin_dir / 'examples/runtime-mcp-inspect').resolve())
     (root / 'binaries').mkdir()
     for name, source_binary in originals.items():
@@ -250,13 +250,13 @@ def run_proof(args, root, profile):
         source = root / 'source.png'
         fixture = inspect(helper, 'fixture', source)
         manifest = {'apps': [
-            {'id': 'dev.qos.photos', 'executable': str(binaries['photos']), 'args': ['--open', str(source)]},
-            {'id': 'dev.qos.word-processor', 'executable': str(helper), 'args': ['observe', str(root)]},
-            {'id': 'dev.qos.word-processor', 'executable': str(helper), 'args': ['wait-ready-exec', str(root), str(binaries['word-processor'])]},
-            {'id': 'dev.qos.calculator', 'executable': str(binaries['calculator']), 'args': []},
+            {'id': 'dev.tilo.photos', 'executable': str(binaries['photos']), 'args': ['--open', str(source)]},
+            {'id': 'dev.tilo.word-processor', 'executable': str(helper), 'args': ['observe', str(root)]},
+            {'id': 'dev.tilo.word-processor', 'executable': str(helper), 'args': ['wait-ready-exec', str(root), str(binaries['word-processor'])]},
+            {'id': 'dev.tilo.calculator', 'executable': str(binaries['calculator']), 'args': []},
         ]}
         save(root / 'apps.json', manifest)
-        client = Client([str(binaries['qos-runtime-mcp']), '--profile', str(profile), '--apps', str(root / 'apps.json')], root)
+        client = Client([str(binaries['tilo-runtime-mcp']), '--profile', str(profile), '--apps', str(root / 'apps.json')], root)
         owned_pids.add(client.process.pid)
         print(f'host_pid={client.process.pid} evidence={root}', flush=True)
         client.request('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {}, 'clientInfo': {'name': 'native-proof', 'version': '1'}})
@@ -265,7 +265,7 @@ def run_proof(args, root, profile):
         shutil.copy2(profile / 'workspace.json', root / 'profile/workspace.json')
         deadline = time.monotonic() + 60
         while True:
-            apps = client.tool('qos_list_apps', {})['apps']
+            apps = client.tool('tilo_list_apps', {})['apps']
             by_id = {app['app_id']: app for app in apps}
             if all(app['id'] in by_id for app in manifest['apps']):
                 break
@@ -281,19 +281,19 @@ def run_proof(args, root, profile):
             if not any(p['command'].startswith(str(binaries[name])) for p in processes):
                 raise ProofError(f'Real {name} executable is not live: {processes}')
         save(root / 'live-processes.json', processes)
-        photo = by_id['dev.qos.photos']['peer_id']
-        writer = by_id['dev.qos.word-processor']
-        calc = by_id['dev.qos.calculator']['peer_id']
+        photo = by_id['dev.tilo.photos']['peer_id']
+        writer = by_id['dev.tilo.word-processor']
+        calc = by_id['dev.tilo.calculator']['peer_id']
         target, descriptor = resolve_action(client.tool, photo, 'crop')
-        denied = client.request('tools/call', {'name': 'qos_invoke', 'arguments': dict(target, arguments=single_argument(descriptor, 123))})
+        denied = client.request('tools/call', {'name': 'tilo_invoke', 'arguments': dict(target, arguments=single_argument(descriptor, 123))})
         denied_terminal = expect_denial(client.tool, denied)
         denial_text = json.dumps(denied_terminal).lower()
         if 'argument' not in denial_text and 'region' not in denial_text:
             raise ProofError(f'Failure did not identify invalid typed arguments: {denied_terminal}')
-        stale = client.request('tools/call', {'name': 'qos_resolve', 'arguments': dict(target, peer_id=18446744073709551615)})
+        stale = client.request('tools/call', {'name': 'tilo_resolve', 'arguments': dict(target, peer_id=18446744073709551615)})
         if not stale.get('isError'):
             raise ProofError('Unavailable instance was accepted')
-        stale_revision = client.request('tools/call', {'name': 'qos_invoke', 'arguments': dict(target, revision='definitely-not-the-discovered-revision', arguments=single_argument(descriptor, square_region(fixture['width'], fixture['height'])))})
+        stale_revision = client.request('tools/call', {'name': 'tilo_invoke', 'arguments': dict(target, revision='definitely-not-the-discovered-revision', arguments=single_argument(descriptor, square_region(fixture['width'], fixture['height'])))})
         if not stale_revision.get('isError'):
             raise ProofError(f'Stale revision was admitted: {stale_revision}')
         save(root / 'denials.json', {'invalid_typed_argument': {'initial': denied, 'terminal': denied_terminal}, 'unavailable_instance': stale, 'stale_revision': stale_revision})

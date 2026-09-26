@@ -47,7 +47,7 @@ fn elevation_command(
     let mut command = Command::new("/usr/bin/pkexec");
     command
         .arg(executable)
-        .arg("--qos-desktop-install-helper")
+        .arg("--tilo-desktop-install-helper")
         .arg(&json)
         .arg(request_digest(json.as_bytes()))
         .stdin(Stdio::null())
@@ -169,13 +169,16 @@ fn track_helper(
 /// # Errors
 /// Returns malformed invocation errors; transaction failures use the protocol.
 pub fn maybe_run_desktop_helper(args: &[String]) -> Result<Option<i32>, String> {
-    if !args.iter().any(|arg| arg == "--qos-desktop-install-helper") {
+    if !args
+        .iter()
+        .any(|arg| arg == "--tilo-desktop-install-helper")
+    {
         return Ok(None);
     }
     let [_, flag, request, digest] = args else {
         return Err("Malformed Desktop helper invocation.".into());
     };
-    if flag != "--qos-desktop-install-helper" {
+    if flag != "--tilo-desktop-install-helper" {
         return Err("Malformed Desktop helper invocation.".into());
     }
     #[cfg(target_os = "linux")]
@@ -205,12 +208,13 @@ mod tests {
             release_id: "fedora".into(),
             package_input: "/tmp/package with spaces.rpm".into(),
         };
-        let command = elevation_command(std::path::Path::new("/opt/qos/imager"), &request).unwrap();
+        let command =
+            elevation_command(std::path::Path::new("/opt/tilo/imager"), &request).unwrap();
         assert_eq!(command.get_program(), "/usr/bin/pkexec");
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(args.len(), 4);
-        assert_eq!(args[0], "/opt/qos/imager");
-        assert_eq!(args[1], "--qos-desktop-install-helper");
+        assert_eq!(args[0], "/opt/tilo/imager");
+        assert_eq!(args[1], "--tilo-desktop-install-helper");
         assert_eq!(
             args[3],
             super::super::desktop_install::request_digest(args[2].to_str().unwrap().as_bytes())
@@ -251,7 +255,7 @@ mod tests {
     }
     #[test]
     fn protected_log_locator_does_not_change_completion_order() {
-        let child = Command::new("/bin/sh").args(["-c", "printf '%s\\n' '{\"phase\":\"Preparing\"}' '{\"phase\":\"Installing\"}' '{\"phase\":\"DiagnosticLog\",\"detail\":\"/var/tmp/qos-desktop-fixture/native.log\"}' '{\"phase\":\"Verifying\"}' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/tilo.desktop\"}}'"]).stdout(Stdio::piped()).spawn().unwrap();
+        let child = Command::new("/bin/sh").args(["-c", "printf '%s\\n' '{\"phase\":\"Preparing\"}' '{\"phase\":\"Installing\"}' '{\"phase\":\"DiagnosticLog\",\"detail\":\"/var/tmp/tilo-desktop-fixture/native.log\"}' '{\"phase\":\"Verifying\"}' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/tilo.desktop\"}}'"]).stdout(Stdio::piped()).spawn().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         track_helper(child, &tx).unwrap();
         let events: Vec<_> = rx.try_iter().collect();

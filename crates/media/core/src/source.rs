@@ -40,6 +40,17 @@ impl Source {
             .map_or_else(|| PathBuf::from(WORKSPACE_ROOT), PathBuf::from)
     }
 
+    /// The source for an absolute path: one under the FUSE mount becomes a
+    /// [`Source::Workspace`] (read *through* the mount so it hydrates on
+    /// demand), anything else a [`Source::LocalFile`].
+    pub fn for_path(abs_path: &Path) -> Source {
+        if abs_path.starts_with(Self::workspace_root()) || abs_path.starts_with(WORKSPACE_ROOT) {
+            Source::Workspace(abs_path.to_path_buf())
+        } else {
+            Source::LocalFile(abs_path.to_path_buf())
+        }
+    }
+
     /// The absolute on-disk path these bytes resolve to, for the local and
     /// workspace variants. `None` for [`Source::Remote`] (no local path).
     pub fn abs_path(&self) -> Option<PathBuf> {

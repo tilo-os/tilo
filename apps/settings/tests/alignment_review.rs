@@ -270,11 +270,11 @@ fn described_row_caption_hugs_its_label_not_the_next_row() {
 #[test]
 fn hero_places_title_beside_its_icon_with_a_caption_gap() {
     let sp = spacing();
-    let mut hero = settings::widgets::hero(ui::icons::Icon::Monitor, "Device name", "qOS 1.0");
+    let mut hero = settings::widgets::hero(ui::icons::Icon::Monitor, "Device name", "Tilo 1.0");
     lay_out(hero.as_mut(), (600.0, 200.0));
     let icon = by_widget_name(hero.as_ref(), "IconWidget")[0];
     let title = first_named(hero.as_ref(), "Device name");
-    let subtitle = first_named(hero.as_ref(), "qOS 1.0");
+    let subtitle = first_named(hero.as_ref(), "Tilo 1.0");
     assert!(
         title.x0 >= icon.x1,
         "title {title:?} must sit beside the icon {icon:?}, not wrap beneath it"

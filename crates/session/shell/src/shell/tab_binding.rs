@@ -18,6 +18,11 @@ fn mark_tree_changed(tree: &mut WorkspaceTree) {
     tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
 }
 
+/// A window's artwork changed without the tree changing: repaint its tab.
+pub fn note_tab_artwork_changed(tree: &mut WorkspaceTree) {
+    mark_tree_changed(tree);
+}
+
 /// Where a newly-adopted toplevel should land — a new window group or a tab in an existing one — decided on purpose rather than inherited from wherever the tree walk landed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Placement {

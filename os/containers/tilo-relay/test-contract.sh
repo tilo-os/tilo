@@ -95,8 +95,8 @@ need "$workflow" 'github-assets=os/external-assets/cache'
 need "$workflow" 'uses: ./.forgejo/actions/cache-github-assets'
 need "$workflow" 'assets: sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz'
 need "$workflow" "driver-opts: network=host"
-need "$workflow" "cache-from: \${{ github.event_name != 'pull_request' && 'type=registry,ref=code.sandbox.example/qos/tilo-relay-buildcache:latest' || '' }}"
-need "$workflow" "cache-to: \${{ github.event_name != 'pull_request' && 'type=registry,ref=code.sandbox.example/qos/tilo-relay-buildcache:latest,mode=max' || '' }}"
+need "$workflow" "cache-from: \${{ github.event_name != 'pull_request' && 'type=registry,ref=registry.tilo.so/tilo/tilo-relay-buildcache:latest' || '' }}"
+need "$workflow" "cache-to: \${{ github.event_name != 'pull_request' && 'type=registry,ref=registry.tilo.so/tilo/tilo-relay-buildcache:latest,mode=max' || '' }}"
 
 for excluded in .git .forgejo target os/output; do
   grep -qxF "$excluded" "$dockerignore" || fail "Docker build context includes $excluded"

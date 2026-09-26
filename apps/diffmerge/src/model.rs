@@ -10,7 +10,7 @@
 //!
 //! * [`MergeModel`] — a three-way merge of a common *base* against *ours* and
 //!   *theirs*. Regions where only one side changed auto-resolve; regions where
-//!   both sides changed the same base lines become [`Conflict`] hunks the user
+//!   both sides changed the same base lines become `Conflict` hunks the user
 //!   resolves per-hunk (take ours / theirs / both). The resolved output is a
 //!   sequence of lines the app mirrors into an Automerge `Text` so the merged
 //!   buffer is collaboratively editable.
@@ -454,7 +454,7 @@ pub struct MergeModel {
 
 impl MergeModel {
     /// Compute a three-way merge. The algorithm diffs base→ours and base→theirs
-    /// into per-side [`SideAlign`] structures (a replacement slot per base line
+    /// into per-side `SideAlign` structures (a replacement slot per base line
     /// plus an insertion slot at every gap, including the trailing gap), then
     /// sweeps the base — and the gaps between base lines — grouping regions that
     /// either side touched into hunks. Keeping replacements and insertions in

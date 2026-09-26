@@ -247,7 +247,7 @@ fn held_export_snapshot_survives_history_and_settles_once_for_the_exact_selectio
         "the real export operation issued one configured Save request"
     );
     let path = std::env::temp_dir().join(format!(
-        "qos-logs-history-held-export-{}-{}.jsonl",
+        "tilo-logs-history-held-export-{}-{}.jsonl",
         std::process::id(),
         selected.realtime_us
     ));

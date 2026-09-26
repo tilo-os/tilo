@@ -8,12 +8,12 @@
 # integration lane (.forgejo/workflows/build-image.yml) and the dev disk
 # workflow (.forgejo/workflows/dev-disk.yml). It writes, in this order:
 #
-#   code.sandbox.example/qos/tilo-vm:<tag>-<arch>          the dev image child
-#   code.sandbox.example/qos/tilo-vm:<tag>                 OCI index of every child
+#   registry.tilo.so/tilo/tilo-vm:<tag>-<arch>          the dev image child
+#   registry.tilo.so/tilo/tilo-vm:<tag>                 OCI index of every child
 #                                                      of <tag> published so far
 #   <packages>/tilo-vm-disk/<tag>/tilo-vm-<tag>-<arch>.<format>[.sha256]
 #   <packages>/tilo-vm-disk/<tag>/tilo-vm-disk-<arch>.json[.sha256]
-#   code.sandbox.example/qos/tilo-vm:latest                (CHANNEL=true only)
+#   registry.tilo.so/tilo/tilo-vm:latest                (CHANNEL=true only)
 #
 # tilo-vm-disk-<arch>.json is the commit point for <arch>: it is written only
 # after its disks and image exist, and `tilo-vm vm create` offers a tag to a
@@ -36,17 +36,17 @@
 #   SOURCE_DISK        the installed qcow2, never booted
 #   SOURCE_BOOT        aarch64: the direct-boot bundle directory
 #   DISK_FORMATS       space-separated: qcow2 vhdx (default qcow2)
-#   BASE_REPOSITORY    code.sandbox.example/qos/tilo or code.sandbox.example/qos/tilo-ci
+#   BASE_REPOSITORY    registry.tilo.so/tilo/tilo or registry.tilo.so/tilo/tilo-ci
 #   BASE_TRUST         release or integration
 #   BASE_INDEX_DIGEST  the base reference's top-level digest (index or child)
 #   BASE_CHILD_DIGEST  the base's native child digest the dev image is FROM
 #   CHANNEL            true advances tilo-vm:latest, only forward (default false)
 #   TILO_PACKAGE_TOKEN, TILO_PACKAGE_PUBLIC_BASE_URL   generic package access
 #   TILO_VM_PUBLISH_DIR  scratch for converted disks (default /var/tmp/tilo-vm-publish)
-# Registry credentials come from a prior `podman login code.sandbox.example`.
+# Registry credentials for registry.tilo.so come from the job's login.
 set -euo pipefail
 
-REPOSITORY=code.sandbox.example/qos/tilo-vm
+REPOSITORY=registry.tilo.so/tilo/tilo-vm
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 die() { printf '::error::%s\n' "$*" >&2; exit 1; }
@@ -70,9 +70,9 @@ case "$ARCH" in
   *) die "unsupported architecture: $ARCH" ;;
 esac
 case "$BASE_TRUST:$BASE_REPOSITORY" in
-  release:code.sandbox.example/qos/tilo) ;;
+  release:registry.tilo.so/tilo/tilo) ;;
   # An unsigned base must never take a name a signed release would use.
-  integration:code.sandbox.example/qos/tilo-ci) [[ $DEV_TAG == *-ci ]] || die "a tilo-ci base publishes only -ci tags, not $DEV_TAG" ;;
+  integration:registry.tilo.so/tilo/tilo-ci) [[ $DEV_TAG == *-ci ]] || die "a tilo-ci base publishes only -ci tags, not $DEV_TAG" ;;
   *) die "base trust $BASE_TRUST does not match repository $BASE_REPOSITORY" ;;
 esac
 for digest in "$BASE_INDEX_DIGEST" "$BASE_CHILD_DIGEST"; do
@@ -97,6 +97,7 @@ status=$(curl --silent --show-error --retry 3 --output /dev/null --write-out '%{
 case "$status" in
   200) note "tilo-vm-disk $DEV_TAG already publishes $ARCH ($package/$manifest_file)"; exit 0 ;;
   404) ;;
+  3??) die "reading $package/$manifest_file was redirected (HTTP $status): the package base moved; update TILO_PACKAGE_PUBLIC_BASE_URL" ;;
   *) die "reading $package/$manifest_file answered HTTP $status" ;;
 esac
 

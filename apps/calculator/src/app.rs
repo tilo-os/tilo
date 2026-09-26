@@ -1709,7 +1709,7 @@ impl Widget for CalculatorApp {
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its history / graph action, so it records one undo boundary for the whole
-    /// gesture (see [`Self::perform_action`]). Rising-edge: cleared on read.
+    /// gesture (see `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }

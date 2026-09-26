@@ -3,6 +3,7 @@
 //! Enter invokes the selected entry's `on_select` with the CRDT handle and
 //! root path directly — there is no message layer.
 
+use crate::search::fuzzy_score;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -147,6 +148,9 @@ pub struct CommandEntry {
     /// section can report what it's hiding instead of the painted count.
     pub group_total: Option<usize>,
     pub icon: Option<Icon>,
+    /// The application's own artwork, painted in place of `icon` when it
+    /// decodes.
+    pub image: Option<icons::AppImage>,
     pub on_select: Option<Arc<SelectFn>>,
     action_address: Option<ActionAddress>,
     action_argument: Option<String>,
@@ -165,6 +169,7 @@ impl std::fmt::Debug for CommandEntry {
             .field("group", &self.group)
             .field("group_total", &self.group_total)
             .field("icon", &self.icon)
+            .field("image", &self.image)
             .field("on_select", &self.on_select.as_ref().map(|_| "<fn>"))
             .field("action_address", &self.action_address)
             .field("action_argument", &self.action_argument)
@@ -185,6 +190,7 @@ impl CommandEntry {
             group: None,
             group_total: None,
             icon: None,
+            image: None,
             on_select: None,
             action_address: None,
             action_argument: None,
@@ -218,6 +224,12 @@ impl CommandEntry {
     #[must_use]
     pub fn icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    #[must_use]
+    pub fn image(mut self, image: icons::AppImage) -> Self {
+        self.image = Some(image);
         self
     }
 
@@ -363,39 +375,6 @@ fn elide_middle(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> Str
         }
     }
     "\u{2026}".to_string()
-}
-
-/// `Some(match_count - gap_penalty)` when `query` matches `text` as a
-/// case-insensitive subsequence; `None` otherwise.
-fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
-    if query.is_empty() {
-        return Some(0);
-    }
-    let q: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
-    let t: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
-    let mut qi = 0usize;
-    let mut matches = 0i32;
-    let mut gaps = 0i32;
-    let mut prev_match: Option<usize> = None;
-    for (ti, ch) in t.iter().enumerate() {
-        if q.get(qi) == Some(ch) {
-            if let Some(pm) = prev_match {
-                let gap = ti.saturating_sub(pm).saturating_sub(1);
-                gaps = gaps.saturating_add(i32::try_from(gap).unwrap_or(i32::MAX));
-            }
-            prev_match = Some(ti);
-            qi = qi.saturating_add(1);
-            matches = matches.saturating_add(1);
-            if qi == q.len() {
-                break;
-            }
-        }
-    }
-    if qi < q.len() {
-        None
-    } else {
-        Some(matches.saturating_sub(gaps))
-    }
 }
 
 /// Narrows a layout/measurement value to `f32` for vello/taffy. Every call
@@ -1678,6 +1657,29 @@ impl CommandPalette {
 
     /// Paints the row's leading icon, if any, and returns where the label
     /// text should start.
+    fn row_icon_rect(row: Rect) -> Rect {
+        let size = 16.0;
+        let cy = f64::midpoint(row.y0, row.y1);
+        Rect::new(
+            row.x0 + 12.0,
+            cy - size / 2.0,
+            row.x0 + 12.0 + size,
+            cy + size / 2.0,
+        )
+    }
+
+    /// The row's application artwork; the x its label starts at, or `None`
+    /// when the artwork has no pixels and the glyph must stand in.
+    fn draw_row_image(
+        scene: &mut Scene,
+        transform: Affine,
+        row: Rect,
+        image: &icons::AppImage,
+    ) -> Option<f64> {
+        let icon_rect = Self::row_icon_rect(row);
+        icons::draw_app_image(scene, transform, icon_rect, image).then_some(icon_rect.x1 + 10.0)
+    }
+
     fn draw_row_icon(
         scene: &mut Scene,
         transform: Affine,
@@ -1686,14 +1688,7 @@ impl CommandPalette {
         colors: &crate::tokens::Colors,
         selected: bool,
     ) -> f64 {
-        let size = 16.0;
-        let cy = f64::midpoint(row.y0, row.y1);
-        let icon_rect = Rect::new(
-            row.x0 + 12.0,
-            cy - size / 2.0,
-            row.x0 + 12.0 + size,
-            cy + size / 2.0,
-        );
+        let icon_rect = Self::row_icon_rect(row);
         let tint = if selected {
             colors.text_primary
         } else {
@@ -1842,7 +1837,13 @@ impl CommandPalette {
         }
 
         let mut text_x = row.x0 + 12.0;
-        if let Some(icon) = entry.icon {
+        let image_x = entry
+            .image
+            .as_ref()
+            .and_then(|image| Self::draw_row_image(scene, transform, row, image));
+        if let Some(x) = image_x {
+            text_x = x;
+        } else if let Some(icon) = entry.icon {
             text_x = Self::draw_row_icon(scene, transform, row, icon, colors, selected);
         }
 

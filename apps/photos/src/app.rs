@@ -293,10 +293,10 @@ const SEP_W: f32 = 17.0;
 const CANVAS_INSET: f32 = 10.0;
 
 /// Library previews are recognition aids, never an alternate full-resolution
-/// image cache. One small worker and a four-item queue keep a hostile library
-/// from occupying a core or retaining unbounded decoded pixels.
-const THUMBNAIL_MAX_W: u32 = 320;
-const THUMBNAIL_MAX_H: u32 = 180;
+/// image cache. At most four in flight on the shared preview pipeline's single
+/// worker keeps a hostile library from occupying a core or retaining unbounded
+/// decoded pixels.
+const THUMBNAIL_SIZE: thumbnail::ThumbSize = thumbnail::ThumbSize::new(320, 180);
 const THUMBNAIL_QUEUE_LIMIT: usize = 4;
 const DIRECTORY_IMPORT_PER_FRAME: usize = 2;
 /// A receipt must not retain an unbounded directory's diagnostics. The total
@@ -440,13 +440,6 @@ fn compact_library_header_geometry(
             timeline_y: albums_y + if has_albums { 38.0 } else { 0.0 } + 8.0,
         }
     }
-}
-
-#[derive(Clone)]
-struct ThumbnailJob {
-    generation: u64,
-    id: String,
-    image: OpenImage,
 }
 
 struct ThumbnailResult {
@@ -655,27 +648,34 @@ fn analysis_worker(
     }
 }
 
-fn thumbnail_worker(
-    rx: &Receiver<ThumbnailJob>,
-    tx: &SyncSender<ThumbnailResult>,
-    wake: &ui::wake::WakeHandle,
-    content: &ContentStore,
-) {
-    while let Ok(job) = rx.recv() {
-        let preview = crate::doc::bytes_of(&job.image, content)
-            .and_then(|bytes| pixels::decode(&bytes))
-            .map(|image| pixels::thumbnail(&image, THUMBNAIL_MAX_W, THUMBNAIL_MAX_H));
-        if tx
-            .send(ThumbnailResult {
-                generation: job.generation,
-                id: job.id,
-                preview,
-            })
-            .is_err()
-        {
-            return;
-        }
-        wake.wake();
+/// Wake the idle host whenever a preview settles, success or failure, so a
+/// finished thumbnail paints without waiting for user input.
+fn with_thumbnail_wake(service: thumbnail::ThumbnailService) -> thumbnail::ThumbnailService {
+    let wake = ui::wake::WakeHandle::new();
+    service.set_wake(move || wake.wake());
+    service
+}
+
+/// The shared-pipeline request for one library photograph. A content
+/// reference is the preview's content address and persists in the preview
+/// cache; a legacy path-only photograph has no stable content identity, so its
+/// preview is generated for this session only.
+fn thumbnail_request(image: &OpenImage, content: &ContentStore) -> thumbnail::ThumbRequest {
+    let persistent = image
+        .content
+        .as_deref()
+        .and_then(|address| thumbnail::ThumbKey::of_address(address, THUMBNAIL_SIZE));
+    let key = persistent.unwrap_or_else(|| {
+        thumbnail::ThumbKey::of_bytes(decode_key(image).as_bytes(), THUMBNAIL_SIZE)
+    });
+    let (image, content) = (image.clone(), content.clone());
+    let request = thumbnail::ThumbRequest::load(key, thumbnail::FileCategory::Image, move || {
+        crate::doc::bytes_of(&image, &content)
+    });
+    if persistent.is_some() {
+        request
+    } else {
+        request.transient()
     }
 }
 
@@ -1453,12 +1453,13 @@ pub struct PhotosApp {
     /// hashes are immutable, and a user reopening a changed legacy path makes
     /// a new attempt through `open_path`, so retaining this failure is safe.
     original_decode_failed: Option<String>,
-    /// One background decoder serializes disk/content-store access. Results
-    /// are stamped with a visible-library generation before they may enter the
-    /// UI cache, so an old job can never paint a card that now names another
-    /// photograph.
-    thumbnail_tx: Option<SyncSender<ThumbnailJob>>,
-    thumbnail_rx: Receiver<ThumbnailResult>,
+    /// The shared preview pipeline; its one worker serializes disk and
+    /// content-store access. Results are stamped with a visible-library
+    /// generation before they may enter the UI cache, so an old job can never
+    /// paint a card that now names another photograph.
+    thumbnail_service: thumbnail::ThumbnailService,
+    /// The pipeline key of every queued preview, by thumbnail id.
+    thumbnail_keys: HashMap<String, thumbnail::ThumbKey>,
     /// `None` is a deliberately terminal generation. Counter exhaustion is
     /// practically unreachable, but reusing zero could admit an ancient
     /// queued result, so the cache fails closed instead.
@@ -2025,10 +2026,6 @@ impl PhotosApp {
         reason = "construction lists every app-owned state field explicitly so local, shared, and transient state remain auditable"
     )]
     pub fn with_content(content: ContentStore) -> Self {
-        let (thumbnail_job_tx, thumbnail_job_rx) =
-            std::sync::mpsc::sync_channel(THUMBNAIL_QUEUE_LIMIT);
-        let (thumbnail_result_tx, thumbnail_result_rx) =
-            std::sync::mpsc::sync_channel(THUMBNAIL_QUEUE_LIMIT);
         let (analysis_job_tx, analysis_job_rx) =
             std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
         let (analysis_result_tx, analysis_rx) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
@@ -2040,22 +2037,9 @@ impl PhotosApp {
             })
             .ok()
             .map(|_| analysis_job_tx);
-        let thumbnail_wake = ui::wake::WakeHandle::new();
-        let thumbnail_tx = std::thread::Builder::new()
-            .name("photos-thumbnail".to_owned())
-            .spawn({
-                let content = content.clone();
-                move || {
-                    thumbnail_worker(
-                        &thumbnail_job_rx,
-                        &thumbnail_result_tx,
-                        &thumbnail_wake,
-                        &content,
-                    );
-                }
-            })
-            .ok()
-            .map(|_| thumbnail_job_tx);
+        // In memory until `new_persistent` swaps in the per-user preview cache:
+        // tests and offscreen shots must not write the user's cache.
+        let thumbnail_service = with_thumbnail_wake(thumbnail::ThumbnailService::ephemeral(1));
         let pending: Rc<Cell<Option<Hit>>> = Rc::new(Cell::new(None));
         let album_page_pending: Rc<Cell<Option<AlbumEditorHit>>> = Rc::new(Cell::new(None));
         let metadata_editor_pending: Rc<Cell<Option<MetadataEditorHit>>> = Rc::new(Cell::new(None));
@@ -2266,8 +2250,8 @@ impl PhotosApp {
             thumbnail_resource_keys: HashMap::new(),
             thumbnail_unavailable: HashSet::new(),
             original_decode_failed: None,
-            thumbnail_tx,
-            thumbnail_rx: thumbnail_result_rx,
+            thumbnail_service,
+            thumbnail_keys: HashMap::new(),
             thumbnail_generation: Some(0),
             thumbnail_visible_ids: Vec::new(),
             thumbnail_queued: HashSet::new(),
@@ -2470,6 +2454,9 @@ impl PhotosApp {
     pub fn new_persistent(content: ContentStore) -> Self {
         let mut app = Self::with_content(content);
         app.people_controller = crate::people::PeopleController::persistent();
+        if let Ok(service) = thumbnail::ThumbnailService::open_default(1) {
+            app.thumbnail_service = with_thumbnail_wake(service);
+        }
         app
     }
 
@@ -3612,7 +3599,7 @@ impl PhotosApp {
     /// the whole image when the viewer has not been laid out yet.
     ///
     /// `ImageViewer` exposes no direct query for this either, so it is derived
-    /// in [`visible_image_rect`] from the same "contain fit, then zoom and
+    /// in `visible_image_rect` from the same "contain fit, then zoom and
     /// pan" transform `ImageViewer::draw` applies — using only the widget's
     /// already-public `zoom()` / `pan()` / rect, and this app's own knowledge
     /// of the original image's pixel size.
@@ -14142,8 +14129,33 @@ impl PhotosApp {
 
     /// Take completed thumbnail work without blocking the UI thread.
     fn drain_thumbnail_results(&mut self) {
-        while let Ok(result) = self.thumbnail_rx.try_recv() {
-            self.accept_thumbnail_result(result);
+        let Some(generation) = self.thumbnail_generation else {
+            return;
+        };
+        let settled: Vec<(String, Option<thumbnail::ThumbState>)> = self
+            .thumbnail_keys
+            .iter()
+            .filter_map(|(id, key)| match self.thumbnail_service.peek(key) {
+                Some(state) if state.is_loading() => None,
+                state => Some((id.clone(), state)),
+            })
+            .collect();
+        for (id, state) in settled {
+            self.thumbnail_keys.remove(&id);
+            match state {
+                // Dropped from the shared queue: forget it here too, so the
+                // next schedule asks again.
+                None => {
+                    self.thumbnail_queued.remove(&id);
+                }
+                Some(state) => self.accept_thumbnail_result(ThumbnailResult {
+                    generation,
+                    id,
+                    preview: state.ready().and_then(|preview| {
+                        pixels::Rgba::new(preview.width, preview.height, preview.rgba.clone())
+                    }),
+                }),
+            }
         }
     }
 
@@ -14302,6 +14314,7 @@ impl PhotosApp {
             else {
                 // Never reuse a generation token. Any result still in the
                 // worker's queue is now untrusted, and no new work is sent.
+                self.withdraw_thumbnail_requests(&[]);
                 self.thumbnail_generation = None;
                 self.thumbnail_visible_ids = ids;
                 self.thumbnail_queued.clear();
@@ -14309,28 +14322,33 @@ impl PhotosApp {
                 self.thumbnail_unavailable.clear();
                 return;
             };
+            self.withdraw_thumbnail_requests(&ids);
             self.thumbnail_generation = Some(next_generation);
             self.thumbnail_visible_ids = ids;
             self.thumbnail_queued.clear();
             if document_changed {
                 self.library_thumbnails.clear();
+                // Bytes behind an unchanged address may have arrived, and a
+                // legacy path may name new pixels: ask the pipeline afresh.
+                for photo in &sources {
+                    self.thumbnail_service
+                        .forget(&thumbnail_request(&photo.image, &self.content).key());
+                }
             }
             self.library_thumbnails
                 .retain(|id, _| self.thumbnail_visible_ids.contains(id));
             self.thumbnail_unavailable
                 .retain(|id| self.thumbnail_visible_ids.contains(id));
         }
-        let (Some(tx), Some(generation)) = (self.thumbnail_tx.as_ref(), self.thumbnail_generation)
-        else {
+        if self.thumbnail_generation.is_none() {
             return;
-        };
+        }
         for photo in sources {
-            // The channel itself is bounded, but the decoder can take a job
-            // between two `try_send` calls. Without this independent
-            // accounting fence a fast worker lets one sync enqueue an
-            // arbitrarily large visible slice while `thumbnail_queued`
-            // continues to grow. Keep the whole in-flight generation—not
-            // merely the instantaneous channel depth—strictly bounded.
+            // The shared queue is bounded, but its worker can take a job
+            // between two requests. Without this independent accounting fence
+            // a fast worker lets one sync enqueue an arbitrarily large visible
+            // slice while `thumbnail_queued` continues to grow. Keep the whole
+            // in-flight generation strictly bounded.
             if self.thumbnail_queued.len() >= THUMBNAIL_QUEUE_LIMIT {
                 break;
             }
@@ -14345,16 +14363,24 @@ impl PhotosApp {
                 continue;
             }
             let id = thumbnail_key(&photo.image);
-            let job = ThumbnailJob {
-                generation,
-                id: id.clone(),
-                image: photo.image,
-            };
-            if tx.try_send(job).is_err() {
-                break;
-            }
+            let request = thumbnail_request(&photo.image, &self.content);
+            self.thumbnail_keys.insert(id.clone(), request.key());
+            self.thumbnail_service.request(request);
             self.thumbnail_queued.insert(id);
         }
+    }
+
+    /// Withdraw queued previews that are no longer on screen. Work already
+    /// running settles into the shared cache; its result is simply not taken.
+    fn withdraw_thumbnail_requests(&mut self, still_visible: &[String]) {
+        let service = &self.thumbnail_service;
+        self.thumbnail_keys.retain(|id, key| {
+            let keep = still_visible.contains(id);
+            if !keep {
+                service.cancel(key);
+            }
+            keep
+        });
     }
 }
 

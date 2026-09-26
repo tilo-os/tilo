@@ -3,7 +3,7 @@
 
 This measures app-dispatch to scroll-marker presentation, not hardware input
 latency. Use fixtures/scroll-response.html, one tab, unique vertical line wheel
-deltas, zoom 100%, and QOS_WEBVIEW_SCROLL_MARKER=1. Preserve raw logs.
+deltas, zoom 100%, and TILO_WEBVIEW_SCROLL_MARKER=1. Preserve raw logs.
 """
 import argparse
 from collections import Counter
@@ -17,14 +17,14 @@ from frame_presentation import analyze as analyze_frames, number, PREFIXES
 def analyze(rows):
     frames = analyze_frames(rows)
     issues = Counter(frames['issues'])
-    windows = [row for prefix, row in rows if prefix == 'qos-native-window']
+    windows = [row for prefix, row in rows if prefix == 'tilo-native-window']
     scale = windows[0].get('scale_factor') if len(windows) == 1 and isinstance(windows[0], dict) else None
     if not number(scale) or scale <= 0:
         issues['invalid_window_scale'] += 1
     inputs, deltas = {}, {}
     invalid = set()
     for prefix, row in rows:
-        if prefix != 'qos-native-input': continue
+        if prefix != 'tilo-native-input': continue
         if not isinstance(row, dict) or not isinstance(row.get('input'), dict):
             issues['invalid_input_record'] += 1
             continue
@@ -64,7 +64,7 @@ def analyze(rows):
         else:
             deltas[delta] = key
     receipts = {row['frame_id']: row for prefix, row in rows
-                if prefix == 'qos-webview-received' and isinstance(row, dict) and
+                if prefix == 'tilo-webview-received' and isinstance(row, dict) and
                 type(row.get('frame_id')) is int}
     tabs = {row.get('tab_id') for row in receipts.values()}
     if len(tabs) != 1:
@@ -73,7 +73,7 @@ def analyze(rows):
     # A marker seen before dispatch invalidates the causal claim even if that
     # frame was dropped. A later animation can repaint the same old marker.
     for prefix, receipt in rows:
-        if prefix != 'qos-webview-received' or not isinstance(receipt, dict): continue
+        if prefix != 'tilo-webview-received' or not isinstance(receipt, dict): continue
         marker = receipt.get('scroll_marker_delta')
         if type(marker) is not int or marker not in deltas: continue
         key = deltas[marker]
@@ -114,7 +114,7 @@ def main():
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     rows = []
-    prefixes = PREFIXES | {'qos-native-input', 'qos-native-window'}
+    prefixes = PREFIXES | {'tilo-native-input', 'tilo-native-window'}
     for line in args.log.read_text().splitlines():
         prefix, _, payload = line.partition(' ')
         if prefix in prefixes:

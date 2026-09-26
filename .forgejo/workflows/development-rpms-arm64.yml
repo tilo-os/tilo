@@ -45,12 +45,12 @@ jobs:
             echo "PACKAGE_MANIFEST_SHA256=$package_manifest_sha256"
           } >> "$GITHUB_ENV"
 
-      - name: Log in to the code.sandbox.example registry
+      - name: Log in to the code.tilo.so registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.sandbox.example
+          registry: registry.tilo.so
           username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up buildx for native snapshot construction
         uses: ./.forgejo/actions/setup-buildx
@@ -65,7 +65,7 @@ jobs:
           file: os/Containerfile.rpms
           platforms: linux/arm64
           push: true
-          tags: code.sandbox.example/qos/tilo-development-rpms-aarch64:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          tags: registry.tilo.so/tilo/tilo-development-rpms-aarch64:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
@@ -78,7 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$RPM_DIGEST" in sha256:[0-9a-f][0-9a-f]*) ;; *) exit 1 ;; esac
-          candidate="code.sandbox.example/qos/tilo-development-rpms-aarch64@$RPM_DIGEST"
+          candidate="registry.tilo.so/tilo/tilo-development-rpms-aarch64@$RPM_DIGEST"
           docker buildx imagetools inspect "$candidate" >/dev/null
           export CANDIDATE="$candidate"
           mkdir -p "$RUNNER_TEMP/development-rpms-arm64"

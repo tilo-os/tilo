@@ -48,9 +48,10 @@ impl Drop for ChildGuard {
     }
 }
 
-/// Run the headless `WaylandServer` on a background thread until it's 20s
-/// old, forwarding queued `input_tx_rx` events into it each tick. Split out
-/// of [`test_click_interaction_in_sandbox`] to keep that test short.
+/// Run the headless `WaylandServer` on a background thread until the test
+/// drops its input sender, forwarding queued `input_tx_rx` events into it
+/// each tick. Split out of [`test_click_interaction_in_sandbox`] to keep that
+/// test short.
 fn spawn_wayland_server(
     tx: mpsc::UnboundedSender<WaylandEvent>,
     started_tx: std::sync::mpsc::Sender<String>,
@@ -86,11 +87,23 @@ fn spawn_wayland_server(
         started_tx.send(env_name).unwrap();
         let mut server_state =
             WaylandServer::new(&display.handle(), tx).expect("WaylandServer::new");
+        // Clients repeat held keys on their own timer. On a loaded host a
+        // press and its release can reach the client further apart than the
+        // repeat delay and type extra characters, so scripted input never
+        // repeats.
+        server_state
+            .seat
+            .get_keyboard()
+            .expect("the server seat has a keyboard")
+            .change_repeat_info(0, 0);
 
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(20) {
-            while let Ok(input) = input_tx_rx.try_recv() {
-                server_state.handle_input(&input);
+        loop {
+            loop {
+                match input_tx_rx.try_recv() {
+                    Ok(input) => server_state.handle_input(&input),
+                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(mpsc::error::TryRecvError::Disconnected) => return,
+                }
             }
             let _ = display.dispatch_clients(&mut server_state);
             let _ = display.flush_clients();
@@ -217,6 +230,54 @@ fn send_peer_key(
     }
 }
 
+/// Generous backstop for waits that end on an observed event. It only bounds
+/// a hung client; a healthy run returns as soon as the event arrives.
+const EVENT_BUDGET: Duration = Duration::from_secs(60);
+
+/// Press Ctrl+S as `peer` until `saved` holds for `document`, and return its
+/// contents then. GNOME Text Editor ignores Save while its document is busy
+/// loading or saving, so repeating the chord is harmless and the file itself
+/// is the signal that the app accepted it. Fails fast when the app exits.
+fn save_until(
+    seats: &mut RemoteSeats,
+    input: &mpsc::UnboundedSender<WaylandInput>,
+    child: &mut ChildGuard,
+    document: &std::path::Path,
+    what: &str,
+    saved: impl Fn(&fs::Metadata, &str) -> bool,
+) -> Result<String, String> {
+    let deadline = Instant::now()
+        .checked_add(EVENT_BUDGET)
+        .unwrap_or_else(Instant::now);
+    loop {
+        send_peer_key(seats, input, 7, 29, true);
+        send_peer_key(seats, input, 7, 31, true);
+        send_peer_key(seats, input, 7, 31, false);
+        send_peer_key(seats, input, 7, 29, false);
+        let attempt = Instant::now()
+            .checked_add(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        while Instant::now() < attempt {
+            if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+                return Err(format!("GNOME Text Editor exited ({status}) before {what}"));
+            }
+            if let (Ok(metadata), Ok(contents)) =
+                (fs::metadata(document), fs::read_to_string(document))
+                && saved(&metadata, &contents)
+            {
+                return Ok(contents);
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        if Instant::now() >= deadline {
+            let contents = fs::read_to_string(document).unwrap_or_default();
+            return Err(format!(
+                "GNOME Text Editor never {what} within {EVENT_BUDGET:?}; document: {contents:?}"
+            ));
+        }
+    }
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -230,6 +291,17 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
     let document_dir = tempfile::tempdir().unwrap();
     let document = document_dir.path().join("shared.txt");
     fs::write(&document, "START").unwrap();
+    // Date the fixture well in the past so the app's first save is visible
+    // as a new modification time even on a coarse-grained filesystem clock.
+    let fixture_time = std::time::UNIX_EPOCH
+        .checked_add(Duration::from_secs(1_000_000_000))
+        .unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&document)
+        .unwrap()
+        .set_modified(fixture_time)
+        .unwrap();
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (started_tx, started_rx) = std::sync::mpsc::channel();
@@ -248,7 +320,7 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
         .unwrap();
     let log_path = app.log_path;
     let mut child = ChildGuard(app.child);
-    let (surface, width, height, _app_id) = wait_for_any_surface(&mut rx, Duration::from_secs(12))
+    let (surface, width, height, _app_id) = wait_for_any_surface(&mut rx, EVENT_BUDGET)
         .unwrap_or_else(|| {
             let log = fs::read_to_string(&log_path).unwrap_or_default();
             panic!("GNOME Text Editor did not create a Wayland window; log:\n{log}")
@@ -256,43 +328,72 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
     // A toplevel exists before its first buffer; input sent to it then is
     // never delivered. Type only once the editor has presented a frame.
     assert!(
-        wait_for_first_frame(&mut rx, surface, Duration::from_secs(20)),
+        wait_for_first_frame(&mut rx, surface, EVENT_BUDGET),
         "GNOME Text Editor created a window but never presented a frame"
     );
+    // The app runs with WAYLAND_DEBUG, so only the log's tail fits a failure.
+    let app_log = || {
+        let log = fs::read_to_string(&log_path).unwrap_or_default();
+        let tail = log
+            .char_indices()
+            .rev()
+            .nth(8_000)
+            .map_or(0, |(index, _)| index);
+        log[tail..].to_owned()
+    };
+    // A press on the surface gives it the seat's keyboard focus; inside the
+    // editor it focuses the text view and places the caret.
     let x = f64::from(width) * 0.5;
     let y = f64::from(height) * 0.5;
-    input_tx
-        .send(WaylandInput::Motion {
-            x,
-            y,
-            surface_id: Some(surface),
-            surface_width: width,
-            surface_height: height,
-        })
-        .unwrap();
-    input_tx
-        .send(WaylandInput::Button {
-            button: 0x110,
-            state: smithay::backend::input::ButtonState::Pressed,
-            surface_id: Some(surface),
-            surface_width: width,
-            surface_height: height,
-        })
-        .unwrap();
-    input_tx
-        .send(WaylandInput::Button {
-            button: 0x110,
-            state: smithay::backend::input::ButtonState::Released,
-            surface_id: Some(surface),
-            surface_width: width,
-            surface_height: height,
-        })
-        .unwrap();
-    thread::sleep(Duration::from_millis(300));
-
+    let click = || {
+        input_tx
+            .send(WaylandInput::Motion {
+                x,
+                y,
+                surface_id: Some(surface),
+                surface_width: width,
+                surface_height: height,
+            })
+            .unwrap();
+        for state in [
+            smithay::backend::input::ButtonState::Pressed,
+            smithay::backend::input::ButtonState::Released,
+        ] {
+            input_tx
+                .send(WaylandInput::Button {
+                    button: 0x110,
+                    state,
+                    surface_id: Some(surface),
+                    surface_width: width,
+                    surface_height: height,
+                })
+                .unwrap();
+        }
+    };
+    click();
     let mut remote_seats = RemoteSeats::new();
     let _ = remote_seats.seat_mut(7).enter(u64::from(surface));
     let _ = remote_seats.seat_mut(8).enter(u64::from(surface));
+    // The first frame can precede the document: while the file loads the
+    // editor refuses focus to its text view and ignores Save. Its first save
+    // of the unchanged text is the signal that loading finished.
+    let loaded = save_until(
+        &mut remote_seats,
+        &input_tx,
+        &mut child,
+        &document,
+        "finished loading the document",
+        |metadata, _| metadata.modified().is_ok_and(|time| time != fixture_time),
+    )
+    .unwrap_or_else(|error| panic!("{error}; log:\n{}", app_log()));
+    // GtkSourceView ends a saved file with a newline.
+    assert_eq!(
+        loaded.trim_end(),
+        "START",
+        "saving the loaded document keeps its text"
+    );
+    // Only now can the click reach the text view.
+    click();
 
     // Ctrl+End places the application's single caret at the end.
     send_peer_key(&mut remote_seats, &input_tx, 7, 29, true);
@@ -324,16 +425,22 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
     send_peer_key(&mut remote_seats, &input_tx, 8, 48, true);
     send_peer_key(&mut remote_seats, &input_tx, 8, 48, false);
     send_peer_key(&mut remote_seats, &input_tx, 8, 42, false);
-    // Save through the app itself, making its document authoritative.
-    send_peer_key(&mut remote_seats, &input_tx, 7, 29, true);
-    send_peer_key(&mut remote_seats, &input_tx, 7, 31, true);
-    send_peer_key(&mut remote_seats, &input_tx, 7, 31, false);
-    send_peer_key(&mut remote_seats, &input_tx, 7, 29, false);
-    thread::sleep(Duration::from_secs(2));
+    // Save through the app itself, making its document authoritative, and
+    // wait for that save to land instead of for a fixed time.
+    let saved = save_until(
+        &mut remote_seats,
+        &input_tx,
+        &mut child,
+        &document,
+        "saved the typed text",
+        // A save replaces the file atomically; never mistake an empty read
+        // for the result.
+        |_, contents| !contents.is_empty() && contents.trim_end() != "START",
+    )
+    .unwrap_or_else(|error| panic!("{error}; log:\n{}", app_log()));
     let _ = child.kill();
     let _ = child.wait();
 
-    let saved = fs::read_to_string(document).unwrap();
     assert!(
         saved.contains("STARTaaB"),
         "the GTK editor did not preserve two collaborator presses at one caret: {saved}"
@@ -346,19 +453,14 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
     reason = "one end-to-end sandbox scenario: spawn, wait for the window, drive input and assert, in order"
 )]
 fn test_click_interaction_in_sandbox() {
-    // 1. Build
-    let _ = std::process::Command::new("cargo")
-        .arg("build")
-        .arg("--locked")
-        .arg("--bin")
-        .arg("click_test_client")
-        .status();
-
+    // Cargo builds every binary target of the package before its integration
+    // tests and hands us the path as CARGO_BIN_EXE_click_test_client; a nested
+    // `cargo build` here would only recompile the crate under another profile.
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (input_tx, input_tx_rx) = mpsc::unbounded_channel();
 
-    // 2. Start Server
+    // 1. Start Server
     spawn_wayland_server(tx, started_tx, input_tx_rx);
 
     let socket_name = started_rx
@@ -379,7 +481,7 @@ fn test_click_interaction_in_sandbox() {
     );
     let log_dir = tempfile::tempdir().unwrap();
 
-    // 3. Spawn Client
+    // 2. Spawn Client
     let app = container
         .spawn_logging_to(
             log_dir.path(),
@@ -391,11 +493,11 @@ fn test_click_interaction_in_sandbox() {
     let log_path = app.log_path;
     let mut child = ChildGuard(app.child);
 
-    // 4. Wait for Window/Frame
+    // 3. Wait for Window/Frame
     let surface_id = wait_for_ready_surface(&mut rx, Duration::from_secs(10))
         .expect("Test client did not become ready");
 
-    // 5. Send Input
+    // 4. Send Input
     let test_x = 123.0;
     let test_y = 45.0;
 
@@ -468,7 +570,7 @@ fn test_click_interaction_in_sandbox() {
 
     thread::sleep(Duration::from_secs(2));
 
-    // 6. Verify Log
+    // 5. Verify Log
     let log_content = fs::read_to_string(&log_path).unwrap_or_default();
     let expected_pattern = format!("EVENT:CLICK AT {test_x:.1},{test_y:.1}");
     println!("DEBUG: Final Client Log:\n{log_content}");

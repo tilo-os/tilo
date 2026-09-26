@@ -74,6 +74,8 @@ class OsReleaseMatrixTests(unittest.TestCase):
             [
                 {"arch": "x86_64", "runner": "imager-linux-x86_64"},
                 {"arch": "aarch64", "runner": "imager-linux-aarch64"},
+                {"arch": "x86_64", "runner": "imager-linux-x86_64", "role": "reproduce"},
+                {"arch": "aarch64", "runner": "imager-linux-aarch64", "role": "reproduce"},
             ],
         )
 
@@ -85,6 +87,8 @@ class OsReleaseMatrixTests(unittest.TestCase):
             [
                 {"arch": "x86_64", "runner": "runner-large"},
                 {"arch": "aarch64", "runner": "runner-large-arm64"},
+                {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
+                {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
             ],
         )
 
@@ -105,6 +109,8 @@ class OsReleaseMatrixTests(unittest.TestCase):
             [
                 {"arch": "x86_64", "runner": "runner-large"},
                 {"arch": "aarch64", "runner": "runner-large-arm64"},
+                {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
+                {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
             ],
         )
 
@@ -153,7 +159,7 @@ class OsReleaseMatrixTests(unittest.TestCase):
         build = workflow.split("\n  build-and-push:\n", 1)[1].split("\n    strategy:", 1)[0]
         self.assertIn("needs.plan.outputs.skip != 'true'", build)
         self.assertIn("PLANNED_PUBLISH: ${{ needs.plan.outputs.publish }}", workflow)
-        self.assertIn("docker://code.sandbox.example/qos/tilo:latest", workflow)
+        self.assertIn("docker://registry.tilo.so/tilo/tilo:latest", workflow)
         self.assertIn('.Labels["org.opencontainers.image.revision"]', workflow)
 
     def test_every_publishing_run_holds_the_generation_series_lock(self):
@@ -249,7 +255,7 @@ class ReleaseGateTests(unittest.TestCase):
         workflow = WORKFLOW.read_text()
         archive = re.compile(r"oci-archive:/var/tmp/tilo-image(?:-repro)?\.tar")
         uses = list(archive.finditer(workflow))
-        self.assertEqual(len(uses), 5)
+        self.assertEqual(len(uses), 4)
         for use in uses:
             self.assertRegex(
                 workflow[use.end():use.end() + 24],
@@ -263,8 +269,8 @@ class ReleaseGateTests(unittest.TestCase):
     def test_two_ref_archive_needs_an_explicit_source_reference(self):
         # Buildx emits one top-level OCI index descriptor for each image tag.
         # The selected ref must work for both inspection and copy/import.
-        first = "code.sandbox.example/qos/tilo:gen1"
-        second = "code.sandbox.example/qos/tilo:main-abcdef0"
+        first = "registry.tilo.so/tilo/tilo:gen1"
+        second = "registry.tilo.so/tilo/tilo:main-abcdef0"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             layout = root / "layout"

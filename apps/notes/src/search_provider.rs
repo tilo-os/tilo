@@ -1,6 +1,6 @@
 //! Notes as a Tilo global-search source.
 //!
-//! Mirrors the reference wiring in [`apps/contacts`]: Notes declares its
+//! Mirrors the reference wiring in `apps/contacts`: Notes declares its
 //! searchable type by implementing [`SearchProvider`] over a snapshot of the
 //! page tree, so every note page becomes a typed [`SearchResult`] the unified
 //! Ctrl+K palette can rank alongside every other provider's hits. Activating a
@@ -18,8 +18,8 @@ use std::sync::{Arc, RwLock};
 
 use ui::icons::Icon;
 use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
+    DEFAULT_SEARCH_RESULT_LIMIT, FieldWeight, SearchCatalog, SearchCursor, SearchPage,
+    SearchProvider, SearchRecord, SearchResult,
 };
 
 use crate::model::{PageId, PageMeta, Workspace};
@@ -120,10 +120,9 @@ impl NoteSearchProvider {
                     crate::actions::open_page_address(page.id),
                 )
                 .with_icon(Icon::FileText);
-                let _ = self.catalog.upsert(
-                    crate::actions::page_resource_id(page.id),
-                    Self::display_title(page),
-                    result,
+                let _ = self.catalog.upsert_record(
+                    SearchRecord::new(crate::actions::page_resource_id(page.id), result)
+                        .field(Self::display_title(page), FieldWeight::TITLE),
                 );
             }
             let old_blocks = snapshot.blocks.get(&page.id).cloned().unwrap_or_default();
@@ -162,10 +161,10 @@ impl NoteSearchProvider {
                 )
                 .with_subtitle(Self::display_title(page))
                 .with_icon(Icon::List);
-                let _ = self.catalog.upsert(
-                    resource,
-                    format!("{}\n{}", Self::display_title(page), block.text),
-                    result,
+                let _ = self.catalog.upsert_record(
+                    SearchRecord::new(resource, result)
+                        .field(&block.text, FieldWeight::BODY)
+                        .field(Self::display_title(page), FieldWeight::SUBTITLE),
                 );
             }
         }

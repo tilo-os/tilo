@@ -1082,9 +1082,8 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
 
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
         TabDescriptor {
-            id: 1,
-            title: "Notes".into(),
             app_kind: Some(AppKind::Editor),
+            ..TabDescriptor::new(1, "Notes")
         },
         TileContent::Stub {
             kind: AppKind::Editor,

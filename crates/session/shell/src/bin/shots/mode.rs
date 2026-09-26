@@ -102,7 +102,7 @@ pub mod offscreen {
     ) -> Result<(), String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("create offscreen output dir '{}': {e}", dir.display()))?;
-        let (w, h) = driver.viewport();
+        let (w, h) = driver.scene_size();
         let (w, h) = (dim_to_u32(w), dim_to_u32(h));
         let mut renderer = OffscreenRenderer::new(w, h);
         println!(
@@ -126,7 +126,12 @@ pub mod offscreen {
     ///
     /// Returns an error if the output directory cannot be created, or if a
     /// scene named in `scenes` fails its own setup.
-    pub fn run_scenes(scenes: &[String], dir: &Path, viewport: (u32, u32)) -> Result<(), String> {
+    pub fn run_scenes(
+        scenes: &[String],
+        dir: &Path,
+        viewport: (u32, u32),
+        outputs: Option<&[shell::compositor::backend::Output]>,
+    ) -> Result<(), String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("create offscreen output dir '{}': {e}", dir.display()))?;
         let mut renderer = OffscreenRenderer::new(viewport.0, viewport.1);
@@ -140,6 +145,9 @@ pub mod offscreen {
         let mut first_paint_seen = false;
         for name in scenes {
             let mut driver = ShellDriver::new(viewport);
+            if let Some(outputs) = outputs {
+                driver.set_outputs(outputs);
+            }
             driver
                 .scene_setup(name)
                 .map_err(|e| format!("scene_setup({name}) failed: {e}"))?;
@@ -238,7 +246,7 @@ pub mod recording {
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        let (w, h) = driver.viewport();
+        let (w, h) = driver.scene_size();
         // 4:2:0 encoders take even dimensions.
         let (w, h) = (dim_to_u32(w) & !1, dim_to_u32(h) & !1);
         let mut renderer = OffscreenRenderer::new(w, h);

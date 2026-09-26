@@ -276,7 +276,7 @@ pub struct Row {
     pub descendants: usize,
 }
 
-/// Options driving [`flatten`].
+/// Options driving `flatten`.
 pub struct FlattenOpts<'a> {
     pub sum_mode: SumMode,
     pub sort_key: SortKey,

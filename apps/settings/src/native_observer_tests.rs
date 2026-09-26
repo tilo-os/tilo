@@ -510,7 +510,10 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
     assert_eq!(restored["search_focused"], true);
     assert_eq!(restored["search_caret_byte"], 0);
     assert_eq!(restored["local_search_text"], "");
-    assert_eq!(restored["rendered_result_count"], 22);
+    assert_eq!(
+        restored["rendered_result_count"],
+        crate::categories::Category::ALL.len()
+    );
     assert_eq!(restored["sidebar_open"], true);
 }
 

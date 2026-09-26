@@ -80,33 +80,33 @@ class DevImageContractTests(unittest.TestCase):
         root = self.fixture()
         path = root / "os/etc/containers/policy.json"
         policy = json.loads(path.read_text())
-        del policy["transports"]["docker"]["code.sandbox.example/qos/tilo-vm"]
+        del policy["transports"]["docker"]["registry.tilo.so/tilo/tilo-vm"]
         path.write_text(json.dumps(policy, indent=2))
-        self.assertIn("does not reject code.sandbox.example/qos/tilo-vm", "\n".join(self.findings(root)))
+        self.assertIn("does not reject registry.tilo.so/tilo/tilo-vm", "\n".join(self.findings(root)))
 
     def test_production_policy_must_reject_integration_repository(self):
         root = self.fixture()
         path = root / "os/etc/containers/policy.json"
         policy = json.loads(path.read_text())
-        policy["transports"]["docker"]["code.sandbox.example/qos/tilo-ci"] = [{"type": "insecureAcceptAnything"}]
+        policy["transports"]["docker"]["registry.tilo.so/tilo/tilo-ci"] = [{"type": "insecureAcceptAnything"}]
         path.write_text(json.dumps(policy, indent=2))
-        self.assertIn("does not reject code.sandbox.example/qos/tilo-ci", "\n".join(self.findings(root)))
+        self.assertIn("does not reject registry.tilo.so/tilo/tilo-ci", "\n".join(self.findings(root)))
 
     def test_dev_image_tagged_as_production_fails(self):
         root = self.fixture()
         workflow = root / ".forgejo/workflows/bad.yml"
         workflow.write_text("jobs:\n  b:\n    steps:\n      - run: |\n"
                             "          podman build --file os/Containerfile.dev \\\n"
-                            "            --tag code.sandbox.example/qos/tilo:latest .\n")
+                            "            --tag registry.tilo.so/tilo/tilo:latest .\n")
         errors = "\n".join(self.findings(root))
         self.assertIn(".forgejo/workflows/bad.yml:5:", errors)
-        self.assertIn("names the production image 'code.sandbox.example/qos/tilo:latest'", errors)
+        self.assertIn("names the production image 'registry.tilo.so/tilo/tilo:latest'", errors)
 
     def test_dev_image_pushed_to_production_fails(self):
         root = self.fixture()
         script = root / "os/push-dev.sh"
         script.write_text("#!/bin/sh\n# builds os/Containerfile.dev\n"
-                          "podman push localhost/tilo-vm:x docker://code.sandbox.example/qos/tilo:main\n")
+                          "podman push localhost/tilo-vm:x docker://registry.tilo.so/tilo/tilo:main\n")
         self.assertIn("os/push-dev.sh:3:", "\n".join(self.findings(root)))
 
     def test_ci_builds_the_dev_image_with_the_local_recipe(self):
@@ -127,8 +127,23 @@ class DevImageContractTests(unittest.TestCase):
     def test_snapshot_pin_has_one_home(self):
         root = self.fixture()
         self.edit(root / "os/Containerfile.dev", "ARG RPMS_REF\n",
-                  "ARG RPMS_REF=code.sandbox.example/qos/rpms@sha256:0\n")
+                  "ARG RPMS_REF=registry.tilo.so/tilo/rpms@sha256:0\n")
         self.assertIn("RPMS_REF has a default", "\n".join(self.findings(root)))
+
+    def test_rust_toolchain_is_digest_pinned(self):
+        root = self.fixture()
+        dev = root / "os/Containerfile.dev"
+        text = dev.read_text(encoding="utf-8")
+        pinned = next(line for line in text.splitlines() if line.startswith("ARG RUST_TOOLCHAIN_IMAGE="))
+        self.edit(dev, pinned, "ARG RUST_TOOLCHAIN_IMAGE=registry.tilo.so/tilo/tilo-builder:latest")
+        self.assertIn("RUST_TOOLCHAIN_IMAGE is not a digest-pinned tilo-builder image",
+                      "\n".join(self.findings(root)))
+
+    def test_builder_packages_leave_out_fedora_rust(self):
+        listed = (REPO / "os/scripts/builder-packages.txt").read_text(encoding="utf-8").split()
+        self.assertNotIn("rust", listed)
+        self.assertNotIn("cargo", listed)
+        self.assertIn("sccache", listed)
 
     def test_builder_package_drift_fails(self):
         root = self.fixture()
@@ -153,15 +168,15 @@ class FinalizeDevImageTests(unittest.TestCase):
 
     def test_dev_policy_admits_only_the_dev_repository(self):
         production = json.loads((REPO / "os/etc/containers/policy.json").read_text())
-        before = json.dumps(production["transports"]["docker"]["code.sandbox.example/qos/tilo"], sort_keys=True)
+        before = json.dumps(production["transports"]["docker"]["registry.tilo.so/tilo/tilo"], sort_keys=True)
         dev = self.finalize.dev_policy(json.loads(json.dumps(production)))
         docker = dev["transports"]["docker"]
-        self.assertEqual(docker["code.sandbox.example/qos/tilo-vm"], [{"type": "insecureAcceptAnything"}])
-        self.assertEqual(json.dumps(docker["code.sandbox.example/qos/tilo"], sort_keys=True), before)
+        self.assertEqual(docker["registry.tilo.so/tilo/tilo-vm"], [{"type": "insecureAcceptAnything"}])
+        self.assertEqual(json.dumps(docker["registry.tilo.so/tilo/tilo"], sort_keys=True), before)
         self.assertEqual(dev["default"], production["default"])
 
     def test_a_base_that_already_admits_dev_images_is_refused(self):
-        policy = {"transports": {"docker": {"code.sandbox.example/qos/tilo-vm": [{"type": "insecureAcceptAnything"}]}}}
+        policy = {"transports": {"docker": {"registry.tilo.so/tilo/tilo-vm": [{"type": "insecureAcceptAnything"}]}}}
         with self.assertRaises(SystemExit):
             self.finalize.dev_policy(policy)
 

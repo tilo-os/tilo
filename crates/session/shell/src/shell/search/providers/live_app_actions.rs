@@ -9,6 +9,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use ui::search::{FieldWeight, RankField};
 
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::search::ActionReceipt;
@@ -19,7 +20,7 @@ use crate::shell::search::{
 };
 
 use crate::shell::collab_broker_capnp::{
-    ActionDirectoryRoot, PublishedAction, PublishedInput, PublishedSurface,
+    ActionDirectoryRoot, PublishedAction, PublishedInput, PublishedSurface, launchable_provider,
 };
 use crate::shell::remote_actions::BrokerActionHost;
 use tilo_actions::remote::{
@@ -29,6 +30,10 @@ use tilo_actions::remote::{
 };
 
 pub const PROVIDER_ID: &str = "app-actions";
+/// How long the palette waits for a local action's admission. A closed app
+/// is launched first, and the host gives up on it sooner with a clearer
+/// error; this only bounds a host that never answers.
+const LOCAL_ADMISSION_TIMEOUT: Duration = Duration::from_secs(40);
 const ID_SEPARATOR: char = '\u{1f}';
 const MAX_DIRECTORY_ROOTS_PER_QUERY: usize = 16;
 /// Jobs are an immediate, useful palette hint rather than a second unbounded
@@ -113,8 +118,35 @@ fn directory_start_ticket(
     cache_key: DirectoryCacheKey,
     deadline: Instant,
 ) -> PendingInvocation {
-    // Dropped once answered or given up on, so a start still waiting on its
-    // owner sees nobody wants it and does not begin after the deadline.
+    let refused_invalidations = Rc::clone(&invalidations);
+    let refused_key = cache_key.clone();
+    admission_ticket(
+        admission,
+        deadline,
+        move |error| {
+            if invalidates_directory_cache(error) {
+                refused_invalidations
+                    .borrow_mut()
+                    .insert(refused_key.clone());
+            }
+            ActionError::Refused(format!("directory action refused: {error}"))
+        },
+        move || {
+            invalidations.borrow_mut().insert(cache_key.clone());
+            ActionError::Refused("directory action admission timed out".into())
+        },
+    )
+}
+
+/// Poll an admission from the frame loop until it answers or `deadline`
+/// passes. Dropped once answered or given up on, so a start still waiting
+/// sees nobody wants it and does not begin after the deadline.
+fn admission_ticket(
+    admission: Pending<Result<(u64, InvocationReceipt), ActionHostError>>,
+    deadline: Instant,
+    refused: impl Fn(&ActionHostError) -> ActionError + 'static,
+    timed_out: impl Fn() -> ActionError + 'static,
+) -> PendingInvocation {
     let admission = Rc::new(RefCell::new(Some(admission)));
     Rc::new(move || {
         let polled = admission
@@ -127,53 +159,45 @@ fn directory_start_ticket(
         match polled {
             PendingPoll::Ready(Ok((job, receipt))) => Ok(Some(ActionReceipt {
                 broker_invocation_id: Some(job),
-                update: match receipt.status {
-                    tilo_actions::remote::ReceiptStatus::Completed { output } => {
-                        tilo_actions::InvocationUpdate::Succeeded {
-                            invocation: receipt.invocation,
-                            output,
-                        }
-                    }
-                    tilo_actions::remote::ReceiptStatus::Failed { error } => {
-                        tilo_actions::InvocationUpdate::Failed {
-                            invocation: receipt.invocation,
-                            error,
-                        }
-                    }
-                    tilo_actions::remote::ReceiptStatus::Cancelled { message } => {
-                        tilo_actions::InvocationUpdate::Cancelled {
-                            invocation: receipt.invocation,
-                            message,
-                        }
-                    }
-                    tilo_actions::remote::ReceiptStatus::Accepted
-                    | tilo_actions::remote::ReceiptStatus::Rejected { .. } => {
-                        tilo_actions::InvocationUpdate::Accepted {
-                            invocation: receipt.invocation,
-                        }
-                    }
-                },
+                update: receipt_update(receipt),
             })),
-            PendingPoll::Ready(Err(error)) => {
-                if invalidates_directory_cache(&error) {
-                    invalidations.borrow_mut().insert(cache_key.clone());
-                }
-                Err(ActionError::Refused(format!(
-                    "directory action refused: {error}"
-                )))
-            }
+            PendingPoll::Ready(Err(error)) => Err(refused(&error)),
             PendingPoll::Abandoned => Err(ActionError::Refused(
-                "directory action response was unavailable".into(),
+                "the action's admission was unavailable".into(),
             )),
-            PendingPoll::Waiting if Instant::now() >= deadline => {
-                invalidations.borrow_mut().insert(cache_key.clone());
-                Err(ActionError::Refused(
-                    "directory action admission timed out".into(),
-                ))
-            }
+            PendingPoll::Waiting if Instant::now() >= deadline => Err(timed_out()),
             PendingPoll::Waiting => Ok(None),
         }
     })
+}
+
+fn receipt_update(receipt: InvocationReceipt) -> tilo_actions::InvocationUpdate {
+    match receipt.status {
+        tilo_actions::remote::ReceiptStatus::Completed { output } => {
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation: receipt.invocation,
+                output,
+            }
+        }
+        tilo_actions::remote::ReceiptStatus::Failed { error } => {
+            tilo_actions::InvocationUpdate::Failed {
+                invocation: receipt.invocation,
+                error,
+            }
+        }
+        tilo_actions::remote::ReceiptStatus::Cancelled { message } => {
+            tilo_actions::InvocationUpdate::Cancelled {
+                invocation: receipt.invocation,
+                message,
+            }
+        }
+        tilo_actions::remote::ReceiptStatus::Accepted
+        | tilo_actions::remote::ReceiptStatus::Rejected { .. } => {
+            tilo_actions::InvocationUpdate::Accepted {
+                invocation: receipt.invocation,
+            }
+        }
+    }
 }
 
 pub(crate) const JOB_UNAVAILABLE_MESSAGE: &str = "invocation is unavailable or not visible; this does not establish the original action's outcome";
@@ -310,118 +334,71 @@ struct AuxiliaryResume {
     directory: Option<DirectoryContinuation>,
 }
 
-struct PeerInvocation<'a> {
-    peer_id: u64,
-    resource: &'a str,
-    action: &'a str,
-    argument: Option<&'a str>,
-    actor: &'a str,
-    confirmation: &'a tilo_actions::ConfirmationPolicy,
-    confirmed: bool,
-    phrase: Option<&'a str>,
+/// A published local action, started through the session's action host
+/// confined to the room of the publishing surface: the same admission,
+/// permission and confirmation path every other caller takes. An action
+/// retained from a closed app names the host's launchable provider, and the
+/// host launches the app before delivering it.
+struct LocalStart {
+    host: BrokerActionHost,
+    provider: String,
+    room: String,
+    address: tilo_actions::ActionAddress,
+    actor: String,
+    confirmation: tilo_actions::ConfirmationPolicy,
+    typed_arguments: bool,
+    wants_content: bool,
 }
 
-/// Start a published action through the session's action host, confined to
-/// the room of the publishing surface: the same admission, permission and
-/// confirmation path every other caller takes.
-fn start_on_peer(
-    broker: &AppActionBroker,
-    invocation: &PeerInvocation<'_>,
-) -> Result<ActionReceipt, String> {
-    use tilo_actions::remote::{
-        Caller, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
-    };
-    let room = broker
-        .surfaces()
-        .into_iter()
-        .find(|surface| surface.peer_id == invocation.peer_id && surface.live)
-        .map(|surface| surface.route.cluster_id)
-        .ok_or_else(|| "the application no longer publishes that action".to_string())?;
-    let argument = match invocation.argument {
-        None => InvokeArgument::None,
-        Some(slot) => match slot
-            .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
-        {
-            Some(serde_json::Value::Object(object)) => InvokeArgument::Json(object),
-            _ => InvokeArgument::Text(slot.to_string()),
-        },
-    };
-    let confirmation = match invocation.confirmation {
-        tilo_actions::ConfirmationPolicy::None => None,
-        tilo_actions::ConfirmationPolicy::Confirm => {
-            invocation.confirmed.then_some(Confirmation::Confirmed)
-        }
-        tilo_actions::ConfirmationPolicy::Phrase { .. } => invocation
-            .phrase
-            .map(|phrase| Confirmation::Phrase(phrase.to_string())),
-    };
-    let request = InvokeRequest {
-        invocation: tilo_actions::InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: invocation.peer_id.to_string(),
-            address: tilo_actions::ActionAddress::new(invocation.resource, invocation.action),
-        },
-        argument,
-        context: None,
-        confirmation,
-        revision: None,
-    };
-    // An action on a live surface is admitted at once; nothing here waits.
-    let mut admission = crate::shell::remote_actions::BrokerActionHost::new(broker.clone())
-        .invoke_job(
-            &Caller::local_person(invocation.actor).in_room(room),
-            request,
-        );
-    let (job, receipt) = match admission.poll_ready() {
-        PendingPoll::Ready(result) => result.map_err(|error| error.to_string())?,
-        PendingPoll::Waiting | PendingPoll::Abandoned => {
-            return Err("the action was not admitted immediately".into());
-        }
-    };
-    let update = broker
-        .status(job)
-        .unwrap_or(tilo_actions::InvocationUpdate::Accepted {
-            invocation: receipt.invocation,
-        });
-    Ok(ActionReceipt {
-        broker_invocation_id: Some(job),
-        update,
-    })
+impl LocalStart {
+    fn begin(
+        &self,
+        args: &crate::shell::search::action_api::ActionArgs,
+    ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
+        let argument = if self.typed_arguments {
+            let mut values = args.to_json();
+            values.remove("confirm");
+            values.remove("confirmation_phrase");
+            InvokeArgument::Json(values)
+        } else {
+            args.text(if self.wants_content {
+                "content"
+            } else {
+                "argument"
+            })
+            .map_or(InvokeArgument::None, |text| {
+                InvokeArgument::Text(text.to_owned())
+            })
+        };
+        let confirmation = match &self.confirmation {
+            tilo_actions::ConfirmationPolicy::None => None,
+            tilo_actions::ConfirmationPolicy::Confirm => {
+                (args.boolean("confirm") == Some(true)).then_some(Confirmation::Confirmed)
+            }
+            tilo_actions::ConfirmationPolicy::Phrase { .. } => args
+                .text("confirmation_phrase")
+                .map(|phrase| Confirmation::Phrase(phrase.to_owned())),
+        };
+        self.host.invoke_job(
+            &Caller::local_person(&self.actor).in_room(&self.room),
+            InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: self.provider.clone(),
+                    address: self.address.clone(),
+                },
+                argument,
+                context: None,
+                confirmation,
+                revision: None,
+            },
+        )
+    }
 }
 
 fn deadline_after(duration: std::time::Duration) -> std::time::Instant {
     let now = std::time::Instant::now();
     now.checked_add(duration).unwrap_or(now)
-}
-
-fn invocation_argument(
-    args: &crate::shell::search::action_api::ActionArgs,
-    typed_arguments: bool,
-    wants_content: bool,
-) -> (Option<String>, bool, Option<String>) {
-    let encoded = typed_arguments.then(|| {
-        let mut application_args = args.to_json();
-        application_args.remove("confirm");
-        application_args.remove("confirmation_phrase");
-        format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::Value::Object(application_args)
-        )
-    });
-    let argument = encoded.or_else(|| {
-        if wants_content {
-            args.text("content").map(str::to_owned)
-        } else {
-            args.text("argument").map(str::to_owned)
-        }
-    });
-    (
-        argument,
-        args.boolean("confirm") == Some(true),
-        args.text("confirmation_phrase").map(str::to_owned),
-    )
 }
 
 impl LiveAppActionsProvider {
@@ -1458,23 +1435,15 @@ impl LiveAppActionsProvider {
         if descriptor.contract.is_programmatic() {
             return None;
         }
-        let searchable = format!(
-            "{} {} {} {}",
-            descriptor.action_label,
-            descriptor.resource_label,
-            descriptor.address.action,
-            root.app_id
-        )
-        .to_lowercase();
-        let score = if needle.is_empty() {
-            0
-        } else if descriptor.action_label.to_lowercase().starts_with(needle) {
-            100
-        } else if searchable.contains(needle) {
-            50
-        } else {
-            return None;
-        };
+        let score = crate::shell::search::rank_fields(
+            needle,
+            &[
+                RankField::new(&descriptor.action_label, FieldWeight::TITLE),
+                RankField::new(&descriptor.resource_label, FieldWeight::SUBTITLE),
+                RankField::new(&descriptor.address.action, FieldWeight::IDENTITY),
+                RankField::new(&root.app_id, FieldWeight::METADATA),
+            ],
+        )?;
         let contract = descriptor.contract.clone();
         let mut params = descriptor.params.clone();
         push_confirmation_params(&mut params, &contract.advertised_confirmation());
@@ -1575,26 +1544,21 @@ impl LiveAppActionsProvider {
             .flatten()
             .collect::<Vec<_>>()
             .join(" ");
-        let searchable = format!(
-            "{} {} {}",
-            row.resource.label, row.resource.id, presentation_text
-        )
-        .to_lowercase();
-        let rank = if needle.is_empty() {
-            0
-        } else if row.resource.label.to_lowercase().starts_with(needle) {
-            100
-        } else if searchable.contains(needle) {
-            50
-        } else {
-            return None;
-        };
+        let rank = crate::shell::search::rank_fields(
+            needle,
+            &[
+                RankField::new(&row.resource.label, FieldWeight::TITLE),
+                RankField::new(row.resource.id.as_str(), FieldWeight::IDENTITY),
+                RankField::new(&presentation_text, FieldWeight::METADATA),
+            ],
+        )?;
         let scope = crate::shell::chrome_state::SearchResourceScope {
             peer_id: root.peer_id,
             cluster_id: root.cluster_id.clone(),
             app_id: root.app_id.clone(),
             resource: row.resource.id.clone(),
             label: row.resource.label.clone(),
+            kind: row.resource.kind.clone(),
         };
         let title = row.resource.label.clone();
         Some(SearchResult {
@@ -1905,51 +1869,48 @@ impl SearchProvider for LiveAppActionsProvider {
                     tilo_actions::Availability::Available => None,
                     tilo_actions::Availability::Unavailable { reason, .. } => Some(reason.clone()),
                 };
-                let searchable = format!(
-                    "{} {} {} {} {}",
-                    action.action_label,
-                    action.resource_label,
-                    action.action,
-                    action.resource,
-                    surface.app_id
-                )
-                .to_lowercase();
-                let score = if needle.is_empty() {
-                    0
-                } else if action.action_label.to_lowercase().starts_with(&needle) {
-                    100
-                } else if searchable.contains(&needle) {
-                    50
-                } else {
+                let Some(score) = crate::shell::search::rank_fields(
+                    &needle,
+                    &[
+                        RankField::new(&action.action_label, FieldWeight::TITLE),
+                        RankField::new(&action.resource_label, FieldWeight::SUBTITLE),
+                        RankField::new(&action.action, FieldWeight::IDENTITY),
+                        RankField::new(&action.resource, FieldWeight::IDENTITY),
+                        RankField::new(&surface.app_id, FieldWeight::METADATA),
+                    ],
+                ) else {
                     continue;
                 };
                 let params = Self::action_params(action);
-                let broker = self.broker.clone();
-                let peer_id = surface.peer_id;
-                let resource = action.resource.clone();
-                let action_id = action.action.clone();
-                let actor = actor.clone();
-                let wants_content = matches!(
-                    action.input,
-                    PublishedInput::Text {
-                        wants_content: true,
-                        ..
-                    }
-                );
-                let typed_arguments = !action.params.is_empty();
-                let confirmation = action.contract.advertised_confirmation();
                 let surface_live = surface.live;
-                let app_id = surface.app_id.clone();
-                let cluster_id = surface.route.cluster_id.clone();
-                let action_label = action.action_label.clone();
-                let invoke_broker = broker.clone();
-                let invoke_resource = resource.clone();
-                let invoke_action_id = action_id.clone();
-                let invoke_actor = actor.clone();
-                let invoke_confirmation = confirmation.clone();
-                let invoke_app_id = app_id.clone();
-                let invoke_cluster_id = cluster_id.clone();
-                let invoke_unavailable_reason = unavailable_reason.clone();
+                let start = Rc::new(LocalStart {
+                    host: self.host.clone(),
+                    provider: if surface_live {
+                        surface.peer_id.to_string()
+                    } else {
+                        launchable_provider(&surface)
+                    },
+                    room: surface.route.cluster_id.clone(),
+                    address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
+                    actor: actor.clone(),
+                    confirmation: action.contract.advertised_confirmation(),
+                    typed_arguments: !action.params.is_empty(),
+                    wants_content: matches!(
+                        action.input,
+                        PublishedInput::Text {
+                            wants_content: true,
+                            ..
+                        }
+                    ),
+                });
+                // Availability on a retained launchable descriptor is only a
+                // last-known hint. The host launches the app first and lets
+                // the freshly published surface decide; otherwise an app
+                // closed while temporarily busy could never be opened
+                // through that action again.
+                let unavailable = unavailable_reason.clone().filter(|_| surface_live);
+                let open_start = Rc::clone(&start);
+                let open_unavailable = unavailable.clone();
                 results.push(SearchResult {
                     kind: ResourceKind::Action,
                     operation_kind: action.operation_kind,
@@ -1972,219 +1933,53 @@ impl SearchProvider for LiveAppActionsProvider {
                     score,
                     params,
                     contract: Some(action.contract.clone()),
-                    on_open: std::rc::Rc::new(move |_doc, _root, chrome, args| {
-                        // Availability on an archived launchable descriptor is
-                        // only a last-known hint. Launch first and let the
-                        // freshly published surface decide; otherwise an app
-                        // closed while temporarily busy could never be opened
-                        // through that action again.
-                        if surface_live && let Some(reason) = &unavailable_reason {
+                    on_open: Rc::new(move |_doc, _root, _chrome, args| {
+                        if let Some(reason) = &open_unavailable {
                             return Err(ActionError::Refused(reason.clone()));
                         }
-                        let encoded_arguments = typed_arguments.then(|| {
-                            let mut application_args = args.to_json();
-                            application_args.remove("confirm");
-                            application_args.remove("confirmation_phrase");
-                            format!(
-                                "{}{}",
-                                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                                serde_json::Value::Object(application_args)
-                            )
-                        });
-                        let argument = if let Some(arguments) = encoded_arguments.as_deref() {
-                            Some(arguments)
-                        } else if wants_content {
-                            args.text("content")
-                        } else {
-                            args.text("argument")
-                        };
-                        let confirmed = args.boolean("confirm") == Some(true);
-                        let phrase = args.text("confirmation_phrase").map(str::to_owned);
-                        if !surface_live {
-                            // Validate the human confirmation before starting
-                            // another process; the broker binds a fresh one-use
-                            // grant to the reconnected peer immediately before
-                            // delivery.
-                            match &confirmation {
-                                tilo_actions::ConfirmationPolicy::Confirm if !confirmed => {
-                                    return Err(ActionError::Refused(
-                                        "explicit confirmation is required".into(),
-                                    ));
-                                }
-                                tilo_actions::ConfirmationPolicy::Phrase { phrase: expected }
-                                    if phrase.as_deref() != Some(expected.as_str()) =>
-                                {
-                                    return Err(ActionError::Refused(
-                                        "the confirmation phrase did not match".into(),
-                                    ));
-                                }
-                                _ => {}
-                            }
-                            crate::shell::search::providers::applications::launch_installed_app(
-                                chrome, &app_id, &app_id,
-                            )?;
-                            let broker = broker.clone();
-                            let resource = resource.clone();
-                            let action_id = action_id.clone();
-                            let argument = argument.map(str::to_owned);
-                            let actor = actor.clone();
-                            let confirmation = confirmation.clone();
-                            let app_id = app_id.clone();
-                            let cluster_id = cluster_id.clone();
-                            let action_label = action_label.clone();
-                            std::thread::Builder::new()
-                                .name("tilo-deferred-action".into())
-                                .spawn(move || {
-                                    let deadline =
-                                        deadline_after(std::time::Duration::from_secs(30));
-                                    while std::time::Instant::now() < deadline {
-                                        let target =
-                                            broker.surfaces().into_iter().find(|surface| {
-                                                surface.live
-                                                    && surface.app_id == app_id
-                                                    && surface.route.cluster_id == cluster_id
-                                                    && surface.actions.iter().any(|candidate| {
-                                                        candidate.resource == resource
-                                                            && candidate.action == action_id
-                                                    })
-                                            });
-                                        if let Some(target) = target {
-                                            match start_on_peer(
-                                                &broker,
-                                                &PeerInvocation {
-                                                    peer_id: target.peer_id,
-                                                    resource: &resource,
-                                                    action: &action_id,
-                                                    argument: argument.as_deref(),
-                                                    actor: &actor,
-                                                    confirmation: &confirmation,
-                                                    confirmed,
-                                                    phrase: phrase.as_deref(),
-                                                },
-                                            ) {
-                                                Ok(receipt) => {
-                                                    tracing::debug!(
-                                                        invocation_id = ?receipt.broker_invocation_id,
-                                                        "deferred application action accepted"
-                                                    );
-                                                }
-                                                Err(error) => tracing::warn!(
-                                                    %error,
-                                                    action = %action_label,
-                                                    "deferred application action was refused"
-                                                ),
-                                            }
-                                            return;
-                                        }
-                                        std::thread::sleep(std::time::Duration::from_millis(100));
-                                    }
-                                    tracing::warn!(
-                                        action = %action_label,
-                                        app = %app_id,
-                                        "application did not publish its launchable action in time"
-                                    );
+                        let mut admission = open_start.begin(args);
+                        match admission.poll_ready() {
+                            PendingPoll::Ready(result) => result
+                                .map(|(job, _)| {
+                                    tracing::debug!(job, "application action accepted");
                                 })
-                                .map_err(|error| ActionError::Refused(error.to_string()))?;
-                            return Ok(());
+                                .map_err(|error| ActionError::Refused(error.to_string())),
+                            PendingPoll::Waiting => {
+                                // Launching a closed app first: the host
+                                // delivers once the app is up. Keep listening
+                                // so the delivery is not abandoned.
+                                admission.then(|answer| match answer {
+                                    Some(Ok((job, _))) => {
+                                        tracing::debug!(job, "launched application action accepted");
+                                    }
+                                    Some(Err(error)) => {
+                                        tracing::warn!(%error, "launched application action was refused");
+                                    }
+                                    None => {}
+                                });
+                                Ok(())
+                            }
+                            PendingPoll::Abandoned => Err(ActionError::Refused(
+                                "the action's admission was unavailable".into(),
+                            )),
                         }
-                        let receipt = start_on_peer(
-                            &broker,
-                            &PeerInvocation {
-                                peer_id,
-                                resource: &resource,
-                                action: &action_id,
-                                argument,
-                                actor: &actor,
-                                confirmation: &confirmation,
-                                confirmed,
-                                phrase: phrase.as_deref(),
-                            },
-                        )
-                        .map_err(ActionError::Refused)?;
-                        tracing::debug!(
-                            invocation_id = ?receipt.broker_invocation_id,
-                            "application action accepted"
-                        );
-                        // Admission is synchronous; execution is observed as a
-                        // broker job rather than blocking the compositor.
-                        Ok(())
                     }),
-                    on_invoke: Some(std::rc::Rc::new(move |_doc, _root, chrome, args| {
-                        if surface_live && let Some(reason) = &invoke_unavailable_reason {
+                    on_invoke: None,
+                    on_begin_invoke: Some(Rc::new(move |_doc, _root, _chrome, args| {
+                        if let Some(reason) = &unavailable {
                             return Err(ActionError::Refused(reason.clone()));
                         }
-                        let (argument, confirmed, phrase) =
-                            invocation_argument(args, typed_arguments, wants_content);
-                        if !surface_live {
-                            match &invoke_confirmation {
-                                tilo_actions::ConfirmationPolicy::Confirm if !confirmed => {
-                                    return Err(ActionError::Refused(
-                                        "explicit confirmation is required".into(),
-                                    ));
-                                }
-                                tilo_actions::ConfirmationPolicy::Phrase { phrase: expected }
-                                    if phrase.as_deref() != Some(expected.as_str()) =>
-                                {
-                                    return Err(ActionError::Refused(
-                                        "the confirmation phrase did not match".into(),
-                                    ));
-                                }
-                                _ => {}
-                            }
-                            crate::shell::search::providers::applications::launch_installed_app(
-                                chrome,
-                                &invoke_app_id,
-                                &invoke_app_id,
-                            )?;
-                            let deadline = deadline_after(std::time::Duration::from_secs(30));
-                            while std::time::Instant::now() < deadline {
-                                let target = invoke_broker.surfaces().into_iter().find(|surface| {
-                                    surface.live
-                                        && surface.app_id == invoke_app_id
-                                        && surface.route.cluster_id == invoke_cluster_id
-                                        && surface.actions.iter().any(|candidate| {
-                                            candidate.resource == invoke_resource
-                                                && candidate.action == invoke_action_id
-                                        })
-                                });
-                                if let Some(target) = target {
-                                    return start_on_peer(
-                                        &invoke_broker,
-                                        &PeerInvocation {
-                                            peer_id: target.peer_id,
-                                            resource: &invoke_resource,
-                                            action: &invoke_action_id,
-                                            argument: argument.as_deref(),
-                                            actor: &invoke_actor,
-                                            confirmation: &invoke_confirmation,
-                                            confirmed,
-                                            phrase: phrase.as_deref(),
-                                        },
-                                    )
-                                    .map_err(ActionError::Refused);
-                                }
-                                std::thread::sleep(std::time::Duration::from_millis(100));
-                            }
-                            return Err(ActionError::Refused(
-                                "application did not publish its launchable action in time".into(),
-                            ));
-                        }
-                        start_on_peer(
-                            &invoke_broker,
-                            &PeerInvocation {
-                                peer_id,
-                                resource: &invoke_resource,
-                                action: &invoke_action_id,
-                                argument: argument.as_deref(),
-                                actor: &invoke_actor,
-                                confirmation: &invoke_confirmation,
-                                confirmed,
-                                phrase: phrase.as_deref(),
-                            },
-                        )
-                        .map_err(ActionError::Refused)
+                        let ticket = admission_ticket(
+                            start.begin(args),
+                            deadline_after(LOCAL_ADMISSION_TIMEOUT),
+                            |error| ActionError::Refused(error.to_string()),
+                            || ActionError::Refused("the action was not admitted in time".into()),
+                        );
+                        Ok(match ticket()? {
+                            Some(receipt) => InvocationDisposition::Accepted(receipt),
+                            None => InvocationDisposition::Pending(ticket),
+                        })
                     })),
-                    on_begin_invoke: None,
                 });
             }
         }
@@ -3459,6 +3254,7 @@ mod tests {
                 app_id: "so.tilo.reader".into(),
                 resource: "book:42".into(),
                 label: "Book of Tilo".into(),
+                kind: "book".into(),
             })
         );
         let chrome_ref = chrome.borrow();

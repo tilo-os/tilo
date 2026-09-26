@@ -6,7 +6,7 @@
 
 **Architecture:** Keep each app's existing state/action model. Change composition through existing Card, Actions, Form, Toolbar, NavSplit, SidebarDrawer and measured text paths where they fit; for immediate-mode apps compute one geometry description and consume it in drawing, pointer events, keyboard navigation and accessibility. Do not create another layout framework.
 
-**Tech stack:** Rust, ui Widget/Taffy/Vello, TextRenderer, Automerge content state and qos_actions.
+**Tech stack:** Rust, ui Widget/Taffy/Vello, TextRenderer, Automerge content state and tilo_actions.
 
 **Spec:** `docs/superpowers/specs/2026-09-15-app-ui-balance.md`.
 
@@ -81,7 +81,7 @@ Execute the SearchField prerequisite and each app as separate reviewed tasks. So
 - [ ] `build_panes_layout` (~809) stacks a fixed `NARROW_PREVIEW_H` 560px specimen before controls. Prefer a compact specimen summary followed by the existing customizer, with a named Show full preview disclosure, rather than cropping arbitrary sample controls. Alternatively use two existing Button tabs Preview/Customize if the summary cannot represent the specimen honestly.
 - [ ] Add local view state and propagate through `build_content_layout`, `apply_content_layout`, `apply_narrow_stack_layout`, draw and event routing. Preserve `push_view_state`, chosen preset, unsaved customization and scroll; do not reset on viewport changes. A full preview opens with keyboard and returns focus to its trigger. Expose the new control through Widget children/accessibility (app has no custom accessibility override to silently extend).
 
-**Acceptance:** Editable controls appear in first narrow viewport with gallery closed; full preview remains reachable; change accent then open/close preview preserves edit. Capture `QOS_THEMES_SHOT=scroll` and `live` in addition to default overlay fixture.
+**Acceptance:** Editable controls appear in first narrow viewport with gallery closed; full preview remains reachable; change accent then open/close preview preserves edit. Capture `TILO_THEMES_SHOT=scroll` and `live` in addition to default overlay fixture.
 
 #### VPN
 

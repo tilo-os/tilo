@@ -41,11 +41,12 @@ fn query_input_is_bounded(needle: &str) -> bool {
 /// but an exact visible title must beat a weak metadata/fuzzy match from a
 /// different source.
 fn lexical_strength(needle: &str, result: &SearchResult) -> f32 {
-    let needle = needle.trim().to_lowercase();
+    use ui::search::MatchTier;
+    let needle = ui::search::fold_search_text(needle.trim());
     if needle.is_empty() {
         return 0.0;
     }
-    let title = result.title.to_lowercase();
+    let title = ui::search::fold_search_text(&result.title);
     // Application providers decorate the app name with the launch verb.
     // Compare its name on the same basis as a file or note title.
     let title = if matches!(
@@ -56,31 +57,43 @@ fn lexical_strength(needle: &str, result: &SearchResult) -> f32 {
     } else {
         &title
     };
-    if title == needle {
-        return 4.0;
-    }
-    if title.starts_with(&needle) {
-        return 2.5;
-    }
-    if title
-        .split(|character: char| !character.is_alphanumeric())
-        .any(|word| word.starts_with(&needle))
-    {
-        return 1.5;
-    }
-    if title.contains(&needle) {
-        return 1.0;
-    }
-    result.subtitle.as_deref().map_or(0.0, |subtitle| {
-        let subtitle = subtitle.to_lowercase();
-        if subtitle == needle {
-            0.7
-        } else if subtitle.contains(&needle) {
-            0.4
-        } else {
-            0.0
+    match ui::search::rank::match_tier(&needle, title) {
+        Some(MatchTier::Exact) => 4.0,
+        Some(MatchTier::Prefix) => 2.5,
+        Some(MatchTier::WordPrefix) => 1.5,
+        Some(MatchTier::Contains) => 1.0,
+        None => {
+            result.subtitle.as_deref().map_or(0.0, |subtitle| {
+                match ui::search::rank::match_tier(&needle, &ui::search::fold_search_text(subtitle))
+                {
+                    Some(MatchTier::Exact) => 0.7,
+                    Some(_) => 0.4,
+                    None => 0.0,
+                }
+            })
         }
-    })
+    }
+}
+
+/// The shared ranker's rank of `fields` for `needle`, on the shell
+/// providers' `0..=MAX_PROVIDER_SCORE` scale. A title prefix is already a
+/// perfect hit for a provider — it is what a person types to launch or
+/// open something — so the scale tops out there; [`lexical_strength`]
+/// still separates an exact title from a prefix across providers.
+pub(crate) fn rank_fields(needle: &str, fields: &[ui::search::RankField<'_>]) -> Option<i32> {
+    ui::search::field_rank(needle, fields).map(provider_score)
+}
+
+/// Top of every shell provider's ranker-derived score.
+pub(crate) const MAX_PROVIDER_SCORE: i32 = 100;
+
+/// Map a shared field rank onto the provider scale; see [`rank_fields`].
+pub(crate) fn provider_score(rank: i32) -> i32 {
+    let perfect = ui::search::MatchTier::Prefix.rank_in(ui::search::FieldWeight::TITLE);
+    rank.clamp(0, perfect)
+        .saturating_mul(MAX_PROVIDER_SCORE)
+        .checked_div(perfect)
+        .unwrap_or(MAX_PROVIDER_SCORE)
 }
 
 /// A deliberately small contextual preference: proximity should settle close

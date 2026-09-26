@@ -7,7 +7,7 @@ on:
         description: Immutable native x86-64 Fedora 44 Wine tools image
         required: true
         type: string
-        default: code.sandbox.example/qos/wine-tools@sha256:2a85681f640ebfbe0a15e6e92bd181b13bc674f10ca98b136fed448a754d12d8
+        default: registry.tilo.so/tilo/wine-tools@sha256:2a85681f640ebfbe0a15e6e92bd181b13bc674f10ca98b136fed448a754d12d8
       wine_pair_candidate:
         description: Immutable wine-paired image; required unless reusing signed Wine
         required: false
@@ -54,9 +54,9 @@ jobs:
           python3 os/tests/test_fetch_windows_guest_assets.py
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.sandbox.example
+          registry: registry.tilo.so
           username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Sign retained Wine, freeze dependencies and assemble guest
         run: python3 os/dev/run-development-windows-guest.py
       - name: Retain public inputs and payload identities

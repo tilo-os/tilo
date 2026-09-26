@@ -103,6 +103,7 @@ mod tests {
                     id: TAB_A,
                     title: "Saved note".into(),
                     app_kind: None,
+                    icon: None,
                 },
                 UiTile::App(Box::new(NotesApp::new())),
             )],

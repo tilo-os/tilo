@@ -7,12 +7,38 @@ use ui::history_mode::{
     checked_files::{FileHistoryTarget, FileHistoryTransport},
 };
 
+/// Submits a transport returned. A checked restore is durable backend work:
+/// the accepted backend commits a phased, fsynced transaction and the mounted
+/// projection's setxattr joins a filesystem transaction, and on a contended
+/// disk either can outlast a frame deadline. Tests wait for the backend here
+/// first and then hold the UI to its deadline.
+#[derive(Default)]
+struct SubmitReturns(std::sync::atomic::AtomicUsize);
+impl SubmitReturns {
+    fn record(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn count(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    /// Drive frames until `count` submits returned.
+    fn wait(&self, driver: &mut ui::headless::FrameHarness, count: usize) {
+        assert!(
+            driver.wait_until(std::time::Duration::from_secs(120), |_| self.count()
+                >= count),
+            "the backend returned {} of {count} submits",
+            self.count()
+        );
+    }
+}
+
 struct Backend {
     fs: Arc<fs::QuickFS>,
     ino: u64,
     hide_first_ack: std::sync::atomic::AtomicBool,
     submitted: Mutex<Vec<CheckedHistoryRequestV1>>,
     lookups: Mutex<Vec<uuid::Uuid>>,
+    returned: SubmitReturns,
 }
 impl FileHistoryTransport for Backend {
     fn read(
@@ -34,6 +60,7 @@ impl FileHistoryTransport for Backend {
     fn submit(&self, request: CheckedHistoryRequestV1) -> CheckedHistoryOutcomeV1 {
         self.submitted.lock().unwrap().push(request);
         let actual = self.fs.checked_history_restore(self.ino, request);
+        self.returned.record();
         if self
             .hide_first_ack
             .swap(false, std::sync::atomic::Ordering::SeqCst)
@@ -49,6 +76,39 @@ impl FileHistoryTransport for Backend {
         self.fs.checked_history_result(self.ino, intent)
     }
 }
+/// A production transport whose submits are counted, nothing else changed.
+struct Counted {
+    inner: Arc<dyn FileHistoryTransport>,
+    returned: Arc<SubmitReturns>,
+}
+impl FileHistoryTransport for Counted {
+    fn read(
+        &self,
+        query: FileHistoryReadQueryV1,
+    ) -> Result<FileHistoryReadValueV1, FileHistoryReadErrorV1> {
+        self.inner.read(query)
+    }
+    fn preview(
+        &self,
+        scope: FileHistoryReadScopeV1,
+        version: collab_types::FileVersionId,
+    ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
+        self.inner.preview(scope, version)
+    }
+    fn review(&self) -> Result<FileRestoreReviewV1, CheckedHistoryOutcomeV1> {
+        self.inner.review()
+    }
+    fn submit(&self, request: CheckedHistoryRequestV1) -> CheckedHistoryOutcomeV1 {
+        let outcome = self.inner.submit(request);
+        self.returned.record();
+        outcome
+    }
+    fn result(&self, intent: uuid::Uuid) -> CheckedHistoryOutcomeV1 {
+        self.inner.result(intent)
+    }
+}
+/// The session's report for a submit or lookup that found no receipt.
+const UNAVAILABLE_ACK: &str = "Restore acknowledgement is unavailable";
 fn wait(driver: &mut ui::headless::FrameHarness, text: &str) {
     assert!(
         driver.wait_until(std::time::Duration::from_secs(5), |driver| driver
@@ -158,6 +218,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         hide_first_ack: std::sync::atomic::AtomicBool::new(true),
         submitted: Mutex::new(vec![]),
         lookups: Mutex::new(vec![]),
+        returned: SubmitReturns::default(),
     });
     let root = FileExplorerWidget::new();
     root.framework_history.set_target(Some(FileHistoryTarget {
@@ -194,7 +255,12 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     assert_eq!(driver.state_mut().doc.get_heads(), original_heads);
     driver.click_named("history-restore").unwrap();
     confirm(&mut driver, "backend restore");
+    // Confirming relabels the dialog at once; the submit runs in the
+    // background. Wait for it, then for its (deliberately hidden)
+    // acknowledgement to reach the session.
     wait(&mut driver, "Refresh review");
+    transport.returned.wait(&mut driver, 1);
+    wait(&mut driver, UNAVAILABLE_ACK);
     let submitted = transport.submitted.lock().unwrap().clone();
     assert_eq!(submitted.len(), 1);
     assert_eq!(
@@ -224,17 +290,15 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     driver.key("Escape");
     driver.click_named("history-files-undo").unwrap();
     confirm(&mut driver, "backend undo");
-    assert!(driver.wait_until(std::time::Duration::from_secs(5), |_| {
-        history.snapshot(record).unwrap().versions.len() == 4
-    }));
+    transport.returned.wait(&mut driver, 2);
+    assert_eq!(history.snapshot(record).unwrap().versions.len(), 4);
     driver.key("Escape");
     wait(&mut driver, "history-files-redo");
     assert_eq!(history.snapshot(record).unwrap().versions.len(), 4);
     driver.click_named("history-files-redo").unwrap();
     confirm(&mut driver, "backend redo");
-    assert!(driver.wait_until(std::time::Duration::from_secs(5), |_| {
-        history.snapshot(record).unwrap().versions.len() == 5
-    }));
+    transport.returned.wait(&mut driver, 3);
+    assert_eq!(history.snapshot(record).unwrap().versions.len(), 5);
     driver.key("Escape");
     wait(&mut driver, "history-files-undo");
     assert_eq!(history.snapshot(record).unwrap().versions.len(), 5);
@@ -451,11 +515,20 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
     let b = directory.path().join("B");
     let (record_a, version_a) = install(&a, 3);
     let (record_b, version_b) = install(&b, 4);
+    let returned = Arc::new(SubmitReturns::default());
+    let target = |path: &std::path::Path, record, label: &str| {
+        let target = crate::framework_history::target(path, record, label.into()).unwrap();
+        FileHistoryTarget {
+            transport: Arc::new(Counted {
+                inner: target.transport.clone(),
+                returned: returned.clone(),
+            }),
+            ..target
+        }
+    };
     let root = FileExplorerWidget::new();
     let source = root.framework_history.clone();
-    source.set_target(Some(
-        crate::framework_history::target(&a, record_a, "A".into()).unwrap(),
-    ));
+    source.set_target(Some(target(&a, record_a, "A")));
     let registration = root.history_registration().unwrap().unwrap();
     let mut driver = ui::headless::FrameHarness::from_managed_root(
         ui::State::new(),
@@ -482,7 +555,11 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
         &mut driver,
         "production initial restore after repeated open",
     );
+    // Confirming relabels the dialog at once; the submit that writes the
+    // request runs in the background and settles with the missing receipt.
     wait(&mut driver, "Refresh review");
+    returned.wait(&mut driver, 1);
+    wait(&mut driver, UNAVAILABLE_ACK);
     driver.key("Escape");
     let original: CheckedHistoryRequestV1 = serde_json::from_slice(
         &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
@@ -494,40 +571,36 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
     // controller's retained exact intent even when the transport no longer
     // exposes the earlier write.
     xattr::remove(&a, CHECKED_HISTORY_RESTORE_XATTR).unwrap();
-    source.set_target(Some(
-        crate::framework_history::target(&b, record_b, "B".into()).unwrap(),
-    ));
+    source.set_target(Some(target(&b, record_b, "B")));
     wait(
         &mut driver,
         &format!("timeline-entry:{}", version_b.0.simple()),
     );
-    source.set_target(Some(
-        crate::framework_history::target(&a, record_a, "A again".into()).unwrap(),
-    ));
+    source.set_target(Some(target(&a, record_a, "A again")));
     // The result button survives target changes. Wait for A's immutable
     // timeline entry instead so the A -> B -> A reconciliation has completed
     // before the retry command is produced; commands from the superseded B
     // presentation are deliberately discarded by the host.
     wait(&mut driver, &select);
+    assert!(
+        !driver.inspection_json().unwrap().contains(UNAVAILABLE_ACK),
+        "the reloaded timeline replaced the earlier report, so the next one is the retry's"
+    );
     // This case exercises exact session routing across descriptor swaps, not
     // button hit-testing. Activate the semantic control directly so the
-    // controller's two-second background poll cannot rebuild the toolbar
+    // controller's background completions cannot rebuild the toolbar
     // between `click_named` resolving its rect and dispatching the pointer.
     driver
         .perform_semantic_named("history-files-retry", None, &ui::a11y::Action::Activate)
         .unwrap();
-    assert!(
-        driver.wait_until(std::time::Duration::from_secs(5), |_| {
-            xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
-                .unwrap()
-                .is_some()
-        }),
-        "retry did not rewrite the checked restore request",
-    );
+    // The retry writes the request and then looks the receipt up. Let its
+    // report reach the session so it cannot land on the steps below.
+    returned.wait(&mut driver, 2);
+    wait(&mut driver, UNAVAILABLE_ACK);
     let retry: CheckedHistoryRequestV1 = serde_json::from_slice(
         &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
             .unwrap()
-            .unwrap(),
+            .expect("the retry rewrote the checked restore request"),
     )
     .unwrap();
     assert_eq!(retry, original);
@@ -588,21 +661,18 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
     .unwrap();
     driver.click_named("history-files-result").unwrap();
     wait(&mut driver, "Restored revision");
-    source.set_target(Some(
-        crate::framework_history::target(&b, record_b, "B again".into()).unwrap(),
-    ));
+    source.set_target(Some(target(&b, record_b, "B again")));
     wait(
         &mut driver,
         &format!("timeline-entry:{}", version_b.0.simple()),
     );
-    source.set_target(Some(
-        crate::framework_history::target(&a, record_a, "A third".into()).unwrap(),
-    ));
+    source.set_target(Some(target(&a, record_a, "A third")));
     wait(&mut driver, "history-files-undo");
     wait(&mut driver, &select);
     driver.click_named("history-files-undo").unwrap();
     confirm(&mut driver, "production undo after receipt recovery");
-    wait(&mut driver, "Restore acknowledgement is unavailable");
+    returned.wait(&mut driver, 3);
+    wait(&mut driver, UNAVAILABLE_ACK);
     let undo: CheckedHistoryRequestV1 = serde_json::from_slice(
         &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
             .unwrap()

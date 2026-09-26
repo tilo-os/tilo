@@ -1,6 +1,6 @@
 #pragma once
 
-namespace qos {
+namespace tilo {
 // Remove renderer media contexts when their browser handle is destroyed.
 // CEF may create a replacement before destroying the old handle with the same
 // numeric ID. Preserve replacement frames, including cross-origin child frames.
@@ -16,4 +16,4 @@ void EraseMediaBrowserContexts(Contexts& contexts, const Browser& browser) {
   }
   if (frames.empty()) contexts.erase(found);
 }
-}  // namespace qos
+}  // namespace tilo

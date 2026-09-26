@@ -91,6 +91,10 @@ pub(crate) struct FileRestoreSession {
     pub receipts: Vec<Receipt>,
     uncertain: bool,
     pub last_operation: Option<Operation>,
+    /// Requests this session already resolved. Their submit and result calls
+    /// run concurrently, so a slower call for the same exact request can
+    /// still complete after another one settled it.
+    settled: Vec<Request>,
 }
 impl FileRestoreSession {
     pub(crate) fn prepare(
@@ -112,6 +116,11 @@ impl FileRestoreSession {
         self.request = Some(request);
         self.outcome = None;
         Ok(request)
+    }
+    /// Whether `request` is no longer pending because this session already
+    /// resolved it. A late completion for it is stale, not a backend fault.
+    pub(crate) fn has_settled(&self, request: &Request) -> bool {
+        self.request.as_ref() != Some(request) && self.settled.contains(request)
     }
     pub(crate) fn receive(&mut self, request: Request, outcome: Outcome) -> bool {
         if self.request != Some(request) {
@@ -170,6 +179,9 @@ impl FileRestoreSession {
                     self.request = None;
                 }
             }
+        }
+        if self.request.is_none() {
+            self.settled.push(request);
         }
         self.outcome = Some(outcome);
         true
@@ -232,6 +244,37 @@ mod tests {
         foreign.review.record_id = FileRecordId(uuid::Uuid::from_u128(6));
         assert!(!session.receive(foreign, Outcome::NotVisible));
         assert_eq!(session.request, Some(request));
+    }
+    #[test]
+    fn files_late_completion_of_a_settled_request_is_recognised_as_stale() {
+        let mut session = FileRestoreSession::default();
+        let request = session
+            .prepare(
+                review(),
+                Operation::Restore {
+                    version_id: FileVersionId(uuid::Uuid::from_u128(5)),
+                },
+            )
+            .unwrap();
+        assert!(
+            !session.has_settled(&request),
+            "a pending request is not stale"
+        );
+        assert!(session.receive(request, Outcome::ReadOnly));
+        assert!(session.has_settled(&request));
+        let mut foreign = request;
+        foreign.intent_id = uuid::Uuid::from_u128(9);
+        assert!(!session.has_settled(&foreign));
+        let next = session
+            .prepare(
+                review(),
+                Operation::Restore {
+                    version_id: FileVersionId(uuid::Uuid::from_u128(6)),
+                },
+            )
+            .unwrap();
+        assert!(session.has_settled(&request));
+        assert!(!session.has_settled(&next));
     }
     #[test]
     fn files_unchanged_and_definite_rejections_do_not_create_undo_entries() {

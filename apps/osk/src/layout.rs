@@ -37,6 +37,8 @@ pub enum KeyAction {
     /// Switch the active letter layout to the named registered layout
     /// (e.g. `"azerty"`). Data-driven layout switching.
     Layout(String),
+    /// Open the emoji panel (or, while searching emoji, go back to it).
+    Emoji,
 }
 
 /// One key in a layout row.
@@ -237,6 +239,7 @@ impl KeyboardLayout {
         rows.push(vec![
             Key::action("?123", KeyAction::SymbolsToggle, 1.5),
             Key::ch(","),
+            Key::action("\u{1F642}", KeyAction::Emoji, 1.0),
             Key::action("space", KeyAction::Space, 5.0),
             Key::ch("."),
             Key::action("⏎", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
@@ -590,7 +593,7 @@ mod tests {
 
         // The spacebar (weight 5) is ~5× a weight-1 key in the same row.
         let func: Vec<_> = rects.iter().filter(|(id, _)| id.row == 3).collect();
-        let space_id = KeyId::new(3, 2);
+        let space_id = KeyId::new(3, 3);
         let comma_id = KeyId::new(3, 1);
         let space_w = func
             .iter()

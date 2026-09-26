@@ -65,6 +65,7 @@ pub use os_actions::codec_pack;
 mod continuity;
 mod device_fleet;
 pub mod dispatcher;
+pub mod i18n;
 pub(crate) mod input_sources;
 pub mod panes;
 pub mod prefs;
@@ -74,6 +75,7 @@ pub mod settings_app;
 #[cfg(not(feature = "thin"))]
 pub mod shots;
 pub mod sidebar;
+pub mod speaker_setup;
 pub mod widgets;
 
 pub use settings_app::SettingsApp;

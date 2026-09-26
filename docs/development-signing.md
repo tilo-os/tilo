@@ -9,7 +9,7 @@ the host. A development image must remain visibly identified as such.
 
 | Identity | Current input and consumer | Development gap |
 |---|---|---|
-| OS image | `keys/cosign.pub` is copied by `os/Containerfile` to `/usr/share/tilo/cosign.pub`. `os/etc/containers/policy.json` requires its signature for `code.sandbox.example/qos/tilo`. Release verification also reads the tracked public key. | The development named context supplies independent public trust, signature policy and a bound update origin. Signed disk/VM integration remains required. |
+| OS image | `keys/cosign.pub` is copied by `os/Containerfile` to `/usr/share/tilo/cosign.pub`. `os/etc/containers/policy.json` requires its signature for `registry.tilo.so/tilo/tilo`. Release verification also reads the tracked public key. | The development named context supplies independent public trust, signature policy and a bound update origin. Signed disk/VM integration remains required. |
 | PCR authorization | `keys/tpm2-pcr-signing.public.pem` is copied into the image and initramfs. `sign-target-prediction.sh` verifies signatures over the exact UKI and generation-bound PCR11 policy with the image's public key. | Test PCR trust must be injected before initramfs/UKI construction, not merely replaced in the final root filesystem. |
 | EFI/UKI | `TILO_PCR_PREDICTION_SIGNER` exports its certificate; `TILO_EFI_SIGNING_CERT_SHA256` independently pins the SHA-256 of its DER bytes. Returned signatures and the unchanged Authenticode payload are checked. Production uses `keys/efi-signing.crt`, the KMS-held Tilo release certificate owners enroll in firmware `db`. | A test certificate is trusted only in a disposable VM variable store and must never be pinned for publication. |
 | Marketplace registry owner | `TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY`, a nonzero 32-byte Ed25519 public key in hex, becomes `/usr/share/tilo/trust/tilo-main-registry-owner.pub`. | Branch CI can use the explicit RFC 8032 test-vector public key. It is not an independently held production owner identity. |
@@ -147,13 +147,13 @@ these boundaries:
    identity matches the development bundle. Adding a public key after sealing
    does not preserve the existing measurement.
 4. The development origin must explicitly name the retained HTTPS repository
-   `code.sandbox.example/qos/tilo-development`, or an isolated
+   `registry.tilo.so/tilo/tilo-development`, or an isolated
    `HOST[:PORT]/tilo-development/os` repository, with a tag or immutable SHA-256
    digest. Retained-repository tags identify the native architecture, for example
    `development-x86_64` or `development-aarch64`; known build/profile/source
    architectures must match that suffix. Digest references bind architecture
    through native image verification. Alternate hosts or explicit ports cannot
-   alias the retained repository. The production `code.sandbox.example/qos/tilo`
+   alias the retained repository. The production `registry.tilo.so/tilo/tilo`
    repository, credentials, URL schemes and other repository paths are
    rejected. The image binds this origin to its pinned public manifest. Runtime
    origin resolution requires root-owned, non-writable metadata, matching public
@@ -470,7 +470,7 @@ bootc, sufficient disk capacity, correct installed content or bootability.
 
 Production identities live in AWS KMS (account 125650147312, `us-east-1`) and
 are used only through the Forgejo OIDC role `TiloForgejoReleaseSigner`, which
-trusts qos/qos `main` and `v*` tags:
+trusts tilo/tilo `main` and `v*` tags:
 
 | Identity | KMS alias | Tracked public identity |
 |---|---|---|
@@ -494,7 +494,7 @@ trusts qos/qos `main` and `v*` tags:
    certificate is the supported production path; a factory-trusted chain may
    replace it later. Validate enrollment and boot on each supported hardware
    family. The PCR/EFI signer is baked root-owned into the native runner image
-   (`code.sandbox.example/public/runner-image`, `tilo-release-signer/`) at
+   (`code.tilo.so/public/runner-image`, `tilo-release-signer/`) at
    `/usr/local/libexec/tilo-release-signer/tilo-release-signer`, which the
    protected `TILO_PCR_PREDICTION_SIGNER` variable names;
    `TILO_EFI_SIGNING_CERT_SHA256` pins the certificate.

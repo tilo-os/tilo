@@ -400,7 +400,7 @@ impl Session {
     /// # Errors
     ///
     /// When no participant answers with the document within
-    /// `await_document` (see [`Self::unanswered`] for the message), or when
+    /// `await_document` (see `Self::unanswered` for the message), or when
     /// a turn's own I/O — receiving from the broker, decoding a snapshot,
     /// applying an edit — fails.
     pub fn run(&mut self) -> Result<()> {
@@ -428,10 +428,53 @@ impl Session {
     /// Returns an error when receiving catalogue updates or reporting task
     /// progress through the collaboration link fails.
     pub fn run_task_runs(&mut self) -> Result<()> {
+        let mut transforms = crate::transform::TransformService::new(
+            std::sync::Arc::new(crate::transform::GatewayModel),
+            self.cfg.content.clone(),
+        );
+        // The transforms are published under the agent's own route; a
+        // connection announcing another app may not publish for it.
+        if self.cfg.app_id == tilo_automation::AGENT_APP_ID {
+            self.link.send(&crate::transform::publication())?;
+            tracing::info!(
+                resource = crate::transform::RESOURCE_ID,
+                "published the AI transforms"
+            );
+        }
         tracing::info!(agent = %self.cfg.name, "waiting for broker-addressed task runs");
         loop {
-            if let Some(CollabEvent::TaskRun(run)) = self.link.recv(Duration::from_millis(100))? {
-                self.run_task(&run)?;
+            match self.link.recv(Duration::from_millis(100))? {
+                Some(CollabEvent::TaskRun(run)) => self.run_task(&run)?,
+                Some(CollabEvent::Invocation {
+                    id,
+                    resource,
+                    action,
+                    argument,
+                    actor,
+                    context,
+                }) => {
+                    let update = transforms.start(
+                        id,
+                        &resource,
+                        &action,
+                        argument.as_deref(),
+                        &actor,
+                        context.as_deref(),
+                    );
+                    self.link
+                        .send(&CollabRequest::UpdateInvocation { id, update })?;
+                }
+                Some(CollabEvent::InvocationCancellation { id }) => {
+                    if let Some(update) = transforms.cancel(id) {
+                        self.link
+                            .send(&CollabRequest::UpdateInvocation { id, update })?;
+                    }
+                }
+                _ => {}
+            }
+            for (id, update) in transforms.finished() {
+                self.link
+                    .send(&CollabRequest::UpdateInvocation { id, update })?;
             }
         }
     }
@@ -570,6 +613,7 @@ impl Session {
             .into_iter()
             .filter(|offer| {
                 offer.broker_peer_id.is_some()
+                    && !crate::transform::is_transform_kind(&offer.descriptor.resource_kind)
                     && matches!(
                         offer.descriptor.contract.confirmation,
                         tilo_actions::ConfirmationPolicy::None

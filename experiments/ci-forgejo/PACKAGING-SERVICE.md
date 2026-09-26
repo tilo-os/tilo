@@ -27,7 +27,7 @@ The existing trusted coordinator policy additionally supplies:
 - `service_user_id`: exact positive user ID; `/user` must return that ID and
   `is_admin=false`. The credential comes only from the dedicated token file.
 - `builder_image`, `collection`, `architectures`: the single central desired
-  product scope. Normal ticks observe the freshly read `qos/qos` `main` SHA;
+  product scope. Normal ticks observe the freshly read `tilo/tilo` `main` SHA;
   explicit recovery retains the active intent's immutable source.
 - `final_receipt_policy_sha256`: exact bytes of the separately mounted final
   policy, already required by the product adapter.
@@ -42,7 +42,7 @@ and successful acceptance, including zero-app completion. A changed desired poli
 gets a new durable observation sequence; an existing incompatible active run fails
 closed rather than silently becoming evidence under the new policy.
 
-The transport uses only `https://code.sandbox.example`: narrowly permitted repository
+The transport uses only `https://code.tilo.so`: narrowly permitted repository
 and identity GETs, and POST only to `release-apps.yml/dispatches`. No proxy or
 redirect is followed; no `fgj`, interactive profile or administrator fallback is
 used. Downloads share the same bounded transport. Canonical verifier bundle fetch
