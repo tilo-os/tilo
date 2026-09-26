@@ -1171,6 +1171,17 @@ impl SettingsApp {
                         }
                         Ok(())
                     }
+                    crate::actions::DisplayOperation::ForgetDisplayTool { ref executable } => {
+                        if settings_store::display_tools::TrustedDisplayTools::load()
+                            .tools
+                            .iter()
+                            .any(|tool| tool.executable == *executable)
+                        {
+                            Ok(())
+                        } else {
+                            Err("that display tool is not trusted".into())
+                        }
+                    }
                     crate::actions::DisplayOperation::Identify
                     | crate::actions::DisplayOperation::Apply
                     | crate::actions::DisplayOperation::Confirm

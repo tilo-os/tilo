@@ -789,6 +789,11 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().palette_visible() {
         return true;
     }
+    // Keep or revert a display tool's change: Enter and Escape answer it
+    // whichever window had focus.
+    if fb.host().display_confirmation_visible() {
+        return true;
+    }
     // The portal's file chooser, for the same reason as the peer-sync card
     // below: modal, drawn over a scrim, but "drawn above" and "receives the click" are separate — without this it was unreachable with mouse or keyboard.
     if fb.host().file_picker().is_some() {
