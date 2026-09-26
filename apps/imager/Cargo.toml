@@ -61,7 +61,7 @@ zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"]
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

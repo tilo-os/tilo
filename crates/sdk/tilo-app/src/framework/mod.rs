@@ -86,7 +86,9 @@ mod switch;
 pub mod testing;
 mod view;
 
-pub use app::{ResourceApp, definition, launch_spec, run};
+#[cfg(feature = "native")]
+pub use app::run;
+pub use app::{ResourceApp, definition, launch_spec};
 pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher};
 pub use each::Each;
