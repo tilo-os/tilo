@@ -91,8 +91,11 @@ impl Session {
         persist::save_tree_to(&tree, &path)?;
         let tree = tree.shared();
         let identity_socket = root.join("identity.sock");
-        let identity = identity_broker::spawn(identity_socket.clone(), tree.clone())?;
+        let channel_keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
+        let identity =
+            identity_broker::spawn(identity_socket.clone(), tree.clone(), channel_keys.clone())?;
         let broker = collab_broker::spawn_native(root.join("collab.sock"), &None, tree.clone())?;
+        channel_keys.set(broker.channel_encryption());
         let blob_socket = root.join("blobs.sock");
         let media = MediaHost::start(&root.join("content"), &blob_socket)?;
         Ok(Self {

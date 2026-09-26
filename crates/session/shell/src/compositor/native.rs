@@ -3767,6 +3767,8 @@ fn spawn_session_collab_broker(
                 capnp_path.display(),
                 peer_sync.is_some()
             );
+            crate::shell::channel_encryption::ChannelKeyProvider::session()
+                .set(handle.channel_encryption());
             chrome.borrow_mut().clear_collab_unavailable();
             Some(handle)
         }
@@ -4366,7 +4368,11 @@ fn spawn_session_identity_broker(
         return None;
     }
     let tree = chrome.borrow().tree_handle();
-    match crate::identity_broker::spawn(path.clone(), tree) {
+    match crate::identity_broker::spawn(
+        path.clone(),
+        tree,
+        crate::shell::channel_encryption::ChannelKeyProvider::session(),
+    ) {
         Ok(handle) => {
             tracing::info!(path = %path.display(), "identity: broker ready");
             Some(handle)

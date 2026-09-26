@@ -1180,6 +1180,33 @@ impl SigningIdentity {
         }
     }
 
+    /// Ask the workspace-bound identity broker for the content keys of one
+    /// document route; see [`crate::wire::Request::ChannelKeys`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::ConnectionFailed`] if this is not a
+    /// workspace-bound broker connection or the broker refuses the route.
+    pub fn channel_keys(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        known_generation: u64,
+    ) -> Result<crate::wire::ChannelKeysReply, NotAvailable> {
+        match &self.source {
+            SigningSource::ActionBroker(stream) => {
+                stream.channel_keys(workspace_id, app_id, record_id, known_generation)
+            }
+            SigningSource::Local(_)
+            | SigningSource::LocalThreshold(_)
+            | SigningSource::Broker(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "channel keys require the workspace identity service",
+            ))),
+        }
+    }
+
     /// Ask the workspace-bound identity broker to authorize and sign one
     /// typed collaboration document operation. The broker parses the complete
     /// unsigned envelope and checks that its route-derived artifact, author,

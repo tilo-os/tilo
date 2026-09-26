@@ -4498,6 +4498,7 @@ impl CapnpBrokerState {
             }
             CollabEvent::ScrollbackBatch { .. }
             | CollabEvent::DocumentSnapshotRequested { .. }
+            | CollabEvent::ChannelAccess { .. }
             | CollabEvent::Invocation { .. }
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::RemoteAction { .. }
