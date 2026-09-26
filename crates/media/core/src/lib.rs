@@ -49,6 +49,10 @@
 //!   between output devices, adjust per-stream volume/mute, switch the default
 //!   device, and diff enumerations for hotplug. Every media surface plays
 //!   *through* `PipeWire`; this is where the OS routes it.
+//! * [`sync_playout`] — the member side of a synchronized speaker group:
+//!   frames stamped on the leader's clock play at a shared presentation time
+//!   through a jitter buffer and a drift-steered resampler, mapped to the
+//!   member's channel role.
 
 #![cfg_attr(
     test,
@@ -78,6 +82,7 @@ pub mod realtime;
 pub mod ring;
 pub mod session;
 pub mod source;
+pub mod sync_playout;
 pub mod transport;
 
 /// The GStreamer decode pipeline. Only compiled with `--features decode`;
