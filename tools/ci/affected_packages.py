@@ -72,8 +72,8 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
-    "tools/ci/test_seconds.json": "tools/tests/test_ci_select.py",
-    "tools/ci/test_seconds.py": "tools/tests/test_ci_test_seconds.py",
+    "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
+    "tools/ci/recorded_test_time.py": "tools/tests/test_ci_recorded_test_time.py",
     "tools/ci/queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/ci/nextest_report.py": "tools/tests/test_nextest_report.py",
@@ -184,11 +184,11 @@ MAX_DEVELOPER_SHARDS = 2
 # workspace to every such change; they stay type-checked here and are
 # tested nightly on both architectures.
 REVERSE_TEST_COST_BUDGET = SHARD_COST_BUDGET
-# Recorded test execution seconds per package (tools/ci/test_seconds.py). A
+# Recorded test execution seconds per package (tools/ci/recorded_test_time.py). A
 # shard's test job links its tests and then runs them on about four threads;
 # one recorded test second costs roughly as much shard wall time as two units
 # of structural cost. Only shard balancing uses these numbers.
-TEST_SECONDS = Path(__file__).with_name("test_seconds.json")
+TEST_SECONDS = Path(__file__).with_name("recorded_test_time.json")
 TEST_SECOND_WEIGHT = 2
 
 

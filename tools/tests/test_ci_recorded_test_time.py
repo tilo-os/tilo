@@ -7,8 +7,8 @@ import sys
 import tempfile
 import unittest
 
-MODULE_PATH = Path(__file__).parents[1] / "ci/test_seconds.py"
-SPEC = importlib.util.spec_from_file_location("test_seconds", MODULE_PATH)
+MODULE_PATH = Path(__file__).parents[1] / "ci/recorded_test_time.py"
+SPEC = importlib.util.spec_from_file_location("recorded_test_time", MODULE_PATH)
 assert SPEC and SPEC.loader
 test_seconds = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(test_seconds)

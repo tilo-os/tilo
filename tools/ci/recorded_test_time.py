@@ -7,7 +7,7 @@ remaining packages. The values only move packages between shards; they never
 change which packages are selected or tested. Stale or missing entries are
 harmless: an unknown package counts as zero seconds.
 
-    python3 tools/ci/test_seconds.py --output tools/ci/test_seconds.json JUNIT...
+    python3 tools/ci/recorded_test_time.py --output tools/ci/recorded_test_time.json JUNIT...
 
 Feed it the x86_64 nightly report (artifact nextest-junit-nightly-x86_64,
 workspace.xml), which runs every workspace test.
