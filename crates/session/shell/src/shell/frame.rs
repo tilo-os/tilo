@@ -269,6 +269,16 @@ fn night_light_multiplier(kelvin: u32) -> Color {
     Color::from_rgb8(255, green, blue)
 }
 
+/// Whether night light shows: on the schedule it follows the day/night phase,
+/// otherwise the manual switch.
+fn night_light_on(manual: bool, scheduled: bool, night: Option<bool>) -> bool {
+    if scheduled {
+        night.unwrap_or(false)
+    } else {
+        manual
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum DesktopColorFilter {
     #[default]
@@ -362,6 +372,10 @@ pub struct FrameBuilder {
     last_theme_store_check: Instant,
     night_light: bool,
     night_light_temperature: u32,
+    /// The day/night schedule an "Automatic" theme or a scheduled night light
+    /// follows, and whether it was night when last applied. Sunrise and sunset
+    /// change what is drawn without changing the settings file.
+    day_phase: Option<(settings_store::day_schedule::Scheduled, bool)>,
     visual_accessibility: VisualAccessibility,
     /// The logical desktop the shell lays out in: the bounding box of every
     /// display's logical rectangle.
@@ -590,6 +604,7 @@ impl FrameBuilder {
             last_theme_store_check: Instant::now(),
             night_light: false,
             night_light_temperature: 3_700,
+            day_phase: None,
             visual_accessibility: VisualAccessibility::default(),
             viewport: (f64::from(viewport.0), f64::from(viewport.1)),
             scene_size: (f64::from(viewport.0), f64::from(viewport.1)),
@@ -1547,8 +1562,19 @@ impl FrameBuilder {
 
     fn refresh_display_comfort(&mut self) {
         let settings = settings_store::load();
-        self.night_light =
-            settings_store::bool_at(&settings, "display", "night_light").unwrap_or(false);
+        let scheduled_night_light =
+            settings_store::bool_at(&settings, "display", "night_light_schedule").unwrap_or(false);
+        let automatic_theme = settings_store::str_at(&settings, "appearance", "theme")
+            .is_some_and(settings_store::day_schedule::is_automatic);
+        self.day_phase = (scheduled_night_light || automatic_theme).then(|| {
+            let schedule = settings_store::day_schedule::Scheduled::from_settings(&settings);
+            (schedule, schedule.is_night(ui::theme::local_moment()))
+        });
+        self.night_light = night_light_on(
+            settings_store::bool_at(&settings, "display", "night_light").unwrap_or(false),
+            scheduled_night_light,
+            self.day_phase.map(|(_, night)| night),
+        );
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -1577,7 +1603,10 @@ impl FrameBuilder {
         self.last_theme_store_check = Instant::now();
         let stamp = settings_store::settings_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
-        if stamp == self.theme_store_stamp {
+        let phase_changed = self
+            .day_phase
+            .is_some_and(|(schedule, night)| schedule.is_night(ui::theme::local_moment()) != night);
+        if stamp == self.theme_store_stamp && !phase_changed {
             return;
         }
         self.theme_store_stamp = stamp;
@@ -3453,6 +3482,14 @@ mod tests {
         assert!(!floating_transfer_proxy_needed(false, true, false, true));
         assert!(floating_transfer_proxy_needed(true, false, true, false));
         assert!(!floating_transfer_proxy_needed(true, false, false, false));
+    }
+
+    #[test]
+    fn scheduled_night_light_follows_the_phase_not_the_switch() {
+        assert!(night_light_on(false, true, Some(true)));
+        assert!(!night_light_on(true, true, Some(false)));
+        assert!(night_light_on(true, false, Some(false)));
+        assert!(!night_light_on(false, false, Some(true)));
     }
 
     #[test]

@@ -1110,6 +1110,26 @@ pub trait Widget {
         None
     }
 
+    /// Opt out of touch-to-pointer emulation for contacts that begin at
+    /// `point` (logical coords, same space as [`Widget::get_rect`]).
+    ///
+    /// By default the host turns direct touch into pointer events: a tap
+    /// clicks, a drag scrolls, a hold opens the context menu, and a second
+    /// finger turns the contact into a pinch or pan. A widget that returns
+    /// `true` here instead receives only the raw per-finger
+    /// `WindowEvent::Touch` stream (`Started`/`Moved`/`Ended`/`Cancelled`,
+    /// keyed by `Touch::id`, `location` in physical pixels) for every contact
+    /// that begins inside it, and those contacts neither cancel nor are
+    /// cancelled by other fingers. An on-screen keyboard uses this so two
+    /// thumbs can type with overlapping presses.
+    ///
+    /// Hit-tested like [`cursor_shape`](Self::cursor_shape): the host asks
+    /// every laid-out widget whose rect contains the point, so containers
+    /// need not forward it.
+    fn claims_raw_touch(&self, _point: vello::kurbo::Point) -> bool {
+        false
+    }
+
     /// Revealed after a dwell over the widget's rect, via the toolkit's one
     /// tooltip mechanism ([`crate::widget::tooltip::TooltipHost`]),
     /// hit-tested like [`cursor_shape`](Self::cursor_shape) so containers
@@ -1486,6 +1506,33 @@ pub trait Widget {
     }
 
     fn restore_view_state(&mut self, _view: &crate::view::ViewContribution) {}
+
+    /// Route history when this widget, or one it contains, is a [`Router`](router::Router).
+    ///
+    /// Dev reload writes this beside the document so the same screen is showing
+    /// after the process is replaced. Containers forward to the first child
+    /// that has one. A [`Router`](router::Router) reports its own stack and
+    /// does not look inside the current screen.
+    fn dev_route(&self) -> Option<router::RouteSnapshot> {
+        for child in self.children() {
+            if let Some(route) = child.dev_route() {
+                return Some(route);
+            }
+        }
+        None
+    }
+
+    /// Put `route` back. Returns whether a router in this subtree accepted it.
+    ///
+    /// An unknown route name is refused and the existing screen stays up.
+    fn restore_dev_route(&mut self, route: &router::RouteSnapshot) -> bool {
+        for child in self.children_mut() {
+            if child.restore_dev_route(route) {
+                return true;
+            }
+        }
+        false
+    }
 
     /// Theme/high-contrast/reduced-motion/scale, polled under
     /// [`crate::app::App::appearance_reconcile`] — how a settings pane
@@ -2386,7 +2433,7 @@ pub use stack::Stack;
 mod container;
 pub use container::Container;
 mod router;
-pub use router::{RouteError, RouteHandle, Router};
+pub use router::{RouteError, RouteHandle, RouteSnapshot, Router};
 mod document_view;
 pub use document_view::ModelView;
 mod divider;
@@ -2685,7 +2732,7 @@ pub mod capture_studio;
 pub use capture_studio::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
     CapturePreview, CaptureStudio, CaptureTarget, PipLayout, RecordingCommand, ReplayCommand,
-    ScreenshotCommand, SourceMode,
+    ScreenshotCommand, ScreenshotSendDevice, ScreenshotSendTarget, SourceMode,
 };
 pub mod screenshot_markup;
 pub use screenshot_markup::{

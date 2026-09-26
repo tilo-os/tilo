@@ -57,8 +57,9 @@ pub(crate) struct Span {
 impl Span {
     pub(crate) fn start(stage: Stage, generation: u64, permission_generation: u64) -> Self {
         static ENABLED: OnceLock<bool> = OnceLock::new();
-        let enabled = *ENABLED
-            .get_or_init(|| std::env::var("TILO_PROFILE_RESOURCES").is_ok_and(|value| value == "1"));
+        let enabled = *ENABLED.get_or_init(|| {
+            std::env::var("TILO_PROFILE_RESOURCES").is_ok_and(|value| value == "1")
+        });
         Self::with_enabled(stage, generation, permission_generation, enabled)
     }
 

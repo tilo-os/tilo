@@ -323,6 +323,26 @@ fn toggle_touchpad(settings: &Path) -> Option<Osd> {
     Some(Osd::touchpad(next))
 }
 
+/// Flip mouse keys in the settings document, for the Shift+Alt+Num Lock
+/// chord. Like the touchpad key, the compositor picks the change up on its
+/// next settings poll, the path a Settings-pane toggle takes.
+pub fn toggle_mouse_keys(settings: &Path) -> Option<Osd> {
+    const SECTION: &str = "accessibility";
+    const KEY: &str = "mouse_keys";
+    let enabled = settings_store::load_section_at(settings, SECTION)
+        .get(KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let next = !enabled;
+    let mut values = serde_json::Map::new();
+    values.insert(KEY.into(), serde_json::Value::Bool(next));
+    if let Err(error) = settings_store::update_section_at(settings, SECTION, values) {
+        tracing::warn!(%error, "mouse keys toggle could not be saved");
+        return None;
+    }
+    Some(Osd::mouse_keys(next))
+}
+
 fn transport(
     cmd: crate::shell::mpris::Command,
     transport_osd: &crate::session_runtime::Delivery<Osd>,
@@ -688,6 +708,20 @@ mod tests {
             )),
             "Touchpad on"
         );
+    }
+
+    #[test]
+    fn the_mouse_keys_chord_flips_the_persisted_preference() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        let on = toggle_mouse_keys(&settings).expect("saved");
+        assert_eq!(on.caption(), "Mouse keys on", "absent means off");
+        assert_eq!(
+            settings_store::load_section_at(&settings, "accessibility").get("mouse_keys"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        let off = toggle_mouse_keys(&settings).expect("saved");
+        assert_eq!(off.caption(), "Mouse keys off");
     }
 
     #[test]

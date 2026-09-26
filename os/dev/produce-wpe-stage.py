@@ -214,7 +214,7 @@ def main():
                     '--repo', str(REPO), '--assets', str(REPO / 'os/external-assets/cache'),
                     '--wpe', args.wpe, '--revision', args.revision, '--run-id', args.run_id,
                     '--attempt', args.attempt, '--cache',
-                    'code.tilo.so/tilo/tilo-development-wpe-cache-' + args.architecture]
+                    'registry.tilo.so/tilo/tilo-development-wpe-cache-' + args.architecture]
             for key, value in pins.items():
                 argv.extend(['--' + key, value])
             result['real_wpe_build_attempted'] = True

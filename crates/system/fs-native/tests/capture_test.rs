@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use fs_native::capture::{CaptureConfig, ChangeOp, Changeset, EpochCapture, NodeKind};
-use fs_native::chunking::Manifest;
 use fs_native::journal::{JournalBatch, JournalEntry, JournalOp, RescanReason};
 
 use crate::support::{btrfs_scratch, pattern};
@@ -34,13 +33,13 @@ fn batch(entries: &[(JournalOp, &str, bool)]) -> JournalBatch {
     }
 }
 
-fn upserts(cs: &Changeset) -> Vec<(String, Option<blake3::Hash>)> {
+fn upserts(cs: &Changeset) -> Vec<(String, Option<[u8; 32]>)> {
     cs.ops
         .iter()
         .filter_map(|op| match op {
             ChangeOp::Upsert { path, node } => Some((
                 path.display().to_string(),
-                node.manifest.as_ref().map(|m| m.content_id),
+                node.manifest.as_ref().map(|m| m.id()),
             )),
             ChangeOp::Remove { .. } | ChangeOp::Move { .. } => None,
         })
@@ -78,8 +77,8 @@ fn removes(cs: &Changeset) -> Vec<String> {
         .collect()
 }
 
-fn full_id(path: &Path) -> blake3::Hash {
-    Manifest::build(&fs::read(path).unwrap(), None).0.content_id
+fn full_id(path: &Path) -> [u8; 32] {
+    fs_content::build(&fs::read(path).unwrap(), None).0.id()
 }
 
 #[test]
@@ -129,9 +128,12 @@ fn first_epoch_captures_the_whole_tree_with_exact_content_ids() {
         .unwrap()
         .1;
     assert_eq!(small.mode, 0o755);
+    let manifest = small.manifest.as_ref().unwrap();
+    assert_eq!(manifest.tier(), Some(fs_content::ChunkTier::Inline));
+    assert_eq!(manifest.chunks().len(), 1);
     assert_eq!(
-        small.manifest.as_ref().unwrap().inline.as_deref(),
-        Some(&b"hello"[..])
+        &manifest.chunks()[0].hash,
+        blake3::hash(b"hello").as_bytes()
     );
     let link = nodes
         .iter()
@@ -205,7 +207,7 @@ fn a_rename_is_a_move_that_reads_nothing() {
     let ChangeOp::Move { node, .. } = &cs.ops[0] else {
         panic!("{:?}", op_paths(&cs));
     };
-    assert_eq!(node.manifest.as_ref().map(|m| m.content_id), id);
+    assert_eq!(node.manifest.as_ref().map(|m| m.id()), id);
     assert_eq!(cs.stats.chunks.bytes_hashed, 0);
 
     // Renamed over an existing file and then edited: one move that also

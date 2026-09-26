@@ -122,6 +122,7 @@ impl HostedTileInputs {
             Some(file_explorer::files_app::HostedFileServices {
                 thumbnails: None,
                 document_opener: None,
+                open_with: None,
             }),
         )
     }

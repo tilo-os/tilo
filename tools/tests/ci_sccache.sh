@@ -13,7 +13,8 @@ case "${1:-}" in
   --stop-server) exit 0 ;;
   --version) echo 'sccache 0.test' ;;
   --show-stats) exit 0 ;;
-  *) exit "${FAKE_SCCACHE_PROBE_STATUS:-0}" ;;
+  *) printf '%s\n' "${RUSTUP_AUTO_INSTALL-unset}" > "$FAKE_SCCACHE_PROBE_ENV"
+     exit "${FAKE_SCCACHE_PROBE_STATUS:-0}" ;;
 esac
 EOF
 chmod +x "$work/bin/sccache"
@@ -22,18 +23,25 @@ export PATH="$work/bin:$PATH"
 export TILO_SCCACHE_KEY_PREFIX=tilo/test
 export GITHUB_ENV="$work/github-env"
 export RUSTC=/fixture/rustc
+export FAKE_SCCACHE_PROBE_ENV="$work/probe-env"
+unset RUSTUP_AUTO_INSTALL
 
 FAKE_SCCACHE_STATUS=0 FAKE_SCCACHE_PROBE_STATUS=0 \
   bash "$repo/tools/ci/sccache.sh" prepare > "$work/healthy.log"
 grep -Fxq "RUSTC_WRAPPER=$work/bin/sccache" "$GITHUB_ENV"
 grep -Fxq 'SCCACHE_S3_KEY_PREFIX=tilo/test' "$GITHUB_ENV"
 grep -Fq 'remote compiler cache enabled: sccache 0.test' "$work/healthy.log"
+# The rustup-proxy check inside the probe, and every later compile, must not
+# download a `stable` toolchain the image does not carry.
+grep -Fxq '0' "$FAKE_SCCACHE_PROBE_ENV"
+grep -Fxq 'RUSTUP_AUTO_INSTALL=0' "$GITHUB_ENV"
 
 : > "$GITHUB_ENV"
 FAKE_SCCACHE_STATUS=0 FAKE_SCCACHE_PROBE_STATUS=1 \
   bash "$repo/tools/ci/sccache.sh" prepare > "$work/bad-credentials.log" 2>&1
 grep -Fxq 'RUSTC_WRAPPER=' "$GITHUB_ENV"
 ! grep -Fq 'SCCACHE_S3_KEY_PREFIX=' "$GITHUB_ENV"
+! grep -Fq 'RUSTUP_AUTO_INSTALL=' "$GITHUB_ENV"
 grep -Fq 'sccache wrapper or backend is unavailable; compiling normally' \
   "$work/bad-credentials.log"
 
@@ -49,6 +57,7 @@ FAKE_SCCACHE_STATUS=0 FAKE_SCCACHE_PROBE_STATUS=0 \
     unset GITHUB_ENV RUSTC_WRAPPER
     source "$1/tools/ci/sccache.sh" prepare-shell
     test "$RUSTC_WRAPPER" = "$2/bin/sccache"
+    test "$RUSTUP_AUTO_INSTALL" = 0
   ' _ "$repo" "$work" > "$work/shell.log"
 grep -Fq 'remote compiler cache enabled: sccache 0.test' "$work/shell.log"
 

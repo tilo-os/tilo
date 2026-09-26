@@ -212,6 +212,53 @@ impl QuickFS {
         attrs: PosixAttrs,
         fence: Option<VersionFence>,
     ) -> Result<(), i32> {
+        self.apply_local_version(
+            rel,
+            super::VersionSource::Bytes(data),
+            mtime_ms,
+            attrs,
+            fence,
+        )
+    }
+
+    /// Applies a locally captured file version whose content is the file at
+    /// `snapshot` (immutable while this runs), described by `manifest` when
+    /// the capture already computed it. Large content is cloned into the
+    /// content store rather than read into memory. `attrs` and `fence` as
+    /// for [`Self::apply_local_file_as`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::apply_local_file`].
+    pub fn apply_local_snapshot(
+        &self,
+        rel: &Path,
+        snapshot: &Path,
+        manifest: Option<std::sync::Arc<crate::content::Manifest>>,
+        mtime_ms: u64,
+        attrs: PosixAttrs,
+        fence: Option<VersionFence>,
+    ) -> Result<(), i32> {
+        self.apply_local_version(
+            rel,
+            super::VersionSource::File {
+                path: snapshot,
+                manifest,
+            },
+            mtime_ms,
+            attrs,
+            fence,
+        )
+    }
+
+    fn apply_local_version(
+        &self,
+        rel: &Path,
+        source: super::VersionSource<'_>,
+        mtime_ms: u64,
+        attrs: PosixAttrs,
+        fence: Option<VersionFence>,
+    ) -> Result<(), i32> {
         let components = path_components(rel)?;
         let Some((name, parents)) = components.split_last() else {
             return Err(EISDIR);
@@ -221,13 +268,13 @@ impl QuickFS {
             Some((ino, FileType::RegularFile)) => ino,
             Some((_, FileType::Directory)) => {
                 self.remove_subtree(parent, name)?;
-                return self.create_local_file(parent, name, data, mtime_ms, attrs, fence);
+                return self.create_local_file(parent, name, source, mtime_ms, attrs, fence);
             }
             Some(_) => return Err(libc::EINVAL),
-            None => return self.create_local_file(parent, name, data, mtime_ms, attrs, fence),
+            None => return self.create_local_file(parent, name, source, mtime_ms, attrs, fence),
         };
         self.set_posix(ino, attrs, false)?;
-        self.commit_content_fenced(ino, data, mtime_ms, fence)
+        self.commit_version_at(ino, source, mtime_ms, fence)
             .map_err(|e| to_errno(&e))
     }
 
@@ -238,7 +285,7 @@ impl QuickFS {
         &self,
         parent: u64,
         name: &[u8],
-        data: &[u8],
+        source: super::VersionSource<'_>,
         mtime_ms: u64,
         attrs: PosixAttrs,
         fence: Option<VersionFence>,
@@ -248,14 +295,14 @@ impl QuickFS {
             self.publish(delta);
             self.set_posix(ino, attrs, false)?;
             return self
-                .commit_content_fenced(ino, data, mtime_ms, fence)
+                .commit_version_at(ino, source, mtime_ms, fence)
                 .map_err(|e| to_errno(&e));
         }
-        let hash = self
-            .write_content_blocking(data)
-            .map_err(|e| to_errno(&e))?;
-        let (ino, delta) =
-            self.create_file_stamped(parent, name, mtime_ms, hash, data.len() as u64)?;
+        let (hash, byte_len) = self
+            .store_version_blocking(source, None)
+            .map_err(|e| to_errno(&e))?
+            .map_or((None, 0), |(hash, len)| (Some(hash), len));
+        let (ino, delta) = self.create_file_stamped(parent, name, mtime_ms, hash, byte_len)?;
         self.publish(delta);
         self.set_posix(ino, attrs, false)
     }

@@ -1892,7 +1892,26 @@ COPY --chmod=0755 \
     os/usr/libexec/tilo-session \
     os/usr/libexec/tilo-security-audit \
     /usr/libexec/
-COPY os/usr/lib/systemd/user/tilo-graphical-session.target /usr/lib/systemd/user/tilo-graphical-session.target
+# User units: the graphical-session target; the user unit that read-only
+# verifies the identity after tilo-session's first-login ceremony, `--global`
+# enabled further down (`systemctl --global enable` resolves the unit file at
+# build time, so a unit that was never copied in fails the build outright with
+# "does not exist" — which is what a unit whose ExecStart is wrong looks like
+# too); and the opt-in peer-sync user service. Peer sync is NOT enabled by
+# default — users opt in via `systemctl --user enable shell-peer-sync` or by
+# picking the "Tilo (peer-sync)" session entry at the greetd prompt. See
+# /usr/share/doc/tilo/peer-sync.md for the privacy / discovery trade-off.
+COPY \
+    os/usr/lib/systemd/user/tilo-graphical-session.target \
+    os/usr/lib/systemd/user/tilo-identity.service \
+    os/usr/lib/systemd/user/shell-peer-sync.service \
+    /usr/lib/systemd/user/
+
+# The echo-cancelled microphone for calls: a PipeWire client config the
+# desktop session runs (`pipewire -c tilo-echo-cancel.conf`) while Settings →
+# Sound → "Reduce echo in calls" is on. It lives in PipeWire's own config
+# directory so /etc/pipewire/ and ~/.config/pipewire/ can override it.
+COPY os/usr/share/pipewire/tilo-echo-cancel.conf /usr/share/pipewire/tilo-echo-cancel.conf
 
 # Default compositor config plus one fixed, signed loopback camera for
 # consented personal-device capture. The shell recognizes only this exact card
@@ -1951,14 +1970,6 @@ COPY \
 RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf
 
-# The user unit that read-only verifies the identity after tilo-session's
-# first-login ceremony, `--global` enabled further down.
-# It has to be installed here and not only exist in the source tree:
-# `systemctl --global enable` resolves the unit file at build time, so a unit
-# that was never copied in fails the build outright with "does not exist" —
-# which is what a unit whose ExecStart is wrong looks like too.
-COPY os/usr/lib/systemd/user/tilo-identity.service /usr/lib/systemd/user/tilo-identity.service
-
 # xdg-desktop-portal backend registration.
 #
 # One file now: tilo.portal, which tells xdg-desktop-portal which
@@ -1975,13 +1986,6 @@ COPY os/usr/lib/systemd/user/tilo-identity.service /usr/lib/systemd/user/tilo-id
 # answered nothing while looking healthy.
 COPY os/usr/share/xdg-desktop-portal/portals/tilo.portal /usr/share/xdg-desktop-portal/portals/tilo.portal
 COPY os/usr/share/xdg-desktop-portal/tilo-portals.conf /usr/share/xdg-desktop-portal/tilo-portals.conf
-
-# Opt-in peer-sync user service. NOT enabled by default — users opt
-# in via `systemctl --user enable shell-peer-sync` or by
-# picking the "Tilo (peer-sync)" session entry at the greetd
-# prompt. See /usr/share/doc/tilo/peer-sync.md for the
-# privacy / discovery trade-off.
-COPY os/usr/lib/systemd/user/shell-peer-sync.service /usr/lib/systemd/user/shell-peer-sync.service
 
 # OS infra config (C3 zram swap, C4 locale) and the suspend policy that
 # freezes user sessions before the kernel freezer reaches processes blocked

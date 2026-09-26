@@ -7,8 +7,8 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 ROOT = "registry.tilo.so/tilo/wine-tools@sha256:" + "a" * 64
 PAIR = "registry.tilo.so/tilo/wine-paired@sha256:" + "b" * 64
-SIGNED = "code.tilo.so/tilo/tilo-development-wine@sha256:" + "c" * 64
-SNAPSHOT = "code.tilo.so/tilo/tilo-development-windows-guest-rpms@sha256:" + "d" * 64
+SIGNED = "registry.tilo.so/tilo/tilo-development-wine@sha256:" + "c" * 64
+SNAPSHOT = "registry.tilo.so/tilo/tilo-development-windows-guest-rpms@sha256:" + "d" * 64
 
 
 class Inputs(unittest.TestCase):

@@ -38,6 +38,7 @@ impl BrokerActor {
         match caller.principal() {
             CallerPrincipal::Person(id) => Self::person(id.clone()),
             CallerPrincipal::Agent(id) => Self::agent(format!("agent:{id}")),
+            CallerPrincipal::App(id) => Self::agent(format!("app:{id}")),
         }
     }
 }
@@ -148,6 +149,127 @@ fn confirmation_evidence(confirmation: Option<&Confirmation>) -> serde_json::Val
 }
 
 impl CapnpBrokerState {
+    /// The caller an application connection's request is decided as.
+    ///
+    /// An application acts under its own identity: `person` is who admitted
+    /// the connection, `app_id` the application it is. The app reaches what
+    /// it owns — its own published surface, the launches the toolkit makes on
+    /// its behalf, and actions published under its own id (the shortcut
+    /// library is the shortcuts app's) — as that person, because those are
+    /// the person's own clicks in it. Reading the catalogue needs the app to
+    /// declare `[actions] query`; invoking another app's action needs
+    /// `[actions] invoke` and is then decided for the app, which holds no
+    /// role and has only what the workspace grants it.
+    ///
+    /// # Errors
+    ///
+    /// The refusal to answer with, when the request is outside what the app
+    /// declared.
+    pub(crate) fn app_door(
+        &self,
+        person: &Caller,
+        app_id: &str,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Result<Caller, Box<tilo_actions::remote::RemoteActionMessage>> {
+        use tilo_actions::remote::{RemoteActionMessage, refuse};
+        let access = self.app_action_access(app_id);
+        let mut as_app = Caller::local_app(app_id);
+        if let Some(room) = person.room() {
+            as_app = as_app.in_room(room);
+        }
+        let permitted = match message {
+            RemoteActionMessage::CatalogueRequest { .. } => access.query.then(|| person.clone()),
+            RemoteActionMessage::Invoke(request) => {
+                if self.app_owns(person, app_id, request) {
+                    Some(person.clone())
+                } else {
+                    access.invoke.then_some(as_app)
+                }
+            }
+            RemoteActionMessage::Observe { invocation }
+            | RemoteActionMessage::Cancel { invocation } => {
+                Some(if self.remote_job(&as_app, invocation).is_some() {
+                    as_app
+                } else {
+                    person.clone()
+                })
+            }
+            RemoteActionMessage::CatalogueResponse { .. }
+            | RemoteActionMessage::Receipt(_)
+            | RemoteActionMessage::Update { .. }
+            | RemoteActionMessage::CancelResponse { .. } => Some(person.clone()),
+        };
+        permitted.ok_or_else(|| {
+            Box::new(refuse(message, ActionHostError::NotPermitted).unwrap_or(
+                RemoteActionMessage::CatalogueResponse {
+                    correlation: 0,
+                    result: Err(ActionHostError::NotPermitted),
+                },
+            ))
+        })
+    }
+
+    /// What application `app_id` declared it may do on the door.
+    pub(crate) fn app_action_access(
+        &self,
+        app_id: &str,
+    ) -> crate::shell::app_action_access::ActionAccess {
+        self.app_action_access
+            .read()
+            .map(|resolver| resolver(app_id))
+            .unwrap_or_default()
+    }
+
+    /// Read declared access from `resolver` from now on.
+    pub(crate) fn set_app_action_access(
+        &self,
+        resolver: crate::shell::app_action_access::AccessResolver,
+    ) {
+        if let Ok(mut current) = self.app_action_access.write() {
+            *current = resolver;
+        }
+    }
+
+    /// Whether `request` names something application `app_id` owns, as
+    /// seen by the `person` using it.
+    fn app_owns(&self, person: &Caller, app_id: &str, request: &InvokeRequest) -> bool {
+        let target = &request.target;
+        if target.provider == OWN_PROVIDER
+            || (workspace_provider_room(&target.provider).is_some()
+                && target
+                    .address
+                    .resource
+                    .starts_with(APPLICATION_RESOURCE_PREFIX)
+                && target.address.action == APPLICATION_OPEN_ACTION)
+        {
+            return true;
+        }
+        if let Some(row) = self
+            .eager_catalogue(person, true)
+            .0
+            .into_iter()
+            .find(|row| {
+                row.provider == target.provider
+                    && row
+                        .action
+                        .as_ref()
+                        .is_some_and(|descriptor| descriptor.address == target.address)
+            })
+        {
+            return row.app_id == app_id;
+        }
+        let Ok(peer_id) = target.provider.parse::<u64>() else {
+            return false;
+        };
+        self.published_surfaces()
+            .iter()
+            .any(|surface| surface.peer_id == peer_id && surface.app_id == app_id)
+            || self
+                .action_directory_roots()
+                .iter()
+                .any(|root| root.peer_id == peer_id && root.app_id == app_id)
+    }
+
     /// Workspaces `caller` may act in, with the policy actor for each. A
     /// caller confined to a room was admitted to it by its connection; any
     /// other caller must be a member.
@@ -170,17 +292,13 @@ impl CapnpBrokerState {
                     None => match caller.principal() {
                         CallerPrincipal::Person(id) => workspace.role_of(id).is_some(),
                         CallerPrincipal::Agent(id) => workspace.role_of_agent(id).is_some(),
+                        // An application is always admitted into one room;
+                        // unconfined, it is a member of none.
+                        CallerPrincipal::App(_) => false,
                     },
                 }
             })
-            .map(|workspace| {
-                let policy = if actor.is_agent {
-                    workspace.actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
-                } else {
-                    workspace.actor_for_person(&actor.id)
-                };
-                (workspace.clone(), policy)
-            })
+            .map(|workspace| (workspace.clone(), actor.policy_in(workspace)))
             .collect()
     }
 
@@ -191,7 +309,14 @@ impl CapnpBrokerState {
         action: &str,
         permission: tilo_actions::PermissionRequirement,
     ) -> bool {
-        permission_verb(permission).is_none_or(|verb| {
+        // An action that asks nothing of a person still has to be granted to
+        // an application: it holds no membership that would imply it.
+        let acting_app = policy
+            .principals
+            .iter()
+            .any(|principal| matches!(principal, crate::shell::state::Principal::App(_)));
+        let verb = permission_verb(permission).or_else(|| acting_app.then_some(Verb::Read));
+        verb.is_none_or(|verb| {
             workspace.decide(
                 policy,
                 &ResourceRef::Action {
@@ -1342,6 +1467,7 @@ impl CapnpBrokerState {
         shortcut_id: &str,
         trigger: &tilo_automation::TriggerSpec,
         run: tilo_automation::RunId,
+        inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, ActionHostError> {
         let shortcut = self
             .saved_shortcut(caller, room, shortcut_id)
@@ -1380,7 +1506,7 @@ impl CapnpBrokerState {
                 run,
                 trigger: tilo_automation::RunTrigger::Fired(trigger.clone()),
                 mode: tilo_automation::RunMode::Unattended,
-                inputs: serde_json::Map::new(),
+                inputs,
             },
             automation_host::DoorHooks::new(None),
         )

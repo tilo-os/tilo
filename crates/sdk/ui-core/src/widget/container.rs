@@ -5,6 +5,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
+use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -22,6 +23,8 @@ use winit::event::WindowEvent;
 )]
 pub struct Container {
     child: Option<Box<dyn Widget>>,
+    /// Stable graph / test identity when built from a serialized UI node.
+    id: Option<String>,
     rect: Rect,
     has_background: bool,
     focus_trap: bool,
@@ -65,6 +68,7 @@ impl Container {
     pub fn new() -> Self {
         Self {
             child: None,
+            id: None,
             rect: Rect::ZERO,
             has_background: false,
             focus_trap: false,
@@ -119,6 +123,41 @@ impl Container {
     pub fn with_child(mut self, child: Box<dyn Widget>) -> Self {
         self.child = Some(child);
         self
+    }
+
+    /// Address this container by a stable id in inspection and graph reconcile.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Take the single child for identity-preserving reconcile.
+    pub fn take_child(&mut self) -> Option<Box<dyn Widget>> {
+        self.child.take()
+    }
+
+    /// Replace the single child after a graph reconcile pass.
+    pub fn set_child(&mut self, child: Box<dyn Widget>) {
+        self.child = Some(child);
+    }
+
+    /// Apply layout flags from a serialized container node without rebuilding.
+    pub fn apply_graph_props(
+        &mut self,
+        id: &str,
+        background: bool,
+        no_padding: bool,
+        fill_height: bool,
+        width: Option<f32>,
+        height: Option<f32>,
+    ) {
+        self.id = Some(id.to_owned());
+        self.has_background = background;
+        self.no_padding = no_padding;
+        self.fill_height = fill_height;
+        self.fixed_width = width;
+        self.fixed_height = height;
     }
 
     #[must_use]
@@ -427,6 +466,14 @@ impl Widget for Container {
 
     fn name(&self) -> &'static str {
         "Container"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
     }
 
     fn is_focused(&self) -> bool {

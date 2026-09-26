@@ -37,6 +37,7 @@ pub enum FixedChordAction {
     ExploreWorkspaceHistory,
     ShortcutGuide,
     StopRemoteInput,
+    ToggleMouseKeys,
 }
 
 /// One key under one exact modifier mask.
@@ -87,6 +88,7 @@ fn key_name(key: ChordKey) -> String {
         ChordKey::ArrowDown => "Down".into(),
         ChordKey::Escape => "Esc".into(),
         ChordKey::Delete => "Delete".into(),
+        ChordKey::NumLock => "Num Lock".into(),
         ChordKey::Function(n) => format!("F{n}"),
         ChordKey::Char(c) => c.to_ascii_uppercase().to_string(),
         ChordKey::Modifier | ChordKey::Other => String::new(),
@@ -288,6 +290,12 @@ pub static FIXED_CHORDS: &[FixedChordEntry] = &[
         "Stop all remote input",
         &[chord(ChordKey::Escape, SUPER)],
     ),
+    entry(
+        FixedChordAction::ToggleMouseKeys,
+        "shortcut-toggle-mouse-keys",
+        "Toggle mouse keys",
+        &[chord(ChordKey::NumLock, ALT_SHIFT)],
+    ),
 ];
 
 /// The table entry for `action`. Every action has exactly one entry
@@ -392,6 +400,10 @@ mod tests {
         assert_eq!(
             display(FixedChordAction::Screenshot).as_deref(),
             Some("Print Screen")
+        );
+        assert_eq!(
+            display(FixedChordAction::ToggleMouseKeys).as_deref(),
+            Some("Alt+Shift+Num Lock")
         );
     }
 

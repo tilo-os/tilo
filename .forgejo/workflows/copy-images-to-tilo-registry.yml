@@ -3,8 +3,8 @@ name: Operations / Copy images to registry.tilo.so
 # Operator-dispatched: copies every image this tree references from the
 # forge's registry to registry.tilo.so with the same digests
 # (tools/ci/copy-images-to-tilo-registry.sh). The default is a dry run that
-# only prints the plan. registry.tilo.so accepts this job's Forgejo Actions ID
-# token for pushes below tilo/; re-signing uses the release KMS key, because a
+# only prints the plan. registry.tilo.so accepts this job's token for pushes
+# below tilo/; re-signing uses the release KMS key, because a
 # copied signature names the old repository and matchRepository refuses it.
 on:
   workflow_dispatch:
@@ -21,6 +21,10 @@ on:
         description: "Re-sign copied digests of signature-required repositories under their new name"
         type: boolean
         default: false
+      extra_references:
+        description: "Space-separated code.tilo.so references this tree does not pin (e.g. infra's runner label images)"
+        type: string
+        default: ""
 
 concurrency:
   group: copy-images-to-tilo-registry
@@ -65,9 +69,12 @@ jobs:
           OWNER_MOVES: ${{ github.repository_owner }}:tilo public:tilo
           SOURCE_USERNAME: ${{ github.actor }}
           SOURCE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          DEST_USERNAME: ${{ github.actor }}
+          DEST_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLY: ${{ inputs.apply && '1' || '0' }}
           ALL_TAGS: ${{ inputs.all_tags && '1' || '0' }}
           RESIGN: ${{ inputs.resign && '1' || '0' }}
+          EXTRA_REFERENCES: ${{ inputs.extra_references }}
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: tools/ci/copy-images-to-tilo-registry.sh

@@ -16,6 +16,8 @@ struct RetainedEditor {
     doc: AutoCommit,
     width: f32,
     rebuilds: usize,
+    /// The host's paint viewport, as the live host pushes the window.
+    viewport: Option<Rect>,
 }
 
 impl RetainedEditor {
@@ -53,7 +55,6 @@ impl RetainedEditor {
     }
 
     fn new(width: f32, scale: f32, image: bool) -> Self {
-        let mut editor = Box::new(BlockEditor::new().with_wrap_lines(true));
         let mut blocks = vec![
             Block::paragraph(""),
             Block::paragraph("Following paragraph"),
@@ -61,6 +62,11 @@ impl RetainedEditor {
         if image {
             blocks.push(Block::paragraph("![An attachment](fixture.png)"));
         }
+        Self::with_blocks(width, scale, blocks)
+    }
+
+    fn with_blocks(width: f32, scale: f32, blocks: Vec<Block>) -> Self {
+        let mut editor = Box::new(BlockEditor::new().with_wrap_lines(true));
         editor.set_blocks(blocks);
         editor.focus_block(0, CursorPlacement::Start);
         let theme = Theme::dark().with_text_scale(scale);
@@ -84,6 +90,7 @@ impl RetainedEditor {
             doc: AutoCommit::new(),
             width,
             rebuilds: 0,
+            viewport: None,
         };
         fixture.frame();
         fixture
@@ -123,12 +130,16 @@ impl RetainedEditor {
             .unwrap();
         }
         self.editor.apply_layout(&self.tree, self.root, Point::ZERO);
+        let presence = PresenceCtx::empty();
+        if let Some(viewport) = self.viewport {
+            presence.push_viewport(viewport);
+        }
         self.editor.draw(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut self.text,
             &self.theme,
-            &PresenceCtx::empty(),
+            &presence,
         );
         self.editor.mark_drawn();
         for child in self.editor.children_mut() {
@@ -327,4 +338,44 @@ fn attachment_children_do_not_hide_paragraph_measurement_changes() {
     );
     fixture.frame();
     fixture.assert_focused_content_fits();
+}
+
+/// Typing in a long document measures and paints what it touched, not the
+/// document: the work per keystroke is the same at 200 and 10000 paragraphs.
+#[test]
+fn keystroke_work_does_not_grow_with_the_document() {
+    let mut work = Vec::new();
+    for paragraphs in [200_usize, 2000, 10000] {
+        let blocks = (0..paragraphs)
+            .map(|index| Block::paragraph(&format!("Paragraph {index} of a long note.")))
+            .collect();
+        let mut fixture = RetainedEditor::with_blocks(480.0, 1.0, blocks);
+        fixture.viewport = Some(Rect::new(0.0, 0.0, 480.0, 600.0));
+        fixture.type_text("warm ");
+        fixture.editor.stack_measures = 0;
+        fixture.editor.painted_blocks = 0;
+        let keystrokes = "typed".len();
+        fixture.type_text("typed");
+        assert_eq!(fixture.rebuilds, 0, "typing retains the layout tree");
+        assert!(
+            fixture.editor.stack_measures <= keystrokes,
+            "{paragraphs} paragraphs: each keystroke re-measures only its own line, \
+             measured {}",
+            fixture.editor.stack_measures,
+        );
+        work.push((
+            fixture.editor.stack_measures,
+            fixture.editor.painted_blocks,
+            fixture.tree.total_node_count(),
+        ));
+        let last = fixture.editor.blocks.last().unwrap().line.get_rect();
+        assert!(
+            last.y0 > 600.0 && last.height() > 0.0,
+            "off-screen blocks keep their exact place in the document: {last:?}"
+        );
+    }
+    assert!(
+        work.windows(2).all(|pair| pair[0] == pair[1]),
+        "measured lines, painted blocks and layout nodes per keystroke: {work:?}"
+    );
 }

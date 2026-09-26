@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use getrandom::{
@@ -3445,6 +3445,8 @@ fn handle_spatial_action(
         | PersonalFabricAction::SpeakerGroupSessionOffer { .. }
         | PersonalFabricAction::SpeakerGroupSessionDecision { .. }
         | PersonalFabricAction::SpeakerGroupSessionStop { .. }
+        | PersonalFabricAction::SpeakerIdentify { .. }
+        | PersonalFabricAction::SpeakerSweep { .. }
         | PersonalFabricAction::RemoteCaptureSignal { .. }
         | PersonalFabricAction::RemoteCaptureChunk { .. }
         | PersonalFabricAction::DeviceHealthProbe { .. }
@@ -5538,6 +5540,36 @@ fn active_spatial_control_devices(
             )
         },
     )
+}
+
+/// The person's certified devices as the personal fabric sees them, for
+/// running each of their schedules on one device.
+pub struct FabricDeviceDirectory {
+    network: Arc<ShellNetwork>,
+}
+
+impl FabricDeviceDirectory {
+    #[must_use]
+    pub fn new(network: Arc<ShellNetwork>) -> Self {
+        Self { network }
+    }
+}
+
+impl crate::shell::automation_triggers::DeviceDirectory for FabricDeviceDirectory {
+    fn personal_devices(&self) -> crate::shell::automation_triggers::PersonalDevices {
+        crate::shell::automation_triggers::PersonalDevices {
+            local: self
+                .network
+                .local_device_fabric_identity()
+                .map(|(device, _)| device.as_str().to_string()),
+            online: self
+                .network
+                .device_fabric()
+                .online_devices()
+                .map(|presence| presence.device.as_str().to_string())
+                .collect(),
+        }
+    }
 }
 
 /// Build the bounded presentation model for Quick Settings. Every remote row

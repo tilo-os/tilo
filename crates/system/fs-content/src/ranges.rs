@@ -90,6 +90,27 @@ impl RangeSet {
             .collect()
     }
 
+    /// The parts of `r` that are not in the set.
+    pub fn missing(&self, r: &Range<u64>) -> Vec<Range<u64>> {
+        let mut out = Vec::new();
+        let mut at = r.start;
+        for present in self.intersect(r) {
+            if present.start > at {
+                out.push(at..present.start);
+            }
+            at = present.end;
+        }
+        if at < r.end {
+            out.push(at..r.end);
+        }
+        out
+    }
+
+    /// Whether every byte of `r` is in the set.
+    pub fn contains(&self, r: &Range<u64>) -> bool {
+        r.start >= r.end || self.missing(r).is_empty()
+    }
+
     pub fn truncate(&mut self, len: u64) {
         self.remove(len..u64::MAX);
     }
@@ -126,6 +147,10 @@ mod tests {
             vec![0..10, 20..50, 60..100]
         );
         assert_eq!(s.intersect(&(5..55)), vec![5..10, 20..50]);
+        assert_eq!(s.missing(&(5..55)), vec![10..20, 50..55]);
+        assert!(s.contains(&(20..50)));
+        assert!(!s.contains(&(15..25)));
+        assert!(s.contains(&(7..7)));
         assert_eq!(s.total(), 80);
         s.truncate(30);
         assert_eq!(s.iter().cloned().collect::<Vec<_>>(), vec![0..10, 20..30]);

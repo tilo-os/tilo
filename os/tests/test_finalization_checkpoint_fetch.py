@@ -19,8 +19,8 @@ class CheckpointFetchTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.request = {'source_revision': 'a' * 40, 'helpers_revision': 'b' * 40,
-            'architecture': 'aarch64', 'new_target': 'code.tilo.so/tilo/tilo-development:next-aarch64',
-            'new_manifest_sha256': 'c' * 64, 'publish_repository': 'code.tilo.so/tilo/tilo-development'}
+            'architecture': 'aarch64', 'new_target': 'registry.tilo.so/tilo/tilo-development:next-aarch64',
+            'new_manifest_sha256': 'c' * 64, 'publish_repository': 'registry.tilo.so/tilo/tilo-development'}
         self.request_raw = fetch.canonical(self.request)
         self.request_path = self.root / 'request.json'
         self.request_path.write_bytes(self.request_raw)
