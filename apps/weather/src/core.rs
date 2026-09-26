@@ -29,6 +29,7 @@ use vello::peniko::{BlendMode, Brush, Color, Fill, Gradient};
 use winit::event::WindowEvent;
 
 use ui::a11y::{AccessNode, AccessState, Role};
+use ui::charts::{BarGauge, GaugeStyle, TrendRange};
 use ui::color_compat::ColorCompat;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
@@ -3171,24 +3172,25 @@ impl Core {
             TextWeight::Medium,
             c.text_dim,
         );
-        // The range track derives against the card at track strength, so an
-        // empty stretch of range still reads as a bar on both themes.
-        let track = RoundedRect::new(geo.bar_x0, cy - 3.0, geo.bar_x1, cy + 3.0, 3.0);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            track_fill(c.surfaces.raised),
-            None,
-            &track,
-        );
-        let f0 = ((d.temp_min - wmin) / (wmax - wmin)).clamp(0.0, 1.0);
-        let f1 = ((d.temp_max - wmin) / (wmax - wmin)).clamp(0.0, 1.0);
-        let seg_x0 = geo.bar_x0 + f0 * (geo.bar_x1 - geo.bar_x0);
-        let seg_x1 = geo.bar_x0 + f1 * (geo.bar_x1 - geo.bar_x0);
-        let seg = RoundedRect::new(seg_x0, cy - 3.0, seg_x1.max(seg_x0 + 4.0), cy + 3.0, 3.0);
+        // The day's low–high on the week's range. The track runs at track
+        // strength, so an empty stretch of range still reads as a bar on both
+        // themes; one cool→warm wash spans the whole track and each day shows
+        // its slice of it.
+        let range = TrendRange { lo: wmin, hi: wmax };
         let grad = Gradient::new_linear(Point::new(geo.bar_x0, cy), Point::new(geo.bar_x1, cy))
             .with_stops([(0.0_f32, c.semantic.info), (1.0_f32, c.semantic.warning)]);
-        scene.fill(Fill::NonZero, t, &Brush::Gradient(grad), None, &seg);
+        BarGauge::draw_span(
+            scene,
+            t,
+            Rect::new(geo.bar_x0, cy - 3.0, geo.bar_x1, cy + 3.0),
+            theme,
+            (
+                range.fraction(d.temp_min) as f32,
+                range.fraction(d.temp_max) as f32,
+            ),
+            &Brush::Gradient(grad),
+            &GaugeStyle::default().with_track_alpha(TRACK_ALPHA),
+        );
         text_left(
             scene,
             tr,
