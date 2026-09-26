@@ -71,7 +71,7 @@ impl KeyboardSettings {
                 let options = config.xkb_options();
                 (!options.is_empty()).then(|| options.join(","))
             },
-            active_index: config.active_source_index(),
+            active_index: config.active_layout_index(),
         }
     }
 
@@ -949,6 +949,33 @@ mod tests {
             settings.options.as_deref(),
             Some("grp:alt_shift_toggle,compose:ralt")
         );
+    }
+
+    #[test]
+    fn input_method_sources_compile_no_group_and_select_the_primary_layout() {
+        let section = serde_json::json!({
+            "keyboard_layout": "ime/pinyin",
+            "keyboard_layouts": ["de", "ime/pinyin", "fr"]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let settings = KeyboardSettings::from_section(&section);
+        assert_eq!(settings.source_ids, ["de", "fr"]);
+        assert_eq!(settings.layouts, "de,fr");
+        assert_eq!(
+            settings.active_index, 0,
+            "the engine types on the primary layout"
+        );
+
+        let section = serde_json::json!({
+            "keyboard_layout": "fr",
+            "keyboard_layouts": ["de", "ime/pinyin", "fr"]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(KeyboardSettings::from_section(&section).active_index, 1);
     }
 
     #[test]
