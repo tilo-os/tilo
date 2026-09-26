@@ -1526,6 +1526,7 @@ impl WorkspaceTree {
         let caps: Vec<CapOverride> = ws.capabilities.clone();
         let tasks = ws.tasks.clone();
         let effect_receipts = ws.effect_receipts.clone();
+        let shortcuts = ws.shortcuts.clone();
         let peer_names: std::collections::BTreeMap<String, String> =
             self.room_peer_names.get(&room).cloned().unwrap_or_default();
         let peer_identities = self
@@ -1605,6 +1606,9 @@ impl WorkspaceTree {
         }
         if let Err(error) = projection::project_effect_receipts(doc, &effect_receipts) {
             tracing::error!(?error, "room doc: effect receipts map");
+        }
+        if let Err(error) = projection::project_workspace_shortcuts(doc, &shortcuts) {
+            tracing::error!(?error, "room doc: shortcuts map");
         }
 
         if !governs {
@@ -2175,6 +2179,7 @@ impl WorkspaceTree {
 
         let (name, owner, caps) = Self::extract_governed_fields(&candidate);
         let mut tasks = projection::workspace_tasks_of(&candidate);
+        let shortcuts = projection::workspace_shortcuts_of(&candidate);
         let mut effect_receipts = projection::workspace_effect_receipts_of(&candidate);
         if let Some(workspace) = self.workspace_in_room(room) {
             for existing in &workspace.effect_receipts {
@@ -2237,6 +2242,8 @@ impl WorkspaceTree {
             ws.tasks = tasks;
             fields_changed = true;
         }
+        fields_changed |= ws.shortcuts != shortcuts;
+        ws.shortcuts = shortcuts;
         effect_receipts.sort_by_key(|receipt| receipt.invocation.0);
         let mut current_receipts = ws.effect_receipts.clone();
         current_receipts.sort_by_key(|receipt| receipt.invocation.0);
@@ -3144,6 +3151,72 @@ impl WorkspaceTree {
         )
     }
 
+    /// Save `shortcut` in `workspace_id`, replacing the shortcut with the
+    /// same id. `false` when the workspace is not held here.
+    pub fn save_workspace_shortcut(
+        &mut self,
+        workspace_id: WorkspaceId,
+        shortcut: &tilo_automation::Shortcut,
+    ) -> bool {
+        let Some(workspace) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+        else {
+            return false;
+        };
+        match workspace
+            .shortcuts
+            .iter_mut()
+            .find(|saved| saved.id == shortcut.id)
+        {
+            Some(saved) => *saved = shortcut.clone(),
+            None => workspace.shortcuts.push(shortcut.clone()),
+        }
+        workspace
+            .shortcuts
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        if tilo_desktop_model::desktop_doc::upsert_shortcut(&mut self.doc, workspace_id, shortcut) {
+            self.commit_room_change();
+        }
+        self.flush_to_disk();
+        true
+    }
+
+    /// Delete shortcut `shortcut_id` from `workspace_id`. `false` when there
+    /// was no such shortcut.
+    pub fn remove_workspace_shortcut(
+        &mut self,
+        workspace_id: WorkspaceId,
+        shortcut_id: &str,
+    ) -> bool {
+        let Some(workspace) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+        else {
+            return false;
+        };
+        let before = workspace.shortcuts.len();
+        workspace
+            .shortcuts
+            .retain(|shortcut| shortcut.id != shortcut_id);
+        if workspace.shortcuts.len() == before {
+            return false;
+        }
+        if tilo_desktop_model::desktop_doc::remove_shortcut(
+            &mut self.doc,
+            workspace_id,
+            shortcut_id,
+        ) {
+            self.commit_room_change();
+        }
+        self.flush_to_disk();
+        true
+    }
+
     fn doc_upsert_workspace_task(&mut self, workspace_id: WorkspaceId, task: &WorkspaceTask) {
         if tilo_desktop_model::desktop_doc::upsert_task(&mut self.doc, workspace_id, task) {
             self.commit_room_change();
@@ -3265,6 +3338,7 @@ impl WorkspaceTree {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            shortcuts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
 
@@ -3364,6 +3438,7 @@ impl WorkspaceTree {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            shortcuts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
 
@@ -3429,6 +3504,7 @@ impl WorkspaceTree {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            shortcuts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
         self.desktop.active_strip.insert(ws_id, strip_id);
@@ -6532,6 +6608,7 @@ mod active_group_tests {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            shortcuts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
         let mut active_strip = HashMap::new();
@@ -7005,6 +7082,7 @@ mod active_workspace_peer_count_tests {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            shortcuts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
         let mut active_strip = HashMap::new();

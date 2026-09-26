@@ -13,6 +13,7 @@ pub mod live_app_actions;
 pub mod notes;
 pub mod records;
 pub mod session_actions;
+pub mod shortcuts;
 pub mod text_app;
 pub mod tray_items;
 
@@ -29,3 +30,4 @@ pub use live_app_actions::LiveAppActionsProvider;
 pub use notes::NotesProvider;
 pub use records::RecordsProvider;
 pub use session_actions::{SessionActionPolicy, SessionActionsProvider};
+pub use shortcuts::ShortcutsProvider;

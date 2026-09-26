@@ -121,6 +121,13 @@
         }
       ],
       "effect_receipts": [],
+      "shortcuts": [
+        {
+          "id": "tidy",
+          "name": "Tidy",
+          "steps": []
+        }
+      ],
       "shared_surfaces": {
         "7": [
           42
@@ -151,6 +158,7 @@
       },
       "tasks": [],
       "effect_receipts": [],
+      "shortcuts": [],
       "shared_surfaces": {}
     }
   ],

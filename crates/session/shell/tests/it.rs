@@ -151,6 +151,8 @@ mod session_lock_e2e;
 mod shell_chrome_test;
 #[path = "shell_state_test.rs"]
 mod shell_state_test;
+#[path = "shortcuts_door.rs"]
+mod shortcuts_door;
 #[path = "sidebar_wheel_disc_snapshot.rs"]
 mod sidebar_wheel_disc_snapshot;
 #[path = "state_file_format.rs"]
