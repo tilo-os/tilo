@@ -15861,6 +15861,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "ui-examples"
+version = "0.1.0"
+dependencies = [
+ "accesskit",
+ "atomic-file",
+ "automerge",
+ "chrono",
+ "collab-types",
+ "getrandom 0.4.1",
+ "image",
+ "pollster",
+ "qdoc",
+ "serde_json",
+ "taffy",
+ "tempfile",
+ "threshold-identity",
+ "tilo-actions",
+ "tilo-automerge",
+ "tilo-ui",
+ "vello",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "unarray"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
