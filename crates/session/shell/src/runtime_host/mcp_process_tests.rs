@@ -16,7 +16,7 @@ use std::{
 const PROCESS_TEST: &str =
     "runtime_host::mcp_process::tests::mcp_process_owns_and_reaps_its_children";
 /// Names the one phase an isolated child process runs.
-const PROCESS_PHASE: &str = "QOS_MCP_PROCESS_TEST_PHASE";
+const PROCESS_PHASE: &str = "TILO_MCP_PROCESS_TEST_PHASE";
 
 /// In the parent, runs `phase` in a fresh child process and returns `None`;
 /// in that child, returns its isolated root for `phase` only and `None` for
