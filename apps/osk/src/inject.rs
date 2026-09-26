@@ -1,11 +1,10 @@
 //! Text-injection backends for the on-screen keyboard (client half).
 //!
-//! The widget ([`crate::OskWidget`]) accumulates typed/swiped/committed input
-//! and surfaces it two ways: as a flattened string ([`OskWidget::take_pending_text`])
-//! and as a per-activation [`KeyAction`] stream via the `on_key` callback. This
-//! module is the *consumer* of that stream: it takes those actions/strings and
-//! pushes them into whatever surface currently holds keyboard focus, so the OSK
-//! behaves like a real keyboard for any app.
+//! The widget ([`crate::OskWidget`]) reduces input into an ordered
+//! [`crate::OskOutput`] stream; [`crate::output`] turns that stream into
+//! keysyms where keysyms are needed. This module presses them in whatever
+//! surface currently holds keyboard focus, so the OSK behaves like a real
+//! keyboard for any app.
 //!
 //! ## Backend: `virtual-keyboard-v1` (wtype-style)
 //!
@@ -45,8 +44,6 @@
 
 use std::fmt::Write as _;
 
-use crate::layout::KeyAction;
-
 /// A sink for committed keyboard input. Implementors push text / key actions
 /// into the focused surface (real backend) or record them (test backend).
 pub trait TextInjector {
@@ -54,33 +51,16 @@ pub trait TextInjector {
     /// each grapheme; the backend is responsible for newlines, spaces, etc.
     fn commit_text(&mut self, text: &str);
 
-    /// Inject a single [`KeyAction`]. Text-producing actions
-    /// (`Char`/`Space`/`Enter`) emit their character; `Backspace` emits the
-    /// delete key. Pure state-transition actions (`Shift`, `SymbolsToggle`,
-    /// `Layout`) are no-ops for injection — they only affect the OSK's own
-    /// rendering, not the focused app.
-    fn key_action(&mut self, action: &KeyAction);
+    /// Press each symbol in order.
+    fn send(&mut self, symbols: &[Symbol]);
+
+    /// Wait until the compositor has processed every key sent so far. Needed
+    /// before a request on another connection that must land after them.
+    fn sync(&mut self) {}
 
     /// Short, stable identifier for the active backend (`"virtual-keyboard-v1"`
     /// or `"null"`). Used in logs and tests.
     fn backend_name(&self) -> &'static str;
-}
-
-/// The symbol a [`KeyAction`] injects, if any. `None` for actions that do not
-/// produce characters in the focused surface (`Shift`, `SymbolsToggle`,
-/// `Layout`).
-///
-/// This is pure and unit-tested; it is the single mapping both the real and the
-/// test backend share.
-pub fn action_symbols(action: &KeyAction) -> Vec<Symbol> {
-    match action {
-        KeyAction::Char(s) => s.chars().map(Symbol::Unicode).collect(),
-        KeyAction::Space => vec![Symbol::Space],
-        KeyAction::Enter => vec![Symbol::Return],
-        KeyAction::Backspace => vec![Symbol::BackSpace],
-        // State transitions affect the OSK only; nothing is sent to the app.
-        KeyAction::Shift | KeyAction::SymbolsToggle | KeyAction::Layout(_) => Vec::new(),
-    }
 }
 
 /// One injectable symbol: either a literal Unicode scalar (most keys) or one of
@@ -201,9 +181,7 @@ pub const KEYCODE_BASE: u32 = 8;
 pub struct NullInjector {
     /// Strings passed to [`commit_text`](TextInjector::commit_text).
     pub committed: Vec<String>,
-    /// Symbol names passed to [`key_action`](TextInjector::key_action) (the
-    /// keysym name of each emitted symbol, in order). State-only actions append
-    /// nothing.
+    /// Keysym names passed to [`send`](TextInjector::send), in order.
     pub keys: Vec<String>,
 }
 
@@ -218,10 +196,9 @@ impl TextInjector for NullInjector {
         self.committed.push(text.to_string());
     }
 
-    fn key_action(&mut self, action: &KeyAction) {
-        for sym in action_symbols(action) {
-            self.keys.push(sym.keysym_name());
-        }
+    fn send(&mut self, symbols: &[Symbol]) {
+        self.keys
+            .extend(symbols.iter().map(|sym| sym.keysym_name()));
     }
 
     fn backend_name(&self) -> &'static str {
@@ -256,8 +233,7 @@ mod wayland {
         zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
     };
 
-    use super::{Symbol, TextInjector, action_symbols, build_keymap};
-    use crate::layout::KeyAction;
+    use super::{Symbol, TextInjector, build_keymap};
 
     /// `wl_keyboard.key_state` value for a press / release.
     const KEY_PRESSED: u32 = 1;
@@ -465,9 +441,12 @@ mod wayland {
             self.inject_symbols(&symbols);
         }
 
-        fn key_action(&mut self, action: &KeyAction) {
-            let symbols = action_symbols(action);
-            self.inject_symbols(&symbols);
+        fn send(&mut self, symbols: &[Symbol]) {
+            self.inject_symbols(symbols);
+        }
+
+        fn sync(&mut self) {
+            let _ = self.queue.roundtrip(&mut self.state);
         }
 
         fn backend_name(&self) -> &'static str {
@@ -486,7 +465,6 @@ mod wayland {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::KeyAction;
 
     #[test]
     fn symbol_from_char_maps_specials() {
@@ -513,30 +491,6 @@ mod tests {
         assert_eq!(Symbol::Return.keysym_name(), "Return");
         assert_eq!(Symbol::Space.keysym_name(), "space");
         assert_eq!(Symbol::Tab.keysym_name(), "Tab");
-    }
-
-    #[test]
-    fn action_symbols_maps_each_variant() {
-        assert_eq!(
-            action_symbols(&KeyAction::Char("a".into())),
-            vec![Symbol::Unicode('a')]
-        );
-        // Multi-codepoint Char (e.g. accented composite / emoji) → one symbol
-        // per char.
-        assert_eq!(
-            action_symbols(&KeyAction::Char("ab".into())),
-            vec![Symbol::Unicode('a'), Symbol::Unicode('b')]
-        );
-        assert_eq!(action_symbols(&KeyAction::Space), vec![Symbol::Space]);
-        assert_eq!(action_symbols(&KeyAction::Enter), vec![Symbol::Return]);
-        assert_eq!(
-            action_symbols(&KeyAction::Backspace),
-            vec![Symbol::BackSpace]
-        );
-        // State-only transitions inject nothing.
-        assert!(action_symbols(&KeyAction::Shift).is_empty());
-        assert!(action_symbols(&KeyAction::SymbolsToggle).is_empty());
-        assert!(action_symbols(&KeyAction::Layout("azerty".into())).is_empty());
     }
 
     #[test]
@@ -593,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn null_injector_records_commit_and_key_action() {
+    fn null_injector_records_commit_and_send() {
         let mut inj = NullInjector::new();
         assert_eq!(inj.backend_name(), "null");
 
@@ -601,12 +555,8 @@ mod tests {
         inj.commit_text(" there");
         assert_eq!(inj.committed, vec!["hi".to_string(), " there".to_string()]);
 
-        inj.key_action(&KeyAction::Char("Z".into()));
-        inj.key_action(&KeyAction::Space);
-        inj.key_action(&KeyAction::Enter);
-        inj.key_action(&KeyAction::Backspace);
-        // State-only action records nothing.
-        inj.key_action(&KeyAction::Shift);
+        inj.send(&[Symbol::Unicode('Z'), Symbol::Space]);
+        inj.send(&[Symbol::Return, Symbol::BackSpace]);
         assert_eq!(
             inj.keys,
             vec![
