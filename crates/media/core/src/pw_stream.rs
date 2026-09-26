@@ -145,10 +145,15 @@ impl DeviceTiming {
             .saturating_add(queued)
     }
 
-    /// Local time at which the first frame of the buffer a capture stream
-    /// delivers this cycle entered the device.
-    pub const fn capture_origin_ns(&self) -> i64 {
-        self.now_ns.saturating_sub(self.delay_ns)
+    /// Local time at which the first of the `frames` frames a capture stream
+    /// delivers this cycle entered the device: the buffer ends where the
+    /// device delay before the cycle start puts it, and spans its own
+    /// duration before that.
+    pub fn capture_origin_ns(&self, frames: usize, rate: u32) -> i64 {
+        let span = frames_to_ns(i64::try_from(frames).unwrap_or(i64::MAX), rate);
+        self.now_ns
+            .saturating_sub(self.delay_ns)
+            .saturating_sub(span)
     }
 }
 
@@ -320,6 +325,9 @@ pub struct PlaybackConfig {
     pub channels: u16,
     /// Graph quantum the stream asks for, in frames at `rate`.
     pub latency_frames: u32,
+    /// Play on the sink with this `object.serial` and nowhere else; `None`
+    /// follows the default output.
+    pub target_serial: Option<u32>,
 }
 
 impl PlaybackConfig {
@@ -331,12 +339,13 @@ impl PlaybackConfig {
             rate,
             channels: u16::try_from(role.channels()).unwrap_or(2),
             latency_frames: rate.checked_div(100).unwrap_or(480).max(1),
+            target_serial: None,
         }
     }
 
     /// Stream properties, as `PipeWire` key/value pairs.
     pub fn properties(&self) -> Vec<(&'static str, String)> {
-        vec![
+        let mut properties = vec![
             ("media.type", "Audio".into()),
             ("media.category", "Playback".into()),
             ("media.role", "Music".into()),
@@ -348,7 +357,16 @@ impl PlaybackConfig {
                 "node.latency",
                 format!("{}/{}", self.latency_frames, self.rate),
             ),
-        ]
+        ];
+        if let Some(serial) = self.target_serial {
+            properties.extend([
+                ("target.object", serial.to_string()),
+                ("node.dont-fallback", "true".into()),
+                ("node.dont-reconnect", "true".into()),
+                ("node.dont-move", "true".into()),
+            ]);
+        }
+        properties
     }
 }
 
@@ -552,6 +570,322 @@ pub fn whole_frames(bytes: &[u8], stride: usize) -> &[u8] {
     bytes.get(..whole).unwrap_or_default()
 }
 
+/// Plays one buffer so that its first frame leaves the speaker at a chosen
+/// local time: the playback half of a timed measurement such as an acoustic
+/// sweep. Frames scheduled before the stream could play them are reported
+/// through [`ScheduledBuffer::late_by_ns`] rather than silently shifted.
+#[derive(Debug)]
+pub struct ScheduledBuffer {
+    samples: Arc<[f32]>,
+    channels: usize,
+    rate: u32,
+    start_ns: i64,
+    progress: Arc<ScheduleProgress>,
+}
+
+/// What a [`ScheduledBuffer`] has played so far, readable from any thread.
+#[derive(Debug, Default)]
+pub struct ScheduleProgress {
+    /// How late the first frame was presented, once known; 0 when on time.
+    late_by_ns: Mutex<Option<i64>>,
+    /// Whether the last frame has been handed to the device.
+    finished: AtomicBool,
+}
+
+impl ScheduleProgress {
+    pub fn late_by_ns(&self) -> Option<i64> {
+        *self
+            .late_by_ns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+}
+
+impl ScheduledBuffer {
+    /// `samples` is interleaved `f32` with `channels` per frame.
+    pub fn new(samples: Vec<f32>, channels: u16, rate: u32, start_ns: i64) -> Self {
+        Self {
+            samples: samples.into(),
+            channels: usize::from(channels.max(1)),
+            rate: rate.max(1),
+            start_ns,
+            progress: Arc::default(),
+        }
+    }
+
+    pub fn progress(&self) -> Arc<ScheduleProgress> {
+        Arc::clone(&self.progress)
+    }
+
+    fn frames(&self) -> i64 {
+        i64::try_from(self.samples.len().checked_div(self.channels).unwrap_or(0))
+            .unwrap_or(i64::MAX)
+    }
+}
+
+impl PlaybackSource for ScheduledBuffer {
+    fn render(&mut self, presentation_ns: i64, out: &mut [f32]) {
+        out.fill(0.0);
+        // The buffer frame presented first, rounded to the nearest frame.
+        let half_frame = frames_to_ns(1, self.rate) / 2;
+        let first = ns_to_frames(
+            presentation_ns
+                .saturating_sub(self.start_ns)
+                .saturating_add(half_frame),
+            self.rate,
+        );
+        let count =
+            i64::try_from(out.len().checked_div(self.channels).unwrap_or(0)).unwrap_or(i64::MAX);
+        let end = first.saturating_add(count);
+        {
+            let mut late = self
+                .progress
+                .late_by_ns
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if late.is_none() && end > 0 {
+                *late = Some(frames_to_ns(first.max(0), self.rate));
+            }
+        }
+        let from = first.max(0);
+        let to = end.min(self.frames());
+        if to >= self.frames() {
+            self.progress.finished.store(true, Ordering::Release);
+        }
+        if from >= to {
+            return;
+        }
+        let skip = usize::try_from(from.saturating_sub(first)).unwrap_or(0);
+        let source = usize::try_from(from).unwrap_or(0);
+        let frames = usize::try_from(to.saturating_sub(from)).unwrap_or(0);
+        let src = self
+            .samples
+            .get(source.saturating_mul(self.channels)..)
+            .unwrap_or_default();
+        let dst = out
+            .get_mut(skip.saturating_mul(self.channels)..)
+            .unwrap_or_default();
+        for (target, sample) in dst
+            .iter_mut()
+            .zip(src)
+            .take(frames.saturating_mul(self.channels))
+        {
+            *target = *sample;
+        }
+    }
+}
+
+/// Samples recorded over a time window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapturedWindow {
+    /// Local `CLOCK_MONOTONIC` nanoseconds at which the first frame entered
+    /// the device.
+    pub first_sample_ns: i64,
+    pub rate: u32,
+    pub channels: u16,
+    /// Interleaved; audio the device never delivered is zeros.
+    pub samples: Vec<i16>,
+}
+
+/// Cuts `[start_ns, start_ns + duration_ns)` out of captured chunks. The
+/// window starts at the first captured frame at or after `start_ns`; gaps are
+/// filled with silence. `None` when no chunk reaches into the window.
+pub fn assemble_window(
+    chunks: &[CaptureChunk],
+    rate: u32,
+    channels: u16,
+    start_ns: i64,
+    duration_ns: i64,
+) -> Option<CapturedWindow> {
+    let width = usize::from(channels.max(1));
+    let stride = width.saturating_mul(S16_BYTES);
+    // First frame whose capture time is at or after `start_ns`.
+    let wanted = ns_to_frames(start_ns.saturating_sub(1), rate).saturating_add(1);
+    let end = ns_to_frames(start_ns.saturating_add(duration_ns).saturating_sub(1), rate)
+        .saturating_add(1);
+    let available = chunks
+        .iter()
+        .filter(|chunk| !chunk.pcm_s16le.is_empty())
+        .map(|chunk| chunk.first_frame)
+        .min()?;
+    let first = wanted.max(available);
+    if first >= end {
+        return None;
+    }
+    let frames = usize::try_from(end.saturating_sub(first)).ok()?;
+    let mut samples = vec![0_i16; frames.saturating_mul(width)];
+    for chunk in chunks {
+        let pcm = whole_frames(&chunk.pcm_s16le, stride);
+        for (index, frame) in pcm.chunks_exact(stride).enumerate() {
+            let at = chunk
+                .first_frame
+                .saturating_add(i64::try_from(index).unwrap_or(i64::MAX));
+            if at < first || at >= end {
+                continue;
+            }
+            let offset = usize::try_from(at.saturating_sub(first))
+                .unwrap_or(usize::MAX)
+                .saturating_mul(width);
+            let slots = samples.get_mut(offset..).unwrap_or_default();
+            for (slot, bytes) in slots.iter_mut().zip(frame.chunks_exact(S16_BYTES)) {
+                *slot = <[u8; 2]>::try_from(bytes).map_or(0, i16::from_le_bytes);
+            }
+        }
+    }
+    Some(CapturedWindow {
+        first_sample_ns: frames_to_ns(first, rate),
+        rate,
+        channels,
+        samples,
+    })
+}
+
+/// Sample-accurate timed playback and capture on chosen local nodes, timed by
+/// `PipeWire`'s device clock rather than a subprocess's start-up: the
+/// primitives acoustic calibration measures with. Both calls block until
+/// their window has passed, so run them off the compositor thread (and on two
+/// threads to play and record at once).
+pub struct TimedAudio<'a> {
+    streams: &'a dyn AudioStreams,
+}
+
+/// How often a timed call checks on its stream.
+const TIMED_POLL: std::time::Duration = std::time::Duration::from_millis(5);
+/// How long past its window a timed call waits for the device before failing.
+const TIMED_GRACE_NS: i64 = 2_000_000_000;
+
+impl TimedAudio<'static> {
+    /// Timed audio on this device's `PipeWire` daemon.
+    pub fn native() -> Self {
+        Self {
+            streams: native_streams(),
+        }
+    }
+}
+
+impl<'a> TimedAudio<'a> {
+    pub const fn new(streams: &'a dyn AudioStreams) -> Self {
+        Self { streams }
+    }
+
+    /// Plays `samples` (interleaved `f32`, `channels` per frame, at `rate`)
+    /// on the sink with `object.serial` `sink_serial`, so that the first
+    /// frame leaves the speaker at local `CLOCK_MONOTONIC` time `start_ns`.
+    /// Returns once the last frame has been handed to the device.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the stream cannot start or stops, or [`StreamError::Late`]
+    /// when the device could not present the first frame on time (start the
+    /// call earlier: opening a stream takes tens of milliseconds).
+    pub fn play_at(
+        &self,
+        sink_serial: u32,
+        rate: u32,
+        channels: u16,
+        samples: Vec<f32>,
+        start_ns: i64,
+    ) -> Result<(), StreamError> {
+        let buffer = ScheduledBuffer::new(samples, channels, rate, start_ns);
+        let progress = buffer.progress();
+        let deadline = start_ns
+            .saturating_add(frames_to_ns(buffer.frames(), rate))
+            .saturating_add(TIMED_GRACE_NS);
+        let config = PlaybackConfig {
+            node_name: "tilo-timed-playback".into(),
+            description: "Tilo measurement".into(),
+            rate,
+            channels,
+            latency_frames: rate.checked_div(200).unwrap_or(240).max(1),
+            target_serial: Some(sink_serial),
+        };
+        let stream = self.streams.open_playback(&config, Box::new(buffer))?;
+        loop {
+            if let Some(failure) = stream.failure() {
+                return Err(StreamError::Setup(failure));
+            }
+            if let Some(late) = progress.late_by_ns().filter(|late| *late > 0) {
+                return Err(StreamError::Late { by_ns: late });
+            }
+            if progress.finished() {
+                return Ok(());
+            }
+            if monotonic_now_ns() > deadline {
+                return Err(StreamError::Setup(
+                    "the device did not play the buffer".into(),
+                ));
+            }
+            std::thread::sleep(TIMED_POLL);
+        }
+    }
+
+    /// Records `duration_ns` from `target` starting at local
+    /// `CLOCK_MONOTONIC` time `start_ns`. The window starts at the first
+    /// frame captured at or after `start_ns`, whose device time is reported.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the stream cannot start, stops, is linked to anything but
+    /// `target`, or delivers nothing inside the window.
+    pub fn capture_window(
+        &self,
+        target: CaptureTarget,
+        rate: u32,
+        channels: u16,
+        start_ns: i64,
+        duration_ns: i64,
+    ) -> Result<CapturedWindow, StreamError> {
+        let config = CaptureConfig {
+            node_name: "tilo-timed-capture".into(),
+            target,
+            rate,
+            channels,
+            queue_chunks: 4096,
+        };
+        let end_ns = start_ns.saturating_add(duration_ns);
+        let end_frame = ns_to_frames(end_ns, rate);
+        let mut stream = self.streams.open_capture(&config)?;
+        let mut chunks: Vec<CaptureChunk> = Vec::new();
+        loop {
+            let drained = stream.drain().map_err(StreamError::Setup)?;
+            // Keep only what can still reach into the window.
+            chunks.extend(drained.into_iter().filter(|chunk| {
+                let frames = chunk
+                    .pcm_s16le
+                    .len()
+                    .checked_div(config.stride())
+                    .unwrap_or(0);
+                chunk
+                    .first_frame
+                    .saturating_add(i64::try_from(frames).unwrap_or(i64::MAX))
+                    > ns_to_frames(start_ns, rate)
+            }));
+            let covered = chunks.iter().any(|chunk| {
+                let frames = chunk
+                    .pcm_s16le
+                    .len()
+                    .checked_div(config.stride())
+                    .unwrap_or(0);
+                chunk
+                    .first_frame
+                    .saturating_add(i64::try_from(frames).unwrap_or(i64::MAX))
+                    >= end_frame
+            });
+            if covered || monotonic_now_ns() > end_ns.saturating_add(TIMED_GRACE_NS) {
+                break;
+            }
+            std::thread::sleep(TIMED_POLL);
+        }
+        assemble_window(&chunks, rate, channels, start_ns, duration_ns).ok_or_else(|| {
+            StreamError::Setup("the device delivered nothing inside the window".into())
+        })
+    }
+}
+
 /// Why a stream could not be opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StreamError {
@@ -559,6 +893,8 @@ pub enum StreamError {
     Unavailable(String),
     /// The daemon refused the stream.
     Setup(String),
+    /// A scheduled buffer's first frame reached the speaker this late.
+    Late { by_ns: i64 },
 }
 
 impl std::fmt::Display for StreamError {
@@ -566,6 +902,10 @@ impl std::fmt::Display for StreamError {
         match self {
             Self::Unavailable(reason) => write!(formatter, "PipeWire is unavailable: {reason}"),
             Self::Setup(reason) => write!(formatter, "PipeWire stream setup failed: {reason}"),
+            Self::Late { by_ns } => write!(
+                formatter,
+                "the device presented the buffer {by_ns} ns after its start time"
+            ),
         }
     }
 }
@@ -664,7 +1004,7 @@ mod native {
     use super::{
         AudioStreams, CaptureChunk, CaptureConfig, CaptureStream, CaptureTimeline, DeviceTiming,
         LinkVerdict, PlaybackConfig, PlaybackRenderer, PlaybackSource, PlaybackStream, StreamClock,
-        StreamError, StreamStatus, TargetLinkGuard, monotonic_now_ns, whole_frames,
+        StreamError, StreamStatus, TargetLinkGuard, frames_to_ns, monotonic_now_ns, whole_frames,
     };
 
     /// How long opening a stream may take before it is reported as failed.
@@ -1003,7 +1343,7 @@ mod native {
                 let Some(mut buffer) = stream.dequeue_buffer() else {
                     return;
                 };
-                let origin_ns = stream
+                let timing = stream
                     .time()
                     .ok()
                     .map(|time| {
@@ -1018,8 +1358,7 @@ mod native {
                             stride,
                         )
                     })
-                    .filter(DeviceTiming::is_live)
-                    .map_or_else(monotonic_now_ns, |timing| timing.capture_origin_ns());
+                    .filter(DeviceTiming::is_live);
                 let Some(data) = buffer.datas_mut().first_mut() else {
                     return;
                 };
@@ -1035,6 +1374,13 @@ mod native {
                 if frames == 0 {
                     return;
                 }
+                let origin_ns = timing.map_or_else(
+                    || {
+                        let span = frames_to_ns(i64::try_from(frames).unwrap_or(0), rate);
+                        monotonic_now_ns().saturating_sub(span)
+                    },
+                    |timing| timing.capture_origin_ns(frames, rate),
+                );
                 let first_frame = timeline.stamp(origin_ns, frames);
                 if !*process_verified.borrow() {
                     return;
@@ -1464,6 +1810,100 @@ mod tests {
             .err()
             .unwrap();
         assert!(matches!(error, StreamError::Unavailable(_)));
+    }
+
+    #[test]
+    fn a_scheduled_buffer_starts_on_its_frame() {
+        // 1000 frames of mono ramp, due at t = 1 s.
+        let samples = (0..1000).map(|index| index as f32 / 1000.0).collect();
+        let mut buffer = ScheduledBuffer::new(samples, 1, RATE, NS_PER_SECOND);
+        let progress = buffer.progress();
+        // A block presented 100 frames early: silence, then the ramp.
+        let mut out = vec![1.0; 480];
+        buffer.render(NS_PER_SECOND - frames_to_ns(100, RATE), &mut out);
+        assert!(out[..100].iter().all(|sample| sample.abs() < f32::EPSILON));
+        assert!((out[100] - 0.0).abs() < f32::EPSILON);
+        assert!((out[101] - 0.001).abs() < 1e-6);
+        assert_eq!(progress.late_by_ns(), Some(0), "on time");
+        assert!(!progress.finished());
+        let mut out = vec![1.0; 480];
+        buffer.render(NS_PER_SECOND + frames_to_ns(380, RATE), &mut out);
+        assert!((out[0] - 0.38).abs() < 1e-6);
+        let mut out = vec![1.0; 480];
+        buffer.render(NS_PER_SECOND + frames_to_ns(860, RATE), &mut out);
+        assert!((out[139] - 0.999).abs() < 1e-6);
+        assert!(out[140..].iter().all(|sample| sample.abs() < f32::EPSILON));
+        assert!(progress.finished());
+    }
+
+    #[test]
+    fn a_scheduled_buffer_that_starts_late_says_so() {
+        let mut buffer = ScheduledBuffer::new(vec![0.5; 2000], 2, RATE, NS_PER_SECOND);
+        let progress = buffer.progress();
+        let mut out = vec![0.0; 960];
+        buffer.render(NS_PER_SECOND + 10_000_000, &mut out);
+        assert_eq!(progress.late_by_ns(), Some(10_000_000));
+    }
+
+    #[test]
+    fn a_window_is_cut_from_chunks_and_timed_by_its_first_frame() {
+        let pcm = |frames: usize, value: i16| -> Vec<u8> {
+            (0..frames).flat_map(|_| value.to_le_bytes()).collect()
+        };
+        // Mono chunks at frames 48_000.. (t = 1 s), with a 10-frame gap.
+        let chunks = vec![
+            CaptureChunk {
+                first_frame: 47_990,
+                pcm_s16le: pcm(100, 7),
+            },
+            CaptureChunk {
+                first_frame: 48_100,
+                pcm_s16le: pcm(100, 9),
+            },
+        ];
+        let window =
+            assemble_window(&chunks, RATE, 1, NS_PER_SECOND, frames_to_ns(150, RATE)).unwrap();
+        assert_eq!(window.first_sample_ns, NS_PER_SECOND);
+        assert_eq!(window.samples.len(), 150);
+        assert!(window.samples[..90].iter().all(|sample| *sample == 7));
+        assert!(
+            window.samples[90..100].iter().all(|sample| *sample == 0),
+            "the gap is silent"
+        );
+        assert!(window.samples[100..].iter().all(|sample| *sample == 9));
+        // A window before any capture starts at the first captured frame.
+        let late = assemble_window(&chunks, RATE, 1, 0, 2 * NS_PER_SECOND).unwrap();
+        assert_eq!(late.first_sample_ns, frames_to_ns(47_990, RATE));
+        assert!(assemble_window(&chunks, RATE, 1, 0, NS_PER_SECOND / 2).is_none());
+    }
+
+    #[test]
+    fn capture_is_timed_from_the_start_of_the_delivered_buffer() {
+        // The cycle ends at 2 s; the device delay is 5 ms and the buffer holds 480 frames (10 ms).
+        let timing = DeviceTiming {
+            now_ns: 2 * NS_PER_SECOND,
+            delay_ns: 5_000_000,
+            queued_frames: 0,
+        };
+        assert_eq!(
+            timing.capture_origin_ns(480, RATE),
+            2 * NS_PER_SECOND - 15_000_000
+        );
+    }
+
+    #[test]
+    fn a_targeted_playback_never_falls_back() {
+        let mut config = PlaybackConfig::for_role("n", "d", RATE, ChannelRole::Mono);
+        assert!(
+            config
+                .properties()
+                .iter()
+                .all(|(key, _)| *key != "target.object")
+        );
+        config.target_serial = Some(33);
+        let properties = config.properties();
+        assert!(properties.contains(&("target.object", "33".into())));
+        assert!(properties.contains(&("node.dont-fallback", "true".into())));
     }
 
     #[test]
