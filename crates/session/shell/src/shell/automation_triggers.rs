@@ -18,6 +18,15 @@
 //!   over, so a restart neither repeats a fire nor forgets one; a fire time
 //!   missed while the device was off or asleep is skipped or run once,
 //!   according to the trigger's [`CatchUp`] policy.
+//!
+//! A shortcut reaches every device of the person who saved it, and each of
+//! them arms it. A schedule still runs once per fire time: the saver's
+//! online devices ([`PersonalDevices`]) rank themselves for each fire time
+//! by a hash of it, the first runs it at once and records a
+//! [`ScheduleClaim`] in the workspace, which syncs like the shortcut, and
+//! each other device waits [`CLAIM_GRACE`] per rank before taking a fire
+//! time nobody has claimed — so an elected device that is asleep or offline
+//! is covered by the next one.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -30,13 +39,69 @@ use chrono::{
 use serde::{Deserialize, Serialize};
 use settings_store::hardware::KeyChord;
 use sha2::{Digest as _, Sha256};
-use tilo_automation::{CatchUp, RunId, Schedule, Shortcut, TriggerSpec, Weekday};
+use tilo_automation::{CatchUp, RunId, Schedule, ScheduleClaim, Shortcut, TriggerSpec, Weekday};
 
 /// A fire time this far in the past counts as missed rather than on time.
 pub const MISSED_AFTER: ChronoDuration = ChronoDuration::seconds(90);
 
 /// The shortest interval a schedule may repeat at.
 pub const MIN_INTERVAL_SECONDS: u64 = 60;
+
+/// How long each device waits, per device ranked before it, for a fire
+/// time to be claimed before it takes it.
+pub const CLAIM_GRACE: ChronoDuration = ChronoDuration::seconds(45);
+
+/// The person's certified devices, as this device sees them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PersonalDevices {
+    /// This device, or `None` when it has no certified identity and so
+    /// shares its schedules with no other device.
+    pub local: Option<String>,
+    /// The person's devices that are online now; this one counts whether
+    /// listed or not.
+    pub online: BTreeSet<String>,
+}
+
+impl PersonalDevices {
+    /// This device alone.
+    #[must_use]
+    pub fn alone(local: impl Into<String>) -> Self {
+        Self {
+            local: Some(local.into()),
+            online: BTreeSet::new(),
+        }
+    }
+}
+
+/// Where trigger sources learn which of the person's devices are online.
+pub trait DeviceDirectory: Send + Sync {
+    fn personal_devices(&self) -> PersonalDevices;
+}
+
+/// A fixed set of devices; a device with no certified identity by default.
+#[derive(Debug, Default)]
+pub struct FixedDevices(Mutex<PersonalDevices>);
+
+impl FixedDevices {
+    #[must_use]
+    pub fn new(devices: PersonalDevices) -> Self {
+        Self(Mutex::new(devices))
+    }
+
+    pub fn set(&self, devices: PersonalDevices) {
+        if let Ok(mut current) = self.0.lock() {
+            *current = devices;
+        }
+    }
+}
+
+impl DeviceDirectory for FixedDevices {
+    fn personal_devices(&self) -> PersonalDevices {
+        self.0
+            .lock()
+            .map_or_else(|_| PersonalDevices::default(), |devices| devices.clone())
+    }
+}
 
 /// Where trigger sources read the time.
 pub trait Clock: Send + Sync {
@@ -99,11 +164,13 @@ impl Clock for ManualClock {
     }
 }
 
-/// A shortcut this device may start, with the room it is saved in.
+/// A shortcut this device may start, with the room it is saved in and the
+/// fire times of that room's schedules already claimed.
 #[derive(Clone, Debug)]
 pub struct Armed<'a> {
     pub room: String,
     pub shortcut: &'a Shortcut,
+    pub claims: &'a [ScheduleClaim],
 }
 
 /// Every shortcut in `workspaces` with triggers that was saved by the person
@@ -117,6 +184,7 @@ pub fn armed(
         .flat_map(|workspace| {
             let person = local_person(workspace);
             let room = workspace.room.to_string();
+            let claims = workspace.schedule_claims.as_slice();
             workspace
                 .shortcuts
                 .iter()
@@ -127,6 +195,7 @@ pub fn armed(
                 .map(move |shortcut| Armed {
                     room: room.clone(),
                     shortcut,
+                    claims,
                 })
         })
         .collect()
@@ -148,6 +217,17 @@ pub struct Firing {
     pub shortcut: String,
     pub trigger: TriggerSpec,
     pub run: RunId,
+    /// The fire time this device takes, to record in the room
+    /// ([`WorkspaceTree::claim_schedule`](crate::shell::state::WorkspaceTree::claim_schedule))
+    /// before the run starts.
+    pub claim: Option<ScheduleClaim>,
+}
+
+/// What every source reads besides the event.
+#[derive(Clone, Copy)]
+pub struct TriggerContext<'a> {
+    pub clock: &'a dyn Clock,
+    pub devices: &'a PersonalDevices,
 }
 
 /// Turns one kind of event into firings.
@@ -156,7 +236,7 @@ pub trait TriggerSource: Send {
         &mut self,
         event: TriggerEvent<'_>,
         armed: &[Armed<'_>],
-        clock: &dyn Clock,
+        context: TriggerContext<'_>,
     ) -> Vec<Firing>;
 }
 
@@ -169,7 +249,7 @@ impl TriggerSource for KeyboardTriggers {
         &mut self,
         event: TriggerEvent<'_>,
         armed: &[Armed<'_>],
-        _clock: &dyn Clock,
+        _context: TriggerContext<'_>,
     ) -> Vec<Firing> {
         let TriggerEvent::Key(pressed) = event else {
             return Vec::new();
@@ -186,6 +266,7 @@ impl TriggerSource for KeyboardTriggers {
                         shortcut: armed.shortcut.id.clone(),
                         trigger: trigger.clone(),
                         run: RunId::new(),
+                        claim: None,
                     })
                 })
             })
@@ -263,17 +344,18 @@ impl TriggerSource for ScheduleTriggers {
         &mut self,
         event: TriggerEvent<'_>,
         armed: &[Armed<'_>],
-        clock: &dyn Clock,
+        context: TriggerContext<'_>,
     ) -> Vec<Firing> {
         let TriggerEvent::Tick = event else {
             return Vec::new();
         };
+        let clock = context.clock;
         let now = clock.now();
         let mut firings = Vec::new();
         let mut live = BTreeSet::new();
         let mut changed = false;
         for armed in armed {
-            for (index, trigger) in armed.shortcut.triggers.iter().enumerate() {
+            'triggers: for (index, trigger) in armed.shortcut.triggers.iter().enumerate() {
                 let TriggerSpec::Schedule { schedule, catch_up } = trigger else {
                     continue;
                 };
@@ -287,19 +369,35 @@ impl TriggerSource for ScheduleTriggers {
                     .and_then(|entry| DateTime::from_timestamp_millis(entry.next_fire_ms));
                 let next = match current {
                     Some(due) if now < due => continue,
-                    Some(due) => {
-                        let on_time = now.signed_duration_since(due) <= MISSED_AFTER;
+                    Some(due) => 'due: {
+                        let Some(wait) = turn(&key, armed, index, due, context.devices) else {
+                            // Another of the person's devices took it.
+                            break 'due next_fire_time(schedule, now, clock);
+                        };
+                        let Some(start) = due.checked_add_signed(wait) else {
+                            continue 'triggers;
+                        };
+                        if now < start {
+                            continue 'triggers;
+                        }
+                        let on_time = now.signed_duration_since(start) <= MISSED_AFTER;
                         if on_time || *catch_up == CatchUp::RunOnce {
                             firings.push(Firing {
                                 room: armed.room.clone(),
                                 shortcut: armed.shortcut.id.clone(),
                                 trigger: trigger.clone(),
                                 run: scheduled_run(&key, due),
+                                claim: context.devices.local.as_ref().map(|device| ScheduleClaim {
+                                    shortcut: armed.shortcut.id.clone(),
+                                    trigger: index,
+                                    due_ms: due.timestamp_millis(),
+                                    device: device.clone(),
+                                }),
                             });
                         }
-                        next_fire_time(schedule, Some(due), now, clock)
+                        next_fire_time(schedule, now, clock)
                     }
-                    None => next_fire_time(schedule, None, now, clock),
+                    None => next_fire_time(schedule, now, clock),
                 };
                 let Some(next) = next else {
                     continue;
@@ -330,6 +428,48 @@ fn ledger_key(room: &str, shortcut: &str, index: usize) -> String {
     format!("{room}/{shortcut}/{index}")
 }
 
+/// How long after `due` this device takes the fire time of schedule `key`
+/// (trigger `index` of `armed`), or `None` when one of the person's devices
+/// already claimed it. Every device ranks the person's online devices the
+/// same way for a fire time, so they agree on who goes first without
+/// talking; ranking by fire time spreads schedules across them.
+fn turn(
+    key: &str,
+    armed: &Armed<'_>,
+    index: usize,
+    due: DateTime<Utc>,
+    devices: &PersonalDevices,
+) -> Option<ChronoDuration> {
+    let Some(local) = devices.local.as_deref() else {
+        return Some(ChronoDuration::zero());
+    };
+    let due_ms = due.timestamp_millis();
+    let claimed = armed.claims.iter().any(|claim| {
+        claim.shortcut == armed.shortcut.id && claim.trigger == index && claim.due_ms >= due_ms
+    });
+    if claimed {
+        return None;
+    }
+    let local_rank = runner_rank(key, due_ms, local);
+    let ahead = devices
+        .online
+        .iter()
+        .filter(|device| device.as_str() != local)
+        .filter(|device| runner_rank(key, due_ms, device) < local_rank)
+        .count();
+    CLAIM_GRACE.checked_mul(i32::try_from(ahead).ok()?)
+}
+
+/// Where `device` stands for one fire time of a schedule; lowest first.
+fn runner_rank(key: &str, due_ms: i64, device: &str) -> ([u8; 32], String) {
+    let mut hasher = Sha256::new();
+    hasher.update(b"tilo.shortcut.runner\0");
+    hasher.update(key.as_bytes());
+    hasher.update(due_ms.to_be_bytes());
+    hasher.update(device.as_bytes());
+    (hasher.finalize().into(), device.to_string())
+}
+
 /// The run a scheduled fire starts: the same for the same fire time, so a
 /// fire that is somehow handed over twice reuses every invocation id.
 fn scheduled_run(key: &str, due: DateTime<Utc>) -> RunId {
@@ -346,22 +486,19 @@ fn scheduled_run(key: &str, due: DateTime<Utc>) -> RunId {
 }
 
 /// The first fire time of `schedule` strictly after `now`. An interval
-/// counts from `anchor` (its previous fire time) when there is one, and from
-/// `now` when it is first armed.
+/// counts from the Unix epoch, so every device computes the same fire times
+/// whenever it armed the schedule.
 #[must_use]
 pub fn next_fire_time(
     schedule: &Schedule,
-    anchor: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
     clock: &dyn Clock,
 ) -> Option<DateTime<Utc>> {
     match schedule {
         Schedule::Interval { seconds } => {
             let period = i64::try_from((*seconds).max(MIN_INTERVAL_SECONDS)).ok()?;
-            let anchor = anchor.unwrap_or(now);
-            let elapsed = now.signed_duration_since(anchor).num_seconds().max(0);
-            let periods = elapsed.checked_div(period)?.checked_add(1)?;
-            anchor.checked_add_signed(ChronoDuration::seconds(period.checked_mul(periods)?))
+            let periods = now.timestamp().div_euclid(period).checked_add(1)?;
+            DateTime::from_timestamp(period.checked_mul(periods)?, 0)
         }
         Schedule::Calendar { at, weekdays } => {
             let time = NaiveTime::from_hms_opt(u32::from(at.hour), u32::from(at.minute), 0)?;
@@ -445,9 +582,11 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
     }
 }
 
-/// Every trigger source a session runs, reading one clock.
+/// Every trigger source a session runs, reading one clock and one view of
+/// the person's devices.
 pub struct TriggerHost {
     clock: Arc<dyn Clock>,
+    devices: Arc<dyn DeviceDirectory>,
     sources: Vec<Box<dyn TriggerSource>>,
 }
 
@@ -458,6 +597,7 @@ impl TriggerHost {
     pub fn new(clock: Arc<dyn Clock>, schedules: Option<PathBuf>) -> Self {
         Self {
             clock,
+            devices: Arc::new(FixedDevices::default()),
             sources: vec![
                 Box::new(KeyboardTriggers),
                 Box::new(ScheduleTriggers::open(schedules)),
@@ -474,6 +614,12 @@ impl TriggerHost {
         Self::new(Arc::new(SystemClock), schedules)
     }
 
+    /// Read the person's devices from `devices`, so their schedules run
+    /// once across them.
+    pub fn set_devices(&mut self, devices: Arc<dyn DeviceDirectory>) {
+        self.devices = devices;
+    }
+
     #[must_use]
     pub fn clock(&self) -> &dyn Clock {
         self.clock.as_ref()
@@ -482,9 +628,14 @@ impl TriggerHost {
     /// Show `event` to every source; every firing, in source order.
     pub fn observe(&mut self, event: TriggerEvent<'_>, armed: &[Armed<'_>]) -> Vec<Firing> {
         let clock = Arc::clone(&self.clock);
+        let devices = self.devices.personal_devices();
+        let context = TriggerContext {
+            clock: clock.as_ref(),
+            devices: &devices,
+        };
         self.sources
             .iter_mut()
-            .flat_map(|source| source.observe(event, armed, clock.as_ref()))
+            .flat_map(|source| source.observe(event, armed, context))
             .collect()
     }
 }
@@ -534,7 +685,7 @@ mod tests {
             weekdays: vec![Weekday::Monday, Weekday::Friday],
         };
         assert_eq!(
-            next_fire_time(&weekday_mornings, None, clock.now(), &clock),
+            next_fire_time(&weekday_mornings, clock.now(), &clock),
             Some(at("2026-09-28T07:30:00Z")),
             "Friday 09:30 local has passed, so Monday's is next"
         );
@@ -546,31 +697,26 @@ mod tests {
             weekdays: Vec::new(),
         };
         assert_eq!(
-            next_fire_time(&daily_evening, None, clock.now(), &clock),
+            next_fire_time(&daily_evening, clock.now(), &clock),
             Some(at("2026-09-25T16:00:00Z"))
         );
     }
 
     #[test]
-    fn an_interval_counts_from_its_previous_fire_time() {
+    fn an_interval_fires_on_the_same_times_wherever_it_was_armed() {
         let clock = ManualClock::new(
             at("2026-09-25T10:00:00Z"),
             FixedOffset::east_opt(0).expect("offset"),
         );
         let hourly = Schedule::Interval { seconds: 3600 };
         assert_eq!(
-            next_fire_time(&hourly, None, clock.now(), &clock),
+            next_fire_time(&hourly, clock.now(), &clock),
             Some(at("2026-09-25T11:00:00Z"))
         );
         assert_eq!(
-            next_fire_time(
-                &hourly,
-                Some(at("2026-09-25T07:00:00Z")),
-                at("2026-09-25T09:30:00Z"),
-                &clock
-            ),
+            next_fire_time(&hourly, at("2026-09-25T09:30:12Z"), &clock),
             Some(at("2026-09-25T10:00:00Z")),
-            "missed periods are not queued up"
+            "armed half way through a period, it still fires on the hour"
         );
     }
 
@@ -582,19 +728,206 @@ mod tests {
         let armed = [Armed {
             room: "room".into(),
             shortcut: &saved,
+            claims: &[],
         }];
         let clock = SystemClock;
+        let devices = PersonalDevices::default();
+        let context = TriggerContext {
+            clock: &clock,
+            devices: &devices,
+        };
         let mut keys = KeyboardTriggers;
         let chord = KeyChord::parse("super+shift+n").expect("chord");
-        let fired = keys.observe(TriggerEvent::Key(&chord), &armed, &clock);
+        let fired = keys.observe(TriggerEvent::Key(&chord), &armed, context);
         assert_eq!(fired.len(), 1);
         assert_eq!(fired[0].shortcut, "tidy");
         let other = KeyChord::parse("Super+Shift+M").expect("chord");
         assert!(
-            keys.observe(TriggerEvent::Key(&other), &armed, &clock)
+            keys.observe(TriggerEvent::Key(&other), &armed, context)
                 .is_empty()
         );
-        assert!(keys.observe(TriggerEvent::Tick, &armed, &clock).is_empty());
+        assert!(keys.observe(TriggerEvent::Tick, &armed, context).is_empty());
+    }
+
+    /// One of the person's devices: its own copy of the personal
+    /// workspace, its own trigger host and its own view of which devices
+    /// are online, on a clock all devices share.
+    struct Device {
+        tree: crate::shell::state::WorkspaceTree,
+        triggers: TriggerHost,
+        ran: Vec<Firing>,
+    }
+
+    const PERSONAL: &str = "5c07c075-0000-4000-8000-000000000042";
+
+    fn personal_room() -> crate::shell::state::RoomId {
+        crate::shell::state::RoomId::parse(PERSONAL).expect("room id")
+    }
+
+    impl Device {
+        fn new(name: &str, online: &[&str], clock: &Arc<ManualClock>) -> Self {
+            let mut tree = crate::shell::state::WorkspaceTree::default();
+            let workspace = tree.append_empty_workspace("Personal");
+            assert!(tree.set_room(workspace, personal_room()));
+            let mut triggers = TriggerHost::new(Arc::clone(clock) as Arc<dyn Clock>, None);
+            triggers.set_devices(Arc::new(FixedDevices::new(PersonalDevices {
+                local: Some(name.to_string()),
+                online: online.iter().map(ToString::to_string).collect(),
+            })));
+            Self {
+                tree,
+                triggers,
+                ran: Vec::new(),
+            }
+        }
+
+        /// Show the device the passing time, and take what fired the way
+        /// the session does: claim it in the room, then run it.
+        fn tick(&mut self) {
+            let fired = {
+                let armed = armed(&self.tree.desktop.workspaces, |_| "person:me".into());
+                self.triggers.observe(TriggerEvent::Tick, &armed)
+            };
+            for firing in fired {
+                if let Some(claim) = &firing.claim {
+                    self.tree.claim_schedule(personal_room(), claim);
+                }
+                self.ran.push(firing);
+            }
+        }
+    }
+
+    /// Carry `from`'s copy of the personal room to `to`.
+    fn sync(from: &mut Device, to: &mut Device) {
+        let changes = from
+            .tree
+            .export_room_changes_since(personal_room(), &[])
+            .expect("the device is in the room");
+        to.tree
+            .apply_room_changes(
+                personal_room(),
+                &changes,
+                &crate::shell::state::PeerOrigin::hub(1),
+            )
+            .expect("the room's changes apply");
+    }
+
+    fn laptop_and_desktop(clock: &Arc<ManualClock>) -> (Device, Device) {
+        let both = ["laptop", "desktop"];
+        let mut laptop = Device::new("laptop", &both, clock);
+        let mut desktop = Device::new("desktop", &both, clock);
+        let workspace = laptop.tree.desktop.workspaces[0].id;
+        assert!(laptop.tree.save_workspace_shortcut(
+            workspace,
+            &shortcut(&TriggerSpec::Schedule {
+                schedule: Schedule::Interval { seconds: 3600 },
+                catch_up: CatchUp::Skip,
+            })
+        ));
+        sync(&mut laptop, &mut desktop);
+        assert_eq!(
+            desktop.tree.desktop.workspaces[0].shortcuts.len(),
+            1,
+            "the shortcut reached the other device"
+        );
+        (laptop, desktop)
+    }
+
+    fn hourly_key() -> String {
+        ledger_key(PERSONAL, "tidy", 0)
+    }
+
+    /// Which of `devices` goes first for the hourly schedule's fire time `due`.
+    fn elected<'a>(devices: &[&'a str], due: DateTime<Utc>) -> &'a str {
+        devices
+            .iter()
+            .copied()
+            .min_by_key(|device| runner_rank(&hourly_key(), due.timestamp_millis(), device))
+            .expect("a device")
+    }
+
+    #[test]
+    fn a_personal_schedule_runs_once_per_fire_time_across_two_devices() {
+        let clock = Arc::new(ManualClock::new(
+            at("2026-09-25T08:00:10Z"),
+            FixedOffset::east_opt(0).expect("offset"),
+        ));
+        let (mut laptop, mut desktop) = laptop_and_desktop(&clock);
+        let mut runners = BTreeSet::new();
+        for hour in 0..6_i64 {
+            let due = at("2026-09-25T09:00:00Z") + ChronoDuration::hours(hour);
+            // Both devices look every quarter minute until five minutes past
+            // each fire time, exchanging the room after each look.
+            clock.set(due - ChronoDuration::seconds(15));
+            for _ in 0..21 {
+                laptop.tick();
+                sync(&mut laptop, &mut desktop);
+                desktop.tick();
+                sync(&mut desktop, &mut laptop);
+                clock.advance(ChronoDuration::seconds(15));
+            }
+            let runs: Vec<&Firing> = laptop.ran.iter().chain(&desktop.ran).collect();
+            assert_eq!(
+                runs.len(),
+                usize::try_from(hour + 1).expect("hours fit"),
+                "one run per fire time: {runs:?}"
+            );
+            let this_run = scheduled_run(&hourly_key(), due);
+            let runner = if laptop.ran.iter().any(|run| run.run == this_run) {
+                "laptop"
+            } else {
+                "desktop"
+            };
+            assert_eq!(runner, elected(&["laptop", "desktop"], due));
+            runners.insert(runner);
+        }
+        assert_eq!(
+            desktop.tree.desktop.workspaces[0].schedule_claims.len(),
+            1,
+            "one claim per schedule, the latest fire time's"
+        );
+        assert_eq!(runners.len(), 2, "fire times are spread over both devices");
+    }
+
+    #[test]
+    fn when_the_elected_device_is_asleep_another_runs_the_fire_time_once() {
+        let clock = Arc::new(ManualClock::new(
+            at("2026-09-25T08:00:10Z"),
+            FixedOffset::east_opt(0).expect("offset"),
+        ));
+        let (mut laptop, mut desktop) = laptop_and_desktop(&clock);
+        laptop.tick();
+        desktop.tick();
+        let due = at("2026-09-25T09:00:00Z");
+        let (asleep, awake) = if elected(&["laptop", "desktop"], due) == "laptop" {
+            (&mut laptop, &mut desktop)
+        } else {
+            (&mut desktop, &mut laptop)
+        };
+
+        // The elected device still looks online to the other, but neither
+        // looks at the time nor syncs.
+        clock.set(due);
+        awake.tick();
+        clock.set(due + CLAIM_GRACE - ChronoDuration::seconds(1));
+        awake.tick();
+        assert!(awake.ran.is_empty(), "the other device waits its turn");
+        clock.set(due + CLAIM_GRACE);
+        awake.tick();
+        assert_eq!(awake.ran.len(), 1, "then takes the unclaimed fire time");
+        for _ in 0..10 {
+            clock.advance(ChronoDuration::seconds(15));
+            awake.tick();
+        }
+        assert_eq!(awake.ran.len(), 1, "and runs it once");
+
+        // The elected device wakes and learns the fire time was taken.
+        sync(awake, asleep);
+        asleep.tick();
+        assert!(
+            asleep.ran.is_empty(),
+            "the woken device does not run it again"
+        );
     }
 
     #[test]

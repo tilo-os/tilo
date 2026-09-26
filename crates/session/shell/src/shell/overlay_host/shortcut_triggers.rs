@@ -26,7 +26,9 @@ use winit::keyboard::Key;
 use super::ShellOverlayHost;
 use super::shortcuts::shortcut_chord_from_event;
 use crate::shell::automation_host::{is_shortcut_target, replace_trigger_chords, trigger_chords};
-use crate::shell::automation_triggers::{Firing, TriggerEvent, TriggerHost, armed};
+use crate::shell::automation_triggers::{
+    DeviceDirectory, Firing, TriggerEvent, TriggerHost, armed,
+};
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::remote_actions::BrokerActionHost;
 
@@ -59,6 +61,12 @@ impl ShellOverlayHost {
     pub fn set_shortcut_triggers(&mut self, triggers: TriggerHost) {
         self.shortcut_triggers.triggers = triggers;
         self.shortcut_triggers.last_tick = None;
+    }
+
+    /// Read the person's devices from `devices`, so each of their
+    /// schedules runs on one of them.
+    pub fn set_personal_devices(&mut self, devices: std::sync::Arc<dyn DeviceDirectory>) {
+        self.shortcut_triggers.triggers.set_devices(devices);
     }
 
     /// Show the passing time to the trigger sources, start whatever fired,
@@ -147,6 +155,13 @@ impl ShellOverlayHost {
             let Some(person) = person else {
                 continue;
             };
+            // Taken before the run starts, so the person's other devices
+            // leave this fire time even if the run is slow to finish.
+            if let Some(claim) = &firing.claim
+                && let Some(room) = crate::shell::state::RoomId::parse(&firing.room)
+            {
+                chrome.borrow().tree_mut().claim_schedule(room, claim);
+            }
             let caller = Caller::local_person(person).in_room(firing.room.clone());
             match broker.start_triggered_shortcut_run(
                 &caller,
