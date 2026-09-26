@@ -283,6 +283,12 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
             "Power menu",
             "Lock, log out, restart or shut down",
         ),
+        (
+            ShortcutAction::NextInputSource,
+            "shortcuts.next_input_source",
+            "Next keyboard layout",
+            "Switch input source and remember the choice",
+        ),
     ]
     .to_vec()
 }
@@ -320,6 +326,7 @@ fn is_desktop_navigation(action: ShortcutAction) -> bool {
             | ShortcutAction::MagnifierZoomIn
             | ShortcutAction::MagnifierZoomOut
             | ShortcutAction::PowerMenu
+            | ShortcutAction::NextInputSource
     )
 }
 

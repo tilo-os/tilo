@@ -3059,6 +3059,13 @@ impl DrmRuntime {
     ///
     /// Devices appearing later pick up new settings from their
     /// `DeviceAdded`; already-attached ones are re-configured here from the dispatch state's handles, so a pointer-speed change is felt on the touchpad the user is holding, not the next one plugged in.
+    /// Switch the physical keyboard to input source `index` at once.
+    pub fn set_keyboard_source(&mut self, index: usize) {
+        if let Some(keyboard) = self.dispatch.keyboard.as_mut() {
+            keyboard.set_active_layout(index);
+        }
+    }
+
     pub fn reload_input_settings(&mut self) {
         let input = InputSettings::load();
         let keyboard_settings = KeyboardSettings::load();
@@ -3066,7 +3073,17 @@ impl DrmRuntime {
         let accessibility = AccessibilityInputSettings::load();
         self.dispatch.input = input;
         self.dispatch.key_repeat.cancel();
-        if let Some(keyboard) = KeyboardXkb::from_settings(&keyboard_settings) {
+        if let Some(keyboard) = self
+            .dispatch
+            .keyboard
+            .as_mut()
+            .filter(|keyboard| keyboard.compiles_to_same_keymap(&keyboard_settings))
+        {
+            // Only the active source moved (the input-source chord persists
+            // its choice): switch groups without a recompile, which would
+            // forget the modifiers the person is still holding.
+            keyboard.set_active_layout(keyboard_settings.active_index);
+        } else if let Some(keyboard) = KeyboardXkb::from_settings(&keyboard_settings) {
             self.dispatch.keyboard = Some(keyboard);
             self.dispatch.slow_pending.clear();
             self.dispatch.physical_modifiers = ModifiersState::empty();
@@ -3612,6 +3629,10 @@ pub struct KeyboardXkb {
     state: xkb::State,
     /// Last modifier mask we emitted — we only push `ModifiersChanged` when it actually flips, matching winit's behaviour.
     mods: ModifiersState,
+    /// The layouts, variants and options this keymap was compiled from, so
+    /// a settings reload that only moves the active source switches groups
+    /// instead of recompiling and dropping held modifiers.
+    compiled: (String, String, Option<String>),
 }
 
 /// What translating one key event yields: an optional `KeyboardInput` (absent for keys with no logical mapping, e.g. bare modifiers) and an optional `ModifiersChanged` (present only when the mask flips).
@@ -3654,7 +3675,43 @@ impl KeyboardXkb {
             keymap,
             state,
             mods: ModifiersState::empty(),
+            compiled: Self::keymap_names(settings),
         })
+    }
+
+    fn keymap_names(settings: &KeyboardSettings) -> (String, String, Option<String>) {
+        (
+            settings.layouts.clone(),
+            settings.variants.clone(),
+            settings.options.clone(),
+        )
+    }
+
+    /// Whether `settings` compile to exactly this keymap.
+    fn compiles_to_same_keymap(&self, settings: &KeyboardSettings) -> bool {
+        self.compiled == Self::keymap_names(settings)
+    }
+
+    /// Switch to input source `index`, keeping every held and locked
+    /// modifier. An index past the configured sources is ignored.
+    pub fn set_active_layout(&mut self, index: usize) {
+        let Ok(group) = u32::try_from(index) else {
+            return;
+        };
+        if group >= self.keymap.num_layouts() {
+            return;
+        }
+        let depressed = self.state.serialize_mods(xkb::STATE_MODS_DEPRESSED);
+        let latched = self.state.serialize_mods(xkb::STATE_MODS_LATCHED);
+        let locked = self.state.serialize_mods(xkb::STATE_MODS_LOCKED);
+        let _ = self
+            .state
+            .update_mask(depressed, latched, locked, 0, 0, group);
+    }
+
+    /// The active input source, counting from 0.
+    pub fn active_layout(&self) -> usize {
+        usize::try_from(self.state.serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE)).unwrap_or(0)
     }
 
     fn key_repeats(&self, keycode: xkb::Keycode) -> bool {
@@ -4373,7 +4430,7 @@ mod tests {
                 source_ids: vec!["us".into(), "de".into()],
                 layouts: "us,de".into(),
                 variants: ",".into(),
-                options: Some("grp:alt_shift_toggle".into()),
+                options: None,
                 active_index: 1,
             };
             let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
@@ -4459,28 +4516,41 @@ mod tests {
                     .shift_key()
             );
         }
-        // Phase `xkb_alt_shift_cycles_configured_sources`.
-        fn xkb_alt_shift_cycles_configured_sources() {
+        // Phase `switching_the_active_source_keeps_held_modifiers`.
+        fn switching_the_active_source_keeps_held_modifiers() {
             let settings = KeyboardSettings {
                 source_ids: vec!["us".into(), "de".into()],
                 layouts: "us,de".into(),
                 variants: ",".into(),
-                options: Some("grp:alt_shift_toggle".into()),
+                options: None,
                 active_index: 0,
             };
             let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
                 eprintln!("xkb keymap unavailable; skipping");
                 return;
             };
-            // evdev Left Alt 56 / Left Shift 42, each plus the XKB offset 8.
-            for (keycode, pressed) in [(64, true), (50, true), (50, false), (64, false)] {
-                let _ = keyboard.process(xkb::Keycode::new(keycode), pressed);
-            }
+            // Hold Left Super (evdev 125 + XKB offset 8), as the chord does.
+            let _ = keyboard.process(xkb::Keycode::new(133), true);
+            keyboard.set_active_layout(1);
+            assert_eq!(keyboard.active_layout(), 1);
+            assert!(
+                keyboard.current_mods().super_key(),
+                "the chord's own modifier survives the switch"
+            );
+            let _ = keyboard.process(xkb::Keycode::new(133), false);
+            // AD06 is Y in US and Z in German.
             let output = keyboard.process(xkb::Keycode::new(29), true);
             let WindowEvent::KeyboardInput { event, .. } = output.input.expect("key input") else {
                 panic!("expected keyboard input")
             };
             assert_eq!(event.logical_key, Key::Character("z".into()));
+
+            keyboard.set_active_layout(7);
+            assert_eq!(keyboard.active_layout(), 1, "an unknown source is ignored");
+            assert!(keyboard.compiles_to_same_keymap(&KeyboardSettings {
+                active_index: 0,
+                ..settings
+            }));
         }
         // Phase `xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes`.
         fn xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes() {
@@ -4568,8 +4638,8 @@ mod tests {
         xkb_uses_the_persisted_active_group_without_reordering_sources();
         // Phase `german_xkb_shift_and_punctuation_keep_physical_positions` (defined above).
         german_xkb_shift_and_punctuation_keep_physical_positions();
-        // Phase `xkb_alt_shift_cycles_configured_sources` (defined above).
-        xkb_alt_shift_cycles_configured_sources();
+        // Phase `switching_the_active_source_keeps_held_modifiers` (defined above).
+        switching_the_active_source_keeps_held_modifiers();
         // Phase `xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes` (defined above).
         xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes();
         // Phase `german_altgr_produces_text_without_becoming_a_shell_alt_chord` (defined above).

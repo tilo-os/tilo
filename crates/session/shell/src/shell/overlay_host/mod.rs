@@ -941,6 +941,37 @@ fn magnifier_step(action: settings_store::hardware::ShortcutAction) -> Option<Ma
     }
 }
 
+/// Make the next keyboard input source the active one in the settings
+/// document, so it survives a settings reload and the next session, and
+/// return the keyboard group to select and the source's name. `None` with a
+/// single source.
+fn select_next_input_source(settings: Option<&std::path::Path>) -> Option<(usize, String)> {
+    use crate::compositor::backend::drm::input_config::{KeyboardSettings, SECTION};
+    let settings = settings?;
+    let section = settings_store::load_section_at(settings, SECTION);
+    let mut config = settings_store::hardware::RichInputConfig::from_section(&section);
+    config.select_next_source()?;
+    let mut values = serde_json::Map::new();
+    values.insert(
+        "keyboard_layout".into(),
+        serde_json::Value::String(config.keyboard_layout.clone()),
+    );
+    if let Err(error) = settings_store::update_section_at(settings, SECTION, values) {
+        tracing::warn!(%error, "input source choice could not be saved");
+    }
+    // The keyboard switches to an XKB group: the active layout, or the
+    // primary layout an input-method engine types on. The input-method
+    // arbiter picks the engine up from the saved choice.
+    let keyboard =
+        KeyboardSettings::from_section(&settings_store::load_section_at(settings, SECTION));
+    let group = keyboard.active_index;
+    let name = config.active_input_method().map_or_else(
+        || keyboard.source_label(group),
+        |engine| engine.label().to_string(),
+    );
+    Some((group, name))
+}
+
 /// The Shift+Print capture: everything on `viewport`, saved and copied.
 fn instant_screen_capture(viewport: Rect) -> ui::widget::CaptureIntent {
     instant_capture(ui::widget::SourceMode::Display, vec![viewport], Vec::new())
@@ -11542,6 +11573,7 @@ impl ShellOverlayHost {
                 | A::Notifications
                 | A::ToggleFullscreen
                 | A::PowerMenu
+                | A::NextInputSource
         ) {
             return false;
         }
@@ -11566,6 +11598,15 @@ impl ShellOverlayHost {
                 .borrow_mut()
                 .open_quick_settings_level(QsLevel::Notifications),
             A::ToggleFullscreen => chrome.borrow_mut().request_fullscreen_toggle(),
+            A::NextInputSource => {
+                if let Some((index, name)) =
+                    select_next_input_source(settings_store::settings_path().as_deref())
+                {
+                    let mut st = chrome.borrow_mut();
+                    st.request_input_source(index);
+                    st.show_osd(crate::shell::osd::Osd::input_source(&name));
+                }
+            }
             A::PowerMenu => {
                 self.power_menu.open();
                 let mut st = chrome.borrow_mut();
