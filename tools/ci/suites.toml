@@ -551,8 +551,8 @@ readers = ["apps/vpn/src/app.rs"]
 
 [[cargo]]
 package = "word-processor"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/word-processor/tests/canonical_component.rs"]
+inputs = ["crates/sdk/ui-core/assets/fonts/", "apps/chat/src/semantic_read/tests/allocation_meter.rs"]
+readers = ["apps/word-processor/tests/canonical_component.rs", "apps/word-processor/src/semantic_read/tests.rs"]
 
 [[cargo]]
 package = "qos-desktop"

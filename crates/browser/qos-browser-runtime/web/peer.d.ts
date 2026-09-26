@@ -67,6 +67,32 @@ export interface InvitationResume{resume:true;scope?:string}
 export interface CloudOwnerOptions{accountId:string;machineId:string;label?:string;enrollment:CloudEnrollmentAdapter}
 export function connectPeer(options?:{enrollmentBaseUrl?:string;invitation?:{text:string;identity:'new-person';label:string}|InvitationResume;cloud?:CloudOwnerOptions;signal?:AbortSignal;onStatus?:(snapshot:PeerSnapshot)=>void}):Promise<CertifiedPeer>;
 
+/**
+ * Bilateral machine-mesh approval signed inside the runtime by this browser's
+ * established Cloud owner identities of both machines (the ones `connectPeer`
+ * enrolled with `cloud:{accountId,machineId}`). Both machine scopes and their
+ * device identities are locked without waiting for the call; it never creates
+ * or replaces an identity and never returns or logs private key material.
+ *
+ * link:   pass both machines' native `mesh inspect` challenge JSON and a link ID.
+ * unlink: pass the link's native grant JSON; the grant's own orientation is
+ *         used, so source/target may be given in either order.
+ * Resolves to the public signed request JSON to deliver to both machines'
+ * `mesh apply`. Native JSON stays opaque (u64 values never become JS numbers).
+ * Rejects with a CloudMachineLinkError, a TypeError for invalid input, or the
+ * signal's reason when aborted.
+ */
+export type CloudMachineMeshRequest={accountId:string;sourceMachineId:string;targetMachineId:string;signal?:AbortSignal}&(
+ |{kind:'link';linkId:string;sourceChallenge:string;targetChallenge:string}
+ |{kind:'unlink';grant:string});
+export function signCloudMachineMesh(request:CloudMachineMeshRequest):Promise<string>;
+export type CloudMachineLinkErrorCode=
+ |'identity-missing'   // no enrolled owner identity for a machine in this browser: open its workspace here first
+ |'workspace-open'     // a machine's owner identity is in use by an open workspace (any tab/window)
+ |'link-refused';      // the native signer refused (challenge/grant does not match the stored identities)
+export interface CloudMachineLinkError extends Error{code:CloudMachineLinkErrorCode;machineId?:string;cause?:unknown}
+export const CLOUD_MACHINE_LINK_ERROR_CODES:readonly CloudMachineLinkErrorCode[];
+
 export function pendingPeerRecoveryCount():number;
 export function retryPendingPeerRecovery():Promise<void>;
 

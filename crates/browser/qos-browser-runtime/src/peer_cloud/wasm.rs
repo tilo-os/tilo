@@ -668,3 +668,69 @@ pub fn cloud_refresh_media(id: u32, material: Vec<u8>, peer: u32) -> Result<(), 
     *peer.media_enrollment.hint.borrow_mut() = value.hint.borrow().clone();
     Ok(())
 }
+/// Bilateral machine-mesh `link` approval signed by both enrolled owner roots
+/// of `account_id`. The materials are the runtime's own custody (the JS
+/// custody layer holds both scope and device locks); both copies are wiped
+/// here. Returns only the public signed request JSON.
+#[wasm_bindgen]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "flat wasm-bindgen boundary; both custody sides travel as primitives"
+)]
+pub fn cloud_mesh_link(
+    account_id: String,
+    source_machine_id: String,
+    mut source_material: Vec<u8>,
+    source_challenge: String,
+    target_machine_id: String,
+    mut target_material: Vec<u8>,
+    target_challenge: String,
+    link_id: String,
+) -> Result<String, JsValue> {
+    let signed = crate::peer_cloud::mesh::link(
+        &account_id,
+        &crate::peer_cloud::mesh::MeshSide {
+            machine_id: &source_machine_id,
+            material: &source_material,
+        },
+        &crate::peer_cloud::mesh::MeshSide {
+            machine_id: &target_machine_id,
+            material: &target_material,
+        },
+        &source_challenge,
+        &target_challenge,
+        &link_id,
+        now(),
+    );
+    source_material.fill(0);
+    target_material.fill(0);
+    signed.map_err(error)
+}
+/// Bilateral `unlink` of an existing link grant; `source`/`target` follow the
+/// grant's own orientation. Same custody and wiping rules as `cloud_mesh_link`.
+#[wasm_bindgen]
+pub fn cloud_mesh_unlink(
+    account_id: String,
+    source_machine_id: String,
+    mut source_material: Vec<u8>,
+    target_machine_id: String,
+    mut target_material: Vec<u8>,
+    grant: String,
+) -> Result<String, JsValue> {
+    let signed = crate::peer_cloud::mesh::unlink(
+        &account_id,
+        &crate::peer_cloud::mesh::MeshSide {
+            machine_id: &source_machine_id,
+            material: &source_material,
+        },
+        &crate::peer_cloud::mesh::MeshSide {
+            machine_id: &target_machine_id,
+            material: &target_material,
+        },
+        &grant,
+        now(),
+    );
+    source_material.fill(0);
+    target_material.fill(0);
+    signed.map_err(error)
+}

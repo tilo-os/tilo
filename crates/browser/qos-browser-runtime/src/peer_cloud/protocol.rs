@@ -513,6 +513,11 @@ impl HostedAttempt {
             certificate: certificate.clone(),
         })
     }
+    /// The enrolled owner root signs only bilateral machine-mesh approvals.
+    pub(super) fn mesh_root_key(&self) -> Result<SigningKey> {
+        self.enrolled_enrollment()?;
+        Ok(SigningKey::from_bytes(&self.current.material.root_secret))
+    }
     /// The enrolled device key signs only closed onboarding wrappers/proofs.
     pub(super) fn device_key(&self) -> Result<SigningKey> {
         self.enrolled_enrollment()?;
