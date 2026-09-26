@@ -498,11 +498,12 @@ impl RetainedGpuTarget {
         let (width, height) = self.size;
         let full = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
         let inset = full.inset(-f64::from(width.min(height)) / 4.0);
+        // The picture is never shown, so it reuses the base colour rather than stating its own.
         let mut scene = Scene::new();
         scene.fill(
             Fill::NonZero,
             Affine::IDENTITY,
-            Color::from_rgb8(0x20, 0x30, 0x40),
+            self.base_color,
             None,
             &full,
         );
@@ -517,7 +518,7 @@ impl RetainedGpuTarget {
         scene.fill(
             Fill::EvenOdd,
             Affine::IDENTITY,
-            Color::from_rgb8(0xC0, 0x80, 0x40),
+            self.base_color.with_alpha(0.5),
             None,
             &full,
         );
