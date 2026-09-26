@@ -68,8 +68,11 @@ enum Command {
         socket: PathBuf,
         /// Absolute pointer range, e.g. 3200x1080: the slot's logical
         /// desktop (default: the seat's first connected output's mode).
-        #[arg(long, value_parser = parse_extent)]
+        #[arg(long, value_parser = parse_extent, requires = "touch_extent")]
         extent: Option<(u32, u32)>,
+        /// Touchscreen and pen range: the slot's first output's mode.
+        #[arg(long, value_parser = parse_extent, requires = "extent")]
+        touch_extent: Option<(u32, u32)>,
     },
     /// Give the slot's outputs these modes and scales through the display
     /// settings, as the Settings app does (run by tilo-vmd as the slot user).
@@ -237,7 +240,14 @@ fn main() -> ExitCode {
             seat,
             socket,
             extent,
-        } => match input::serve(&seat, &socket, extent) {
+            touch_extent,
+        } => match input::serve(
+            &seat,
+            &socket,
+            extent
+                .zip(touch_extent)
+                .map(|(desktop, touch)| input::Geometry { desktop, touch }),
+        ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("tilo-vmd: {error}");
