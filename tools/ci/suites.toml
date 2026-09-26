@@ -200,6 +200,11 @@ inputs = ["os/", "crates/system/tilo-rollback/"]
 suites = ["os/tests/esp_capacity.sh"]
 
 [[group]]
+name = "direct-boot-bundle"
+inputs = ["os/dev/export-direct-boot-bundle.sh", "os/dev/disk-image.sh", "os/tests/direct_boot_bundle_export.sh"]
+suites = ["os/tests/direct_boot_bundle_export.sh"]
+
+[[group]]
 name = "home-peer"
 inputs = [
   "os/", "apps/settings/", "crates/hosting/tilo-relay/", "crates/system/bounded-command/",
