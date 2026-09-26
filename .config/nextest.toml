@@ -95,13 +95,14 @@ threads-required = "num-cpus"
 filter = '(package(notes) and binary(it) and (test(screenshot_critique::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
 threads-required = "num-cpus"
 
-# The imager's migration and cache tests fsync journals and payloads on the
-# real disk that CI qualifies for them. Dozens at once queue behind each
-# other's flushes until their worker deadlines expire, so they share a cap.
+# The imager's migration, cache and download tests fsync journals and
+# payloads on the real disk that CI qualifies for them. Dozens at once queue
+# behind each other's flushes until their worker deadlines expire, so they
+# share a cap.
 [[profile.default.overrides]]
-filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/))'
+filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
 test-group = "imager-durable-disk"
 
 [[profile.ci.overrides]]
-filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/))'
+filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
 test-group = "imager-durable-disk"
