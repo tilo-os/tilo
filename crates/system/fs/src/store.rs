@@ -55,6 +55,7 @@ mod files;
 mod serve;
 
 pub use area::{FileArea, Retention};
+#[cfg(feature = "filesystem")]
 pub(crate) use content::copy_part;
 
 #[cfg(feature = "filesystem")]
