@@ -5,6 +5,7 @@ use automerge::{AutoCommit, ChangeHash, ObjId, PatchAction, ReadDoc, Value};
 use std::collections::HashMap;
 use tilo_automerge::ApplyIncoming;
 
+mod built_on;
 pub(crate) mod owned_restore;
 mod sequence_replay;
 use sequence_replay::SequenceReplay;
@@ -1241,6 +1242,9 @@ impl State {
 /// exactly the properties and elements that differ and writes them forward,
 /// rather than replacing the document with an old state and dropping every
 /// concurrently-merged remote op.
+/// A container the delta would remove that somebody has written inside since
+/// `from_heads` — the paragraph a collaborator typed into after the action
+/// that created it — is left standing, so undo takes back only the action.
 ///
 /// The caller commits. That is deliberate: a `ui` app signals `needs_commit()`
 /// and lets `App::commit_action` do the commit, so a restore performed from
@@ -1254,7 +1258,9 @@ pub fn write_revert_patches(
 ) {
     // Patches describing how to get from `from_heads` back to `to_heads`.
     let patches = doc.diff(from_heads, to_heads);
-    write_patches(doc, patches, to_heads, from_heads);
+    // A container somebody wrote inside since `from_heads` stays standing.
+    let patches = built_on::hold_back_built_on(doc, patches, from_heads);
+    write_selected_patches(doc, patches, to_heads, from_heads);
 }
 
 /// Write an already-derived patch set forward into `doc`'s open transaction.
@@ -2081,6 +2087,66 @@ mod tests {
 
     fn text_body(state: &State, obj: &ObjId) -> String {
         state.doc.text(obj).unwrap_or_default()
+    }
+
+    /// Undoing the action that created a paragraph keeps the paragraph when a
+    /// collaborator has written in it since: their words are not the undoing
+    /// author's to take back.
+    #[test]
+    fn undo_keeps_a_created_paragraph_a_collaborator_wrote_in() {
+        fn paragraph(state: &mut State, blocks: &ObjId, id: &str) -> ObjId {
+            let block = state.doc.put_object(blocks, id, ObjType::Map).unwrap();
+            state.doc.put(&block, "order", id).unwrap();
+            state.doc.put_object(&block, "text", ObjType::Text).unwrap()
+        }
+        fn texts(state: &State, blocks: &ObjId) -> Vec<(String, String)> {
+            state
+                .doc
+                .keys(blocks)
+                .map(|id| {
+                    let block = state.doc.get(blocks, &id).unwrap().unwrap().1;
+                    let text = state.doc.get(&block, "text").unwrap().unwrap().1;
+                    (id, state.doc.text(&text).unwrap())
+                })
+                .collect()
+        }
+        let mut state = State::new();
+        let blocks = state.doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
+        let first = paragraph(&mut state, &blocks, "a");
+        state.commit_action(None, None);
+        // Type a word, then press Enter: a new paragraph after it.
+        state.doc.splice_text(&first, 0, 0, "hello").unwrap();
+        state.commit_action(None, None);
+        paragraph(&mut state, &blocks, "b");
+        state.commit_action(None, None);
+        // A collaborator types into the new paragraph.
+        let seen = state.doc.get_heads();
+        let mut peer = state.doc.fork_at(&seen).unwrap();
+        let block = peer.get(&blocks, "b").unwrap().unwrap().1;
+        let text = peer.get(&block, "text").unwrap().unwrap().1;
+        peer.splice_text(&text, 0, 0, "their words").unwrap();
+        peer.commit();
+        state.load_incremental(&peer.save_after(&seen)).unwrap();
+
+        state.undo(None, None).unwrap();
+        state.undo(None, None).unwrap();
+        assert_eq!(
+            texts(&state, &blocks),
+            [
+                ("a".to_owned(), String::new()),
+                ("b".to_owned(), "their words".to_owned())
+            ]
+        );
+        // Redo puts back only what the undo took.
+        state.redo(None, None).unwrap();
+        state.redo(None, None).unwrap();
+        assert_eq!(
+            texts(&state, &blocks),
+            [
+                ("a".to_owned(), "hello".to_owned()),
+                ("b".to_owned(), "their words".to_owned())
+            ]
+        );
     }
 
     /// A committed local action, then a *concurrent remote change* merged in,
