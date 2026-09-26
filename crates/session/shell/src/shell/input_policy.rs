@@ -230,6 +230,9 @@ impl From<&Modifiers> for ChordMods {
 /// are resolved from `ShortcutConfig` by the host before client delivery; do
 /// not add their defaults here or rebinding would leave the old app chord
 /// blocked forever.
+///
+/// Pure over its inputs and never touches settings storage: it runs for
+/// nearly every local and remote keystroke.
 pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> bool {
     if key == ChordKey::Modifier {
         return false;
@@ -253,18 +256,9 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
     {
         return true;
     }
-    // Vim navigation is an explicitly enabled desktop layer. Its complete
-    // Super+Ctrl mask cannot collide with ordinary text editing, and keeping
-    // this ownership decision beside the static aliases prevents a focused
-    // client from consuming H/J/K/L before the host can dispatch them.
-    if settings_store::hardware::DesktopControlsConfig::load().vim_mode
-        && mods.logo
-        && mods.ctrl
-        && !mods.alt
-        && matches!(key, ChordKey::Char('h' | 'j' | 'k' | 'l'))
-    {
-        return true;
-    }
+    // The optional Vim navigation layer (Super+Ctrl+H/J/K/L) needs no
+    // separate check: every Super+Ctrl chord reaches the `mods.logo` arm
+    // below, so ownership does not depend on whether the layer is enabled.
     // These are defaults for editable actions.  They intentionally fall
     // through when the effective configuration no longer assigns them.
     if matches!(
@@ -1932,6 +1926,28 @@ mod tests {
         ));
     }
     #[test]
+    fn vim_navigation_chords_are_shell_owned_without_reading_settings() {
+        let super_ctrl = ChordMods {
+            logo: true,
+            ctrl: true,
+            ..Default::default()
+        };
+        for key in ['h', 'j', 'k', 'l'] {
+            assert!(
+                shell_owns_chord(ChordKey::Char(key), super_ctrl, false),
+                "Super+Ctrl+{key} must be withheld from a focused client"
+            );
+        }
+        let ctrl = ChordMods {
+            ctrl: true,
+            ..Default::default()
+        };
+        assert!(
+            !shell_owns_chord(ChordKey::Char('h'), ctrl, false),
+            "Ctrl+H stays an application text chord"
+        );
+    }
+    #[test]
     fn a_shell_owned_press_never_produces_an_unmatched_client_release() {
         let mut forwarded = std::collections::HashSet::new();
         assert!(!track_forwarded_key(&mut forwarded, 34, true, false));
@@ -2007,9 +2023,20 @@ pub fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: Modifiers) ->
         && matches!(event.logical_key, Key::Named(NamedKey::Escape))
 }
 
-pub fn is_lock_chord(event: &WindowEvent, modifiers: Modifiers) -> bool {
-    let config = settings_store::hardware::ShortcutConfig::load();
-    let Some(chord) = config
+/// Is `event` a press of the configured session-lock binding?
+///
+/// Called for every input event the compositor takes off the backend,
+/// pointer motion included, so it rejects non-keyboard events first and
+/// reads the host's cached `shortcuts` rather than the settings file.
+pub fn is_lock_chord(
+    event: &WindowEvent,
+    modifiers: Modifiers,
+    shortcuts: &settings_store::hardware::ShortcutConfig,
+) -> bool {
+    if !matches!(event, WindowEvent::KeyboardInput { .. }) {
+        return false;
+    }
+    let Some(chord) = shortcuts
         .bindings
         .get(&settings_store::hardware::ShortcutAction::Lock)
     else {
@@ -2079,29 +2106,59 @@ mod lock_chord_tests {
         Modifiers::from(mask)
     }
 
+    /// The lock chord against the default shortcut table.
+    fn locks(event: &WindowEvent, modifiers: Modifiers) -> bool {
+        is_lock_chord(
+            event,
+            modifiers,
+            &settings_store::hardware::ShortcutConfig::default(),
+        )
+    }
+
+    #[test]
+    fn lock_chord_follows_the_passed_shortcut_snapshot() {
+        use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
+        let mut rebound = ShortcutConfig::default();
+        rebound.bindings.insert(
+            ShortcutAction::Lock,
+            KeyChord::parse("Ctrl+Alt+L").expect("a valid chord"),
+        );
+        let l = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
+        let ctrl_alt = Modifiers::from(ModifiersState::CONTROL | ModifiersState::ALT);
+        assert!(is_lock_chord(&l, ctrl_alt, &rebound));
+        assert!(
+            !is_lock_chord(&l, mods_with_super(true), &rebound),
+            "the old default no longer locks once the snapshot rebinds it"
+        );
+
+        let mut unbound = ShortcutConfig::default();
+        unbound.bindings.remove(&ShortcutAction::Lock);
+        assert!(!is_lock_chord(&l, mods_with_super(true), &unbound));
+    }
+
     /// Super+L on key press is the lock chord.
     #[test]
     fn super_l_press_is_lock_chord() {
         let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
-        assert!(is_lock_chord(&ev, mods_with_super(true)));
+        assert!(locks(&ev, mods_with_super(true)));
         // A layout/caps state may report an upper-case logical key without an
         // extra Shift modifier; key comparison remains case-insensitive.
         let ev_upper = keyboard_input_event(&Key::Character(SmolStr::new("L")), true);
-        assert!(is_lock_chord(&ev_upper, mods_with_super(true)));
+        assert!(locks(&ev_upper, mods_with_super(true)));
     }
 
     #[test]
     fn other_super_chords_and_extra_modifiers_do_not_lock() {
         let search = keyboard_input_event(&Key::Character(SmolStr::new("k")), true);
         assert!(
-            !is_lock_chord(&search, mods_with_super(true)),
+            !locks(&search, mods_with_super(true)),
             "Super+K must reach Search instead of locking the session"
         );
 
         let lock = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
         let shifted = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
         assert!(
-            !is_lock_chord(&lock, shifted),
+            !locks(&lock, shifted),
             "an extra modifier must not broaden Super+L into a lock chord"
         );
     }
@@ -2110,14 +2167,14 @@ mod lock_chord_tests {
     #[test]
     fn l_without_super_is_not_lock_chord() {
         let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
-        assert!(!is_lock_chord(&ev, mods_with_super(false)));
+        assert!(!locks(&ev, mods_with_super(false)));
     }
 
     /// The lock chord only fires on press, not release — else key-up would re-trigger and toggle twice.
     #[test]
     fn super_l_release_is_not_lock_chord() {
         let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), false);
-        assert!(!is_lock_chord(&ev, mods_with_super(true)));
+        assert!(!locks(&ev, mods_with_super(true)));
     }
 
     #[test]
@@ -2192,7 +2249,7 @@ mod lock_chord_tests {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(10.0, 10.0),
         };
-        assert!(!is_lock_chord(&ev, mods_with_super(true)));
+        assert!(!locks(&ev, mods_with_super(true)));
     }
 
     /// Enter and Escape on press are the explicit unlock action.
