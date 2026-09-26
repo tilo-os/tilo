@@ -140,50 +140,54 @@ mod tests {
     use winit::event::TouchPhase;
 
     #[test]
-    fn navigation_wraps_and_handles_empty_data() {
-        assert_eq!(moved_index(None, 0, ChartNavAction::Next), None);
-        assert_eq!(moved_index(None, 3, ChartNavAction::Next), Some(0));
-        assert_eq!(moved_index(Some(2), 3, ChartNavAction::Next), Some(0));
-        assert_eq!(
-            moved_index(Some(usize::MAX), 3, ChartNavAction::Next),
-            Some(0)
-        );
-        assert_eq!(moved_index(Some(0), 3, ChartNavAction::Previous), Some(2));
-        assert_eq!(
-            super::moved_item(Some(4), &[2, 4, 8], ChartNavAction::Next),
-            Some(8)
-        );
-    }
+    fn chart_navigation_wraps_and_touch_tracker_classifies_gestures() {
+        fn navigation_wraps_and_handles_empty_data() {
+            assert_eq!(moved_index(None, 0, ChartNavAction::Next), None);
+            assert_eq!(moved_index(None, 3, ChartNavAction::Next), Some(0));
+            assert_eq!(moved_index(Some(2), 3, ChartNavAction::Next), Some(0));
+            assert_eq!(
+                moved_index(Some(usize::MAX), 3, ChartNavAction::Next),
+                Some(0)
+            );
+            assert_eq!(moved_index(Some(0), 3, ChartNavAction::Previous), Some(2));
+            assert_eq!(
+                super::moved_item(Some(4), &[2, 4, 8], ChartNavAction::Next),
+                Some(8)
+            );
+        }
 
-    #[test]
-    fn touch_tracker_activates_taps_but_not_scrolls_or_pinches() {
-        let mut tracker = ChartTouchTracker::default();
-        let start = Point::new(10.0, 10.0);
-        assert_eq!(
-            tracker.advance(1, TouchPhase::Started, start),
-            Some(ChartTouchAction::Inspect(start))
-        );
-        assert_eq!(
-            tracker.advance(1, TouchPhase::Ended, start),
-            Some(ChartTouchAction::Activate(start))
-        );
+        fn touch_tracker_activates_taps_but_not_scrolls_or_pinches() {
+            let mut tracker = ChartTouchTracker::default();
+            let start = Point::new(10.0, 10.0);
+            assert_eq!(
+                tracker.advance(1, TouchPhase::Started, start),
+                Some(ChartTouchAction::Inspect(start))
+            );
+            assert_eq!(
+                tracker.advance(1, TouchPhase::Ended, start),
+                Some(ChartTouchAction::Activate(start))
+            );
 
-        let _ = tracker.advance(2, TouchPhase::Started, start);
-        let moved = Point::new(10.0, 30.0);
-        assert_eq!(
-            tracker.advance(2, TouchPhase::Moved, moved),
-            Some(ChartTouchAction::Inspect(moved))
-        );
-        assert_eq!(
-            tracker.advance(2, TouchPhase::Ended, moved),
-            Some(ChartTouchAction::Clear)
-        );
+            let _ = tracker.advance(2, TouchPhase::Started, start);
+            let moved = Point::new(10.0, 30.0);
+            assert_eq!(
+                tracker.advance(2, TouchPhase::Moved, moved),
+                Some(ChartTouchAction::Inspect(moved))
+            );
+            assert_eq!(
+                tracker.advance(2, TouchPhase::Ended, moved),
+                Some(ChartTouchAction::Clear)
+            );
 
-        let _ = tracker.advance(3, TouchPhase::Started, start);
-        assert_eq!(tracker.advance(4, TouchPhase::Started, start), None);
-        assert_eq!(
-            tracker.advance(3, TouchPhase::Ended, start),
-            Some(ChartTouchAction::Clear)
-        );
+            let _ = tracker.advance(3, TouchPhase::Started, start);
+            assert_eq!(tracker.advance(4, TouchPhase::Started, start), None);
+            assert_eq!(
+                tracker.advance(3, TouchPhase::Ended, start),
+                Some(ChartTouchAction::Clear)
+            );
+        }
+
+        navigation_wraps_and_handles_empty_data();
+        touch_tracker_activates_taps_but_not_scrolls_or_pinches();
     }
 }

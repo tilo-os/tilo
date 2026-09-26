@@ -219,41 +219,43 @@ mod tests {
     }
 
     #[test]
-    fn searches_canonical_actions_and_materializes_exact_resources_lazily() {
-        let provider = CameraSearchProvider::new();
-        provider.sync(&context()).unwrap();
-        let hits = provider.search_limited("scan existing image", usize::MAX);
-        assert_eq!(hits.len(), 1);
-        let address = hits[0].action_address().expect("canonical action");
-        let resource = provider
-            .resolve_action_resource(&address)
-            .expect("exact resource");
-        assert_eq!(resource.id.as_str(), "camera.scanner");
-        assert!(
-            resource
-                .actions
-                .iter()
-                .any(|action| action.id == "import-image")
-        );
-        assert_eq!(CameraSearchProvider::retained_resource_trees(), 0);
-    }
-
-    #[test]
-    fn hostile_limits_and_over_100k_devices_cannot_expand_the_fixed_directory() {
-        let provider = CameraSearchProvider::new();
-        let mut context = context();
-        context.camera_devices = (0..100_001)
-            .map(|index| format!("/dev/video{index}"))
-            .collect();
-        provider.sync(&context).unwrap();
-        let page = provider.search_page("camera", None, usize::MAX, usize::MAX);
-        assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
-        assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
-        assert!(provider.stats().records <= MAX_CAMERA_SEARCH_RESOURCES);
-        assert_eq!(CameraSearchProvider::retained_resource_trees(), 0);
-        assert_eq!(
-            provider.retained_device_seeds(),
-            MAX_PUBLISHED_CAMERA_DEVICES
-        );
+    fn camera_search_materializes_exact_resources_lazily_within_fixed_limits() {
+        // Phase `searches_canonical_actions_and_materializes_exact_resources_lazily`.
+        {
+            let provider = CameraSearchProvider::new();
+            provider.sync(&context()).unwrap();
+            let hits = provider.search_limited("scan existing image", usize::MAX);
+            assert_eq!(hits.len(), 1);
+            let address = hits[0].action_address().expect("canonical action");
+            let resource = provider
+                .resolve_action_resource(&address)
+                .expect("exact resource");
+            assert_eq!(resource.id.as_str(), "camera.scanner");
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "import-image")
+            );
+            assert_eq!(CameraSearchProvider::retained_resource_trees(), 0);
+        }
+        // Phase `hostile_limits_and_over_100k_devices_cannot_expand_the_fixed_directory`.
+        {
+            let provider = CameraSearchProvider::new();
+            let mut context = context();
+            context.camera_devices = (0..100_001)
+                .map(|index| format!("/dev/video{index}"))
+                .collect();
+            provider.sync(&context).unwrap();
+            let page = provider.search_page("camera", None, usize::MAX, usize::MAX);
+            assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
+            assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
+            assert!(provider.stats().records <= MAX_CAMERA_SEARCH_RESOURCES);
+            assert_eq!(CameraSearchProvider::retained_resource_trees(), 0);
+            assert_eq!(
+                provider.retained_device_seeds(),
+                MAX_PUBLISHED_CAMERA_DEVICES
+            );
+        }
     }
 }

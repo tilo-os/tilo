@@ -348,84 +348,89 @@ mod tests {
     }
 
     #[test]
-    fn record_scope_survives_onto_the_wire() {
-        let (pubr, sink) = wired();
-        let route = CrdtRoute::record("notes", "11111111-1111-4111-8111-111111111111", "doc-7");
-        assert!(pubr.signed_document(&route, document(vec![9, 9])));
-        assert_eq!(
-            sink.drain(),
-            vec![Sent::Signed {
-                app_id: "notes".into(),
-                cluster_id: "11111111-1111-4111-8111-111111111111".into(),
-                record_id: "doc-7".into(),
-                payload: vec![9, 9],
-            }],
-            "the wire must carry the same route the local fanout used, \
-             record included",
-        );
-    }
-
-    #[test]
-    fn an_unaddressable_route_publishes_nothing() {
-        let (pubr, sink) = wired();
-        for route in [
-            CrdtRoute::cluster(""),
-            CrdtRoute::cluster("00000000-0000-0000-0000-000000000000"),
-            CrdtRoute::record("notes", "", "doc"),
-        ] {
-            assert!(
-                !pubr.signed_document(&route, document(vec![7])),
-                "route {route:?} addresses nobody and must not reach the wire",
-            );
-            assert!(
-                !pubr.presence(&route, presence()),
-                "route {route:?} addresses nobody, so no presence either",
-            );
-            assert!(
-                !pubr.scrollback_request(&route, ArtifactId(uuid::Uuid::nil()), 1, 1),
-                "route {route:?} addresses nobody, so no history request either",
+    fn outbound_publishing_keeps_scope_bounds_and_routes_or_publishes_nothing() {
+        fn record_scope_survives_onto_the_wire() {
+            let (pubr, sink) = wired();
+            let route = CrdtRoute::record("notes", "11111111-1111-4111-8111-111111111111", "doc-7");
+            assert!(pubr.signed_document(&route, document(vec![9, 9])));
+            assert_eq!(
+                sink.drain(),
+                vec![Sent::Signed {
+                    app_id: "notes".into(),
+                    cluster_id: "11111111-1111-4111-8111-111111111111".into(),
+                    record_id: "doc-7".into(),
+                    payload: vec![9, 9],
+                }],
+                "the wire must carry the same route the local fanout used, \
+                 record included",
             );
         }
-        assert!(sink.drain().is_empty());
-    }
 
-    #[test]
-    fn a_disabled_publisher_never_reaches_the_wire() {
-        let pubr = PeerPublisher::disabled();
-        let route = CrdtRoute::record("notes", "44444444-4444-4444-8444-444444444444", "d");
-        assert!(!pubr.is_wired());
-        assert!(!pubr.signed_document(&route, document(vec![1])));
-        assert!(!pubr.presence(&route, presence()));
-        assert!(!pubr.scrollback_request(&route, ArtifactId(uuid::Uuid::nil()), 5, 3));
-    }
+        fn an_unaddressable_route_publishes_nothing() {
+            let (pubr, sink) = wired();
+            for route in [
+                CrdtRoute::cluster(""),
+                CrdtRoute::cluster("00000000-0000-0000-0000-000000000000"),
+                CrdtRoute::record("notes", "", "doc"),
+            ] {
+                assert!(
+                    !pubr.signed_document(&route, document(vec![7])),
+                    "route {route:?} addresses nobody and must not reach the wire",
+                );
+                assert!(
+                    !pubr.presence(&route, presence()),
+                    "route {route:?} addresses nobody, so no presence either",
+                );
+                assert!(
+                    !pubr.scrollback_request(&route, ArtifactId(uuid::Uuid::nil()), 1, 1),
+                    "route {route:?} addresses nobody, so no history request either",
+                );
+            }
+            assert!(sink.drain().is_empty());
+        }
 
-    #[test]
-    fn scrollback_requests_carry_their_bounds() {
-        let (pubr, sink) = wired();
-        let route = CrdtRoute::record("notes", "55555555-5555-4555-8555-555555555555", "d");
-        assert!(pubr.scrollback_request(&route, ArtifactId(uuid::Uuid::nil()), 42, 9));
-        assert_eq!(
-            sink.drain(),
-            vec![Sent::Scrollback {
-                before_seq: 42,
-                max: 9
-            }],
-        );
-    }
+        fn a_disabled_publisher_never_reaches_the_wire() {
+            let pubr = PeerPublisher::disabled();
+            let route = CrdtRoute::record("notes", "44444444-4444-4444-8444-444444444444", "d");
+            assert!(!pubr.is_wired());
+            assert!(!pubr.signed_document(&route, document(vec![1])));
+            assert!(!pubr.presence(&route, presence()));
+            assert!(!pubr.scrollback_request(&route, ArtifactId(uuid::Uuid::nil()), 5, 3));
+        }
 
-    #[test]
-    fn presence_reaches_the_room_and_leaves_the_record_behind() {
-        let (pubr, sink) = wired();
-        let route = CrdtRoute::record("words", "77777777-7777-4777-8777-777777777777", "letter");
-        let presence = presence();
-        assert!(pubr.presence(&route, presence.clone()));
-        assert_eq!(
-            sink.drain(),
-            vec![Sent::Presence {
-                app_id: "words".into(),
-                cluster_id: "77777777-7777-4777-8777-777777777777".into(),
-                presence,
-            }],
-        );
+        fn scrollback_requests_carry_their_bounds() {
+            let (pubr, sink) = wired();
+            let route = CrdtRoute::record("notes", "55555555-5555-4555-8555-555555555555", "d");
+            assert!(pubr.scrollback_request(&route, ArtifactId(uuid::Uuid::nil()), 42, 9));
+            assert_eq!(
+                sink.drain(),
+                vec![Sent::Scrollback {
+                    before_seq: 42,
+                    max: 9
+                }],
+            );
+        }
+
+        fn presence_reaches_the_room_and_leaves_the_record_behind() {
+            let (pubr, sink) = wired();
+            let route =
+                CrdtRoute::record("words", "77777777-7777-4777-8777-777777777777", "letter");
+            let presence = presence();
+            assert!(pubr.presence(&route, presence.clone()));
+            assert_eq!(
+                sink.drain(),
+                vec![Sent::Presence {
+                    app_id: "words".into(),
+                    cluster_id: "77777777-7777-4777-8777-777777777777".into(),
+                    presence,
+                }],
+            );
+        }
+
+        record_scope_survives_onto_the_wire();
+        an_unaddressable_route_publishes_nothing();
+        a_disabled_publisher_never_reaches_the_wire();
+        scrollback_requests_carry_their_bounds();
+        presence_reaches_the_room_and_leaves_the_record_behind();
     }
 }

@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "git-client"
 version = "0.1.0"
 edition = "2024"
@@ -49,6 +50,10 @@ futures-util.workspace = true
 tokio = { workspace = true, features = ["process", "io-util", "sync", "macros"] }
 tempfile.workspace = true
 rcgen.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

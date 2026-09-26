@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
+use settings_store::magnifier::MagnifierStep;
 use taffy::{
     Dimension, Display, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect, Size, Style,
     TaffyTree,
@@ -31,6 +32,7 @@ use crate::shell::quick_settings::actions::QsActions as _;
 
 mod controller;
 mod device_fabric;
+mod displays;
 mod history;
 mod notification_center;
 mod now_playing;
@@ -42,7 +44,7 @@ pub use controller::{ControllerDelivery, ControllerKey};
 pub use device_fabric::{
     BluetoothHandoffAuthorizationView, DeviceFabricBridge, DeviceFabricUiAction, DeviceFabricView,
     FabricDeviceView, FabricMediaView, FabricTransferStatus, FabricTransferView,
-    GamepadAuthorizationView, LocalMediaOutputView, RealtimeContinuityBridge,
+    GamepadAuthorizationView, LocalMediaInputView, LocalMediaOutputView, RealtimeContinuityBridge,
     RealtimeContinuityUiAction,
 };
 use device_fabric::{
@@ -277,6 +279,8 @@ enum AccessibleOverlay {
     NowPlaying,
     ShortcutHelp,
     DisplayLayouts,
+    /// Keep or revert a display tool's change; above everything while up.
+    DisplayConfirmation,
 }
 
 /// The result of asking whether the global Print Screen shortcut may change
@@ -670,6 +674,9 @@ pub struct ShellOverlayHost {
     /// focus-follow scroll is edge-triggered and doesn't fight a user who
     /// wheels away.
     last_scrolled_active_group: HashMap<StripId, GroupId>,
+    /// The focused `(strip, group)` last recorded in the display partition,
+    /// so a focus change is noted once.
+    last_noted_focus: Option<(StripId, GroupId)>,
     /// Hit rect for the "+ Add workspace" affordance at the tail of the
     /// overview's list. `Rect::ZERO` when not painted.
     add_workspace_rect: Rect,
@@ -837,12 +844,17 @@ pub struct ShellOverlayHost {
     /// Numbered cards painted on every display when Settings asks which
     /// screen is which.
     display_identify: crate::shell::display_identify::DisplayIdentify,
+    /// Keep or revert a display change a layout tool made, on every display.
+    display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt,
     /// Shared toolkit capture selector. The shell only hosts it and drains
     /// semantic intents; compositor readback/encoding stays below this layer.
     capture_studio: ui::widget::CaptureStudio,
     /// Shift/Alt+Print captures, which skip the chooser and wait here for
     /// the compositor's next clean scene alongside the chooser's intents.
     instant_captures: Vec<ui::widget::CaptureIntent>,
+    /// Set when a shortcut changed the magnifier, so the frame re-reads it at once instead of
+    /// on its next settings poll.
+    magnifier_changed: bool,
     capture_node: Option<NodeId>,
     /// Native exact-pixel screenshot editor. It lives in the shared UI crate;
     /// the shell supplies only artifact bytes and drains semantic commands.
@@ -918,22 +930,14 @@ const PALETTE_ROW_BUDGET: usize = 8;
 /// The file manager Super+E opens.
 const FILES_PACKAGE: (&str, &str) = ("so.tilo.file-explorer", "Files");
 
-/// Flip the desktop magnifier between off and its default 2× zoom. The
-/// frame builder reads `accessibility.magnifier_zoom` on its settings poll,
-/// the same path the Settings slider takes.
-fn toggle_magnifier(settings: Option<&std::path::Path>) {
-    let Some(settings) = settings else {
-        return;
-    };
-    let zoom = settings_store::load_section_at(settings, "accessibility")
-        .get("magnifier_zoom")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(1);
-    let next = if zoom > 1 { 1 } else { 2 };
-    let mut values = serde_json::Map::new();
-    values.insert("magnifier_zoom".into(), serde_json::Value::from(next));
-    if let Err(error) = settings_store::update_section_at(settings, "accessibility", values) {
-        tracing::warn!(%error, "magnifier toggle could not be saved");
+/// The magnifier step a shortcut performs, if it is a magnifier shortcut.
+fn magnifier_step(action: settings_store::hardware::ShortcutAction) -> Option<MagnifierStep> {
+    use settings_store::hardware::ShortcutAction as A;
+    match action {
+        A::ToggleMagnifier => Some(MagnifierStep::Toggle),
+        A::MagnifierZoomIn => Some(MagnifierStep::ZoomIn),
+        A::MagnifierZoomOut => Some(MagnifierStep::ZoomOut),
+        _ => None,
     }
 }
 
@@ -1919,6 +1923,9 @@ impl ShellOverlayHost {
     fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
         let mut order = Vec::with_capacity(7);
         let flags = self.overlay_flags();
+        if self.display_confirm.visible() {
+            order.push(AccessibleOverlay::DisplayConfirmation);
+        }
         // The display sheet is modal and drawn above every other overlay.
         if flags.projection {
             order.push(AccessibleOverlay::DisplayLayouts);
@@ -2299,6 +2306,7 @@ impl ShellOverlayHost {
             content_built_empty: None,
             workspace_content_layout_dirty: false,
             last_scrolled_active_group: HashMap::new(),
+            last_noted_focus: None,
             add_workspace_rect: Rect::ZERO,
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
@@ -2355,6 +2363,7 @@ impl ShellOverlayHost {
             collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: inputs.projection_overlay,
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
+            display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt::default(),
             followed_peer: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
@@ -2364,6 +2373,7 @@ impl ShellOverlayHost {
             follow_cursor_targets: Vec::new(),
             capture_studio: ui::widget::CaptureStudio::default(),
             instant_captures: Vec::new(),
+            magnifier_changed: false,
             capture_node: None,
             screenshot_markup: None,
             screenshot_markup_node: None,
@@ -2487,6 +2497,29 @@ impl ShellOverlayHost {
     /// compositor uses this to turn the frame encoder on only while needed.
     pub fn projection_capture_requested(&self) -> bool {
         self.projection_overlay.capture_requested()
+    }
+
+    /// Whether a shortcut changed the magnifier since the last call.
+    pub fn take_magnifier_changed(&mut self) -> bool {
+        std::mem::take(&mut self.magnifier_changed)
+    }
+
+    /// Apply a magnifier shortcut to the shared settings and show the resulting zoom.
+    fn step_magnifier(&mut self, step: MagnifierStep) {
+        let Some(path) = settings_store::settings_path() else {
+            return;
+        };
+        match settings_store::magnifier::apply_step_at(&path, step) {
+            Ok(zoom) => {
+                self.magnifier_changed = true;
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome
+                        .borrow_mut()
+                        .show_osd(crate::shell::osd::Osd::magnifier(zoom));
+                }
+            }
+            Err(error) => tracing::warn!(%error, "magnifier change could not be saved"),
+        }
     }
 
     /// Drained by the compositor after it has built a clean scene (the picker
@@ -3046,6 +3079,16 @@ impl ShellOverlayHost {
         self
     }
 
+    /// Audio devices that arrived or left since the last call.
+    pub fn drain_audio_device_sounds(
+        &self,
+    ) -> Vec<settings_store::system_sounds::SystemSoundEvent> {
+        self.session_audio_policy
+            .as_ref()
+            .map(crate::shell::session_audio_policy::SessionAudioPolicyOwner::drain_device_sounds)
+            .unwrap_or_default()
+    }
+
     /// The QS action dispatcher, for callers that actuate hardware
     /// outside the popover — the media keys, which drive the same
     /// volume and brightness the sliders do and must go through the same
@@ -3565,6 +3608,7 @@ impl ShellOverlayHost {
     pub fn set_output_geometry(&mut self, outputs: &[OutputGeometry]) {
         if self.outputs != outputs {
             self.outputs = outputs.to_vec();
+            self.reconcile_display_partition();
         }
     }
 
@@ -3592,6 +3636,50 @@ impl ShellOverlayHost {
             chrome.borrow_mut().bump();
         }
         started
+    }
+
+    /// Ask the person to keep or revert display transaction `transaction`,
+    /// which a layout tool applied. Settings and the Super+P sheet ask in
+    /// their own UI; this is for changes from anywhere else.
+    pub fn show_display_confirmation(
+        &mut self,
+        transaction: u64,
+        tool: Option<settings_store::display_tools::DisplayTool>,
+    ) {
+        self.display_confirm.show(transaction, tool, Instant::now());
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+    }
+
+    /// Whether the keep-or-revert prompt for a tool's display change is up.
+    /// It owns the keyboard and pointer while it is.
+    pub fn display_confirmation_visible(&self) -> bool {
+        self.display_confirm.visible()
+    }
+
+    /// Re-read the transaction the prompt asks about now: close it if it
+    /// was answered elsewhere, revert it if its time ran out. Returns
+    /// whether the prompt closed.
+    pub fn poll_display_confirmation(&mut self) -> bool {
+        let closed = self.display_confirm.poll(Instant::now(), true);
+        if closed && let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+        closed
+    }
+
+    /// Where the prompt's card sits on each display.
+    pub fn display_confirmation_cards(&self) -> Vec<crate::shell::display_confirm::ConfirmCard> {
+        self.display_confirm.cards(&self.display_confirm_outputs())
+    }
+
+    fn display_confirm_outputs(&self) -> Vec<Rect> {
+        if self.outputs.is_empty() {
+            vec![self.rect]
+        } else {
+            self.outputs.iter().map(OutputGeometry::rect).collect()
+        }
     }
 
     /// The identify cards on screen right now, one per display.
@@ -4123,6 +4211,7 @@ impl ShellOverlayHost {
             return false;
         };
         chrome.borrow_mut().retry_new_tab_records();
+        self.place_new_groups();
         let current_rev = chrome.borrow().revision;
         if current_rev == self.last_chrome_revision {
             return false;
@@ -4150,9 +4239,12 @@ impl ShellOverlayHost {
                     row.group_ids().into_iter().collect();
                 let tree_ids: std::collections::HashSet<u64> =
                     strip.window_groups.iter().map(|g| g.id).collect();
+                // The row lays groups out display by display; on one
+                // display that is the strip's own order.
+                let ordered = displays::display_ordered(&tree.desktop.outputs, strip);
                 // Splice in new groups without rebuilding the vector, so
                 // existing rows keep their host state.
-                for (idx, g) in strip.window_groups.iter().enumerate() {
+                for (idx, g) in ordered.iter().enumerate() {
                     if !live_ids.contains(&g.id) {
                         let mut fresh = crate::shell::to_ui_window_group(g, &records);
                         // Same spawn fade the row's own splice paths use,
@@ -4177,7 +4269,7 @@ impl ShellOverlayHost {
                 // revision from another device reorders two existing
                 // windows). Splicing alone misses that case and leaves the
                 // screen disagreeing with the durable layout until restart.
-                for (idx, group) in strip.window_groups.iter().enumerate() {
+                for (idx, group) in ordered.iter().enumerate() {
                     if row.reorder_group_by_id(group.id, idx) {
                         any_change = true;
                     }
@@ -4197,6 +4289,12 @@ impl ShellOverlayHost {
                     for (idx, tab) in g.tabs.iter().enumerate() {
                         let signature = tile_signature(&tab.tile);
                         if live_tab_ids.contains(&tab.id) {
+                            // A window's artwork can arrive after its tab:
+                            // the desktop entry is installed, or the app
+                            // sets its own.
+                            if live.set_tab_icon(tab.id, crate::app_icons::for_tile(&tab.tile)) {
+                                any_change = true;
+                            }
                             // Install the foreign widget before its first
                             // buffer: layout must publish its configure size.
                             // TileHost retains visibility and owns the opening
@@ -4238,6 +4336,7 @@ impl ShellOverlayHost {
                             id: tab.id,
                             title: tab.title.clone(),
                             app_kind: Some(crate::shell::tile_app_kind(&tab.tile)),
+                            icon: crate::app_icons::for_tile(&tab.tile),
                         };
                         // Gets its own document too, same as any tab
                         // present at boot.
@@ -4758,12 +4857,28 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut changes: Vec<(StripId, u64, usize)> = Vec::new();
+        // (strip, group, row index, the group's display neighbours when the
+        // row is partitioned)
+        let mut changes: Vec<(StripId, u64, usize, displays::ReorderNeighbours)> = Vec::new();
         for (&strip_id, &ptr) in &self.group_row_ptrs {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
             if let Some((group_id, new_index)) = row.take_pending_group_reorder() {
-                changes.push((strip_id, group_id, new_index));
+                // A partitioned row orders groups display by display, so its
+                // index is not the strip's: record the neighbours instead.
+                let neighbours = row.is_partitioned().then(|| {
+                    let ids = row.group_ids();
+                    let at = ids.iter().position(|id| *id == group_id);
+                    let before = at
+                        .and_then(|i| i.checked_sub(1))
+                        .and_then(|i| ids.get(i).copied())
+                        .filter(|id| row.lane_of_group(*id) == row.lane_of_group(group_id));
+                    let after = at
+                        .and_then(|i| ids.get(i.saturating_add(1)).copied())
+                        .filter(|id| row.lane_of_group(*id) == row.lane_of_group(group_id));
+                    (before, after)
+                });
+                changes.push((strip_id, group_id, new_index, neighbours));
             }
         }
         if changes.is_empty() {
@@ -4771,7 +4886,34 @@ impl ShellOverlayHost {
         }
         let st = chrome.borrow_mut();
         let mut tree = st.tree_mut();
-        for (strip_id, group_id, new_index) in changes {
+        for (strip_id, group_id, new_index, neighbours) in changes {
+            let new_index = match neighbours {
+                Some((before, after)) => {
+                    let order: Vec<u64> = tree
+                        .desktop
+                        .workspaces
+                        .iter()
+                        .flat_map(|w| &w.strips)
+                        .find(|s| s.id == strip_id)
+                        .map(|s| {
+                            s.window_groups
+                                .iter()
+                                .map(|g| g.id)
+                                .filter(|id| *id != group_id)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let slot = before
+                        .and_then(|b| order.iter().position(|id| *id == b))
+                        .map(|i| i.saturating_add(1))
+                        .or_else(|| after.and_then(|a| order.iter().position(|id| *id == a)));
+                    let Some(slot) = slot else {
+                        continue;
+                    };
+                    slot
+                }
+                None => new_index,
+            };
             tree.reorder_group_within_strip(strip_id, group_id, new_index);
         }
     }
@@ -5081,6 +5223,10 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        let focused_display = self
+            .is_partitioned()
+            .then(|| chrome.borrow().tree().desktop.outputs.focused_display())
+            .flatten();
         // Same resolution the placement rule performs.
         let strip_id = {
             let st = chrome.borrow();
@@ -5099,11 +5245,15 @@ impl ShellOverlayHost {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &GroupRow = unsafe { &*ptr };
             let (visible_x0, visible_x1) = row.visible_canvas_span();
+            // On a partitioned strip, the focused display's windows only:
+            // a new window opens where the person is looking.
+            let focused = focused_display.map(|d| row.group_ids_on(d));
             Some(crate::shell::placement::StripViewport {
                 strip: sid,
                 groups: row
                     .group_canvas_spans()
                     .into_iter()
+                    .filter(|(id, _, _)| focused.as_ref().is_none_or(|on| on.contains(id)))
                     .map(|(id, x0, x1)| crate::shell::placement::GroupSpan { id, x0, x1 })
                     .collect(),
                 visible_x0,
@@ -5857,6 +6007,9 @@ impl ShellOverlayHost {
         if steps == 0 {
             return false;
         }
+        if let Some(moved) = self.step_focus_across_displays(steps) {
+            return moved;
+        }
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -6042,10 +6195,26 @@ impl ShellOverlayHost {
                     return false;
                 };
                 let last = strip.window_groups.len().saturating_sub(1);
+                // On a partitioned strip the neighbour is the next group
+                // on the same display; groups in between belong elsewhere.
+                let partition = &tree.desktop.outputs;
+                let display = partition.display_of(group_id);
+                let same_display = |g: &crate::shell::state::WindowGroup| {
+                    partition.displays.len() < 2 || partition.display_of(g.id) == display
+                };
                 let destination = if direction < 0 {
-                    current.saturating_sub(1)
+                    strip
+                        .window_groups
+                        .get(..current)
+                        .and_then(|before| before.iter().rposition(same_display))
+                        .unwrap_or(current)
                 } else {
-                    current.saturating_add(1).min(last)
+                    strip
+                        .window_groups
+                        .get(current.saturating_add(1)..)
+                        .and_then(|rest| rest.iter().position(same_display))
+                        .map_or(current, |i| current.saturating_add(1).saturating_add(i))
+                        .min(last)
                 };
                 (
                     tree.reorder_group_within_strip(strip_id, group_id, destination),
@@ -6721,6 +6890,13 @@ impl ShellOverlayHost {
                     .group(label.clone())
                     .group_total(group.total)
                     .icon(icon_for_kind(&r.kind));
+                // The unconfined-host glyph stays the fallback; the app's own
+                // artwork is what a person recognises it by.
+                if r.kind == crate::shell::search::ResourceKind::HostApplication
+                    && let Some(image) = crate::app_icons::for_desktop_id(&r.id)
+                {
+                    e = e.image(image);
+                }
                 if let Some(sub) = &r.subtitle {
                     e = e.description(sub.clone());
                 }
@@ -6924,6 +7100,13 @@ impl ShellOverlayHost {
             }
         }
         candidates
+    }
+
+    /// The on-screen part of the focused window, which the magnifier follows when keyboard
+    /// focus is inside an app rather than on shell chrome.
+    pub fn focused_window_rect(&self) -> Option<Rect> {
+        self.focused_capture_target()
+            .map(|target| target.visible_rect)
     }
 
     /// The window Alt+Print photographs: the focused group, which
@@ -7877,6 +8060,7 @@ impl ShellOverlayHost {
         use crate::shell::quick_settings::refresh::FastReading;
         let FastReading {
             brightness,
+            displays,
             volume,
             wifi,
             bluetooth,
@@ -7888,7 +8072,12 @@ impl ShellOverlayHost {
             privacy,
             vpns,
         } = *reading;
-        st.quick_settings.brightness_available = brightness.is_some();
+        st.quick_settings.brightness_available = brightness.is_some() || !displays.is_empty();
+        let brightness = brightness.or_else(|| displays.first().map(|display| display.level));
+        if st.quick_settings.displays != displays {
+            st.quick_settings.displays = displays;
+            st.bump();
+        }
         st.quick_settings.volume_available = volume.is_some();
         if let Some(radios) = radios {
             st.quick_settings.radios = radios;
@@ -9927,6 +10116,7 @@ impl ShellOverlayHost {
         if let WindowEvent::CursorMoved { position, .. } = event {
             let p = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_cursor = Some(p);
+            self.focus_display_at(p);
             // Paint-only: a segment thickens under the pointer to say it's
             // clickable.
             let hover = if self.overlay_flags().overview {
@@ -10616,9 +10806,10 @@ impl ShellOverlayHost {
             (A::PreviousStrip, A::NextStrip),
             (A::PreviousWorkspace, A::NextWorkspace),
             (A::MoveGroupLeft, A::MoveGroupRight),
+            (A::MoveGroupToPreviousDisplay, A::MoveGroupToNextDisplay),
             (A::ResizeNarrower, A::ResizeWider),
         ];
-        let mut controls = Vec::with_capacity(19);
+        let mut controls = Vec::with_capacity(22);
         for (first, second) in rows {
             controls.push(ShortcutGuideFocus::Binding(first));
             controls.push(ShortcutGuideFocus::Binding(second));
@@ -11181,6 +11372,8 @@ impl ShellOverlayHost {
             ShortcutAction::ResizeWider,
             ShortcutAction::MoveGroupLeft,
             ShortcutAction::MoveGroupRight,
+            ShortcutAction::MoveGroupToPreviousDisplay,
+            ShortcutAction::MoveGroupToNextDisplay,
             ShortcutAction::FocusPreviousWindow,
             ShortcutAction::FocusNextWindow,
             ShortcutAction::PreviousStrip,
@@ -11240,6 +11433,16 @@ impl ShellOverlayHost {
                 }
                 ShortcutAction::MoveGroupRight => {
                     let _ = self.reorder_focused_group(1);
+                }
+                ShortcutAction::MoveGroupToPreviousDisplay => {
+                    if !repeat {
+                        let _ = self.move_focused_group_to_display(-1);
+                    }
+                }
+                ShortcutAction::MoveGroupToNextDisplay => {
+                    if !repeat {
+                        let _ = self.move_focused_group_to_display(1);
+                    }
                 }
                 ShortcutAction::FocusPreviousWindow => {
                     let _ = self.step_focus_along_strip(-1);
@@ -11324,6 +11527,13 @@ impl ShellOverlayHost {
             }
             return true;
         }
+        if let Some(step) = magnifier_step(action) {
+            // Zooming is a step, so a held zoom key keeps zooming; the toggle is an edge.
+            if !(repeat && step == MagnifierStep::Toggle) {
+                self.step_magnifier(step);
+            }
+            return true;
+        }
         if !matches!(
             action,
             A::OpenFiles
@@ -11331,7 +11541,6 @@ impl ShellOverlayHost {
                 | A::ClipboardHistory
                 | A::Notifications
                 | A::ToggleFullscreen
-                | A::ToggleMagnifier
                 | A::PowerMenu
         ) {
             return false;
@@ -11357,7 +11566,6 @@ impl ShellOverlayHost {
                 .borrow_mut()
                 .open_quick_settings_level(QsLevel::Notifications),
             A::ToggleFullscreen => chrome.borrow_mut().request_fullscreen_toggle(),
-            A::ToggleMagnifier => toggle_magnifier(settings_store::settings_path().as_deref()),
             A::PowerMenu => {
                 self.power_menu.open();
                 let mut st = chrome.borrow_mut();
@@ -13265,6 +13473,12 @@ impl ShellOverlayHost {
                 },
                 format!("Audio is now routed to {}", output.label),
             )),
+            DeviceFabricPaneRow::LocalInput(input) if !input.is_default => Some((
+                DeviceFabricUiAction::SelectLocalInput {
+                    node_id: input.node_id,
+                },
+                format!("Recording from {}", input.label),
+            )),
             DeviceFabricPaneRow::Tethering(status) => {
                 if status.phase
                     == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired
@@ -13517,6 +13731,28 @@ impl ShellOverlayHost {
         row_index: usize,
         item: &DeviceFabricPaneRow,
     ) -> Option<(DeviceFabricUiAction, String)> {
+        if let DeviceFabricPaneRow::LocalInput(input) = item {
+            if !input.is_default {
+                return None;
+            }
+            let (lower, raise) =
+                Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+            let raise = if raise.contains(point) {
+                true
+            } else if lower.contains(point) {
+                false
+            } else {
+                return None;
+            };
+            // A level step is its own feedback: the row's level updates.
+            return Some((
+                DeviceFabricUiAction::StepInputLevel {
+                    node_id: input.node_id,
+                    raise,
+                },
+                String::new(),
+            ));
+        }
         let DeviceFabricPaneRow::Device(device) = item else {
             return None;
         };
@@ -13581,9 +13817,14 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             match result {
-                Ok(_) => state.push_notification("Devices & media", success),
-                Err(error) => state.push_notification("Could not complete device action", error),
-            };
+                Ok(_) if success.is_empty() => {}
+                Ok(_) => {
+                    state.push_notification("Devices & media", success);
+                }
+                Err(error) => {
+                    state.push_notification("Could not complete device action", error);
+                }
+            }
             state.bump();
         }
     }
@@ -13901,6 +14142,25 @@ impl ShellOverlayHost {
         let (label, result, osd) = match commit {
             SliderCommit::Brightness(value_pct) => {
                 let result = actions.set_brightness(value_pct);
+                (
+                    "brightness",
+                    result,
+                    crate::shell::osd::Osd::brightness(value_pct / 100.0),
+                )
+            }
+            SliderCommit::DisplayBrightness(index, value_pct) => {
+                let connector = self.chrome.as_ref().and_then(|chrome| {
+                    chrome
+                        .borrow()
+                        .quick_settings
+                        .displays
+                        .get(index)
+                        .map(|display| display.connector.clone())
+                });
+                let result = connector.map_or_else(
+                    || Err("that monitor is no longer connected".to_owned()),
+                    |connector| actions.set_display_brightness(&connector, value_pct),
+                );
                 (
                     "brightness",
                     result,
@@ -15511,6 +15771,7 @@ impl Widget for ShellOverlayHost {
         let presence_dirty = self.pump_presence_requests();
         self.pump_screenshot_sends();
         let follow_dirty = self.reconcile_followed_peer();
+        self.follow_focus_across_displays();
         // Both edge-triggered on `active_group`, so they run after the
         // writeback above reflects this frame's focus change.
         self.scroll_active_group_into_view();
@@ -15644,6 +15905,7 @@ impl Widget for ShellOverlayHost {
             // → unaliased mutable access.
             unsafe { (&mut *ptr).set_output_spans(&spans) };
         }
+        self.push_display_layout();
         let content_node = self.content.build_layout(taffy, theme, node_map);
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
@@ -15704,6 +15966,8 @@ impl Widget for ShellOverlayHost {
 
         // Override the sidebar's own leaf style with absolute positioning
         // so it hovers above the content pane instead of displacing it.
+        let primary = self.primary_output().filter(|_| self.is_partitioned());
+        let sidebar_width = self.sidebar_width();
         let sidebar_node = self.sidebar.as_mut().map(|sidebar| {
             let node = sidebar.build_layout(taffy, theme, node_map);
             // See the palette override above: failure here is not
@@ -15712,16 +15976,24 @@ impl Widget for ShellOverlayHost {
             if let Ok(style) = taffy.style(node) {
                 let mut style = style.clone();
                 style.position = Position::Absolute;
+                // The wheel lives on the primary display: on a partitioned
+                // desktop that is its own left edge and height.
+                let (left, top, bottom) = match primary {
+                    Some(p) => (
+                        f64_to_f32_lossy(p.x - self.rect.x0),
+                        f64_to_f32_lossy(p.y - self.rect.y0) + self.sidebar_top_y,
+                        f64_to_f32_lossy((self.rect.y1 - (p.y + p.height)).max(0.0)),
+                    ),
+                    None => (0.0, self.sidebar_top_y, 0.0),
+                };
                 style.inset = TaffyRect {
-                    left: LengthPercentageAuto::length(0.0),
+                    left: LengthPercentageAuto::length(left),
                     right: LengthPercentageAuto::auto(),
-                    top: LengthPercentageAuto::length(self.sidebar_top_y),
-                    bottom: LengthPercentageAuto::length(0.0),
+                    top: LengthPercentageAuto::length(top),
+                    bottom: LengthPercentageAuto::length(bottom),
                 };
                 style.size = Size {
-                    width: Dimension::length(sidebar_width_for_viewport(f64_to_f32_lossy(
-                        self.rect.height(),
-                    ))),
+                    width: Dimension::length(sidebar_width),
                     height: Dimension::auto(),
                 };
                 style.flex_grow = 0.0;
@@ -15837,11 +16109,7 @@ impl Widget for ShellOverlayHost {
         // Wheel-disc slot width plus a gap, reserved so the strip leaves
         // room for the wheel and a wallpaper gutter beside it. No sidebar
         // means no gutter to reserve.
-        let wheel_w = if self.sidebar.is_some() {
-            workspace_rail_clearance_for_viewport(self.rect.height())
-        } else {
-            0.0
-        };
+        let wheel_w = self.wheel_clearance();
         // Re-derive strip widths now the host's rect is known: frame 1's
         // `build_layout` had no viewport yet. A no-op once the
         // compositor has pushed real output geometry.
@@ -16081,6 +16349,21 @@ impl Widget for ShellOverlayHost {
                 chrome.borrow_mut().overlays.capture = false;
             }
             if *handled || self.capture_studio.modal_capture().is_some() {
+                return;
+            }
+        }
+        // A display tool's change waits for Keep or Revert, possibly with a
+        // screen blanked: the answer comes before any other surface.
+        if self.display_confirm.visible() {
+            let outputs = self.display_confirm_outputs();
+            if self
+                .display_confirm
+                .handle_event(event, self.last_cursor, &outputs)
+            {
+                *handled = true;
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
                 return;
             }
         }
@@ -17186,6 +17469,20 @@ impl Widget for ShellOverlayHost {
                                             },
                                             Vec::new(),
                                         ),
+                                        DeviceFabricPaneRow::LocalInput(input) => {
+                                            let detail = Self::local_input_detail(&input);
+                                            let actions = if input.is_default {
+                                                vec![
+                                                    AccessNode::new(Role::Button)
+                                                        .with_name("Lower input level"),
+                                                    AccessNode::new(Role::Button)
+                                                        .with_name("Raise input level"),
+                                                ]
+                                            } else {
+                                                Vec::new()
+                                            };
+                                            (input.label, detail, actions)
+                                        }
                                         DeviceFabricPaneRow::Tethering(status) => (
                                             format!("Tethering with {}", status.peer_label),
                                             match status.phase {
@@ -17282,6 +17579,14 @@ impl Widget for ShellOverlayHost {
                 }
                 AccessibleOverlay::DisplayLayouts => {
                     root.children.push(self.projection_overlay.accessibility());
+                }
+                AccessibleOverlay::DisplayConfirmation => {
+                    if let Some(prompt) = self
+                        .display_confirm
+                        .accessibility(&self.display_confirm_outputs())
+                    {
+                        root.children.push(prompt);
+                    }
                 }
                 AccessibleOverlay::ShortcutHelp => {
                     use settings_store::hardware::ShortcutAction;
@@ -17491,7 +17796,8 @@ impl Widget for ShellOverlayHost {
             AccessibleOverlay::NowPlaying => self.now_playing_accessibility_rect(child_path),
             AccessibleOverlay::MemberSheet
             | AccessibleOverlay::ShortcutHelp
-            | AccessibleOverlay::DisplayLayouts => None,
+            | AccessibleOverlay::DisplayLayouts
+            | AccessibleOverlay::DisplayConfirmation => None,
         }
     }
 
@@ -17533,7 +17839,8 @@ impl Widget for ShellOverlayHost {
             AccessibleOverlay::Overview
             | AccessibleOverlay::MemberSheet
             | AccessibleOverlay::ShortcutHelp
-            | AccessibleOverlay::DisplayLayouts => false,
+            | AccessibleOverlay::DisplayLayouts
+            | AccessibleOverlay::DisplayConfirmation => false,
         }
     }
 
@@ -17702,7 +18009,8 @@ impl ShellOverlayHost {
         let room_replay_in_flight = self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
         let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)
-            || self.display_identify.needs_frame(now);
+            || self.display_identify.needs_frame(now)
+            || self.display_confirm.needs_frame();
         let sidebar_frame = self
             .sidebar
             .as_ref()
@@ -18229,6 +18537,7 @@ impl ShellOverlayHost {
                 (&mut *parts.backdrop).draw(scene, transform, text_renderer, theme, presence);
                 (&mut *parts.workspace).draw(scene, transform, text_renderer, theme, presence);
                 (&mut *parts.topbar).draw(scene, transform, text_renderer, theme, presence);
+                (&mut *parts.display_bars).draw(scene, transform, text_renderer, theme, presence);
             }
         } else {
             self.content
@@ -18342,6 +18651,8 @@ impl ShellOverlayHost {
             let topbar = &mut *parts.topbar;
             let rect = topbar.get_rect();
             topbar.draw(topbar_scene, transform, text_renderer, theme, presence);
+            let display_bars = &mut *parts.display_bars;
+            display_bars.draw(topbar_scene, transform, text_renderer, theme, presence);
             (&mut *parts.workspace).draw(
                 workspace_scene,
                 transform,
@@ -18349,7 +18660,11 @@ impl ShellOverlayHost {
                 theme,
                 presence,
             );
-            Some(Rect::new(rect.x0, rect.y0, rect.x1, rect.y1 + 28.0))
+            let bounds = display_bars
+                .bar_rects()
+                .into_iter()
+                .fold(rect, |all, (_, bar)| all.union(bar));
+            Some(Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1 + 28.0))
         }
     }
 
@@ -18518,6 +18833,14 @@ impl ShellOverlayHost {
         self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
         self.display_identify
             .draw(scene, transform, text_renderer, theme, Instant::now());
+        if self.display_confirm.poll(Instant::now(), false)
+            && let Some(chrome) = self.chrome.as_ref()
+        {
+            chrome.borrow_mut().bump();
+        }
+        let outputs = self.display_confirm_outputs();
+        self.display_confirm
+            .draw(scene, transform, text_renderer, theme, &outputs);
     }
 
     /// Ribbon and rail sit below Quick Settings and every popover.
@@ -20090,7 +20413,7 @@ impl ShellOverlayHost {
             transform,
             text_renderer,
             theme,
-            &ButtonFace::new(layout.cancel, "Cancel")
+            &ButtonFace::new(layout.cancel, view.cancel_label())
                 .radius(button_radius)
                 .hovered(self.last_cursor.is_some_and(|p| layout.cancel.contains(p))),
         );
@@ -22395,6 +22718,23 @@ impl ShellOverlayHost {
         )
     }
 
+    /// The Devices row text for a local input: whether it is the one in
+    /// use, and its level.
+    fn local_input_detail(input: &LocalMediaInputView) -> String {
+        use std::fmt::Write as _;
+        if !input.is_default {
+            return "Microphone · record from here".into();
+        }
+        let mut detail = "Current microphone".to_string();
+        if let Some(level) = input.level_percent {
+            let _ = write!(detail, " · input level {level}%");
+        }
+        if input.muted {
+            detail.push_str(" · muted");
+        }
+        detail
+    }
+
     fn qs_realtime_consent_actions(row: Rect) -> (Rect, Rect) {
         (
             Rect::new(row.x1 - 72.0, row.y0 + 10.0, row.x1 - 38.0, row.y1 - 10.0),
@@ -23088,6 +23428,13 @@ impl ShellOverlayHost {
                     self.qs_selected_media.as_ref() == Some(&media.session_id),
                     true,
                 ),
+                DeviceFabricPaneRow::LocalInput(input) => (
+                    input.label.clone(),
+                    Self::local_input_detail(input),
+                    ui::icons::Icon::Mic,
+                    input.is_default,
+                    true,
+                ),
                 DeviceFabricPaneRow::LocalOutput(output) => (
                     output.label.clone(),
                     output.bluetooth_codec.as_ref().map_or_else(
@@ -23228,7 +23575,12 @@ impl ShellOverlayHost {
                 DeviceFabricPaneRow::Tethering(status)
                     if status.phase == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired
             );
+            let input_level = matches!(
+                item,
+                DeviceFabricPaneRow::LocalInput(input) if input.is_default
+            );
             let trailing = if tethering_consent
+                || input_level
                 || matches!(
                     item,
                     DeviceFabricPaneRow::Device(_)
@@ -23358,6 +23710,24 @@ impl ShellOverlayHost {
                             _ => "Decline this call handoff",
                         }),
                 );
+            } else if input_level {
+                let (lower, raise) = Self::qs_realtime_consent_actions(row);
+                for (rect, icon, name) in [
+                    (lower, ui::icons::Icon::ArrowDown, "Lower input level"),
+                    (raise, ui::icons::Icon::ArrowUp, "Raise input level"),
+                ] {
+                    Button::paint(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        &ButtonFace::new(rect, "")
+                            .ghost()
+                            .icon(icon)
+                            .hovered(self.last_cursor.is_some_and(|point| rect.contains(point)))
+                            .accessible_name(name),
+                    );
+                }
             } else if let DeviceFabricPaneRow::Device(device) = item {
                 let (placements, control) = Self::qs_device_row_actions(row);
                 for (rect, icon, name) in [

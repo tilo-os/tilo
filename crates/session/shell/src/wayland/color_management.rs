@@ -1415,82 +1415,85 @@ mod tests {
     use super::*;
 
     #[test]
-    fn advertised_capabilities_include_bt2020_and_pq() {
-        let cfg = ColorManagerState::default();
-        assert!(cfg.supported_primaries.contains(&(6)));
-        assert!(cfg.supported_primaries.contains(&(1)));
-        assert!(cfg.supported_primaries.contains(&(9)));
-        assert!(cfg.supported_transfers.contains(&(11)));
-        assert!(cfg.supported_transfers.contains(&(13)));
-        assert!(cfg.supported_features.contains(&(1)));
-        assert!(cfg.supported_features.contains(&(2)));
-    }
-
-    #[test]
-    fn builder_yields_bt2020_pq_when_configured() {
-        let b = ParametricBuilder::default();
+    fn color_management_advertises_builds_and_exposes_hdr_descriptions() {
+        // Phase `advertised_capabilities_include_bt2020_and_pq`.
         {
-            let mut inner = b.inner.lock().unwrap();
-            inner.primaries_named = Some(ColorPrimaries::Bt2020);
-            inner.tf_named = Some(TransferCharacteristics::SmpteSt2084);
+            let cfg = ColorManagerState::default();
+            assert!(cfg.supported_primaries.contains(&(6)));
+            assert!(cfg.supported_primaries.contains(&(1)));
+            assert!(cfg.supported_primaries.contains(&(9)));
+            assert!(cfg.supported_transfers.contains(&(11)));
+            assert!(cfg.supported_transfers.contains(&(13)));
+            assert!(cfg.supported_features.contains(&(1)));
+            assert!(cfg.supported_features.contains(&(2)));
         }
-        let desc = b.build().expect("builder produces description");
-        assert_eq!(desc.colorimetry.primaries, ColorPrimaries::Bt2020);
-        assert_eq!(
-            desc.colorimetry.transfer,
-            TransferCharacteristics::SmpteSt2084
-        );
-        assert!(desc.hdr.is_some());
-    }
 
-    #[test]
-    fn builder_returns_none_on_missing_required_fields() {
-        let b = ParametricBuilder::default();
-        assert!(b.build().is_none());
+        // Phase `builder_yields_bt2020_pq_when_configured`.
         {
-            b.inner.lock().unwrap().primaries_named = Some(ColorPrimaries::Bt709);
+            let b = ParametricBuilder::default();
+            {
+                let mut inner = b.inner.lock().unwrap();
+                inner.primaries_named = Some(ColorPrimaries::Bt2020);
+                inner.tf_named = Some(TransferCharacteristics::SmpteSt2084);
+            }
+            let desc = b.build().expect("builder produces description");
+            assert_eq!(desc.colorimetry.primaries, ColorPrimaries::Bt2020);
+            assert_eq!(
+                desc.colorimetry.transfer,
+                TransferCharacteristics::SmpteSt2084
+            );
+            assert!(desc.hdr.is_some());
         }
-        // Still missing transfer.
-        assert!(b.build().is_none());
-    }
 
-    #[test]
-    fn hdr_metadata_only_populated_for_hdr_transfer() {
-        let b = ParametricBuilder::default();
+        // Phase `builder_returns_none_on_missing_required_fields`.
         {
-            let mut inner = b.inner.lock().unwrap();
-            inner.primaries_named = Some(ColorPrimaries::Bt709);
-            inner.tf_named = Some(TransferCharacteristics::Bt709);
+            let b = ParametricBuilder::default();
+            assert!(b.build().is_none());
+            {
+                b.inner.lock().unwrap().primaries_named = Some(ColorPrimaries::Bt709);
+            }
+            // Still missing transfer.
+            assert!(b.build().is_none());
         }
-        let desc = b.build().unwrap();
-        assert!(desc.hdr.is_none(), "SDR builder must not emit HDR metadata");
-    }
 
-    #[test]
-    fn compositor_descriptions_are_queryable_but_client_descriptions_are_not() {
-        let output =
-            ColorManagementOutputData::from_color(Colorimetry::sdr_bt709(), None).snapshot();
-        assert_eq!(
-            output.information_colors(),
-            Some((
-                Some(ColorPrimaries::Bt709),
-                Some(TransferCharacteristics::Bt709)
-            ))
-        );
-        assert_eq!(
-            output.protocol_primaries(),
-            (
-                640_000, 330_000, 300_000, 600_000, 150_000, 60_000, 312_700, 329_000
-            )
-        );
-        assert_eq!(output.protocol_luminances(), (100, 100, 100));
-
-        let builder = ParametricBuilder::default();
+        // Phase `hdr_metadata_only_populated_for_hdr_transfer`.
         {
-            let mut inner = builder.inner.lock().unwrap();
-            inner.primaries_named = Some(ColorPrimaries::Bt2020);
-            inner.tf_named = Some(TransferCharacteristics::SmpteSt2084);
+            let b = ParametricBuilder::default();
+            {
+                let mut inner = b.inner.lock().unwrap();
+                inner.primaries_named = Some(ColorPrimaries::Bt709);
+                inner.tf_named = Some(TransferCharacteristics::Bt709);
+            }
+            let desc = b.build().unwrap();
+            assert!(desc.hdr.is_none(), "SDR builder must not emit HDR metadata");
         }
-        assert_eq!(builder.build().unwrap().information_colors(), None);
+
+        // Phase `compositor_descriptions_are_queryable_but_client_descriptions_are_not`.
+        {
+            let output =
+                ColorManagementOutputData::from_color(Colorimetry::sdr_bt709(), None).snapshot();
+            assert_eq!(
+                output.information_colors(),
+                Some((
+                    Some(ColorPrimaries::Bt709),
+                    Some(TransferCharacteristics::Bt709)
+                ))
+            );
+            assert_eq!(
+                output.protocol_primaries(),
+                (
+                    640_000, 330_000, 300_000, 600_000, 150_000, 60_000, 312_700, 329_000
+                )
+            );
+            assert_eq!(output.protocol_luminances(), (100, 100, 100));
+
+            let builder = ParametricBuilder::default();
+            {
+                let mut inner = builder.inner.lock().unwrap();
+                inner.primaries_named = Some(ColorPrimaries::Bt2020);
+                inner.tf_named = Some(TransferCharacteristics::SmpteSt2084);
+            }
+            assert_eq!(builder.build().unwrap().information_colors(), None);
+        }
     }
 }

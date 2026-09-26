@@ -84,7 +84,8 @@ pub fn interval_to_mhz(interval: std::time::Duration) -> Option<u32> {
 /// data leave it empty and the advertiser falls back to generic values.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OutputIdentity {
-    /// Connector name, e.g. `DP-2`; also the `wl_output` name.
+    /// Connector key, e.g. `DP-2` — qualified by card when two GPUs share
+    /// a connector name; also the `wl_output` name and the head name.
     pub connector: String,
     pub make: String,
     pub model: String,
@@ -221,6 +222,7 @@ pub fn output_geometry(outputs: &[Output]) -> Vec<crate::shell::overlay_host::Ou
         .map(|o| {
             let logical = o.logical_rect();
             crate::shell::overlay_host::OutputGeometry {
+                id: o.id.0,
                 x: logical.x0,
                 y: logical.y0,
                 width: logical.width(),
@@ -540,14 +542,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn combined_geometry_single_output_equals_its_size() {
-        let outs = [Output::new(OutputId(0), (1920, 1080), 1.0)];
-        assert_eq!(combined_geometry(&outs), (1920, 1080));
-    }
+    fn combined_geometry_spans_every_output_and_is_zero_for_none() {
+        let single = [Output::new(OutputId(0), (1920, 1080), 1.0)];
+        assert_eq!(
+            combined_geometry(&single),
+            (1920, 1080),
+            "single output equals its size"
+        );
 
-    #[test]
-    fn combined_geometry_side_by_side_sums_width_takes_max_height() {
-        let outs = [
+        let side_by_side = [
             Output {
                 id: OutputId(0),
                 position: (0, 0),
@@ -572,7 +575,13 @@ mod tests {
             },
         ];
         // Combined width = 1920 + 1280 = 3200; height = max(1080, 1024).
-        assert_eq!(combined_geometry(&outs), (3200, 1080));
+        assert_eq!(
+            combined_geometry(&side_by_side),
+            (3200, 1080),
+            "side by side"
+        );
+
+        assert_eq!(combined_geometry(&[]), (0, 0), "empty");
     }
 
     #[test]
@@ -609,11 +618,6 @@ mod tests {
             PointerConstraintRegion::Confined(Vec::new()).constrain((1.0, 1.0), (2.0, 2.0)),
             None
         );
-    }
-
-    #[test]
-    fn combined_geometry_empty_is_zero() {
-        assert_eq!(combined_geometry(&[]), (0, 0));
     }
 }
 

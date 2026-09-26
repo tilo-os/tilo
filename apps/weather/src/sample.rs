@@ -385,46 +385,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sample_is_fully_populated() {
-        let m = sample_model();
-        assert!(m.locations.len() >= 3);
-        for loc in &m.locations {
-            let snap = m
-                .snapshot_for(loc.id)
-                .expect("every location has a snapshot");
-            assert_eq!(snap.hourly.len(), 24);
-            assert_eq!(snap.daily.len(), 7);
+    fn sample_is_fully_populated_with_clean_hourly_and_daily_series() {
+        // Case `sample_is_fully_populated`.
+        {
+            let m = sample_model();
+            assert!(m.locations.len() >= 3);
+            for loc in &m.locations {
+                let snap = m
+                    .snapshot_for(loc.id)
+                    .expect("every location has a snapshot");
+                assert_eq!(snap.hourly.len(), 24);
+                assert_eq!(snap.daily.len(), 7);
+            }
         }
-    }
-
-    #[test]
-    fn sample_carries_air_quality_for_every_place() {
-        let m = sample_model();
-        for loc in &m.locations {
-            let aq = m
-                .air_quality_for(loc.id)
-                .expect("every location has air quality");
-            assert!(
-                aq.has_any(),
-                "the reading carries real index/pollutant values"
-            );
-            assert!(aq.european_aqi.is_some());
+        // Case `sample_carries_air_quality_for_every_place`.
+        {
+            let m = sample_model();
+            for loc in &m.locations {
+                let aq = m
+                    .air_quality_for(loc.id)
+                    .expect("every location has air quality");
+                assert!(
+                    aq.has_any(),
+                    "the reading carries real index/pollutant values"
+                );
+                assert!(aq.european_aqi.is_some());
+            }
         }
-    }
-
-    #[test]
-    fn hourly_starts_at_current_hour() {
-        let m = sample_model();
-        let snap = m.selected_snapshot().unwrap();
-        // San Francisco now_hour = 14.
-        assert_eq!(snap.hourly[0].hour_label(), "14");
-    }
-
-    #[test]
-    fn daily_dates_are_clean_sequence() {
-        let m = sample_model();
-        let snap = m.selected_snapshot().unwrap();
-        assert_eq!(snap.daily[0].date, "2026-06-30");
-        assert_eq!(snap.daily[6].date, "2026-07-06");
+        // Case `hourly_starts_at_current_hour`.
+        {
+            let m = sample_model();
+            let snap = m.selected_snapshot().unwrap();
+            // San Francisco now_hour = 14.
+            assert_eq!(snap.hourly[0].hour_label(), "14");
+        }
+        // Case `daily_dates_are_clean_sequence`.
+        {
+            let m = sample_model();
+            let snap = m.selected_snapshot().unwrap();
+            assert_eq!(snap.daily[0].date, "2026-06-30");
+            assert_eq!(snap.daily[6].date, "2026-07-06");
+        }
     }
 }

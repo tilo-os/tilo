@@ -117,6 +117,8 @@ on:
       - "tools/ci/workflow_applicability.py"
       - "tools/ci/prepare_pr_history.py"
       - "tools/ci/sccache.sh"
+      - "tools/ci/native-stores.sh"
+      - "tools/native-tier1.sh"
   schedule:
     - cron: "30 4 * * *"
   workflow_dispatch:
@@ -266,12 +268,12 @@ jobs:
           bash scripts/ci-run.sh "authenticated named-share delivery" -- cargo test --locked -p fs named_share_delivery --lib -- --nocapture
           bash scripts/ci-run.sh "named-share control wire" -- cargo test --locked -p collab-types share_control --lib -- --nocapture
           bash scripts/ci-run.sh "governed identity projection schema" -- cargo test --locked -p tilo-user-identity projection --lib -- --nocapture
-          bash scripts/ci-run.sh "governed room identity projection" -- cargo test --locked -p shell governed_name_and_root_signed_endpoint_project_human_and_device --lib -- --nocapture
+          bash scripts/ci-run.sh "governed room identity projection" -- cargo test --locked -p shell root_signed_governance_projects_identity_and_additive_revocation --lib -- --nocapture
 
       - name: Enforce skew, read-only and atomic-recovery boundaries
         run: |
           bash scripts/ci-run.sh "replica receipt clock skew" -- cargo test --locked -p fs replica_ack::tests::exact_nonce_version_peer_and_freshness_are_bound --lib -- --nocapture
-          bash scripts/ci-run.sh "authenticated read-only writer denial" -- cargo test --locked -p fs sync::tests::a_read_only_peer_pulls_updates_but_cannot_author --lib -- --nocapture
+          bash scripts/ci-run.sh "authenticated read-only writer denial" -- cargo test --locked -p fs sync::tests::namespace_documents_reach_only_entitled_peers_and_readers_cannot_author --lib -- --nocapture
           SOURCE_SHA="$(git rev-parse HEAD)" PACKAGE=fs TEST_TARGET= OPERATION=test-lib \
             TEST_NAME=fs::tests::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions \
             bash scripts/ci-run.sh "Keep Both all-phase restart recovery" -- python3 -I tools/ci/focused_test.py run --root .
@@ -280,13 +282,12 @@ jobs:
         run: |
           bash scripts/ci-run.sh "collaborative-files corruption matrix" -- cargo test --locked -p fs --test corruption_matrix -- --nocapture --test-threads=1
           bash scripts/ci-run.sh "bounded durable backup policy" -- cargo test --locked -p fs durable_backup::tests --lib -- --nocapture
-          bash scripts/ci-run.sh "signed repository known-good recovery" -- cargo test --locked -p fs record_repository::tests::tampered_primary_recovers_latest_valid_signed_generation_with_evidence --lib -- --nocapture
-          bash scripts/ci-run.sh "legacy byte-name migration" -- cargo test --locked -p fs namespace::tests::legacy_string_name_loads_exactly_and_next_rename_persists_bytes --lib -- --nocapture
-          bash scripts/ci-run.sh "signed repository tamper refusal" -- cargo test --locked -p fs record_repository::tests::tampered_signed_state_is_rejected_on_restart --lib -- --nocapture
-          bash scripts/ci-run.sh "history ancestry corruption refusal" -- cargo test --locked -p fs history::tests::corrupt_heads_are_rejected_on_open --lib -- --nocapture
-          bash scripts/ci-run.sh "transaction journal partial-batch refusal" -- cargo test --locked -p fs record_transaction::tests::journal_rejects_partial_or_mutated_participant_batches --lib -- --nocapture
+          bash scripts/ci-run.sh "signed repository known-good recovery and tamper refusal" -- cargo test --locked -p fs record_repository::tests::restart_verifies_signed_state_and_recovers_valid_generations --lib -- --nocapture
+          bash scripts/ci-run.sh "legacy byte-name migration" -- cargo test --locked -p fs namespace::tests::byte_names_survive_load_save_rename_and_replication_exactly --lib -- --nocapture
+          bash scripts/ci-run.sh "history ancestry corruption refusal" -- cargo test --locked -p fs history::tests::history_logs_read_legacy_and_fail_closed_on_damage --lib -- --nocapture
+          bash scripts/ci-run.sh "transaction journal partial-batch refusal" -- cargo test --locked -p fs record_transaction::tests::journal_restarts_exactly_with_monotonic_phases_and_whole_batches --lib -- --nocapture
           bash scripts/ci-run.sh "transaction coordinator recovery" -- cargo test --locked -p fs transaction_coordinator::tests::broadcast_failure_recovers_exact_committed_namespace_without_duplicate_history --lib -- --nocapture
-          bash scripts/ci-run.sh "availability receipt tamper refusal" -- cargo test --locked -p fs availability::tests::tampered_persisted_receipt_fails_registry_open --lib -- --nocapture
+          bash scripts/ci-run.sh "availability receipt tamper refusal" -- cargo test --locked -p fs availability::tests::availability_registry_persists_by_stable_record_id_and_rejects_tampering --lib -- --nocapture
 
       - name: Enforce deterministic collaborative-files performance SLOs
         env:
@@ -300,6 +301,87 @@ jobs:
         continue-on-error: true
         run: |
           echo '### real-fuse compiler cache' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # The native data plane's acceptance suites (`fs --test native_tier1`,
+  # `fs-native --test it`): two daemons on two loop-mounted Btrfs stores,
+  # fanotify journal and pre-content hydration, leases, SQLite and git sync.
+  # TILO_REQUIRE_FANOTIFY=1 turns every skip into a failure. They need a
+  # kernel with pre-content fanotify events (Linux 6.14 or later with
+  # CONFIG_FANOTIFY_ACCESS_PERMISSIONS=y), Btrfs, loop devices and a
+  # privileged container. No runner has that kernel yet: the Kata guest
+  # kernels are 6.12 (x86-64) and 6.18 (ARM64), both without
+  # CONFIG_FANOTIFY_ACCESS_PERMISSIONS. The job stays skipped, instead of
+  # queueing forever, until a `runner-native-storage` pool exists and
+  # TILO_NATIVE_STORAGE_RUNNER is set to true.
+  native-tier1:
+    needs: [applicability, builder]
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        needs.builder.result == 'success' && vars.TILO_NATIVE_STORAGE_RUNNER == 'true'
+      }}
+    runs-on: runner-native-storage
+    timeout-minutes: 60
+    env:
+      TILO_FS_FUSE_REQUIRED: "0"
+      TILO_REQUIRE_FUSE: "0"
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+      # Privilege applies inside the disposable guest only: loop devices,
+      # Btrfs mounts, fanotify filesystem marks and pre-content groups.
+      options: --privileged
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Ensure store and scenario tools
+        run: |
+          missing=()
+          command -v mkfs.btrfs >/dev/null || missing+=(btrfs-progs)
+          command -v losetup >/dev/null || missing+=(util-linux)
+          command -v sqlite3 >/dev/null || missing+=(sqlite)
+          command -v git >/dev/null || missing+=(git-core)
+          if [ "${#missing[@]}" -gt 0 ]; then dnf install -y "${missing[@]}"; fi
+
+      # The job container's /dev is a static tmpfs with no udev, so loop
+      # nodes never appear; the guest kernel's devtmpfs has them.
+      - name: Expose kernel block device nodes
+        run: |
+          modprobe loop 2>/dev/null || true
+          if [ ! -e /dev/loop-control ]; then
+            mount -t devtmpfs devtmpfs /dev
+            mkdir -p /dev/pts /dev/shm
+            mountpoint -q /dev/pts || mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+            mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+          fi
+          test -c /dev/loop-control
+          uname -r
+
+      - name: Enable shared compiler cache
+        run: bash tools/ci/sccache.sh prepare
+
+      - name: Run the native data plane acceptance suites
+        env:
+          TILO_NATIVE_TIER1_DIR: ${{ runner.temp }}/native-tier1
+        run: >-
+          bash scripts/ci-run.sh "native Tier 1 acceptance" --
+          tools/native-tier1.sh --nocapture
+
+      - name: Report compiler cache effectiveness
+        if: always()
+        continue-on-error: true
+        run: |
+          echo '### native-tier1 compiler cache' >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"

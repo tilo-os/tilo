@@ -1357,332 +1357,343 @@ mod tests {
     }
 
     #[test]
-    fn comment_resource_identity_survives_reordering() {
-        let mut model = crate::sample::model();
-        let video = model
-            .videos
-            .iter_mut()
-            .find(|video| video.comments.len() > 1)
-            .expect("sample has multiple comments");
-        let video_id = video.id.clone();
-        model.route = Route::Watch(video_id.clone());
-        let before = provide_resources(&model)[0]
-            .children
-            .iter()
-            .map(|resource| resource.id.0.clone())
-            .collect::<std::collections::HashSet<_>>();
-        model
-            .videos
-            .iter_mut()
-            .find(|video| video.id == video_id)
-            .unwrap()
-            .comments
-            .swap(0, 1);
-        let after = provide_resources(&model)[0]
-            .children
-            .iter()
-            .map(|resource| resource.id.0.clone())
-            .collect::<std::collections::HashSet<_>>();
-        assert_eq!(
-            before, after,
-            "comment addresses must not be list positions"
-        );
-    }
-
-    #[test]
-    fn resource_projection_is_bounded_for_large_catalogues() {
-        let mut model = crate::sample::model();
-        let seed = model.videos[0].clone();
-        model.videos = (0..250)
-            .map(|index| {
-                let mut video = seed.clone();
-                video.id = format!("video-{index}");
-                video.title = format!("Video {index}");
-                video
-            })
-            .collect();
-        let resources = provide_resources(&model);
-        let library = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "tube.library")
-            .expect("library resource");
-        let projected_videos = library
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "tube.videos")
-            .expect("videos collection")
-            .children
-            .iter()
-            .filter(|resource| resource.kind == "tube.video")
-            .count();
-        assert_eq!(projected_videos, MAX_RESOURCE_ENTITIES);
-    }
-
-    #[test]
-    fn durable_views_and_search_are_canonical_bounded_collections() {
-        let mut model = crate::sample::model();
-        let video = model.videos[0].id.clone();
-        let channel = model.videos[0].channel_id.clone();
-        model.subscriptions = vec![channel];
-        model.queue = vec![video.clone()];
-        model.history = vec![video.clone()];
-        model.search_hits_query = "rust".into();
-        model.search_hits = vec![video.clone()];
-
-        let resources = provide_resources(&model);
-        let library = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "tube.library")
-            .expect("library resource");
-        let subscriptions = library
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "tube.subscriptions")
-            .expect("subscriptions collection");
-        assert_eq!(subscriptions.children.len(), 1);
-        assert!(
-            subscriptions.children[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "unsubscribe")
-        );
-        let history = library
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "tube.history")
-            .expect("history collection");
-        assert_eq!(history.children[0].id.0, format!("tube.history:{video}"));
-        let search = library
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "tube.search-results")
-            .expect("search-results collection");
-        assert_eq!(
-            search.children[0].id.0,
-            format!("tube.search-result:video:{video}")
-        );
-        assert!(
-            library
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn resource_projection_is_stable_bounded_and_canonical() {
+        // Case `comment_resource_identity_survives_reordering`.
+        {
+            let mut model = crate::sample::model();
+            let video = model
+                .videos
+                .iter_mut()
+                .find(|video| video.comments.len() > 1)
+                .expect("sample has multiple comments");
+            let video_id = video.id.clone();
+            model.route = Route::Watch(video_id.clone());
+            let before = provide_resources(&model)[0]
                 .children
                 .iter()
-                .any(|resource| resource.id.0 == "tube.downloads")
-        );
-        let queue = library
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "tube.queue")
-            .expect("shared queue collection");
-        assert_eq!(queue.children[0].id.0, format!("tube.queue:{video}"));
-        assert!(
-            queue.children[0]
-                .actions
+                .map(|resource| resource.id.0.clone())
+                .collect::<std::collections::HashSet<_>>();
+            model
+                .videos
+                .iter_mut()
+                .find(|video| video.id == video_id)
+                .unwrap()
+                .comments
+                .swap(0, 1);
+            let after = provide_resources(&model)[0]
+                .children
                 .iter()
-                .any(|action| action.id == "remove")
-        );
-        assert!(history.actions.iter().any(|action| action.id == "clear"));
-        assert!(
-            history.children[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "remove")
-        );
-        let videos = library
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "tube.videos")
-            .expect("videos collection");
-        assert!(
-            videos.children[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "mark-watched")
-        );
-    }
-
-    #[test]
-    fn legacy_shared_history_actions_are_refused() {
-        let mut doc = AutoCommit::new();
-        let watch = TubeAction::SetHistoryEntry {
-            owner_id: "user:alice".into(),
-            video_id: "v1".into(),
-            watched_at_ms: 10,
-            present: true,
-            mutation_id: "alice:watch:v1:10".into(),
-        };
-        assert!(watch.apply(&mut doc).is_err());
-        assert!(doc.get(&ROOT, "tube").unwrap().is_none());
-    }
-
-    #[test]
-    fn queue_membership_is_an_absolute_keyed_tombstone() {
-        let mut doc = AutoCommit::new();
-        tilo_actions::Action::apply(
-            &TubeAction::SetQueueMembership {
-                video_id: "video-1".into(),
-                queued: true,
-            },
-            &mut doc,
-        )
-        .expect("queue add applies");
-        tilo_actions::Action::apply(
-            &TubeAction::SetQueueMembership {
-                video_id: "video-1".into(),
-                queued: false,
-            },
-            &mut doc,
-        )
-        .expect("queue tombstone applies");
-        let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap() else {
-            panic!("tube root exists");
-        };
-        let (Value::Object(ObjType::Map), queue) = doc.get(&tube, "queue").unwrap().unwrap() else {
-            panic!("queue is a keyed map");
-        };
-        assert_eq!(
-            doc.get(&queue, "video-1").unwrap().unwrap().0.as_bool(),
-            Some(false)
-        );
-    }
-
-    #[test]
-    fn comment_mutations_use_keyed_absolute_records() {
-        let mut doc = AutoCommit::new();
-        let comment_id = "video-1#comment".to_string();
-        let reply_id = reply_key(&comment_id, "Useful explanation");
-        tilo_actions::Action::apply(
-            &TubeAction::SetCommentLiked {
-                comment_id: comment_id.clone(),
-                liked: false,
-            },
-            &mut doc,
-        )
-        .expect("comment-like tombstone applies");
-        tilo_actions::Action::apply(
-            &TubeAction::SetCommentReply {
-                comment_id: comment_id.clone(),
-                reply_id: reply_id.clone(),
-                text: "Useful explanation".into(),
-                active: false,
-            },
-            &mut doc,
-        )
-        .expect("reply tombstone applies");
-        let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap() else {
-            panic!("tube root exists");
-        };
-        let (Value::Object(ObjType::Map), likes) =
-            doc.get(&tube, "comment_likes").unwrap().unwrap()
-        else {
-            panic!("comment likes is a keyed map");
-        };
-        assert_eq!(
-            doc.get(&likes, &comment_id).unwrap().unwrap().0.as_bool(),
-            Some(false)
-        );
-        let (Value::Object(ObjType::Map), all_replies) =
-            doc.get(&tube, "comment_replies").unwrap().unwrap()
-        else {
-            panic!("comment replies is a keyed map");
-        };
-        let (Value::Object(ObjType::Map), replies) =
-            doc.get(&all_replies, &comment_id).unwrap().unwrap()
-        else {
-            panic!("per-comment replies is a keyed map");
-        };
-        let (Value::Object(ObjType::Map), reply) = doc.get(&replies, &reply_id).unwrap().unwrap()
-        else {
-            panic!("reply is a keyed record");
-        };
-        assert_eq!(
-            doc.get(&reply, "active").unwrap().unwrap().0.as_bool(),
-            Some(false)
-        );
-    }
-
-    #[test]
-    fn legacy_receiver_dependent_actions_are_decoded_but_refused() {
-        let mut doc = AutoCommit::new();
-        for action in [
-            TubeAction::LikeVideo {
-                video_id: "video-1".into(),
-            },
-            TubeAction::ToggleSubscription {
-                channel_id: "channel-1".into(),
-            },
-            TubeAction::CyclePreferredQuality,
-        ] {
-            assert!(matches!(
-                tilo_actions::Action::apply(&action, &mut doc),
-                Err(ActionError::Refused(_))
-            ));
-        }
-        assert!(doc.get(&ROOT, "tube").unwrap().is_none());
-    }
-
-    #[test]
-    fn absolute_quality_replays_identically_on_divergent_replicas() {
-        let mut left = AutoCommit::new();
-        let mut right = AutoCommit::new();
-        for (doc, initial) in [(&mut left, "1080p"), (&mut right, "480p")] {
-            let tube = doc.put_object(&ROOT, "tube", ObjType::Map).unwrap();
-            let settings = doc.put_object(&tube, "settings", ObjType::Map).unwrap();
-            doc.put(&settings, "preferred_quality", initial).unwrap();
-        }
-        let action = TubeAction::SetPreferredQuality {
-            quality: "720p".into(),
-        };
-        action.apply(&mut left).expect("left replay applies");
-        action.apply(&mut right).expect("right replay applies");
-        for doc in [&left, &right] {
-            let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap()
-            else {
-                panic!("tube root");
-            };
-            let (Value::Object(ObjType::Map), settings) =
-                doc.get(&tube, "settings").unwrap().unwrap()
-            else {
-                panic!("settings");
-            };
+                .map(|resource| resource.id.0.clone())
+                .collect::<std::collections::HashSet<_>>();
             assert_eq!(
-                doc.get(&settings, "preferred_quality")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .as_str(),
-                Some("720p")
+                before, after,
+                "comment addresses must not be list positions"
             );
         }
-        assert!(matches!(
-            TubeAction::SetPreferredQuality {
-                quality: "4K magic".into()
-            }
-            .apply(&mut left),
-            Err(ActionError::Refused(_))
-        ));
-    }
+        // Case `resource_projection_is_bounded_for_large_catalogues`.
+        {
+            let mut model = crate::sample::model();
+            let seed = model.videos[0].clone();
+            model.videos = (0..250)
+                .map(|index| {
+                    let mut video = seed.clone();
+                    video.id = format!("video-{index}");
+                    video.title = format!("Video {index}");
+                    video
+                })
+                .collect();
+            let resources = provide_resources(&model);
+            let library = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "tube.library")
+                .expect("library resource");
+            let projected_videos = library
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "tube.videos")
+                .expect("videos collection")
+                .children
+                .iter()
+                .filter(|resource| resource.kind == "tube.video")
+                .count();
+            assert_eq!(projected_videos, MAX_RESOURCE_ENTITIES);
+        }
+        // Case `durable_views_and_search_are_canonical_bounded_collections`.
+        {
+            let mut model = crate::sample::model();
+            let video = model.videos[0].id.clone();
+            let channel = model.videos[0].channel_id.clone();
+            model.subscriptions = vec![channel];
+            model.queue = vec![video.clone()];
+            model.history = vec![video.clone()];
+            model.search_hits_query = "rust".into();
+            model.search_hits = vec![video.clone()];
 
-    #[test]
-    fn resource_labels_bound_remote_metadata_without_changing_actions() {
-        let mut model = crate::sample::model();
-        model.videos[0].title = format!("title\n{}", "x".repeat(MAX_RESOURCE_LABEL_CHARS + 20));
-        let resources = provide_resources(&model);
-        let resource = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "tube.library")
-            .and_then(|library| {
+            let resources = provide_resources(&model);
+            let library = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "tube.library")
+                .expect("library resource");
+            let subscriptions = library
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "tube.subscriptions")
+                .expect("subscriptions collection");
+            assert_eq!(subscriptions.children.len(), 1);
+            assert!(
+                subscriptions.children[0]
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "unsubscribe")
+            );
+            let history = library
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "tube.history")
+                .expect("history collection");
+            assert_eq!(history.children[0].id.0, format!("tube.history:{video}"));
+            let search = library
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "tube.search-results")
+                .expect("search-results collection");
+            assert_eq!(
+                search.children[0].id.0,
+                format!("tube.search-result:video:{video}")
+            );
+            assert!(
                 library
                     .children
                     .iter()
-                    .find(|resource| resource.id.0 == "tube.videos")
-            })
-            .and_then(|videos| videos.children.first())
-            .expect("first video resource");
-        assert!(resource.label.chars().count() <= MAX_RESOURCE_LABEL_CHARS + 1);
-        assert!(!resource.label.contains('\n'));
-        assert!(resource.actions.iter().any(|action| action.id == "open"));
+                    .any(|resource| resource.id.0 == "tube.downloads")
+            );
+            let queue = library
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "tube.queue")
+                .expect("shared queue collection");
+            assert_eq!(queue.children[0].id.0, format!("tube.queue:{video}"));
+            assert!(
+                queue.children[0]
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "remove")
+            );
+            assert!(history.actions.iter().any(|action| action.id == "clear"));
+            assert!(
+                history.children[0]
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "remove")
+            );
+            let videos = library
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "tube.videos")
+                .expect("videos collection");
+            assert!(
+                videos.children[0]
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "mark-watched")
+            );
+        }
+        // Case `resource_labels_bound_remote_metadata_without_changing_actions`.
+        {
+            let mut model = crate::sample::model();
+            model.videos[0].title = format!("title\n{}", "x".repeat(MAX_RESOURCE_LABEL_CHARS + 20));
+            let resources = provide_resources(&model);
+            let resource = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "tube.library")
+                .and_then(|library| {
+                    library
+                        .children
+                        .iter()
+                        .find(|resource| resource.id.0 == "tube.videos")
+                })
+                .and_then(|videos| videos.children.first())
+                .expect("first video resource");
+            assert!(resource.label.chars().count() <= MAX_RESOURCE_LABEL_CHARS + 1);
+            assert!(!resource.label.contains('\n'));
+            assert!(resource.actions.iter().any(|action| action.id == "open"));
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn tube_actions_write_absolute_keyed_records_and_refuse_legacy_forms() {
+        // Case `legacy_shared_history_actions_are_refused`.
+        {
+            let mut doc = AutoCommit::new();
+            let watch = TubeAction::SetHistoryEntry {
+                owner_id: "user:alice".into(),
+                video_id: "v1".into(),
+                watched_at_ms: 10,
+                present: true,
+                mutation_id: "alice:watch:v1:10".into(),
+            };
+            assert!(watch.apply(&mut doc).is_err());
+            assert!(doc.get(&ROOT, "tube").unwrap().is_none());
+        }
+        // Case `queue_membership_is_an_absolute_keyed_tombstone`.
+        {
+            let mut doc = AutoCommit::new();
+            tilo_actions::Action::apply(
+                &TubeAction::SetQueueMembership {
+                    video_id: "video-1".into(),
+                    queued: true,
+                },
+                &mut doc,
+            )
+            .expect("queue add applies");
+            tilo_actions::Action::apply(
+                &TubeAction::SetQueueMembership {
+                    video_id: "video-1".into(),
+                    queued: false,
+                },
+                &mut doc,
+            )
+            .expect("queue tombstone applies");
+            let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap()
+            else {
+                panic!("tube root exists");
+            };
+            let (Value::Object(ObjType::Map), queue) = doc.get(&tube, "queue").unwrap().unwrap()
+            else {
+                panic!("queue is a keyed map");
+            };
+            assert_eq!(
+                doc.get(&queue, "video-1").unwrap().unwrap().0.as_bool(),
+                Some(false)
+            );
+        }
+        // Case `comment_mutations_use_keyed_absolute_records`.
+        {
+            let mut doc = AutoCommit::new();
+            let comment_id = "video-1#comment".to_string();
+            let reply_id = reply_key(&comment_id, "Useful explanation");
+            tilo_actions::Action::apply(
+                &TubeAction::SetCommentLiked {
+                    comment_id: comment_id.clone(),
+                    liked: false,
+                },
+                &mut doc,
+            )
+            .expect("comment-like tombstone applies");
+            tilo_actions::Action::apply(
+                &TubeAction::SetCommentReply {
+                    comment_id: comment_id.clone(),
+                    reply_id: reply_id.clone(),
+                    text: "Useful explanation".into(),
+                    active: false,
+                },
+                &mut doc,
+            )
+            .expect("reply tombstone applies");
+            let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap()
+            else {
+                panic!("tube root exists");
+            };
+            let (Value::Object(ObjType::Map), likes) =
+                doc.get(&tube, "comment_likes").unwrap().unwrap()
+            else {
+                panic!("comment likes is a keyed map");
+            };
+            assert_eq!(
+                doc.get(&likes, &comment_id).unwrap().unwrap().0.as_bool(),
+                Some(false)
+            );
+            let (Value::Object(ObjType::Map), all_replies) =
+                doc.get(&tube, "comment_replies").unwrap().unwrap()
+            else {
+                panic!("comment replies is a keyed map");
+            };
+            let (Value::Object(ObjType::Map), replies) =
+                doc.get(&all_replies, &comment_id).unwrap().unwrap()
+            else {
+                panic!("per-comment replies is a keyed map");
+            };
+            let (Value::Object(ObjType::Map), reply) =
+                doc.get(&replies, &reply_id).unwrap().unwrap()
+            else {
+                panic!("reply is a keyed record");
+            };
+            assert_eq!(
+                doc.get(&reply, "active").unwrap().unwrap().0.as_bool(),
+                Some(false)
+            );
+        }
+        // Case `legacy_receiver_dependent_actions_are_decoded_but_refused`.
+        {
+            let mut doc = AutoCommit::new();
+            for action in [
+                TubeAction::LikeVideo {
+                    video_id: "video-1".into(),
+                },
+                TubeAction::ToggleSubscription {
+                    channel_id: "channel-1".into(),
+                },
+                TubeAction::CyclePreferredQuality,
+            ] {
+                assert!(matches!(
+                    tilo_actions::Action::apply(&action, &mut doc),
+                    Err(ActionError::Refused(_))
+                ));
+            }
+            assert!(doc.get(&ROOT, "tube").unwrap().is_none());
+        }
+        // Case `absolute_quality_replays_identically_on_divergent_replicas`.
+        {
+            let mut left = AutoCommit::new();
+            let mut right = AutoCommit::new();
+            for (doc, initial) in [(&mut left, "1080p"), (&mut right, "480p")] {
+                let tube = doc.put_object(&ROOT, "tube", ObjType::Map).unwrap();
+                let settings = doc.put_object(&tube, "settings", ObjType::Map).unwrap();
+                doc.put(&settings, "preferred_quality", initial).unwrap();
+            }
+            let action = TubeAction::SetPreferredQuality {
+                quality: "720p".into(),
+            };
+            action.apply(&mut left).expect("left replay applies");
+            action.apply(&mut right).expect("right replay applies");
+            for doc in [&left, &right] {
+                let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap()
+                else {
+                    panic!("tube root");
+                };
+                let (Value::Object(ObjType::Map), settings) =
+                    doc.get(&tube, "settings").unwrap().unwrap()
+                else {
+                    panic!("settings");
+                };
+                assert_eq!(
+                    doc.get(&settings, "preferred_quality")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .as_str(),
+                    Some("720p")
+                );
+            }
+            assert!(matches!(
+                TubeAction::SetPreferredQuality {
+                    quality: "4K magic".into()
+                }
+                .apply(&mut left),
+                Err(ActionError::Refused(_))
+            ));
+        }
     }
 
     fn registry() -> ActionRegistry {
@@ -1691,53 +1702,185 @@ mod tests {
         r
     }
 
-    /// Ctrl+K on tube lists the open video + its comment resources and their
-    /// actions. Drives the real resource-collection hook (`Widget::resources`)
-    /// and the real `ui::ActionPalette`.
     #[test]
-    fn ctrl_k_lists_open_video_and_comment_resources() {
-        let (app, _vid, n_comments) = watching();
-        let doc = AutoCommit::new();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn palette_lists_and_dispatches_tube_resource_actions() {
+        // Case `ctrl_k_lists_open_video_and_comment_resources`:
+        // Ctrl+K on tube lists the open video + its comment resources and their
+        // actions. Drives the real resource-collection hook (`Widget::resources`)
+        // and the real `ui::ActionPalette`.
+        {
+            let (app, _vid, n_comments) = watching();
+            let doc = AutoCommit::new();
 
-        // The hook `ui::App::collect_resources` calls each frame.
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one stable Tube application root");
-        assert_eq!(resources[0].kind, "tube.application");
-        let video = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0.starts_with("tube.current:"))
-            .expect("the current video is projected beside the bounded library");
-        assert_eq!(video.kind, "tube.video");
-        let video_actions: Vec<&str> = video.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(video_actions.contains(&"like"), "video exports like");
-        assert!(
-            video_actions.contains(&"queue"),
-            "video exports add-to-queue"
-        );
-        assert!(video_actions.contains(&"play-pause"));
-        assert!(video_actions.contains(&"share"));
-        assert_eq!(
-            video
-                .actions
+            // The hook `ui::App::collect_resources` calls each frame.
+            let resources = Widget::resources(&app, &doc);
+            assert_eq!(resources.len(), 1, "one stable Tube application root");
+            assert_eq!(resources[0].kind, "tube.application");
+            let video = resources[0]
+                .children
                 .iter()
-                .find(|a| a.id == "queue")
-                .unwrap()
-                .contract
-                .retry,
-            RetryPolicy::AtMostOnce
-        );
+                .find(|resource| resource.id.0.starts_with("tube.current:"))
+                .expect("the current video is projected beside the bounded library");
+            assert_eq!(video.kind, "tube.video");
+            let video_actions: Vec<&str> = video.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(video_actions.contains(&"like"), "video exports like");
+            assert!(
+                video_actions.contains(&"queue"),
+                "video exports add-to-queue"
+            );
+            assert!(video_actions.contains(&"play-pause"));
+            assert!(video_actions.contains(&"share"));
+            assert_eq!(
+                video
+                    .actions
+                    .iter()
+                    .find(|a| a.id == "queue")
+                    .unwrap()
+                    .contract
+                    .retry,
+                RetryPolicy::AtMostOnce
+            );
 
-        assert_eq!(
-            video.children.len(),
-            n_comments,
-            "each comment is a child resource"
-        );
-        let c0 = &video.children[0];
-        assert_eq!(c0.kind, "tube.comment");
-        let comment_actions: Vec<&str> = c0.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(comment_actions.contains(&"like"), "comment exports like");
-        assert!(comment_actions.contains(&"reply"), "comment exports reply");
+            assert_eq!(
+                video.children.len(),
+                n_comments,
+                "each comment is a child resource"
+            );
+            let c0 = &video.children[0];
+            assert_eq!(c0.kind, "tube.comment");
+            let comment_actions: Vec<&str> = c0.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(comment_actions.contains(&"like"), "comment exports like");
+            assert!(comment_actions.contains(&"reply"), "comment exports reply");
+        }
+        // Case `executing_like_action_mutates_crdt`:
+        // Executing the "Like video" action mutates the CRDT.
+        {
+            let (app, vid, _) = watching();
+            let mut doc = AutoCommit::new();
+            let resources = Widget::resources(&app, &doc);
+            let mut palette = ui::ActionPalette::new();
+            palette.load_open_resources(&resources);
+            palette.open();
+
+            assert_eq!(read_bool(&doc, "likes", &vid), None, "not liked yet");
+            let mut tx = LocalTransport::new();
+            let d = run_row(&mut palette, &mut doc, &registry(), &mut tx, "Like video");
+            assert!(matches!(d, tilo_actions::Dispatched::AppliedLocal(_)));
+            assert_eq!(
+                read_bool(&doc, "likes", &vid),
+                Some(true),
+                "like written to CRDT"
+            );
+            assert_eq!(tx.replicated.len(), 1, "replicated once");
+        }
+        // Case `playback_setting_resources_write_the_same_document_state_as_visible_controls`.
+        {
+            let app = TubeApp::new();
+            let mut doc = AutoCommit::new();
+            let resources = Widget::resources(&app, &doc);
+            let settings = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "tube.settings")
+                .expect("settings resource");
+            assert!(settings.children.iter().any(|resource| {
+                resource.id.0 == "tube.setting:preferred-quality"
+                    && resource.actions.iter().any(|action| action.id == "cycle")
+            }));
+            assert!(settings.children.iter().any(|resource| {
+                resource.id.0 == "tube.setting:sponsor-category:sponsor"
+                    && resource.actions.iter().any(|action| action.id == "cycle")
+            }));
+
+            let mut palette = ui::ActionPalette::new();
+            palette.load_open_resources(&resources);
+            palette.open();
+            palette.set_query("cycle preferred quality");
+            assert!(
+                palette
+                    .result_labels()
+                    .iter()
+                    .any(|label| label.contains("Cycle preferred quality")),
+                "settings action appears in Ctrl+K: {:?}",
+                palette.result_labels()
+            );
+            let mut tx = LocalTransport::new();
+            let quality = run_row(
+                &mut palette,
+                &mut doc,
+                &registry(),
+                &mut tx,
+                "Cycle preferred quality",
+            );
+            assert!(matches!(quality, tilo_actions::Dispatched::AppliedLocal(_)));
+            assert_eq!(
+                read_str(&doc, "settings", "preferred_quality").as_deref(),
+                Some("720p")
+            );
+
+            palette.open();
+            palette.set_query("cycle sponsor handling");
+            let category = run_row(
+                &mut palette,
+                &mut doc,
+                &registry(),
+                &mut tx,
+                "Cycle Sponsor handling",
+            );
+            assert!(matches!(
+                category,
+                tilo_actions::Dispatched::AppliedLocal(_)
+            ));
+            let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap()
+            else {
+                panic!("tube root exists");
+            };
+            let (Value::Object(ObjType::Map), settings) =
+                doc.get(&tube, "settings").unwrap().unwrap()
+            else {
+                panic!("settings map exists");
+            };
+            let (Value::Object(ObjType::Map), categories) =
+                doc.get(&settings, "sponsor_categories").unwrap().unwrap()
+            else {
+                panic!("category map exists");
+            };
+            assert_eq!(
+                doc.get(&categories, "sponsor").unwrap().unwrap().0.as_str(),
+                Some("show"),
+            );
+        }
+        // Case `executing_add_to_queue_refuses_without_host`:
+        // The host-authoritative "Add to queue" action fails closed when no host
+        // transport is installed.
+        {
+            let (app, vid, _) = watching();
+            let mut doc = AutoCommit::new();
+            let resources = Widget::resources(&app, &doc);
+            let mut palette = ui::ActionPalette::new();
+            palette.load_open_resources(&resources);
+            palette.open();
+
+            let mut tx = LocalTransport::new();
+            let idx = palette
+                .result_labels()
+                .iter()
+                .position(|label| label.contains("Add to queue"))
+                .expect("queue action is published");
+            palette.set_cursor(idx);
+            palette.activate_selected();
+            let error = palette
+                .take_dispatch(&mut doc, &registry(), &mut tx)
+                .expect("the selected action attempted dispatch")
+                .unwrap_err();
+            assert!(matches!(error, tilo_actions::ActionError::Refused(_)));
+            assert!(doc.get(&ROOT, "tube").unwrap().is_none());
+            let _ = vid;
+        }
     }
 
     /// The watched sample video, its creator and its first comment's stable id.
@@ -1917,213 +2060,89 @@ mod tests {
             .expect("dispatch succeeded")
     }
 
-    /// Executing the "Like video" action mutates the CRDT.
     #[test]
-    fn executing_like_action_mutates_crdt() {
-        let (app, vid, _) = watching();
-        let mut doc = AutoCommit::new();
-        let resources = Widget::resources(&app, &doc);
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-
-        assert_eq!(read_bool(&doc, "likes", &vid), None, "not liked yet");
-        let mut tx = LocalTransport::new();
-        let d = run_row(&mut palette, &mut doc, &registry(), &mut tx, "Like video");
-        assert!(matches!(d, tilo_actions::Dispatched::AppliedLocal(_)));
-        assert_eq!(
-            read_bool(&doc, "likes", &vid),
-            Some(true),
-            "like written to CRDT"
-        );
-        assert_eq!(tx.replicated.len(), 1, "replicated once");
-    }
-
-    #[test]
-    fn playback_setting_resources_write_the_same_document_state_as_visible_controls() {
-        let app = TubeApp::new();
-        let mut doc = AutoCommit::new();
-        let resources = Widget::resources(&app, &doc);
-        let settings = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "tube.settings")
-            .expect("settings resource");
-        assert!(settings.children.iter().any(|resource| {
-            resource.id.0 == "tube.setting:preferred-quality"
-                && resource.actions.iter().any(|action| action.id == "cycle")
-        }));
-        assert!(settings.children.iter().any(|resource| {
-            resource.id.0 == "tube.setting:sponsor-category:sponsor"
-                && resource.actions.iter().any(|action| action.id == "cycle")
-        }));
-
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        palette.set_query("cycle preferred quality");
-        assert!(
-            palette
-                .result_labels()
+    fn unavailable_sync_backend_keeps_discoverable_unavailable_effects() {
+        // Case `unavailable_sync_keeps_discoverable_unavailable_effects`.
+        {
+            let app = TubeApp::new();
+            let doc = AutoCommit::new();
+            let resources = Widget::resources(&app, &doc);
+            let device = resources[0]
+                .children
                 .iter()
-                .any(|label| label.contains("Cycle preferred quality")),
-            "settings action appears in Ctrl+K: {:?}",
-            palette.result_labels()
-        );
-        let mut tx = LocalTransport::new();
-        let quality = run_row(
-            &mut palette,
-            &mut doc,
-            &registry(),
-            &mut tx,
-            "Cycle preferred quality",
-        );
-        assert!(matches!(quality, tilo_actions::Dispatched::AppliedLocal(_)));
-        assert_eq!(
-            read_str(&doc, "settings", "preferred_quality").as_deref(),
-            Some("720p")
-        );
-
-        palette.open();
-        palette.set_query("cycle sponsor handling");
-        let category = run_row(
-            &mut palette,
-            &mut doc,
-            &registry(),
-            &mut tx,
-            "Cycle Sponsor handling",
-        );
-        assert!(matches!(
-            category,
-            tilo_actions::Dispatched::AppliedLocal(_)
-        ));
-        let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap() else {
-            panic!("tube root exists");
-        };
-        let (Value::Object(ObjType::Map), settings) = doc.get(&tube, "settings").unwrap().unwrap()
-        else {
-            panic!("settings map exists");
-        };
-        let (Value::Object(ObjType::Map), categories) =
-            doc.get(&settings, "sponsor_categories").unwrap().unwrap()
-        else {
-            panic!("category map exists");
-        };
-        assert_eq!(
-            doc.get(&categories, "sponsor").unwrap().unwrap().0.as_str(),
-            Some("show"),
-        );
-    }
-
-    #[test]
-    fn unavailable_sync_keeps_discoverable_unavailable_effects() {
-        let app = TubeApp::new();
-        let doc = AutoCommit::new();
-        let resources = Widget::resources(&app, &doc);
-        let device = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "tube.device-sync")
-            .expect("sync capability is discoverable to agents in every build");
-        assert!(device.label.contains("unavailable"));
-        assert!(
-            device
+                .find(|resource| resource.id.0 == "tube.device-sync")
+                .expect("sync capability is discoverable to agents in every build");
+            assert!(device.label.contains("unavailable"));
+            assert!(
+                device
+                    .actions
+                    .iter()
+                    .all(|action| !action.contract.availability.is_available())
+            );
+        }
+        // Case `unavailable_device_backend_keeps_stable_unavailable_effects`.
+        {
+            let resource = provide_device_resources(&crate::sync::SyncView::default());
+            let pair = resource
                 .actions
                 .iter()
-                .all(|action| !action.contract.availability.is_available())
-        );
-    }
-
-    /// The host-authoritative "Add to queue" action fails closed when no host
-    /// transport is installed.
-    #[test]
-    fn executing_add_to_queue_refuses_without_host() {
-        let (app, vid, _) = watching();
-        let mut doc = AutoCommit::new();
-        let resources = Widget::resources(&app, &doc);
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-
-        let mut tx = LocalTransport::new();
-        let idx = palette
-            .result_labels()
-            .iter()
-            .position(|label| label.contains("Add to queue"))
-            .expect("queue action is published");
-        palette.set_cursor(idx);
-        palette.activate_selected();
-        let error = palette
-            .take_dispatch(&mut doc, &registry(), &mut tx)
-            .expect("the selected action attempted dispatch")
-            .unwrap_err();
-        assert!(matches!(error, tilo_actions::ActionError::Refused(_)));
-        assert!(doc.get(&ROOT, "tube").unwrap().is_none());
-        let _ = vid;
-    }
-
-    #[cfg(feature = "grayjay-sync")]
-    #[test]
-    fn device_lifecycle_resources_are_effects_with_confirmation() {
-        let view = crate::sync::SyncView {
-            status: crate::sync::SyncStatus::Ready,
-            summary: "ready".into(),
-            device_public_key: Some("our-public-key".into()),
-            peers: vec![crate::sync::PeerRecord {
-                id: "peer-public-key".into(),
-                name: "Phone".into(),
-                descriptor: crate::sync::PeerDescriptor {
-                    public_key: "peer-public-key".into(),
-                    addresses: vec!["127.0.0.1".into()],
-                    port: 12315,
-                },
-                approved_at: 1,
-                pending_approval: false,
-                revoked_at: None,
-                last_sync_at: None,
-                last_error: None,
-            }],
-        };
-        let resource = provide_device_resources(&view);
-        let pair = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "pair")
-            .expect("pair is published");
-        assert_eq!(pair.kind, OperationKind::Effect);
-        assert!(!matches!(
-            pair.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::None
-        ));
-        let revoke = resource.children[0]
-            .actions
-            .iter()
-            .find(|action| action.id == "revoke")
-            .expect("revoke is published");
-        assert_eq!(revoke.kind, OperationKind::Effect);
-        assert_eq!(revoke.contract.retry, RetryPolicy::Idempotent);
-        assert!(!matches!(
-            revoke.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::None
-        ));
-        assert_eq!(pair.params()[0].ty, ParamType::Secret);
-    }
-
-    #[test]
-    fn unavailable_device_backend_keeps_stable_unavailable_effects() {
-        let resource = provide_device_resources(&crate::sync::SyncView::default());
-        let pair = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "pair")
-            .expect("pair remains discoverable to agents");
-        assert!(!pair.contract.availability.is_available());
-        assert!(
-            resource
+                .find(|action| action.id == "pair")
+                .expect("pair remains discoverable to agents");
+            assert!(!pair.contract.availability.is_available());
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "sync"
+                        && !action.contract.availability.is_available())
+            );
+            assert!(resource.children.is_empty());
+        }
+        // Case `device_lifecycle_resources_are_effects_with_confirmation`.
+        #[cfg(feature = "grayjay-sync")]
+        {
+            let view = crate::sync::SyncView {
+                status: crate::sync::SyncStatus::Ready,
+                summary: "ready".into(),
+                device_public_key: Some("our-public-key".into()),
+                peers: vec![crate::sync::PeerRecord {
+                    id: "peer-public-key".into(),
+                    name: "Phone".into(),
+                    descriptor: crate::sync::PeerDescriptor {
+                        public_key: "peer-public-key".into(),
+                        addresses: vec!["127.0.0.1".into()],
+                        port: 12315,
+                    },
+                    approved_at: 1,
+                    pending_approval: false,
+                    revoked_at: None,
+                    last_sync_at: None,
+                    last_error: None,
+                }],
+            };
+            let resource = provide_device_resources(&view);
+            let pair = resource
                 .actions
                 .iter()
-                .any(|action| action.id == "sync" && !action.contract.availability.is_available())
-        );
-        assert!(resource.children.is_empty());
+                .find(|action| action.id == "pair")
+                .expect("pair is published");
+            assert_eq!(pair.kind, OperationKind::Effect);
+            assert!(!matches!(
+                pair.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::None
+            ));
+            let revoke = resource.children[0]
+                .actions
+                .iter()
+                .find(|action| action.id == "revoke")
+                .expect("revoke is published");
+            assert_eq!(revoke.kind, OperationKind::Effect);
+            assert_eq!(revoke.contract.retry, RetryPolicy::Idempotent);
+            assert!(!matches!(
+                revoke.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::None
+            ));
+            assert_eq!(pair.params()[0].ty, ParamType::Secret);
+        }
     }
 }

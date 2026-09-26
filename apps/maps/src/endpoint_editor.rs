@@ -573,45 +573,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn external_queries_replace_the_component_draft_without_drift() {
-        let mut editor = EndpointEditor::new();
-        editor.sync_queries("Old origin", "Old destination");
-        editor.sync_queries("Peer origin", "Peer destination");
-        assert_eq!(editor.query(Endpoint::Origin), "Peer origin");
-        assert_eq!(editor.query(Endpoint::Destination), "Peer destination");
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn endpoint_editor_owns_its_draft_debounce_dismiss_and_spellcheck() {
+        // Phase `external_queries_replace_the_component_draft_without_drift`.
+        {
+            let mut editor = EndpointEditor::new();
+            editor.sync_queries("Old origin", "Old destination");
+            editor.sync_queries("Peer origin", "Peer destination");
+            assert_eq!(editor.query(Endpoint::Origin), "Peer origin");
+            assert_eq!(editor.query(Endpoint::Destination), "Peer destination");
+        }
 
-    #[test]
-    fn debounce_emits_one_typed_search_for_the_focused_endpoint() {
-        let mut editor = EndpointEditor::new();
-        editor.focus(Endpoint::Origin);
-        editor.origin_query = "station".to_string();
-        let now = Instant::now();
-        editor.deadline = Some(now);
-        assert_eq!(
-            editor.take_due_search(now),
-            Some(EndpointEffect::Search {
-                endpoint: Endpoint::Origin,
-                query: "station".to_string(),
-            })
-        );
-        assert!(editor.take_due_search(now).is_none());
-    }
+        // Phase `debounce_emits_one_typed_search_for_the_focused_endpoint`.
+        {
+            let mut editor = EndpointEditor::new();
+            editor.focus(Endpoint::Origin);
+            editor.origin_query = "station".to_string();
+            let now = Instant::now();
+            editor.deadline = Some(now);
+            assert_eq!(
+                editor.take_due_search(now),
+                Some(EndpointEffect::Search {
+                    endpoint: Endpoint::Origin,
+                    query: "station".to_string(),
+                })
+            );
+            assert!(editor.take_due_search(now).is_none());
+        }
 
-    #[test]
-    fn dismiss_clears_focus_and_pending_search() {
-        let mut editor = EndpointEditor::new();
-        editor.focus(Endpoint::Destination);
-        editor.deadline = Some(Instant::now());
-        editor.dismiss();
-        assert!(!editor.is_focused());
-        assert!(!editor.has_pending_query());
-    }
+        // Phase `dismiss_clears_focus_and_pending_search`.
+        {
+            let mut editor = EndpointEditor::new();
+            editor.focus(Endpoint::Destination);
+            editor.deadline = Some(Instant::now());
+            editor.dismiss();
+            assert!(!editor.is_focused());
+            assert!(!editor.has_pending_query());
+        }
 
-    #[test]
-    fn route_endpoints_are_not_spellchecked_as_prose() {
-        let editor = EndpointEditor::new();
-        assert!(!editor.origin_input.spellcheck_enabled());
-        assert!(!editor.destination_input.spellcheck_enabled());
+        // Phase `route_endpoints_are_not_spellchecked_as_prose`.
+        {
+            let editor = EndpointEditor::new();
+            assert!(!editor.origin_input.spellcheck_enabled());
+            assert!(!editor.destination_input.spellcheck_enabled());
+        }
     }
 }

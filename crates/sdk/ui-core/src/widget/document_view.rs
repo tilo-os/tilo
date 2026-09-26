@@ -378,142 +378,146 @@ mod tests {
     }
 
     #[test]
-    fn keyed_projection_retains_subtree_across_unrelated_document_edits() {
-        let builds = Rc::new(Cell::new(0));
-        let observed_builds = Rc::clone(&builds);
-        let mut view = ModelView::from_document(
-            |doc, _| string(doc, "selection"),
-            move |selection| {
-                observed_builds.set(observed_builds.get() + 1);
-                Box::new(Text::new(selection))
-            },
-        );
-        let mut doc = AutoCommit::new();
-        doc.put(&ROOT, "selection", "alpha").unwrap();
+    fn document_view_projects_keyed_subtrees_and_tracks_undo() {
+        fn keyed_projection_retains_subtree_across_unrelated_document_edits() {
+            let builds = Rc::new(Cell::new(0));
+            let observed_builds = Rc::clone(&builds);
+            let mut view = ModelView::from_document(
+                |doc, _| string(doc, "selection"),
+                move |selection| {
+                    observed_builds.set(observed_builds.get() + 1);
+                    Box::new(Text::new(selection))
+                },
+            );
+            let mut doc = AutoCommit::new();
+            doc.put(&ROOT, "selection", "alpha").unwrap();
 
-        view.sync(&mut doc, &ROOT);
-        assert_eq!(builds.get(), 1);
-        assert!(view.take_structure_dirty());
-        assert!(!view.take_structure_dirty(), "the signal is edge-triggered");
+            view.sync(&mut doc, &ROOT);
+            assert_eq!(builds.get(), 1);
+            assert!(view.take_structure_dirty());
+            assert!(!view.take_structure_dirty(), "the signal is edge-triggered");
 
-        doc.put(&ROOT, "unrelated", 42).unwrap();
-        view.sync(&mut doc, &ROOT);
-        assert_eq!(builds.get(), 1, "equal keys retain the existing subtree");
-        assert!(!view.take_structure_dirty());
+            doc.put(&ROOT, "unrelated", 42).unwrap();
+            view.sync(&mut doc, &ROOT);
+            assert_eq!(builds.get(), 1, "equal keys retain the existing subtree");
+            assert!(!view.take_structure_dirty());
 
-        doc.put(&ROOT, "selection", "beta").unwrap();
-        view.sync(&mut doc, &ROOT);
-        assert_eq!(builds.get(), 2);
-        assert!(view.take_structure_dirty());
-        assert_eq!(
-            view.children()[0].accessibility().unwrap().name.as_deref(),
-            Some("beta")
-        );
-    }
-
-    #[test]
-    fn document_view_tracks_undo_without_app_owned_notifications() {
-        let mut state = crate::State::new();
-        state.doc.put(&ROOT, "mode", "list").unwrap();
-        state.commit_action(None, None);
-        let mut view = ModelView::from_document(
-            |doc, _| string(doc, "mode"),
-            |mode| Box::new(Text::new(mode)),
-        )
-        .autofocus_on_change(true);
-
-        view.sync(&mut state.doc, &ROOT);
-        assert_eq!(
-            view.children()[0].accessibility().unwrap().name.as_deref(),
-            Some("list")
-        );
-        assert!(view.take_focus_reset());
-
-        state.doc.put(&ROOT, "mode", "detail").unwrap();
-        state.commit_action(None, None);
-        view.sync(&mut state.doc, &ROOT);
-        assert_eq!(
-            view.children()[0].accessibility().unwrap().name.as_deref(),
-            Some("detail")
-        );
-
-        state.undo(None, None).unwrap();
-        view.sync(&mut state.doc, &ROOT);
-        assert_eq!(
-            view.children()[0].accessibility().unwrap().name.as_deref(),
-            Some("list")
-        );
-    }
-
-    #[test]
-    fn typed_state_selects_arbitrary_subtrees() {
-        let state = crate::LocalState::new(String::from("loading"));
-        let mut view = ModelView::from_state(&state, |value| Box::new(Text::new(value)));
-        let mut doc = AutoCommit::new();
-
-        view.sync(&mut doc, &ROOT);
-        assert_eq!(
-            view.children()[0].accessibility().unwrap().name.as_deref(),
-            Some("loading")
-        );
-        state.set(String::from("ready"));
-        view.sync(&mut doc, &ROOT);
-        assert_eq!(
-            view.children()[0].accessibility().unwrap().name.as_deref(),
-            Some("ready")
-        );
-    }
-
-    #[test]
-    fn separately_keyed_state_does_not_clone_or_compare_the_payload() {
-        struct Project {
-            title: String,
-        }
-        enum LoadState {
-            Loading,
-            Ready(Project),
-        }
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        enum Screen {
-            Loading,
-            Ready,
+            doc.put(&ROOT, "selection", "beta").unwrap();
+            view.sync(&mut doc, &ROOT);
+            assert_eq!(builds.get(), 2);
+            assert!(view.take_structure_dirty());
+            assert_eq!(
+                view.children()[0].accessibility().unwrap().name.as_deref(),
+                Some("beta")
+            );
         }
 
-        let state = crate::LocalState::new(LoadState::Loading);
-        let builds = Rc::new(Cell::new(0));
-        let observed_builds = Rc::clone(&builds);
-        let mut view = ModelView::from_state_by(
-            &state,
-            |state| match state {
-                LoadState::Loading => Screen::Loading,
-                LoadState::Ready(_) => Screen::Ready,
-            },
-            move |state| {
-                observed_builds.set(observed_builds.get() + 1);
-                let label = match state {
-                    LoadState::Loading => "loading",
-                    LoadState::Ready(project) => &project.title,
-                };
-                Box::new(Text::new(label))
-            },
-        );
-        let mut doc = AutoCommit::new();
+        fn document_view_tracks_undo_without_app_owned_notifications() {
+            let mut state = crate::State::new();
+            state.doc.put(&ROOT, "mode", "list").unwrap();
+            state.commit_action(None, None);
+            let mut view = ModelView::from_document(
+                |doc, _| string(doc, "mode"),
+                |mode| Box::new(Text::new(mode)),
+            )
+            .autofocus_on_change(true);
 
-        view.sync(&mut doc, &ROOT);
-        state.set(LoadState::Ready(Project {
-            title: String::from("First"),
-        }));
-        view.sync(&mut doc, &ROOT);
-        assert_eq!(builds.get(), 2);
-        assert_eq!(
-            view.children()[0].accessibility().unwrap().name.as_deref(),
-            Some("First")
-        );
+            view.sync(&mut state.doc, &ROOT);
+            assert_eq!(
+                view.children()[0].accessibility().unwrap().name.as_deref(),
+                Some("list")
+            );
+            assert!(view.take_focus_reset());
 
-        state.set(LoadState::Ready(Project {
-            title: String::from("Updated without structural replacement"),
-        }));
-        view.sync(&mut doc, &ROOT);
-        assert_eq!(builds.get(), 2, "the Ready subtree keeps its identity");
+            state.doc.put(&ROOT, "mode", "detail").unwrap();
+            state.commit_action(None, None);
+            view.sync(&mut state.doc, &ROOT);
+            assert_eq!(
+                view.children()[0].accessibility().unwrap().name.as_deref(),
+                Some("detail")
+            );
+
+            state.undo(None, None).unwrap();
+            view.sync(&mut state.doc, &ROOT);
+            assert_eq!(
+                view.children()[0].accessibility().unwrap().name.as_deref(),
+                Some("list")
+            );
+        }
+
+        fn typed_state_selects_arbitrary_subtrees() {
+            let state = crate::LocalState::new(String::from("loading"));
+            let mut view = ModelView::from_state(&state, |value| Box::new(Text::new(value)));
+            let mut doc = AutoCommit::new();
+
+            view.sync(&mut doc, &ROOT);
+            assert_eq!(
+                view.children()[0].accessibility().unwrap().name.as_deref(),
+                Some("loading")
+            );
+            state.set(String::from("ready"));
+            view.sync(&mut doc, &ROOT);
+            assert_eq!(
+                view.children()[0].accessibility().unwrap().name.as_deref(),
+                Some("ready")
+            );
+        }
+
+        fn separately_keyed_state_does_not_clone_or_compare_the_payload() {
+            struct Project {
+                title: String,
+            }
+            enum LoadState {
+                Loading,
+                Ready(Project),
+            }
+            #[derive(Clone, Copy, PartialEq, Eq)]
+            enum Screen {
+                Loading,
+                Ready,
+            }
+
+            let state = crate::LocalState::new(LoadState::Loading);
+            let builds = Rc::new(Cell::new(0));
+            let observed_builds = Rc::clone(&builds);
+            let mut view = ModelView::from_state_by(
+                &state,
+                |state| match state {
+                    LoadState::Loading => Screen::Loading,
+                    LoadState::Ready(_) => Screen::Ready,
+                },
+                move |state| {
+                    observed_builds.set(observed_builds.get() + 1);
+                    let label = match state {
+                        LoadState::Loading => "loading",
+                        LoadState::Ready(project) => &project.title,
+                    };
+                    Box::new(Text::new(label))
+                },
+            );
+            let mut doc = AutoCommit::new();
+
+            view.sync(&mut doc, &ROOT);
+            state.set(LoadState::Ready(Project {
+                title: String::from("First"),
+            }));
+            view.sync(&mut doc, &ROOT);
+            assert_eq!(builds.get(), 2);
+            assert_eq!(
+                view.children()[0].accessibility().unwrap().name.as_deref(),
+                Some("First")
+            );
+
+            state.set(LoadState::Ready(Project {
+                title: String::from("Updated without structural replacement"),
+            }));
+            view.sync(&mut doc, &ROOT);
+            assert_eq!(builds.get(), 2, "the Ready subtree keeps its identity");
+        }
+
+        keyed_projection_retains_subtree_across_unrelated_document_edits();
+        document_view_tracks_undo_without_app_owned_notifications();
+        typed_state_selects_arbitrary_subtrees();
+        separately_keyed_state_does_not_clone_or_compare_the_payload();
     }
 }

@@ -1151,302 +1151,323 @@ mod tests {
         (s, canvas)
     }
 
+    /// The Functions panel layout is re-derived from the current width: it docks
+    /// when wide, collapses to an overlay drawer (toggle, scrim, dismiss) when
+    /// narrow, re-docks when widened, and keeps non-overlapping 44 px row-action
+    /// targets. Fresh screen per phase.
     #[test]
-    fn wide_docks_the_functions_panel() {
-        let mut s = Graph2dScreen::default();
-        let m = CalcModel::seeded();
-        let area = Rect::new(0.0, 60.0, 1280.0, 800.0);
-        s.layout(area, &m);
-        assert!(!s.overlay, "wide window docks the panel");
-        assert!(s.panel_open);
-        assert!(
-            s.panel.width() > 0.0 && (s.panel.x0 - area.x0).abs() < f64::EPSILON,
-            "docked panel on the left"
-        );
-        assert!(
-            s.canvas.x0 >= s.panel.x1 - 0.5,
-            "canvas starts after the docked panel"
-        );
+    fn functions_panel_docks_wide_overlays_narrow_and_keeps_row_targets() {
+        // phase wide_docks_the_functions_panel
+        {
+            let mut s = Graph2dScreen::default();
+            let m = CalcModel::seeded();
+            let area = Rect::new(0.0, 60.0, 1280.0, 800.0);
+            s.layout(area, &m);
+            assert!(!s.overlay, "wide window docks the panel");
+            assert!(s.panel_open);
+            assert!(
+                s.panel.width() > 0.0 && (s.panel.x0 - area.x0).abs() < f64::EPSILON,
+                "docked panel on the left"
+            );
+            assert!(
+                s.canvas.x0 >= s.panel.x1 - 0.5,
+                "canvas starts after the docked panel"
+            );
+        }
+
+        // phase narrow_collapses_panel_to_overlay
+        {
+            let mut s = Graph2dScreen::default();
+            let m = CalcModel::seeded();
+            let area = Rect::new(0.0, 60.0, 560.0, 800.0);
+            s.layout(area, &m);
+            assert!(s.overlay, "narrow window uses the overlay drawer");
+            assert!(
+                !s.panel_open,
+                "narrow default is collapsed so the plot keeps the width"
+            );
+            assert_eq!(
+                s.panel,
+                Rect::ZERO,
+                "collapsed → no docked panel eating the canvas"
+            );
+            assert!(
+                (s.canvas.width() - area.width()).abs() < 0.5,
+                "canvas gets the full width when collapsed"
+            );
+            assert!(
+                s.toggle_at(s.toggle_rect.center()),
+                "a floating toggle must be present to open it"
+            );
+        }
+
+        // phase narrow_overlay_opens_with_scrim_and_dismisses
+        {
+            let mut s = Graph2dScreen::default();
+            let m = CalcModel::seeded();
+            let area = Rect::new(0.0, 60.0, 560.0, 800.0);
+            s.layout(area, &m);
+            // Open via the toggle.
+            s.toggle_panel();
+            s.layout(area, &m);
+            assert!(s.panel_open && s.overlay);
+            assert!(s.panel.width() > 0.0, "open overlay draws a drawer");
+            assert!(
+                s.scrim_rect.width() > 0.0,
+                "open overlay lays down a dismiss scrim"
+            );
+            // A press inside the drawer must not pan the canvas.
+            assert!(!s.canvas_contains(s.panel.center()));
+            // Scrim tap dismisses.
+            let scrim_pt = Point::new(s.scrim_rect.x0 + 10.0, s.scrim_rect.center().y);
+            assert!(s.scrim_at(scrim_pt));
+            s.close_panel();
+            s.layout(area, &m);
+            assert!(!s.panel_open);
+        }
+
+        // phase narrow_panel_reflows_back_to_docked_when_widened
+        {
+            // Re-derive from the current width each pass: a fresh (un-toggled) screen
+            // must dock when wide and overlay when narrow, proving no first-frame cache.
+            let mut s = Graph2dScreen::default();
+            let m = CalcModel::seeded();
+            s.layout(Rect::new(0.0, 60.0, 560.0, 800.0), &m);
+            assert!(s.overlay && !s.panel_open);
+            s.layout(Rect::new(0.0, 60.0, 1280.0, 800.0), &m);
+            assert!(
+                !s.overlay && s.panel_open,
+                "widening must re-dock the panel"
+            );
+        }
+
+        // phase row_actions_have_non_overlapping_44px_targets
+        {
+            let mut s = Graph2dScreen::default();
+            let m = CalcModel::seeded();
+            // 390-wide overlay is the tightest production presentation.
+            let area = Rect::new(0.0, 60.0, 390.0, 844.0);
+            s.layout(area, &m);
+            s.toggle_panel();
+            s.layout(area, &m);
+            let delete = s.delete_rect(0).expect("delete target");
+            let visible = s.visibility_rect(0).expect("visibility target");
+            assert!(delete.width() >= 44.0 && delete.height() >= 44.0);
+            assert!(visible.width() >= 44.0 && visible.height() >= 44.0);
+            assert!(delete.x1 <= visible.x0, "row actions must not overlap");
+            assert_eq!(s.delete_at(delete.center()), Some(0));
+            assert_eq!(s.vis_at(visible.center()), Some(0));
+            assert_eq!(
+                s.delete_at(s.delete_rect(1).expect("second delete target").center()),
+                Some(1),
+                "a delete hit must not target the adjacent row"
+            );
+            assert!(
+                s.edit_rects[0].x1 <= delete.x0,
+                "math editing must not steal the delete target"
+            );
+        }
     }
 
+    /// The sampled-curve cache: the first draw samples every visible function;
+    /// theme or tab switches do not resample; editing a function, panning or
+    /// zooming resample; hiding a function drops its curve. Fresh screen + model
+    /// per phase.
     #[test]
-    fn narrow_collapses_panel_to_overlay() {
-        let mut s = Graph2dScreen::default();
-        let m = CalcModel::seeded();
-        let area = Rect::new(0.0, 60.0, 560.0, 800.0);
-        s.layout(area, &m);
-        assert!(s.overlay, "narrow window uses the overlay drawer");
-        assert!(
-            !s.panel_open,
-            "narrow default is collapsed so the plot keeps the width"
-        );
-        assert_eq!(
-            s.panel,
-            Rect::ZERO,
-            "collapsed → no docked panel eating the canvas"
-        );
-        assert!(
-            (s.canvas.width() - area.width()).abs() < 0.5,
-            "canvas gets the full width when collapsed"
-        );
-        assert!(
-            s.toggle_at(s.toggle_rect.center()),
-            "a floating toggle must be present to open it"
-        );
+    fn curve_cache_resamples_only_when_geometry_changes() {
+        // phase first_draw_samples_visible_functions
+        {
+            let (mut s, _) = screen_with_canvas();
+            let m = CalcModel::seeded();
+            s.ensure_curves(&m);
+            // seeded model has 4 visible functions → 4 sampled polylines.
+            let visible = m.funcs.iter().filter(|f| f.visible).count();
+            assert_eq!(s.curve_cache.paths.len(), visible);
+            assert_eq!(s.curve_cache.rebuilds, 1);
+        }
+
+        // phase theme_or_tab_switch_does_not_resample
+        {
+            let (mut s, _) = screen_with_canvas();
+            let mut m = CalcModel::seeded();
+            s.ensure_curves(&m);
+            assert_eq!(s.curve_cache.rebuilds, 1);
+            // A theme switch is invisible to geometry: nothing about the model that
+            // ensure_curves keys on changes, so re-calling it must NOT resample.
+            s.ensure_curves(&m);
+            s.ensure_curves(&m);
+            assert_eq!(
+                s.curve_cache.rebuilds, 1,
+                "re-sampled with no geometry change"
+            );
+            // Switching tabs and back leaves funcs/view/canvas identical.
+            m.mode = Mode::Calc;
+            s.ensure_curves(&m);
+            m.mode = Mode::Graph2d;
+            s.ensure_curves(&m);
+            assert_eq!(s.curve_cache.rebuilds, 1, "tab switch triggered a resample");
+        }
+
+        // phase editing_a_function_resamples
+        {
+            let (mut s, _) = screen_with_canvas();
+            let mut m = CalcModel::seeded();
+            s.ensure_curves(&m);
+            assert_eq!(s.curve_cache.rebuilds, 1);
+            m.funcs[0].expr = "x^3".into();
+            s.ensure_curves(&m);
+            assert_eq!(s.curve_cache.rebuilds, 2);
+        }
+
+        // phase panning_the_view_resamples
+        {
+            let (mut s, _) = screen_with_canvas();
+            let mut m = CalcModel::seeded();
+            s.ensure_curves(&m);
+            m.view2d.cx += 1.5;
+            s.ensure_curves(&m);
+            assert_eq!(s.curve_cache.rebuilds, 2);
+            m.view2d.scale *= 1.2;
+            s.ensure_curves(&m);
+            assert_eq!(s.curve_cache.rebuilds, 3);
+        }
+
+        // phase toggling_visibility_off_drops_the_curve
+        {
+            let (mut s, _) = screen_with_canvas();
+            let mut m = CalcModel::seeded();
+            s.ensure_curves(&m);
+            let before = s.curve_cache.paths.len();
+            m.funcs[0].visible = false;
+            s.ensure_curves(&m);
+            assert_eq!(s.curve_cache.paths.len(), before - 1);
+        }
     }
 
+    /// Formula cards on the real measure → layout → set-rect path: a fraction
+    /// grows to show in full, an oversized formula clamps to the max and scrolls,
+    /// a short formula keeps the base height, and taller rows push later rows
+    /// down. Fresh screen + renderer per phase.
     #[test]
-    fn narrow_overlay_opens_with_scrim_and_dismisses() {
-        let mut s = Graph2dScreen::default();
-        let m = CalcModel::seeded();
-        let area = Rect::new(0.0, 60.0, 560.0, 800.0);
-        s.layout(area, &m);
-        // Open via the toggle.
-        s.toggle_panel();
-        s.layout(area, &m);
-        assert!(s.panel_open && s.overlay);
-        assert!(s.panel.width() > 0.0, "open overlay draws a drawer");
-        assert!(
-            s.scrim_rect.width() > 0.0,
-            "open overlay lays down a dismiss scrim"
-        );
-        // A press inside the drawer must not pan the canvas.
-        assert!(!s.canvas_contains(s.panel.center()));
-        // Scrim tap dismisses.
-        let scrim_pt = Point::new(s.scrim_rect.x0 + 10.0, s.scrim_rect.center().y);
-        assert!(s.scrim_at(scrim_pt));
-        s.close_panel();
-        s.layout(area, &m);
-        assert!(!s.panel_open);
-    }
-
-    #[test]
-    fn narrow_panel_reflows_back_to_docked_when_widened() {
-        // Re-derive from the current width each pass: a fresh (un-toggled) screen
-        // must dock when wide and overlay when narrow, proving no first-frame cache.
-        let mut s = Graph2dScreen::default();
-        let m = CalcModel::seeded();
-        s.layout(Rect::new(0.0, 60.0, 560.0, 800.0), &m);
-        assert!(s.overlay && !s.panel_open);
-        s.layout(Rect::new(0.0, 60.0, 1280.0, 800.0), &m);
-        assert!(
-            !s.overlay && s.panel_open,
-            "widening must re-dock the panel"
-        );
-    }
-
-    #[test]
-    fn row_actions_have_non_overlapping_44px_targets() {
-        let mut s = Graph2dScreen::default();
-        let m = CalcModel::seeded();
-        // 390-wide overlay is the tightest production presentation.
-        let area = Rect::new(0.0, 60.0, 390.0, 844.0);
-        s.layout(area, &m);
-        s.toggle_panel();
-        s.layout(area, &m);
-        let delete = s.delete_rect(0).expect("delete target");
-        let visible = s.visibility_rect(0).expect("visibility target");
-        assert!(delete.width() >= 44.0 && delete.height() >= 44.0);
-        assert!(visible.width() >= 44.0 && visible.height() >= 44.0);
-        assert!(delete.x1 <= visible.x0, "row actions must not overlap");
-        assert_eq!(s.delete_at(delete.center()), Some(0));
-        assert_eq!(s.vis_at(visible.center()), Some(0));
-        assert_eq!(
-            s.delete_at(s.delete_rect(1).expect("second delete target").center()),
-            Some(1),
-            "a delete hit must not target the adjacent row"
-        );
-        assert!(
-            s.edit_rects[0].x1 <= delete.x0,
-            "math editing must not steal the delete target"
-        );
-    }
-
-    #[test]
-    fn first_draw_samples_visible_functions() {
-        let (mut s, _) = screen_with_canvas();
-        let m = CalcModel::seeded();
-        s.ensure_curves(&m);
-        // seeded model has 4 visible functions → 4 sampled polylines.
-        let visible = m.funcs.iter().filter(|f| f.visible).count();
-        assert_eq!(s.curve_cache.paths.len(), visible);
-        assert_eq!(s.curve_cache.rebuilds, 1);
-    }
-
-    #[test]
-    fn theme_or_tab_switch_does_not_resample() {
-        let (mut s, _) = screen_with_canvas();
-        let mut m = CalcModel::seeded();
-        s.ensure_curves(&m);
-        assert_eq!(s.curve_cache.rebuilds, 1);
-        // A theme switch is invisible to geometry: nothing about the model that
-        // ensure_curves keys on changes, so re-calling it must NOT resample.
-        s.ensure_curves(&m);
-        s.ensure_curves(&m);
-        assert_eq!(
-            s.curve_cache.rebuilds, 1,
-            "re-sampled with no geometry change"
-        );
-        // Switching tabs and back leaves funcs/view/canvas identical.
-        m.mode = Mode::Calc;
-        s.ensure_curves(&m);
-        m.mode = Mode::Graph2d;
-        s.ensure_curves(&m);
-        assert_eq!(s.curve_cache.rebuilds, 1, "tab switch triggered a resample");
-    }
-
-    #[test]
-    fn editing_a_function_resamples() {
-        let (mut s, _) = screen_with_canvas();
-        let mut m = CalcModel::seeded();
-        s.ensure_curves(&m);
-        assert_eq!(s.curve_cache.rebuilds, 1);
-        m.funcs[0].expr = "x^3".into();
-        s.ensure_curves(&m);
-        assert_eq!(s.curve_cache.rebuilds, 2);
-    }
-
-    #[test]
-    fn panning_the_view_resamples() {
-        let (mut s, _) = screen_with_canvas();
-        let mut m = CalcModel::seeded();
-        s.ensure_curves(&m);
-        m.view2d.cx += 1.5;
-        s.ensure_curves(&m);
-        assert_eq!(s.curve_cache.rebuilds, 2);
-        m.view2d.scale *= 1.2;
-        s.ensure_curves(&m);
-        assert_eq!(s.curve_cache.rebuilds, 3);
-    }
-
-    #[test]
-    fn toggling_visibility_off_drops_the_curve() {
-        let (mut s, _) = screen_with_canvas();
-        let mut m = CalcModel::seeded();
-        s.ensure_curves(&m);
-        let before = s.curve_cache.paths.len();
-        m.funcs[0].visible = false;
-        s.ensure_curves(&m);
-        assert_eq!(s.curve_cache.paths.len(), before - 1);
-    }
-
-    /// A fraction row's card grows taller than the base to show the fraction IN
-    /// FULL (no clip, no scroll) — mirrors `draw()`'s measure → layout → set-rect
-    /// sequence on the real path.
-    #[test]
-    fn fraction_card_grows_to_show_in_full() {
-        let mut tr = TextRenderer::new();
-        let mut s = Graph2dScreen::default();
-        let mut m = CalcModel::seeded();
-        m.funcs = vec![crate::model::PlotFn {
-            expr: "(x^2+1)/(x-3)".into(),
-            visible: true,
-        }];
-        m.active_fn = 0;
-        let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
-        s.measure_cards(&m, &mut tr, 1.0);
-        s.layout(area, &m);
-        assert!(
-            s.card_heights[0] > BASE_ROW_H + 8.0,
-            "a fraction card must grow visibly taller than the base ({BASE_ROW_H}), got {}",
-            s.card_heights[0]
-        );
-        assert!(
-            (s.row_rects[0].height() - s.card_heights[0]).abs() < 1e-6,
-            "the row rect must reflect the grown card height"
-        );
-        // The fraction fits VERTICALLY in its grown field (no vertical scroll /
-        // clip); horizontal scrolling for very wide formulas is a separate axis.
-        let content_h = s.fields[0].content_height(&mut tr);
-        assert!(
-            content_h <= s.edit_rects[0].height() + 0.5,
-            "a fraction under the card max must fit vertically in full: content {content_h} vs field {}",
-            s.edit_rects[0].height()
-        );
-    }
-
-    /// A fraction-over-fraction exceeds even the generous max: the card grows to
-    /// the max and its field scrolls (never clips).
-    #[test]
-    fn oversized_formula_card_grows_to_max_then_scrolls() {
-        let mut tr = TextRenderer::new();
-        let mut s = Graph2dScreen::default();
-        let mut m = CalcModel::seeded();
-        m.funcs = vec![crate::model::PlotFn {
-            expr: "(1/x)/(1/y)".into(),
-            visible: true,
-        }];
-        m.active_fn = 0;
-        let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
-        s.measure_cards(&m, &mut tr, 1.0);
-        s.layout(area, &m);
-        let expected = crate::mathfield::CARD_MAX_H + 2.0 * CARD_PAD_Y;
-        assert!(
-            (s.card_heights[0] - expected).abs() < 1e-6,
-            "an oversized formula card must clamp to the max ({expected}), got {}",
-            s.card_heights[0]
-        );
-        // The formula is taller than the (maxed) field → it scrolls vertically.
-        let content_h = s.fields[0].content_height(&mut tr);
-        assert!(
-            content_h > s.edit_rects[0].height() + 0.5,
-            "an oversized formula must overflow its maxed field vertically (scroll, not clip): content {content_h} vs field {}",
-            s.edit_rects[0].height()
-        );
-        s.fields[0].set_rect(s.edit_rects[0], &mut tr);
-        assert!(
-            s.fields[0].overflows(),
-            "the maxed field must report overflow"
-        );
-    }
-
-    /// A short one-line formula keeps the base card height and does not scroll,
-    /// so the common case is unchanged.
-    #[test]
-    fn short_formula_card_keeps_base_height() {
-        let mut tr = TextRenderer::new();
-        let mut s = Graph2dScreen::default();
-        let mut m = CalcModel::seeded();
-        m.funcs = vec![crate::model::PlotFn {
-            expr: "sin(x)".into(),
-            visible: true,
-        }];
-        m.active_fn = 0;
-        s.measure_cards(&m, &mut tr, 1.0);
-        s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
-        assert!(
-            (s.card_heights[0] - BASE_ROW_H).abs() < 1e-6,
-            "a short one-line formula keeps the base card height, got {}",
-            s.card_heights[0]
-        );
-        s.fields[0].set_rect(s.edit_rects[0], &mut tr);
-        assert!(!s.fields[0].overflows(), "a short formula must not scroll");
-    }
-
-    /// Cards reflow: the second card starts below the (grown) first card plus the
-    /// gap, so a tall formula pushes later rows down instead of overlapping them.
-    #[test]
-    fn cards_reflow_to_accommodate_taller_rows() {
-        let mut tr = TextRenderer::new();
-        let mut s = Graph2dScreen::default();
-        let mut m = CalcModel::seeded();
-        m.funcs = vec![
-            crate::model::PlotFn {
+    fn formula_cards_grow_to_fit_clamp_to_max_and_reflow() {
+        // phase fraction_card_grows_to_show_in_full
+        // A fraction row's card grows taller than the base to show the fraction IN
+        // FULL (no clip, no scroll) — mirrors `draw()`'s measure → layout → set-rect
+        // sequence on the real path.
+        {
+            let mut tr = TextRenderer::new();
+            let mut s = Graph2dScreen::default();
+            let mut m = CalcModel::seeded();
+            m.funcs = vec![crate::model::PlotFn {
                 expr: "(x^2+1)/(x-3)".into(),
                 visible: true,
-            },
-            crate::model::PlotFn {
+            }];
+            m.active_fn = 0;
+            let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
+            s.measure_cards(&m, &mut tr, 1.0);
+            s.layout(area, &m);
+            assert!(
+                s.card_heights[0] > BASE_ROW_H + 8.0,
+                "a fraction card must grow visibly taller than the base ({BASE_ROW_H}), got {}",
+                s.card_heights[0]
+            );
+            assert!(
+                (s.row_rects[0].height() - s.card_heights[0]).abs() < 1e-6,
+                "the row rect must reflect the grown card height"
+            );
+            // The fraction fits VERTICALLY in its grown field (no vertical scroll /
+            // clip); horizontal scrolling for very wide formulas is a separate axis.
+            let content_h = s.fields[0].content_height(&mut tr);
+            assert!(
+                content_h <= s.edit_rects[0].height() + 0.5,
+                "a fraction under the card max must fit vertically in full: content {content_h} vs field {}",
+                s.edit_rects[0].height()
+            );
+        }
+
+        // phase oversized_formula_card_grows_to_max_then_scrolls
+        // A fraction-over-fraction exceeds even the generous max: the card grows to
+        // the max and its field scrolls (never clips).
+        {
+            let mut tr = TextRenderer::new();
+            let mut s = Graph2dScreen::default();
+            let mut m = CalcModel::seeded();
+            m.funcs = vec![crate::model::PlotFn {
+                expr: "(1/x)/(1/y)".into(),
+                visible: true,
+            }];
+            m.active_fn = 0;
+            let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
+            s.measure_cards(&m, &mut tr, 1.0);
+            s.layout(area, &m);
+            let expected = crate::mathfield::CARD_MAX_H + 2.0 * CARD_PAD_Y;
+            assert!(
+                (s.card_heights[0] - expected).abs() < 1e-6,
+                "an oversized formula card must clamp to the max ({expected}), got {}",
+                s.card_heights[0]
+            );
+            // The formula is taller than the (maxed) field → it scrolls vertically.
+            let content_h = s.fields[0].content_height(&mut tr);
+            assert!(
+                content_h > s.edit_rects[0].height() + 0.5,
+                "an oversized formula must overflow its maxed field vertically (scroll, not clip): content {content_h} vs field {}",
+                s.edit_rects[0].height()
+            );
+            s.fields[0].set_rect(s.edit_rects[0], &mut tr);
+            assert!(
+                s.fields[0].overflows(),
+                "the maxed field must report overflow"
+            );
+        }
+
+        // phase short_formula_card_keeps_base_height
+        // A short one-line formula keeps the base card height and does not scroll,
+        // so the common case is unchanged.
+        {
+            let mut tr = TextRenderer::new();
+            let mut s = Graph2dScreen::default();
+            let mut m = CalcModel::seeded();
+            m.funcs = vec![crate::model::PlotFn {
                 expr: "sin(x)".into(),
                 visible: true,
-            },
-        ];
-        s.measure_cards(&m, &mut tr, 1.0);
-        s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
-        assert!(
-            s.row_rects[1].y0 >= s.row_rects[0].y1 - 0.01,
-            "row 1 (y0={}) must start at/after the bottom of the taller row 0 (y1={})",
-            s.row_rects[1].y0,
-            s.row_rects[0].y1
-        );
+            }];
+            m.active_fn = 0;
+            s.measure_cards(&m, &mut tr, 1.0);
+            s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
+            assert!(
+                (s.card_heights[0] - BASE_ROW_H).abs() < 1e-6,
+                "a short one-line formula keeps the base card height, got {}",
+                s.card_heights[0]
+            );
+            s.fields[0].set_rect(s.edit_rects[0], &mut tr);
+            assert!(!s.fields[0].overflows(), "a short formula must not scroll");
+        }
+
+        // phase cards_reflow_to_accommodate_taller_rows
+        // Cards reflow: the second card starts below the (grown) first card plus the
+        // gap, so a tall formula pushes later rows down instead of overlapping them.
+        {
+            let mut tr = TextRenderer::new();
+            let mut s = Graph2dScreen::default();
+            let mut m = CalcModel::seeded();
+            m.funcs = vec![
+                crate::model::PlotFn {
+                    expr: "(x^2+1)/(x-3)".into(),
+                    visible: true,
+                },
+                crate::model::PlotFn {
+                    expr: "sin(x)".into(),
+                    visible: true,
+                },
+            ];
+            s.measure_cards(&m, &mut tr, 1.0);
+            s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
+            assert!(
+                s.row_rects[1].y0 >= s.row_rects[0].y1 - 0.01,
+                "row 1 (y0={}) must start at/after the bottom of the taller row 0 (y1={})",
+                s.row_rects[1].y0,
+                s.row_rects[0].y1
+            );
+        }
     }
 }

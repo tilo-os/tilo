@@ -685,82 +685,85 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keyboard_after_touch_preserves_coarse_pointer_capability() {
-        let env = InteractionEnvironment::TOUCH.with_keyboard_modality();
-        assert_eq!(env.modality, InputModality::Keyboard);
-        assert_eq!(env.pointer_precision, PointerPrecision::Coarse);
-        assert_eq!(env.minimum_target(), 48.0);
-        assert!(!env.supports_hover());
-        assert!(env.available.contains(InputDevice::Touch));
-        assert!(env.available.contains(InputDevice::Keyboard));
-    }
+    fn modality_tracking_keeps_discovered_devices_and_hint_priority() {
+        // Case `keyboard_after_touch_preserves_coarse_pointer_capability`.
+        {
+            let env = InteractionEnvironment::TOUCH.with_keyboard_modality();
+            assert_eq!(env.modality, InputModality::Keyboard);
+            assert_eq!(env.pointer_precision, PointerPrecision::Coarse);
+            assert_eq!(env.minimum_target(), 48.0);
+            assert!(!env.supports_hover());
+            assert!(env.available.contains(InputDevice::Touch));
+            assert!(env.available.contains(InputDevice::Keyboard));
+        }
 
-    #[test]
-    fn modality_changes_do_not_erase_discovered_devices() {
-        let env = InteractionEnvironment::POINTER
-            .with_touch_modality()
-            .with_controller(ControllerFamily::JoyConPair)
-            .with_pointer_modality();
-        assert_eq!(env.modality, InputModality::Pointer);
-        assert!(env.available.contains(InputDevice::Pointer));
-        assert!(env.available.contains(InputDevice::Touch));
-        assert!(env.available.contains(InputDevice::Controller));
-        assert_eq!(env.controller, Some(ControllerFamily::JoyConPair));
-    }
+        // Case `modality_changes_do_not_erase_discovered_devices`.
+        {
+            let env = InteractionEnvironment::POINTER
+                .with_touch_modality()
+                .with_controller(ControllerFamily::JoyConPair)
+                .with_pointer_modality();
+            assert_eq!(env.modality, InputModality::Pointer);
+            assert!(env.available.contains(InputDevice::Pointer));
+            assert!(env.available.contains(InputDevice::Touch));
+            assert!(env.available.contains(InputDevice::Controller));
+            assert_eq!(env.controller, Some(ControllerFamily::JoyConPair));
+        }
 
-    #[test]
-    fn hint_priority_is_used_controller_then_keyboard_then_touch() {
-        let all = InteractionEnvironment::POINTER
-            .with_touch_modality()
-            .with_controller(ControllerFamily::Xbox);
-        assert_eq!(all.preferred_hint_modality(), InputModality::Controller);
-        let keyboard_last = all.with_keyboard_modality();
-        assert_eq!(
-            keyboard_last.preferred_hint_modality(),
-            InputModality::Keyboard
-        );
-        let touch_only = InteractionEnvironment {
-            modality: InputModality::Touch,
-            available: InputAvailability::NONE.with(InputDevice::Touch),
-            ..InteractionEnvironment::TOUCH
-        };
-        assert_eq!(touch_only.preferred_hint_modality(), InputModality::Touch);
-    }
+        // Case `hint_priority_is_used_controller_then_keyboard_then_touch`.
+        {
+            let all = InteractionEnvironment::POINTER
+                .with_touch_modality()
+                .with_controller(ControllerFamily::Xbox);
+            assert_eq!(all.preferred_hint_modality(), InputModality::Controller);
+            let keyboard_last = all.with_keyboard_modality();
+            assert_eq!(
+                keyboard_last.preferred_hint_modality(),
+                InputModality::Keyboard
+            );
+            let touch_only = InteractionEnvironment {
+                modality: InputModality::Touch,
+                available: InputAvailability::NONE.with(InputDevice::Touch),
+                ..InteractionEnvironment::TOUCH
+            };
+            assert_eq!(touch_only.preferred_hint_modality(), InputModality::Touch);
+        }
 
-    #[test]
-    fn availability_is_an_idempotent_set_of_independent_devices() {
-        let available = InputAvailability::NONE
-            .with(InputDevice::Touch)
-            .with(InputDevice::Controller)
-            .with(InputDevice::Touch);
-        assert!(!available.contains(InputDevice::Keyboard));
-        assert!(!available.contains(InputDevice::Pointer));
-        assert!(available.contains(InputDevice::Touch));
-        assert!(available.contains(InputDevice::Controller));
-    }
+        // Case `availability_is_an_idempotent_set_of_independent_devices`.
+        {
+            let available = InputAvailability::NONE
+                .with(InputDevice::Touch)
+                .with(InputDevice::Controller)
+                .with(InputDevice::Touch);
+            assert!(!available.contains(InputDevice::Keyboard));
+            assert!(!available.contains(InputDevice::Pointer));
+            assert!(available.contains(InputDevice::Touch));
+            assert!(available.contains(InputDevice::Controller));
+        }
 
-    #[test]
-    fn hid_names_select_legends_without_affecting_semantic_positions() {
-        assert_eq!(
-            ControllerFamily::from_device_name("Nintendo Switch Joy-Con (L)"),
-            ControllerFamily::JoyConLeft
-        );
-        assert_eq!(
-            ControllerFamily::from_device_name("Sony DualSense Wireless Controller"),
-            ControllerFamily::PlayStation
-        );
-        assert_eq!(
-            ControllerFamily::from_hid(Some(0x054c), "Wireless Controller"),
-            ControllerFamily::PlayStation
-        );
-        assert_eq!(
-            ControllerFamily::from_device_name("Wireless Controller"),
-            ControllerFamily::Generic
-        );
-        assert_eq!(
-            KeyboardFamily::from_device_name("Apple Inc. Magic Keyboard"),
-            KeyboardFamily::Apple
-        );
+        // Case `hid_names_select_legends_without_affecting_semantic_positions`.
+        {
+            assert_eq!(
+                ControllerFamily::from_device_name("Nintendo Switch Joy-Con (L)"),
+                ControllerFamily::JoyConLeft
+            );
+            assert_eq!(
+                ControllerFamily::from_device_name("Sony DualSense Wireless Controller"),
+                ControllerFamily::PlayStation
+            );
+            assert_eq!(
+                ControllerFamily::from_hid(Some(0x054c), "Wireless Controller"),
+                ControllerFamily::PlayStation
+            );
+            assert_eq!(
+                ControllerFamily::from_device_name("Wireless Controller"),
+                ControllerFamily::Generic
+            );
+            assert_eq!(
+                KeyboardFamily::from_device_name("Apple Inc. Magic Keyboard"),
+                KeyboardFamily::Apple
+            );
+        }
     }
 
     fn touch(phase: winit::event::TouchPhase, id: u64, x: f64, y: f64) -> winit::event::Touch {

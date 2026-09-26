@@ -247,61 +247,65 @@ mod tests {
     use ui::surface::edge_delta;
     use ui::tokens::colors::HAIRLINE_MIN_DELTA;
 
+    /// Chrome edges register and floored rows keep order on every preset; pointer targets grow to the metric and rhythm steps are monotone.
     #[test]
-    fn every_chrome_edge_registers_on_every_preset() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let c = &theme.tokens.colors;
-            for (name, fill) in [
-                ("raised card", c.surfaces.raised),
-                ("overlay card", c.surfaces.overlay),
-                ("rail / bar on base", c.surfaces.base),
-                ("floored row", c.lift(FLOOR_IDLE_T)),
-                ("hovered floored row", c.lift(FLOOR_HOVER_T)),
-            ] {
-                let delta = edge_delta(edge_on(fill), fill);
-                assert!(delta >= HAIRLINE_MIN_DELTA, "{name}: Δ={delta}");
+    fn chrome_metrics_register_and_grow_on_every_preset() {
+        // --- phase: every_chrome_edge_registers_on_every_preset ---
+        {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let c = &theme.tokens.colors;
+                for (name, fill) in [
+                    ("raised card", c.surfaces.raised),
+                    ("overlay card", c.surfaces.overlay),
+                    ("rail / bar on base", c.surfaces.base),
+                    ("floored row", c.lift(FLOOR_IDLE_T)),
+                    ("hovered floored row", c.lift(FLOOR_HOVER_T)),
+                ] {
+                    let delta = edge_delta(edge_on(fill), fill);
+                    assert!(delta >= HAIRLINE_MIN_DELTA, "{name}: Δ={delta}");
+                }
             }
         }
-    }
 
-    /// HIG §9.3's caveat: a control with its own floor derives every state
-    /// from one ordered ramp against the ground, so the chosen row is never
-    /// less prominent than an idle one — on every preset.
-    #[test]
-    fn floored_rows_keep_their_order_on_every_preset() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let c = &theme.tokens.colors;
-            let base = relative_luminance(c.surfaces.base);
-            let dist = |state: SelectionState| {
-                (relative_luminance(c.lift(floor_ramp(state))) - base).abs()
-            };
-            let idle = dist(SelectionState::default());
-            let hover = dist(SelectionState::new(false, true, false));
-            let active = dist(SelectionState::active(true));
-            assert!(idle < hover, "idle {idle} !< hover {hover}");
-            assert!(hover < active, "hover {hover} !< active {active}");
+        // --- phase: floored_rows_keep_their_order_on_every_preset ---
+        // HIG §9.3's caveat: a control with its own floor derives every state
+        // from one ordered ramp against the ground, so the chosen row is never
+        // less prominent than an idle one — on every preset.
+        {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let c = &theme.tokens.colors;
+                let base = relative_luminance(c.surfaces.base);
+                let dist = |state: SelectionState| {
+                    (relative_luminance(c.lift(floor_ramp(state))) - base).abs()
+                };
+                let idle = dist(SelectionState::default());
+                let hover = dist(SelectionState::new(false, true, false));
+                let active = dist(SelectionState::active(true));
+                assert!(idle < hover, "idle {idle} !< hover {hover}");
+                assert!(hover < active, "hover {hover} !< active {active}");
+            }
         }
-    }
 
-    #[test]
-    fn pointer_targets_grow_to_the_metric_and_never_shrink() {
-        let theme = Theme::dark();
-        let min = f64::from(theme.tokens.metrics.min_pointer_target);
-        let small = pointer_target(Rect::new(0.0, 0.0, 22.0, 22.0), &theme);
-        assert_eq!(small.width(), min);
-        assert_eq!(small.height(), min);
-        assert_eq!(small.center(), Rect::new(0.0, 0.0, 22.0, 22.0).center());
-        let big = Rect::new(0.0, 0.0, 200.0, 40.0);
-        assert_eq!(pointer_target(big, &theme), big);
-    }
+        // --- phase: pointer_targets_grow_to_the_metric_and_never_shrink ---
+        {
+            let theme = Theme::dark();
+            let min = f64::from(theme.tokens.metrics.min_pointer_target);
+            let small = pointer_target(Rect::new(0.0, 0.0, 22.0, 22.0), &theme);
+            assert_eq!(small.width(), min);
+            assert_eq!(small.height(), min);
+            assert_eq!(small.center(), Rect::new(0.0, 0.0, 22.0, 22.0).center());
+            let big = Rect::new(0.0, 0.0, 200.0, 40.0);
+            assert_eq!(pointer_target(big, &theme), big);
+        }
 
-    #[test]
-    fn rhythm_is_monotone_token_steps() {
-        const { assert!(rhythm::TIGHT < rhythm::RELATED) };
-        const { assert!(rhythm::RELATED < rhythm::SIBLING) };
-        const { assert!(rhythm::SIBLING < rhythm::SECTION) };
-        const { assert!(rhythm::SECTION < rhythm::GROUP) };
-        assert_eq!(rhythm::TIGHT, 4.0);
-        assert_eq!(rhythm::SIBLING, 12.0);
+        // --- phase: rhythm_is_monotone_token_steps ---
+        {
+            const { assert!(rhythm::TIGHT < rhythm::RELATED) };
+            const { assert!(rhythm::RELATED < rhythm::SIBLING) };
+            const { assert!(rhythm::SIBLING < rhythm::SECTION) };
+            const { assert!(rhythm::SECTION < rhythm::GROUP) };
+            assert_eq!(rhythm::TIGHT, 4.0);
+            assert_eq!(rhythm::SIBLING, 12.0);
+        }
     }
 }

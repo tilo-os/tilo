@@ -341,8 +341,13 @@ impl RelayConfig {
 mod tests {
     use super::*;
 
+    /// The two paths every hand-written config starts with.
+    const PRELUDE: &str =
+        "identity_root = \"/var/lib/tilo\"\nstate_root = \"/var/lib/tilo-relay\"\n";
+
     #[test]
-    fn defaults_are_usable() {
+    fn relay_config_defaults_and_toml_decoding() {
+        // Defaults are usable as-is.
         let cfg = RelayConfig::default();
         assert_eq!(cfg.identity_root, PathBuf::from("/var/lib/tilo"));
         assert_eq!(cfg.state_root, PathBuf::from("/var/lib/tilo-relay"));
@@ -355,22 +360,27 @@ mod tests {
         assert!(cfg.services.remote_control_relay);
         assert!(!cfg.services.app_serving);
         assert!(!cfg.services.compute);
-    }
 
-    #[test]
-    fn round_trip_via_disk() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("relay.toml");
-        let mut cfg = RelayConfig::default();
-        cfg.add_workspace(7, true);
-        cfg.add_workspace(9, false);
-        cfg.save(&path).unwrap();
-        let back = RelayConfig::load(&path).unwrap();
-        assert_eq!(cfg, back);
-    }
+        // A minimal file names only the two roots.
+        let cfg: RelayConfig = toml::from_str(PRELUDE).unwrap();
+        assert_eq!(cfg.workspaces.len(), 0);
 
-    #[test]
-    fn workspace_ids_round_trip_above_toml_integer_range_and_parse_legacy_integers() {
+        // Peer relays parse, with priority defaulting to 0.
+        let cfg: RelayConfig = toml::from_str(&format!(
+            "{PRELUDE}\n[[peer_relays]]\niroh_node_id = \"aa\"\nlabel = \"west\"\npriority = 100\n\n\
+             [[peer_relays]]\niroh_node_id = \"bb\"\nlabel = \"east\"\n"
+        ))
+        .unwrap();
+        assert_eq!(cfg.peer_relays.len(), 2);
+        assert_eq!(cfg.peer_relays[0].label, "west");
+        assert_eq!(cfg.peer_relays[0].priority, 100);
+        assert_eq!(cfg.peer_relays[1].priority, 0);
+
+        // An unknown field is rejected rather than ignored.
+        assert!(toml::from_str::<RelayConfig>(&format!("{PRELUDE}surprise = 3\n")).is_err());
+
+        // Workspace ids above TOML's integer range round-trip as strings, and
+        // legacy integer ids still parse.
         let high = (i64::MAX as u64) + 42;
         let binding = WorkspaceBinding {
             id: high,
@@ -381,79 +391,35 @@ mod tests {
         let text = toml::to_string(&binding).unwrap();
         assert!(text.contains(&format!("id = \"{high}\"")));
         assert_eq!(toml::from_str::<WorkspaceBinding>(&text).unwrap().id, high);
-
         let legacy: WorkspaceBinding = toml::from_str("id = 42").unwrap();
         assert_eq!(legacy.id, 42);
     }
 
     #[test]
-    fn parses_minimal_toml() {
-        let text = r#"
-            identity_root = "/var/lib/tilo"
-            state_root = "/var/lib/tilo-relay"
-        "#;
-        let cfg: RelayConfig = toml::from_str(text).unwrap();
-        assert_eq!(cfg.workspaces.len(), 0);
-    }
-
-    #[test]
-    fn add_workspace_idempotent() {
+    fn relay_config_edits_are_idempotent_and_persist() {
         let mut cfg = RelayConfig::default();
         assert!(cfg.add_workspace(1, true));
-        assert!(!cfg.add_workspace(1, true));
+        assert!(!cfg.add_workspace(1, true), "adding twice is a no-op");
         assert_eq!(cfg.workspaces.len(), 1);
         assert_eq!(
             cfg.workspaces[0].replication,
             ReplicationIntent::WorkspaceOnly
         );
-    }
-
-    #[test]
-    fn remove_workspace() {
-        let mut cfg = RelayConfig::default();
-        cfg.add_workspace(1, true);
         assert!(cfg.remove_workspace(1));
-        assert!(!cfg.remove_workspace(1));
-    }
+        assert!(!cfg.remove_workspace(1), "removing twice is a no-op");
 
-    #[test]
-    fn parses_peer_relays_toml() {
-        let text = r#"
-            identity_root = "/var/lib/tilo"
-            state_root = "/var/lib/tilo-relay"
-
-            [[peer_relays]]
-            iroh_node_id = "aa"
-            label = "west"
-            priority = 100
-
-            [[peer_relays]]
-            iroh_node_id = "bb"
-            label = "east"
-        "#;
-        let cfg: RelayConfig = toml::from_str(text).unwrap();
-        assert_eq!(cfg.peer_relays.len(), 2);
-        assert_eq!(cfg.peer_relays[0].label, "west");
-        assert_eq!(cfg.peer_relays[0].priority, 100);
-        // Default priority for the second entry.
-        assert_eq!(cfg.peer_relays[1].priority, 0);
-    }
-
-    #[test]
-    fn add_peer_relay_dedups_by_node_id() {
-        let mut cfg = RelayConfig::default();
+        // Peer relays dedup by node id, case-insensitively.
         assert!(cfg.add_peer_relay("ABCD", "a", 1));
         assert!(!cfg.add_peer_relay("abcd", "again", 2));
         assert_eq!(cfg.peer_relays.len(), 1);
-    }
 
-    #[test]
-    fn unknown_field_rejected() {
-        let text = r#"
-            identity_root = "/var/lib/tilo"
-            state_root = "/var/lib/tilo-relay"
-            surprise = 3
-        "#;
-        assert!(toml::from_str::<RelayConfig>(text).is_err());
+        // Save + load is lossless.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("relay.toml");
+        let mut cfg = RelayConfig::default();
+        cfg.add_workspace(7, true);
+        cfg.add_workspace(9, false);
+        cfg.save(&path).unwrap();
+        assert_eq!(cfg, RelayConfig::load(&path).unwrap());
     }
 }

@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "photos"
 version = "0.1.0"
 edition = "2024"
@@ -18,7 +19,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The open photograph is published as a Resource whose edits are ActionSpecs,
 # so the shell's palette and an out-of-process caller drive the same operations
 # the toolbar buttons do.
@@ -51,6 +52,10 @@ runtime-fs = { path = "../../crates/runtime/runtime-fs" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 libc.workspace = true
 vello_encoding.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

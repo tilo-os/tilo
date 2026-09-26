@@ -181,19 +181,20 @@ impl WallpaperBackend {
 mod tests {
     use super::*;
     #[test]
-    fn uri_rejects_path_and_controls() {
+    fn wallpaper_requests_accept_only_clean_uris_and_standard_targets() {
+        // Phase `uri_rejects_path_and_controls`.
         assert!(valid_uri("file:///run/user/1000/doc/token/a.png"));
         assert!(!valid_uri("document://tilo/a.png"));
         assert!(!valid_uri("/tmp/a.png"));
         assert!(!valid_uri("file:///tmp/a\n.png"));
-    }
-    #[test]
-    fn only_standard_targets_are_accepted() {
-        let mut map = HashMap::new();
-        map.insert(
-            "set-on".into(),
-            OwnedValue::from(zbus::zvariant::Str::from("desktop")),
-        );
-        assert_eq!(set_on(&map), None);
+        // Phase `only_standard_targets_are_accepted`.
+        {
+            let mut map = HashMap::new();
+            map.insert(
+                "set-on".into(),
+                OwnedValue::from(zbus::zvariant::Str::from("desktop")),
+            );
+            assert_eq!(set_on(&map), None);
+        }
     }
 }

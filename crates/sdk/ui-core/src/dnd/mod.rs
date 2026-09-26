@@ -226,37 +226,40 @@ pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
 mod outgoing_tests {
     use super::*;
 
-    /// A dragged name has to survive the trip through a URI, which is the
-    /// case a naive `format!("file://{}")` gets wrong.
     #[test]
-    fn a_uri_list_escapes_what_a_uri_cannot_carry() {
-        assert_eq!(
-            uri_list(&[PathBuf::from("/home/me/my photo#1.png")]),
-            "file:///home/me/my%20photo%231.png\r\n"
-        );
-    }
+    fn outgoing_drags_encode_uri_lists_and_content_types() {
+        // Case `a_uri_list_escapes_what_a_uri_cannot_carry`:
+        // A dragged name has to survive the trip through a URI, which is the
+        // case a naive `format!("file://{}")` gets wrong.
+        {
+            assert_eq!(
+                uri_list(&[PathBuf::from("/home/me/my photo#1.png")]),
+                "file:///home/me/my%20photo%231.png\r\n"
+            );
+        }
 
-    #[test]
-    fn several_paths_are_one_entry_per_line() {
-        assert_eq!(
-            uri_list(&[PathBuf::from("/a.png"), PathBuf::from("/b.png")]),
-            "file:///a.png\r\nfile:///b.png\r\n"
-        );
-    }
+        // Case `several_paths_are_one_entry_per_line`.
+        {
+            assert_eq!(
+                uri_list(&[PathBuf::from("/a.png"), PathBuf::from("/b.png")]),
+                "file:///a.png\r\nfile:///b.png\r\n"
+            );
+        }
 
-    /// The content type is what a confined receiver actually uses, so an
-    /// unknown extension must not claim one.
-    #[test]
-    fn a_known_extension_names_a_content_type_and_an_unknown_one_does_not() {
-        assert_eq!(mime_for_path(Path::new("/x/photo.PNG")), Some("image/png"));
-        assert_eq!(mime_for_path(Path::new("/x/scan.jpeg")), Some("image/jpeg"));
-        assert_eq!(mime_for_path(Path::new("/x/archive.tar.zst")), None);
-        assert_eq!(mime_for_path(Path::new("/x/noext")), None);
-    }
+        // Case `a_known_extension_names_a_content_type_and_an_unknown_one_does_not`:
+        // The content type is what a confined receiver actually uses, so an
+        // unknown extension must not claim one.
+        {
+            assert_eq!(mime_for_path(Path::new("/x/photo.PNG")), Some("image/png"));
+            assert_eq!(mime_for_path(Path::new("/x/scan.jpeg")), Some("image/jpeg"));
+            assert_eq!(mime_for_path(Path::new("/x/archive.tar.zst")), None);
+            assert_eq!(mime_for_path(Path::new("/x/noext")), None);
+        }
 
-    /// Nothing to drag is not a drag.
-    #[test]
-    fn an_empty_selection_starts_nothing() {
-        assert!(!start_file_drag(&[]));
+        // Case `an_empty_selection_starts_nothing`:
+        // Nothing to drag is not a drag.
+        {
+            assert!(!start_file_drag(&[]));
+        }
     }
 }

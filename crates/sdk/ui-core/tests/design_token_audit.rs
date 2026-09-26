@@ -87,52 +87,85 @@ fn forbidden_patterns() -> Vec<(Regex, &'static str)> {
     ]
 }
 
-/// The forbidden set must still bite: a pattern that no longer matches the
-/// shape it names would let the audit pass empty.
 #[test]
-fn forbidden_patterns_match_the_shapes_they_name() {
-    let patterns = forbidden_patterns();
-    assert_eq!(patterns.len(), 3);
-    assert!(
-        patterns[0]
-            .0
-            .is_match("Some(cosmic_text::Color::rgb(100, 110, 120))")
-    );
-    assert!(
-        !patterns[0]
-            .0
-            .is_match("cosmic_text::Color::rgb(cr, cg, cb)"),
-        "real data routed through the constructor is not a literal"
-    );
-    assert!(
-        !patterns[0].0.is_match("Color::from_rgb8(12, 120, 220)"),
-        "peniko literals belong to the ratchet, not the hard-fail set"
-    );
-    assert!(patterns[1].0.is_match("rect.to_rounded_rect(8.0)"));
-    assert!(
-        !patterns[1]
-            .0
-            .is_match("rect.to_rounded_rect(theme.radius_standard)")
-    );
-    assert!(patterns[2].0.is_match("blur: 16.0,"));
-    assert!(
-        !patterns[2]
-            .0
-            .is_match("blur: theme.tokens.elevation.raised.blur,")
-    );
-}
+fn audit_patterns_match_exactly_the_shapes_they_name() {
+    // Case `forbidden_patterns_match_the_shapes_they_name`.
+    // The forbidden set must still bite: a pattern that no longer matches the
+    // shape it names would let the audit pass empty.
+    {
+        let patterns = forbidden_patterns();
+        assert_eq!(patterns.len(), 3);
+        assert!(
+            patterns[0]
+                .0
+                .is_match("Some(cosmic_text::Color::rgb(100, 110, 120))")
+        );
+        assert!(
+            !patterns[0]
+                .0
+                .is_match("cosmic_text::Color::rgb(cr, cg, cb)"),
+            "real data routed through the constructor is not a literal"
+        );
+        assert!(
+            !patterns[0].0.is_match("Color::from_rgb8(12, 120, 220)"),
+            "peniko literals belong to the ratchet, not the hard-fail set"
+        );
+        assert!(patterns[1].0.is_match("rect.to_rounded_rect(8.0)"));
+        assert!(
+            !patterns[1]
+                .0
+                .is_match("rect.to_rounded_rect(theme.radius_standard)")
+        );
+        assert!(patterns[2].0.is_match("blur: 16.0,"));
+        assert!(
+            !patterns[2]
+                .0
+                .is_match("blur: theme.tokens.elevation.raised.blur,")
+        );
+    }
 
-/// The `#[cfg(test)]` span finder and the baseline plumbing live in
-/// `support::ratchet`, shared with `spacing_token_audit.rs`. The finder
-/// covers exactly the item the attribute governs — an earlier copy here
-/// treated every `#[cfg(test)]` as a braced module, so a `#[cfg(test)]
-/// const …;` or `mod tests;` exempted whatever braced production item
-/// followed it.
-#[test]
-fn a_file_gated_to_tests_has_no_production_style_lines() {
-    let source = "#![cfg(test)]\nuse super::*;\nfn fixture() { let ink = Color::WHITE; }\n";
-    assert_eq!(test_module_spans(source), vec![(0, 3)]);
-    assert!(test_module_spans("fn draw() { let ink = Color::WHITE; }\n").is_empty());
+    // Case `a_file_gated_to_tests_has_no_production_style_lines`.
+    // The `#[cfg(test)]` span finder and the baseline plumbing live in
+    // `support::ratchet`, shared with `spacing_token_audit.rs`. The finder
+    // covers exactly the item the attribute governs — an earlier copy here
+    // treated every `#[cfg(test)]` as a braced module, so a `#[cfg(test)]
+    // const …;` or `mod tests;` exempted whatever braced production item
+    // followed it.
+    {
+        let source = "#![cfg(test)]\nuse super::*;\nfn fixture() { let ink = Color::WHITE; }\n";
+        assert_eq!(test_module_spans(source), vec![(0, 3)]);
+        assert!(test_module_spans("fn draw() { let ink = Color::WHITE; }\n").is_empty());
+    }
+
+    // Case `declared_border_pattern_matches_the_shapes_it_names`.
+    // The chrome-edge pattern must match the shapes it names and nothing else.
+    {
+        let (_, re, _) = declared_border_patterns().remove(0);
+        for hit in [
+            "theme.tokens.colors.border_standard,",
+            "let bc = theme.border_standard;",
+            "stroke(&Stroke::new(1.0), t, colors.border_strong, None, &shape);",
+            "c.overlay_border_strong",
+            "colors.neutral[3]",
+        ] {
+            assert!(
+                re.is_match(hit),
+                "{hit:?} is a declared edge and must match"
+            );
+        }
+        for miss in [
+            "theme.border_focus",
+            "Colors::hairline_on(ground, HAIRLINE_ALPHA)",
+            "border_standard: p.border,",
+            "tilo_ui::surface::edge_on(fill)",
+            "let neutral = colors.text_dim;",
+        ] {
+            assert!(
+                !re.is_match(miss),
+                "{miss:?} is not a declared edge and must not match"
+            );
+        }
+    }
 }
 
 #[test]
@@ -373,36 +406,6 @@ fn declared_border_patterns() -> Vec<(&'static str, Regex, &'static str)> {
     )]
 }
 
-/// The chrome-edge pattern must match the shapes it names and nothing else.
-#[test]
-fn declared_border_pattern_matches_the_shapes_it_names() {
-    let (_, re, _) = declared_border_patterns().remove(0);
-    for hit in [
-        "theme.tokens.colors.border_standard,",
-        "let bc = theme.border_standard;",
-        "stroke(&Stroke::new(1.0), t, colors.border_strong, None, &shape);",
-        "c.overlay_border_strong",
-        "colors.neutral[3]",
-    ] {
-        assert!(
-            re.is_match(hit),
-            "{hit:?} is a declared edge and must match"
-        );
-    }
-    for miss in [
-        "theme.border_focus",
-        "Colors::hairline_on(ground, HAIRLINE_ALPHA)",
-        "border_standard: p.border,",
-        "tilo_ui::surface::edge_on(fill)",
-        "let neutral = colors.text_dim;",
-    ] {
-        assert!(
-            !re.is_match(miss),
-            "{miss:?} is not a declared edge and must not match"
-        );
-    }
-}
-
 /// Chrome may not gain a declared edge, and a file that sheds one lowers its
 /// record in the same commit. Refresh with `UPDATE_CHROME_BORDER_BASELINE=1`
 /// only after reviewing that every change is a reduction.
@@ -478,63 +481,66 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
     rest.split_once("\n}\n").map_or(rest, |(body, _)| body)
 }
 
-/// Accepting the framework's entry points is sound only while they stay on
-/// `LaunchSpec`; a framework that grew its own launcher would take every
-/// framework app off the acceptance matrix at once.
 #[test]
-fn framework_launchers_build_on_the_shared_launch_spec() {
-    let source = fs::read_to_string(repository_root().join(FRAMEWORK_APP))
-        .expect("framework app module is readable");
-    let spec = function_body(&source, "launch_spec");
-    assert!(
-        spec.contains("-> LaunchSpec") && spec.contains("LaunchSpec::from_definition("),
-        "framework::launch_spec must build the shared LaunchSpec:\n{spec}"
-    );
-    let run = function_body(&source, "run");
-    assert!(
-        run.contains("launch::run_or_exit(&launch_spec::<A>())"),
-        "framework::run must launch through framework::launch_spec:\n{run}"
-    );
-}
-
-/// Product apps share one viewport/large-type/pseudo-locale audit path. A new
-/// bespoke launcher silently loses that acceptance matrix, so keep the fleet on
-/// `LaunchSpec` — directly or through a framework entry point that builds it —
-/// unless the binary is itself an automation agent rather than a user-facing
-/// app window.
-#[test]
-fn product_apps_use_the_shared_responsive_launcher() {
-    let apps = repository_root().join("apps");
-    let mut missing = Vec::new();
-    for entry in fs::read_dir(&apps)
-        .expect("apps directory exists")
-        .flatten()
+fn launchers_build_on_the_shared_launch_specs() {
+    // Case `framework_launchers_build_on_the_shared_launch_spec`.
+    // Accepting the framework's entry points is sound only while they stay on
+    // `LaunchSpec`; a framework that grew its own launcher would take every
+    // framework app off the acceptance matrix at once.
     {
-        let app = entry.path();
-        if !app.join("tilo-app.toml").is_file() {
-            continue;
-        }
-        let main = app.join("src/main.rs");
-        if !main.is_file() || app.file_name().is_some_and(|name| name == "agent") {
-            continue;
-        }
-        let source = fs::read_to_string(&main).expect("app main is readable");
-        let launched = source.contains("LaunchSpec")
-            || FRAMEWORK_LAUNCHERS
-                .iter()
-                .any(|entry| source.contains(entry));
-        if !launched {
-            missing.push(
-                app.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-            );
-        }
+        let source = fs::read_to_string(repository_root().join(FRAMEWORK_APP))
+            .expect("framework app module is readable");
+        let spec = function_body(&source, "launch_spec");
+        assert!(
+            spec.contains("-> LaunchSpec") && spec.contains("LaunchSpec::from_definition("),
+            "framework::launch_spec must build the shared LaunchSpec:\n{spec}"
+        );
+        let run = function_body(&source, "run");
+        assert!(
+            run.contains("launch::run_or_exit(&launch_spec::<A>())"),
+            "framework::run must launch through framework::launch_spec:\n{run}"
+        );
     }
-    assert!(
-        missing.is_empty(),
-        "product apps missing the shared responsive launcher: {}",
-        missing.join(", ")
-    );
+
+    // Case `product_apps_use_the_shared_responsive_launcher`.
+    // Product apps share one viewport/large-type/pseudo-locale audit path. A new
+    // bespoke launcher silently loses that acceptance matrix, so keep the fleet on
+    // `LaunchSpec` — directly or through a framework entry point that builds it —
+    // unless the binary is itself an automation agent rather than a user-facing
+    // app window.
+    {
+        let apps = repository_root().join("apps");
+        let mut missing = Vec::new();
+        for entry in fs::read_dir(&apps)
+            .expect("apps directory exists")
+            .flatten()
+        {
+            let app = entry.path();
+            if !app.join("tilo-app.toml").is_file() {
+                continue;
+            }
+            let main = app.join("src/main.rs");
+            if !main.is_file() || app.file_name().is_some_and(|name| name == "agent") {
+                continue;
+            }
+            let source = fs::read_to_string(&main).expect("app main is readable");
+            let launched = source.contains("LaunchSpec")
+                || FRAMEWORK_LAUNCHERS
+                    .iter()
+                    .any(|entry| source.contains(entry));
+            if !launched {
+                missing.push(
+                    app.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "product apps missing the shared responsive launcher: {}",
+            missing.join(", ")
+        );
+    }
 }

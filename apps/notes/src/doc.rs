@@ -1377,388 +1377,395 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
     use uuid::Uuid;
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn pages_round_trip() {
-        let mut doc = AutoCommit::new();
-        let id = Uuid::new_v4();
-        NotesDoc::upsert_page_meta(
-            &mut doc,
-            &PageMeta {
-                id,
-                title: "Hello".into(),
-                parent: None,
-                order: 0,
-            },
-        );
-        let pages = NotesDoc::list_pages(&doc);
-        assert_eq!(pages.len(), 1);
-        assert_eq!(pages[0].id, id);
-        assert_eq!(pages[0].title, "Hello");
-        assert_eq!(pages[0].parent, None);
-        assert_eq!(pages[0].order, 0);
-    }
-
-    #[test]
-    fn parent_and_order_round_trip() {
-        let mut doc = AutoCommit::new();
-        let root = Uuid::new_v4();
-        let child = Uuid::new_v4();
-        NotesDoc::upsert_page_meta(
-            &mut doc,
-            &PageMeta {
-                id: root,
-                title: "Root".into(),
-                parent: None,
-                order: 0,
-            },
-        );
-        NotesDoc::upsert_page_meta(
-            &mut doc,
-            &PageMeta {
-                id: child,
-                title: "Child".into(),
-                parent: Some(root),
-                order: 0,
-            },
-        );
-        let pages = NotesDoc::list_pages(&doc);
-        let c = pages.iter().find(|p| p.id == child).unwrap();
-        assert_eq!(c.parent, Some(root));
-    }
-
-    #[test]
-    fn rename_updates_in_place() {
-        let mut doc = AutoCommit::new();
-        let id = Uuid::new_v4();
-        NotesDoc::upsert_page_meta(
-            &mut doc,
-            &PageMeta {
-                id,
-                title: "Old".into(),
-                parent: None,
-                order: 0,
-            },
-        );
-        NotesDoc::upsert_page_meta(
-            &mut doc,
-            &PageMeta {
-                id,
-                title: "New".into(),
-                parent: None,
-                order: 0,
-            },
-        );
-        let pages = NotesDoc::list_pages(&doc);
-        assert_eq!(pages.len(), 1, "rename must not create a second page");
-        assert_eq!(pages[0].title, "New");
-    }
-
-    #[test]
-    fn two_docs_merge_pages() {
-        // Models the real flow: peer A creates the workspace, peer B
-        // joins by loading A's full state (the Arrived->SyncCRDT
-        // handshake), THEN both edit and converge. Sharing a common base
-        // is what makes the root `pages` Map the same object on both
-        // sides — two independent `AutoCommit::new()` docs would each
-        // create a competing `pages` Map and conflict, which is exactly
-        // why late joiners always adopt remote state first.
-        let mut a = AutoCommit::new();
-        let ida = Uuid::new_v4();
-        NotesDoc::upsert_page_meta(
-            &mut a,
-            &PageMeta {
-                id: ida,
-                title: "A".into(),
-                parent: None,
-                order: 0,
-            },
-        );
-
-        // B joins from A's state.
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let idb = Uuid::new_v4();
-        NotesDoc::upsert_page_meta(
-            &mut b,
-            &PageMeta {
-                id: idb,
-                title: "B".into(),
-                parent: None,
-                order: 1,
-            },
-        );
-
-        // A pulls B's new page back.
-        let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b_loaded).unwrap();
-
-        let titles: Vec<_> = NotesDoc::list_pages(&a)
-            .into_iter()
-            .map(|p| p.title)
-            .collect();
-        assert!(
-            titles.contains(&"A".to_string()),
-            "converged doc has A: {titles:?}"
-        );
-        assert!(
-            titles.contains(&"B".to_string()),
-            "converged doc has B: {titles:?}"
-        );
-    }
-
-    #[test]
-    fn renaming_by_one_char_is_a_bounded_splice() {
-        // A long title renamed by one char must diff-splice (grow the doc a
-        // little), not delete+reinsert the whole title (O(len) tombstones per
-        // edit — the churn that freezes the app).
-        let mut doc = AutoCommit::new();
-        let id = Uuid::new_v4();
-        let long = "A very long note title that would be expensive to rewrite each keystroke";
-        NotesDoc::upsert_page_meta(
-            &mut doc,
-            &PageMeta {
-                id,
-                title: long.into(),
-                parent: None,
-                order: 0,
-            },
-        );
-        let before = doc.save().len();
-        let mut longer = long.to_string();
-        longer.push('!');
-        NotesDoc::upsert_page_meta(
-            &mut doc,
-            &PageMeta {
-                id,
-                title: longer.clone(),
-                parent: None,
-                order: 0,
-            },
-        );
-        let grew = doc.save().len() - before;
-        assert_eq!(NotesDoc::list_pages(&doc)[0].title, longer);
-        assert!(
-            grew < 40,
-            "appending one char to a title grew the doc by {grew} bytes (expected a single-char splice)"
-        );
-    }
-
-    #[test]
-    fn idempotent_upsert_does_not_grow_the_doc() {
-        // Re-storing an unchanged page (title + parent + order) must be a no-op:
-        // change-guarded scalars + diff-spliced title mean zero new ops.
-        let mut doc = AutoCommit::new();
-        let id = Uuid::new_v4();
-        let meta = PageMeta {
-            id,
-            title: "Stable".into(),
-            parent: None,
-            order: 3,
-        };
-        NotesDoc::upsert_page_meta(&mut doc, &meta);
-        let before = doc.save().len();
-        for _ in 0..25 {
-            NotesDoc::upsert_page_meta(&mut doc, &meta);
+    fn pages_round_trip_merge_and_rename_with_bounded_growth() {
+        eprintln!("phase pages_round_trip");
+        {
+            let mut doc = AutoCommit::new();
+            let id = Uuid::new_v4();
+            NotesDoc::upsert_page_meta(
+                &mut doc,
+                &PageMeta {
+                    id,
+                    title: "Hello".into(),
+                    parent: None,
+                    order: 0,
+                },
+            );
+            let pages = NotesDoc::list_pages(&doc);
+            assert_eq!(pages.len(), 1);
+            assert_eq!(pages[0].id, id);
+            assert_eq!(pages[0].title, "Hello");
+            assert_eq!(pages[0].parent, None);
+            assert_eq!(pages[0].order, 0);
         }
-        assert_eq!(
-            doc.save().len(),
-            before,
-            "idempotent upsert must not grow the document"
-        );
+
+        eprintln!("phase parent_and_order_round_trip");
+        {
+            let mut doc = AutoCommit::new();
+            let root = Uuid::new_v4();
+            let child = Uuid::new_v4();
+            NotesDoc::upsert_page_meta(
+                &mut doc,
+                &PageMeta {
+                    id: root,
+                    title: "Root".into(),
+                    parent: None,
+                    order: 0,
+                },
+            );
+            NotesDoc::upsert_page_meta(
+                &mut doc,
+                &PageMeta {
+                    id: child,
+                    title: "Child".into(),
+                    parent: Some(root),
+                    order: 0,
+                },
+            );
+            let pages = NotesDoc::list_pages(&doc);
+            let c = pages.iter().find(|p| p.id == child).unwrap();
+            assert_eq!(c.parent, Some(root));
+        }
+
+        eprintln!("phase rename_updates_in_place");
+        {
+            let mut doc = AutoCommit::new();
+            let id = Uuid::new_v4();
+            NotesDoc::upsert_page_meta(
+                &mut doc,
+                &PageMeta {
+                    id,
+                    title: "Old".into(),
+                    parent: None,
+                    order: 0,
+                },
+            );
+            NotesDoc::upsert_page_meta(
+                &mut doc,
+                &PageMeta {
+                    id,
+                    title: "New".into(),
+                    parent: None,
+                    order: 0,
+                },
+            );
+            let pages = NotesDoc::list_pages(&doc);
+            assert_eq!(pages.len(), 1, "rename must not create a second page");
+            assert_eq!(pages[0].title, "New");
+        }
+
+        eprintln!("phase two_docs_merge_pages");
+        {
+            // Models the real flow: peer A creates the workspace, peer B
+            // joins by loading A's full state (the Arrived->SyncCRDT
+            // handshake), THEN both edit and converge. Sharing a common base
+            // is what makes the root `pages` Map the same object on both
+            // sides — two independent `AutoCommit::new()` docs would each
+            // create a competing `pages` Map and conflict, which is exactly
+            // why late joiners always adopt remote state first.
+            let mut a = AutoCommit::new();
+            let ida = Uuid::new_v4();
+            NotesDoc::upsert_page_meta(
+                &mut a,
+                &PageMeta {
+                    id: ida,
+                    title: "A".into(),
+                    parent: None,
+                    order: 0,
+                },
+            );
+
+            // B joins from A's state.
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let idb = Uuid::new_v4();
+            NotesDoc::upsert_page_meta(
+                &mut b,
+                &PageMeta {
+                    id: idb,
+                    title: "B".into(),
+                    parent: None,
+                    order: 1,
+                },
+            );
+
+            // A pulls B's new page back.
+            let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b_loaded).unwrap();
+
+            let titles: Vec<_> = NotesDoc::list_pages(&a)
+                .into_iter()
+                .map(|p| p.title)
+                .collect();
+            assert!(
+                titles.contains(&"A".to_string()),
+                "converged doc has A: {titles:?}"
+            );
+            assert!(
+                titles.contains(&"B".to_string()),
+                "converged doc has B: {titles:?}"
+            );
+        }
+
+        eprintln!("phase renaming_by_one_char_is_a_bounded_splice");
+        {
+            // A long title renamed by one char must diff-splice (grow the doc a
+            // little), not delete+reinsert the whole title (O(len) tombstones per
+            // edit — the churn that freezes the app).
+            let mut doc = AutoCommit::new();
+            let id = Uuid::new_v4();
+            let long = "A very long note title that would be expensive to rewrite each keystroke";
+            NotesDoc::upsert_page_meta(
+                &mut doc,
+                &PageMeta {
+                    id,
+                    title: long.into(),
+                    parent: None,
+                    order: 0,
+                },
+            );
+            let before = doc.save().len();
+            let mut longer = long.to_string();
+            longer.push('!');
+            NotesDoc::upsert_page_meta(
+                &mut doc,
+                &PageMeta {
+                    id,
+                    title: longer.clone(),
+                    parent: None,
+                    order: 0,
+                },
+            );
+            let grew = doc.save().len() - before;
+            assert_eq!(NotesDoc::list_pages(&doc)[0].title, longer);
+            assert!(
+                grew < 40,
+                "appending one char to a title grew the doc by {grew} bytes (expected a single-char splice)"
+            );
+        }
+
+        eprintln!("phase idempotent_upsert_does_not_grow_the_doc");
+        {
+            // Re-storing an unchanged page (title + parent + order) must be a no-op:
+            // change-guarded scalars + diff-spliced title mean zero new ops.
+            let mut doc = AutoCommit::new();
+            let id = Uuid::new_v4();
+            let meta = PageMeta {
+                id,
+                title: "Stable".into(),
+                parent: None,
+                order: 3,
+            };
+            NotesDoc::upsert_page_meta(&mut doc, &meta);
+            let before = doc.save().len();
+            for _ in 0..25 {
+                NotesDoc::upsert_page_meta(&mut doc, &meta);
+            }
+            assert_eq!(
+                doc.save().len(),
+                before,
+                "idempotent upsert must not grow the document"
+            );
+        }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one end-to-end native-mark regression keeps reorder, Unicode, and merge evidence together"
     )]
-    fn native_inline_marks_survive_reorder_and_unicode_text_edits() {
-        let mut doc = AutoCommit::new();
-        let page = Uuid::new_v4();
-        let block = Uuid::new_v4().to_string();
-        NotesDoc::upsert_page_meta(
-            &mut doc,
-            &PageMeta {
-                id: page,
-                title: "Formatting".into(),
-                parent: None,
-                order: 0,
-            },
-        );
-        NotesDoc::apply_block_ops(
-            &mut doc,
-            page,
-            &[BlockEditOp::Insert {
-                block_id: block.clone(),
-                after: None,
-                kind: "paragraph".into(),
-                text: "café link web".into(),
-            }],
-        )
-        .unwrap();
-        let target = Uuid::new_v4();
-        let expected = vec![
-            InlineMarkSpan {
-                start: 0,
-                end: 5,
-                mark: InlineMark::Bold,
-            },
-            InlineMarkSpan {
-                start: 6,
-                end: 10,
-                mark: InlineMark::Link {
-                    page: target.to_string(),
+    #[test]
+    fn blocks_and_marks_round_trip_and_legacy_ids_stay_read_only() {
+        eprintln!("phase blocks_list_and_text_round_trip");
+        {
+            let mut doc = AutoCommit::new();
+            let id = Uuid::new_v4();
+            NotesDoc::upsert_page_meta(
+                &mut doc,
+                &PageMeta {
+                    id,
+                    title: "P".into(),
+                    parent: None,
+                    order: 0,
                 },
-            },
-            InlineMarkSpan {
-                start: 11,
-                end: 14,
-                mark: InlineMark::ExternalLink {
-                    url: "https://example.test".into(),
+            );
+            let blocks = NotesDoc::page_blocks_list(&doc, id).unwrap();
+            let _t = NotesDoc::push_block(&mut doc, &blocks, "paragraph", "hi");
+            assert_eq!(doc.length(&blocks), 1);
+            assert_eq!(NotesDoc::block_kind(&doc, &blocks, 0), "paragraph");
+            let tid = NotesDoc::block_text_obj(&doc, &blocks, 0).unwrap();
+            assert_eq!(doc.text(&tid).unwrap(), "hi");
+        }
+
+        eprintln!("phase native_inline_marks_survive_reorder_and_unicode_text_edits");
+        {
+            let mut doc = AutoCommit::new();
+            let page = Uuid::new_v4();
+            let block = Uuid::new_v4().to_string();
+            NotesDoc::upsert_page_meta(
+                &mut doc,
+                &PageMeta {
+                    id: page,
+                    title: "Formatting".into(),
+                    parent: None,
+                    order: 0,
                 },
-            },
-        ];
-        NotesDoc::set_block_marks(&mut doc, page, &block, &expected).unwrap();
-        assert!(NotesDoc::page_marks_are_canonical(&doc, page));
-        assert_eq!(NotesDoc::page_block_marks(&doc, page)[0].1, expected);
-
-        // A move must leave native formatting/link anchors unchanged.
-        NotesDoc::apply_block_ops(
-            &mut doc,
-            page,
-            &[BlockEditOp::Move {
-                block_id: block.clone(),
-                after: None,
-            }],
-        )
-        .unwrap();
-        assert_eq!(NotesDoc::page_block_marks(&doc, page)[0].1, expected);
-
-        // The mark positions are native character anchors, not a brittle
-        // JSON byte offset: an adjacent Unicode edit keeps the spans readable.
-        NotesDoc::apply_block_ops(
-            &mut doc,
-            page,
-            &[BlockEditOp::TextSplice {
-                block_id: block,
-                start: 0,
-                end: 0,
-                text: "✓ ".into(),
-            }],
-        )
-        .unwrap();
-        let after = NotesDoc::page_block_marks(&doc, page);
-        assert_eq!(after.len(), 1);
-        assert!(
-            after[0]
-                .1
-                .iter()
-                .any(|span| matches!(span.mark, InlineMark::Bold))
-        );
-        assert!(
-            after[0]
-                .1
-                .iter()
-                .any(|span| matches!(span.mark, InlineMark::Link { .. }))
-        );
-        assert!(
-            after[0]
-                .1
-                .iter()
-                .any(|span| matches!(span.mark, InlineMark::ExternalLink { .. }))
-        );
-
-        // A late-joining peer's text edit merges back without turning the
-        // native formatting/link anchors into stale plain-text state.
-        let mut peer = AutoCommit::load(&doc.save()).unwrap();
-        let moved = after[0].0.clone();
-        let end = peer
-            .text(
-                NotesDoc::block_text_obj(
-                    &peer,
-                    &NotesDoc::page_blocks_list(&peer, page).unwrap(),
-                    0,
-                )
-                .unwrap(),
+            );
+            NotesDoc::apply_block_ops(
+                &mut doc,
+                page,
+                &[BlockEditOp::Insert {
+                    block_id: block.clone(),
+                    after: None,
+                    kind: "paragraph".into(),
+                    text: "café link web".into(),
+                }],
             )
-            .unwrap()
-            .len();
-        NotesDoc::apply_block_ops(
-            &mut peer,
-            page,
-            &[BlockEditOp::TextSplice {
-                block_id: moved,
-                start: end,
-                end,
-                text: "!".into(),
-            }],
-        )
-        .unwrap();
-        let mut merged_peer = AutoCommit::load(&peer.save()).unwrap();
-        doc.merge_incoming(&mut merged_peer).unwrap();
-        assert!(
-            NotesDoc::page_block_marks(&doc, page)[0]
-                .1
-                .iter()
-                .any(|span| matches!(span.mark, InlineMark::Link { .. }))
-        );
-    }
+            .unwrap();
+            let target = Uuid::new_v4();
+            let expected = vec![
+                InlineMarkSpan {
+                    start: 0,
+                    end: 5,
+                    mark: InlineMark::Bold,
+                },
+                InlineMarkSpan {
+                    start: 6,
+                    end: 10,
+                    mark: InlineMark::Link {
+                        page: target.to_string(),
+                    },
+                },
+                InlineMarkSpan {
+                    start: 11,
+                    end: 14,
+                    mark: InlineMark::ExternalLink {
+                        url: "https://example.test".into(),
+                    },
+                },
+            ];
+            NotesDoc::set_block_marks(&mut doc, page, &block, &expected).unwrap();
+            assert!(NotesDoc::page_marks_are_canonical(&doc, page));
+            assert_eq!(NotesDoc::page_block_marks(&doc, page)[0].1, expected);
 
-    #[test]
-    fn blocks_list_and_text_round_trip() {
-        let mut doc = AutoCommit::new();
-        let id = Uuid::new_v4();
-        NotesDoc::upsert_page_meta(
-            &mut doc,
-            &PageMeta {
-                id,
-                title: "P".into(),
-                parent: None,
-                order: 0,
-            },
-        );
-        let blocks = NotesDoc::page_blocks_list(&doc, id).unwrap();
-        let _t = NotesDoc::push_block(&mut doc, &blocks, "paragraph", "hi");
-        assert_eq!(doc.length(&blocks), 1);
-        assert_eq!(NotesDoc::block_kind(&doc, &blocks, 0), "paragraph");
-        let tid = NotesDoc::block_text_obj(&doc, &blocks, 0).unwrap();
-        assert_eq!(doc.text(&tid).unwrap(), "hi");
-    }
+            // A move must leave native formatting/link anchors unchanged.
+            NotesDoc::apply_block_ops(
+                &mut doc,
+                page,
+                &[BlockEditOp::Move {
+                    block_id: block.clone(),
+                    after: None,
+                }],
+            )
+            .unwrap();
+            assert_eq!(NotesDoc::page_block_marks(&doc, page)[0].1, expected);
 
-    #[test]
-    fn legacy_block_identity_is_read_only_until_an_action_persists_it() {
-        let mut doc = AutoCommit::new();
-        let page = Uuid::new_v4();
-        NotesDoc::upsert_page_meta(
-            &mut doc,
-            &PageMeta {
-                id: page,
-                title: "Legacy".into(),
-                parent: None,
-                order: 0,
-            },
-        );
-        let list = NotesDoc::page_blocks_list(&doc, page).unwrap();
-        NotesDoc::push_block(&mut doc, &list, "paragraph", "old");
-        let (_, map) = doc.get(&list, 0).unwrap().unwrap();
-        doc.delete(&map, "id").unwrap();
-        let legacy = ui::widget::legacy_block_id(&list, 0, "paragraph", "old");
-        assert_eq!(NotesDoc::page_block_snapshots(&doc, page)[0].0, legacy);
+            // The mark positions are native character anchors, not a brittle
+            // JSON byte offset: an adjacent Unicode edit keeps the spans readable.
+            NotesDoc::apply_block_ops(
+                &mut doc,
+                page,
+                &[BlockEditOp::TextSplice {
+                    block_id: block,
+                    start: 0,
+                    end: 0,
+                    text: "✓ ".into(),
+                }],
+            )
+            .unwrap();
+            let after = NotesDoc::page_block_marks(&doc, page);
+            assert_eq!(after.len(), 1);
+            assert!(
+                after[0]
+                    .1
+                    .iter()
+                    .any(|span| matches!(span.mark, InlineMark::Bold))
+            );
+            assert!(
+                after[0]
+                    .1
+                    .iter()
+                    .any(|span| matches!(span.mark, InlineMark::Link { .. }))
+            );
+            assert!(
+                after[0]
+                    .1
+                    .iter()
+                    .any(|span| matches!(span.mark, InlineMark::ExternalLink { .. }))
+            );
 
-        NotesDoc::apply_block_ops(
-            &mut doc,
-            page,
-            &[BlockEditOp::TextSplice {
-                block_id: legacy,
-                start: 0,
-                end: 3,
-                text: "new".into(),
-            }],
-        )
-        .unwrap();
-        assert_eq!(NotesDoc::page_block_snapshots(&doc, page)[0].1, "new");
-        assert!(
-            block_id(&doc, &map).is_some(),
-            "action persisted the legacy id"
-        );
+            // A late-joining peer's text edit merges back without turning the
+            // native formatting/link anchors into stale plain-text state.
+            let mut peer = AutoCommit::load(&doc.save()).unwrap();
+            let moved = after[0].0.clone();
+            let end = peer
+                .text(
+                    NotesDoc::block_text_obj(
+                        &peer,
+                        &NotesDoc::page_blocks_list(&peer, page).unwrap(),
+                        0,
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+                .len();
+            NotesDoc::apply_block_ops(
+                &mut peer,
+                page,
+                &[BlockEditOp::TextSplice {
+                    block_id: moved,
+                    start: end,
+                    end,
+                    text: "!".into(),
+                }],
+            )
+            .unwrap();
+            let mut merged_peer = AutoCommit::load(&peer.save()).unwrap();
+            doc.merge_incoming(&mut merged_peer).unwrap();
+            assert!(
+                NotesDoc::page_block_marks(&doc, page)[0]
+                    .1
+                    .iter()
+                    .any(|span| matches!(span.mark, InlineMark::Link { .. }))
+            );
+        }
+
+        eprintln!("phase legacy_block_identity_is_read_only_until_an_action_persists_it");
+        {
+            let mut doc = AutoCommit::new();
+            let page = Uuid::new_v4();
+            NotesDoc::upsert_page_meta(
+                &mut doc,
+                &PageMeta {
+                    id: page,
+                    title: "Legacy".into(),
+                    parent: None,
+                    order: 0,
+                },
+            );
+            let list = NotesDoc::page_blocks_list(&doc, page).unwrap();
+            NotesDoc::push_block(&mut doc, &list, "paragraph", "old");
+            let (_, map) = doc.get(&list, 0).unwrap().unwrap();
+            doc.delete(&map, "id").unwrap();
+            let legacy = ui::widget::legacy_block_id(&list, 0, "paragraph", "old");
+            assert_eq!(NotesDoc::page_block_snapshots(&doc, page)[0].0, legacy);
+
+            NotesDoc::apply_block_ops(
+                &mut doc,
+                page,
+                &[BlockEditOp::TextSplice {
+                    block_id: legacy,
+                    start: 0,
+                    end: 3,
+                    text: "new".into(),
+                }],
+            )
+            .unwrap();
+            assert_eq!(NotesDoc::page_block_snapshots(&doc, page)[0].1, "new");
+            assert!(
+                block_id(&doc, &map).is_some(),
+                "action persisted the legacy id"
+            );
+        }
     }
 }

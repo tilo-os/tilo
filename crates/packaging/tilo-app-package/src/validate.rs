@@ -367,111 +367,112 @@ mode = "off"
     }
 
     #[test]
-    fn format_provider_payload_needs_provider_module() {
-        let m = minimal_format_provider_manifest();
-        assert_eq!(
-            validate_manifest_with_payload(&m, &["provider.wasm".into()]),
-            Ok(())
-        );
-        assert_eq!(
-            validate_manifest_with_payload(&m, &["component.wasm".into()]),
-            Err(ManifestError::FormatProviderMissingModule)
-        );
-        assert_eq!(
-            validate_manifest_with_payload(&m, &[]),
-            Err(ManifestError::FormatProviderMissingModule)
-        );
+    fn runtime_and_provider_manifests_validate_their_kind() {
+        // phase: format_provider_payload_needs_provider_module
+        {
+            let m = minimal_format_provider_manifest();
+            assert_eq!(
+                validate_manifest_with_payload(&m, &["provider.wasm".into()]),
+                Ok(())
+            );
+            assert_eq!(
+                validate_manifest_with_payload(&m, &["component.wasm".into()]),
+                Err(ManifestError::FormatProviderMissingModule)
+            );
+            assert_eq!(
+                validate_manifest_with_payload(&m, &[]),
+                Err(ManifestError::FormatProviderMissingModule)
+            );
+        }
+        // phase: runtime_kind_with_runtime_field_rejected
+        {
+            let mut m = minimal_runtime_manifest();
+            m.package.runtime = Some("tilo-runtime/2025.06".into());
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::RuntimeKindHasRuntime)
+            );
+        }
+        // phase: calendar_runtime_version_accepted
+        {
+            let mut m = minimal_runtime_manifest();
+            m.package.kind = Kind::App;
+            m.package.runtime = Some("tilo-runtime/2025.06".into());
+            // Will still fail because no entrypoint is set, but the
+            // runtime-version parse should pass before that — make sure the
+            // error is App-specific, not runtime-version.
+            let e = validate_manifest(&m).unwrap_err();
+            assert!(
+                matches!(e, ManifestError::AppMissingEntrypoint),
+                "expected app-entrypoint error, got {e:?}"
+            );
+        }
+        // phase: stamped_browser_runtime_manifest_accepted
+        {
+            let source = include_str!("../../../../apps/browser/tilo-app.toml");
+            let stamped = source.replace(
+                "runtime  = \"tilo-runtime/2026.07\"",
+                "runtime  = \"tilo-runtime/2026.7.0-browser\"",
+            );
+            assert_ne!(stamped, source, "browser runtime stamp did not match");
+            let manifest = Manifest::from_toml_str(&stamped).expect("stamped browser TOML");
+            assert_eq!(
+                manifest.package.runtime.as_deref(),
+                Some("tilo-runtime/2026.7.0-browser")
+            );
+            assert_eq!(validate_manifest(&manifest), Ok(()));
+        }
     }
 
     #[test]
-    fn runtime_kind_with_runtime_field_rejected() {
-        let mut m = minimal_runtime_manifest();
-        m.package.runtime = Some("tilo-runtime/2025.06".into());
-        assert_eq!(
-            validate_manifest(&m),
-            Err(ManifestError::RuntimeKindHasRuntime)
-        );
-    }
-
-    #[test]
-    fn calendar_runtime_version_accepted() {
-        let mut m = minimal_runtime_manifest();
-        m.package.kind = Kind::App;
-        m.package.runtime = Some("tilo-runtime/2025.06".into());
-        // Will still fail because no entrypoint is set, but the
-        // runtime-version parse should pass before that — make sure the
-        // error is App-specific, not runtime-version.
-        let e = validate_manifest(&m).unwrap_err();
-        assert!(
-            matches!(e, ManifestError::AppMissingEntrypoint),
-            "expected app-entrypoint error, got {e:?}"
-        );
-    }
-
-    #[test]
-    fn stamped_browser_runtime_manifest_accepted() {
-        let source = include_str!("../../../../apps/browser/tilo-app.toml");
-        let stamped = source.replace(
-            "runtime  = \"tilo-runtime/2026.07\"",
-            "runtime  = \"tilo-runtime/2026.7.0-browser\"",
-        );
-        assert_ne!(stamped, source, "browser runtime stamp did not match");
-        let manifest = Manifest::from_toml_str(&stamped).expect("stamped browser TOML");
-        assert_eq!(
-            manifest.package.runtime.as_deref(),
-            Some("tilo-runtime/2026.7.0-browser")
-        );
-        assert_eq!(validate_manifest(&manifest), Ok(()));
-    }
-
-    #[test]
-    fn semantic_continuity_requires_presentation() {
-        let mut m = minimal_runtime_manifest();
-        m.continuity.required = vec![ContinuityFacet::Semantic];
-        assert_eq!(
-            validate_manifest(&m),
-            Err(ManifestError::SemanticContinuityWithoutPresentation)
-        );
-    }
-
-    #[test]
-    fn semantic_continuity_requires_a_signed_portable_schema() {
-        let mut m = minimal_runtime_manifest();
-        m.continuity.required = vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic];
-        assert_eq!(
-            validate_manifest(&m),
-            Err(ManifestError::SemanticContinuityWithoutSchema)
-        );
-    }
-
-    #[test]
-    fn continuity_facets_cannot_be_repeated() {
-        let mut m = minimal_runtime_manifest();
-        m.continuity.required = vec![ContinuityFacet::Presentation, ContinuityFacet::Presentation];
-        assert_eq!(
-            validate_manifest(&m),
-            Err(ManifestError::DuplicateContinuityFacet(
-                ContinuityFacet::Presentation
-            ))
-        );
-    }
-
-    #[test]
-    fn apps_cannot_opt_out_of_structural_presentation() {
-        let mut m = minimal_runtime_manifest();
-        m.package.kind = Kind::App;
-        m.entrypoint = Some(crate::manifest::Entrypoint {
-            bin: "bin/app".into(),
-            r#type: EntrypointType::Gui,
-            gui_bin: None,
-            cli_bin: None,
-            splash_segments: Vec::new(),
-            splash_budget_ms: 400,
-        });
-        m.continuity.required.clear();
-        assert_eq!(
-            validate_manifest(&m),
-            Err(ManifestError::AppContinuityMissingPresentation)
-        );
+    fn continuity_declarations_are_validated() {
+        // phase: semantic_continuity_requires_presentation
+        {
+            let mut m = minimal_runtime_manifest();
+            m.continuity.required = vec![ContinuityFacet::Semantic];
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::SemanticContinuityWithoutPresentation)
+            );
+        }
+        // phase: semantic_continuity_requires_a_signed_portable_schema
+        {
+            let mut m = minimal_runtime_manifest();
+            m.continuity.required = vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic];
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::SemanticContinuityWithoutSchema)
+            );
+        }
+        // phase: continuity_facets_cannot_be_repeated
+        {
+            let mut m = minimal_runtime_manifest();
+            m.continuity.required =
+                vec![ContinuityFacet::Presentation, ContinuityFacet::Presentation];
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::DuplicateContinuityFacet(
+                    ContinuityFacet::Presentation
+                ))
+            );
+        }
+        // phase: apps_cannot_opt_out_of_structural_presentation
+        {
+            let mut m = minimal_runtime_manifest();
+            m.package.kind = Kind::App;
+            m.entrypoint = Some(crate::manifest::Entrypoint {
+                bin: "bin/app".into(),
+                r#type: EntrypointType::Gui,
+                gui_bin: None,
+                cli_bin: None,
+                splash_segments: Vec::new(),
+                splash_budget_ms: 400,
+            });
+            m.continuity.required.clear();
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::AppContinuityMissingPresentation)
+            );
+        }
     }
 }

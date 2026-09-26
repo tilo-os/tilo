@@ -15,6 +15,7 @@ done
 for file in share/applications/tilo-import-folders.desktop etc/pam.d/tilo-unlock share/wayland-sessions/tilo.desktop \
             share/xdg-desktop-portal/portals/tilo.portal \
             share/xdg-desktop-portal/tilo-portals.conf \
+            share/pipewire/tilo-echo-cancel.conf \
             share/systemd/user/tilo-graphical-session.target \
             share/licenses/tilo-session/LICENSE; do
     [[ -f $result/$file ]] || { echo "missing file: $file" >&2; exit 1; }
@@ -29,6 +30,7 @@ grep -Fqx "TryExec=$result/bin/tilo-shell" "$entry"
 grep -q '^DesktopNames=tilo$' "$entry"
 grep -q '^UseIn=tilo$' "$portal"
 grep -q '^default=tilo$' "$result/share/xdg-desktop-portal/tilo-portals.conf"
+grep -q 'libpipewire-module-echo-cancel' "$result/share/pipewire/tilo-echo-cancel.conf"
 grep -Fqx "TILO_SHELL=$result/bin/tilo-shell" "$wrapper"
 grep -Fqx "SESSION_RUNNER=$result/libexec/tilo-session-runner" "$wrapper"
 grep -Eq '^SYSTEMD_CAT=/nix/store/.+/bin/systemd-cat$' "$runner"

@@ -91,50 +91,54 @@ mod tests {
     }
 
     #[test]
-    fn an_open_gate_runs_launches_at_once() {
-        let mut gate = gate();
-        assert_eq!(gate.admit("files", "files"), Admission::Run("files"));
-        assert!(gate.open().is_empty());
-    }
-
-    #[test]
-    fn launches_wait_while_holding_and_run_in_request_order_once_open() {
-        let mut gate = gate();
-        gate.hold();
-        assert_eq!(gate.admit("files", "files"), Admission::Held);
-        assert_eq!(gate.admit("notes", "notes"), Admission::Held);
-        assert!(gate.is_holding());
-        assert_eq!(gate.open(), vec!["files", "notes"]);
-        assert!(!gate.is_holding());
-        assert_eq!(gate.admit("music", "music"), Admission::Run("music"));
-    }
-
-    #[test]
-    fn a_repeated_launch_waits_once() {
-        let mut gate = gate();
-        gate.hold();
-        assert_eq!(gate.admit("files", "first click"), Admission::Held);
-        assert_eq!(gate.admit("files", "second click"), Admission::AlreadyHeld);
-        assert_eq!(gate.open(), vec!["first click"]);
-    }
-
-    #[test]
-    fn the_wait_is_bounded() {
-        let mut gate = gate();
-        gate.hold();
-        for app in ["a", "b", "c"] {
-            assert_eq!(gate.admit(app, app), Admission::Held);
+    fn launch_gate_runs_open_launches_and_holds_others_once_in_bounded_order() {
+        fn an_open_gate_runs_launches_at_once() {
+            let mut gate = gate();
+            assert_eq!(gate.admit("files", "files"), Admission::Run("files"));
+            assert!(gate.open().is_empty());
         }
-        assert_eq!(gate.admit("d", "d"), Admission::Full("d"));
-        assert_eq!(gate.open(), vec!["a", "b", "c"]);
-    }
 
-    #[test]
-    fn holding_again_keeps_what_is_already_held() {
-        let mut gate = gate();
-        gate.hold();
-        assert_eq!(gate.admit("files", "files"), Admission::Held);
-        gate.hold();
-        assert_eq!(gate.open(), vec!["files"]);
+        fn launches_wait_while_holding_and_run_in_request_order_once_open() {
+            let mut gate = gate();
+            gate.hold();
+            assert_eq!(gate.admit("files", "files"), Admission::Held);
+            assert_eq!(gate.admit("notes", "notes"), Admission::Held);
+            assert!(gate.is_holding());
+            assert_eq!(gate.open(), vec!["files", "notes"]);
+            assert!(!gate.is_holding());
+            assert_eq!(gate.admit("music", "music"), Admission::Run("music"));
+        }
+
+        fn a_repeated_launch_waits_once() {
+            let mut gate = gate();
+            gate.hold();
+            assert_eq!(gate.admit("files", "first click"), Admission::Held);
+            assert_eq!(gate.admit("files", "second click"), Admission::AlreadyHeld);
+            assert_eq!(gate.open(), vec!["first click"]);
+        }
+
+        fn the_wait_is_bounded() {
+            let mut gate = gate();
+            gate.hold();
+            for app in ["a", "b", "c"] {
+                assert_eq!(gate.admit(app, app), Admission::Held);
+            }
+            assert_eq!(gate.admit("d", "d"), Admission::Full("d"));
+            assert_eq!(gate.open(), vec!["a", "b", "c"]);
+        }
+
+        fn holding_again_keeps_what_is_already_held() {
+            let mut gate = gate();
+            gate.hold();
+            assert_eq!(gate.admit("files", "files"), Admission::Held);
+            gate.hold();
+            assert_eq!(gate.open(), vec!["files"]);
+        }
+
+        an_open_gate_runs_launches_at_once();
+        launches_wait_while_holding_and_run_in_request_order_once_open();
+        a_repeated_launch_waits_once();
+        the_wait_is_bounded();
+        holding_again_keeps_what_is_already_held();
     }
 }

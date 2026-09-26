@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "tilo-app"
 version = "0.1.0"
 edition = "2024"
@@ -6,22 +7,37 @@ publish.workspace = true
 license.workspace = true
 
 [features]
-default = ["native", "broker-transport"]
+# Every OS affordance is on by default: the native runner, collaboration over
+# the broker, host file choosers and URI opening (XDG portal / Windows
+# dialogs), desktop media controls (MPRIS), notifications and GPU video
+# frames. An app depends on `tilo-app` and gets all of them; it never picks
+# features to get the affordances.
+#
+# A headless tool that wants only the toolkit opts out with
+# `default-features = false` and names what it keeps.
+default = ["native", "broker-transport", "portal", "mpris", "notifications", "gpu-video"]
 # The native desktop runner and host services; see `tilo-ui`'s `native`.
 native = ["ui-core/native"]
 # The collaboration manager's built-in broker transport; see `tilo-ui`'s
 # `broker-transport`.
 broker-transport = ["ui-core/broker-transport"]
+# Host-native file open/save, OpenURI, location and screen capture.
+portal = ["ui-core/portal"]
+# Desktop media controls on the session bus for players.
+mpris = ["ui-core/mpris"]
+# Host notifications (Windows toasts; a no-op elsewhere).
+notifications = ["ui-core/notifications"]
+# Painting hardware-decoded video frames, zero-copy where the GPU allows.
+gpu-video = ["ui-core/gpu-video"]
+dmabuf-import = ["ui-core/dmabuf-import"]
 test-support = ["ui-core/test-support"]
+# WebView engines. WPE needs the WPE WebKit libraries, which the workspace
+# does not build by default; ad blocking is the browser's filter-list
+# compiler.
 webview-adblock = ["ui-core/webview-adblock"]
 webview-wpe = ["ui-core/webview-wpe"]
-dmabuf-import = ["ui-core/dmabuf-import"]
-gpu-video = ["ui-core/gpu-video"]
-mpris = ["ui-core/mpris"]
-portal = ["ui-core/portal"]
 # Optional native presentation diagnostics shared by app entrypoints.
 presentation-feedback = ["ui-core/presentation-feedback"]
-notifications = ["ui-core/notifications"]
 
 [dependencies]
 ui-core = { package = "tilo-ui", path = "../ui-core", default-features = false }
@@ -32,6 +48,10 @@ tilo-actions = { path = "../../collab/actions" }
 serde_json.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true
