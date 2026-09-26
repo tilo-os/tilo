@@ -278,15 +278,19 @@ jobs:
           fi
           [[ $base =~ ^[0-9a-f]{40}$ && $GITHUB_SHA =~ ^[0-9a-f]{40}$ ]]
           origin=$(/usr/bin/git remote get-url origin)
-          [[ $origin == https://code.tilo.so/tilo/tilo || \
-             $origin == https://code.tilo.so/tilo/tilo.git ]]
+          [[ $GITHUB_SERVER_URL =~ ^https://[a-z0-9.-]+$ ]]
+          [[ $origin == "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" || \
+             $origin == "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" ]] || {
+            printf 'checkout origin is not %s/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" >&2
+            exit 1
+          }
           token=$SOURCE_TOKEN
           unset SOURCE_TOKEN
           credential=$(printf 'x-access-token:%s' "$token" | \
             /usr/bin/env -u SOURCE_TOKEN /usr/bin/base64 -w0)
           unset token
           auth=(/usr/bin/env -u SOURCE_TOKEN GIT_CONFIG_COUNT=1 \
-            GIT_CONFIG_KEY_0=http.https://code.tilo.so/.extraheader \
+            GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/.extraheader" \
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $credential")
           connected=false
           for depth in 2 32 128 512 2048; do
