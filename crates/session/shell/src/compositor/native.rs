@@ -8597,6 +8597,27 @@ pub fn run() {
                             // shell receipt, so a second notification would
                             // obscure work and split the next action.
                             tracing::info!(path = %path.display(), "screenshot saved");
+                            frame_builder.host_mut().set_capture_send_devices(
+                                peer_sync.as_deref().map_or_else(Vec::new, |network| {
+                                    crate::shell::screenshot_send::online_devices(network)
+                                }),
+                            );
+                        }
+                        CaptureOutcome::ScreenshotSendRequested { path, target } => {
+                            let mut bridge = crate::shell::screenshot_send::FabricSendBridge {
+                                network: peer_sync.as_deref(),
+                                workspace_root: crate::shell::screenshot_send::workspace_files_root(
+                                ),
+                            };
+                            match crate::shell::screenshot_send::route(&path, &target, &mut bridge)
+                            {
+                                Ok(receipt) => frame_builder.with_chrome(|chrome| {
+                                    chrome.push_notification("Screenshot sent", receipt.message());
+                                }),
+                                Err(error) => frame_builder.with_chrome(|chrome| {
+                                    chrome.push_error_notification("Screenshot not sent", error);
+                                }),
+                            }
                         }
                         CaptureOutcome::Copied { width, height } => {
                             tracing::info!(width, height, "screenshot copied");
