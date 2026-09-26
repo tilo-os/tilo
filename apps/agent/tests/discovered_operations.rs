@@ -904,6 +904,7 @@ fn qos_action_grant_does_not_authorize_the_tilo_route() {
             settle: Duration::ZERO,
             directory: None,
             permissions: granted("Scribe", "word-processor"),
+            content: tilo_content::ContentStore::memory(),
         },
         replica,
         |doc| {

@@ -2461,6 +2461,7 @@ mod tests {
                     ui::permissions::Actor::agent("agent-1"),
                     vec![],
                 ),
+                content: tilo_content::ContentStore::memory(),
             },
             link,
             editor: None,

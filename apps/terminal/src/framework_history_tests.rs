@@ -139,6 +139,7 @@ fn recording_widget() -> RecordingWidget {
         Arc::new(Mutex::new(Box::new(ChannelWriter(write_tx)))),
         Arc::new(Mutex::new(Box::new(RecordingMaster(resize_tx)))),
         output_rx,
+        tilo_content::ContentStore::memory(),
     );
     (widget, writes, output, resizes)
 }

@@ -485,6 +485,7 @@ mod launch_tests {
             Arc::new(Mutex::new(Box::new(ChanWriter(write_tx)))),
             Arc::new(Mutex::new(Box::new(MockMaster))),
             output_rx,
+            tilo_content::ContentStore::memory(),
         );
         let waker = widget.waker_handle();
         let wake_scope = ui::WakeScope::new();

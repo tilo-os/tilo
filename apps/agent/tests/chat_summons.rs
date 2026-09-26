@@ -51,6 +51,7 @@ fn config(path: std::path::PathBuf) -> Config {
                 .with_id("reviewed"),
             ],
         ),
+        content: tilo_content::ContentStore::memory(),
     }
 }
 fn resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
@@ -71,6 +72,7 @@ fn resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
             selection: None,
             region: word_processor::actions::RegionKind::Body,
             search_hits: vec![],
+            content: tilo_content::ContentStore::memory(),
         },
         doc,
     )
