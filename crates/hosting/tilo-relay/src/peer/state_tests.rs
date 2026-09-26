@@ -244,6 +244,30 @@ impl Fixture {
     }
 }
 
+impl Fixture {
+    /// Signs a revocation of `device` under the owner root and installs it in
+    /// the source session's live revocation list.
+    fn revoke(&self, device: [u8; 32]) {
+        let mut entry = tilo_user_identity::RevocationEntry {
+            user_public_key: self.source.own_user,
+            revoked_device_public_key: device,
+            revoked_at_ns: 1,
+            reason: tilo_user_identity::RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, &self.root_key).unwrap();
+        self.source
+            .revocations
+            .write()
+            .unwrap()
+            .insert(entry)
+            .unwrap();
+    }
+    fn revoke_source(&self) {
+        self.revoke(self.source.peer.device_public_key);
+    }
+}
+
 // These cases exercise the ordered persistence/publication path, including its
 // checkpoint-prefix publisher, rather than only the checkpoint classifier.
 impl Fixture {
@@ -685,21 +709,7 @@ async fn personal_continuity_rechecks_source_revocation_after_persistence_wait()
     .await
     .unwrap();
     reached.await.unwrap();
-    let mut entry = tilo_user_identity::RevocationEntry {
-        user_public_key: fixture.source.own_user,
-        revoked_device_public_key: fixture.source.peer.device_public_key,
-        revoked_at_ns: 1,
-        reason: tilo_user_identity::RevocationReason::Lost,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
-    fixture
-        .source
-        .revocations
-        .write()
-        .unwrap()
-        .insert(entry)
-        .unwrap();
+    fixture.revoke_source();
     drop(release);
     fixture.drained_wait().await;
     assert!(
@@ -734,21 +744,7 @@ async fn personal_continuity_prefix_rechecks_source_revocation_after_persistence
         .await
         .expect("prefix never reached its persistence barrier")
         .unwrap();
-    let mut entry = tilo_user_identity::RevocationEntry {
-        user_public_key: fixture.source.own_user,
-        revoked_device_public_key: fixture.source.peer.device_public_key,
-        revoked_at_ns: 1,
-        reason: tilo_user_identity::RevocationReason::Lost,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
-    fixture
-        .source
-        .revocations
-        .write()
-        .unwrap()
-        .insert(entry)
-        .unwrap();
+    fixture.revoke_source();
     drop(release);
     fixture.drained_wait().await;
     assert_eq!(
@@ -935,21 +931,7 @@ async fn personal_continuity_prefix_revocation_before_promotion_keeps_prior_curr
         .await
         .unwrap()
         .unwrap();
-    let mut entry = tilo_user_identity::RevocationEntry {
-        user_public_key: fixture.source.own_user,
-        revoked_device_public_key: fixture.source.peer.device_public_key,
-        revoked_at_ns: 1,
-        reason: tilo_user_identity::RevocationReason::Lost,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
-    fixture
-        .source
-        .revocations
-        .write()
-        .unwrap()
-        .insert(entry)
-        .unwrap();
+    fixture.revoke_source();
     drop(release);
     fixture.drained_wait().await;
     assert!(fixture.recipient_rx.try_recv().is_err());
@@ -974,7 +956,7 @@ async fn personal_continuity_prefix_revocation_before_promotion_keeps_prior_curr
 
 #[tokio::test]
 async fn personal_continuity_nonmatching_checkpoints_keep_once_and_rearm_gates() {
-    use crate::store::shell_selection_tests::{producer_frame, producer_metadata};
+    use crate::store::shell_selection::tests::{producer_frame, producer_metadata};
     let metadata = producer_metadata();
     let raw = producer_frame(&metadata, &metadata["baseline"][1], 1);
     let Envelope::Delta { delta, .. } = crate::transport::decode(&raw[4..]).unwrap() else {
@@ -1370,21 +1352,7 @@ async fn state_completion_rechecks_source_and_recipient_membership_and_generatio
             } else {
                 fixture.recipient.device_public_key
             };
-            let mut entry = tilo_user_identity::RevocationEntry {
-                user_public_key: fixture.source.own_user,
-                revoked_device_public_key: key,
-                revoked_at_ns: 1,
-                reason: tilo_user_identity::RevocationReason::Lost,
-                signature: [0; 64],
-            };
-            tilo_user_identity::sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
-            fixture
-                .source
-                .revocations
-                .write()
-                .unwrap()
-                .insert(entry)
-                .unwrap();
+            fixture.revoke(key);
         }
         drop(release);
         fixture.drained().await;
@@ -1569,21 +1537,7 @@ async fn outbound_federation_revocation_and_generation_replacement_fence_complet
         .unwrap();
         reached.await.unwrap();
         if revoke {
-            let mut entry = tilo_user_identity::RevocationEntry {
-                user_public_key: fixture.source.own_user,
-                revoked_device_public_key: fixture.source.peer.device_public_key,
-                revoked_at_ns: 1,
-                reason: tilo_user_identity::RevocationReason::Lost,
-                signature: [0; 64],
-            };
-            tilo_user_identity::sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
-            fixture
-                .source
-                .revocations
-                .write()
-                .unwrap()
-                .insert(entry)
-                .unwrap();
+            fixture.revoke_source();
         } else {
             fixture.workspace.lock().await.outbound_federation.insert(
                 fixture.source.peer.device_public_key,
@@ -1765,21 +1719,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 });
             }
             "revoked" => {
-                let mut entry = tilo_user_identity::RevocationEntry {
-                    user_public_key: fixture.source.own_user,
-                    revoked_device_public_key: device,
-                    revoked_at_ns: 1,
-                    reason: tilo_user_identity::RevocationReason::Lost,
-                    signature: [0; 64],
-                };
-                tilo_user_identity::sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
-                fixture
-                    .source
-                    .revocations
-                    .write()
-                    .unwrap()
-                    .insert(entry)
-                    .unwrap();
+                fixture.revoke(device);
             }
             "removed" => crate::workspace_io::replace_membership(
                 &fixture.workspace,
@@ -2048,21 +1988,7 @@ async fn replay_completion_only_classifies_a_valid_replacement_as_superseded() {
             mutation,
             Mutation::Revocation | Mutation::ReplacementAndRevocation
         ) {
-            let mut entry = tilo_user_identity::RevocationEntry {
-                user_public_key: fixture.source.own_user,
-                revoked_device_public_key: device,
-                revoked_at_ns: 1,
-                reason: tilo_user_identity::RevocationReason::Lost,
-                signature: [0; 64],
-            };
-            tilo_user_identity::sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
-            fixture
-                .source
-                .revocations
-                .write()
-                .unwrap()
-                .insert(entry)
-                .unwrap();
+            fixture.revoke(device);
         }
         if matches!(mutation, Mutation::MembershipRemoval) {
             fixture
@@ -2985,21 +2911,7 @@ async fn replay_cleanup_rechecks_authority_after_waiting_for_worker() {
         reached.await.unwrap();
         match change {
             0 => {
-                let mut entry = tilo_user_identity::RevocationEntry {
-                    user_public_key: fixture.source.own_user,
-                    revoked_device_public_key: device,
-                    revoked_at_ns: 1,
-                    reason: tilo_user_identity::RevocationReason::Lost,
-                    signature: [0; 64],
-                };
-                tilo_user_identity::sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
-                fixture
-                    .source
-                    .revocations
-                    .write()
-                    .unwrap()
-                    .insert(entry)
-                    .unwrap();
+                fixture.revoke(device);
             }
             1 => crate::workspace_io::replace_membership(
                 &fixture.workspace,
@@ -3334,15 +3246,7 @@ async fn native_sync_refresh_uses_live_subscribed_source_and_rechecks_execution(
                 });
             }
             "revoked" => {
-                let mut entry = tilo_user_identity::RevocationEntry {
-                    user_public_key: source.own_user,
-                    revoked_device_public_key: source.peer.device_public_key,
-                    revoked_at_ns: 1,
-                    reason: tilo_user_identity::RevocationReason::Lost,
-                    signature: [0; 64],
-                };
-                tilo_user_identity::sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
-                source.revocations.write().unwrap().insert(entry).unwrap();
+                fixture.revoke_source();
             }
             "removed" => crate::workspace_io::replace_membership(
                 &fixture.workspace,
