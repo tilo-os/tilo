@@ -16,11 +16,12 @@ use tilo_vm_protocol::{
     SlotRestart, SlotRm, SlotShow, SlotShowResult, Status, Stick, Swap, VM_SLOT, VmTools,
 };
 
+use crate::appsets;
 use crate::build;
 use crate::ci;
 use crate::cli::{
     Builder, Command, CreateArgs, GamepadCommand, InputCommand, PenCommand, ScenarioCommand,
-    SeatCommand, SlotCommand, TouchCommand, UpgradeArgs, VmCommand,
+    SeatCommand, SlotAppsCommand, SlotCommand, TouchCommand, UpgradeArgs, VmCommand,
 };
 use crate::config::{self, DirectKernel, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
@@ -520,6 +521,7 @@ impl App {
             Some(Command::Doctor) => Ok(self.doctor()),
             Some(Command::Guide { topic }) => Self::guide(topic.as_deref()),
             Some(Command::Vm(command)) => self.vm(command),
+            Some(Command::Slot(SlotCommand::Apps(SlotAppsCommand::List))) => Ok(apps_list()),
             Some(Command::Slot(command)) => self.slot(command),
             Some(Command::Swap {
                 component,
@@ -2441,6 +2443,10 @@ impl App {
     // ---- slots ----------------------------------------------------------------
 
     fn slot(&mut self, command: SlotCommand) -> Result<Outcome, CliError> {
+        // A typo in the set name needs no VM to be reported.
+        if let SlotCommand::Apps(SlotAppsCommand::Install { set, .. }) = &command {
+            app_set(set)?;
+        }
         let vm = self.resolve_vm(None)?;
         match command {
             SlotCommand::Create {
@@ -2501,6 +2507,10 @@ impl App {
                 command,
                 ..
             } => self.slot_exec(&vm, name, timeout, &command),
+            SlotCommand::Apps(SlotAppsCommand::Install {
+                name, set, timeout, ..
+            }) => self.apps_install(&vm, name, &set, timeout),
+            SlotCommand::Apps(SlotAppsCommand::List) => Ok(apps_list()),
             SlotCommand::Restart { name, .. } => {
                 let name = self.slot_name(name)?;
                 let mut remote = self.connect(&vm)?;
@@ -2523,6 +2533,65 @@ impl App {
                 Ok(Outcome::new(text, json!(result)).next(&["tilo-vm gc --dry-run"]))
             }
         }
+    }
+
+    /// `slot apps install`: the set's packages through `tilo-vmd
+    /// install-packages` over SSH (output streams), then a session restart
+    /// so the slot sees the VM's new `/usr`.
+    fn apps_install(
+        &mut self,
+        vm: &Resolved,
+        name: Option<String>,
+        set: &str,
+        timeout: u64,
+    ) -> Result<Outcome, CliError> {
+        let apps = app_set(set)?;
+        let slot = self.slot_name(name)?;
+        // Fail on a missing slot before downloading anything.
+        self.connect(vm)?.call(SlotShow { name: slot.clone() })?;
+        let packages: Vec<String> = apps.apps.iter().map(|a| a.package.clone()).collect();
+        let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let mut words = vmbuild::daemon_command(vm.entry.daemon.as_deref(), "install-packages");
+        words.extend(["--timeout".to_owned(), timeout.to_string()]);
+        words.extend(packages.iter().map(|p| vmbuild::sh_quote(p)));
+        let line = remote::ssh_command(&endpoint, vm.entry.key.as_deref(), &words, false);
+        if !self
+            .receipt
+            .phase("install", || self.runner.interactive(&line))?
+        {
+            return Err(CliError::PackagesFailed {
+                set: set.to_owned(),
+                vm: vm.name.clone(),
+            });
+        }
+        let mut remote = self.connect(vm)?;
+        let restarted = self
+            .receipt
+            .phase("apply", || remote.call(SlotRestart { name: slot.clone() }))?;
+        self.receipt.set("slot", &slot);
+        let mut text = vec![format!(
+            "installed the {set} apps into VM {} (a transient /usr overlay: gone at the next VM reboot) and restarted slot {slot}'s session",
+            vm.name
+        )];
+        text.extend(
+            apps.apps
+                .iter()
+                .map(|a| format!("  {}: {}  (try: {})", a.package, a.checks, a.try_command)),
+        );
+        text.push(
+            "Start one from the launcher (system apps are listed with Tilo's), or open xterm and type the try commands into it."
+                .into(),
+        );
+        Ok(Outcome::new(
+            text.join("\n"),
+            json!({ "vm": vm.name, "slot": slot, "set": set, "packages": packages, "restart": restarted }),
+        )
+        .next(&[
+            "tilo-vm input key super",
+            "tilo-vm input type xterm",
+            "tilo-vm input key Return",
+            "tilo-vm shot",
+        ]))
     }
 
     /// `slot exec`: `tilo-vmd exec` over SSH, output streaming straight
@@ -3655,6 +3724,37 @@ fn describe_input(action: &InputAction) -> String {
     }
 }
 
+fn app_set(set: &str) -> Result<appsets::AppSet, CliError> {
+    appsets::find(set).map_err(|known| CliError::UnknownAppSet {
+        set: set.to_owned(),
+        known,
+    })
+}
+
+/// `slot apps list`: every set, what each app checks and how to start it.
+fn apps_list() -> Outcome {
+    let sets = appsets::all();
+    let text = sets
+        .iter()
+        .map(appsets::describe)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let json: Vec<_> = sets
+        .iter()
+        .map(|set| {
+            json!({
+                "name": set.name,
+                "summary": set.summary,
+                "apps": set.apps.iter().map(|a| json!({
+                    "package": a.package, "checks": a.checks, "try": a.try_command,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let first = sets.first().map_or("verification", |s| s.name.as_str());
+    Outcome::new(text, json!(json)).next(&[&format!("tilo-vm slot apps install --set {first}")])
+}
+
 /// What `slot create` did, in a sentence or two.
 fn slot_created_text(
     name: &str,
@@ -3791,7 +3891,8 @@ fn named_slot(command: &Command) -> Option<String> {
             | SlotCommand::Restart { name: slot, .. }
             | SlotCommand::Rm { name: slot, .. }
             | SlotCommand::Show { name: slot, .. }
-            | SlotCommand::Exec { name: slot, .. },
+            | SlotCommand::Exec { name: slot, .. }
+            | SlotCommand::Apps(SlotAppsCommand::Install { name: slot, .. }),
         ) => slot.clone(),
         _ => None,
     }
