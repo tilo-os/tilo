@@ -330,6 +330,7 @@ fn chat_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
             name: c.name,
             kind: c.kind,
             archived: c.archived,
+            feedback: c.feedback,
         })
         .collect();
     chat::actions::provide_resources(

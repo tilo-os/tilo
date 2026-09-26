@@ -14,7 +14,7 @@ use ui::format::bytes as format_bytes;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Avatar, Button, ButtonFace};
+use ui::widget::{Avatar, Badge, Button, ButtonFace, SegmentedFace, ToggleGroup};
 
 use crate::app::{AVATAR, ChatApp, Hit, MenuTarget};
 use crate::geometry::{SidebarHeaderSpec, centered_band, line_top, sidebar_header_layout};
@@ -1811,14 +1811,39 @@ impl ChatApp {
             text_width: text_w,
         };
 
+        // A feedback channel lists its reports under a local sort and filter
+        // band; the timeline scrolls beneath it.
+        let feedback = self.active_feedback_channel();
+        let band_area = area;
+        let area = if feedback {
+            Rect::new(area.x0, area.y0 + FEEDBACK_BAND_H, area.x1, area.y1)
+        } else {
+            area
+        };
+        let column = MessageColumn { area, ..column };
+        if feedback && !self.messages.iter().any(Message::is_top_level) {
+            self.draw_feedback_empty(
+                PaintContext::new(scene, tf, tr, theme),
+                band_area,
+                area,
+                hits,
+            );
+            return;
+        }
+
         // Empty channel: a quiet start-of-conversation marker rather than a
         // blank void, so a fresh channel reads as ready, not broken.
         if self.messages.is_empty() {
             self.draw_empty_channel_marker(scene, tf, tr, theme, area);
+            self.draw_feedback_notice(PaintContext::new(scene, tf, tr, theme), area);
             return;
         }
 
-        let groups = model::group_messages(&self.messages);
+        let groups = if feedback {
+            model::group_reports(&self.messages)
+        } else {
+            model::group_messages(&self.messages)
+        };
         let divider_h = 36.0;
         let (rows, total) = self.measure_message_rows(tr, theme, &groups, text_w, divider_h);
 
@@ -1885,9 +1910,13 @@ impl ChatApp {
                 hits,
             );
         }
+        if feedback {
+            self.draw_feedback_band(PaintContext::new(scene, tf, tr, theme), band_area, hits);
+        }
         if !self.timeline_at_end {
             Self::draw_jump_to_latest(scene, tf, tr, theme, area, hits);
         }
+        self.draw_feedback_notice(PaintContext::new(scene, tf, tr, theme), area);
     }
 
     /// A visible, keyboard-reachable escape hatch from history. It only
@@ -2126,10 +2155,21 @@ impl ChatApp {
         } else {
             0.0
         };
-        let react_h = if m.reactions.is_empty() {
+        let report = self.is_report(m);
+        let react_h = if visible_reactions(m, report).next().is_none() {
             0.0
         } else {
             reaction_chip_h(tr, theme) + REACTION_STRIP_GAP
+        };
+        let ref_h = if m.reference.is_some() {
+            control_band_h(tr, theme) + REACTION_STRIP_GAP
+        } else {
+            0.0
+        };
+        let report_h = if report {
+            control_band_h(tr, theme) + REACTION_STRIP_GAP
+        } else {
+            0.0
         };
         // While editing, the "(edited)" marker is suppressed in favour of the
         // editor's own controls row.
@@ -2153,6 +2193,8 @@ impl ChatApp {
             react_h,
             edited_h,
             thread_h,
+            ref_h,
+            report_h,
             editing,
             edit_ctrl_h,
         }
@@ -2193,7 +2235,7 @@ impl ChatApp {
         let content_top = *y;
 
         if rm.show_header {
-            self.draw_row_header(PaintContext::new(scene, tf, tr, theme), column, &m, y);
+            self.draw_row_header(PaintContext::new(scene, tf, tr, theme), column, &m, y, hits);
         }
 
         self.draw_row_body(
@@ -2218,6 +2260,14 @@ impl ChatApp {
             y,
             hits,
         );
+        if let Some(origin) = self.feedback.fixed_field_at.take() {
+            self.draw_report_fixed_field(
+                PaintContext::new(scene, tf, tr, theme),
+                presence,
+                origin,
+                hits,
+            );
+        }
     }
 
     /// A message group's header: avatar, author name (in their palette
@@ -2228,6 +2278,7 @@ impl ChatApp {
         column: MessageColumn,
         m: &Message,
         y: &mut f64,
+        hits: &mut Vec<(Rect, Hit)>,
     ) {
         let PaintContext {
             scene,
@@ -2262,6 +2313,12 @@ impl ChatApp {
             *y,
             TextWeight::Semibold,
             None,
+        );
+        // The name opens the person's card: Message, Invite to workspace.
+        ChatApp::push_hit(
+            hits,
+            Rect::new(text_x, *y, text_x + f64::from(nw), *y + f64::from(nh)),
+            Hit::OpenPerson(m.author.clone()),
         );
         // The timestamp's line box is bottom-aligned to the name's, which
         // keeps their baselines together at any text scale.
@@ -2418,18 +2475,39 @@ impl ChatApp {
             *y += rm.edited_h;
         }
 
+        if rm.ref_h > 0.0 {
+            self.draw_reference_chip(
+                PaintContext::new(scene, tf, tr, theme),
+                m,
+                AttachmentLayout::new(text_x, *y, text_w),
+                hits,
+            );
+            *y += rm.ref_h;
+        }
+
         if let Some(att) = &m.attachment {
             self.draw_attachment(
                 PaintContext::new(scene, tf, tr, theme),
                 att,
                 AttachmentLayout::new(text_x, *y, text_w),
+                Some((m, &mut *hits)),
             );
             *y += rm.att_h;
         }
 
+        if rm.report_h > 0.0 {
+            self.draw_report_strip(
+                PaintContext::new(scene, tf, tr, theme),
+                m,
+                AttachmentLayout::new(text_x, *y, text_w),
+                hits,
+            );
+            *y += rm.report_h;
+        }
+
         // Empty reaction strip still gets an add affordance on header rows —
         // handled elsewhere, so there is nothing to draw when it's empty.
-        if !m.reactions.is_empty() {
+        if rm.react_h > 0.0 {
             self.draw_reactions(PaintContext::new(scene, tf, tr, theme), m, text_x, *y, hits);
             *y += rm.react_h;
         }
@@ -2556,7 +2634,7 @@ impl ChatApp {
         let mut x = text_x;
         let chip_h = reaction_chip_h(tr, theme);
         let chip_r = chip_h / 2.0;
-        for r in &m.reactions {
+        for r in visible_reactions(m, self.is_report(m)) {
             let mine = r.reacted_by(&self.me.id);
             let lbl = format!("{}  {}", r.emoji, r.count());
             let (lw, lh) = tr.measure(&lbl, REACTION_SIZE, None);
@@ -2723,12 +2801,17 @@ impl ChatApp {
         mut paint: PaintContext<'_>,
         att: &Attachment,
         layout: AttachmentLayout,
+        controls: Option<(&Message, &mut Vec<(Rect, Hit)>)>,
     ) {
+        if let Attachment::Record(record) = att {
+            self.draw_record_attachment(paint, record, layout, controls);
+            return;
+        }
         // Permission boundary: an embed this peer hasn't been granted access to
         // renders as a locked card and never requests its shared bytes. Same
         // footprint as the real embed so the timeline layout is
         // identical whether granted or gated.
-        if !self.embed_allowed(att.blob()) {
+        if att.blob().is_some_and(|blob| !self.embed_allowed(blob)) {
             Self::draw_gated_embed(paint, att, layout);
             return;
         }
@@ -2744,6 +2827,7 @@ impl ChatApp {
             Attachment::File { name, size, .. } => {
                 Self::draw_file_attachment(paint, name, *size, layout);
             }
+            Attachment::Record(_) => {}
         }
     }
 
@@ -3585,6 +3669,7 @@ impl ChatApp {
                 PaintContext::new(scene, tf, tr, theme),
                 att,
                 AttachmentLayout::new(tx, yy, tw),
+                None,
             );
             yy += attachment_flow_height(att, f64::from(tw), scale);
         }
@@ -3654,6 +3739,7 @@ impl ChatApp {
             panel,
             head_y1,
             &rows,
+            hits,
         );
     }
 
@@ -3753,6 +3839,7 @@ impl ChatApp {
         panel: Rect,
         head_y1: f64,
         rows: &[(crate::model::User, Option<String>)],
+        hits: &mut Vec<(Rect, Hit)>,
     ) {
         let PaintContext {
             scene,
@@ -3769,15 +3856,27 @@ impl ChatApp {
             if y + row_h > panel.y1 {
                 break;
             }
-            if self.revealed_person.as_deref() == Some(u.id.as_str()) {
+            // An opened card grows by one control row: Message, Invite.
+            let card = self.revealed_person.as_deref() == Some(u.id.as_str());
+            let actions_h = if card && !self.is_me(&u.id) {
+                control_band_h(tr, theme) + 10.0
+            } else {
+                0.0
+            };
+            if card {
                 fill_round(
                     scene,
                     tf,
-                    Rect::new(panel.x0 + 8.0, y, panel.x1 - 8.0, y + row_h),
+                    Rect::new(panel.x0 + 8.0, y, panel.x1 - 8.0, y + row_h + actions_h),
                     10.0,
                     c.lift(0.55),
                 );
             }
+            ChatApp::push_hit(
+                hits,
+                Rect::new(panel.x0 + 8.0, y, panel.x1 - 8.0, y + row_h),
+                Hit::OpenPerson(u.id.clone()),
+            );
             let avc = Point::new(panel.x0 + 16.0 + 16.0, y + row_h / 2.0);
             draw_avatar(
                 PaintContext::new(scene, tf, tr, theme),
@@ -3814,7 +3913,16 @@ impl ChatApp {
             };
             let status_txt = truncate_to(tr, &status_txt, 11.5, panel.x1 - nx - 14.0);
             label(scene, tr, tf, &status_txt, 11.5, col, nx, avc.y + 2.0);
-            y += row_h;
+            if actions_h > 0.0 {
+                self.draw_person_actions(
+                    PaintContext::new(scene, tf, tr, theme),
+                    &u.id,
+                    Point::new(nx, y + row_h),
+                    panel.x1 - nx - 14.0,
+                    hits,
+                );
+            }
+            y += row_h + actions_h;
         }
         scene.pop_layer();
     }
@@ -4248,6 +4356,10 @@ struct RowM {
     react_h: f64,
     edited_h: f64,
     thread_h: f64,
+    /// The reference chip under the body, when the message is about something.
+    ref_h: f64,
+    /// The vote / status strip of a report.
+    report_h: f64,
     /// This row is the message currently being edited inline — its body is
     /// replaced by the editor box (extra padding) plus a controls row.
     editing: bool,
@@ -4264,7 +4376,16 @@ impl RowM {
         } else {
             0.0
         };
-        top_gap + header + body + self.edited_h + self.att_h + self.react_h + self.thread_h + 4.0
+        top_gap
+            + header
+            + body
+            + self.edited_h
+            + self.ref_h
+            + self.att_h
+            + self.report_h
+            + self.react_h
+            + self.thread_h
+            + 4.0
     }
 }
 
@@ -4305,6 +4426,7 @@ fn attachment_card_size(att: &Attachment, max_w: f64, scale: f64) -> (f64, f64) 
         Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, max_w),
         Attachment::Video { w, h, .. } => video_card_size(*w, *h, max_w),
         Attachment::File { .. } => (max_w.min(360.0), 58.0 * scale),
+        Attachment::Record(_) => (max_w.min(RECORD_CARD_W), RECORD_CARD_H * scale),
     }
 }
 
@@ -4313,7 +4435,7 @@ fn attachment_card_size(att: &Attachment, max_w: f64, scale: f64) -> (f64, f64) 
 fn attachment_flow_height(att: &Attachment, max_w: f64, scale: f64) -> f64 {
     let (_, card_h) = attachment_card_size(att, max_w, scale);
     card_h
-        + if matches!(att, Attachment::File { .. }) {
+        + if matches!(att, Attachment::File { .. } | Attachment::Record(_)) {
             12.0 * scale
         } else {
             24.0 * scale
@@ -4342,6 +4464,709 @@ fn file_chip_meta(name: &str, size: u64) -> String {
 
 /// Horizontal centre of the workspace rail (column of square buttons).
 const RAIL_W_CENTER: f64 = crate::app::RAIL_W / 2.0;
+
+// ------------------------------------------------------------- feedback
+
+/// Widest a record card grows; the card is a summary, not a player.
+const RECORD_CARD_W: f64 = 440.0;
+/// A record card at 1×: title row, summary row, and its controls.
+const RECORD_CARD_H: f64 = 100.0;
+/// Label size of the controls in a report strip, reference chip and card.
+const CONTROL_SIZE: f32 = 12.5;
+/// Height of the local sort / filter band above a feedback channel.
+const FEEDBACK_BAND_H: f64 = 48.0;
+
+/// A control row: its label's line box plus the button padding, never below
+/// the 28 px dense step.
+fn control_band_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    let (_, lh) = tr.measure("Ag", CONTROL_SIZE, None);
+    (f64::from(lh) + 2.0 * f64::from(theme.tokens.spacing.s2)).max(28.0)
+}
+
+/// Width of a shared button face holding `label` (and an icon).
+fn control_w(tr: &mut TextRenderer, label: &str, icon: bool) -> f64 {
+    let (lw, _) = tr.measure(label, CONTROL_SIZE, None);
+    f64::from(lw) + if icon { 44.0 } else { 26.0 }
+}
+
+/// A report's reactions other than its votes, which its strip shows; any
+/// other message shows every reaction.
+fn visible_reactions(m: &Message, report: bool) -> impl Iterator<Item = &model::Reaction> {
+    m.reactions
+        .iter()
+        .filter(move |r| !(report && r.emoji == crate::feedback::VOTE_EMOJI))
+}
+
+impl ChatApp {
+    /// A top-level message in a feedback channel.
+    pub(crate) fn is_report(&self, m: &Message) -> bool {
+        m.is_top_level() && self.channel(&m.channel).is_some_and(|c| c.feedback)
+    }
+
+    fn hovered(&self, rect: Rect) -> bool {
+        rect.contains(self.last_mouse)
+    }
+
+    /// The chip naming what a message is about. Activating it asks the
+    /// workspace to open the resource in the app that published it.
+    fn draw_reference_chip(
+        &self,
+        paint: PaintContext<'_>,
+        m: &Message,
+        layout: AttachmentLayout,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let Some(reference) = &m.reference else {
+            return;
+        };
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let h = control_band_h(tr, theme);
+        let max_w = f64::from(layout.max_width).min(RECORD_CARD_W);
+        let label = truncate_to(tr, &reference.label, CONTROL_SIZE, max_w - 44.0);
+        let w = control_w(tr, &label, true).min(max_w);
+        let rect = Rect::new(
+            layout.origin.x,
+            layout.origin.y,
+            layout.origin.x + w,
+            layout.origin.y + h,
+        );
+        let spoken = crate::i18n::t_args(
+            "chat-reference-open",
+            &[("label", ui::i18n::ArgValue::Text(reference.label.clone()))],
+        );
+        Button::paint(
+            scene,
+            tf,
+            tr,
+            theme,
+            &ButtonFace::new(rect, &label)
+                .icon(ui::icons::Icon::ExternalLink)
+                .text_size(CONTROL_SIZE)
+                .radius(h / 2.0)
+                .accessible_name(&spoken)
+                .hovered(self.hovered(rect)),
+        );
+        ChatApp::push_hit(hits, rect, Hit::OpenReference(m.id.clone()));
+    }
+
+    /// A record attached by reference. A `session` card says what the
+    /// recording covers — its apps, length, steps, which layer the problem is
+    /// in and what review redacted — and offers Replay. The author may
+    /// withdraw it; the card then says what withdrawal cannot do.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one card: its title, summary, and control row share one layout"
+    )]
+    fn draw_record_attachment(
+        &self,
+        paint: PaintContext<'_>,
+        record: &tilo_reference::RecordAttachment,
+        layout: AttachmentLayout,
+        controls: Option<(&Message, &mut Vec<(Rect, Hit)>)>,
+    ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let c = &theme.tokens.colors;
+        let scale = f64::from(theme.text_scale);
+        let (w, h) = (
+            f64::from(layout.max_width).min(RECORD_CARD_W),
+            RECORD_CARD_H * scale,
+        );
+        let Point { x, y } = layout.origin;
+        let card = Rect::new(x, y, x + w, y + h);
+        ui::surface::card(scene, tf, card, 12.0, c.surfaces.raised);
+        let pad = f64::from(theme.tokens.spacing.s3);
+
+        // Kind glyph_box, then the title and the layer tag on one line.
+        let glyph_box = Rect::new(
+            card.x0 + pad,
+            card.y0 + pad,
+            card.x0 + pad + 36.0,
+            card.y0 + pad + 36.0,
+        );
+        fill_round(scene, tf, glyph_box, 9.0, c.accent[5]);
+        let glyph = if record.is_session() { "⏺" } else { "📝" };
+        let (gw, gh) = tr.measure(glyph, 16.0, None);
+        text(
+            scene,
+            tr,
+            tf,
+            glyph,
+            16.0,
+            Color::WHITE,
+            glyph_box.center().x - f64::from(gw) / 2.0,
+            glyph_box.center().y - f64::from(gh) / 2.0,
+            TextWeight::Regular,
+            None,
+        );
+        let tx = glyph_box.x1 + pad;
+        let session = record.session.as_ref();
+        let tag = session.map(|s| match s.layer {
+            tilo_reference::SessionLayer::Logic => (
+                crate::i18n::t("chat-session-layer-logic"),
+                theme.accent_primary,
+            ),
+            tilo_reference::SessionLayer::BelowToolkit => (
+                crate::i18n::t("chat-session-layer-below"),
+                c.semantic.warning,
+            ),
+        });
+        let tag_w = tag.as_ref().map_or(0.0, |(label, _)| {
+            f64::from(tr.measure(label, theme.tokens.typography.scale.xs, None).0) + 18.0
+        });
+        let fallback = crate::i18n::t(if record.is_session() {
+            "chat-session-title"
+        } else {
+            "chat-record-title"
+        });
+        let title = if record.label.trim().is_empty() {
+            fallback.as_str()
+        } else {
+            record.label.as_str()
+        };
+        let title = truncate_to(tr, title, 13.5, card.x1 - tx - pad - tag_w - 8.0);
+        let (title_w, title_h) = text(
+            scene,
+            tr,
+            tf,
+            &title,
+            13.5,
+            c.text_primary,
+            tx,
+            glyph_box.y0,
+            TextWeight::Semibold,
+            None,
+        );
+        if let Some((label, tint)) = &tag {
+            let pill_h = f64::from(title_h).max(18.0);
+            let px = tx + f64::from(title_w) + 8.0;
+            Badge::paint_at(
+                scene,
+                tf,
+                Rect::new(px, glyph_box.y0, px + tag_w, glyph_box.y0 + pill_h),
+                label,
+                *tint,
+                tr,
+                theme,
+            );
+        }
+
+        // What the recording covers, in one line.
+        let summary = session.map_or_else(
+            || fallback.clone(),
+            |s| {
+                let apps = s
+                    .apps
+                    .iter()
+                    .map(|app| crate::feedback::app_label(app))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                [
+                    apps,
+                    crate::feedback::duration_label(s.duration_ms),
+                    crate::feedback::counted("chat-session-steps", s.steps as usize),
+                    crate::feedback::counted(
+                        "chat-session-redactions",
+                        s.redactions.total() as usize,
+                    ),
+                ]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ")
+            },
+        );
+        let summary = truncate_to(tr, &summary, 11.5, card.x1 - tx - pad);
+        label(
+            scene,
+            tr,
+            tf,
+            &summary,
+            11.5,
+            c.text_dim,
+            tx,
+            glyph_box.y0 + f64::from(title_h) + 4.0,
+        );
+
+        // Controls, or what withdrawal means.
+        let band = control_band_h(tr, theme);
+        let row_y = card.y1 - pad - band;
+        let Some((m, hits)) = controls else {
+            return;
+        };
+        if m.attachment_withdrawn {
+            text(
+                scene,
+                tr,
+                tf,
+                &crate::i18n::t("chat-session-withdrawn"),
+                11.5,
+                c.text_dim,
+                card.x0 + pad,
+                row_y,
+                TextWeight::Regular,
+                Some((w - 2.0 * pad) as f32),
+            );
+            return;
+        }
+        let mut bx = card.x0 + pad;
+        if record.is_session() {
+            let label = crate::i18n::t("chat-session-replay");
+            let rect = Rect::new(bx, row_y, bx + control_w(tr, &label, true), row_y + band);
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::new(rect, &label)
+                    .icon(ui::icons::Icon::Play)
+                    .primary()
+                    .text_size(CONTROL_SIZE)
+                    .hovered(self.hovered(rect)),
+            );
+            ChatApp::push_hit(hits, rect, Hit::ReplayRecord(m.id.clone()));
+            bx = rect.x1 + f64::from(theme.tokens.spacing.s2);
+        }
+        if self.is_me(&m.author) {
+            let label = crate::i18n::t("chat-session-withdraw");
+            let rect = Rect::new(bx, row_y, bx + control_w(tr, &label, false), row_y + band);
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::new(rect, &label)
+                    .ghost()
+                    .text_size(CONTROL_SIZE)
+                    .hovered(self.hovered(rect)),
+            );
+            ChatApp::push_hit(hits, rect, Hit::WithdrawRecord(m.id.clone()));
+        }
+    }
+
+    /// A report's votes and status. Voting is the one canonical reaction; the
+    /// status is set by an Editor through the status menu.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one strip whose controls change with the local role and a pending duplicate pick"
+    )]
+    fn draw_report_strip(
+        &self,
+        paint: PaintContext<'_>,
+        m: &Message,
+        layout: AttachmentLayout,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let c = &theme.tokens.colors;
+        let band = control_band_h(tr, theme);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let Point { x, y } = layout.origin;
+        let x1 = x + f64::from(layout.max_width);
+
+        // Vote: the count is the label, the thumb is the icon.
+        let vote_total = crate::feedback::vote_count(m);
+        let voted = crate::feedback::voted_by(m, &self.me.id);
+        let count = vote_total.to_string();
+        let spoken = format!(
+            "{}, {}",
+            crate::i18n::t("chat-report-vote"),
+            crate::feedback::counted("chat-report-votes", vote_total)
+        );
+        let vote = Rect::new(x, y, x + control_w(tr, &count, true).max(64.0), y + band);
+        let face = ButtonFace::new(vote, &count)
+            .icon(ui::icons::Icon::ThumbsUp)
+            .text_size(CONTROL_SIZE)
+            .radius(band / 2.0)
+            .accessible_name(&spoken)
+            .hovered(self.hovered(vote))
+            .disabled(!self.can_comment());
+        Button::paint(
+            scene,
+            tf,
+            tr,
+            theme,
+            &if voted { face.primary() } else { face },
+        );
+        ChatApp::push_hit(hits, vote, Hit::Vote(m.id.clone()));
+        let mut bx = vote.x1 + gap;
+
+        // Status, as a pill.
+        let status = crate::feedback::status_of(m);
+        let mut status_label = crate::feedback::status_label(&status);
+        if let crate::feedback::ReportStatus::Duplicate { of } = &status
+            && let Some(original) = self.message(of)
+        {
+            let snippet: String = original.text.chars().take(32).collect();
+            status_label = format!("{status_label} · {snippet}");
+        }
+        let tint = match &status {
+            crate::feedback::ReportStatus::Fixed { .. } => theme.status_success,
+            crate::feedback::ReportStatus::Planned | crate::feedback::ReportStatus::InProgress => {
+                theme.accent_primary
+            }
+            crate::feedback::ReportStatus::Open => c.neutral[3],
+            crate::feedback::ReportStatus::WontFix
+            | crate::feedback::ReportStatus::Duplicate { .. } => theme.text_dim,
+        };
+        let status_label = truncate_to(
+            tr,
+            &status_label,
+            theme.tokens.typography.scale.xs,
+            (x1 - bx - 160.0).max(80.0),
+        );
+        let (sw, _) = tr.measure(&status_label, theme.tokens.typography.scale.xs, None);
+        let pill_h = (band - 6.0).max(20.0);
+        let pill = Rect::new(
+            bx,
+            y + (band - pill_h) / 2.0,
+            bx + f64::from(sw) + 20.0,
+            y + f64::midpoint(band, pill_h),
+        );
+        Badge::paint_at(scene, tf, pill, &status_label, tint, tr, theme);
+        bx = pill.x1 + gap;
+
+        if !self.can_participate() {
+            return;
+        }
+        // An Editor's controls: pick the original for a pending duplicate,
+        // type the generation for a fix, or open the status menu.
+        match self.feedback.duplicate_pick.as_deref() {
+            Some(pending) if pending == m.id => {
+                let hint = crate::i18n::t("chat-report-pick-original");
+                let (hw, hh) = tr.measure(&hint, 11.5, None);
+                label(
+                    scene,
+                    tr,
+                    tf,
+                    &hint,
+                    11.5,
+                    c.text_dim,
+                    bx,
+                    line_top(y + band / 2.0, f64::from(hh)),
+                );
+                let cancel = crate::i18n::t("chat-report-cancel");
+                let cx = bx + f64::from(hw) + gap;
+                let rect = Rect::new(cx, y, cx + control_w(tr, &cancel, false), y + band);
+                Button::paint(
+                    scene,
+                    tf,
+                    tr,
+                    theme,
+                    &ButtonFace::new(rect, &cancel)
+                        .ghost()
+                        .text_size(CONTROL_SIZE)
+                        .hovered(self.hovered(rect)),
+                );
+                ChatApp::push_hit(hits, rect, Hit::CancelDuplicatePick);
+            }
+            Some(_) => {
+                let original = crate::i18n::t("chat-report-original");
+                let rect = Rect::new(bx, y, bx + control_w(tr, &original, true), y + band);
+                Button::paint(
+                    scene,
+                    tf,
+                    tr,
+                    theme,
+                    &ButtonFace::new(rect, &original)
+                        .icon(ui::icons::Icon::Copy)
+                        .primary()
+                        .text_size(CONTROL_SIZE)
+                        .hovered(self.hovered(rect)),
+                );
+                ChatApp::push_hit(hits, rect, Hit::DuplicateOf(m.id.clone()));
+            }
+            None if matches!(&self.rename, Some(MenuTarget::ReportFixed(id)) if id == &m.id) => {
+                self.feedback.fixed_field_at.set(Some(Point::new(bx, y)));
+            }
+            None => {
+                let set = crate::i18n::t("chat-report-set-status");
+                let rect = Rect::new(bx, y, bx + control_w(tr, &set, false), y + band);
+                Button::paint(
+                    scene,
+                    tf,
+                    tr,
+                    theme,
+                    &ButtonFace::new(rect, &set)
+                        .ghost()
+                        .text_size(CONTROL_SIZE)
+                        .hovered(self.hovered(rect)),
+                );
+                ChatApp::push_hit(hits, rect, Hit::ReportStatusMenu(m.id.clone()));
+            }
+        }
+    }
+
+    /// The generation field an Editor types into when marking a report fixed.
+    /// Painted over the strip after the row, so it sits where "Set status" was.
+    fn draw_report_fixed_field(
+        &mut self,
+        paint: PaintContext<'_>,
+        presence: &PresenceCtx,
+        origin: Point,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let band = control_band_h(tr, theme);
+        let (_, lh) = tr.measure("Ag", 13.0, None);
+        let y = line_top(origin.y + band / 2.0, f64::from(lh));
+        self.draw_inline_rename(
+            PaintContext::new(scene, tf, tr, theme),
+            presence,
+            origin.x,
+            y,
+            120.0,
+            hits,
+        );
+        let hint = crate::i18n::t("chat-report-fixed-generation-hint");
+        label(
+            scene,
+            tr,
+            tf,
+            &hint,
+            11.5,
+            theme.tokens.colors.text_dim,
+            origin.x + 128.0,
+            y,
+        );
+    }
+
+    /// The local sort and filter of a feedback channel. Painted over the
+    /// top of the timeline, which scrolls beneath it.
+    fn draw_feedback_band(&self, paint: PaintContext<'_>, area: Rect, hits: &mut Vec<(Rect, Hit)>) {
+        use crate::feedback::{ReportFilter, ReportSort};
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let c = &theme.tokens.colors;
+        let band = Rect::new(area.x0, area.y0, area.x1, area.y0 + FEEDBACK_BAND_H);
+        fill_rect(scene, tf, band, c.surfaces.base);
+        hline(
+            scene,
+            tf,
+            band.x0,
+            band.x1,
+            band.y1,
+            ui::surface::edge_on(c.surfaces.base),
+        );
+        let view = self.feedback.view(&self.active_channel);
+        let pad = f64::from(theme.tokens.spacing.s4);
+        let seg_h = 30.0;
+        let y0 = band.center().y - seg_h / 2.0;
+        let title = crate::i18n::t("chat-feedback-header");
+        let (tw, th) = tr.measure_weighted(&title, 13.0, None, TextWeight::Semibold);
+        text(
+            scene,
+            tr,
+            tf,
+            &title,
+            13.0,
+            c.text_primary,
+            band.x0 + pad,
+            line_top(band.center().y, f64::from(th)),
+            TextWeight::Semibold,
+            None,
+        );
+        let mut x = band.x0 + pad + f64::from(tw) + pad;
+
+        let mut segmented =
+            |x: &mut f64, labels: &[String], selected: usize, hit: &dyn Fn(usize) -> Hit| {
+                let widths: Vec<f64> = labels
+                    .iter()
+                    .map(|label| f64::from(tr.measure(label, 12.5, None).0) + 24.0)
+                    .collect();
+                let mut rects = Vec::with_capacity(widths.len());
+                let mut sx = *x;
+                for w in &widths {
+                    rects.push(Rect::new(sx, y0, sx + w, y0 + seg_h));
+                    sx += w;
+                }
+                let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+                let hovered = rects.iter().position(|rect| rect.contains(self.last_mouse));
+                ToggleGroup::paint(
+                    scene,
+                    tf,
+                    tr,
+                    theme,
+                    &SegmentedFace::new(&rects, &refs, selected)
+                        .hovered(hovered)
+                        .text_size(12.5),
+                );
+                for (index, rect) in rects.iter().enumerate() {
+                    ChatApp::push_hit(hits, *rect, hit(index));
+                }
+                *x = sx + pad;
+            };
+        let sorts = [ReportSort::Votes, ReportSort::New];
+        segmented(
+            &mut x,
+            &[
+                crate::i18n::t("chat-feedback-sort-votes"),
+                crate::i18n::t("chat-feedback-sort-new"),
+            ],
+            sorts.iter().position(|s| *s == view.sort).unwrap_or(0),
+            &|i| Hit::ReportSort(sorts.get(i).copied().unwrap_or_default()),
+        );
+        let filters = [
+            ReportFilter::Active,
+            ReportFilter::Closed,
+            ReportFilter::All,
+        ];
+        segmented(
+            &mut x,
+            &[
+                crate::i18n::t("chat-feedback-filter-active"),
+                crate::i18n::t("chat-feedback-filter-closed"),
+                crate::i18n::t("chat-feedback-filter-all"),
+            ],
+            filters.iter().position(|f| *f == view.filter).unwrap_or(0),
+            &|i| Hit::ReportFilter(filters.get(i).copied().unwrap_or_default()),
+        );
+    }
+
+    /// A feedback channel whose filter admits no report.
+    fn draw_feedback_empty(
+        &self,
+        paint: PaintContext<'_>,
+        band_area: Rect,
+        area: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let empty = crate::i18n::t("chat-feedback-empty");
+        let (ew, _) = tr.measure(&empty, 13.0, None);
+        label(
+            scene,
+            tr,
+            tf,
+            &empty,
+            13.0,
+            theme.tokens.colors.text_dim,
+            area.center().x - f64::from(ew) / 2.0,
+            area.y0 + 48.0,
+        );
+        self.draw_feedback_band(PaintContext::new(scene, tf, tr, theme), band_area, hits);
+        self.draw_feedback_notice(PaintContext::new(scene, tf, tr, theme), area);
+    }
+
+    /// Message and Invite on an opened person card.
+    fn draw_person_actions(
+        &self,
+        paint: PaintContext<'_>,
+        user: &str,
+        origin: Point,
+        max_w: f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let band = control_band_h(tr, theme);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let message = crate::i18n::t("chat-person-message");
+        let invite = crate::i18n::t("chat-person-invite");
+        let mw = control_w(tr, &message, true);
+        let iw = control_w(tr, &invite, false);
+        let m_rect = Rect::new(origin.x, origin.y, origin.x + mw, origin.y + band);
+        Button::paint(
+            scene,
+            tf,
+            tr,
+            theme,
+            &ButtonFace::new(m_rect, &message)
+                .icon(ui::icons::Icon::Send)
+                .primary()
+                .text_size(CONTROL_SIZE)
+                .hovered(self.hovered(m_rect)),
+        );
+        ChatApp::push_hit(hits, m_rect, Hit::PersonMessage(user.to_string()));
+        if mw + gap + iw <= max_w {
+            let i_rect = Rect::new(
+                m_rect.x1 + gap,
+                origin.y,
+                m_rect.x1 + gap + iw,
+                origin.y + band,
+            );
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::new(i_rect, &invite)
+                    .text_size(CONTROL_SIZE)
+                    .hovered(self.hovered(i_rect)),
+            );
+            ChatApp::push_hit(hits, i_rect, Hit::PersonInvite(user.to_string()));
+        }
+    }
+
+    /// The last request that did not happen, above the composer.
+    fn draw_feedback_notice(&self, paint: PaintContext<'_>, area: Rect) {
+        let Some(notice) = &self.feedback.notice else {
+            return;
+        };
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let c = &theme.tokens.colors;
+        let w = (area.width() - 32.0).max(80.0);
+        let (_, th) = tr.measure(notice, 12.5, Some(w as f32 - 24.0));
+        let h = f64::from(th) + 16.0;
+        let rect = Rect::new(
+            area.x0 + 16.0,
+            area.y1 - h - 12.0,
+            area.x0 + 16.0 + w,
+            area.y1 - 12.0,
+        );
+        ui::surface::card(scene, tf, rect, 10.0, c.surfaces.raised);
+        stroke_round(scene, tf, rect, 10.0, c.semantic.warning, 1.0);
+        text(
+            scene,
+            tr,
+            tf,
+            notice,
+            12.5,
+            c.text_primary,
+            rect.x0 + 12.0,
+            rect.y0 + 8.0,
+            TextWeight::Regular,
+            Some(w as f32 - 24.0),
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

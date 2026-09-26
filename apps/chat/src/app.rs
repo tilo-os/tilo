@@ -106,6 +106,9 @@ impl ContextMenu {
                 | MenuAction::NewCategory => Icon::Plus,
                 MenuAction::Archive => Icon::Archive,
                 MenuAction::PinMessage => Icon::Pin,
+                MenuAction::ToggleFeedback => Icon::Inbox,
+                MenuAction::Status(_) | MenuAction::StatusFixed => Icon::Check,
+                MenuAction::StatusDuplicate => Icon::Copy,
             };
             widget.push(item.with_icon(icon));
         }
@@ -129,6 +132,10 @@ pub(crate) enum MenuTarget {
     Category(Id),
     /// One of your own messages — the action menu offers Edit.
     Message(Id),
+    /// A report in a feedback channel — the status menu, for an Editor.
+    Report(Id),
+    /// The inline field that takes the generation a report was fixed in.
+    ReportFixed(Id),
     /// The workspace background / the sidebar's "+" — create affordances.
     #[allow(
         dead_code,
@@ -144,6 +151,8 @@ impl MenuTarget {
             MenuTarget::Channel(id) => ("channel", id),
             MenuTarget::Category(id) => ("category", id),
             MenuTarget::Message(id) => ("message", id),
+            MenuTarget::Report(id) => ("report", id),
+            MenuTarget::ReportFixed(id) => ("report-fixed", id),
             MenuTarget::Workspace(id) => ("workspace", id),
         }
     }
@@ -154,6 +163,7 @@ impl MenuTarget {
             "channel" => MenuTarget::Channel(id),
             "category" => MenuTarget::Category(id),
             "message" => MenuTarget::Message(id),
+            "report" => MenuTarget::Report(id),
             "workspace" => MenuTarget::Workspace(id),
             _ => return None,
         })
@@ -166,7 +176,9 @@ impl MenuTarget {
             MenuTarget::Channel(_) => MenuAction::for_channel().to_vec(),
             MenuTarget::Category(_) => MenuAction::for_category().to_vec(),
             MenuTarget::Message(_) => MenuAction::for_message().to_vec(),
+            MenuTarget::Report(_) => MenuAction::for_report().to_vec(),
             MenuTarget::Workspace(_) => vec![MenuAction::NewCategory],
+            MenuTarget::ReportFixed(_) => Vec::new(),
         }
     }
 }
@@ -193,11 +205,49 @@ pub(crate) enum MenuAction {
     PinMessage,
     /// Delete one of your own messages.
     DeleteMessage,
+    /// Make a channel a feedback channel, or an ordinary one again.
+    ToggleFeedback,
+    /// Set a report to a status that needs nothing more.
+    Status(SimpleStatus),
+    /// Set a report fixed: asks which generation contains the fix.
+    StatusFixed,
+    /// Mark a report a duplicate: the next report picked is the original.
+    StatusDuplicate,
+}
+
+/// The report statuses a menu row sets outright.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SimpleStatus {
+    Open,
+    Planned,
+    InProgress,
+    WontFix,
+}
+
+impl SimpleStatus {
+    pub(crate) fn status(self) -> crate::feedback::ReportStatus {
+        use crate::feedback::ReportStatus;
+        match self {
+            SimpleStatus::Open => ReportStatus::Open,
+            SimpleStatus::Planned => ReportStatus::Planned,
+            SimpleStatus::InProgress => ReportStatus::InProgress,
+            SimpleStatus::WontFix => ReportStatus::WontFix,
+        }
+    }
 }
 
 impl MenuAction {
-    pub fn label(self) -> &'static str {
-        match self {
+    pub fn label(self) -> String {
+        let fixed = match self {
+            MenuAction::ToggleFeedback => return crate::i18n::t("chat-feedback-toggle"),
+            MenuAction::Status(status) => {
+                return crate::feedback::status_label(&status.status());
+            }
+            MenuAction::StatusFixed => return crate::i18n::t("chat-report-set-fixed"),
+            MenuAction::StatusDuplicate => return crate::i18n::t("chat-report-set-duplicate"),
+            other => other,
+        };
+        match fixed {
             MenuAction::Rename => "Rename",
             MenuAction::Delete => "Delete",
             MenuAction::MoveUp => "Move up",
@@ -210,20 +260,37 @@ impl MenuAction {
             MenuAction::EditMessage => "Edit message",
             MenuAction::PinMessage => "Pin / unpin",
             MenuAction::DeleteMessage => "Delete message",
+            MenuAction::ToggleFeedback
+            | MenuAction::Status(_)
+            | MenuAction::StatusFixed
+            | MenuAction::StatusDuplicate => "",
         }
+        .to_string()
     }
     pub fn is_destructive(self) -> bool {
         matches!(self, MenuAction::Delete | MenuAction::DeleteMessage)
     }
     /// Menu items for a channel row, in order. The first (`Delete`) is the
     /// swipe-left action.
-    pub fn for_channel() -> [MenuAction; 5] {
+    pub fn for_channel() -> [MenuAction; 6] {
         [
             MenuAction::Delete,
             MenuAction::Archive,
             MenuAction::Rename,
             MenuAction::MoveUp,
             MenuAction::MoveDown,
+            MenuAction::ToggleFeedback,
+        ]
+    }
+    /// The status menu an Editor opens on a report.
+    pub fn for_report() -> [MenuAction; 6] {
+        [
+            MenuAction::Status(SimpleStatus::Open),
+            MenuAction::Status(SimpleStatus::Planned),
+            MenuAction::Status(SimpleStatus::InProgress),
+            MenuAction::StatusFixed,
+            MenuAction::Status(SimpleStatus::WontFix),
+            MenuAction::StatusDuplicate,
         ]
     }
     /// Menu items for a category row.
@@ -389,6 +456,27 @@ pub(crate) enum Hit {
     ToggleLeftFlap,
     /// Toggle the right flap (members / thread).
     ToggleRightFlap,
+    /// A message's reference chip: open what it is about in its own app.
+    OpenReference(Id),
+    /// Replay the session recording attached to a message.
+    ReplayRecord(Id),
+    /// Withdraw the record you attached to a message from this room.
+    WithdrawRecord(Id),
+    /// Vote for a report, or take the vote back.
+    Vote(Id),
+    /// Open the status menu on a report (Editors).
+    ReportStatusMenu(Id),
+    /// Pick this report as the original a pending duplicate points at.
+    DuplicateOf(Id),
+    CancelDuplicatePick,
+    ReportSort(crate::feedback::ReportSort),
+    ReportFilter(crate::feedback::ReportFilter),
+    /// A participant's name: open their card.
+    OpenPerson(Id),
+    /// Message this person in the room only the two of you are in.
+    PersonMessage(Id),
+    /// Invite this person into the current workspace.
+    PersonInvite(Id),
     Dismiss, // click on a scrim closes the top-most popover
 }
 
@@ -432,6 +520,18 @@ impl Hit {
             Self::CallParticipantsToggle => "chat.call-participants".into(),
             Self::CallExpand => "chat.call-expand".into(),
             Self::CallLeave => "chat.call-leave".into(),
+            Self::OpenReference(id) => format!("chat.reference:{id}"),
+            Self::ReplayRecord(id) => format!("chat.replay:{id}"),
+            Self::WithdrawRecord(id) => format!("chat.withdraw:{id}"),
+            Self::Vote(id) => format!("chat.vote:{id}"),
+            Self::ReportStatusMenu(id) => format!("chat.report-status:{id}"),
+            Self::DuplicateOf(id) => format!("chat.duplicate-of:{id}"),
+            Self::CancelDuplicatePick => "chat.duplicate-cancel".into(),
+            Self::ReportSort(sort) => format!("chat.report-sort:{sort:?}"),
+            Self::ReportFilter(filter) => format!("chat.report-filter:{filter:?}"),
+            Self::OpenPerson(id) => format!("chat.person:{id}"),
+            Self::PersonMessage(id) => format!("chat.person-message:{id}"),
+            Self::PersonInvite(id) => format!("chat.person-invite:{id}"),
             other => format!("chat.control:{other:?}"),
         }
     }
@@ -734,6 +834,8 @@ pub struct ChatApp {
     /// `--shots` only: seed the real minimal starter instead of the demo, so
     /// the honest first-run empty state can be captured.
     shot_starter: bool,
+    /// `--shots` only: add the sample feedback channel and remark.
+    shot_feedback: bool,
     /// `--shots` only: a draft to stage into the main composer so a screenshot
     /// can show the composer mid-compose (caret + wrapped text). `None` in every
     /// live/interactive path, so production is unaffected.
@@ -824,6 +926,8 @@ pub struct ChatApp {
     /// collaborators do not retain a stale featured-stage reservation.
     pub(crate) screen_share_needs_sync: bool,
     legacy_migration_attempted: bool,
+    /// Feedback channels, reference chips and record cards on this peer.
+    pub(crate) feedback: crate::feedback::FeedbackUi,
 }
 
 impl Default for ChatApp {
@@ -958,6 +1062,7 @@ impl ChatApp {
             relayout: false,
             flap_animating: false,
             shot_starter: false,
+            shot_feedback: false,
             shot_composer_draft: None,
             is_live: false,
             remote_frames: HashMap::new(),
@@ -994,6 +1099,7 @@ impl ChatApp {
             media_error: None,
             screen_share_needs_sync: false,
             legacy_migration_attempted: false,
+            feedback: crate::feedback::FeedbackUi::default(),
         }
     }
 
@@ -1010,6 +1116,75 @@ impl ChatApp {
     /// context gates writes while still letting the peer read.
     pub(crate) fn can_participate(&self) -> bool {
         self.perms.can_participate()
+    }
+
+    /// Whether the local peer may vote on a report (a Comment grant).
+    pub(crate) fn can_comment(&self) -> bool {
+        self.perms.can_comment()
+    }
+
+    /// The active channel, when it is a feedback channel.
+    pub(crate) fn active_feedback_channel(&self) -> bool {
+        self.channel(&self.active_channel)
+            .is_some_and(|c| c.feedback)
+    }
+
+    /// Ask the room to reference each record this peer attached, and to drop
+    /// each one it withdrew — once per session each. Only the author's peer
+    /// asks: the record is theirs to share. Posting a message by any path
+    /// (the composer, the palette, a remark from another app, an agent) ends
+    /// here, so there is one place a share can be forgotten, not five.
+    fn reconcile_record_sharing(&mut self) {
+        let mine: Vec<(Id, bool)> = self
+            .search_messages
+            .iter()
+            .filter(|m| self.is_me(&m.author))
+            .filter(|m| m.attachment.as_ref().is_some_and(|a| a.record().is_some()))
+            .map(|m| (m.id.clone(), !m.attachment_withdrawn))
+            .collect();
+        for (msg, share) in mine {
+            if self.feedback.shared.insert((msg.clone(), share)) {
+                self.feedback.invoke(
+                    format!("chat.attachment:{msg}"),
+                    if share { "share" } else { "unshare" },
+                );
+            }
+        }
+    }
+
+    /// Put a feedback channel's reports in this peer's order: the report
+    /// ranked first sits by the composer, where the reader's eye already is,
+    /// and replies follow so their threads still resolve.
+    fn arrange_reports(&mut self) {
+        if !self.active_feedback_channel() {
+            return;
+        }
+        let view = self.feedback.view(&self.active_channel);
+        let order = crate::feedback::arrange(&self.messages, view);
+        let mut arranged: Vec<Message> = order
+            .iter()
+            .rev()
+            .filter_map(|&i| self.messages.get(i).cloned())
+            .collect();
+        arranged.extend(self.messages.iter().filter(|m| !m.is_top_level()).cloned());
+        self.messages = arranged;
+    }
+
+    /// What to tell the reader when a workspace request did not happen.
+    fn request_notice(address: &tilo_actions::ActionAddress, reason: &str) -> String {
+        let key = match address.action.as_str() {
+            "replay" => "chat-notice-replay-unavailable",
+            "share" => "chat-notice-share-failed",
+            "unshare" => "chat-notice-unshare-failed",
+            "open" if address.resource.starts_with("chat.reference:") => "chat-notice-open-failed",
+            "message" => "chat-notice-message-failed",
+            "invite" => "chat-notice-invite-failed",
+            _ => "chat-notice-failed",
+        };
+        crate::i18n::t_args(
+            key,
+            &[("reason", ui::i18n::ArgValue::Text(reason.to_string()))],
+        )
     }
 
     /// Whether the local peer may hydrate + render an attachment blob. An
@@ -1068,33 +1243,25 @@ impl ChatApp {
                 name: c.name.clone(),
                 kind: c.kind,
                 archived: c.archived,
+                feedback: c.feedback,
             })
             .collect();
-        let messages =
-            self.messages
-                .iter()
-                .map(|m| actions::MessageResource {
-                    id: m.id.clone(),
-                    label: self.message_resource_label(m),
-                    pinned: m.pinned,
-                    parent: m.parent.clone(),
-                    attachment: m.attachment.as_ref().map(|attachment| {
-                        actions::AttachmentResource {
-                            name: attachment.name().to_owned(),
-                            blob: attachment.blob().to_owned(),
-                        }
-                    }),
-                    reactions: m
-                        .reactions
-                        .iter()
-                        .map(|reaction| actions::ReactionResource {
-                            emoji: reaction.emoji.clone(),
-                            count: reaction.count(),
-                            reacted_by_me: reaction.reacted_by(&self.me.id),
-                        })
-                        .collect(),
-                })
-                .collect();
+        let feedback = self
+            .channels
+            .iter()
+            .any(|c| c.id == self.active_channel && c.feedback);
+        let messages = self
+            .messages
+            .iter()
+            .map(|m| {
+                actions::MessageResource::of(
+                    m,
+                    self.message_resource_label(m),
+                    &self.me.id,
+                    feedback,
+                )
+            })
+            .collect();
         actions::ChatResourceCtx {
             me: self.me.id.clone(),
             workspace_id: self.active_ws.clone(),
@@ -1187,6 +1354,33 @@ impl ChatApp {
                 self.thread_open = Some("m_concept".into());
                 self.right_flap.open();
                 self.call.join("c_huddle");
+            }
+            "feedback" => {
+                // A feedback channel: reports with votes, statuses, reference
+                // chips and recorded-session cards, under the local sort and
+                // filter band.
+                self.shot_feedback = true;
+                self.active_ws = "ws_tilo".into();
+                self.context_ws = "ws_tilo".into();
+                self.active_channel = "c_feedback".into();
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+            }
+            "remark" => {
+                // A remark in an ordinary channel: its reference chip and the
+                // recorded session attached to it, with the author's controls.
+                self.shot_feedback = true;
+                self.active_channel = "c_general".into();
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+            }
+            "person" => {
+                // A participant's card opened from a report: Message, Invite.
+                self.seed_shot_scenario("feedback");
+                self.revealed_person = Some("u_aria".into());
+                self.right_flap.snap(true);
             }
             "starter" => {
                 // The real first-run empty workspace (no demo content).
@@ -2363,6 +2557,7 @@ impl ChatApp {
             };
         }
         self.messages = ChatDoc::list_messages(doc, &self.active_channel);
+        self.arrange_reports();
         self.search_messages = self
             .channels
             .iter()
@@ -2385,6 +2580,7 @@ impl ChatApp {
             }
         }
         self.users = self.workspace_people(doc);
+        self.reconcile_record_sharing();
         // Load the per-surface drafts from the CRDT into the composer widgets.
         // `set_text` is a no-op when the value is unchanged, so this preserves
         // the caret/selection while typing (the draft we just wrote back equals
@@ -2992,6 +3188,80 @@ impl ChatApp {
                         self.call.expanded,
                     ),
                     Hit::CallLeave => ("Leave call".into(), Role::Button, false),
+                    Hit::OpenReference(msg) => {
+                        let reference = self.message(msg)?.reference.as_ref()?;
+                        (
+                            crate::i18n::t_args(
+                                "chat-reference-open",
+                                &[("label", ui::i18n::ArgValue::Text(reference.label.clone()))],
+                            ),
+                            Role::Link,
+                            false,
+                        )
+                    }
+                    Hit::ReplayRecord(_) => {
+                        (crate::i18n::t("chat-session-replay"), Role::Button, false)
+                    }
+                    Hit::WithdrawRecord(_) => {
+                        (crate::i18n::t("chat-session-withdraw"), Role::Button, false)
+                    }
+                    Hit::Vote(msg) => {
+                        let message = self.message(msg)?;
+                        let voted = crate::feedback::voted_by(message, &self.me.id);
+                        (
+                            format!(
+                                "{}, {}",
+                                crate::i18n::t("chat-report-vote"),
+                                crate::feedback::counted(
+                                    "chat-report-votes",
+                                    crate::feedback::vote_count(message)
+                                )
+                            ),
+                            Role::ToggleButton,
+                            voted,
+                        )
+                    }
+                    Hit::ReportStatusMenu(_) => (
+                        crate::i18n::t("chat-report-set-status"),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::DuplicateOf(_) => {
+                        (crate::i18n::t("chat-report-original"), Role::Button, false)
+                    }
+                    Hit::CancelDuplicatePick => {
+                        (crate::i18n::t("chat-report-cancel"), Role::Button, false)
+                    }
+                    Hit::ReportSort(sort) => {
+                        let view = self.feedback.view(&self.active_channel);
+                        let key = match sort {
+                            crate::feedback::ReportSort::Votes => "chat-feedback-sort-votes",
+                            crate::feedback::ReportSort::New => "chat-feedback-sort-new",
+                        };
+                        (crate::i18n::t(key), Role::Tab, view.sort == *sort)
+                    }
+                    Hit::ReportFilter(filter) => {
+                        let view = self.feedback.view(&self.active_channel);
+                        let key = match filter {
+                            crate::feedback::ReportFilter::Active => "chat-feedback-filter-active",
+                            crate::feedback::ReportFilter::Closed => "chat-feedback-filter-closed",
+                            crate::feedback::ReportFilter::All => "chat-feedback-filter-all",
+                        };
+                        (crate::i18n::t(key), Role::Tab, view.filter == *filter)
+                    }
+                    Hit::OpenPerson(user) => (self.user_name(user), Role::Link, false),
+                    Hit::PersonMessage(user) => (
+                        format!(
+                            "{} {}",
+                            crate::i18n::t("chat-person-message"),
+                            self.user_name(user)
+                        ),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::PersonInvite(_) => {
+                        (crate::i18n::t("chat-person-invite"), Role::Button, false)
+                    }
                     _ => return None,
                 };
                 // The composer's pointer target is the whole box (clicking
@@ -3430,6 +3700,9 @@ impl Widget for ChatApp {
         } else {
             // Ephemeral `--shots`/test instance: the rich demo workspace.
             ChatDoc::seed_if_empty(doc);
+            if self.shot_feedback {
+                ChatDoc::seed_demo_feedback(doc);
+            }
         }
         if !self.legacy_migration_attempted {
             ChatDoc::migrate_legacy_attachment_paths(doc);
@@ -4154,6 +4427,18 @@ impl Widget for ChatApp {
                 self.focus = Focus::Main;
                 self.right_flap.open();
             }
+            crate::actions::ChatOperation::SetReportView { channel, view } => {
+                if !self
+                    .channels
+                    .iter()
+                    .any(|item| item.id == channel && item.feedback)
+                {
+                    return Err("not a feedback channel".into());
+                }
+                self.feedback.views.insert(channel, view);
+                self.messages = ChatDoc::list_messages(doc, &self.active_channel);
+                self.arrange_reports();
+            }
             crate::actions::ChatOperation::ImportAttachment { channel, path } => {
                 if path.is_empty() {
                     return Err("attachment path is empty".into());
@@ -4171,6 +4456,38 @@ impl Widget for ChatApp {
 
     fn name(&self) -> &'static str {
         "ChatApp"
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.feedback.controls.pop_front()
+    }
+
+    fn has_pending_control_invocation(&self) -> bool {
+        !self.feedback.controls.is_empty()
+    }
+
+    fn on_control_invocation_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        if let Err(error) = result
+            && !matches!(error, tilo_actions::DoorError::ConfirmationRequired)
+        {
+            self.feedback.notice = Some(Self::request_notice(address, &error.to_string()));
+            self.relayout = true;
+        }
+    }
+
+    fn on_workspace_request_finished(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<(), String>,
+    ) {
+        if let Err(reason) = result {
+            self.feedback.notice = Some(Self::request_notice(address, reason));
+            self.relayout = true;
+        }
     }
 
     fn get_rect(&self) -> Rect {

@@ -342,6 +342,7 @@ mod tests {
             order: 0,
             unread: 0,
             archived: false,
+            feedback: false,
         }
     }
 
@@ -370,8 +371,10 @@ mod tests {
             mentions: Vec::new(),
             reference: None,
             attachment: None,
+            attachment_withdrawn: false,
             pinned: false,
             work: None,
+            report: None,
         }
     }
 

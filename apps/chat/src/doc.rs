@@ -386,6 +386,182 @@ impl ChatDoc {
         Self::seed_demo_general_welcome(doc);
     }
 
+    /// Sample feedback for `--shots` only: a feedback channel in the demo's
+    /// Tilo workspace with reports that carry votes, statuses, references and
+    /// recorded sessions, plus a remark in #general. Never on the live path.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one sample-data table; splitting it would scatter the fixture a screenshot is read against"
+    )]
+    pub fn seed_demo_feedback(doc: &mut AutoCommit) {
+        use crate::feedback::{ReportState, ReportStatus, VOTE_EMOJI};
+        use tilo_reference::{
+            RecordAttachment, Redactions, ResourceRef, SessionLayer, SessionSummary,
+        };
+        if Self::channel_exists(doc, "c_feedback") {
+            return;
+        }
+        Self::put_channel(
+            doc,
+            "c_feedback",
+            "ws_tilo",
+            "cat_tilo_eng",
+            "feedback",
+            "Reports from alpha users",
+            ChannelKind::Text,
+            2,
+        );
+        Self::set_channel_feedback(doc, "c_feedback", true);
+        let m = |off_min: i64| NOW - off_min * 60;
+        let votes = |users: &[&str]| {
+            (
+                VOTE_EMOJI.to_string(),
+                users.iter().map(|u| (*u).to_string()).collect(),
+            )
+        };
+        let session = |record: &str,
+                       label: &str,
+                       apps: &[&str],
+                       secs: u64,
+                       steps: u32,
+                       layer,
+                       text: u32,
+                       regions: u32| {
+            Attachment::Record(Box::new(RecordAttachment::session(
+                record,
+                label,
+                "room-reporter",
+                SessionSummary {
+                    apps: apps.iter().map(|a| (*a).to_string()).collect(),
+                    duration_ms: secs * 1000,
+                    steps,
+                    layer,
+                    redactions: Redactions { text, regions },
+                    generation: Some(118),
+                },
+            )))
+        };
+        let reports = [
+            (
+                "m_fb_send",
+                NewMessage {
+                    author: "u_aria".into(),
+                    ts: m(180),
+                    text: "Send in Mail does nothing when the To field ends with a comma. No error, the draft just stays.".into(),
+                    reference: Some(ResourceRef::whole("mail.draft", "mail.draft:d_42", "Draft to Milo")),
+                    attachment: Some(session("uuid:5a1e-send", "Send does nothing", &["so.tilo.mail"], 83, 7, SessionLayer::Logic, 3, 0)),
+                    reactions: vec![
+                        votes(&["u_me", "u_milo", "u_sora", "u_devon"]),
+                        ("🎉".into(), vec!["u_iris".into()]),
+                    ],
+                    ..Default::default()
+                },
+                Some(ReportStatus::Planned),
+            ),
+            (
+                "m_fb_clip",
+                NewMessage {
+                    author: "u_milo".into(),
+                    ts: m(120),
+                    text: "Sidebar labels are clipped at 125% scaling.".into(),
+                    attachment: Some(session("uuid:c11p-scale", "Clipped sidebar", &["so.tilo.file-explorer"], 42, 3, SessionLayer::BelowToolkit, 0, 2)),
+                    reactions: vec![votes(&["u_aria", "u_sora"])],
+                    ..Default::default()
+                },
+                Some(ReportStatus::InProgress),
+            ),
+            (
+                "m_fb_keys",
+                NewMessage {
+                    author: "u_sora".into(),
+                    ts: m(95),
+                    text: "Keyboard shortcuts for moving between strips, please.".into(),
+                    reactions: vec![votes(&["u_milo"])],
+                    ..Default::default()
+                },
+                None,
+            ),
+            (
+                "m_fb_ics",
+                NewMessage {
+                    author: "u_devon".into(),
+                    ts: m(300),
+                    text: "Calendar crashed importing an .ics with no DTEND.".into(),
+                    reactions: vec![votes(&["u_me", "u_aria", "u_milo"])],
+                    ..Default::default()
+                },
+                Some(ReportStatus::Fixed { generation: 117 }),
+            ),
+            (
+                "m_fb_caret",
+                NewMessage {
+                    author: "u_me".into(),
+                    ts: m(20),
+                    text: "Notes loses the caret after undo.".into(),
+                    reference: Some(ResourceRef::whole("notes.block", "notes.block:b_9", "Standup notes")),
+                    attachment: Some(session("uuid:ca7e-undo", "Caret lost on undo", &["so.tilo.notes"], 16, 2, SessionLayer::Logic, 1, 0)),
+                    ..Default::default()
+                },
+                None,
+            ),
+        ];
+        for (id, message, status) in reports {
+            Self::push_message_with_id(doc, "c_feedback", id, message);
+            if let Some(status) = status {
+                Self::set_report_status(
+                    doc,
+                    "c_feedback",
+                    id,
+                    &ReportState {
+                        status,
+                        by: "u_iris".into(),
+                        since: NOW,
+                    },
+                );
+            }
+        }
+        Self::push_message_with_id(
+            doc,
+            "c_feedback",
+            "m_fb_keys_r1",
+            NewMessage {
+                author: "u_iris".into(),
+                ts: m(90),
+                text: "Planned alongside the strip overview work.".into(),
+                parent: Some("m_fb_keys".into()),
+                ..Default::default()
+            },
+        );
+        // A remark in an ordinary channel: something said about a document,
+        // with the recording of what happened.
+        Self::push_message_with_id(
+            doc,
+            "c_general",
+            "m_remark",
+            NewMessage {
+                author: "u_me".into(),
+                ts: m(5),
+                text: "The times in this table contradict the prose above it.".into(),
+                reference: Some(ResourceRef::whole(
+                    "word_processor.block",
+                    "word-processor.block:blk_7",
+                    "¶3 of Run sheet",
+                )),
+                attachment: Some(session(
+                    "uuid:7ab1-runsheet",
+                    "Editing the run sheet",
+                    &["so.tilo.word-processor", "so.tilo.sheets"],
+                    104,
+                    9,
+                    SessionLayer::Logic,
+                    2,
+                    0,
+                )),
+                ..Default::default()
+            },
+        );
+    }
+
     fn seed_demo_users(doc: &mut AutoCommit) {
         for (id, name, initials, color, status) in [
             ("u_me", "You", "QD", 0usize, Presence::Online),
@@ -1120,6 +1296,16 @@ impl ChatDoc {
                 let _ = doc.put(&a, "blob", blob.as_str());
                 let _ = doc.put(&a, "size", *size as i64);
             }
+            // One atomic value, like `reference`: an address and its summary
+            // are one authored claim, and merging their fields separately
+            // could describe a recording nobody made.
+            Attachment::Record(record) => {
+                let _ = doc.put(&a, "kind", "record");
+                let _ = doc.put(&a, "name", record.label.as_str());
+                if let Ok(json) = serde_json::to_string(record) {
+                    let _ = doc.put(&a, "record", json.as_str());
+                }
+            }
         }
     }
 
@@ -1285,6 +1471,7 @@ impl ChatDoc {
             Attachment::File { name, blob, size } => {
                 valid_name(name) && valid_blob(blob) && *size > 0 && *size <= MAX_ATTACHMENT_BYTES
             }
+            Attachment::Record(record) => record.is_valid(),
         }
     }
 
@@ -1712,6 +1899,78 @@ impl ChatDoc {
         }
     }
 
+    /// Mark (or unmark) a channel as a feedback channel. Guarded so a
+    /// redundant write doesn't churn the document.
+    pub fn set_channel_feedback(doc: &mut AutoCommit, id: &str, feedback: bool) {
+        if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id)
+            && read_bool(doc, &c, "feedback").unwrap_or(false) != feedback
+        {
+            let _ = doc.put(&c, "feedback", feedback);
+        }
+    }
+
+    /// Whether `id` names a feedback channel.
+    pub fn is_feedback_channel(doc: &AutoCommit, id: &str) -> bool {
+        map_at(doc, &ROOT, "channels")
+            .and_then(|channels| map_at(doc, &channels, id))
+            .is_some_and(|c| read_bool(doc, &c, "feedback").unwrap_or(false))
+    }
+
+    /// Set a report's status. Only a top-level message of a feedback channel
+    /// is a report, and a duplicate must name a different report in the same
+    /// channel; anything else is a no-op, so a stale or hostile replay
+    /// cannot label a reply or point a report at itself.
+    pub fn set_report_status(
+        doc: &mut AutoCommit,
+        channel: &str,
+        msg_id: &str,
+        state: &crate::feedback::ReportState,
+    ) {
+        if !Self::is_feedback_channel(doc, channel) {
+            return;
+        }
+        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else {
+            return;
+        };
+        if !read_str(doc, &block, "parent")
+            .unwrap_or_default()
+            .is_empty()
+        {
+            return;
+        }
+        if let crate::feedback::ReportStatus::Duplicate { of } = &state.status {
+            let target_is_report = of != msg_id
+                && Self::find_message_obj(doc, channel, of).is_some_and(|row| {
+                    read_str(doc, &row, "parent").unwrap_or_default().is_empty()
+                });
+            if !target_is_report {
+                return;
+            }
+        }
+        if Self::read_report(doc, &block).as_ref() == Some(state) {
+            return;
+        }
+        if let Ok(json) = serde_json::to_string(state) {
+            let _ = doc.put(&block, "report", json.as_str());
+        }
+    }
+
+    /// Withdraw a message's attached record from the room. The card stays,
+    /// flagged, so the conversation still shows that something was shared.
+    pub fn withdraw_attachment(doc: &mut AutoCommit, channel: &str, msg_id: &str) {
+        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else {
+            return;
+        };
+        let Some(a) = map_at(doc, &block, "attachment") else {
+            return;
+        };
+        if read_str(doc, &a, "kind").as_deref() == Some("record")
+            && !read_bool(doc, &a, "withdrawn").unwrap_or(false)
+        {
+            let _ = doc.put(&a, "withdrawn", true);
+        }
+    }
+
     pub fn rename_channel(doc: &mut AutoCommit, id: &str, name: &str) {
         if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id) {
             let _ = doc.put(&c, "name", name);
@@ -2068,6 +2327,7 @@ impl ChatDoc {
                     // watermark; not stored in the shared document.
                     unread: 0,
                     archived: read_bool(doc, &c, "archived").unwrap_or(false),
+                    feedback: read_bool(doc, &c, "feedback").unwrap_or(false),
                 })
             })
             .collect();
@@ -2105,8 +2365,10 @@ impl ChatDoc {
                 mentions: Self::read_mentions(doc, &m),
                 reference: Self::read_reference(doc, &m),
                 attachment: Self::read_attachment(doc, &m),
+                attachment_withdrawn: Self::read_attachment_withdrawn(doc, &m),
                 work: Self::read_work(doc, &m),
                 pinned: read_bool(doc, &m, "pinned").unwrap_or(false),
+                report: Self::read_report(doc, &m),
             });
         }
         out
@@ -2230,8 +2492,26 @@ impl ChatDoc {
                 blob,
                 size: read_i64_coerced(doc, &a, "size").unwrap_or(0) as u64,
             }),
+            "record" => read_str(doc, &a, "record")
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .map(|record| Attachment::Record(Box::new(record))),
             _ => None,
         }
+    }
+
+    fn read_attachment_withdrawn(doc: &AutoCommit, msg: &ObjId) -> bool {
+        map_at(doc, msg, "attachment")
+            .is_some_and(|a| read_bool(doc, &a, "withdrawn").unwrap_or(false))
+    }
+
+    /// A report status that will not parse is no status: the report reads as
+    /// open rather than as a nearby state somebody did not set.
+    fn read_report(doc: &AutoCommit, msg: &ObjId) -> Option<crate::feedback::ReportState> {
+        let raw = read_str(doc, msg, "report").unwrap_or_default();
+        if raw.is_empty() {
+            return None;
+        }
+        serde_json::from_str(&raw).ok()
     }
 
     /// The address of what a message is about, or `None` for an ordinary
@@ -3100,7 +3380,10 @@ mod tests {
             .into_iter()
             .find(|row| row.id == id)
             .unwrap();
-        assert_eq!(row.attachment.unwrap().blob(), "/old-machine/old-local.pdf");
+        assert_eq!(
+            row.attachment.unwrap().blob(),
+            Some("/old-machine/old-local.pdf")
+        );
         assert_eq!(
             read_str(&doc, &attachment, "path").unwrap_or_default(),
             "/old-machine/old-local.pdf",

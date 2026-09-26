@@ -76,6 +76,12 @@ impl ChatPermissions {
         self.ctx.check(&PermissionScope::workspace(Verb::Write))
     }
 
+    /// May this peer vote on a report here? `Comment` on the room — what a
+    /// Commenter holds. Setting a report's status stays `Write`.
+    pub fn can_comment(&self) -> bool {
+        self.ctx.check(&PermissionScope::workspace(Verb::Comment))
+    }
+
     /// The call-action seam, backed by the real context. Join / Speak / Camera
     /// / `ShareScreen` all require Write on the room (you can't transmit into a
     /// room you can't write to); Leave is always allowed so a downgraded peer

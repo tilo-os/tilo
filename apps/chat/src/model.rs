@@ -132,6 +132,10 @@ pub struct Channel {
     /// the document (and reachable via the Ctrl+K command palette to unarchive).
     /// Convergent state — a plain scalar flag toggled by an action.
     pub archived: bool,
+    /// A feedback channel: its top-level messages are reports, with votes and
+    /// a status (see [`crate::feedback`]). Set by an Editor through
+    /// `ChatAction::SetChannelFeedback`.
+    pub feedback: bool,
 }
 
 /// One person currently connected to a voice channel, with their live
@@ -257,17 +261,24 @@ pub enum Attachment {
         blob: String,
         size: u64,
     },
+    /// A record — a recorded session or a report — attached by reference.
+    /// Posting it brings the record into this room; the message carries only
+    /// its address and a bounded summary, never the record's bytes.
+    Record(Box<tilo_reference::RecordAttachment>),
 }
 
 impl Attachment {
     /// The portable content hash backing this
     /// attachment. It is safe to replicate and cannot expose a peer-local
     /// filesystem layout.
-    pub fn blob(&self) -> &str {
+    /// `None` for a record, which is addressed by record id and hydrated
+    /// through the room rather than the content store.
+    pub fn blob(&self) -> Option<&str> {
         match self {
             Attachment::Image { blob, .. }
             | Attachment::Video { blob, .. }
-            | Attachment::File { blob, .. } => blob,
+            | Attachment::File { blob, .. } => Some(blob),
+            Attachment::Record(_) => None,
         }
     }
     pub fn name(&self) -> &str {
@@ -275,6 +286,13 @@ impl Attachment {
             Attachment::Image { name, .. }
             | Attachment::Video { name, .. }
             | Attachment::File { name, .. } => name,
+            Attachment::Record(record) => &record.label,
+        }
+    }
+    pub fn record(&self) -> Option<&tilo_reference::RecordAttachment> {
+        match self {
+            Attachment::Record(record) => Some(record.as_ref()),
+            _ => None,
         }
     }
 }
@@ -325,6 +343,10 @@ pub struct Message {
     /// ever needing a screen position. `None` for an ordinary message.
     pub reference: Option<tilo_reference::ResourceRef>,
     pub attachment: Option<Attachment>,
+    /// The author withdrew the attached record from this room. The row keeps
+    /// the card so nobody is told the record never existed, and the card says
+    /// what withdrawal cannot do: recall a copy a peer already synced.
+    pub attachment_withdrawn: bool,
     /// Pinned messages are flagged in the shared document so every peer sees the
     /// same pins. A plain scalar flag toggled by an action.
     pub pinned: bool,
@@ -335,6 +357,8 @@ pub struct Message {
     /// ordinary message, which is what keeps it honest as "an agent took this
     /// on" rather than a field every message carries an empty version of.
     pub work: Option<AgentWork>,
+    /// A report's status in a feedback channel; `None` reads as open.
+    pub report: Option<crate::feedback::ReportState>,
 }
 
 impl Message {
@@ -636,6 +660,21 @@ pub fn group_messages(messages: &[Message]) -> Vec<MessageGroup> {
     groups
 }
 
+/// Every top-level message as its own group, in order — a feedback channel's
+/// reports each carry their author and time, however close together they
+/// were posted.
+pub fn group_reports(messages: &[Message]) -> Vec<MessageGroup> {
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.is_top_level())
+        .map(|(i, m)| MessageGroup {
+            author: m.author.clone(),
+            message_indices: vec![i],
+        })
+        .collect()
+}
+
 /// Number of replies whose `parent` is `parent_id`.
 pub fn reply_count(messages: &[Message], parent_id: &str) -> usize {
     messages
@@ -722,8 +761,10 @@ mod tests {
             mentions: vec![],
             reference: None,
             attachment: None,
+            attachment_withdrawn: false,
             pinned: false,
             work: None,
+            report: None,
         }
     }
 

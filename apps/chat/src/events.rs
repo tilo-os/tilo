@@ -769,12 +769,88 @@ impl ChatApp {
             Hit::CallLeave => self.leave_voice(doc),
             Hit::ToggleLeftFlap => self.left_flap.toggle(self.left_mode),
             Hit::ToggleRightFlap => self.right_flap.toggle(self.right_mode),
+            Hit::OpenReference(msg) => {
+                self.feedback
+                    .invoke(format!("chat.reference:{msg}"), "open");
+            }
+            Hit::ReplayRecord(msg) => {
+                self.feedback
+                    .invoke(format!("chat.attachment:{msg}"), "replay");
+            }
+            Hit::WithdrawRecord(msg) => {
+                let channel = self.active_channel.clone();
+                self.perform_action(doc, &actions::withdraw_attachment_action(&channel, &msg));
+            }
+            Hit::Vote(msg) if self.can_comment() => {
+                let channel = self.active_channel.clone();
+                let voted = self
+                    .message(&msg)
+                    .is_some_and(|m| crate::feedback::voted_by(m, &self.me.id));
+                let me = self.me.id.clone();
+                self.perform_action(doc, &actions::vote_action(&channel, &msg, &me, !voted));
+            }
+            Hit::ReportStatusMenu(msg) if self.can_participate() => {
+                self.menu = Some(ContextMenu::new(
+                    MenuTarget::Report(msg),
+                    self.last_mouse,
+                    MenuAction::for_report().to_vec(),
+                    self.rect,
+                ));
+            }
+            Hit::DuplicateOf(original) if self.can_participate() => {
+                if let Some(report) = self.feedback.duplicate_pick.take() {
+                    self.set_report_status(
+                        doc,
+                        &report,
+                        crate::feedback::ReportStatus::Duplicate { of: original },
+                    );
+                }
+            }
+            Hit::CancelDuplicatePick => self.feedback.duplicate_pick = None,
+            Hit::ReportSort(sort) => {
+                let channel = self.active_channel.clone();
+                self.feedback.views.entry(channel).or_default().sort = sort;
+            }
+            Hit::ReportFilter(filter) => {
+                let channel = self.active_channel.clone();
+                self.feedback.views.entry(channel).or_default().filter = filter;
+            }
+            Hit::OpenPerson(user) => {
+                self.revealed_person = Some(user);
+                self.right_flap.open();
+            }
+            Hit::PersonMessage(user) => {
+                self.feedback
+                    .invoke(format!("chat.person:{user}"), "message");
+            }
+            Hit::PersonInvite(user) => {
+                self.feedback
+                    .invoke(format!("chat.person:{user}"), "invite");
+            }
             Hit::Dismiss => self.on_hit_dismiss(),
             // MessageMenu is a right-click affordance and CallDragHandle is
             // handled at press time; permission-gated fallthroughs are no-ops.
             _ => {}
         }
         self.reload(doc);
+    }
+
+    /// Set a report's status as this Editor, now.
+    pub(crate) fn set_report_status(
+        &mut self,
+        doc: &mut AutoCommit,
+        msg: &str,
+        status: crate::feedback::ReportStatus,
+    ) {
+        if !self.can_participate() {
+            return;
+        }
+        let channel = self.active_channel.clone();
+        let me = self.me.id.clone();
+        self.perform_action(
+            doc,
+            &actions::set_report_status_action(&channel, msg, status, &me, now_secs()),
+        );
     }
 
     fn on_hit_workspace(&mut self, id: Id) {
@@ -1143,6 +1219,13 @@ impl ChatApp {
                 }
                 _ => {}
             },
+            MenuTarget::Report(id) => match action {
+                MenuAction::Status(status) => self.set_report_status(doc, &id, status.status()),
+                MenuAction::StatusFixed => self.begin_rename(MenuTarget::ReportFixed(id)),
+                MenuAction::StatusDuplicate => self.feedback.duplicate_pick = Some(id),
+                _ => {}
+            },
+            MenuTarget::ReportFixed(_) => {}
             MenuTarget::Workspace(ws) => {
                 if action == MenuAction::NewCategory {
                     let id = new_category_id();
@@ -1172,6 +1255,10 @@ impl ChatApp {
                 if !archived && self.active_channel == id {
                     self.active_channel.clear(); // an archived channel leaves the view
                 }
+            }
+            MenuAction::ToggleFeedback => {
+                let feedback = self.channel(id).is_some_and(|c| c.feedback);
+                self.perform_action(doc, &actions::set_channel_feedback_action(id, !feedback));
             }
             MenuAction::MoveUp => {
                 self.perform_action(doc, &actions::reorder_channel_action(id, true));
@@ -1232,7 +1319,10 @@ impl ChatApp {
         let current = match &target {
             MenuTarget::Channel(id) => self.channel(id).map(|c| c.name.clone()),
             MenuTarget::Category(id) => self.category(id).map(|c| c.name.clone()),
-            MenuTarget::Message(_) | MenuTarget::Workspace(_) => None,
+            MenuTarget::Message(_)
+            | MenuTarget::Workspace(_)
+            | MenuTarget::Report(_)
+            | MenuTarget::ReportFixed(_) => None,
         }
         .unwrap_or_default();
         self.rename_input.set_text(&current);
@@ -1253,7 +1343,18 @@ impl ChatApp {
                     MenuTarget::Category(id) => {
                         self.perform_action(doc, &actions::rename_category_action(&id, &text));
                     }
-                    MenuTarget::Message(_) | MenuTarget::Workspace(_) => {}
+                    MenuTarget::ReportFixed(id) => match text.parse::<u64>() {
+                        Ok(generation) => self.set_report_status(
+                            doc,
+                            &id,
+                            crate::feedback::ReportStatus::Fixed { generation },
+                        ),
+                        Err(_) => {
+                            self.feedback.notice =
+                                Some(crate::i18n::t("chat-report-fixed-generation-hint"));
+                        }
+                    },
+                    MenuTarget::Message(_) | MenuTarget::Workspace(_) | MenuTarget::Report(_) => {}
                 }
             }
             self.rename_input.set_text("");

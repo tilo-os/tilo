@@ -66,9 +66,10 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_i64;
 
+use tilo_actions::remote::{InvokeArgument, WORKSPACE_REQUEST_TYPE, WorkspaceRequest};
 use tilo_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider,
+    Action, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, OperationKind, ParamType, PermissionRequirement, Resource, ResourceProvider,
 };
 
 use crate::doc::{ChatDoc, NewMessage, VoiceState};
@@ -111,6 +112,11 @@ pub enum ChatOperation {
         channel: String,
         path: String,
     },
+    /// How this peer lists a feedback channel's reports. Presentation only.
+    SetReportView {
+        channel: String,
+        view: crate::feedback::ReportView,
+    },
 }
 
 /// Decode a Chat-local view operation addressed through a resource action.
@@ -141,6 +147,37 @@ pub(crate) fn view_operation(id: &str, label: &str, operation: &ChatOperation) -
         operation,
     )
     .expect("ChatOperation is always serializable")
+}
+
+/// An action whose work is a request to the workspace Chat runs in — opening
+/// another app's resource, sharing a record into the room, replaying a
+/// recording. The host forwards it to the broker, so it is admitted, checked
+/// and answered like any other invocation, and a workspace that does not
+/// offer the request fails it visibly rather than Chat claiming success.
+#[allow(
+    clippy::expect_used,
+    reason = "WorkspaceRequest holds only strings and a JSON argument, so encoding cannot fail; ActionSpec's builder returns an EncodedAction directly"
+)]
+pub(crate) fn workspace_request_spec(
+    id: &str,
+    label: &str,
+    description: &str,
+    permission: PermissionRequirement,
+    request: WorkspaceRequest,
+) -> ActionSpec {
+    ActionSpec::typed_operation(
+        id,
+        label,
+        description,
+        OperationKind::Effect,
+        WORKSPACE_REQUEST_TYPE,
+        Vec::new(),
+        move |_| {
+            EncodedAction::encode_operation(WORKSPACE_REQUEST_TYPE, &request)
+                .expect("WorkspaceRequest is always serializable")
+        },
+    )
+    .requiring(permission)
 }
 
 /// Every collaborative operation Chat exports on the shared workspace.
@@ -266,6 +303,26 @@ pub enum ChatAction {
     ArchiveChannel {
         id: String,
         archived: bool,
+    },
+    /// Mark (or unmark) a channel as a feedback channel, whose top-level
+    /// messages are reports (see [`crate::feedback`]). An Editor's decision.
+    SetChannelFeedback {
+        id: String,
+        feedback: bool,
+    },
+    /// Set a report's status. An Editor's decision: a Commenter votes and
+    /// replies but does not triage. `state` carries who set it and when,
+    /// minted at authoring time.
+    SetReportStatus {
+        channel: String,
+        msg: String,
+        state: crate::feedback::ReportState,
+    },
+    /// Withdraw the record attached to a message from this room. The row
+    /// keeps its card; the author's peer removes the room's reference.
+    WithdrawAttachment {
+        channel: String,
+        msg: String,
     },
     /// Advance `user`'s read watermark for `channel` to `count`, minted at
     /// authoring time (the channel's top-level message count) and carried here so
@@ -405,6 +462,22 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
         ChatAction::SetAgentWork { channel, msg, .. } => {
             ("Update agent work", channel, msg, "chat.message")
         }
+        ChatAction::SetReportStatus { channel, msg, .. } => {
+            ("Set report status", channel, msg, "chat.message")
+        }
+        ChatAction::WithdrawAttachment { channel, msg } => {
+            ("Withdraw attachment", channel, msg, "chat.message")
+        }
+        ChatAction::SetChannelFeedback { id, feedback } => (
+            if *feedback {
+                "Make feedback channel"
+            } else {
+                "Make ordinary channel"
+            },
+            id,
+            id,
+            "chat.channel",
+        ),
         ChatAction::CreateChannel { id, .. } => ("Create channel", id, id, "chat.channel"),
         ChatAction::CreateCategory { id, .. } => ("Create category", id, id, "chat.category"),
         ChatAction::RenameCategory { id, .. } => ("Rename category", id, id, "chat.category"),
@@ -575,6 +648,16 @@ impl ChatAction {
             } => {
                 ChatDoc::set_message_pinned(doc, channel, msg, *pinned);
             }
+            ChatAction::SetReportStatus {
+                channel,
+                msg,
+                state,
+            } => {
+                ChatDoc::set_report_status(doc, channel, msg, state);
+            }
+            ChatAction::WithdrawAttachment { channel, msg } => {
+                ChatDoc::withdraw_attachment(doc, channel, msg);
+            }
             _ => {}
         }
     }
@@ -619,6 +702,9 @@ impl ChatAction {
             }
             ChatAction::ArchiveChannel { id, archived } => {
                 ChatDoc::set_channel_archived(doc, id, *archived);
+            }
+            ChatAction::SetChannelFeedback { id, feedback } => {
+                ChatDoc::set_channel_feedback(doc, id, *feedback);
             }
             ChatAction::MarkRead {
                 channel,
@@ -870,6 +956,82 @@ pub fn archive_channel_action(id: &str, archived: bool) -> ChatAction {
     }
 }
 
+pub fn set_channel_feedback_action(id: &str, feedback: bool) -> ChatAction {
+    ChatAction::SetChannelFeedback {
+        id: id.to_string(),
+        feedback,
+    }
+}
+
+pub fn set_report_status_action(
+    channel: &str,
+    msg: &str,
+    status: crate::feedback::ReportStatus,
+    by: &str,
+    since: i64,
+) -> ChatAction {
+    ChatAction::SetReportStatus {
+        channel: channel.to_string(),
+        msg: msg.to_string(),
+        state: crate::feedback::ReportState {
+            status,
+            by: by.to_string(),
+            since,
+        },
+    }
+}
+
+pub fn withdraw_attachment_action(channel: &str, msg: &str) -> ChatAction {
+    ChatAction::WithdrawAttachment {
+        channel: channel.to_string(),
+        msg: msg.to_string(),
+    }
+}
+
+/// A vote is the canonical reaction ([`crate::feedback::VOTE_EMOJI`]), so the
+/// vote and the reaction chip are one action.
+pub fn vote_action(channel: &str, msg: &str, user: &str, vote: bool) -> ChatAction {
+    if vote {
+        add_reaction_action(channel, msg, crate::feedback::VOTE_EMOJI, user)
+    } else {
+        remove_reaction_action(channel, msg, crate::feedback::VOTE_EMOJI, user)
+    }
+}
+
+/// Decode the typed `set-status` arguments into a status. Shared by the
+/// resource action and the on-screen status menu.
+///
+/// # Errors
+///
+/// Names the argument that is missing or out of range.
+pub fn report_status_from_args(
+    status: &str,
+    generation: Option<i64>,
+    duplicate_of: Option<&str>,
+) -> Result<crate::feedback::ReportStatus, String> {
+    use crate::feedback::ReportStatus;
+    Ok(match status {
+        "open" => ReportStatus::Open,
+        "planned" => ReportStatus::Planned,
+        "in_progress" => ReportStatus::InProgress,
+        "wont_fix" => ReportStatus::WontFix,
+        "fixed" => ReportStatus::Fixed {
+            generation: generation
+                .and_then(|g| u64::try_from(g).ok())
+                .ok_or("a fixed report names the generation that fixes it")?,
+        },
+        "duplicate" => ReportStatus::Duplicate {
+            of: duplicate_of
+                .map(str::trim)
+                .filter(|of| !of.is_empty())
+                .ok_or("a duplicate names the report it duplicates")?
+                .trim_start_matches("chat.message:")
+                .to_string(),
+        },
+        other => return Err(format!("{other:?} is not a report status")),
+    })
+}
+
 pub fn mark_read_action(channel: &str, user: &str, count: i64) -> ChatAction {
     ChatAction::MarkRead {
         channel: channel.to_string(),
@@ -956,6 +1118,7 @@ pub struct ChannelResource {
     pub name: String,
     pub kind: ChannelKind,
     pub archived: bool,
+    pub feedback: bool,
 }
 
 /// A durable channel grouping published alongside channels.  Categories are
@@ -970,12 +1133,17 @@ pub struct CategoryResource {
 
 /// A message as the resource tree needs to see it: its id, a display label
 /// (author + snippet) and whether it is pinned (so pin toggles to unpin).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MessageResource {
     pub id: String,
     pub label: String,
     pub pinned: bool,
     pub parent: Option<String>,
+    pub author: String,
+    /// What the message is about, as its author selected it.
+    pub reference: Option<tilo_reference::ResourceRef>,
+    /// Present when the message is a report: top-level in a feedback channel.
+    pub report: Option<ReportResource>,
     /// An attachment is a durable, content-addressed child of the message,
     /// rather than an unsearchable bit of its paint. There can be only one in
     /// the current message schema, so its stable address is keyed by message.
@@ -989,7 +1157,59 @@ pub struct MessageResource {
 #[derive(Debug, Clone)]
 pub struct AttachmentResource {
     pub name: String,
-    pub blob: String,
+    /// The content hash of shared bytes; `None` for a record.
+    pub blob: Option<String>,
+    pub record: Option<tilo_reference::RecordAttachment>,
+    pub withdrawn: bool,
+    /// Whether the local peer posted it, and so owns sharing it into the room.
+    pub mine: bool,
+}
+
+/// A report's standing, as its resource publishes it.
+#[derive(Debug, Clone)]
+pub struct ReportResource {
+    pub status: crate::feedback::ReportStatus,
+    pub votes: usize,
+    pub voted_by_me: bool,
+}
+
+impl MessageResource {
+    /// The resource view of `message` for the peer `me`. `feedback` says the
+    /// message's channel is a feedback channel.
+    pub fn of(message: &crate::model::Message, label: String, me: &str, feedback: bool) -> Self {
+        Self {
+            id: message.id.clone(),
+            label,
+            pinned: message.pinned,
+            parent: message.parent.clone(),
+            author: message.author.clone(),
+            reference: message.reference.clone(),
+            report: (feedback && message.is_top_level()).then(|| ReportResource {
+                status: crate::feedback::status_of(message),
+                votes: crate::feedback::vote_count(message),
+                voted_by_me: crate::feedback::voted_by(message, me),
+            }),
+            attachment: message
+                .attachment
+                .as_ref()
+                .map(|attachment| AttachmentResource {
+                    name: attachment.name().to_owned(),
+                    blob: attachment.blob().map(str::to_owned),
+                    record: attachment.record().cloned(),
+                    withdrawn: message.attachment_withdrawn,
+                    mine: message.author == me,
+                }),
+            reactions: message
+                .reactions
+                .iter()
+                .map(|reaction| ReactionResource {
+                    emoji: reaction.emoji.clone(),
+                    count: reaction.count(),
+                    reacted_by_me: reaction.reacted_by(me),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1113,6 +1333,7 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
                 name: channel.name,
                 kind: channel.kind,
                 archived: channel.archived,
+                feedback: channel.feedback,
             };
             workspace =
                 workspace.with_child(build_channel_resource(&resource_ctx, doc, &ws.id, &ch, &[]));
@@ -1138,17 +1359,55 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
 
     let mut people = Resource::new("chat.people", "chat.people", "People");
     for user in users.into_iter().take(EAGER_PEOPLE_LIMIT) {
-        people = people.with_child(
-            Resource::new(format!("chat.person:{}", user.id), "chat.person", user.name)
-                .with_action(view_operation(
-                    "open",
-                    "Open person",
-                    &ChatOperation::OpenPerson { user: user.id },
-                )),
-        );
+        people = people.with_child(person_resource(&ctx.me, &user));
     }
     forest.push(people);
     forest
+}
+
+/// A participant, with what one can do about meeting them: open their card,
+/// message them in the room the two of you share, or invite them into this
+/// workspace. The last two are the workspace's own requests, so they reach
+/// the same direct-room and invite flows every other surface uses.
+pub(crate) fn person_resource(me: &str, user: &crate::model::User) -> Resource {
+    let mut person = Resource::new(
+        format!("chat.person:{}", user.id),
+        "chat.person",
+        user.name.clone(),
+    )
+    .with_action(view_operation(
+        "open",
+        "Open person",
+        &ChatOperation::OpenPerson {
+            user: user.id.clone(),
+        },
+    ));
+    if tilo_reference::DirectRoom::between(me, &user.id).is_some() {
+        person = person
+            .with_action(workspace_request_spec(
+                "message",
+                "Message",
+                "Open the conversation only the two of you are in",
+                PermissionRequirement::Read,
+                WorkspaceRequest::new(
+                    tilo_actions::remote::PEOPLE_RESOURCE,
+                    tilo_actions::remote::PERSON_MESSAGE_ACTION,
+                    InvokeArgument::Text(user.id.clone()),
+                ),
+            ))
+            .with_action(workspace_request_spec(
+                "invite",
+                "Invite to workspace",
+                "Invite this person into the current workspace",
+                PermissionRequirement::Invite,
+                WorkspaceRequest::new(
+                    tilo_actions::remote::PEOPLE_RESOURCE,
+                    tilo_actions::remote::PERSON_INVITE_ACTION,
+                    InvokeArgument::Text(user.id.clone()),
+                ),
+            ));
+    }
+    person
 }
 
 fn workspace_resource(id: &str, name: &str) -> Resource {
@@ -1200,6 +1459,7 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
             name: channel.name,
             kind: channel.kind,
             archived: channel.archived,
+            feedback: channel.feedback,
         };
         let mut resource = build_channel_resource(ctx, doc, &workspace_id, &model, &[]);
         annotate_contracts(&mut resource);
@@ -1223,14 +1483,7 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
         let user = ChatDoc::list_users(doc)
             .into_iter()
             .find(|user| user.id == user_id)?;
-        return Some(
-            Resource::new(format!("chat.person:{}", user.id), "chat.person", user.name)
-                .with_action(view_operation(
-                    "open",
-                    "Open person",
-                    &ChatOperation::OpenPerson { user: user.id },
-                )),
-        );
+        return Some(person_resource(&ctx.me, &user));
     }
     if let Some(channel_id) = id.strip_prefix("chat.call:") {
         let channel = ChatDoc::list_channels(doc)
@@ -1241,6 +1494,7 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
             name: channel.name,
             kind: channel.kind,
             archived: channel.archived,
+            feedback: channel.feedback,
         };
         let mut resource = build_call_resource(ctx, doc, &channel.workspace, &model);
         annotate_contracts(&mut resource);
@@ -1248,20 +1502,33 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
     }
     if let Some(message_id) = id.strip_prefix("chat.attachment:") {
         let (channel, message) = find_message(doc, message_id)?;
-        let attachment = message.attachment.as_ref()?;
         let workspace = ChatDoc::list_workspaces(doc)
             .into_iter()
             .find(|workspace| workspace.id == channel.workspace)?;
         let channel_model = channel_resource(&channel);
+        let model = MessageResource::of(&message, String::new(), &ctx.me, channel.feedback);
         let mut resource = build_attachment_resource(
             &workspace.id,
             &channel_model,
             &message.id,
             message.parent.as_ref(),
-            &AttachmentResource {
-                name: attachment.name().to_owned(),
-                blob: attachment.blob().to_owned(),
-            },
+            model.attachment.as_ref()?,
+        );
+        annotate_contracts(&mut resource);
+        return Some(resource);
+    }
+    if let Some(message_id) = id.strip_prefix("chat.reference:") {
+        let (channel, message) = find_message(doc, message_id)?;
+        let reference = message.reference.as_ref()?;
+        let workspace = ChatDoc::list_workspaces(doc)
+            .into_iter()
+            .find(|workspace| workspace.id == channel.workspace)?;
+        let mut resource = build_reference_resource(
+            &workspace.id,
+            &channel_resource(&channel),
+            &message.id,
+            message.parent.as_ref(),
+            reference,
         );
         annotate_contracts(&mut resource);
         return Some(resource);
@@ -1313,33 +1580,13 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
         .find(|workspace| workspace.id == channel.workspace)?;
     let channel_model = channel_resource(&channel);
     let users = ChatDoc::list_users(doc);
-    let message_model = MessageResource {
-        id: message.id,
-        label: message_label(
-            &message.author,
-            &message.text,
-            message.attachment.as_ref(),
-            &users,
-        ),
-        pinned: message.pinned,
-        parent: message.parent,
-        attachment: message
-            .attachment
-            .as_ref()
-            .map(|attachment| AttachmentResource {
-                name: attachment.name().to_owned(),
-                blob: attachment.blob().to_owned(),
-            }),
-        reactions: message
-            .reactions
-            .iter()
-            .map(|reaction| ReactionResource {
-                emoji: reaction.emoji.clone(),
-                count: reaction.count(),
-                reacted_by_me: reaction.reacted_by(&ctx.me),
-            })
-            .collect(),
-    };
+    let label = message_label(
+        &message.author,
+        &message.text,
+        message.attachment.as_ref(),
+        &users,
+    );
+    let message_model = MessageResource::of(&message, label, &ctx.me, channel.feedback);
     let mut resource = build_message_resource(ctx, &workspace.id, &channel_model, &message_model);
     annotate_contracts(&mut resource);
     Some(resource)
@@ -1365,6 +1612,7 @@ fn channel_resource(channel: &crate::model::Channel) -> ChannelResource {
         name: channel.name.clone(),
         kind: channel.kind,
         archived: channel.archived,
+        feedback: channel.feedback,
     }
 }
 
@@ -1493,32 +1741,36 @@ fn build_channel_resource(
 
     // Post a message (Send, from the palette). Id + timestamp minted in the
     // closure at authoring time so the payload is self-contained.
-    channel = channel.with_action(ActionSpec::prompted(
-        "post",
-        "Post message",
-        "Message",
-        "type a message…",
-        ExecutionLocus::ClientLocal,
-        {
-            let cid = ch.id.clone();
-            let me = ctx.me.clone();
-            let room = ctx.participants.clone();
-            move |text: &str| {
-                let id = format!("m_{}", uuid::Uuid::new_v4().simple());
-                let mentions = crate::mention::resolve(text, &room);
-                encode(&send_message_action(
-                    &cid,
-                    &id,
-                    &me,
-                    unix_now_i64(),
-                    text,
-                    None,
-                    None,
-                    mentions,
-                ))
-            }
-        },
-    ));
+    channel = channel.with_action(
+        ActionSpec::prompted(
+            "post",
+            "Post message",
+            "Message",
+            "type a message…",
+            ExecutionLocus::ClientLocal,
+            {
+                let cid = ch.id.clone();
+                let me = ctx.me.clone();
+                let room = ctx.participants.clone();
+                move |text: &str| {
+                    let id = format!("m_{}", uuid::Uuid::new_v4().simple());
+                    let mentions = crate::mention::resolve(text, &room);
+                    encode(&send_message_action(
+                        &cid,
+                        &id,
+                        &me,
+                        unix_now_i64(),
+                        text,
+                        None,
+                        None,
+                        mentions,
+                    ))
+                }
+            },
+        )
+        // Posting is a comment on the room: a Commenter may post and react.
+        .requiring(PermissionRequirement::Comment),
+    );
 
     // An agent and the picker use the same local import lifecycle. The path
     // stays local to the machine that can read it; only the resulting bytes
@@ -1581,6 +1833,23 @@ fn build_channel_resource(
         "Mark as read",
         &mark_read_action(&ch.id, &ctx.me, count),
     ));
+
+    channel = channel.with_action(if ch.feedback {
+        immediate_spec(
+            "unmark-feedback",
+            "Make an ordinary channel",
+            &set_channel_feedback_action(&ch.id, false),
+        )
+    } else {
+        immediate_spec(
+            "mark-feedback",
+            "Make a feedback channel",
+            &set_channel_feedback_action(&ch.id, true),
+        )
+    });
+    if ch.feedback {
+        channel = channel.with_action(report_view_spec(&ch.id));
+    }
 
     // Delete the whole channel.
     channel = channel.with_action(immediate_spec(
@@ -1734,19 +2003,24 @@ fn build_message_resource(
     ));
 
     // React — prompted for an emoji; adds the local peer's reaction.
-    message = message.with_action(ActionSpec::prompted(
-        "react",
-        "Add reaction",
-        "Emoji",
-        "👍",
-        ExecutionLocus::ClientLocal,
-        {
-            let cid = ch.id.clone();
-            let mid = m.id.clone();
-            let me = ctx.me.clone();
-            move |emoji: &str| encode(&add_reaction_action(&cid, &mid, emoji.trim(), &me))
-        },
-    ));
+    message = message.with_action(
+        ActionSpec::prompted(
+            "react",
+            "Add reaction",
+            "Emoji",
+            "👍",
+            ExecutionLocus::ClientLocal,
+            {
+                let cid = ch.id.clone();
+                let mid = m.id.clone();
+                let me = ctx.me.clone();
+                move |emoji: &str| encode(&add_reaction_action(&cid, &mid, emoji.trim(), &me))
+            },
+        )
+        .requiring(PermissionRequirement::Comment),
+    );
+
+    message = with_participation_actions(message, ctx, ch, m);
 
     // Pin / unpin toggles the stored flag.
     if m.pinned {
@@ -1779,6 +2053,15 @@ fn build_message_resource(
             attachment,
         ));
     }
+    if let Some(reference) = &m.reference {
+        message = message.with_child(build_reference_resource(
+            workspace_id,
+            ch,
+            &m.id,
+            m.parent.as_ref(),
+            reference,
+        ));
+    }
     for reaction in &m.reactions {
         message = message.with_child(build_reaction_resource(
             ctx,
@@ -1793,6 +2076,74 @@ fn build_message_resource(
     message
 }
 
+/// What a Commenter does with a message — reply, meet its author, and on a
+/// report vote — plus an Editor's status.
+fn with_participation_actions(
+    mut message: Resource,
+    ctx: &ChatResourceCtx,
+    ch: &ChannelResource,
+    m: &MessageResource,
+) -> Resource {
+    // Reply in the message's thread. A reply to a reply lands in the same
+    // thread, which is the only depth a thread has.
+    message = message.with_action(
+        ActionSpec::prompted(
+            "reply",
+            "Reply in thread",
+            "Reply",
+            "type a reply…",
+            ExecutionLocus::ClientLocal,
+            {
+                let cid = ch.id.clone();
+                let parent = m.parent.clone().unwrap_or_else(|| m.id.clone());
+                let me = ctx.me.clone();
+                let room = ctx.participants.clone();
+                move |text: &str| {
+                    let id = format!("m_{}", uuid::Uuid::new_v4().simple());
+                    let mentions = crate::mention::resolve(text, &room);
+                    encode(&send_message_action(
+                        &cid,
+                        &id,
+                        &me,
+                        unix_now_i64(),
+                        text,
+                        Some(parent.clone()),
+                        None,
+                        mentions,
+                    ))
+                }
+            },
+        )
+        .requiring(PermissionRequirement::Comment),
+    );
+
+    // Who wrote it: the person card, with its own Message and Invite.
+    message = message.with_action(view_operation(
+        "open-author",
+        "Show author",
+        &ChatOperation::OpenPerson {
+            user: m.author.clone(),
+        },
+    ));
+
+    if let Some(report) = &m.report {
+        message = message.with_action(
+            immediate_spec(
+                if report.voted_by_me { "unvote" } else { "vote" },
+                if report.voted_by_me {
+                    "Remove my vote"
+                } else {
+                    "Vote for this report"
+                },
+                &vote_action(&ch.id, &m.id, &ctx.me, !report.voted_by_me),
+            )
+            .requiring(PermissionRequirement::Comment),
+        );
+        message = message.with_action(set_status_spec(&ch.id, &m.id, &ctx.me));
+    }
+    message
+}
+
 /// The portable attachment is an addressable child of its message. Opening it
 /// deliberately reveals the owning message: fetching/opening the bytes happens in
 /// the content app that knows the file type, whereas Chat's truthful action is
@@ -1804,7 +2155,7 @@ fn build_attachment_resource(
     parent: Option<&String>,
     attachment: &AttachmentResource,
 ) -> Resource {
-    Resource::new(
+    let mut resource = Resource::new(
         format!("chat.attachment:{message_id}"),
         "chat.attachment",
         attachment.name.clone(),
@@ -1818,7 +2169,226 @@ fn build_attachment_resource(
             message: message_id.to_owned(),
             parent: parent.cloned(),
         },
+    ));
+    let Some(record) = &attachment.record else {
+        return resource;
+    };
+    if attachment.withdrawn {
+        // Withdrawn from this room: the author's peer takes the room's
+        // reference back. A copy a member already synced stays theirs.
+        if attachment.mine {
+            resource = resource.with_action(record_index_spec(record, false));
+        }
+        return resource;
+    }
+    if record.is_session() {
+        resource = resource.with_action(workspace_request_spec(
+            "replay",
+            "Replay recording",
+            "Replay this recorded session in a sandboxed replay room",
+            PermissionRequirement::Read,
+            WorkspaceRequest::new(
+                tilo_actions::remote::SESSION_REPLAY_RESOURCE,
+                tilo_actions::remote::SESSION_REPLAY_ACTION,
+                InvokeArgument::Text(record.record.clone()),
+            ),
+        ));
+    }
+    if attachment.mine {
+        resource = resource
+            .with_action(record_index_spec(record, true))
+            .with_action(immediate_spec(
+                "withdraw",
+                "Withdraw from this room",
+                &withdraw_attachment_action(&ch.id, message_id),
+            ));
+    }
+    resource
+}
+
+/// Share (or take back) an attached record through the room's own index.
+/// Offered only to programmatic callers: the author's Chat issues it when
+/// the message is posted or withdrawn, and a person never has to.
+fn record_index_spec(record: &tilo_reference::RecordAttachment, share: bool) -> ActionSpec {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert(
+        "id".into(),
+        serde_json::Value::String(record.record.clone()),
+    );
+    arguments.insert(
+        "kind".into(),
+        serde_json::Value::String(record.kind.clone()),
+    );
+    let mut spec = workspace_request_spec(
+        if share { "share" } else { "unshare" },
+        if share {
+            "Share record into this room"
+        } else {
+            "Stop sharing record with this room"
+        },
+        if share {
+            "Add a reference from this room to the attached record; no bytes are copied"
+        } else {
+            "Remove this room's reference; members who already synced it keep their copy"
+        },
+        PermissionRequirement::Comment,
+        WorkspaceRequest::new(
+            tilo_actions::remote::ROOM_RECORDS_RESOURCE,
+            if share {
+                tilo_actions::remote::ROOM_RECORD_REFERENCE_ACTION
+            } else {
+                tilo_actions::remote::ROOM_RECORD_UNREFERENCE_ACTION
+            },
+            InvokeArgument::Json(arguments),
+        ),
+    );
+    spec.contract
+        .tags
+        .push(tilo_actions::PROGRAMMATIC_TAG.to_string());
+    spec
+}
+
+/// The address a message carries, as a child the reader can open. Opening
+/// asks the workspace to open the resource in the app that published it.
+fn build_reference_resource(
+    workspace_id: &str,
+    ch: &ChannelResource,
+    message_id: &str,
+    parent: Option<&String>,
+    reference: &tilo_reference::ResourceRef,
+) -> Resource {
+    Resource::new(
+        format!("chat.reference:{message_id}"),
+        "chat.reference",
+        reference.label.clone(),
+    )
+    .with_action(workspace_request_spec(
+        "open",
+        "Open referenced item",
+        "Open what this message is about in the app it belongs to",
+        PermissionRequirement::Read,
+        WorkspaceRequest::new(
+            tilo_actions::remote::RESOURCES_RESOURCE,
+            tilo_actions::remote::RESOURCE_OPEN_ACTION,
+            InvokeArgument::Text(reference.id.clone()),
+        ),
     ))
+    .with_action(view_operation(
+        "open-message",
+        "Reveal message",
+        &ChatOperation::RevealMessage {
+            workspace: workspace_id.to_owned(),
+            channel: ch.id.clone(),
+            message: message_id.to_owned(),
+            parent: parent.cloned(),
+        },
+    ))
+}
+
+/// The status keys `set-status` accepts, in menu order.
+pub const REPORT_STATUS_KEYS: [&str; 6] = [
+    "open",
+    "planned",
+    "in_progress",
+    "fixed",
+    "wont_fix",
+    "duplicate",
+];
+
+/// Set a report's status. Write, so an Editor's: a Commenter's catalogue
+/// never offers it and the broker refuses it from one.
+fn set_status_spec(channel: &str, msg: &str, me: &str) -> ActionSpec {
+    let channel = channel.to_string();
+    let msg = msg.to_string();
+    let me = me.to_string();
+    ActionSpec::typed(
+        "set-status",
+        "Set report status",
+        "open",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required("status", ParamType::Text, "The report's new status")
+                .with_choices(REPORT_STATUS_KEYS),
+            ActionParam::optional(
+                "generation",
+                ParamType::Integer,
+                "For `fixed`: the image generation that contains the fix",
+            ),
+            ActionParam::optional(
+                "duplicate_of",
+                ParamType::Resource,
+                "For `duplicate`: the report (`chat.message:<id>`) this one repeats",
+            ),
+        ],
+        move |args| match report_status_from_args(
+            args.text("status").unwrap_or_default(),
+            args.integer("generation"),
+            args.text("duplicate_of"),
+        ) {
+            Ok(status) => encode(&set_report_status_action(
+                &channel,
+                &msg,
+                status,
+                &me,
+                unix_now_i64(),
+            )),
+            Err(reason) => EncodedAction {
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                payload: reason.into_bytes(),
+            },
+        },
+    )
+    .requiring(PermissionRequirement::Write)
+}
+
+/// How this peer lists a feedback channel's reports.
+#[allow(
+    clippy::expect_used,
+    reason = "ChatOperation is serde-derived from serializable fields; the builder returns an EncodedAction directly"
+)]
+fn report_view_spec(channel: &str) -> ActionSpec {
+    let channel = channel.to_string();
+    ActionSpec::typed_operation(
+        "report-view",
+        "Sort and filter reports",
+        "votes",
+        OperationKind::View,
+        CHAT_OPERATION_TYPE,
+        vec![
+            ActionParam::required("sort", ParamType::Text, "Most votes first, or newest first")
+                .with_choices(["votes", "new"]),
+            ActionParam::optional(
+                "filter",
+                ParamType::Text,
+                "Which reports to show; active by default",
+            )
+            .with_choices(["active", "closed", "all"]),
+        ],
+        move |args| {
+            use crate::feedback::{ReportFilter, ReportSort, ReportView};
+            let view = ReportView {
+                sort: if args.text("sort") == Some("new") {
+                    ReportSort::New
+                } else {
+                    ReportSort::Votes
+                },
+                filter: match args.text("filter") {
+                    Some("closed") => ReportFilter::Closed,
+                    Some("all") => ReportFilter::All,
+                    _ => ReportFilter::Active,
+                },
+            };
+            EncodedAction::encode_operation(
+                CHAT_OPERATION_TYPE,
+                &ChatOperation::SetReportView {
+                    channel: channel.clone(),
+                    view,
+                },
+            )
+            .expect("ChatOperation is always serializable")
+        },
+    )
+    .requiring(PermissionRequirement::Read)
 }
 
 /// A reaction is both a durable aggregate and a direct action surface. The
@@ -1854,19 +2424,22 @@ fn build_reaction_resource(
     } else {
         add_reaction_action(&ch.id, message_id, &reaction.emoji, &ctx.me)
     };
-    resource = resource.with_action(immediate_spec(
-        if reaction.reacted_by_me {
-            "remove"
-        } else {
-            "add"
-        },
-        if reaction.reacted_by_me {
-            "Remove my reaction"
-        } else {
-            "Add my reaction"
-        },
-        &action,
-    ));
+    resource = resource.with_action(
+        immediate_spec(
+            if reaction.reacted_by_me {
+                "remove"
+            } else {
+                "add"
+            },
+            if reaction.reacted_by_me {
+                "Remove my reaction"
+            } else {
+                "Add my reaction"
+            },
+            &action,
+        )
+        .requiring(PermissionRequirement::Comment),
+    );
     resource
 }
 
@@ -1882,11 +2455,7 @@ fn message_label(
         .map_or(author_id, |user| user.name.as_str());
     let body = if text.trim().is_empty() {
         match attachment {
-            Some(
-                crate::model::Attachment::File { name, .. }
-                | crate::model::Attachment::Image { name, .. }
-                | crate::model::Attachment::Video { name, .. },
-            ) => name.as_str(),
+            Some(attachment) => attachment.name(),
             None => "Attachment",
         }
     } else {
@@ -1947,29 +2516,12 @@ mod tests {
                 name: c.name,
                 kind: c.kind,
                 archived: c.archived,
+                feedback: c.feedback,
             })
             .collect();
         let messages = ChatDoc::list_messages(doc, "c_crit")
             .into_iter()
-            .map(|m| MessageResource {
-                id: m.id,
-                label: m.text.chars().take(24).collect(),
-                pinned: m.pinned,
-                parent: m.parent,
-                attachment: m.attachment.as_ref().map(|attachment| AttachmentResource {
-                    name: attachment.name().to_owned(),
-                    blob: attachment.blob().to_owned(),
-                }),
-                reactions: m
-                    .reactions
-                    .iter()
-                    .map(|reaction| ReactionResource {
-                        emoji: reaction.emoji.clone(),
-                        count: reaction.count(),
-                        reacted_by_me: reaction.reacted_by(model::ME),
-                    })
-                    .collect(),
-            })
+            .map(|m| MessageResource::of(&m, m.text.chars().take(24).collect(), model::ME, false))
             .collect();
         ChatResourceCtx {
             me: model::ME.to_string(),
@@ -2026,28 +2578,7 @@ mod tests {
         let source = ChatDoc::list_messages(&doc, "c_crit").remove(0);
         let ctx = ctx_from(&doc);
         let ch = ctx.channels.iter().find(|ch| ch.id == "c_crit").unwrap();
-        let msg_model = MessageResource {
-            id: source.id,
-            label: source.text,
-            pinned: source.pinned,
-            parent: source.parent,
-            attachment: source
-                .attachment
-                .as_ref()
-                .map(|attachment| AttachmentResource {
-                    name: attachment.name().to_owned(),
-                    blob: attachment.blob().to_owned(),
-                }),
-            reactions: source
-                .reactions
-                .iter()
-                .map(|reaction| ReactionResource {
-                    emoji: reaction.emoji.clone(),
-                    count: reaction.count(),
-                    reacted_by_me: reaction.reacted_by(model::ME),
-                })
-                .collect(),
-        };
+        let msg_model = MessageResource::of(&source, source.text.clone(), model::ME, false);
         let msg = build_message_resource(&ctx, "ws_acme", ch, &msg_model);
         assert_eq!(msg.kind, "chat.message");
         let m_actions: Vec<&str> = msg.actions.iter().map(|a| a.id.as_str()).collect();
@@ -2159,9 +2690,7 @@ mod tests {
                 id: format!("message-{id}"),
                 label: format!("Message {id}"),
                 pinned: false,
-                parent: None,
-                attachment: None,
-                reactions: Vec::new(),
+                ..MessageResource::default()
             })
             .collect();
         let resources = provide_resources(&ctx, &doc);
@@ -2607,28 +3136,7 @@ mod tests {
             &ctx,
             "ws_acme",
             ch,
-            &MessageResource {
-                id: source.id,
-                label: source.text,
-                pinned: source.pinned,
-                parent: source.parent,
-                attachment: source
-                    .attachment
-                    .as_ref()
-                    .map(|attachment| AttachmentResource {
-                        name: attachment.name().to_owned(),
-                        blob: attachment.blob().to_owned(),
-                    }),
-                reactions: source
-                    .reactions
-                    .iter()
-                    .map(|reaction| ReactionResource {
-                        emoji: reaction.emoji.clone(),
-                        count: reaction.count(),
-                        reacted_by_me: reaction.reacted_by(model::ME),
-                    })
-                    .collect(),
-            },
+            &MessageResource::of(&source, source.text.clone(), model::ME, false),
         );
         assert_eq!(
             message
@@ -2643,7 +3151,7 @@ mod tests {
             message
                 .actions
                 .iter()
-                .filter(|action| action.id != "open")
+                .filter(|action| action.id != "open" && action.id != "open-author")
                 .all(|action| action.kind == OperationKind::Document)
         );
         let delete = channel.actions.iter().find(|a| a.id == "delete").unwrap();
@@ -2652,5 +3160,468 @@ mod tests {
             delete.contract.confirmation,
             tilo_actions::ConfirmationPolicy::Confirm
         );
+    }
+}
+
+#[cfg(test)]
+mod feedback_tests {
+    use super::*;
+    use crate::doc::ChatDoc;
+    use crate::feedback::{ReportStatus, VOTE_EMOJI, status_of, vote_count};
+    use crate::model::{self, Attachment};
+    use tilo_actions::LocalTransport;
+    use tilo_actions::remote::{InvokeArgument, WorkspaceRequest};
+    use tilo_reference::{
+        Destination, DirectRoom, RecordAttachment, Redactions, Remark, ResourceRef, SessionLayer,
+        SessionSummary,
+    };
+
+    const TS: i64 = 1_782_000_000;
+
+    fn registry() -> ActionRegistry {
+        let mut r = ActionRegistry::new();
+        register(&mut r);
+        r
+    }
+
+    fn dispatch_encoded(doc: &mut AutoCommit, encoded: EncodedAction) {
+        let decoded = registry().decode(&encoded).expect("a chat action decodes");
+        let mut tx = LocalTransport::new();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+    }
+
+    fn dispatch(doc: &mut AutoCommit, action: &ChatAction) {
+        dispatch_encoded(doc, encode(action));
+    }
+
+    fn built(
+        spec: &ActionSpec,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> EncodedAction {
+        spec.build_json(args).expect("the declared arguments bind")
+    }
+
+    fn request(spec: &ActionSpec) -> WorkspaceRequest {
+        let encoded = built(spec, &serde_json::Map::new());
+        assert_eq!(
+            encoded.type_id,
+            tilo_actions::remote::WORKSPACE_REQUEST_TYPE
+        );
+        serde_json::from_slice(&encoded.payload).expect("a workspace request")
+    }
+
+    fn recording() -> RecordAttachment {
+        RecordAttachment::session(
+            "uuid:9f2c-send",
+            "Send does nothing",
+            "room-reporter",
+            SessionSummary {
+                apps: vec!["so.tilo.mail".into()],
+                duration_ms: 83_000,
+                steps: 7,
+                layer: SessionLayer::Logic,
+                redactions: Redactions {
+                    text: 3,
+                    regions: 0,
+                },
+                generation: Some(118),
+            },
+        )
+    }
+
+    /// A seeded document with an empty feedback channel in it.
+    fn feedback_doc() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_if_empty(&mut doc);
+        dispatch(
+            &mut doc,
+            &create_channel_action("ws_tilo", "", "c_fb", "feedback", ChannelKind::Text),
+        );
+        dispatch(&mut doc, &set_channel_feedback_action("c_fb", true));
+        doc
+    }
+
+    fn post(doc: &mut AutoCommit, id: &str, author: &str, parent: Option<&str>) {
+        dispatch(
+            doc,
+            &send_message_action(
+                "c_fb",
+                id,
+                author,
+                TS,
+                "a report",
+                parent.map(str::to_string),
+                None,
+                Vec::new(),
+            ),
+        );
+    }
+
+    fn post_record(doc: &mut AutoCommit, id: &str, record: RecordAttachment) {
+        dispatch(
+            doc,
+            &send_message_action(
+                "c_fb",
+                id,
+                model::ME,
+                TS,
+                "",
+                None,
+                Some(Attachment::Record(Box::new(record))),
+                Vec::new(),
+            ),
+        );
+    }
+
+    fn message(doc: &AutoCommit, id: &str) -> model::Message {
+        ChatDoc::list_messages(doc, "c_fb")
+            .into_iter()
+            .find(|m| m.id == id)
+            .expect("the message exists")
+    }
+
+    fn ctx(doc: &AutoCommit, me: &str) -> ChatResourceCtx {
+        ChatResourceCtx {
+            me: me.into(),
+            workspace_id: "ws_tilo".into(),
+            workspace_name: "Tilo Core".into(),
+            channels: Vec::new(),
+            active_channel: "c_fb".into(),
+            messages: Vec::new(),
+            participants: ChatDoc::list_users(doc)
+                .into_iter()
+                .map(|u| crate::mention::Participant {
+                    id: u.id,
+                    name: u.name,
+                    is_agent: u.is_agent,
+                })
+                .collect(),
+        }
+    }
+
+    fn resolved(doc: &AutoCommit, me: &str, id: &str) -> Resource {
+        resolve_resource(&ctx(doc, me), doc, id).unwrap_or_else(|| panic!("{id} resolves"))
+    }
+
+    fn action<'a>(resource: &'a Resource, id: &str) -> Option<&'a ActionSpec> {
+        resource.actions.iter().find(|a| a.id == id)
+    }
+
+    /// The remark an app composes arrives as chat's own `SendMessage`: its
+    /// reference and recording become the row's reference and record
+    /// attachment, and the delivery field chat does not model is ignored.
+    #[test]
+    fn a_remark_with_a_recording_becomes_a_message_with_a_chip_and_a_card() {
+        let mut doc = feedback_doc();
+        let remark = Remark::new(
+            "the times contradict the prose",
+            ResourceRef::whole("word_processor.block", "word-processor.block:blk_7", "¶3"),
+            Destination::channel("c_fb", "feedback"),
+        )
+        .with_attachment(recording());
+        let encoded = remark.to_chat_action("m_remark", model::ME, TS).unwrap();
+        let read = tilo_reference::read_chat_action(&encoded).expect("a remark reads back");
+        assert_eq!(read.attachment, Some(recording()));
+        dispatch_encoded(&mut doc, encoded);
+
+        let m = message(&doc, "m_remark");
+        assert_eq!(
+            m.reference.as_ref().map(|r| r.id.as_str()),
+            Some("word-processor.block:blk_7")
+        );
+        assert_eq!(
+            m.attachment,
+            Some(Attachment::Record(Box::new(recording())))
+        );
+        assert_eq!(
+            m.attachment.as_ref().and_then(Attachment::blob),
+            None,
+            "no bytes, only an address"
+        );
+
+        // The reference is an addressable child whose open is a workspace
+        // request, so the chip, an agent and tilo-control open it one way.
+        let chip = resolved(&doc, model::ME, "chat.reference:m_remark");
+        let open = request(action(&chip, "open").expect("open"));
+        assert_eq!(open.resource, tilo_actions::remote::RESOURCES_RESOURCE);
+        assert_eq!(
+            open.argument,
+            InvokeArgument::Text("word-processor.block:blk_7".into())
+        );
+    }
+
+    /// A private remark rides the pair's direct room and lands in its
+    /// conversation as an ordinary message with its reference.
+    #[test]
+    fn a_private_remark_arrives_in_the_direct_room_conversation() {
+        let (ada, team) = ("u_1f4c3a9b2d7e5061", "u_9a0b1c2d3e4f5061");
+        let room = DirectRoom::between(ada, team).unwrap();
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, ada, "Ada", "A");
+        let encoded = Remark::new(
+            "this crashed",
+            ResourceRef::whole("files.entry", "files.entry:/w/a.png", "a.png"),
+            Destination::participant(team, "Tilo team", false),
+        )
+        .to_direct_action(&room, "m_private", ada, TS)
+        .unwrap();
+        dispatch_encoded(&mut doc, encoded);
+        let row = ChatDoc::list_messages(&doc, tilo_reference::ROOM_CONVERSATION)
+            .into_iter()
+            .find(|m| m.id == "m_private")
+            .expect("the direct room's conversation holds it");
+        assert_eq!(row.reference.unwrap().id, "files.entry:/w/a.png");
+    }
+
+    #[test]
+    fn votes_are_the_canonical_reaction_and_count_once_per_person() {
+        let mut doc = feedback_doc();
+        post(&mut doc, "m_r", "u_aria", None);
+        for user in ["u_me", "u_milo", "u_me"] {
+            dispatch(&mut doc, &vote_action("c_fb", "m_r", user, true));
+        }
+        dispatch(
+            &mut doc,
+            &add_reaction_action("c_fb", "m_r", "🎉", "u_sora"),
+        );
+        assert_eq!(
+            vote_count(&message(&doc, "m_r")),
+            2,
+            "a repeat vote is one vote"
+        );
+        dispatch(&mut doc, &vote_action("c_fb", "m_r", "u_milo", false));
+        let m = message(&doc, "m_r");
+        assert_eq!(vote_count(&m), 1);
+        assert!(
+            m.reactions.iter().any(|r| r.emoji == "🎉"),
+            "other reactions stay ordinary reactions"
+        );
+
+        // The vote is the report resource's own action, Comment-gated.
+        let report = resolved(&doc, "u_milo", "chat.message:m_r");
+        let vote = action(&report, "vote").expect("a report offers a vote");
+        assert_eq!(vote.contract.permission, PermissionRequirement::Comment);
+        dispatch_encoded(
+            &mut doc,
+            ui::testing::action_contract::spec_encoding(vote, None),
+        );
+        assert_eq!(vote_count(&message(&doc, "m_r")), 2);
+        let report = resolved(&doc, "u_milo", "chat.message:m_r");
+        assert!(action(&report, "unvote").is_some());
+        assert!(
+            message(&doc, "m_r")
+                .reactions
+                .iter()
+                .any(|r| r.emoji == VOTE_EMOJI && r.reacted_by("u_milo"))
+        );
+    }
+
+    /// Status is Write — an Editor's — while posting, replying, reacting and
+    /// voting are Comment, so a Commenter's catalogue offers those and never
+    /// status, and the broker refuses status from one.
+    #[test]
+    fn status_is_gated_to_editors_and_participation_to_commenters() {
+        let mut doc = feedback_doc();
+        post(&mut doc, "m_r", "u_aria", None);
+        let report = resolved(&doc, model::ME, "chat.message:m_r");
+        assert_eq!(
+            action(&report, "set-status").unwrap().contract.permission,
+            PermissionRequirement::Write
+        );
+        for id in ["reply", "react", "vote"] {
+            assert_eq!(
+                action(&report, id).unwrap().contract.permission,
+                PermissionRequirement::Comment,
+                "{id} is a Commenter's"
+            );
+        }
+        let channel = resolved(&doc, model::ME, "chat.channel:c_fb");
+        assert_eq!(
+            action(&channel, "post").unwrap().contract.permission,
+            PermissionRequirement::Comment
+        );
+        assert_eq!(
+            action(&channel, "unmark-feedback")
+                .unwrap()
+                .contract
+                .permission,
+            PermissionRequirement::Write
+        );
+        assert!(action(&channel, "report-view").is_some());
+
+        // In an ordinary channel a message is not a report.
+        dispatch(&mut doc, &set_channel_feedback_action("c_fb", false));
+        let plain = resolved(&doc, model::ME, "chat.message:m_r");
+        assert!(action(&plain, "set-status").is_none());
+        assert!(action(&plain, "vote").is_none());
+
+        let commenter = crate::permissions::ChatPermissions::from_context(
+            ui::permissions::PermissionContext::from_capabilities(
+                ui::permissions::Actor::person(Some(ui::permissions::Role::Commenter), "u_c"),
+                vec![],
+            ),
+        );
+        assert!(commenter.can_comment(), "a Commenter votes");
+        assert!(!commenter.can_participate(), "and does not set status");
+    }
+
+    #[test]
+    fn set_status_decodes_typed_arguments_and_applies_only_to_reports() {
+        let mut doc = feedback_doc();
+        post(&mut doc, "m_a", "u_aria", None);
+        post(&mut doc, "m_b", "u_milo", None);
+        post(&mut doc, "m_reply", "u_sora", Some("m_a"));
+        let report = resolved(&doc, model::ME, "chat.message:m_b");
+        let spec = action(&report, "set-status").unwrap();
+
+        let mut args = serde_json::Map::new();
+        args.insert("status".into(), "fixed".into());
+        args.insert("generation".into(), 121.into());
+        dispatch_encoded(&mut doc, built(spec, &args));
+        assert_eq!(
+            status_of(&message(&doc, "m_b")),
+            ReportStatus::Fixed { generation: 121 }
+        );
+        assert!(status_of(&message(&doc, "m_b")).fixed_for(121));
+        assert_eq!(message(&doc, "m_b").report.unwrap().by, model::ME);
+
+        assert!(report_status_from_args("fixed", None, None).is_err());
+        assert!(report_status_from_args("duplicate", None, None).is_err());
+        assert!(report_status_from_args("maybe", None, None).is_err());
+        assert_eq!(
+            report_status_from_args("duplicate", None, Some("chat.message:m_a")),
+            Ok(ReportStatus::Duplicate { of: "m_a".into() })
+        );
+
+        let set = |status| set_report_status_action("c_fb", "m_b", status, "u_iris", TS);
+        dispatch(&mut doc, &set(ReportStatus::Duplicate { of: "m_a".into() }));
+        let duplicate = ReportStatus::Duplicate { of: "m_a".into() };
+        assert_eq!(status_of(&message(&doc, "m_b")), duplicate);
+        // Not a duplicate of itself, nor of a reply; and a reply has no status.
+        dispatch(&mut doc, &set(ReportStatus::Duplicate { of: "m_b".into() }));
+        dispatch(
+            &mut doc,
+            &set(ReportStatus::Duplicate {
+                of: "m_reply".into(),
+            }),
+        );
+        assert_eq!(status_of(&message(&doc, "m_b")), duplicate);
+        dispatch(
+            &mut doc,
+            &set_report_status_action("c_fb", "m_reply", ReportStatus::WontFix, "u_iris", TS),
+        );
+        assert!(message(&doc, "m_reply").report.is_none());
+        // In an ordinary channel nothing is a report.
+        dispatch(&mut doc, &set_channel_feedback_action("c_fb", false));
+        dispatch(
+            &mut doc,
+            &set_report_status_action("c_fb", "m_a", ReportStatus::Planned, "u_iris", TS),
+        );
+        assert!(message(&doc, "m_a").report.is_none());
+        assert_eq!(
+            history_context(&set(ReportStatus::Planned)).action_label,
+            "Set report status"
+        );
+    }
+
+    /// Posting a record shares it into the room through the room's own index
+    /// — a workspace request, never copied bytes — and withdrawing takes the
+    /// reference back while the card stays to say so.
+    #[test]
+    fn a_record_attachment_is_shared_and_withdrawn_by_reference() {
+        let mut doc = feedback_doc();
+        post_record(&mut doc, "m_rec", recording());
+        let card = resolved(&doc, model::ME, "chat.attachment:m_rec");
+        let share = action(&card, "share").expect("the author shares it");
+        assert!(share.contract.is_programmatic());
+        let shared = request(share);
+        assert_eq!(shared.resource, tilo_actions::remote::ROOM_RECORDS_RESOURCE);
+        assert_eq!(
+            shared.action,
+            tilo_actions::remote::ROOM_RECORD_REFERENCE_ACTION
+        );
+        let InvokeArgument::Json(args) = &shared.argument else {
+            panic!("the reference names the record: {:?}", shared.argument);
+        };
+        assert_eq!(args["id"], "uuid:9f2c-send");
+        assert_eq!(args["kind"], "session");
+        let replay = request(action(&card, "replay").expect("a recording replays"));
+        assert_eq!(
+            replay.resource,
+            tilo_actions::remote::SESSION_REPLAY_RESOURCE
+        );
+        assert_eq!(
+            replay.argument,
+            InvokeArgument::Text("uuid:9f2c-send".into())
+        );
+        assert!(action(&card, "withdraw").is_some());
+
+        // Someone else's card replays, but its sharing is not theirs.
+        let other = resolved(&doc, "u_aria", "chat.attachment:m_rec");
+        assert!(action(&other, "share").is_none());
+        assert!(action(&other, "withdraw").is_none());
+        assert!(action(&other, "replay").is_some());
+
+        dispatch(&mut doc, &withdraw_attachment_action("c_fb", "m_rec"));
+        let m = message(&doc, "m_rec");
+        assert!(m.attachment_withdrawn);
+        assert!(m.attachment.is_some(), "the card stays");
+        let card = resolved(&doc, model::ME, "chat.attachment:m_rec");
+        let unshared = request(action(&card, "unshare").expect("withdrawal drops the reference"));
+        assert_eq!(
+            unshared.action,
+            tilo_actions::remote::ROOM_RECORD_UNREFERENCE_ACTION
+        );
+        assert!(action(&card, "replay").is_none());
+        assert!(action(&card, "share").is_none());
+    }
+
+    /// The author's Chat asks the room once per record per session, however
+    /// the message was posted, and asks it to drop a withdrawn one.
+    #[test]
+    fn the_authors_chat_asks_the_room_to_reference_each_record_once() {
+        let mut doc = feedback_doc();
+        post_record(&mut doc, "m_rec", recording());
+        let mut app = crate::ChatApp::new_ephemeral();
+        app.reload(&doc);
+        app.reload(&doc);
+        let asked: Vec<_> = std::iter::from_fn(|| app.feedback.controls.pop_front())
+            .map(|c| (c.address.resource, c.address.action))
+            .collect();
+        assert_eq!(
+            asked,
+            [("chat.attachment:m_rec".to_string(), "share".to_string())]
+        );
+        dispatch(&mut doc, &withdraw_attachment_action("c_fb", "m_rec"));
+        app.reload(&doc);
+        let asked: Vec<_> = std::iter::from_fn(|| app.feedback.controls.pop_front())
+            .map(|c| c.address.action)
+            .collect();
+        assert_eq!(asked, ["unshare"]);
+    }
+
+    #[test]
+    fn an_invalid_record_attachment_is_refused() {
+        let mut doc = feedback_doc();
+        let mut bad = recording();
+        bad.record = "not-a-record".into();
+        post_record(&mut doc, "m_bad", bad);
+        assert!(ChatDoc::list_messages(&doc, "c_fb").is_empty());
+    }
+
+    #[test]
+    fn a_person_offers_message_and_invite_as_workspace_requests() {
+        let doc = feedback_doc();
+        let person = resolved(&doc, model::ME, "chat.person:u_aria");
+        let invite = action(&person, "invite").expect("invite");
+        assert_eq!(invite.contract.permission, PermissionRequirement::Invite);
+        for spec in [action(&person, "message").expect("message"), invite] {
+            let asked = request(spec);
+            assert_eq!(asked.resource, tilo_actions::remote::PEOPLE_RESOURCE);
+            assert_eq!(asked.argument, InvokeArgument::Text("u_aria".into()));
+        }
+        // Nobody messages themselves.
+        let me = resolved(&doc, model::ME, "chat.person:u_me");
+        assert!(action(&me, "message").is_none());
     }
 }

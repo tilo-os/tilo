@@ -385,8 +385,10 @@ mod tests {
             mentions: vec![],
             reference: None,
             attachment: None,
+            attachment_withdrawn: false,
             pinned: false,
             work: None,
+            report: None,
         }
     }
 
