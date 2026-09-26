@@ -1,0 +1,241 @@
+//! Identify displays: a large number and the display's name painted on
+//! every attached display for a few seconds, answering "which screen is
+//! which?" while arranging them in Settings.
+//!
+//! Settings asks through [`IdentifyRequest`]; the numbers come from
+//! [`display_numbers`], the same numbering the Settings arrangement canvas
+//! shows.
+
+use std::time::{Duration, Instant};
+
+use settings_store::display_identify::{IdentifyRequest, display_numbers};
+use settings_store::hardware::DisplayHardwareSnapshot;
+use vello::Scene;
+use vello::kurbo::{Affine, Rect, RoundedRect};
+use vello::peniko::Fill;
+
+use ui::i18n::ArgValue;
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+
+use crate::shell::i18n::{t, t_args};
+use crate::shell::overlay_host::OutputGeometry;
+
+/// One display's identify card.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdentifyLabel {
+    /// The whole display, in combined desktop coordinates.
+    pub output: Rect,
+    pub number: usize,
+    pub name: String,
+}
+
+#[derive(Default)]
+pub(crate) struct DisplayIdentify {
+    labels: Vec<IdentifyLabel>,
+    until: Option<Instant>,
+    seen: Option<u64>,
+}
+
+impl DisplayIdentify {
+    /// Start showing numbers when Settings has asked since the last look.
+    /// Returns whether the overlay started.
+    pub(crate) fn poll(&mut self, outputs: &[OutputGeometry], now: Instant) -> bool {
+        let Some(request) = IdentifyRequest::load() else {
+            return false;
+        };
+        if self.seen == Some(request.requested_unix_ms) {
+            return false;
+        }
+        self.seen = Some(request.requested_unix_ms);
+        let Some(remaining) = request.remaining_ms(tilo_clock::unix_now_ms()) else {
+            return false;
+        };
+        self.start(
+            outputs,
+            DisplayHardwareSnapshot::load().as_ref(),
+            Duration::from_millis(remaining),
+            now,
+        );
+        true
+    }
+
+    /// Label every output for `duration`. Outputs the compositor's snapshot
+    /// describes get their number and name; any other output still gets a
+    /// card, numbered after them, so no screen is left unexplained.
+    pub(crate) fn start(
+        &mut self,
+        outputs: &[OutputGeometry],
+        snapshot: Option<&DisplayHardwareSnapshot>,
+        duration: Duration,
+        now: Instant,
+    ) {
+        let numbers = snapshot
+            .map(|s| display_numbers(&s.outputs))
+            .unwrap_or_default();
+        let known = numbers.len();
+        let mut next_unknown = known;
+        self.labels = outputs
+            .iter()
+            .filter(|output| output.width > 0.0 && output.height > 0.0)
+            .map(|output| {
+                let placed = snapshot.and_then(|snapshot| {
+                    // Matched by left edge: a mirror shares its target's
+                    // picture, so it shows the target's card anyway.
+                    let placement = snapshot
+                        .layout
+                        .iter()
+                        .find(|placement| (f64::from(placement.x) - output.x).abs() < 0.5)?;
+                    let index = snapshot
+                        .outputs
+                        .iter()
+                        .position(|o| o.descriptor.connector == placement.connector)?;
+                    let described = snapshot.outputs.get(index)?;
+                    Some((placement, described, numbers.get(index).copied()?))
+                });
+                if let Some((placement, described, number)) = placed {
+                    IdentifyLabel {
+                        output: Rect::new(
+                            output.x,
+                            f64::from(placement.y),
+                            output.x + output.width,
+                            f64::from(placement.y) + output.height,
+                        ),
+                        number,
+                        name: if described.builtin {
+                            t("display-identify-builtin")
+                        } else {
+                            described.descriptor.label().to_owned()
+                        },
+                    }
+                } else {
+                    next_unknown = next_unknown.saturating_add(1);
+                    IdentifyLabel {
+                        output: Rect::new(output.x, 0.0, output.x + output.width, output.height),
+                        number: next_unknown,
+                        name: t_args(
+                            "display-identify-unnamed",
+                            &[("number", ArgValue::Text(next_unknown.to_string()))],
+                        ),
+                    }
+                }
+            })
+            .collect();
+        self.until = now.checked_add(duration);
+    }
+
+    /// The cards on screen at `now`.
+    pub(crate) fn labels(&self, now: Instant) -> &[IdentifyLabel] {
+        if self.until.is_some_and(|until| now < until) {
+            &self.labels
+        } else {
+            &[]
+        }
+    }
+
+    /// Frames are needed while cards show, and briefly after, so the frame
+    /// that clears them is painted.
+    pub(crate) fn needs_frame(&self, now: Instant) -> bool {
+        self.until
+            .and_then(|until| until.checked_add(Duration::from_millis(100)))
+            .is_some_and(|end| now < end)
+    }
+
+    pub(crate) fn draw(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        now: Instant,
+    ) {
+        let colors = &theme.tokens.colors;
+        let type_scale = &theme.tokens.typography.scale;
+        for label in self.labels(now) {
+            let side = (label.output.height() * 0.28).clamp(120.0, 260.0);
+            let card = Rect::from_center_size(label.output.center(), (side * 1.25, side));
+            let radius = ui::chrome::ChromeRole::Panel.radius(theme, card.height());
+            ui::chrome::shell::panel_shadow(scene, transform, card, radius, theme, 1.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                ui::chrome::shell::panel_ground(theme),
+                None,
+                &RoundedRect::from_rect(card, radius),
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                ui::chrome::shell::panel_border(theme),
+                None,
+                &RoundedRect::from_rect(card, radius),
+            );
+            let number = label.number.to_string();
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a display-sized glyph fits f32"
+            )]
+            let number_size = (side * 0.5) as f32;
+            let (nw, nh) =
+                text_renderer.measure_weighted(&number, number_size, None, TextWeight::Semibold);
+            text_renderer.draw_text_weighted(
+                scene,
+                &number,
+                number_size,
+                colors.text_primary,
+                transform.pre_translate(
+                    (
+                        card.center().x - f64::from(nw) / 2.0,
+                        card.center().y - f64::from(nh) / 2.0 - side * 0.1,
+                    )
+                        .into(),
+                ),
+                None,
+                TextWeight::Semibold,
+            );
+            #[allow(clippy::cast_possible_truncation, reason = "card width fits f32")]
+            let name_width = (card.width() - 32.0) as f32;
+            let name = text_renderer.elide_to_width(&label.name, type_scale.lg, name_width);
+            let (lw, _) = text_renderer.measure(&name, type_scale.lg, None);
+            text_renderer.draw_text(
+                scene,
+                &name,
+                type_scale.lg,
+                colors.text_dim,
+                transform.pre_translate(
+                    (card.center().x - f64::from(lw) / 2.0, card.y1 - side * 0.22).into(),
+                ),
+                None,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_output_gets_a_card_even_without_a_snapshot() {
+        let outputs = [
+            OutputGeometry {
+                x: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+            },
+            OutputGeometry {
+                x: 1920.0,
+                width: 2560.0,
+                height: 1440.0,
+            },
+        ];
+        let mut identify = DisplayIdentify::default();
+        let now = Instant::now();
+        identify.start(&outputs, None, Duration::from_secs(3), now);
+        let labels = identify.labels(now);
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels[0].number, 1);
+        assert_eq!(labels[1].output, Rect::new(1920.0, 0.0, 4480.0, 1440.0));
+        assert!(identify.labels(now + Duration::from_secs(3)).is_empty());
+    }
+}

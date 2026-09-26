@@ -1880,9 +1880,12 @@ pub struct ShellOverlayHost {
     /// Hit targets over live peer cursors. Rebuilt from room presence every
     /// paint; a click is an explicit spatial request to follow that person.
     follow_cursor_targets: Vec<(String, Rect)>,
-    /// Complete wireless projection picker, including controller, editor,
-    /// animation, painted geometry, and event routing.
+    /// The Super+P display sheet, including controller, editor, animation,
+    /// painted geometry, and event routing.
     projection_overlay: ProjectionOverlay,
+    /// Numbered cards painted on every display when Settings asks which
+    /// screen is which.
+    display_identify: crate::shell::display_identify::DisplayIdentify,
     /// Shared toolkit capture selector. The shell only hosts it and drains
     /// semantic intents; compositor readback/encoding stays below this layer.
     capture_studio: ui::widget::CaptureStudio,
@@ -3358,6 +3361,7 @@ impl ShellOverlayHost {
             activity_pending_reveal: None,
             collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: inputs.projection_overlay,
+            display_identify: crate::shell::display_identify::DisplayIdentify::default(),
             followed_peer: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
@@ -4548,6 +4552,31 @@ impl ShellOverlayHost {
     /// The displays the host was last told about.
     pub fn output_geometry(&self) -> &[OutputGeometry] {
         &self.outputs
+    }
+
+    /// Start painting each display's number and name when Settings has
+    /// asked to identify displays since the last check. The compositor
+    /// calls this at its settings reload point.
+    pub fn poll_display_identify(&mut self) -> bool {
+        let outputs = if self.outputs.is_empty() {
+            vec![OutputGeometry {
+                x: 0.0,
+                width: self.rect.width(),
+                height: self.rect.height(),
+            }]
+        } else {
+            self.outputs.clone()
+        };
+        let started = self.display_identify.poll(&outputs, Instant::now());
+        if started && let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+        started
+    }
+
+    /// The identify cards on screen right now, one per display.
+    pub fn display_identify_labels(&self) -> Vec<crate::shell::display_identify::IdentifyLabel> {
+        self.display_identify.labels(Instant::now()).to_vec()
     }
 
     /// Per-display strip widths: full extent plus width actually
@@ -18430,7 +18459,8 @@ impl ShellOverlayHost {
         let follow_in_flight = self.follow_transition.is_animating(now);
         let room_replay_in_flight = self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
-        let projection_needs_frame = self.projection_overlay.needs_animation_frame(now);
+        let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)
+            || self.display_identify.needs_frame(now);
         let sidebar_frame = self
             .sidebar
             .as_ref()
@@ -19244,6 +19274,8 @@ impl ShellOverlayHost {
         self.draw_collaborators_dropdown(scene, transform, text_renderer, theme, presence, flags);
         self.draw_room_activity_sheet(scene, transform, text_renderer, theme, presence, flags);
         self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
+        self.display_identify
+            .draw(scene, transform, text_renderer, theme, Instant::now());
     }
 
     /// Ribbon and rail sit below Quick Settings and every popover.

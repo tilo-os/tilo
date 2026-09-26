@@ -57,3 +57,7 @@ wireless-connect = Connect
 wireless-stop = Stop
 wireless-wait = Wait
 wireless-protocols = Miracast · Google Cast · AirPlay · FCast
+
+# Identify displays: the card painted on each display
+display-identify-builtin = Built-in display
+display-identify-unnamed = Display { $number }

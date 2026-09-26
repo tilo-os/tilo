@@ -110,6 +110,7 @@ apps/photos/src/places.rs pixel_const 2
 apps/photos/src/timeline_projection.rs pixel_const 1
 apps/remote/src/app.rs pixel_const 7
 apps/settings/src/panes/accounts.rs pixel_const 1
+apps/settings/src/panes/display_arrangement.rs pixel_const 2
 apps/settings/src/panes/time_date.rs pixel_const 2
 apps/settings/src/settings_app.rs pixel_const 2
 apps/settings/src/widgets.rs pixel_const 3

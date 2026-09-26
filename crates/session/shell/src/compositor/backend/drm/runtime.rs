@@ -887,6 +887,20 @@ impl DrmDispatchState {
     /// the output plan itself.
     fn publish_display_snapshot(&self) {
         let outputs = display_capabilities(&self.cards, &self.color_profiles);
+        let layout = self
+            .live
+            .iter()
+            .map(|entry| {
+                let (width, height) = logical_output_size(entry.size, entry.transform);
+                settings_store::hardware::LiveOutputPlacement {
+                    connector: entry.config_key.clone(),
+                    x: entry.position.0,
+                    y: entry.position.1,
+                    width,
+                    height,
+                }
+            })
+            .collect();
         let snapshot = settings_store::hardware::DisplayHardwareSnapshot {
             generated_unix_ms: unix_now_ms(),
             backend: "drm-kms-xrgb8888".into(),
@@ -895,6 +909,7 @@ impl DrmDispatchState {
                 settings_store::hardware::process_start_ticks(std::process::id())
                     .unwrap_or_default(),
             outputs,
+            layout,
         };
         if let Err(error) = snapshot.save() {
             tracing::debug!(%error, "DRM display: could not publish capability snapshot");
