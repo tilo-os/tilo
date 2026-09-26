@@ -338,9 +338,6 @@ impl ApplicationHandler<u64> for Runner {
                         m.error = Some(e);
                         m.publish(id);
                     }
-                    if let Some(changed) = m.take_record_change() {
-                        resync_record_mounts(mounts, id, &changed);
-                    }
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                     if m.peer_suspended {
@@ -414,6 +411,7 @@ impl ApplicationHandler<u64> for Runner {
                     m.window.request_redraw();
                 }
             }
+            propagate_record_change(mounts, id);
         });
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -845,11 +843,16 @@ impl SharedRecord {
         })
     }
 }
-/// Another mount changed a record these mounts show. Nothing else wakes a
-/// component whose document another component edited, so re-run their frame
-/// passes, which read the document afresh, and present them.
-fn resync_record_mounts(mounts: &mut HashMap<u64, Mount>, origin: u64, changed: &SharedRecord) {
-    for (_, mount) in mounts
+/// Mount `origin` may have changed the record it shows. Nothing else wakes a
+/// component whose document another component edited, so re-run the frame
+/// passes of the page's other mounts of that record, which read the document
+/// afresh, and have them present. Returns the mounts it re-synced.
+fn propagate_record_change(mounts: &mut HashMap<u64, Mount>, origin: u64) -> Vec<u64> {
+    let Some(changed) = mounts.get_mut(&origin).and_then(Mount::take_record_change) else {
+        return Vec::new();
+    };
+    let mut resynced = Vec::new();
+    for (&id, mount) in mounts
         .iter_mut()
         .filter(|(id, mount)| **id != origin && changed.shown_by(mount))
     {
@@ -858,6 +861,17 @@ fn resync_record_mounts(mounts: &mut HashMap<u64, Mount>, origin: u64, changed: 
         mount.frame.relayout();
         mount.pending = true;
         mount.window.request_redraw();
+        resynced.push(id);
+    }
+    resynced
+}
+/// A redraw requested outside Winit's dispatch (from a call the page made)
+/// waits for the next event; a proxy event per mount delivers it now.
+fn wake(ids: impl IntoIterator<Item = u64>) {
+    if let Some(proxy) = LOOP.with_borrow(Clone::clone) {
+        for id in ids {
+            let _ = proxy.send_event(id);
+        }
     }
 }
 impl Mount {
@@ -1254,10 +1268,10 @@ pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
         "end" => winit::event::Ime::Disabled,
         _ => return Err(error("invalid IME event")),
     };
-    MOUNTS.with_borrow_mut(|m| {
-        let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+    let resynced = MOUNTS.with_borrow_mut(|mounts| {
+        let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
         if m.peer_suspended {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let start = m.metric_start();
         m.frame.send_host_event(&WindowEvent::Ime(event));
@@ -1267,8 +1281,10 @@ pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
         }
         m.pending = true;
         m.window.request_redraw();
-        Ok(())
-    })
+        Ok::<_, JsValue>(propagate_record_change(mounts, id))
+    })?;
+    wake(resynced);
+    Ok(())
 }
 #[wasm_bindgen]
 pub fn semantic(
@@ -1289,10 +1305,10 @@ pub fn semantic(
         "selection" => Action::SetSelection { anchor, focus },
         _ => return Err(error("unsupported semantic action")),
     };
-    MOUNTS.with_borrow_mut(|m| {
-        let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+    let resynced = MOUNTS.with_borrow_mut(|mounts| {
+        let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
         if m.peer_suspended {
-            return Ok(false);
+            return Ok(None);
         }
         let desktop = m.desktop.clone();
         crate::clipboard::during_input(&m.status, || match desktop {
@@ -1306,8 +1322,13 @@ pub fn semantic(
         .map_err(error)?;
         m.pending = true;
         m.window.request_redraw();
-        Ok(true)
-    })
+        Ok::<_, JsValue>(Some(propagate_record_change(mounts, id)))
+    })?;
+    let Some(resynced) = resynced else {
+        return Ok(false);
+    };
+    wake(resynced);
+    Ok(true)
 }
 /// The actions a standalone mount's application publishes, described as
 /// `tilo-control actions list` describes them. `resource` narrows to one
@@ -1340,7 +1361,7 @@ pub fn invoke_component_action(
 ) -> Result<String, JsValue> {
     let arguments: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(arguments).map_err(error)?;
-    MOUNTS.with_borrow_mut(|mounts| {
+    let (started, resynced) = MOUNTS.with_borrow_mut(|mounts| {
         let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
         if m.desktop.is_some() {
             return Err(error(DESKTOP_ACTIONS));
@@ -1364,15 +1385,16 @@ pub fn invoke_component_action(
         // A following call sees the state this one left, not the last frame's.
         m.frame.relayout();
         m.pending = true;
-        m.window.request_redraw();
-        Ok(match started {
-            ui::widget::ResourceOperationStart::Completed(output) => {
-                serde_json::json!({"state":"completed","output":output})
-            }
-            ui::widget::ResourceOperationStart::Accepted => serde_json::json!({"state":"accepted"}),
+        Ok((started, propagate_record_change(mounts, id)))
+    })?;
+    wake(std::iter::once(id).chain(resynced));
+    Ok(match started {
+        ui::widget::ResourceOperationStart::Completed(output) => {
+            serde_json::json!({"state":"completed","output":output})
         }
-        .to_string())
-    })
+        ui::widget::ResourceOperationStart::Accepted => serde_json::json!({"state":"accepted"}),
+    }
+    .to_string())
 }
 const DESKTOP_ACTIONS: &str = "the canonical desktop's actions go through its certified peer";
 fn door_error(e: tilo_actions::DoorError) -> JsValue {
@@ -1516,11 +1538,11 @@ pub fn clipboard_event(
         "cut" => "x",
         _ => return Err(error("invalid clipboard event")),
     };
-    crate::clipboard::during(transfer, || {
-        MOUNTS.with_borrow_mut(|m| {
-            let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+    let (handled, resynced) = crate::clipboard::during(transfer, || {
+        MOUNTS.with_borrow_mut(|mounts| {
+            let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
             if m.peer_suspended {
-                return Ok(false);
+                return Ok((false, Vec::new()));
             }
             let mut modifiers =
                 if m.frame.platform_conventions().platform() == ui::platform::Platform::MacOs {
@@ -1546,9 +1568,12 @@ pub fn clipboard_event(
             ));
             m.pending = true;
             m.window.request_redraw();
-            Ok(kind == "paste" || crate::clipboard::copied())
+            let handled = kind == "paste" || crate::clipboard::copied();
+            Ok::<_, JsValue>((handled, propagate_record_change(mounts, id)))
         })
-    })
+    })?;
+    wake(resynced);
+    Ok(handled)
 }
 
 /// Read actual rendered texture pixels to separate the compute pass from canvas presentation.
