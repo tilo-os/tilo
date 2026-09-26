@@ -49,8 +49,13 @@ for the persistent-volume and identity requirements.
 - `tilo-relay` — daemon. Systemd `Type=notify`; subcommands `init`,
   `run`, `status`, `bind-workspace`, `unbind-workspace`.
 - `tilo-relay-admin` — helper: `bind-room`, `bind-workspace`, membership
-  add/remove/list, status, and root-signed `revoke-device`. Membership and
-  revocation changes are reloaded by a running daemon within one second.
+  add/remove/list, status, and root-signed `revoke-device --identity-dir DIR`.
+  Membership and revocation changes are reloaded by a running daemon within
+  one second.
+- `tilo-enroll` — nearby enrollment. `approve` and `approve-device` sign with
+  the personal identity in `--identity-dir` and run as its owner, in their
+  session; `tilo-home-peer-control register-home-peer` only records the
+  finished, root-signed admission in the machine-wide `/var/lib/tilo`.
 
 ## Shell configuration
 
@@ -139,9 +144,10 @@ owner's shell. This relay only admits people to it. See
 `src/public_room.rs` and `docs/architecture/feedback.md`, and
 `tilo-relay-admin community --help` for the commands:
 
-- `community host --room ROOM --owner-identity-root DIR` binds the room here
-  and signs, with the owner's root, a delegation for this relay's device to
-  admit at most Commenters.
+- `community host --room ROOM --owner-identity-dir DIR`, run as the owner,
+  binds the room here and signs, with the root held by the owner's personal
+  identity in DIR (`~/.config/tilo/identity`), a delegation for this relay's
+  device to admit at most Commenters.
 - `community add-invite --room ROOM TOKEN` registers the room's standing
   invitation. `revoke-invite` stops new joins through it, and `status` shows
   what is hosted.

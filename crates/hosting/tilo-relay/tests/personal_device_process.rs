@@ -29,6 +29,10 @@ use crate::common::client_endpoint;
 
 const FILE_WORKSPACE: u64 = 42;
 
+/// Nearby approval binds the fixed LAN pairing port, so the tests in this
+/// binary that run one take turns.
+static LAN_PAIRING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn wait_for_file(path: &std::path::Path, what: &str) {
     let started = Instant::now();
     while !path.is_file() {
@@ -60,6 +64,42 @@ fn signed_cert(
     cert
 }
 
+/// Install `root` the way `shell --provision-identity` leaves a personal
+/// identity on a session without Secret Service: a secured `primary.json`
+/// whose secret lives in the broker-file store under `identities`. No root
+/// key file is written anywhere.
+fn provision_personal_identity(identities: &std::path::Path, root: &SigningKey) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::create_dir_all(identities).unwrap();
+    std::fs::set_permissions(identities, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let record = serde_json::json!({
+        "display_name": "",
+        "avatar_color": [128, 128, 128],
+        "threshold_identity": {
+            "single_device": true,
+            "group_public_key": root.verifying_key().to_bytes(),
+            "threshold": 1,
+            "total_shares": 1,
+            "share_index": 1,
+            "secret_bytes": root.to_bytes(),
+        },
+        "created_at": "",
+        "schema_version": 1,
+    });
+    runtime_identity::import_identity_with_provider(
+        identities,
+        "primary",
+        &serde_json::to_vec(&record).unwrap(),
+        &runtime_identity::BrokerFileProvider::new(identities),
+    )
+    .unwrap();
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(identities.join("primary.json")).unwrap()).unwrap();
+    assert_eq!(stored["schema_version"], 2);
+    assert!(stored["threshold_identity"].get("secret_bytes").is_none());
+}
+
 fn write_approver_fixture(
     root_dir: &std::path::Path,
     identities: &std::path::Path,
@@ -70,7 +110,7 @@ fn write_approver_fixture(
 ) -> HomePeerRegistration {
     let paths = IdentityPaths::under(root_dir);
     paths.ensure_directories().unwrap();
-    tilo_user_identity::persist::write_signing_key(&paths.user_privkey, root).unwrap();
+    provision_personal_identity(identities, root);
     tilo_user_identity::persist::write_public_key(
         &paths.user_pubkey,
         &root.verifying_key().to_bytes(),
@@ -122,6 +162,10 @@ fn write_approver_fixture(
         serde_json::to_vec_pretty(&vec![registration.clone()]).unwrap(),
     )
     .unwrap();
+    assert!(
+        !paths.user_privkey.exists(),
+        "approval must work without a root key file"
+    );
     registration
 }
 
@@ -131,6 +175,7 @@ fn write_approver_fixture(
     reason = "keeps enrollment and offline-owner continuity in one process-level trace"
 )]
 async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_route() {
+    let _lan = LAN_PAIRING.lock().await;
     let workspace = tempfile::tempdir().unwrap();
     let approver_root = workspace.path().join("approver-tilo");
     let approver_identities = workspace.path().join("approver-identities");
@@ -349,6 +394,142 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     ));
 }
 
+/// Settings approves a home server by running `tilo-enroll approve` as the
+/// signed-in user. On a freshly provisioned identity the user root exists
+/// only in the personal record, so this is the production path end to end.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeps the approver, the joining server and the registry and bundle checks in one process-level trace"
+)]
+fn home_server_approval_signs_with_a_freshly_provisioned_personal_identity() {
+    let _lan = LAN_PAIRING.blocking_lock();
+    let workspace = tempfile::tempdir().unwrap();
+    let approver_root = workspace.path().join("approver-tilo");
+    let approver_identities = workspace.path().join("approver-identities");
+    let server_root = workspace.path().join("server-tilo");
+    let root = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let approver = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let home = SigningKey::generate(&mut UnwrapErr(SysRng));
+    write_approver_fixture(
+        &approver_root,
+        &approver_identities,
+        &root,
+        &approver,
+        &home,
+        None,
+    );
+    let user = root.verifying_key().to_bytes();
+
+    let cache = workspace.path().join("workspace-cache");
+    std::fs::create_dir_all(&cache).unwrap();
+    let ticket = fs::Ticket {
+        node: iroh::EndpointAddr::new(
+            iroh::SecretKey::from_bytes(&SigningKey::generate(&mut UnwrapErr(SysRng)).to_bytes())
+                .public(),
+        ),
+        workspace: [44; 32],
+    };
+    std::fs::write(cache.join("workspace-ticket"), ticket.encode().unwrap()).unwrap();
+    let acl = cache.join("fs-capabilities.json");
+    std::fs::write(&acl, b"[]").unwrap();
+
+    let server = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let server_paths = IdentityPaths::under(&server_root);
+    server_paths.ensure_directories().unwrap();
+    tilo_user_identity::persist::write_device_key(&server_paths.device_privkey, &server).unwrap();
+    let server_id = hex::encode(server.verifying_key().to_bytes());
+    let server_service = hex::encode(tilo_relay::daemon::relay_service_node_id(&server));
+    let bundle_path = server_root.join("home-peer.toml");
+
+    let enroll = std::path::PathBuf::from(env!("CARGO_BIN_EXE_tilo-enroll"));
+    let server_process = Command::new(&enroll)
+        .args(["pair", "--identity-root"])
+        .arg(&server_root)
+        .args([
+            "--label",
+            "Home server",
+            "--timeout",
+            "15",
+            "--home-peer-output",
+        ])
+        .arg(&bundle_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let approval = Command::new(&enroll)
+        .args(["approve", "--identity-root"])
+        .arg(&approver_root)
+        .arg("--identity-dir")
+        .arg(&approver_identities)
+        .arg("--workspace-cache")
+        .arg(&cache)
+        .arg("--acl")
+        .arg(&acl)
+        .args([
+            "--relay-workspace-id",
+            &FILE_WORKSPACE.to_string(),
+            "--expected-device",
+            &server_id,
+            "--expected-service",
+            &server_service,
+            "--timeout",
+            "15",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let server_output = server_process.wait_with_output().unwrap();
+    assert!(
+        server_output.status.success(),
+        "home server enrollment failed: {}",
+        String::from_utf8_lossy(&server_output.stderr)
+    );
+    let approval_output = approval.wait_with_output().unwrap();
+    assert!(
+        approval_output.status.success(),
+        "approval failed: {}",
+        String::from_utf8_lossy(&approval_output.stderr)
+    );
+
+    let server_cert =
+        tilo_user_identity::persist::read_device_cert(&server_paths.device_cert).unwrap();
+    assert_eq!(server_cert.user_public_key, user);
+    assert_eq!(server_cert.capabilities, DeviceCapabilities::host());
+    tilo_user_identity::verify_device_cert(&server_cert).unwrap();
+
+    let registry: Vec<HomePeerRegistration> =
+        serde_json::from_slice(&std::fs::read(approver_root.join("home-peers.json")).unwrap())
+            .unwrap();
+    let registered = registry
+        .iter()
+        .find(|entry| entry.device_node_id == server_id)
+        .expect("the approver registers the new home server");
+    assert_eq!(registered.relay_service_node_id, server_service);
+    assert_eq!(registered.device_cert.as_ref(), Some(&server_cert));
+    assert!(registered.relay_workspace_ids.contains(&FILE_WORKSPACE));
+    assert!(
+        registered
+            .relay_workspace_ids
+            .contains(&tilo_relay::personal_continuity_workspace_id(&user))
+    );
+
+    let bundle: fs::full_replica::HomePeerSet =
+        toml::from_str(&std::fs::read_to_string(&bundle_path).unwrap()).unwrap();
+    bundle.workspaces[0]
+        .authority
+        .as_ref()
+        .expect("the home server receives the owner's signed workspace authority")
+        .verify(ticket.workspace_id(), user)
+        .unwrap();
+    assert!(
+        !IdentityPaths::under(&approver_root).user_privkey.exists(),
+        "approval must not leave a root key file behind"
+    );
+}
+
 /// The polkit helper deliberately has a fixed `/usr/bin/tilo-enroll` route.
 /// Exercise that route only where CI provides the mount capability needed to
 /// put the freshly-built binary at the production path without touching the
@@ -449,7 +630,9 @@ while [ "$requester_uid" != 42424 ]; do
     /proc/self/fd/7 0.01
 done
 requester_start=$(/proc/self/fd/6 '{print $22}' "/proc/$requester/stat")
-"$TILO_HELPER" approve-device --identity-root "$TILO_APPROVER_ROOT" --identity-dir "$TILO_APPROVER_IDENTITIES" --expected-device "$TILO_RECIPIENT_ID" --expected-service "$TILO_RECIPIENT_SERVICE" &
+# Approval signs with the approver's personal identity, so it runs
+# unprivileged as that identity's owner, not through the helper.
+/proc/self/fd/8 --reuid=42424 --regid=42424 --clear-groups "$TILO_ENROLL_BIN" approve-device --identity-root "$TILO_APPROVER_ROOT" --identity-dir "$TILO_APPROVER_IDENTITIES" --expected-device "$TILO_RECIPIENT_ID" --expected-service "$TILO_RECIPIENT_SERVICE" &
 approval=$!
 "$TILO_HELPER" pair-device --identity-root "$TILO_RECIPIENT_ROOT" --identity-dir "$TILO_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$TILO_RECIPIENT_IDENTITIES/pairing-status.json" --requester-pid "$requester" --requester-start-time "$requester_start"
 wait "$approval"

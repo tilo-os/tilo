@@ -28,7 +28,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::canonical::CanonicalError;
+use crate::canonical::{CanonicalError, canonical_bytes};
 use crate::caps::{Verb, role_caps};
 use crate::channel::ArtifactId;
 use crate::crypto::{Ed25519PublicKey, Signature, VerifyError, sign_event, verify_event};
@@ -126,6 +126,9 @@ pub enum InviteError {
     /// Canonical encoding failed. Effectively unreachable.
     #[error("canonicalisation failed: {0}")]
     Canonical(#[from] CanonicalError),
+    /// An external root signer could not produce the token's signature.
+    #[error("root signer failed: {0}")]
+    Signer(String),
 }
 
 /// The domain-tagged canonical view an invite signs over (everything but
@@ -256,7 +259,28 @@ pub fn mint_root(
     spec: InviteSpec,
     authority_sk: &ed25519_dalek::SigningKey,
 ) -> Result<InviteToken, InviteError> {
-    let issuer = Ed25519PublicKey::from_bytes(authority_sk.verifying_key().to_bytes());
+    mint_root_with(
+        spec,
+        Ed25519PublicKey::from_bytes(authority_sk.verifying_key().to_bytes()),
+        |bytes| Ok(ed25519_dalek::Signer::sign(authority_sk, bytes).to_bytes()),
+    )
+}
+
+/// Mint a root token through an external signer holding `issuer`'s key,
+/// such as the owner's personal identity. `sign` receives the exact
+/// canonical bytes [`mint_root`] signs, so both produce the same token; the
+/// signature is verified under `issuer` before the token is returned.
+///
+/// # Errors
+///
+/// Returns [`InviteError::Signer`] if `sign` fails,
+/// [`InviteError::BadSignature`] if its signature does not verify under
+/// `issuer`, or [`InviteError::Canonical`] if canonicalisation fails.
+pub fn mint_root_with(
+    spec: InviteSpec,
+    issuer: Ed25519PublicKey,
+    sign: impl FnOnce(&[u8]) -> Result<[u8; 64], String>,
+) -> Result<InviteToken, InviteError> {
     let mut token = InviteToken {
         subject: spec.subject,
         workspace: spec.workspace,
@@ -268,7 +292,10 @@ pub fn mint_root(
         parent: None,
         signature: Signature::from_bytes([0u8; 64]),
     };
-    token.signature = sign_event(&token.view(), authority_sk)?;
+    token.signature =
+        Signature::from_bytes(sign(&canonical_bytes(&token.view())?).map_err(InviteError::Signer)?);
+    verify_event(&token.view(), &token.signature, &token.issuer)
+        .map_err(InviteError::BadSignature)?;
     Ok(token)
 }
 

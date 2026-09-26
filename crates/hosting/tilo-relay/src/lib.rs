@@ -75,6 +75,7 @@ pub mod compute_session;
 pub mod compute_transport;
 pub mod compute_worker;
 pub mod daemon;
+pub mod home_peer_registry;
 pub mod metrics;
 pub mod peer;
 pub mod public_room;

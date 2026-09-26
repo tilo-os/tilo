@@ -15,10 +15,13 @@ use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use tilo_clock::try_unix_now_ns;
 use tilo_relay::HomePeerRegistration;
+use tilo_relay::home_peer_registry::{
+    HomePeerAdmission, register_home_peer, valid_relay_endpoint_hint,
+};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList, decode_enrollment_token,
-    encode_enrollment_token, mint_enrollment_token, sign_device_cert, verify_device_cert,
-    verify_device_cert_at, verify_enrollment_token, verify_revocation_entry,
+    encode_enrollment_token, mint_enrollment_token, verify_device_cert, verify_device_cert_at,
+    verify_enrollment_token, verify_revocation_entry,
 };
 
 const PORT: u16 = 45_831;
@@ -93,10 +96,15 @@ enum Command {
         #[arg(long)]
         requester_start_time: u64,
     },
-    /// Approve one nearby host token issued by this device.
+    /// Approve one nearby home server, signing its certificate with the
+    /// personal identity in `--identity-dir`. Run it as that identity's owner.
     Approve {
         #[arg(long, default_value = "/var/lib/tilo")]
         identity_root: PathBuf,
+        /// The personal identity directory holding the active record
+        /// (`primary.json`), usually `~/.config/tilo/identity`.
+        #[arg(long)]
+        identity_dir: PathBuf,
         #[arg(long, default_value_t = 60)]
         timeout: u64,
         #[arg(long, default_value = "/var/cache/quick-fs")]
@@ -112,9 +120,12 @@ enum Command {
     },
     /// Approve one nearby ordinary device and give it the current fleet and
     /// home-peer registry needed to reconnect after this device goes offline.
+    /// Signs with the personal identity in `--identity-dir`; run it as its owner.
     ApproveDevice {
         #[arg(long, default_value = "/var/lib/tilo")]
         identity_root: PathBuf,
+        /// The personal identity directory holding the active record
+        /// (`primary.json`) and this identity's device fleet.
         #[arg(long)]
         identity_dir: PathBuf,
         #[arg(long, default_value_t = 60)]
@@ -451,15 +462,6 @@ fn bounded_home_peer_registry(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(b"[]".to_vec()),
         Err(error) => Err(error.into()),
     }
-}
-
-fn valid_relay_endpoint_hint(entry: &HomePeerRegistration) -> bool {
-    entry.relay_endpoint.as_ref().is_none_or(|endpoint| {
-        !endpoint.is_empty()
-            && hex::decode(&entry.relay_service_node_id)
-                .ok()
-                .is_some_and(|service| service.as_slice() == endpoint.id.as_bytes())
-    })
 }
 
 fn public_identity_record(user: [u8; 32], display_name: &str) -> anyhow::Result<Vec<u8>> {
@@ -909,76 +911,43 @@ struct Finalized {
     signature: Vec<u8>,
 }
 
-fn register_home_peer(
-    identity_root: &std::path::Path,
-    cert: &DeviceCert,
-    relay_service_node_id: [u8; 32],
-    relay_workspace_ids: &[u64],
-) -> anyhow::Result<()> {
-    let path = identity_root.join("home-peers.json");
-    if !tilo_relay::valid_home_peer_label(&cert.device_label) || relay_workspace_ids.len() > 4096 {
-        bail!("home-peer registration exceeds its bounded schema");
-    }
-    let mut registrations = match std::fs::read(&path) {
-        Ok(bytes) if bytes.len() <= 1024 * 1024 => {
-            serde_json::from_slice::<Vec<HomePeerRegistration>>(&bytes)
-                .context("existing home-peer registry is invalid")?
-        }
-        Ok(_) => bail!("existing home-peer registry exceeds 1 MiB"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(error.into()),
-    };
-    if registrations.len() > 128
-        || registrations.iter().any(|entry| {
-            entry.device_node_id.len() != 64
-                || hex::decode(&entry.device_node_id).is_err()
-                || entry.relay_service_node_id.len() != 64
-                || hex::decode(&entry.relay_service_node_id).is_err()
-                || entry.user_public_key.len() != 64
-                || hex::decode(&entry.user_public_key).is_err()
-                || !valid_relay_endpoint_hint(entry)
-                || entry.device_cert.as_ref().is_some_and(|cert| {
-                    verify_device_cert(cert).is_err()
-                        || hex::encode(cert.device_public_key) != entry.device_node_id
-                        || hex::encode(cert.user_public_key) != entry.user_public_key
-                })
-                || !tilo_relay::valid_home_peer_label(&entry.label)
-                || entry.relay_workspace_ids.len() > 4096
-        })
-    {
-        bail!("existing home-peer registry violates its bounded schema");
-    }
-    let device_node_id = hex::encode(cert.device_public_key);
-    registrations.retain(|entry| entry.device_node_id != device_node_id);
-    registrations.push(HomePeerRegistration {
-        schema_version: HomePeerRegistration::CURRENT_SCHEMA,
-        device_node_id,
-        relay_service_node_id: hex::encode(relay_service_node_id),
-        relay_endpoint: None,
-        label: cert.device_label.clone(),
-        user_public_key: hex::encode(cert.user_public_key),
-        device_cert: Some(cert.clone()),
-        relay_workspace_ids: relay_workspace_ids.to_vec(),
-    });
-    if registrations.len() > 128 {
-        bail!("home-peer registry is full");
-    }
-    registrations.sort_by(|left, right| left.device_node_id.cmp(&right.device_node_id));
-    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&registrations)?, 0o644)?;
-    Ok(())
-}
-
 fn response_preimage(payload: &ResponsePayload) -> anyhow::Result<Vec<u8>> {
     let mut preimage = RESPONSE_DOMAIN.to_vec();
     preimage.extend(postcard::to_stdvec(payload)?);
     Ok(preimage)
 }
 
-fn sign_response(
-    payload: ResponsePayload,
-    root: &ed25519_dalek::SigningKey,
-) -> anyhow::Result<Response> {
-    let signature = root.sign(&response_preimage(&payload)?).to_bytes().to_vec();
+/// The user root an approval signs with. Production approval signs only
+/// through the owner's personal identity record; no root key file is read.
+trait RootSigner {
+    fn root_public_key(&self) -> [u8; 32];
+    fn root_sign(&self, message: &[u8]) -> anyhow::Result<[u8; 64]>;
+}
+
+impl RootSigner for runtime_identity::SigningIdentity {
+    fn root_public_key(&self) -> [u8; 32] {
+        self.group_public_key()
+    }
+
+    fn root_sign(&self, message: &[u8]) -> anyhow::Result<[u8; 64]> {
+        self.sign(message)
+            .map_err(|error| anyhow::anyhow!("the personal identity could not sign: {error}"))
+    }
+}
+
+/// Sign `cert` with the user root and check the result verifies.
+fn sign_cert_with_root(cert: &mut DeviceCert, root: &impl RootSigner) -> anyhow::Result<()> {
+    if cert.user_public_key != root.root_public_key() {
+        bail!("device certificate names a different identity than its signer");
+    }
+    let digest = tilo_user_identity::device_cert_signing_digest(cert)?;
+    cert.signature = root.root_sign(&digest)?;
+    verify_device_cert(cert).context("signed device certificate does not verify")?;
+    Ok(())
+}
+
+fn sign_response(payload: ResponsePayload, root: &impl RootSigner) -> anyhow::Result<Response> {
+    let signature = root.root_sign(&response_preimage(&payload)?)?.to_vec();
     Ok(Response { payload, signature })
 }
 
@@ -1426,7 +1395,7 @@ fn make_finalized(
     response_bytes: &[u8],
     nonce: [u8; 16],
     device_public_key: [u8; 32],
-    root: &ed25519_dalek::SigningKey,
+    root: &impl RootSigner,
 ) -> anyhow::Result<Vec<u8>> {
     let payload = FinalizedPayload {
         nonce,
@@ -1436,7 +1405,7 @@ fn make_finalized(
     let encoded = postcard::to_stdvec(&payload)?;
     Ok(postcard::to_stdvec(&Finalized {
         payload,
-        signature: root.sign(&encoded).to_bytes().to_vec(),
+        signature: root.root_sign(&encoded)?.to_vec(),
     })?)
 }
 
@@ -1898,7 +1867,7 @@ fn pair(
 
 struct ApprovalOptions<'a> {
     identity_root: &'a std::path::Path,
-    identity_dir: Option<&'a std::path::Path>,
+    identity_dir: &'a std::path::Path,
     timeout: u64,
     workspace_cache: &'a std::path::Path,
     acl: &'a std::path::Path,
@@ -1910,7 +1879,7 @@ struct ApprovalOptions<'a> {
 }
 
 struct ApprovalIdentity {
-    root: ed25519_dalek::SigningKey,
+    root: runtime_identity::SigningIdentity,
     device: ed25519_dalek::SigningKey,
     user_public_key: [u8; 32],
     relay_workspace_ids: Vec<u64>,
@@ -1957,10 +1926,10 @@ fn expected_pair(options: &ApprovalOptions<'_>) -> anyhow::Result<Option<([u8; 3
 
 fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<ApprovalIdentity> {
     let paths = IdentityPaths::under(options.identity_root);
-    let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
-        .context("this device does not hold the identity root needed to approve enrollment")?;
+    let root = runtime_identity::load_root_signer(options.identity_dir)
+        .context("this device cannot sign with the identity root needed to approve enrollment")?;
     let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)?;
-    let user_public_key = root.verifying_key().to_bytes();
+    let user_public_key = root.group_public_key();
     let issuer_cert = tilo_user_identity::persist::read_device_cert(
         &paths.device_cert_for_user(&user_public_key),
     )
@@ -1972,9 +1941,12 @@ fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<Appro
     {
         bail!("this device is not authorised to approve enrollment");
     }
-    if let Some(directory) = options.identity_dir
-        && fleet_revokes_device(directory, user_public_key, issuer_cert.device_public_key)
-            .context("verify approving device fleet")?
+    if fleet_revokes_device(
+        options.identity_dir,
+        user_public_key,
+        issuer_cert.device_public_key,
+    )
+    .context("verify approving device fleet")?
     {
         bail!("this device is revoked and cannot approve enrollment");
     }
@@ -2160,12 +2132,13 @@ fn approval_projection(
                 .with_context(|| format!("read {}", options.acl.display()))?;
             let capabilities = serde_json::from_str(&capability_json)
                 .context("filesystem capability export is invalid")?;
-            let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign_with(
                 ticket.workspace_id(),
                 1,
                 capabilities,
                 false,
-                &identity.root,
+                identity.user_public_key,
+                |payload| identity.root.root_sign(payload),
             )?;
             let mut relay_workspace_ids = identity.relay_workspace_ids.clone();
             relay_workspace_ids.sort_unstable();
@@ -2190,9 +2163,7 @@ fn approval_projection(
             })
         }
         EnrollmentKind::PersonalDevice => {
-            let identity_dir = options
-                .identity_dir
-                .context("identity directory is required for personal-device approval")?;
+            let identity_dir = options.identity_dir;
             Ok(ApprovalProjection {
                 home_peer_toml: None,
                 public_identity_json: Some(public_identity_record(
@@ -2223,7 +2194,7 @@ fn prepare_approval(
         expires_at_ns: None,
         signature: [0; 64],
     };
-    sign_device_cert(&mut cert, &identity.root)?;
+    sign_cert_with_root(&mut cert, &identity.root)?;
     let projection = approval_projection(options, identity, &cert)?;
     let signed = sign_response(
         ResponsePayload {
@@ -2289,17 +2260,9 @@ fn commit_approval(
     pending: &PendingApproval,
     prepared: &PreparedApproval,
 ) -> anyhow::Result<()> {
-    match options.kind {
-        EnrollmentKind::HomePeer => register_home_peer(
-            options.identity_root,
-            &prepared.signed.payload.cert,
-            prepared.signed.payload.relay_service_node_id,
-            &identity.relay_workspace_ids,
-        )?,
-        EnrollmentKind::PersonalDevice => commit_personal_device(
-            options
-                .identity_dir
-                .context("identity directory is required")?,
+    if options.kind == EnrollmentKind::PersonalDevice {
+        commit_personal_device(
+            options.identity_dir,
             identity.user_public_key,
             prepared
                 .signed
@@ -2307,10 +2270,12 @@ fn commit_approval(
                 .fleet_json
                 .as_deref()
                 .context("fleet is required")?,
-        )?,
+        )?;
     }
+    // The approver's single-use ledger belongs to the approving identity, so
+    // approval needs no write access to the machine-wide identity root.
     consume_nonce(
-        options.identity_root,
+        options.identity_dir,
         &pending.token.nonce,
         pending.request.device_public_key,
     )?;
@@ -2331,6 +2296,56 @@ fn commit_approval(
     Ok(())
 }
 
+/// The privileged writer of a machine-wide identity root's home-peer registry.
+const HOME_PEER_CONTROL: &str = "/usr/libexec/tilo-home-peer-control";
+
+/// Record an approved home peer. An identity root this user can write is
+/// updated directly; the machine-wide one only through the privileged
+/// helper, which receives the finished root-signed admission and verifies it.
+fn record_home_peer(
+    identity_root: &std::path::Path,
+    admission: &HomePeerAdmission,
+) -> anyhow::Result<()> {
+    if directory_writable(identity_root) {
+        return register_home_peer(
+            identity_root,
+            &admission.cert,
+            admission.relay_service_node_id,
+            &admission.relay_workspace_ids,
+        );
+    }
+    let mut command = std::process::Command::new("pkexec");
+    command
+        .args([HOME_PEER_CONTROL, "register-home-peer", "--identity-root"])
+        .arg(identity_root);
+    let output = bounded_command::run_prepared(
+        command,
+        Some(&serde_json::to_vec(admission)?),
+        64 * 1024,
+        Duration::from_secs(120),
+    )
+    .context("start the home-peer registry helper")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "{} did not record the home server ({}): {}",
+            identity_root.join("home-peers.json").display(),
+            output.status,
+            stderr.trim()
+        );
+    }
+    Ok(())
+}
+
+fn directory_writable(path: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt as _;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `path` is a valid NUL-terminated string for this call.
+    unsafe { libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) == 0 }
+}
+
 fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
     let identity = load_approval_identity(options)?;
     let socket = bind_pair_listener()?;
@@ -2341,6 +2356,20 @@ fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
     let mut packet = vec![0_u8; MAX_PACKET];
     let pending = receive_approval_request(&socket, &mut packet, options, &identity)?;
     let prepared = prepare_approval(options, &identity, &pending)?;
+    if options.kind == EnrollmentKind::HomePeer {
+        // Registered before the signed response is sent: the requester keeps
+        // asking for the whole join window, which leaves room for an
+        // authorization prompt, while the completion window after its
+        // acknowledgement is only seconds.
+        record_home_peer(
+            options.identity_root,
+            &HomePeerAdmission {
+                cert: prepared.signed.payload.cert.clone(),
+                relay_service_node_id: prepared.signed.payload.relay_service_node_id,
+                relay_workspace_ids: identity.relay_workspace_ids.clone(),
+            },
+        )?;
+    }
     await_approval_ack(&socket, &mut packet, &pending, &prepared)?;
     commit_approval(&socket, options, &identity, &pending, &prepared)
 }
@@ -2400,6 +2429,7 @@ fn main() -> anyhow::Result<()> {
         ),
         Command::Approve {
             identity_root,
+            identity_dir,
             timeout,
             workspace_cache,
             acl,
@@ -2408,7 +2438,7 @@ fn main() -> anyhow::Result<()> {
             expected_service,
         } => approve(&ApprovalOptions {
             identity_root: &identity_root,
-            identity_dir: None,
+            identity_dir: &identity_dir,
             timeout,
             workspace_cache: &workspace_cache,
             acl: &acl,
@@ -2426,7 +2456,7 @@ fn main() -> anyhow::Result<()> {
             expected_service,
         } => approve(&ApprovalOptions {
             identity_root: &identity_root,
-            identity_dir: Some(&identity_dir),
+            identity_dir: &identity_dir,
             timeout,
             workspace_cache: std::path::Path::new(""),
             acl: std::path::Path::new(""),
@@ -2443,8 +2473,19 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use tilo_user_identity::{
-        DeviceCapabilities, RevocationEntry, RevocationReason, sign_revocation_entry,
+        DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert,
+        sign_revocation_entry,
     };
+
+    impl RootSigner for ed25519_dalek::SigningKey {
+        fn root_public_key(&self) -> [u8; 32] {
+            self.verifying_key().to_bytes()
+        }
+
+        fn root_sign(&self, message: &[u8]) -> anyhow::Result<[u8; 64]> {
+            Ok(self.sign(message).to_bytes())
+        }
+    }
 
     fn personal_payload(
         root: &ed25519_dalek::SigningKey,
@@ -2574,7 +2615,7 @@ mod tests {
     fn approval_target_requires_a_complete_pair_of_bounded_ids() {
         let mut options = ApprovalOptions {
             identity_root: std::path::Path::new(""),
-            identity_dir: None,
+            identity_dir: std::path::Path::new(""),
             timeout: 1,
             workspace_cache: std::path::Path::new(""),
             acl: std::path::Path::new(""),
@@ -2998,27 +3039,64 @@ mod tests {
         assert!(!valid_home_peer_registration(&registration));
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the end-to-end test keeps the approver and joining-device setup in one auditable protocol scenario"
-    )]
-    fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
-        let approver_root = tempfile::tempdir().unwrap();
-        let approver_identities = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(approver_root.path());
-        paths.ensure_directories().unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
-        tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
-        tilo_user_identity::persist::write_public_key(
-            &paths.user_pubkey,
-            &root.verifying_key().to_bytes(),
+    /// Nearby approval binds the fixed LAN pairing port, so the tests that
+    /// run one take turns.
+    static LAN_PAIRING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// An approving device as `shell --provision-identity` leaves it on a
+    /// session without Secret Service: the user root lives only in the
+    /// secured personal record (`primary.json` plus its broker-file secret),
+    /// the device key and certificates live in the identity root, and the
+    /// identity's fleet lists this device. No root key file is written.
+    fn provisioned_approver(
+        identity_root: &std::path::Path,
+        identity_dir: &std::path::Path,
+        seed: u8,
+    ) -> runtime_identity::SigningIdentity {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        std::fs::create_dir_all(identity_dir).unwrap();
+        std::fs::set_permissions(identity_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let secret = [seed; 32];
+        let group = ed25519_dalek::SigningKey::from_bytes(&secret)
+            .verifying_key()
+            .to_bytes();
+        let record = serde_json::json!({
+            "display_name": "",
+            "avatar_color": [128, 128, 128],
+            "threshold_identity": {
+                "single_device": true,
+                "group_public_key": group,
+                "threshold": 1,
+                "total_shares": 1,
+                "share_index": 1,
+                "secret_bytes": secret,
+            },
+            "created_at": "",
+            "schema_version": 1,
+        });
+        runtime_identity::import_identity_with_provider(
+            identity_dir,
+            "primary",
+            &serde_json::to_vec(&record).unwrap(),
+            &runtime_identity::BrokerFileProvider::new(identity_dir),
         )
         .unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(identity_dir.join("primary.json")).unwrap())
+                .unwrap();
+        assert_eq!(stored["schema_version"], 2);
+        assert!(stored["threshold_identity"].get("secret_bytes").is_none());
+        let root = runtime_identity::load_root_signer(identity_dir).unwrap();
+        let user = root.root_public_key();
+
+        let paths = IdentityPaths::under(identity_root);
+        paths.ensure_directories().unwrap();
+        tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &user).unwrap();
+        let issuer = ed25519_dalek::SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
         tilo_user_identity::persist::write_device_key(&paths.device_privkey, &issuer).unwrap();
         let mut issuer_cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
+            user_public_key: user,
             device_public_key: issuer.verifying_key().to_bytes(),
             device_label: "Trusted laptop".into(),
             capabilities: DeviceCapabilities::primary(),
@@ -3026,27 +3104,187 @@ mod tests {
             expires_at_ns: None,
             signature: [0; 64],
         };
-        sign_device_cert(&mut issuer_cert, &root).unwrap();
+        sign_cert_with_root(&mut issuer_cert, &root).unwrap();
         tilo_user_identity::persist::write_device_cert(&paths.device_cert, &issuer_cert).unwrap();
         tilo_user_identity::persist::write_device_cert(
-            &paths.device_cert_for_user(&root.verifying_key().to_bytes()),
+            &paths.device_cert_for_user(&user),
             &issuer_cert,
         )
         .unwrap();
         atomic_file::write_creating_parent(
-            &fleet_path(approver_identities.path(), root.verifying_key().to_bytes()),
+            &fleet_path(identity_dir, user),
             &serde_json::to_vec_pretty(&FleetProjection {
                 schema_version: 1,
-                identity_id: hex::encode(root.verifying_key().to_bytes()),
+                identity_id: hex::encode(user),
                 certificates: vec![issuer_cert],
                 revocations: Vec::new(),
             })
             .unwrap(),
         )
         .unwrap();
+        assert!(!paths.user_privkey.exists());
+        root
+    }
+
+    #[test]
+    fn nearby_home_server_approval_signs_with_a_freshly_provisioned_identity() {
+        let _lan = LAN_PAIRING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let approver_root = tempfile::tempdir().unwrap();
+        let approver_identities = tempfile::tempdir().unwrap();
+        let root = provisioned_approver(approver_root.path(), approver_identities.path(), 51);
+        let user = root.root_public_key();
+        let workspace_cache = tempfile::tempdir().unwrap();
+        let ticket = fs::Ticket {
+            node: iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[53; 32]).public()),
+            workspace: [54; 32],
+        };
+        std::fs::write(
+            workspace_cache.path().join("workspace-ticket"),
+            ticket.encode().unwrap(),
+        )
+        .unwrap();
+        let acl = workspace_cache.path().join("fs-capabilities.json");
+        std::fs::write(&acl, b"[]").unwrap();
+
+        let server_root = approver_root.path().to_path_buf();
+        let server_identities = approver_identities.path().to_path_buf();
+        let server_cache = workspace_cache.path().to_path_buf();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let approval = std::thread::spawn(move || {
+            approve(&ApprovalOptions {
+                identity_root: &server_root,
+                identity_dir: &server_identities,
+                timeout: 15,
+                workspace_cache: &server_cache,
+                acl: &acl,
+                relay_workspace_ids: &[7],
+                expected_device: None,
+                expected_service: None,
+                kind: EnrollmentKind::HomePeer,
+                ready: Some(&ready_tx),
+            })
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("approval listener became ready");
+        let server = tempfile::tempdir().unwrap();
+        let bundle_path = server.path().join("home-peer.toml");
+        pair(
+            server.path(),
+            "Home server",
+            15,
+            EnrollmentKind::HomePeer,
+            Some(&bundle_path),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        approval.join().unwrap().unwrap();
+
+        let server_paths = IdentityPaths::under(server.path());
+        let server_device =
+            tilo_user_identity::persist::read_device_key(&server_paths.device_privkey).unwrap();
+        let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
+            &std::fs::read(approver_root.path().join("home-peers.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(
+            peers[0].device_node_id,
+            hex::encode(server_device.verifying_key().to_bytes())
+        );
+        assert_eq!(peers[0].user_public_key, hex::encode(user));
+        let cert = peers[0].device_cert.clone().unwrap();
+        assert_eq!(cert.capabilities, DeviceCapabilities::host());
+        assert!(verify_device_cert(&cert).is_ok());
+        assert!(peers[0].relay_workspace_ids.contains(&7));
+        assert!(
+            peers[0]
+                .relay_workspace_ids
+                .contains(&tilo_relay::personal_continuity_workspace_id(&user))
+        );
+        let bundle: fs::full_replica::HomePeerSet =
+            toml::from_str(&std::fs::read_to_string(&bundle_path).unwrap()).unwrap();
+        bundle.workspaces[0]
+            .authority
+            .as_ref()
+            .expect("the home peer receives the owner's signed workspace authority")
+            .verify(ticket.workspace_id(), user)
+            .unwrap();
+        assert!(
+            approver_identities
+                .path()
+                .join("enrollment-nonces")
+                .is_dir()
+        );
+        assert!(!approver_root.path().join("enrollment-nonces").exists());
+        assert!(
+            !IdentityPaths::under(approver_root.path())
+                .user_privkey
+                .exists()
+        );
+    }
+
+    #[test]
+    fn approval_names_the_fix_when_no_personal_identity_is_provisioned() {
+        let identity_root = tempfile::tempdir().unwrap();
+        let identity_dir = tempfile::tempdir().unwrap();
+        let options = ApprovalOptions {
+            identity_root: identity_root.path(),
+            identity_dir: identity_dir.path(),
+            timeout: 1,
+            workspace_cache: std::path::Path::new(""),
+            acl: std::path::Path::new(""),
+            relay_workspace_ids: &[],
+            expected_device: None,
+            expected_service: None,
+            kind: EnrollmentKind::HomePeer,
+            ready: None,
+        };
+        let Err(error) = load_approval_identity(&options) else {
+            panic!("approval without a personal identity must fail");
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("primary.json"), "{message}");
+        assert!(message.contains("shell --provision-identity"), "{message}");
+    }
+
+    #[test]
+    fn approval_refuses_an_identity_received_from_another_device() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let identity_dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(identity_dir.path(), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let member = public_identity_record([61; 32], "My Tilo identity").unwrap();
+        let path = identity_dir.path().join("primary.json");
+        std::fs::write(&path, member).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let Err(error) = runtime_identity::load_root_signer(identity_dir.path()) else {
+            panic!("a member projection cannot approve enrollment");
+        };
+        assert!(error.to_string().contains("holds no user root"), "{error}");
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the end-to-end test keeps the approver and joining-device setup in one auditable protocol scenario"
+    )]
+    fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
+        let _lan = LAN_PAIRING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let approver_root = tempfile::tempdir().unwrap();
+        let approver_identities = tempfile::tempdir().unwrap();
+        let root = provisioned_approver(approver_root.path(), approver_identities.path(), 31);
+        let user = root.root_public_key();
         let home_device = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
         let mut home_cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
+            user_public_key: user,
             device_public_key: home_device.verifying_key().to_bytes(),
             device_label: "Home peer".into(),
             capabilities: DeviceCapabilities::host(),
@@ -3054,14 +3292,12 @@ mod tests {
             expires_at_ns: None,
             signature: [0; 64],
         };
-        sign_device_cert(&mut home_cert, &root).unwrap();
+        sign_cert_with_root(&mut home_cert, &root).unwrap();
         register_home_peer(
             approver_root.path(),
             &home_cert,
             [43; 32],
-            &[tilo_relay::personal_continuity_workspace_id(
-                &root.verifying_key().to_bytes(),
-            )],
+            &[tilo_relay::personal_continuity_workspace_id(&user)],
         )
         .unwrap();
 
@@ -3071,7 +3307,7 @@ mod tests {
         let approval = std::thread::spawn(move || {
             approve(&ApprovalOptions {
                 identity_root: &server_root,
-                identity_dir: Some(&server_identities),
+                identity_dir: &server_identities,
                 timeout: 15,
                 workspace_cache: std::path::Path::new(""),
                 acl: std::path::Path::new(""),
@@ -3104,19 +3340,34 @@ mod tests {
         let enrolled_paths = IdentityPaths::under(new_root.path());
         let cert =
             tilo_user_identity::persist::read_device_cert(&enrolled_paths.device_cert).unwrap();
-        assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
+        assert_eq!(cert.user_public_key, user);
         assert_eq!(cert.capabilities, DeviceCapabilities::member());
         assert!(verify_device_cert(&cert).is_ok());
         assert!(!enrolled_paths.user_privkey.exists());
+        assert!(
+            !IdentityPaths::under(approver_root.path())
+                .user_privkey
+                .exists(),
+            "approval must sign through the personal record, never a root key file"
+        );
+        assert!(
+            approver_identities
+                .path()
+                .join("enrollment-nonces")
+                .is_dir(),
+            "the approver's single-use ledger belongs to its identity"
+        );
         let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
             &std::fs::read(new_root.path().join("home-peers.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(peers.len(), 1);
-        assert!(peers[0].relay_workspace_ids.contains(
-            &tilo_relay::personal_continuity_workspace_id(&root.verifying_key().to_bytes())
-        ));
-        let record = identity_record_path(new_identities.path(), root.verifying_key().to_bytes());
+        assert!(
+            peers[0]
+                .relay_workspace_ids
+                .contains(&tilo_relay::personal_continuity_workspace_id(&user))
+        );
+        let record = identity_record_path(new_identities.path(), user);
         let identity = runtime_identity::load_from_path(record).unwrap();
         assert!(
             identity

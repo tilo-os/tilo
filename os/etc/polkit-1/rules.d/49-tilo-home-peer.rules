@@ -1,5 +1,7 @@
-// The executable itself accepts only two bounded operations and no paths:
-// apply a validated stdin projection, or approve a nearby host enrollment.
+// The executable itself accepts only bounded operations: apply a validated
+// stdin projection, record a root-signed home-server admission it verifies,
+// or receive an identity on a new personal device. Approval signing happens
+// unprivileged, in the owner's session, never here.
 polkit.addRule(function (action, subject) {
     if (action.id == "org.freedesktop.policykit.exec" &&
         action.lookup("program") == "/usr/libexec/tilo-home-peer-control" &&

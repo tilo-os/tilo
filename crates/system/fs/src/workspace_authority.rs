@@ -232,15 +232,43 @@ impl WorkspaceAuthorityEnvelope {
         tombstoned: bool,
         governor: &ed25519_dalek::SigningKey,
     ) -> anyhow::Result<Self> {
+        Self::sign_with(
+            workspace,
+            revision,
+            capabilities,
+            tombstoned,
+            governor.verifying_key().to_bytes(),
+            |payload| Ok(governor.sign(payload).to_bytes()),
+        )
+    }
+
+    /// Sign one monotonic workspace authority revision through an external
+    /// signer holding the governor's key, such as the owner's personal
+    /// identity. `sign` receives the exact payload [`Self::sign`] signs, so
+    /// both produce the same envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the payload cannot be encoded, the signer fails,
+    /// or its signature does not verify under `governor`.
+    pub fn sign_with(
+        workspace: uuid::Uuid,
+        revision: u64,
+        capabilities: Vec<CapOverride>,
+        tombstoned: bool,
+        governor: [u8; 32],
+        sign: impl FnOnce(&[u8]) -> anyhow::Result<[u8; 64]>,
+    ) -> anyhow::Result<Self> {
         let mut envelope = Self {
             workspace,
             revision,
             capabilities,
             tombstoned,
-            governor: governor.verifying_key().to_bytes(),
+            governor,
             signature: [0; 64],
         };
-        envelope.signature = governor.sign(&envelope.payload()?).to_bytes();
+        envelope.signature = sign(&envelope.payload()?)?;
+        envelope.verify(workspace, governor)?;
         Ok(envelope)
     }
 

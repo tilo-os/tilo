@@ -1497,30 +1497,28 @@ impl DeviceMeshPane {
             self.approve_enrollment(target);
             return;
         }
-        let mut command = Command::new("pkexec");
-        match target {
-            PairingTarget::HomePeer => {
-                command
-                    .args([CONTROL_HELPER, "approve-enrollment", "--identity-root"])
-                    .arg(identity_root());
+        // Approval signs with the user root, which stays in this session's
+        // personal identity: it runs unprivileged, as this user. Only the
+        // finished admission of a home server is handed to the privileged
+        // registry writer, by tilo-enroll itself.
+        let identity_dir = match runtime_identity::identity_dir_from_env() {
+            Ok(path) => path,
+            Err(error) => {
+                self.load_status = format!("Could not find your identity: {error}");
+                self.structure_dirty = true;
+                return;
             }
-            PairingTarget::PersonalDevice => {
-                let identity_dir = match runtime_identity::identity_dir_from_env() {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.load_status = format!("Could not find your identity: {error}");
-                        self.structure_dirty = true;
-                        return;
-                    }
-                };
-                command
-                    .args([CONTROL_HELPER, "approve-device", "--identity-root"])
-                    .arg(identity_root())
-                    .arg("--identity-dir")
-                    .arg(identity_dir);
-            }
-        }
+        };
+        let mut command = Command::new("/usr/bin/tilo-enroll");
         command
+            .arg(match target {
+                PairingTarget::HomePeer => "approve",
+                PairingTarget::PersonalDevice => "approve-device",
+            })
+            .arg("--identity-root")
+            .arg(identity_root())
+            .arg("--identity-dir")
+            .arg(identity_dir)
             .args(["--expected-device", &candidate.device_node_id])
             .args(["--expected-service", &candidate.relay_service_node_id]);
         let ids = if self.config.workspaces.is_empty() {
@@ -1537,7 +1535,7 @@ impl DeviceMeshPane {
         };
         if target == PairingTarget::HomePeer {
             for id in ids {
-                command.args(["--workspace-id", &id.to_string()]);
+                command.args(["--relay-workspace-id", &id.to_string()]);
             }
         }
         self.load_status = match bounded_command::spawn_prepared(
@@ -1577,6 +1575,22 @@ impl DeviceMeshPane {
             .args(["--service", &peer.relay_service_node_id]);
         if let Some(label) = label {
             command.args(["--label", label]);
+        }
+        if action == "home-peer-remove" {
+            // Removal root-signs a revocation with this session's identity.
+            match runtime_identity::identity_dir_from_env() {
+                Ok(identity_dir) => {
+                    command.arg("--identity-dir").arg(identity_dir);
+                }
+                Err(error) => {
+                    self.home_peer_health.insert(
+                        peer.device_node_id.clone(),
+                        format!("Could not find your identity: {error}"),
+                    );
+                    self.structure_dirty = true;
+                    return;
+                }
+            }
         }
         match bounded_command::spawn_prepared(
             command,

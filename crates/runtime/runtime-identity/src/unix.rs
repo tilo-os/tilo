@@ -1393,6 +1393,59 @@ pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
     identity_from_record(record, Some(secret.as_slice()))
 }
 
+/// Load the active personal identity in `dir` as the user-root signer.
+///
+/// Host tools that sign with the user root (device certificates, enrollment
+/// responses, revocations, workspace authority) use this instead of a copied
+/// root key file. The record is read in the owner's session through its own
+/// secret provider, so it must run as the identity's owner. A member
+/// projection received through enrollment and a threshold share cannot sign
+/// alone and are refused with the step that fixes it.
+///
+/// # Errors
+///
+/// Returns an error naming the fix when `dir` holds no active record, the
+/// record or its secret cannot be read by this user, or the identity cannot
+/// sign as a single device.
+pub fn load_root_signer(dir: &std::path::Path) -> io::Result<SigningIdentity> {
+    let path = resolve_active_identity(dir).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "no personal identity at {}; provision it with `shell --provision-identity`",
+                dir.join("primary.json").display()
+            ),
+        )
+    })?;
+    let signer = load_from_path(path.clone()).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "cannot open the personal identity at {}: {error}; run this as the identity's \
+                 owner, inside their session",
+                path.display()
+            ),
+        )
+    })?;
+    if !signer.is_single_device() {
+        let message = if signer.threshold() == 1 && signer.total_shares() == 1 {
+            format!(
+                "the identity at {} was received from another device and holds no user root; \
+                 run this on the device that created the identity",
+                path.display()
+            )
+        } else {
+            format!(
+                "the identity at {} is a threshold identity; signing with its root requires the \
+                 multi-device certificate ceremony",
+                path.display()
+            )
+        };
+        return Err(io::Error::new(io::ErrorKind::Unsupported, message));
+    }
+    Ok(signer)
+}
+
 /// Read the public presentation and quorum fields of a private identity
 /// record without contacting its secret provider.
 ///

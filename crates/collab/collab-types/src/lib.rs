@@ -147,7 +147,8 @@ pub use host_admission::{
 };
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
 pub use invite::{
-    INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
+    INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, mint_root_with,
+    verify_chain,
 };
 pub use mls_governance::{
     MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION, MlsAccessRequestV1, MlsGovernanceAckV1,

@@ -59,6 +59,10 @@ enum Cmd {
     HomePeerRemove {
         #[arg(long)]
         identity_root: PathBuf,
+        /// The personal identity directory whose user root signs the
+        /// revocation, usually `~/.config/tilo/identity`.
+        #[arg(long)]
+        identity_dir: PathBuf,
         #[arg(long)]
         device: String,
         #[arg(long)]
@@ -110,11 +114,16 @@ enum Cmd {
     Community(CommunityCmd),
     /// Publish a `RevocationEntry` for a device pubkey (hex-encoded, 32 bytes).
     ///
-    /// Requires access to the user root private key, so this
-    /// subcommand only runs on the user's primary device.
+    /// Signs with the user root held by the personal identity in
+    /// `--identity-dir`, so it runs as that identity's owner on the device that
+    /// created the identity.
     RevokeDevice {
         /// Hex-encoded device pubkey to revoke.
         device_pubkey_hex: String,
+        /// The personal identity directory holding the active record
+        /// (`primary.json`), usually `~/.config/tilo/identity`.
+        #[arg(long)]
+        identity_dir: PathBuf,
         /// lost, stolen, retired, or compromised.
         #[arg(long, default_value = "compromised")]
         reason: String,
@@ -128,8 +137,9 @@ enum Cmd {
 /// The usual order:
 ///
 ///   1. In the owner's shell, create the public room and copy its id.
-///   2. `community host --room ROOM --owner-identity-root DIR` here: binds the
-///      room and stores the owner's signed delegation for this relay.
+///   2. `community host --room ROOM --owner-identity-dir DIR` here, as the
+///      owner: binds the room and stores the owner's signed delegation for
+///      this relay.
 ///   3. Restart tilo-relay so it serves the newly bound room, with
 ///      `trust_policy = { kind = "allow_any" }` so certified strangers may
 ///      connect (every room stays gated by its own membership).
@@ -145,15 +155,17 @@ enum CommunityCmd {
     ///
     /// Signs, with the owner's user root, a delegation letting this relay's
     /// device admit redeeming devices into ROOM at role Commenter and nothing
-    /// more. The owner's root key never leaves DIR and is not copied here.
+    /// more. The root stays in the owner's personal identity record in DIR
+    /// and is not copied here.
     Host {
         /// The public room's UUID, as the owner's shell shows it.
         #[arg(long)]
         room: String,
-        /// Identity root of the room's owner — the directory holding the
-        /// owner's user root private key (a shell's `TILO_IDENTITY_ROOT`).
+        /// The room owner's personal identity directory, holding the active
+        /// record (`primary.json`), usually `~/.config/tilo/identity`. Run
+        /// this as the owner.
         #[arg(long)]
-        owner_identity_root: PathBuf,
+        owner_identity_dir: PathBuf,
         /// End the delegation after this many days. Without it the delegation
         /// lasts until replaced; admissions stop verifying once it ends.
         #[arg(long)]
@@ -232,9 +244,10 @@ fn main() -> anyhow::Result<()> {
         } => cmd_home_peer(&identity_root, &device, &service, Some(label)),
         Cmd::HomePeerRemove {
             identity_root,
+            identity_dir,
             device,
             service,
-        } => cmd_home_peer_remove(&identity_root, &device, &service),
+        } => cmd_home_peer_remove(&identity_root, &identity_dir, &device, &service),
         Cmd::BindWorkspace { workspace_id, pin } => {
             cmd_bind_workspace(&cli.config, workspace_id, pin)
         }
@@ -253,8 +266,9 @@ fn main() -> anyhow::Result<()> {
         Cmd::Status => cmd_status(&cli.config),
         Cmd::RevokeDevice {
             device_pubkey_hex,
+            identity_dir,
             reason,
-        } => cmd_revoke_device(&cli.config, &device_pubkey_hex, &reason),
+        } => cmd_revoke_device(&cli.config, &identity_dir, &device_pubkey_hex, &reason),
         Cmd::Community(cmd) => cmd_community(&cli.config, cmd),
     }
 }
@@ -282,9 +296,9 @@ fn cmd_community(config: &std::path::Path, cmd: CommunityCmd) -> anyhow::Result<
     match cmd {
         CommunityCmd::Host {
             room,
-            owner_identity_root,
+            owner_identity_dir,
             expires_in_days,
-        } => cmd_community_host(config, &room, &owner_identity_root, expires_in_days),
+        } => cmd_community_host(config, &room, &owner_identity_dir, expires_in_days),
         CommunityCmd::AddInvite { room, token } => {
             let cfg = load(config)?;
             let (_, store) = hosted_room_store(&cfg, &room)?;
@@ -366,7 +380,7 @@ fn cmd_community(config: &std::path::Path, cmd: CommunityCmd) -> anyhow::Result<
 fn cmd_community_host(
     config: &std::path::Path,
     room: &str,
-    owner_identity_root: &std::path::Path,
+    owner_identity_dir: &std::path::Path,
     expires_in_days: Option<u64>,
 ) -> anyhow::Result<()> {
     let workspace_id = tilo_relay::room_workspace_id(room)
@@ -380,15 +394,9 @@ fn cmd_community_host(
                 relay_paths.device_cert.display()
             )
         })?;
-    let owner_paths = tilo_user_identity::IdentityPaths::under(owner_identity_root);
-    if !owner_paths.user_privkey.exists() {
-        anyhow::bail!(
-            "no user root private key at {}; point --owner-identity-root at the room owner's \
-             identity (the primary device's root)",
-            owner_paths.user_privkey.display()
-        );
-    }
-    let owner = tilo_user_identity::persist::read_owned_signing_key(&owner_paths.user_privkey)?;
+    let owner = runtime_identity::load_root_signer(owner_identity_dir)
+        .context("--owner-identity-dir must hold the room owner's personal identity")?;
+    let owner_key = owner.group_public_key();
     let not_after = match expires_in_days {
         Some(days) => Some(
             std::time::SystemTime::now()
@@ -397,7 +405,7 @@ fn cmd_community_host(
         ),
         None => None,
     };
-    let delegation = collab_types::mint_root(
+    let delegation = collab_types::mint_root_with(
         collab_types::InviteSpec {
             subject: collab_types::Ed25519PublicKey::from_bytes(relay_cert.device_public_key),
             workspace: workspace_id,
@@ -409,9 +417,9 @@ fn cmd_community_host(
             sub_resource: None,
             not_after,
         },
-        &owner,
+        collab_types::Ed25519PublicKey::from_bytes(owner_key),
+        |bytes| owner.sign(bytes).map_err(|error| error.to_string()),
     )?;
-    let owner_key = owner.verifying_key().to_bytes();
     tilo_relay::public_room::PublicRoomHosting::check_delegation(
         room,
         owner_key,
@@ -560,6 +568,7 @@ fn refresh_home_peer_endpoint(
 
 fn cmd_home_peer_remove(
     identity_root: &std::path::Path,
+    identity_dir: &std::path::Path,
     device: &str,
     service: &str,
 ) -> anyhow::Result<()> {
@@ -573,9 +582,10 @@ fn cmd_home_peer_remove(
     {
         existing
     } else {
-        let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)?;
+        let root = runtime_identity::load_root_signer(identity_dir)
+            .context("removing a home server signs its revocation with your identity root")?;
         let mut revocation = tilo_user_identity::RevocationEntry {
-            user_public_key: root.verifying_key().to_bytes(),
+            user_public_key: root.group_public_key(),
             revoked_device_public_key: target,
             revoked_at_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -585,7 +595,7 @@ fn cmd_home_peer_remove(
             reason: tilo_user_identity::RevocationReason::Retired,
             signature: [0; 64],
         };
-        tilo_user_identity::sign_revocation_entry(&mut revocation, &root)?;
+        sign_revocation_with_root(&mut revocation, &root)?;
         let intent = PendingDecommission {
             device: device.to_string(),
             service: service.to_string(),
@@ -936,19 +946,30 @@ fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Sign `entry` with the user root and check the result verifies.
+fn sign_revocation_with_root(
+    entry: &mut tilo_user_identity::RevocationEntry,
+    root: &runtime_identity::SigningIdentity,
+) -> anyhow::Result<()> {
+    if entry.user_public_key != root.group_public_key() {
+        anyhow::bail!("revocation names a different identity than its signer");
+    }
+    let digest = tilo_user_identity::revocation_signing_digest(entry)?;
+    entry.signature = root
+        .sign(&digest)
+        .map_err(|error| anyhow::anyhow!("the personal identity could not sign: {error}"))?;
+    tilo_user_identity::verify_revocation_entry(entry)
+        .context("signed revocation does not verify")?;
+    Ok(())
+}
+
 fn cmd_revoke_device(
     config: &std::path::Path,
+    identity_dir: &std::path::Path,
     device_pubkey_hex: &str,
     reason: &str,
 ) -> anyhow::Result<()> {
     let cfg = load(config)?;
-    let paths = tilo_user_identity::IdentityPaths::under(&cfg.identity_root);
-    if !paths.user_privkey.exists() {
-        anyhow::bail!(
-            "cannot revoke: no user root private key at {}. Run this from your primary device.",
-            paths.user_privkey.display()
-        );
-    }
     let pk = device_key(device_pubkey_hex)?;
     let reason = match reason {
         "lost" => tilo_user_identity::RevocationReason::Lost,
@@ -957,9 +978,10 @@ fn cmd_revoke_device(
         "compromised" => tilo_user_identity::RevocationReason::Compromised,
         _ => anyhow::bail!("reason must be lost, stolen, retired, or compromised"),
     };
-    let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)?;
+    let root = runtime_identity::load_root_signer(identity_dir)
+        .context("cannot revoke: this device must hold the identity root")?;
     let mut entry = tilo_user_identity::RevocationEntry {
-        user_public_key: root.verifying_key().to_bytes(),
+        user_public_key: root.group_public_key(),
         revoked_device_public_key: pk,
         revoked_at_ns: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -969,7 +991,7 @@ fn cmd_revoke_device(
         reason,
         signature: [0; 64],
     };
-    tilo_user_identity::sign_revocation_entry(&mut entry, &root)?;
+    sign_revocation_with_root(&mut entry, &root)?;
     let mut entries = tilo_relay::store::load_revocations(&cfg.state_root)?;
     entries.retain(|existing| existing.revoked_device_public_key != pk);
     entries.push(entry);

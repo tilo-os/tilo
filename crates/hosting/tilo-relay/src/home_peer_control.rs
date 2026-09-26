@@ -29,16 +29,13 @@ struct Cli {
 enum BrokerCommand {
     /// Apply the bounded JSON request read from stdin and restart affected services.
     Apply,
-    /// Open a one-minute LAN enrollment approval window.
-    ApproveEnrollment {
+    /// Record a home server the user root approved in the machine-wide
+    /// registry. Reads one root-signed admission from stdin and verifies it
+    /// against this machine's certificate from the same identity; approval
+    /// itself runs unprivileged, in the owner's session (`tilo-enroll approve`).
+    RegisterHomePeer {
         #[arg(long)]
         identity_root: PathBuf,
-        #[arg(long = "workspace-id")]
-        workspace_ids: Vec<u64>,
-        #[arg(long)]
-        expected_device: Option<String>,
-        #[arg(long)]
-        expected_service: Option<String>,
     },
     /// Receive an existing identity on this new personal device.
     PairDevice {
@@ -54,17 +51,6 @@ enum BrokerCommand {
         requester_pid: u32,
         #[arg(long)]
         requester_start_time: u64,
-    },
-    /// Approve an ordinary nearby personal device.
-    ApproveDevice {
-        #[arg(long)]
-        identity_root: PathBuf,
-        #[arg(long)]
-        identity_dir: PathBuf,
-        #[arg(long)]
-        expected_device: String,
-        #[arg(long)]
-        expected_service: String,
     },
 }
 
@@ -453,46 +439,6 @@ fn validate_identity_root(identity_root: &Path, uid: u32, home: &Path) -> anyhow
     Ok(canonical)
 }
 
-fn approve_enrollment(
-    identity_root: &Path,
-    workspace_ids: Vec<u64>,
-    expected_device: Option<String>,
-    expected_service: Option<String>,
-) -> anyhow::Result<()> {
-    if workspace_ids.len() > 4096 {
-        bail!("too many workspaces");
-    }
-    let uid = invoking_uid()?;
-    let account = account_for_uid(uid)?;
-    let identity_root = validate_identity_root(identity_root, uid, &account.home)?;
-    let mut command = Command::new("/usr/bin/tilo-enroll");
-    command
-        .args(["approve", "--timeout", "60", "--identity-root"])
-        .arg(&identity_root);
-    for id in workspace_ids {
-        command.args(["--relay-workspace-id", &id.to_string()]);
-    }
-    match (expected_device, expected_service) {
-        (Some(device), Some(service)) => {
-            if device.len() != 64
-                || service.len() != 64
-                || hex::decode(&device).is_err()
-                || hex::decode(&service).is_err()
-            {
-                bail!("invalid nearby home-server identity");
-            }
-            command.args(["--expected-device", &device]);
-            command.args(["--expected-service", &service]);
-        }
-        (None, None) => {}
-        _ => bail!("nearby device and service identities must be supplied together"),
-    }
-    run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
-    let output =
-        bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(90))?;
-    enrollment_command_result(&output, "home-server enrollment was not completed")
-}
-
 fn validate_identity_dir(path: &Path, uid: u32, home: &Path) -> anyhow::Result<PathBuf> {
     let canonical_home = home.canonicalize().context("user home does not exist")?;
     let canonical = path
@@ -506,21 +452,6 @@ fn validate_identity_dir(path: &Path, uid: u32, home: &Path) -> anyhow::Result<P
         bail!("identity directory must be the requesting user's private data directory");
     }
     Ok(canonical)
-}
-
-fn validate_peer_ids(device: &str, service: &str) -> anyhow::Result<()> {
-    if device.len() != 64
-        || service.len() != 64
-        || hex::decode(device)
-            .ok()
-            .is_none_or(|bytes| bytes.len() != 32)
-        || hex::decode(service)
-            .ok()
-            .is_none_or(|bytes| bytes.len() != 32)
-    {
-        bail!("invalid nearby device identity");
-    }
-    Ok(())
 }
 
 fn enrollment_command_result(
@@ -562,21 +493,44 @@ fn personal_device_command(
     enrollment_command_result(&output, "personal-device enrollment was not completed")
 }
 
+/// Verify one root-signed home-peer admission from stdin and record it in
+/// the machine-wide registry. This process never holds a root signer: the
+/// approving session produced the signatures, and this only checks them.
+fn register_home_peer(identity_root: &Path) -> anyhow::Result<()> {
+    let uid = invoking_uid()?;
+    let account = account_for_uid(uid)?;
+    let identity_root = validate_identity_root(identity_root, uid, &account.home)?;
+    if identity_root != Path::new("/var/lib/tilo") {
+        bail!(
+            "{} belongs to its user; `tilo-enroll approve` records home servers there itself",
+            identity_root.display()
+        );
+    }
+    let limit = tilo_relay::home_peer_registry::MAX_REGISTRY_BYTES;
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        bail!("home-peer admission is too large");
+    }
+    let admission: tilo_relay::home_peer_registry::HomePeerAdmission =
+        serde_json::from_slice(&bytes).context("invalid home-peer admission")?;
+    let now_ns = tilo_clock::try_unix_now_ns().context("read the clock")?;
+    tilo_relay::home_peer_registry::verify_admission(&identity_root, &admission, now_ns)?;
+    tilo_relay::home_peer_registry::register_home_peer(
+        &identity_root,
+        &admission.cert,
+        admission.relay_service_node_id,
+        &admission.relay_workspace_ids,
+    )
+}
+
 fn main() -> anyhow::Result<()> {
     require_root()?;
     match Cli::parse().command {
         BrokerCommand::Apply => apply(&read_request()?),
-        BrokerCommand::ApproveEnrollment {
-            identity_root,
-            workspace_ids,
-            expected_device,
-            expected_service,
-        } => approve_enrollment(
-            &identity_root,
-            workspace_ids,
-            expected_device,
-            expected_service,
-        ),
+        BrokerCommand::RegisterHomePeer { identity_root } => register_home_peer(&identity_root),
         BrokerCommand::PairDevice {
             identity_root,
             identity_dir,
@@ -602,19 +556,6 @@ fn main() -> anyhow::Result<()> {
                     .arg(requester_pid.to_string())
                     .arg("--requester-start-time")
                     .arg(requester_start_time.to_string());
-            })
-        }
-        BrokerCommand::ApproveDevice {
-            identity_root,
-            identity_dir,
-            expected_device,
-            expected_service,
-        } => {
-            validate_peer_ids(&expected_device, &expected_service)?;
-            personal_device_command("approve-device", &identity_root, &identity_dir, |command| {
-                command
-                    .args(["--expected-device", &expected_device])
-                    .args(["--expected-service", &expected_service]);
             })
         }
     }
@@ -670,13 +611,6 @@ mod tests {
             error.to_string(),
             "home-server enrollment was not completed (exit status: 2)"
         );
-    }
-
-    #[test]
-    fn personal_device_ids_are_exact_ed25519_width_hex() {
-        assert!(validate_peer_ids(&"11".repeat(32), &"22".repeat(32)).is_ok());
-        assert!(validate_peer_ids("11", &"22".repeat(32)).is_err());
-        assert!(validate_peer_ids(&"zz".repeat(32), &"22".repeat(32)).is_err());
     }
 
     #[test]
