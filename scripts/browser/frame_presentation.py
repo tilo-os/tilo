@@ -10,7 +10,7 @@ import json
 import math
 from pathlib import Path
 
-PREFIXES = {'qos-webview-received', 'qos-webview-scene', 'qos-display-frame'}
+PREFIXES = {'tilo-webview-received', 'tilo-webview-scene', 'tilo-display-frame'}
 
 
 def number(value):
@@ -37,13 +37,13 @@ def analyze(rows):
         if not isinstance(row, dict):
             issues['invalid_record'] += 1
             continue
-        if prefix in {'qos-webview-received', 'qos-webview-scene'}:
+        if prefix in {'tilo-webview-received', 'tilo-webview-scene'}:
             pid = row.get('process_id')
             if not identity(pid):
                 issues['invalid_process'] += 1
                 continue
             processes.add(pid)
-        if prefix == 'qos-webview-received':
+        if prefix == 'tilo-webview-received':
             fid = row.get('frame_id')
             lo, hi = row.get('received_host_lo_s'), row.get('received_host_hi_s')
             if not identity(fid):
@@ -58,7 +58,7 @@ def analyze(rows):
                     not number(lo) or not number(hi) or lo <= 0 or hi < lo):
                 duplicate_receipts.add(fid)
                 issues['invalid_receipt_clock'] += 1
-        elif prefix == 'qos-webview-scene':
+        elif prefix == 'tilo-webview-scene':
             cpu, ids = row.get('cpu_frame_id'), row.get('webview_frame_ids')
             if not frame_index(cpu):
                 issues['missing_cpu_frame_id'] += 1
@@ -72,7 +72,7 @@ def analyze(rows):
                     len(ids) != len(set(ids))):
                 duplicate_scenes.add(cpu)
                 issues['invalid_or_overflowed_scene'] += 1
-        elif prefix == 'qos-display-frame':
+        elif prefix == 'tilo-display-frame':
             cpu = row.get('cpu_frame_id')
             if frame_index(cpu):
                 presentations[cpu].append(row)

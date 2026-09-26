@@ -17,17 +17,17 @@
 # Forgejo generic package that apps/imager/packaging/publish-internal-bundle.sh
 # uploads:
 #
-#   https://code.sandbox.example/api/packages/OWNER/generic/tilo-internal-installer/RELEASE_ID/NAME
+#   https://code.tilo.so/api/packages/OWNER/generic/tilo-internal-installer/RELEASE_ID/NAME
 #
-# OWNER is $TILO_INTERNAL_BUNDLE_OWNER (default qos). The origin is fixed: the
-# Imager accepts internal manifests only from https://code.sandbox.example.
+# OWNER is $TILO_INTERNAL_BUNDLE_OWNER (default tilo). The origin is fixed: the
+# Imager accepts internal manifests only from https://code.tilo.so.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 die() { printf 'export-internal-bundle: %s\n' "$*" >&2; exit 1; }
 [ "$#" -eq 4 ] || { sed -n '2,24p' "$0" >&2; exit 2; }
 disk="$1" arch="$2" release="$3" out="$4"
-owner="${TILO_INTERNAL_BUNDLE_OWNER:-qos}"
+owner="${TILO_INTERNAL_BUNDLE_OWNER:-tilo}"
 case "$arch" in x86_64|aarch64) ;; *) die "unsupported architecture: $arch" ;; esac
 [[ "$release" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "invalid release identity: $release"
 [[ "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]] || die "invalid package owner: $owner"
@@ -58,7 +58,7 @@ entry = {
     'layout': 'internal-bundle-v2',
     'release_id': release,
     'arch': arch,
-    'manifest_url': 'https://code.sandbox.example/api/packages/%s/generic/tilo-internal-installer/%s/%s'
+    'manifest_url': 'https://code.tilo.so/api/packages/%s/generic/tilo-internal-installer/%s/%s'
                     % (owner, release, os.path.basename(manifest)),
     'manifest_sha256': hashlib.sha256(raw).hexdigest(),
     'manifest_size': len(raw),

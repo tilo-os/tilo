@@ -17,7 +17,7 @@ import app_packaging_product as product
 
 class PlanProducerTests(unittest.TestCase):
     def setUp(self):
-        self.desired = {'source_sha': 'a' * 40, 'builder_image': product.resolve('code.sandbox.example/qos/tilo-builder@sha256:' + 'b' * 64),
+        self.desired = {'source_sha': 'a' * 40, 'builder_image': product.resolve('registry.tilo.so/tilo/tilo-builder@sha256:' + 'b' * 64),
                         'collection': 'default', 'architectures': ['x86_64', 'aarch64'], 'policy_sha256': 'c' * 64}
         self.intent = {'id': '12345678-1234-4234-8234-123456789abc', 'desired': self.desired, 'baseline': None}
         self.env = {variable: product.dispatch_inputs(self.intent)[name] for name, variable in plan.INPUT_ENV.items()}

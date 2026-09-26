@@ -421,7 +421,7 @@ impl MigrationStore {
     pub(super) fn open_default() -> Result<Self, String> {
         let root = xdg_paths::data_local_dir()
             .ok_or_else(|| "no private local data directory is available".to_string())?
-            .join("qos-imager")
+            .join("tilo-imager")
             .join("migrations");
         Self::open_at(&root)
     }
@@ -1091,7 +1091,7 @@ mod tests {
 
     #[test]
     fn store_lock_process_helper() {
-        let Some(root) = std::env::var_os("QOS_COPY_STORE_LOCK_TEST") else {
+        let Some(root) = std::env::var_os("TILO_COPY_STORE_LOCK_TEST") else {
             return;
         };
         let root = PathBuf::from(root);
@@ -1115,7 +1115,7 @@ mod tests {
                     module_path!().split_once("::").unwrap().1
                 ),
             ])
-            .env("QOS_COPY_STORE_LOCK_TEST", &root)
+            .env("TILO_COPY_STORE_LOCK_TEST", &root)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()

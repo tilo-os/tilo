@@ -19,12 +19,12 @@ use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::{Brush, Color, Fill, Gradient};
 use winit::event::WindowEvent;
 
 use crate::paint::with_alpha;
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
@@ -91,48 +91,364 @@ impl Series {
     }
 }
 
-/// Map sample `i` of a series (value `v`) into a point inside `plot`,
-/// scaling against `ceil` (the shared series max, floored away from zero).
-/// `n` is the series length. Shared by [`Chart`] and [`Sparkline`].
-fn map_point(plot: Rect, idx: usize, value: f32, len: usize, ceil: f32) -> Point {
+/// A fixed-capacity rolling window of samples — the store behind a live,
+/// streaming chart or sparkline. Once full, every [`push`](Self::push) drops
+/// the oldest sample, so [`as_slice`](Self::as_slice) always reads oldest →
+/// newest and can be handed straight to [`Series`] or [`Sparkline::paint`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct RollingSeries {
+    data: Vec<f32>,
+    cap: usize,
+}
+
+impl RollingSeries {
+    /// An empty window holding at most `cap` samples.
+    pub fn new(cap: usize) -> Self {
+        Self {
+            data: Vec::with_capacity(cap),
+            cap,
+        }
+    }
+
+    /// A window seeded from `samples`, keeping only the newest `cap`.
+    pub fn from_samples(cap: usize, samples: impl IntoIterator<Item = f32>) -> Self {
+        let mut series = Self::new(cap);
+        for sample in samples {
+            series.push(sample);
+        }
+        series
+    }
+
+    /// Append the newest sample, evicting the oldest once the window is full.
+    pub fn push(&mut self, sample: f32) {
+        if self.cap == 0 {
+            return;
+        }
+        if self.data.len() >= self.cap {
+            let excess = self.data.len() + 1 - self.cap;
+            self.data.drain(..excess);
+        }
+        self.data.push(sample);
+    }
+
+    /// The held samples, oldest first.
+    pub fn as_slice(&self) -> &[f32] {
+        &self.data
+    }
+
+    /// Newest sample, or `0.0` when empty.
+    pub fn last(&self) -> f32 {
+        self.data.last().copied().unwrap_or(0.0)
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.cap
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// Largest held sample, or `0.0` when empty — the usual basis for an
+    /// unbounded unit's axis ceiling (throughput, I/O).
+    pub fn max(&self) -> f32 {
+        self.data.iter().copied().fold(0.0_f32, f32::max)
+    }
+
+    /// Mean of the held samples, or `0.0` when empty.
+    pub fn mean(&self) -> f32 {
+        if self.data.is_empty() {
+            0.0
+        } else {
+            self.data.iter().sum::<f32>() / self.data.len() as f32
+        }
+    }
+}
+
+/// How the area under a trend line is filled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TrendFill {
+    /// The line alone.
+    None,
+    /// A flat tint of the series colour at this alpha (0–255).
+    Alpha(u8),
+    /// A vertical wash of the series colour: `top` × its alpha at the plot's
+    /// top edge, fading to `bottom` × at the baseline.
+    Gradient { top: f32, bottom: f32 },
+}
+
+/// How consecutive samples are joined.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TrendCurve {
+    /// Straight segments — honest for sampled measurements.
+    #[default]
+    Linear,
+    /// A uniform Catmull-Rom spline (tension 0) through every sample — for a
+    /// forecast or trend that reads as a continuous quantity.
+    CatmullRom,
+}
+
+/// The value interval a trend maps onto its plot's height: `lo` lands on the
+/// baseline, `hi` on the top edge, and values outside clamp to the plot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrendRange {
+    pub lo: f64,
+    pub hi: f64,
+}
+
+impl TrendRange {
+    /// `0..=max`, with `max` floored away from zero so the projection never
+    /// divides by ~0.
+    pub fn up_to(max: f64) -> Self {
+        Self {
+            lo: 0.0,
+            hi: max.max(1e-3),
+        }
+    }
+
+    /// The data's own `min..=max`. A series flatter than half a unit widens by
+    /// one either way, so a constant series sits mid-band instead of pinned
+    /// to an edge. Empty or non-finite data falls back to `0..=1`.
+    pub fn fit<T: Copy + Into<f64>>(data: &[T]) -> Self {
+        let (mut lo, mut hi) = data
+            .iter()
+            .map(|&value| value.into())
+            .filter(|value: &f64| value.is_finite())
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), value| {
+                (lo.min(value), hi.max(value))
+            });
+        if !lo.is_finite() || !hi.is_finite() {
+            return Self::up_to(1.0);
+        }
+        if (hi - lo).abs() < 0.5 {
+            hi += 1.0;
+            lo -= 1.0;
+        }
+        Self { lo, hi }
+    }
+
+    /// Where `value` sits in the range, clamped to `0..=1`.
+    pub fn fraction(self, value: f64) -> f64 {
+        let span = self.hi - self.lo;
+        if span.abs() < f64::EPSILON || !span.is_finite() {
+            return 0.0;
+        }
+        ((value - self.lo) / span).clamp(0.0, 1.0)
+    }
+}
+
+/// Paint options for a trend line — the one line/area renderer behind
+/// [`Sparkline`] and every series of a [`Chart`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrendStyle {
+    pub line_width: f64,
+    pub fill: TrendFill,
+    pub curve: TrendCurve,
+    /// How far the area fill reaches below the plot's baseline, so a curve
+    /// with dots on its lowest sample still sits on a filled ground.
+    pub baseline_overhang: f64,
+    /// A dot of this radius at every sample.
+    pub markers: Option<f64>,
+    /// A dot of this radius at the newest (rightmost) sample — the live edge
+    /// of a streaming series.
+    pub leading_dot: Option<f64>,
+}
+
+impl TrendStyle {
+    /// The compact trend of a [`Sparkline`]: a thin line over a legible fill.
+    pub const SPARKLINE: Self = Self {
+        line_width: SPARK_LINE_WIDTH,
+        fill: TrendFill::Alpha(SPARK_FILL_ALPHA),
+        curve: TrendCurve::Linear,
+        baseline_overhang: 0.0,
+        markers: None,
+        leading_dot: None,
+    };
+
+    /// A [`Chart`] series with its area fill.
+    pub const CHART: Self = Self {
+        line_width: LINE_WIDTH,
+        fill: TrendFill::Alpha(AREA_FILL_ALPHA),
+        curve: TrendCurve::Linear,
+        baseline_overhang: 0.0,
+        markers: None,
+        leading_dot: None,
+    };
+
+    #[must_use]
+    pub fn with_line_width(mut self, width: f64) -> Self {
+        self.line_width = width;
+        self
+    }
+
+    #[must_use]
+    pub fn with_fill(mut self, fill: TrendFill) -> Self {
+        self.fill = fill;
+        self
+    }
+
+    #[must_use]
+    pub fn with_curve(mut self, curve: TrendCurve) -> Self {
+        self.curve = curve;
+        self
+    }
+
+    #[must_use]
+    pub fn with_baseline_overhang(mut self, overhang: f64) -> Self {
+        self.baseline_overhang = overhang;
+        self
+    }
+
+    #[must_use]
+    pub fn with_markers(mut self, radius: f64) -> Self {
+        self.markers = Some(radius);
+        self
+    }
+
+    #[must_use]
+    pub fn with_leading_dot(mut self, radius: f64) -> Self {
+        self.leading_dot = Some(radius);
+        self
+    }
+}
+
+impl Default for TrendStyle {
+    fn default() -> Self {
+        Self::SPARKLINE
+    }
+}
+
+/// Map sample `idx` of `len` into `plot`: samples spread evenly across the
+/// width, the value projected against `range` (y-down, so `range.hi` sits
+/// at `plot.y0`).
+fn map_point(plot: Rect, idx: usize, len: usize, value: f64, range: TrendRange) -> Point {
     let dx = if len > 1 {
         plot.width() / (count_f64(len) - 1.0)
     } else {
         0.0
     };
     let x = plot.x0 + dx * count_f64(idx);
-    let frac = f64::from((value / ceil).clamp(0.0, 1.0));
-    // y-down: the baseline is `plot.y1`, larger values rise toward `y0`.
-    let y = plot.y1 - frac * plot.height();
+    let y = plot.y1 - range.fraction(value) * plot.height();
     Point::new(x, y)
 }
 
-/// Build the closed area path (line down to the baseline) for `data`.
-fn area_path(plot: Rect, data: &[f32], ceil: f32) -> BezPath {
-    let n = data.len();
+/// The open line through `points`, straight or splined.
+fn trend_path(points: &[Point], curve: TrendCurve) -> BezPath {
     let mut path = BezPath::new();
-    path.move_to(Point::new(plot.x0, plot.y1));
-    for (i, &v) in data.iter().enumerate() {
-        path.line_to(map_point(plot, i, v, n, ceil));
-    }
-    path.line_to(Point::new(plot.x1, plot.y1));
-    path.close_path();
-    path
-}
-
-/// Build the open top-line path for `data`.
-fn line_path(plot: Rect, data: &[f32], ceil: f32) -> BezPath {
-    let n = data.len();
-    let mut path = BezPath::new();
-    for (i, &v) in data.iter().enumerate() {
-        let p = map_point(plot, i, v, n, ceil);
-        if i == 0 {
-            path.move_to(p);
-        } else {
-            path.line_to(p);
+    let (Some(&first), Some(&last)) = (points.first(), points.last()) else {
+        return path;
+    };
+    path.move_to(first);
+    match curve {
+        TrendCurve::Linear => {
+            for &point in points.iter().skip(1) {
+                path.line_to(point);
+            }
+        }
+        TrendCurve::CatmullRom => {
+            // Endpoints are repeated so the spline passes through the first
+            // and last samples.
+            for (i, pair) in points.windows(2).enumerate() {
+                let (Some(&p1), Some(&p2)) = (pair.first(), pair.get(1)) else {
+                    continue;
+                };
+                let p0 = i
+                    .checked_sub(1)
+                    .and_then(|prev| points.get(prev))
+                    .copied()
+                    .unwrap_or(first);
+                let p3 = points.get(i + 2).copied().unwrap_or(last);
+                let c1 = Point::new(p1.x + (p2.x - p0.x) / 6.0, p1.y + (p2.y - p0.y) / 6.0);
+                let c2 = Point::new(p2.x - (p3.x - p1.x) / 6.0, p2.y - (p3.y - p1.y) / 6.0);
+                path.curve_to(c1, c2, p2);
+            }
         }
     }
     path
+}
+
+/// Paint one trend into `plot`. Fewer than two samples draw nothing — a
+/// line needs two points to interpolate.
+fn paint_trend(
+    scene: &mut Scene,
+    transform: Affine,
+    plot: Rect,
+    points: &[Point],
+    color: Color,
+    style: &TrendStyle,
+) {
+    if points.len() < 2 || plot.width() <= 0.0 || plot.height() <= 0.0 {
+        return;
+    }
+    let line = trend_path(points, style.curve);
+    let baseline = plot.y1 + style.baseline_overhang;
+    let area = || {
+        let mut area = line.clone();
+        if let (Some(first), Some(last)) = (points.first(), points.last()) {
+            area.line_to(Point::new(last.x, baseline));
+            area.line_to(Point::new(first.x, baseline));
+        }
+        area.close_path();
+        area
+    };
+    match style.fill {
+        TrendFill::None => {}
+        TrendFill::Alpha(alpha) => {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                with_alpha(color, alpha),
+                None,
+                &area(),
+            );
+        }
+        TrendFill::Gradient { top, bottom } => {
+            let wash =
+                Gradient::new_linear(Point::new(plot.x0, plot.y0), Point::new(plot.x0, baseline))
+                    .with_stops([
+                        (0.0_f32, color.multiply_alpha(top)),
+                        (1.0_f32, color.multiply_alpha(bottom)),
+                    ]);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                &Brush::Gradient(wash),
+                None,
+                &area(),
+            );
+        }
+    }
+    scene.stroke(
+        &Stroke::new(style.line_width),
+        transform,
+        color,
+        None,
+        &line,
+    );
+    if let Some(radius) = style.markers {
+        for &point in points {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                color,
+                None,
+                &Circle::new(point, radius),
+            );
+        }
+    }
+    if let (Some(radius), Some(&last)) = (style.leading_dot, points.last()) {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            color,
+            None,
+            &Circle::new(last, radius),
+        );
+    }
 }
 
 /// Full time-series line/area chart with grid, axis ticks and a legend.
@@ -146,6 +462,7 @@ pub struct Chart {
     axis_hi: String,
     axis_lo: String,
     height: f32,
+    style: ChartStyle,
     rect: Rect,
 }
 
@@ -161,6 +478,7 @@ impl Chart {
             axis_hi: String::new(),
             axis_lo: String::new(),
             height: 160.0,
+            style: ChartStyle::default(),
             rect: Rect::ZERO,
         }
     }
@@ -218,36 +536,19 @@ impl Chart {
         self.max.unwrap_or(derived).max(1e-3)
     }
 
-    fn draw_series(
-        scene: &mut Scene,
-        transform: Affine,
-        plot: Rect,
-        series: &[Series],
-        ceil: f32,
-        area: bool,
-    ) {
-        // Series: area fill (optional) then top line.
-        for s in series {
-            if s.data.len() < 2 {
-                continue;
-            }
-            if area {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    with_alpha(s.color, AREA_FILL_ALPHA),
-                    None,
-                    &area_path(plot, &s.data, ceil),
-                );
-            }
-            scene.stroke(
-                &Stroke::new(LINE_WIDTH),
-                transform,
-                s.color,
-                None,
-                &line_path(plot, &s.data, ceil),
-            );
-        }
+    /// Builder: grid, header and per-series trend styling.
+    #[must_use]
+    pub fn with_style(mut self, style: ChartStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    pub fn style(&self) -> &ChartStyle {
+        &self.style
+    }
+
+    pub fn style_mut(&mut self) -> &mut ChartStyle {
+        &mut self.style
     }
 
     /// Immediate-mode draw: render a full chart into `scene` at `rect`,
@@ -270,70 +571,120 @@ impl Chart {
         axis_hi: &str,
         axis_lo: &str,
     ) {
+        let style = if area {
+            ChartStyle::default()
+        } else {
+            ChartStyle::default().with_trend(TrendStyle::CHART.with_fill(TrendFill::None))
+        };
+        Self::draw_styled(
+            scene,
+            transform,
+            text_renderer,
+            rect,
+            theme,
+            series,
+            TrendRange::up_to(f64::from(max)),
+            ChartLabels {
+                title,
+                axis_hi,
+                axis_lo,
+            },
+            &style,
+        );
+    }
+
+    /// Immediate-mode draw with explicit styling: the value `range` every
+    /// series shares, the header/axis `labels`, and the grid and trend
+    /// `style`. A header-less style gives the whole rect to the plot.
+    pub fn draw_styled(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        rect: Rect,
+        theme: &Theme,
+        series: &[Series],
+        range: TrendRange,
+        labels: ChartLabels<'_>,
+        style: &ChartStyle,
+    ) {
         let tokens = &theme.tokens;
         // The header band holds the title's line plus the smallest step, so
         // at 2× the title no longer clips and the legend clears the top axis
         // label; `HEADER_H` at the default text scale.
-        let header_h = text_band(
-            HEADER_H,
-            type_line_height(tokens.typography.scale.sm),
-            f64::from(tokens.spacing.s1),
-        );
+        let header_h = if style.header {
+            text_band(
+                HEADER_H,
+                type_line_height(tokens.typography.scale.sm),
+                f64::from(tokens.spacing.s1),
+            )
+        } else {
+            0.0
+        };
         if rect.width() <= 0.0 || rect.height() <= header_h {
             return;
         }
         let plot = Rect::new(rect.x0, rect.y0 + header_h, rect.x1, rect.y1);
-        let ceil = max.max(1e-3);
-
-        // Title, legend labels and legend dots share the header band's centre
-        // line, each placed by its measured line box.
-        let title_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
-        if !title.is_empty() {
-            let (_, title_h) = text_renderer.measure(title, title_size, None);
-            text_renderer.draw_text(
-                scene,
-                title,
-                title_size,
-                tokens.colors.text_primary,
-                translated(
-                    transform,
-                    rect.x0,
-                    centered_text_top(rect.y0, header_h, title_h),
-                ),
-                None,
-            );
-        }
-
-        // Legend (right-aligned, painted right-to-left).
         let legend_size = renderer_type_size(text_renderer, tokens.typography.scale.xs);
-        let dot_gap = f64::from(tokens.spacing.s2);
-        let entry_gap = f64::from(tokens.spacing.s3);
-        let mut lx = rect.x1;
-        for s in series.iter().rev() {
-            if s.legend.is_empty() {
-                continue;
+
+        if style.header {
+            // Title, legend labels and legend dots share the header band's
+            // centre line, each placed by its measured line box.
+            let title_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+            if !labels.title.is_empty() {
+                let (_, title_h) = text_renderer.measure_weighted(
+                    labels.title,
+                    title_size,
+                    None,
+                    style.title_weight,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    labels.title,
+                    title_size,
+                    tokens.colors.text_primary,
+                    translated(
+                        transform,
+                        rect.x0,
+                        centered_text_top(rect.y0, header_h, title_h),
+                    ),
+                    None,
+                    style.title_weight,
+                );
             }
-            let (tw, th) = text_renderer.measure(&s.legend, legend_size, None);
-            lx -= f64::from(tw);
-            text_renderer.draw_text(
-                scene,
-                &s.legend,
-                legend_size,
-                tokens.colors.text_dim,
-                translated(transform, lx, centered_text_top(rect.y0, header_h, th)),
-                None,
-            );
-            lx -= dot_gap;
-            let dot = Circle::new(Point::new(lx, rect.y0 + header_h / 2.0), 3.0);
-            scene.fill(Fill::NonZero, transform, s.color, None, &dot);
-            lx -= entry_gap;
+
+            // Legend (right-aligned, painted right-to-left).
+            let dot_gap = f64::from(tokens.spacing.s2);
+            let entry_gap = f64::from(tokens.spacing.s3);
+            let mut lx = rect.x1;
+            for s in series.iter().rev() {
+                if s.legend.is_empty() {
+                    continue;
+                }
+                let (tw, th) = text_renderer.measure(&s.legend, legend_size, None);
+                lx -= f64::from(tw);
+                text_renderer.draw_text(
+                    scene,
+                    &s.legend,
+                    legend_size,
+                    tokens.colors.text_dim,
+                    translated(transform, lx, centered_text_top(rect.y0, header_h, th)),
+                    None,
+                );
+                lx -= dot_gap;
+                let dot = Circle::new(Point::new(lx, rect.y0 + header_h / 2.0), 3.0);
+                scene.fill(Fill::NonZero, transform, s.color, None, &dot);
+                lx -= entry_gap;
+            }
         }
 
-        // Horizontal grid rules.
-        // Grid rules derive from the surface the chart sits on (HIG §9.5).
-        let grid = crate::surface::edge_on(tokens.colors.surfaces.raised);
-        for i in 0..=GRID_DIVISIONS {
-            let y = plot.y0 + plot.height() * (count_f64(i) / count_f64(GRID_DIVISIONS));
+        // Horizontal grid rules, derived from the surface the chart sits on
+        // (HIG §9.5) unless the style names its own.
+        let grid = style
+            .grid_color
+            .unwrap_or_else(|| crate::surface::edge_on(tokens.colors.surfaces.raised));
+        let divisions = style.grid_divisions.max(1);
+        for i in 0..=divisions {
+            let y = plot.y0 + plot.height() * (count_f64(i) / count_f64(divisions));
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -344,23 +695,23 @@ impl Chart {
         }
 
         // Axis ticks (right-aligned just inside the plot).
-        if !axis_hi.is_empty() {
-            let (tw, _) = text_renderer.measure(axis_hi, legend_size, None);
+        if !labels.axis_hi.is_empty() {
+            let (tw, _) = text_renderer.measure(labels.axis_hi, legend_size, None);
             text_renderer.draw_text(
                 scene,
-                axis_hi,
+                labels.axis_hi,
                 legend_size,
                 tokens.colors.text_dim,
                 translated(transform, plot.x1 - f64::from(tw), plot.y0 - 1.0),
                 None,
             );
         }
-        if !axis_lo.is_empty() {
+        if !labels.axis_lo.is_empty() {
             // Bottom-aligned inside the plot by its measured line box.
-            let (tw, th) = text_renderer.measure(axis_lo, legend_size, None);
+            let (tw, th) = text_renderer.measure(labels.axis_lo, legend_size, None);
             text_renderer.draw_text(
                 scene,
-                axis_lo,
+                labels.axis_lo,
                 legend_size,
                 tokens.colors.text_dim,
                 translated(transform, plot.x1 - f64::from(tw), plot.y1 - f64::from(th)),
@@ -368,7 +719,75 @@ impl Chart {
             );
         }
 
-        Self::draw_series(scene, transform, plot, series, ceil, area);
+        for s in series {
+            let points = Sparkline::points(plot, &s.data, range);
+            paint_trend(scene, transform, plot, &points, s.color, &style.trend);
+        }
+    }
+}
+
+/// The text a [`Chart`] paints around its plot. Any of them may be empty.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ChartLabels<'a> {
+    /// Drawn at the top-left of the header band.
+    pub title: &'a str,
+    /// Right-aligned at the top of the plot, e.g. `"100%"`.
+    pub axis_hi: &'a str,
+    /// Right-aligned at the bottom of the plot, e.g. `"0%"`.
+    pub axis_lo: &'a str,
+}
+
+/// Grid, header and series styling for a [`Chart`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChartStyle {
+    /// How every series is painted.
+    pub trend: TrendStyle,
+    /// Number of horizontal grid divisions (so `grid_divisions + 1` rules).
+    pub grid_divisions: usize,
+    /// Grid rule colour; `None` derives it from the raised surface.
+    pub grid_color: Option<Color>,
+    /// Whether the chart reserves a title/legend band above the plot.
+    pub header: bool,
+    pub title_weight: TextWeight,
+}
+
+impl Default for ChartStyle {
+    fn default() -> Self {
+        Self {
+            trend: TrendStyle::CHART,
+            grid_divisions: GRID_DIVISIONS,
+            grid_color: None,
+            header: true,
+            title_weight: TextWeight::Regular,
+        }
+    }
+}
+
+impl ChartStyle {
+    #[must_use]
+    pub fn with_trend(mut self, trend: TrendStyle) -> Self {
+        self.trend = trend;
+        self
+    }
+
+    #[must_use]
+    pub fn with_grid(mut self, divisions: usize, color: Option<Color>) -> Self {
+        self.grid_divisions = divisions;
+        self.grid_color = color;
+        self
+    }
+
+    /// Drop the title/legend band; the plot takes the whole rect.
+    #[must_use]
+    pub fn without_header(mut self) -> Self {
+        self.header = false;
+        self
+    }
+
+    #[must_use]
+    pub fn with_title_weight(mut self, weight: TextWeight) -> Self {
+        self.title_weight = weight;
+        self
     }
 }
 
@@ -410,18 +829,26 @@ impl Widget for Chart {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        Chart::draw_at(
+        let style = if self.area {
+            self.style
+        } else {
+            self.style
+                .with_trend(self.style.trend.with_fill(TrendFill::None))
+        };
+        Chart::draw_styled(
             scene,
             transform,
             text_renderer,
             self.rect,
             theme,
             &self.series,
-            self.ceiling(),
-            self.area,
-            &self.title,
-            &self.axis_hi,
-            &self.axis_lo,
+            TrendRange::up_to(f64::from(self.ceiling())),
+            ChartLabels {
+                title: &self.title,
+                axis_hi: &self.axis_hi,
+                axis_lo: &self.axis_lo,
+            },
+            &style,
         );
     }
 
@@ -462,6 +889,7 @@ pub struct Sparkline {
     max: Option<f32>,
     width: f32,
     height: f32,
+    style: TrendStyle,
     rect: Rect,
 }
 
@@ -475,6 +903,7 @@ impl Sparkline {
             max: None,
             width: 64.0,
             height: 20.0,
+            style: TrendStyle::SPARKLINE,
             rect: Rect::ZERO,
         }
     }
@@ -503,6 +932,21 @@ impl Sparkline {
         self.max.unwrap_or(derived).max(1e-3)
     }
 
+    /// Builder: how the trend is painted (fill, curve, markers).
+    #[must_use]
+    pub fn with_style(mut self, style: TrendStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    pub fn style(&self) -> &TrendStyle {
+        &self.style
+    }
+
+    pub fn style_mut(&mut self) -> &mut TrendStyle {
+        &mut self.style
+    }
+
     /// Immediate-mode draw of a sparkline into `scene` at `rect`.
     pub fn draw_at(
         scene: &mut Scene,
@@ -512,24 +956,41 @@ impl Sparkline {
         max: f32,
         color: Color,
     ) {
-        if data.len() < 2 || rect.width() <= 0.0 || rect.height() <= 0.0 {
-            return;
-        }
-        let ceil = max.max(1e-3);
-        scene.fill(
-            Fill::NonZero,
+        Self::paint(
+            scene,
             transform,
-            with_alpha(color, SPARK_FILL_ALPHA),
-            None,
-            &area_path(rect, data, ceil),
-        );
-        scene.stroke(
-            &Stroke::new(SPARK_LINE_WIDTH),
-            transform,
+            rect,
+            data,
+            TrendRange::up_to(f64::from(max)),
             color,
-            None,
-            &line_path(rect, data, ceil),
+            &TrendStyle::SPARKLINE,
         );
+    }
+
+    /// Immediate-mode draw of `data` (any `f32`/`f64` samples, oldest first)
+    /// spread across `rect` and projected against `range`, painted with
+    /// `style`. Fewer than two samples draw nothing.
+    pub fn paint<T: Copy + Into<f64>>(
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        data: &[T],
+        range: TrendRange,
+        color: Color,
+        style: &TrendStyle,
+    ) {
+        let points = Self::points(rect, data, range);
+        paint_trend(scene, transform, rect, &points, color, style);
+    }
+
+    /// Where each sample of `data` lands inside `rect` — the same projection
+    /// [`Self::paint`] draws, so a host can seat labels or marks on the line.
+    pub fn points<T: Copy + Into<f64>>(rect: Rect, data: &[T], range: TrendRange) -> Vec<Point> {
+        let len = data.len();
+        data.iter()
+            .enumerate()
+            .map(|(idx, &value)| map_point(rect, idx, len, value.into(), range))
+            .collect()
     }
 }
 
@@ -572,13 +1033,14 @@ impl Widget for Sparkline {
         _theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        Sparkline::draw_at(
+        Sparkline::paint(
             scene,
             transform,
             self.rect,
             &self.data,
-            self.ceiling(),
+            TrendRange::up_to(f64::from(self.ceiling())),
             self.color,
+            &self.style,
         );
     }
 
@@ -630,9 +1092,9 @@ mod tests {
     fn map_point_projects_value_to_pixels() {
         let plot = Rect::new(0.0, 0.0, 100.0, 50.0);
         // n = 3 samples, ceil = 10.
-        let top = map_point(plot, 0, 10.0, 3, 10.0);
-        let bottom = map_point(plot, 2, 0.0, 3, 10.0);
-        let mid = map_point(plot, 1, 5.0, 3, 10.0);
+        let top = map_point(plot, 0, 3, 10.0, TrendRange::up_to(10.0));
+        let bottom = map_point(plot, 2, 3, 0.0, TrendRange::up_to(10.0));
+        let mid = map_point(plot, 1, 3, 5.0, TrendRange::up_to(10.0));
         assert!((top.y - plot.y0).abs() < 1e-6, "max sits at plot top");
         assert!(
             (bottom.y - plot.y1).abs() < 1e-6,
@@ -649,7 +1111,7 @@ mod tests {
     #[test]
     fn map_point_clamps_overshoot() {
         let plot = Rect::new(0.0, 0.0, 10.0, 10.0);
-        let p = map_point(plot, 0, 999.0, 2, 1.0);
+        let p = map_point(plot, 0, 2, 999.0, TrendRange::up_to(1.0));
         assert!((p.y - plot.y0).abs() < 1e-6, "overshoot clamps to the top");
     }
 
@@ -781,5 +1243,109 @@ mod tests {
         assert!(chart.ceiling() >= 1e-3);
         let pinned = Chart::new(vec![]).with_max(42.0);
         assert_eq!(pinned.ceiling(), 42.0);
+    }
+
+    #[test]
+    fn rolling_series_caps_and_keeps_newest() {
+        let mut series = RollingSeries::new(3);
+        for sample in [1.0, 2.0, 3.0, 4.0] {
+            series.push(sample);
+        }
+        assert_eq!(series.as_slice(), &[2.0, 3.0, 4.0]);
+        assert_eq!(series.last(), 4.0);
+        assert_eq!(series.max(), 4.0);
+        assert_eq!(series.mean(), 3.0);
+        let seeded = RollingSeries::from_samples(2, [5.0, 6.0, 7.0]);
+        assert_eq!(seeded.as_slice(), &[6.0, 7.0]);
+        let mut none = RollingSeries::new(0);
+        none.push(1.0);
+        assert!(none.is_empty());
+    }
+
+    /// A flat series widens around its value so it sits mid-band, and a
+    /// fitted range spans the data exactly otherwise.
+    #[test]
+    fn fitted_range_centres_a_flat_series() {
+        let flat = TrendRange::fit(&[12.0_f64, 12.0]);
+        assert!((flat.fraction(12.0) - 0.5).abs() < 1e-9);
+        let span = TrendRange::fit(&[2.0_f32, 8.0, 5.0]);
+        assert_eq!((span.lo, span.hi), (2.0, 8.0));
+        assert_eq!(TrendRange::fit::<f64>(&[]), TrendRange::up_to(1.0));
+    }
+
+    /// The spline passes through every sample — marks seated on
+    /// [`Sparkline::points`] sit on the painted curve.
+    #[test]
+    fn catmull_rom_passes_through_every_sample() {
+        let rect = Rect::new(0.0, 0.0, 120.0, 40.0);
+        let data = [3.0_f64, 9.0, 1.0, 6.0];
+        let points = Sparkline::points(rect, &data, TrendRange::fit(&data));
+        let path = trend_path(&points, TrendCurve::CatmullRom);
+        let ends: Vec<Point> = path
+            .elements()
+            .iter()
+            .filter_map(|el| el.end_point())
+            .collect();
+        assert_eq!(ends, points);
+    }
+
+    /// Markers and the leading dot each add fills on top of line and area.
+    #[test]
+    fn trend_marks_add_fills() {
+        let rect = Rect::new(0.0, 0.0, 64.0, 20.0);
+        let data = [1.0_f64, 4.0, 2.0];
+        let range = TrendRange::up_to(4.0);
+        let mut plain = Scene::new();
+        Sparkline::paint(
+            &mut plain,
+            Affine::IDENTITY,
+            rect,
+            &data,
+            range,
+            Color::WHITE,
+            &TrendStyle::SPARKLINE,
+        );
+        let mut marked = Scene::new();
+        Sparkline::paint(
+            &mut marked,
+            Affine::IDENTITY,
+            rect,
+            &data,
+            range,
+            Color::WHITE,
+            &TrendStyle::SPARKLINE
+                .with_markers(2.0)
+                .with_leading_dot(3.0)
+                .with_fill(TrendFill::Gradient {
+                    top: 0.3,
+                    bottom: 0.0,
+                }),
+        );
+        assert_eq!(count_color_tags(&plain), 2, "area + line");
+        // Line + three markers + the leading dot; the gradient area is not a
+        // solid-colour fill.
+        assert_eq!(count_color_tags(&marked), 5);
+    }
+
+    /// A header-less chart still paints its grid over the whole rect, and an
+    /// empty series list paints only that grid.
+    #[test]
+    fn headerless_chart_paints_grid_for_empty_series() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let style = ChartStyle::default().without_header().with_grid(3, None);
+        Chart::draw_styled(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            Rect::new(0.0, 0.0, 200.0, 10.0),
+            &theme,
+            &[],
+            TrendRange::up_to(1.0),
+            ChartLabels::default(),
+            &style,
+        );
+        assert_eq!(count_color_tags(&scene), 4, "three divisions, four rules");
     }
 }

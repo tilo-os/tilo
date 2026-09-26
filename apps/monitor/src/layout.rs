@@ -24,7 +24,7 @@ use crate::app::SortKey;
 // ---- shared card padding -------------------------------------------------
 
 /// Inner padding a content card insets its content by (matches
-/// [`crate::charts::panel`]'s `pad`). Used by the per-core grid and the
+/// [`crate::paint::panel`]'s `pad`). Used by the per-core grid and the
 /// Resources dashboard cards.
 pub const RAIL_CARD_PAD: f64 = 12.0;
 
@@ -335,7 +335,7 @@ pub fn process_columns_total_w(cols: &[Column]) -> f64 {
 }
 
 /// Inset the rail-card / panel rectangle by its padding, matching
-/// [`crate::charts::panel`]. Handy for tests that need the *inner* content
+/// [`crate::paint::panel`]. Handy for tests that need the *inner* content
 /// box without invoking the renderer.
 pub fn inner(rect: Rect, pad: f64) -> Rect {
     Rect::new(rect.x0 + pad, rect.y0 + pad, rect.x1 - pad, rect.y1 - pad)

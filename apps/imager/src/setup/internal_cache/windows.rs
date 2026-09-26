@@ -78,7 +78,7 @@ fn windows_cache_path(raw: impl IntoIterator<Item = u16>) -> Result<WindowsDirec
     // creating anything; the final verifier must accept this exact raw ancestry.
     let mut final_names = parsed.names.clone();
     final_names.extend(
-        ["qos-internal-install", &"0".repeat(64), "payload"]
+        ["tilo-internal-install", &"0".repeat(64), "payload"]
             .map(|s| s.encode_utf16().collect::<Vec<_>>()),
     );
     let length = 3 + final_names
@@ -408,7 +408,7 @@ mod native {
         }
         fn digest(self) -> [u8; 32] {
             let mut h = Sha256::new();
-            h.update(b"qos-windows-volume-fileid-v1");
+            h.update(b"tilo-windows-volume-fileid-v1");
             h.update(self.volume.to_le_bytes());
             h.update(self.id);
             h.finalize().into()
@@ -845,7 +845,7 @@ mod native {
             )
         }
     }
-    /// The per-user cache directory that holds `qos-internal-install`.
+    /// The per-user cache directory that holds `tilo-internal-install`.
     pub(in crate::setup) fn cache_base() -> Result<std::path::PathBuf> {
         xdg_paths::cache_dir().ok_or_else(|| "Current-user LocalAppData cache unavailable".into())
     }
@@ -870,7 +870,7 @@ mod native {
                 )?);
             }
             for leaf in [
-                b"qos-internal-install".as_slice(),
+                b"tilo-internal-install".as_slice(),
                 selected.manifest_sha256().as_bytes(),
             ] {
                 ancestry.push(directory(&ancestry.last().unwrap().file, leaf, true, true)?);
@@ -1146,7 +1146,7 @@ mod native {
         let digest = h.finalize();
         // Uniqueness only. Exclusive FILE_CREATE supplies the no-adoption boundary.
         Ok(format!(
-            ".qos-part-{:032x}",
+            ".tilo-part-{:032x}",
             u128::from_le_bytes(digest[..16].try_into().unwrap())
         ))
     }

@@ -25,6 +25,8 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["po
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-reference = { path = "../../crates/collab/reference" }
 tilo-content = { path = "../../crates/system/content" }
+# The shared preview pipeline behind the library grid.
+thumbnail = { path = "../../crates/media/thumbnail" }
 tilo-vision = { path = "../../crates/media/vision" }
 agent-provider-config = { path = "../../crates/agent/provider-config" }
 atomic-file = { path = "../../crates/system/atomic-file" }

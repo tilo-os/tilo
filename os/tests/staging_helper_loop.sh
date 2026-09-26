@@ -103,7 +103,7 @@ open(os.path.join(bundle, 'manifest.json'), 'wb').write(raw)
 catalog = {'schema': 1, 'tag': 'imager-v0.0.0-loop-test', 'releases': [{
     'purpose': 'tilo-internal-installer', 'layout': 'internal-bundle-v2',
     'release_id': 'loop-test', 'arch': arch,
-    'manifest_url': 'https://code.sandbox.example/qos/loop-test/manifest.json',
+    'manifest_url': 'https://code.tilo.so/tilo/loop-test/manifest.json',
     'manifest_sha256': hashlib.sha256(raw).hexdigest(), 'manifest_size': len(raw)}]}
 json.dump(catalog, open(os.path.join(bundle, 'catalog.json'), 'w'))
 PY

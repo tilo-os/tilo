@@ -19,7 +19,7 @@ class PackageTests(unittest.TestCase):
         if system == "Darwin":
             native /= "Browser Engine.app/Contents/MacOS"
         native.mkdir(parents=True)
-        (native / "qos-chromium-host").write_bytes(b"chromium fixture")
+        (native / "tilo-chromium-host").write_bytes(b"chromium fixture")
 
         def external(command, **kwargs):
             if command[0] == "cargo":
@@ -48,9 +48,9 @@ class PackageTests(unittest.TestCase):
             root = Path(directory)
             self.package_fixture(root, "Darwin")
             executables = root / "target/browser-package/Browser.app/Contents/MacOS"
-            host = executables / "qos-runtime-mcp"
+            host = executables / "tilo-runtime-mcp"
             self.assertTrue(host.is_file(), "packaged browser must not need PATH or Cargo for its runtime")
-            self.assertEqual(host.read_bytes(), b"qos-runtime-mcp fixture")
+            self.assertEqual(host.read_bytes(), b"tilo-runtime-mcp fixture")
             self.assertTrue(host.stat().st_mode & 0o111)
             self.assertEqual((executables / "browser").read_bytes(), b"browser fixture")
 
@@ -58,10 +58,10 @@ class PackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.package_fixture(root, "Linux")
-            executables = root / "target/browser-package/qos-browser"
-            host = executables / "qos-runtime-mcp"
+            executables = root / "target/browser-package/tilo-browser"
+            host = executables / "tilo-runtime-mcp"
             self.assertTrue(host.is_file(), "packaged browser must not need PATH or Cargo for its runtime")
-            self.assertEqual(host.read_bytes(), b"qos-runtime-mcp fixture")
+            self.assertEqual(host.read_bytes(), b"tilo-runtime-mcp fixture")
             self.assertTrue(host.stat().st_mode & 0o111)
             self.assertEqual((executables / "browser").read_bytes(), b"browser fixture")
 

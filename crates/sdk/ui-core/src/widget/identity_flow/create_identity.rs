@@ -76,7 +76,7 @@ pub const ACCENT_PALETTE: [[u8; 3]; 8] = [
     [244, 114, 182], // pink
 ];
 
-const TITLE: &str = "Create your qOS identity";
+const TITLE: &str = "Create your Tilo identity";
 const EXPLANATION: &str =
     "Your identity signs every action you take and lets you join shared channels.";
 const NAME_LABEL: &str = "Display name";

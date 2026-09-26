@@ -45,7 +45,7 @@ impl Blocker {
         let (commands, requests) = mpsc::sync_channel(64);
         let (ready, initialized) = mpsc::sync_channel(0);
         let worker = thread::Builder::new()
-            .name("qos-blocker".into())
+            .name("tilo-blocker".into())
             .spawn(move || worker_loop(&rules, requests, ready))
             .expect("blocker worker thread must start");
         initialized
@@ -189,7 +189,7 @@ fn foreign_json(operation: impl FnOnce() -> Option<Value>) -> *mut c_char {
 /// `rules` must point to `len` readable bytes for this call. Null is allowed only
 /// when len is zero. The returned handle is owned; destroy once after all calls.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn qos_blocker_create(rules: *const u8, len: usize) -> *mut Blocker {
+pub unsafe extern "C" fn tilo_blocker_create(rules: *const u8, len: usize) -> *mut Blocker {
     if len > MAX_RULE_BYTES || (rules.is_null() && len != 0) {
         return std::ptr::null_mut();
     }
@@ -208,10 +208,10 @@ pub unsafe extern "C" fn qos_blocker_create(rules: *const u8, len: usize) -> *mu
 }
 
 /// # Safety
-/// The handle must be a live result of qos_blocker_create, with no concurrent
+/// The handle must be a live result of tilo_blocker_create, with no concurrent
 /// callers. Null is accepted. After this call the handle must never be used.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn qos_blocker_destroy(handle: *mut Blocker) {
+pub unsafe extern "C" fn tilo_blocker_destroy(handle: *mut Blocker) {
     if !handle.is_null() {
         drop(unsafe { Box::from_raw(handle) });
     }
@@ -232,10 +232,10 @@ unsafe fn foreign_text<'a>(ptr: *const u8, len: usize, max: usize) -> Option<&'a
 
 /// # Safety
 /// Handle must remain live. Each pointer must reference its declared readable
-/// byte length for the call. Returned JSON is freed with qos_blocker_string_free.
+/// byte length for the call. Returned JSON is freed with tilo_blocker_string_free.
 /// Null means matcher failure, distinct from an allowed request.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn qos_blocker_match(
+pub unsafe extern "C" fn tilo_blocker_match(
     handle: *mut Blocker,
     url: *const u8,
     url_len: usize,
@@ -257,10 +257,10 @@ pub unsafe extern "C" fn qos_blocker_match(
 }
 
 /// # Safety
-/// Same lifetime/ownership contract as qos_blocker_match. classes/ids contain
+/// Same lifetime/ownership contract as tilo_blocker_match. classes/ids contain
 /// JSON arrays, bounded to 1 MiB each before parsing and 10000 entries after.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn qos_blocker_cosmetics(
+pub unsafe extern "C" fn tilo_blocker_cosmetics(
     handle: *mut Blocker,
     url: *const u8,
     url_len: usize,
@@ -288,7 +288,7 @@ pub unsafe extern "C" fn qos_blocker_cosmetics(
 /// # Safety
 /// Value must be null or a live string returned by this library, freed once.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn qos_blocker_string_free(value: *mut c_char) {
+pub unsafe extern "C" fn tilo_blocker_string_free(value: *mut c_char) {
     if !value.is_null() {
         drop(unsafe { CString::from_raw(value) });
     }

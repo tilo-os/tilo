@@ -5,7 +5,7 @@ use super::migration::{
 use super::migration_native_journal::{NativeJournal, Receipt};
 use super::migration_source::{CopyFileSource, CopyPass, CopyTimes, SourcePass, sealed};
 use super::{migration_durability as durability, nofollow::metadata_nofollow};
-use qos_ntfs_protocol::{
+use tilo_ntfs_protocol::{
     CHUNK_BYTES, Entry, HASH_BYTES, Identity, Issue, Manifest, NativePath, ntfs_time_to_system_time,
 };
 use serde::{Deserialize, Serialize};
@@ -29,9 +29,9 @@ trait Transport: transport_sealed::Sealed {
     fn finish(&mut self) -> io::Result<(BTreeMap<String, String>, Vec<Issue>)>;
 }
 #[cfg(target_os = "linux")]
-impl transport_sealed::Sealed for qos_ntfs_protocol::client::Client {}
+impl transport_sealed::Sealed for tilo_ntfs_protocol::client::Client {}
 #[cfg(target_os = "linux")]
-impl Transport for qos_ntfs_protocol::client::Client {
+impl Transport for tilo_ntfs_protocol::client::Client {
     fn identity(&self) -> &Identity {
         self.identity()
     }
@@ -47,7 +47,7 @@ impl Transport for qos_ntfs_protocol::client::Client {
 }
 /// Durable source facts deliberately exclude observation tokens.
 pub(super) mod entry_facts {
-    use qos_ntfs_protocol::Entry;
+    use tilo_ntfs_protocol::Entry;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     pub fn serialize<S: Serializer>(entry: &Entry, serializer: S) -> Result<S::Ok, S::Error> {
         if !entry.token.is_empty() {
@@ -732,7 +732,7 @@ fn run<T: Transport>(
 /// Refuses unsafe grants, unavailable durability or journal persistence failures.
 #[cfg(target_os = "linux")]
 pub fn copy_native_selected(
-    client: qos_ntfs_protocol::client::Client,
+    client: tilo_ntfs_protocol::client::Client,
     destination: &Path,
     journal: &Path,
     cancel: &AtomicBool,
@@ -745,7 +745,7 @@ pub fn copy_native_selected(
 /// Refuses changed selection, journal location, output or persistence.
 #[cfg(target_os = "linux")]
 pub fn resume_native_selected(
-    client: qos_ntfs_protocol::client::Client,
+    client: tilo_ntfs_protocol::client::Client,
     journal: &Path,
     cancel: &AtomicBool,
     progress: impl FnMut(CopyProgress),
@@ -813,7 +813,7 @@ pub fn maybe_run_command(args: &[String]) -> io::Result<Option<i32>> {
         ));
     }
     let client =
-        qos_ntfs_protocol::client::Client::connect(Path::new(socket), nonce.to_owned(), expected)?;
+        tilo_ntfs_protocol::client::Client::connect(Path::new(socket), nonce.to_owned(), expected)?;
     // SAFETY: dedicated early command; handler only stores to an atomic boolean.
     unsafe {
         libc::signal(libc::SIGINT, cancel as *const () as libc::sighandler_t);
@@ -874,7 +874,7 @@ mod tests {
             metadata_digest: "a".repeat(64),
             content_readable: !directory,
             enumeration_complete: true,
-            copy_times: Some(qos_ntfs_protocol::CopyTimes {
+            copy_times: Some(tilo_ntfs_protocol::CopyTimes {
                 last_access_100ns: 116_444_735_999_999_999,
                 last_data_change_100ns: 116_444_736_012_345_678,
             }),
@@ -1015,7 +1015,7 @@ mod tests {
     }
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let temp = tempfile::Builder::new()
-            .prefix("qos-native-copy-consumer-")
+            .prefix("tilo-native-copy-consumer-")
             .tempdir_in("/tmp")
             .unwrap();
         let base = temp.path().canonicalize().unwrap();
@@ -1052,7 +1052,7 @@ mod tests {
                 .unwrap(),
             expected_time
         );
-        assert!(std::fs::read(&journal).unwrap().starts_with(b"QOSJNL3\n"));
+        assert!(std::fs::read(&journal).unwrap().starts_with(b"TILOJL3\n"));
         let resumed = run(
             script(state.clone(), cancel.clone()),
             None,
@@ -1294,9 +1294,9 @@ mod tests {
     #[ignore = "requires explicitly prepared actual NTFS image and diagnostic executable; no production claims"]
     fn actual_native_image_bytes_reach_shared_copy_and_v3_receipts() {
         let (_temp, dest, journal) = fixture();
-        let program = PathBuf::from(std::env::var_os("QOS_NATIVE_COPY_DIAGNOSTIC").unwrap());
-        let image = std::env::var_os("QOS_NTFS_COPY_TREE_IMAGE").map_or_else(
-            || PathBuf::from(std::env::var_os("QOS_NTFS_FIXTURES").unwrap()).join("large.img"),
+        let program = PathBuf::from(std::env::var_os("TILO_NATIVE_COPY_DIAGNOSTIC").unwrap());
+        let image = std::env::var_os("TILO_NTFS_COPY_TREE_IMAGE").map_or_else(
+            || PathBuf::from(std::env::var_os("TILO_NTFS_FIXTURES").unwrap()).join("large.img"),
             PathBuf::from,
         );
         let before = Sha256::digest(std::fs::read(&image).unwrap());
@@ -1354,7 +1354,7 @@ mod tests {
         );
         assert_eq!(report.verified_files.len(), 5);
         assert_eq!(report.verified_bytes, 12_587_213);
-        if std::env::var_os("QOS_NTFS_COPY_TREE_IMAGE").is_some() {
+        if std::env::var_os("TILO_NTFS_COPY_TREE_IMAGE").is_some() {
             assert!(dest.join("nested/empty").is_dir());
             assert_eq!(
                 std::fs::read_dir(dest.join("nested/empty"))
@@ -1411,11 +1411,11 @@ mod tests {
     fn image_transport(name: &str) -> io::Result<ImageTransport> {
         let mut transport = ImageTransport {
             program: PathBuf::from(
-                std::env::var_os("QOS_NATIVE_COPY_DIAGNOSTIC")
+                std::env::var_os("TILO_NATIVE_COPY_DIAGNOSTIC")
                     .ok_or_else(|| changed("diagnostic executable missing"))?,
             ),
             image: PathBuf::from(
-                std::env::var_os("QOS_NTFS_FIXTURES")
+                std::env::var_os("TILO_NTFS_FIXTURES")
                     .ok_or_else(|| changed("fixture directory missing"))?,
             )
             .join(format!("{name}.img")),
@@ -1431,7 +1431,7 @@ mod tests {
             active: None,
             reads: Rc::new(RefCell::new(Vec::new())),
         };
-        if let Some(root) = std::env::var_os("QOS_NTFS_COPY_SCOPED_FIXTURES")
+        if let Some(root) = std::env::var_os("TILO_NTFS_COPY_SCOPED_FIXTURES")
             && let Some(candidate) = scoped_fixture(Path::new(&root), name)
         {
             transport.image = candidate;
@@ -1514,7 +1514,7 @@ mod tests {
                     .any(|(_, m)| m.contains("external-alias-closure-unknown"))
             );
         }
-        if std::env::var_os("QOS_NTFS_COPY_SCOPED_FIXTURES").is_some() {
+        if std::env::var_os("TILO_NTFS_COPY_SCOPED_FIXTURES").is_some() {
             assert_eq!(
                 std::fs::read(dest.join("ordinary.txt")).unwrap(),
                 b"ordinary sibling\n"
@@ -1566,7 +1566,7 @@ mod tests {
     #[ignore = "production Linux administrative selection; requires separately authorized fixture coordinator"]
     fn native_selected_copy_command_worker() {
         let args: Vec<String> =
-            serde_json::from_str(&std::env::var("QOS_NATIVE_COPY_COMMAND_ARGS").unwrap()).unwrap();
+            serde_json::from_str(&std::env::var("TILO_NATIVE_COPY_COMMAND_ARGS").unwrap()).unwrap();
         assert!(maybe_run_command(&args).unwrap().is_some());
     }
     #[test]
@@ -1827,7 +1827,7 @@ mod tests {
                 .unwrap()
                 .complete()
         );
-        std::fs::write(dest.join(".qos-copy-abandoned"), b"preserve").unwrap();
+        std::fs::write(dest.join(".tilo-copy-abandoned"), b"preserve").unwrap();
         std::fs::OpenOptions::new()
             .append(true)
             .open(&journal)
@@ -1838,7 +1838,7 @@ mod tests {
         assert!(run(fresh(), None, &journal, &cancel, |_| {}).is_err());
         assert_eq!(std::fs::read(&journal).unwrap(), before);
         assert_eq!(
-            std::fs::read(dest.join(".qos-copy-abandoned")).unwrap(),
+            std::fs::read(dest.join(".tilo-copy-abandoned")).unwrap(),
             b"preserve"
         );
     }

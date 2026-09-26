@@ -10,7 +10,7 @@ fn setup(binding: &CallbackBinding) -> PreparedContentRestore {
     binding
         .records
         .with_action_state(&binding.checkout.id, |doc, history, _| {
-            // Preserve the real canonical qos:record identity and framework roots.
+            // Preserve the real canonical tilo:record identity and framework roots.
             doc.put(ROOT, "body", "old").unwrap();
             history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
             let target = doc.base_heads();

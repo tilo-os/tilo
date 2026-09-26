@@ -4777,3 +4777,29 @@ fn windows_claimed_hosted_service_never_starts_an_unconfined_shell() {
         "a hosted grant must never fall back to COMSPEC"
     );
 }
+
+#[test]
+fn a_desktop_entry_command_reaches_the_terminal_through_the_launch_context() {
+    use crate::inner::{exec_script, launch_command_from_context};
+    assert_eq!(
+        launch_command_from_context(r#"{"terminal_command":["vim","--","/home/u/a b.txt"]}"#),
+        vec!["vim", "--", "/home/u/a b.txt"]
+    );
+    for ignored in [
+        "",
+        "not json",
+        r#"{"tool":"vpn"}"#,
+        r#"{"terminal_command":[]}"#,
+        r#"{"terminal_command":["",""]}"#,
+        r#"{"terminal_command":["vim",3]}"#,
+    ] {
+        assert!(
+            launch_command_from_context(ignored).is_empty(),
+            "{ignored:?} must start an ordinary shell"
+        );
+    }
+    assert_eq!(
+        exec_script(&["printf".into(), "it's %s".into()]),
+        "exec 'printf' 'it'\\''s %s'"
+    );
+}

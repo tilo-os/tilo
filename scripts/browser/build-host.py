@@ -101,7 +101,7 @@ def acquire_sdk(cache, entry):
     cache.mkdir(parents=True, exist_ok=True)
     name = entry["name"].removesuffix(".tar.bz2")
     sdk = cache / name
-    marker = sdk / ".qos-verified-archive"
+    marker = sdk / ".tilo-verified-archive"
     if marker.is_file() and marker.read_text().strip() == entry["sha256"] and (sdk / "include/cef_app.h").is_file():
         return sdk
     archive = download_archive(cache, entry)
@@ -136,12 +136,12 @@ def main():
     if not cmake:
         raise SystemExit("CMake is required. Install CMake, or use target/chromium-tools Python venv with cmake and ninja.")
     env = dict(os.environ, PATH=str(local_bin) + os.pathsep + os.environ["PATH"])
-    subprocess.run(["cargo", "build", "-p", "qos-chromium-blocker", "--profile", "thin-app"], cwd=ROOT, check=True)
-    blocker = ROOT / "target/thin-app/libqos_chromium_blocker.a"
+    subprocess.run(["cargo", "build", "-p", "tilo-chromium-blocker", "--profile", "thin-app"], cwd=ROOT, check=True)
+    blocker = ROOT / "target/thin-app/libtilo_chromium_blocker.a"
     build = ROOT / "target/chromium-build"
     subprocess.run([cmake, "-S", str(ROOT / "apps/browser/chromium"), "-B", str(build),
-                    f"-DCEF_ROOT={sdk}", f"-DQOS_BLOCKER_LIBRARY={blocker}", "-DCMAKE_BUILD_TYPE=Release",
-                    f"-DQOS_OUTPUT_DIR={ROOT / 'target/chromium'}"], check=True, env=env)
+                    f"-DCEF_ROOT={sdk}", f"-DTILO_BLOCKER_LIBRARY={blocker}", "-DCMAKE_BUILD_TYPE=Release",
+                    f"-DTILO_OUTPUT_DIR={ROOT / 'target/chromium'}"], check=True, env=env)
     subprocess.run([cmake, "--build", str(build), "--parallel", str(args.jobs)], check=True, env=env)
 
 

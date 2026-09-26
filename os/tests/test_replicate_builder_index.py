@@ -33,10 +33,10 @@ class Response:
 
 class RegionalBuilderReplicationTest(unittest.TestCase):
     def test_expected_identity_is_the_one_the_aws_role_trusts(self):
-        # The IAM trust policy (infra: qos_builder_replication_assume) names
+        # The IAM trust policy (infra: tilo_builder_replication_assume) names
         # Forgejo's owner/repository IDs. A renamed subject is refused by AWS.
-        self.assertEqual(MODULE.OIDC_ISSUER, "https://code.sandbox.example/api/actions")
-        self.assertEqual(MODULE.OIDC_SUBJECT, "repo:qos-11/qos-23:ref:refs/heads/main")
+        self.assertEqual(MODULE.OIDC_ISSUER, "https://code.tilo.so/api/actions")
+        self.assertEqual(MODULE.OIDC_SUBJECT, "repo:tilo-11/tilo-23:ref:refs/heads/main")
 
     @staticmethod
     def token_for(**overrides):
@@ -127,7 +127,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             ) as open_token, patch.object(MODULE.subprocess, "run", side_effect=self.execute):
                 target = MODULE.replicate(
                     source,
-                    "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder",
+                    "125650147312.dkr.ecr.us-west-2.amazonaws.com/tilo/tilo-builder",
                     "arn:aws:iam::125650147312:role/burst-us-tilo-builder-replication",
                     "us-west-2",
                     "tilo-builder-replication",
@@ -160,7 +160,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "different manifest bytes"):
                     MODULE.replicate(
                         source,
-                        "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder",
+                        "125650147312.dkr.ecr.us-west-2.amazonaws.com/tilo/tilo-builder",
                         "arn:aws:iam::125650147312:role/burst-us-tilo-builder-replication",
                         "us-west-2",
                         "tilo-builder-replication",
@@ -272,11 +272,11 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
     def test_source_mapping_and_regional_scope_reject_before_external_commands(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "source.txt"
-            source.write_text("code.sandbox.example/qos/unknown@" + self.digest + "\n")
+            source.write_text("registry.tilo.so/tilo/unknown@" + self.digest + "\n")
             with self.assertRaisesRegex(ValueError, "no configured regional repository"):
                 MODULE.replicate(
                     source,
-                    "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/unknown",
+                    "125650147312.dkr.ecr.us-west-2.amazonaws.com/tilo/unknown",
                     "arn:aws:iam::125650147312:role/replicator",
                     "us-west-2",
                     "tilo-builder-replication",
@@ -287,7 +287,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "no configured regional repository"):
                 MODULE.replicate(
                     source,
-                    "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder",
+                    "125650147312.dkr.ecr.us-west-2.amazonaws.com/tilo/tilo-builder",
                     "arn:aws:iam::125650147312:role/replicator",
                     "us-west-2",
                     "tilo-builder-replication",
@@ -295,10 +295,10 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                     Path(temporary) / "output",
                 )
         for role, repository, region, message in (
-            ("not-an-arn", "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder", "us-west-2", "invalid"),
-            ("arn:aws:iam::125650147312:role/replicator", "bad.example/qos/tilo-builder", "us-west-2", "invalid"),
-            ("arn:aws:iam::000000000000:role/replicator", "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder", "us-west-2", "do not agree"),
-            ("arn:aws:iam::125650147312:role/replicator", "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder", "eu-central-1", "do not agree"),
+            ("not-an-arn", "125650147312.dkr.ecr.us-west-2.amazonaws.com/tilo/tilo-builder", "us-west-2", "invalid"),
+            ("arn:aws:iam::125650147312:role/replicator", "bad.example/tilo/tilo-builder", "us-west-2", "invalid"),
+            ("arn:aws:iam::000000000000:role/replicator", "125650147312.dkr.ecr.us-west-2.amazonaws.com/tilo/tilo-builder", "us-west-2", "do not agree"),
+            ("arn:aws:iam::125650147312:role/replicator", "125650147312.dkr.ecr.us-west-2.amazonaws.com/tilo/tilo-builder", "eu-central-1", "do not agree"),
         ):
             with self.subTest(role=role, repository=repository, region=region), self.assertRaisesRegex(ValueError, message):
                 MODULE.regional_identity(role, repository, region)
@@ -402,8 +402,8 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             source = Path(temporary) / "registry-server.txt"
             source_auth = Path(temporary) / "forgejo-auth.json"
             output = Path(temporary) / "replication.txt"
-            source.write_text("code.sandbox.example/qos/tilo-registry-server@" + digest + "\n")
-            source_auth.write_text('{"auths":{"code.sandbox.example":{}}}')
+            source.write_text("registry.tilo.so/tilo/tilo-registry-server@" + digest + "\n")
+            source_auth.write_text('{"auths":{"code.tilo.so":{}}}')
             environment = {
                 "ACTIONS_ID_TOKEN_REQUEST_URL": "https://code.invalid/token",
                 "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-secret",
@@ -415,7 +415,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             ), patch.object(MODULE.subprocess, "run", side_effect=self.execute):
                 target = MODULE.replicate(
                     source,
-                    "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-registry-server",
+                    "125650147312.dkr.ecr.us-west-2.amazonaws.com/tilo/tilo-registry-server",
                     "arn:aws:iam::125650147312:role/burst-us-tilo-builder-replication",
                     "us-west-2",
                     "tilo-builder-replication",
@@ -427,7 +427,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             source_inspect = next(
                 call
                 for call in self.calls
-                if call[:3] == ("skopeo", "inspect", "--raw") and "code.sandbox.example" in call[-1]
+                if call[:3] == ("skopeo", "inspect", "--raw") and "registry.tilo.so" in call[-1]
             )
             copy = next(call for call in self.calls if call[:2] == ("skopeo", "copy"))
             self.assertIn(("--authfile", str(source_auth)), list(zip(source_inspect, source_inspect[1:])))
@@ -446,7 +446,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported media type"):
             MODULE.validate_manifest(
                 {"schemaVersion": 2, "manifests": [descriptor]},
-                "code.sandbox.example/qos/tilo-registry-server",
+                "registry.tilo.so/tilo/tilo-registry-server",
             )
 
     def test_builder_requires_exactly_two_children_but_generic_indexes_do_not(self):
@@ -463,7 +463,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             }
             with self.subTest(count=count), self.assertRaisesRegex(ValueError, "two-platform index"):
                 MODULE.validate_manifest(document, MODULE.SOURCE_REPOSITORY)
-            MODULE.validate_manifest(document, "code.sandbox.example/qos/tilo-registry-server")
+            MODULE.validate_manifest(document, "registry.tilo.so/tilo/tilo-registry-server")
 
     def test_rejects_ambiguous_and_unknown_manifest_shapes(self):
         descriptor = {
@@ -479,12 +479,12 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                     "config": descriptor,
                     "layers": [],
                 },
-                "code.sandbox.example/qos/tilo-registry-server",
+                "registry.tilo.so/tilo/tilo-registry-server",
             )
         with self.assertRaisesRegex(ValueError, "neither index nor image-manifest"):
             MODULE.validate_manifest(
                 {"schemaVersion": 2},
-                "code.sandbox.example/qos/tilo-registry-server",
+                "registry.tilo.so/tilo/tilo-registry-server",
             )
 
     def test_rejects_target_manifest_bytes_changed_after_copy(self):
@@ -539,7 +539,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             with self.subTest(media_type=media_type):
                 MODULE.validate_manifest(
                     {"schemaVersion": 2, "mediaType": media_type, "manifests": [descriptor]},
-                    "code.sandbox.example/qos/tilo-registry-server",
+                    "registry.tilo.so/tilo/tilo-registry-server",
                 )
         for media_type in (
             "application/vnd.oci.image.manifest.v1+json",
@@ -550,7 +550,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                 document = {"schemaVersion": 2, "config": descriptor, "layers": [descriptor]}
                 if media_type is not None:
                     document["mediaType"] = media_type
-                MODULE.validate_manifest(document, "code.sandbox.example/qos/tilo-registry-server")
+                MODULE.validate_manifest(document, "registry.tilo.so/tilo/tilo-registry-server")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,10 @@
-# QoS pleasant layout with minimal effort: proposed architecture and rollout
+# Tilo pleasant layout with minimal effort: proposed architecture and rollout
 
 Status: implementation underway. Intrinsic spacing, host grid geometry, resize settlement, Text sizing, and content-aware cards/actions are implemented and independently reviewed. Automatic forms and guided overrides are implemented and independently reviewed; full manual measure/place, inspection, scaffolding, and the final audit remain required. See the framework layout implementation plan and progress audit.
 
 ## Goal and priorities
 
-Make a pleasant, balanced, adaptive layout the result of very little application code. Developers describe content and grouping; QoS supplies a carefully designed arrangement. Fully manual layout remains a first-class option for any screen, including ordinary forms and app chrome, not only specialized canvases.
+Make a pleasant, balanced, adaptive layout the result of very little application code. Developers describe content and grouping; Tilo supplies a carefully designed arrangement. Fully manual layout remains a first-class option for any screen, including ordinary forms and app chrome, not only specialized canvases.
 
 Priority order:
 
@@ -35,7 +35,7 @@ Automatic means deterministic layout policies, not runtime AI guessing the inter
 - `ui/src/widget/column.rs` and `row.rs` expose padding, filling, wrapping, and intrinsic-size choices that currently require developer knowledge.
 - `ui/src/widget/nav_shell.rs`, `nav_split.rs`, and `app_shell.rs` contain adaptive behavior with distinct purposes. Classify them before selecting the default public patterns.
 - `crates/sdk/tilo-app/src/lib.rs` exposes the full toolkit. Preserve its capabilities while making the automatic path easier to discover.
-- `ui/src/headless.rs` and `crates/dev/qos-dev/src/main.rs` provide inspection, screenshots, scenarios, and responsive acceptance machinery.
+- `ui/src/headless.rs` and `crates/dev/tilo-dev/src/main.rs` provide inspection, screenshots, scenarios, and responsive acceptance machinery.
 - `ui/tests/design_token_audit.rs` checks some styling literals. Distinguish standard framework styling from intentional manual choices and domain geometry; a literal alone does not establish poor layout.
 
 ## 1. Encode pleasant composition in reusable policies
@@ -111,7 +111,7 @@ Supply a small set of polished presets and complete examples. Developers should 
 
 ## 6. Keep checks supportive and concrete
 
-Reuse existing `qos-dev check`, inspection, scenarios, and responsive captures. Detect actual clipping, unreachable actions, missing accessible names, broken focus, and invalid standard color pairs. Exercise long labels, large text, narrow windows, supported themes, and locales.
+Reuse existing `tilo-dev check`, inspection, scenarios, and responsive captures. Detect actual clipping, unreachable actions, missing accessible names, broken focus, and invalid standard color pairs. Exercise long labels, large text, narrow windows, supported themes, and locales.
 
 Include effective clipping and intentional overflow in inspection so scroll content and overlays are not misclassified. Distinguish an automatic-policy defect from a manual constraint causing a problem, with actionable diagnostics for either.
 
@@ -147,7 +147,7 @@ Gate: state/focus survive resize, navigation follows region purpose, and develop
 
 ### Phase 5 — Adopt through templates and targeted checks
 
-Update `qos-dev new`, examples, and serialized UI construction to recommend automatic layout while clearly documenting guided/manual use. Add layout-policy regressions and functional checks. Preserve the low-level SDK and migrate incrementally.
+Update `tilo-dev new`, examples, and serialized UI construction to recommend automatic layout while clearly documenting guided/manual use. Add layout-policy regressions and functional checks. Preserve the low-level SDK and migrate incrementally.
 
 Gate: new apps start with pleasant defaults; existing apps remain compatible; automatic and manual pilots pass shared functional checks.
 
@@ -174,8 +174,8 @@ Low line count alone is not success. The result must look and behave well, and t
 - [GOV.UK Design System accessibility](https://design-system.service.gov.uk/accessibility/) notes that components alone do not make a service accessible. Evaluate actual screens and tasks.
 - [W3C evaluation-tool guidance](https://www.w3.org/WAI/test-evaluate/tools/selecting/) explains automated evaluation limits. Keep aesthetic and workflow judgments in human evaluation.
 
-The three-level model, override rules, and rollout are proposed engineering choices for QoS, not claims that the cited systems implement this exact architecture.
+The three-level model, override rules, and rollout are proposed engineering choices for Tilo, not claims that the cited systems implement this exact architecture.
 
 ## Implementation status — 2026-09-15
 
-The approved seven-task [implementation plan](/Users/user/dev/qos-macos-shell/docs/superpowers/plans/2026-09-15-framework-layout-improvements.md) is complete: reliable primitives, shared resize/measurement lifecycle, automatic cards/forms, guided overrides, first-class retained manual composition, inspection, examples and starter adoption. The broader rollout directions and human productivity study above remain future work. No elapsed authoring-time improvement or human acceptance study is claimed. See [verified acceptance](/Users/user/dev/qos-macos-shell/docs/superpowers/audits/framework-layout-verification/final-acceptance-matrix.md).
+The approved seven-task [implementation plan](/Users/user/dev/tilo-macos-shell/docs/superpowers/plans/2026-09-15-framework-layout-improvements.md) is complete: reliable primitives, shared resize/measurement lifecycle, automatic cards/forms, guided overrides, first-class retained manual composition, inspection, examples and starter adoption. The broader rollout directions and human productivity study above remain future work. No elapsed authoring-time improvement or human acceptance study is claimed. See [verified acceptance](/Users/user/dev/tilo-macos-shell/docs/superpowers/audits/framework-layout-verification/final-acceptance-matrix.md).

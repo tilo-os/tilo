@@ -143,7 +143,7 @@ invoked. Probes retain original admission identities for their descendant maps.
 
 ## Existing preview and inspection
 
-The existing `FrameHarness::inspection()` / `inspection_json()` and qos-dev
+The existing `FrameHarness::inspection()` / `inspection_json()` and tilo-dev
 inspection flow add an optional `layout` property from `Widget::layout_info()`.
 Ordinary widgets without metadata omit it. Page/Form/Section/Field show actual
 resolved values and property origins (`Theme`, `Pattern`, or nearest authored
@@ -178,7 +178,7 @@ and manual-in-automatic fixtures demonstrate mixed nesting. Captures include
 wide/narrow and200% text plus scroll-end views. The source makes author effort
 visible; it is not a measured development-time study.
 
-`qos-dev new --template starter` uses automatic composition and keeps the same
+`tilo-dev new --template starter` uses automatic composition and keeps the same
 localization keys, typed bindings, resources, actions, and control IDs. Its
 generated semantic test checks automatic topology at narrow width and exercises
 name, checkbox, number, slider, dropdown, and derived greeting behavior. Existing

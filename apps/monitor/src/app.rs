@@ -44,12 +44,16 @@ use ui::widget::{
     Button, ButtonFace, ButtonStyle, ModalDialog, Text, TextInput, Toggle, ToggleFace, Widget,
 };
 
-use crate::charts::{self, Series, ts, with_alpha};
 use crate::layout;
-use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo, Ring, fmt_rate, fmt_uptime};
+use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo, fmt_rate, fmt_uptime};
+use crate::paint::{self, ts, with_alpha};
 use crate::prefs::Prefs;
 use crate::sampler::{Sampler, StopKind};
 use crate::tree::{FlattenOpts, Forest, Row, SumMode};
+use ui::charts::{
+    BarGauge, Chart, ChartLabels, ChartStyle, GaugeStyle, RingGauge, RollingSeries, Series,
+    Sparkline, TrendRange,
+};
 use ui::widget::{PushNav, PushPane};
 
 /// A row action chosen from the right-click context menu. The menu's action
@@ -232,6 +236,13 @@ const LONG_PRESS_MS: u128 = 350;
 /// a shorter window than the whole-system charts so the mini-line stays punchy.
 const PROC_SPARK_CAP: usize = 48;
 
+/// The monitor's gauges sit dense on a dashboard: a firmer track so a thin
+/// ring or bar still reads beside its fill, and compact bar labels.
+const GAUGE: GaugeStyle = GaugeStyle {
+    track_alpha: 56,
+    compact_labels: true,
+};
+
 /// Height of the pinned action bar at the bottom of the detail pane. The
 /// Kill/Stop buttons live here and nowhere else, so process content above can
 /// never collide with them however narrow the pane gets.
@@ -308,10 +319,10 @@ impl Density {
         let scale = f64::from(tr.text_scale()).max(f32::EPSILON.into());
         let grow = |line: f64| (line - line / scale).max(0.0);
         let ty = &theme.tokens.typography.scale;
-        let xs = grow(charts::line_h(tr, ty.xs));
-        let sm = grow(charts::line_h(tr, ty.sm));
-        let base = grow(charts::line_h(tr, ty.base));
-        let lg = grow(charts::line_h(tr, ty.lg));
+        let xs = grow(paint::line_h(tr, ty.xs));
+        let sm = grow(paint::line_h(tr, ty.sm));
+        let base = grow(paint::line_h(tr, ty.base));
+        let lg = grow(paint::line_h(tr, ty.lg));
         // Pitch = band + this frame's scaled `s1`: the gap and the pitch are
         // one value, so a scaled theme cannot shrink the band below its floor.
         let row_gap = f64::from(theme.tokens.spacing.s1);
@@ -774,7 +785,7 @@ pub struct MonitorApp {
     /// feeding the detail-pane sparkline. A PID alone is not an identity: using
     /// the same `(pid, started_at)` tuple as resource actions prevents a new
     /// process inheriting a recycled PID's history after a refresh.
-    proc_cpu_hist: HashMap<(u32, u64), Ring>,
+    proc_cpu_hist: HashMap<(u32, u64), RollingSeries>,
 
     // responsive layout
     /// The Processes master-detail push flow used only when narrow.
@@ -998,7 +1009,7 @@ impl MonitorApp {
         for p in &self.model.processes {
             self.proc_cpu_hist
                 .entry((p.pid, p.started_at))
-                .or_insert_with(|| Ring::new(PROC_SPARK_CAP))
+                .or_insert_with(|| RollingSeries::new(PROC_SPARK_CAP))
                 .push(p.cpu);
         }
         let live: HashSet<(u32, u64)> = self
@@ -1020,7 +1031,7 @@ impl MonitorApp {
             return;
         };
         let base = p.cpu;
-        let ring = Ring::from_iter(
+        let ring = RollingSeries::from_samples(
             PROC_SPARK_CAP,
             (0..PROC_SPARK_CAP).map(|i| {
                 let t = i as f32;
@@ -1752,7 +1763,7 @@ impl MonitorApp {
         r: Rect,
     ) {
         let c = &theme.tokens.colors;
-        let inner = charts::panel(scene, t, r, theme, 12.0);
+        let inner = paint::panel(scene, t, r, theme, 12.0);
         let xs = ts(tr, theme.tokens.typography.scale.xs);
         let sm = ts(tr, theme.tokens.typography.scale.sm);
         // Segment/pill height: the 1× 30 px control grown by its `sm` label's
@@ -1910,7 +1921,7 @@ impl MonitorApp {
         // Uptime caption (second line) — dropped when space is tight. It
         // stacks on the clock's measured line box so the pair never overlaps.
         if show_uptime {
-            let caption_top = inner.y0 + 1.0 + charts::line_box(tr, cs) + 1.0;
+            let caption_top = inner.y0 + 1.0 + paint::line_box(tr, cs) + 1.0;
             tr.draw_text(
                 scene,
                 &up_caption,
@@ -1956,14 +1967,14 @@ impl MonitorApp {
                 self.prefs.auto_refresh,
             ),
         ] {
-            charts::fill_rrect(
+            paint::fill_rrect(
                 scene,
                 t,
                 rect,
                 6.0,
                 c.lift(if active { 0.55 } else { 0.35 }),
             );
-            charts::stroke_rrect(
+            paint::stroke_rrect(
                 scene,
                 t,
                 rect,
@@ -2028,7 +2039,7 @@ impl MonitorApp {
         let c = &theme.tokens.colors;
         let radius = r.height() / 2.0;
         if active {
-            charts::fill_rrect(scene, t, r, radius, c.accent[5]);
+            paint::fill_rrect(scene, t, r, radius, c.accent[5]);
         } else {
             ui::surface::card(scene, t, r, radius, c.lift(0.35));
         }
@@ -2118,7 +2129,7 @@ impl MonitorApp {
                 Cell {
                     label: "CPU",
                     value: format!("{overall:.0}%"),
-                    vcolor: charts::load_color(theme, overall / 100.0),
+                    vcolor: paint::load_color(theme, overall / 100.0),
                     data: m.cpu_hist.as_slice().to_vec(),
                     max: 100.0,
                     spark: c.accent[5],
@@ -2161,7 +2172,7 @@ impl MonitorApp {
             let x0 = r.x0 + col as f64 * (cell_w + GAP);
             let y0 = r.y0 + row as f64 * (self.density.strip_cell_h + GAP);
             let rect = Rect::new(x0, y0, x0 + cell_w, y0 + self.density.strip_cell_h);
-            let inner = charts::panel(scene, t, rect, theme, layout::STRIP_CELL_PAD);
+            let inner = paint::panel(scene, t, rect, theme, layout::STRIP_CELL_PAD);
             // Label (dim, left). The single-row strip keeps a constant height so
             // the table below never loses height; the cell instead adapts
             // horizontally — value beside the label when it fits, else stacked
@@ -2210,9 +2221,36 @@ impl MonitorApp {
             };
             // Sparkline fills the remaining lower portion of the cell.
             let sr = Rect::new(inner.x0, spark_top.min(inner.y1), inner.x1, inner.y1);
-            charts::sparkline(scene, t, sr, &cell.data, cell.max, cell.spark);
+            Sparkline::draw_at(scene, t, sr, &cell.data, cell.max, cell.spark);
             self.hit.summary_cells.push(rect);
         }
+    }
+
+    /// The processor card's CPU-load ring, centred on `center` and sized for
+    /// the text `scale`.
+    fn cpu_ring(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        center: Point,
+        scale: f64,
+        overall: f32,
+    ) {
+        RingGauge::draw_styled(
+            scene,
+            t,
+            tr,
+            center,
+            44.0 * scale,
+            9.0 * scale,
+            overall / 100.0,
+            paint::load_color(theme, overall / 100.0),
+            theme,
+            &format!("{overall:.0}%"),
+            "CPU LOAD",
+            &GAUGE,
+        );
     }
 
     /// The Resources overview **Processor** card: a CPU-load ring gauge, plus
@@ -2230,7 +2268,7 @@ impl MonitorApp {
         let scale = f64::from(theme.text_scale);
         let c = &theme.tokens.colors;
         let m = &self.model.metrics;
-        let inner = charts::panel(scene, t, rect, theme, 12.0);
+        let inner = paint::panel(scene, t, rect, theme, 12.0);
         tr.draw_text_weighted(
             scene,
             "Processor",
@@ -2250,19 +2288,7 @@ impl MonitorApp {
             // scaling these positions a 200% card left its labels piled up at
             // the top and most of the card empty.
             let center = Point::new(inner.x0 + 62.0 * scale, inner.center().y + 8.0 * scale);
-            charts::ring_gauge(
-                scene,
-                t,
-                tr,
-                center,
-                44.0 * scale,
-                9.0 * scale,
-                overall / 100.0,
-                charts::load_color(theme, overall / 100.0),
-                theme,
-                &format!("{overall:.0}%"),
-                "CPU LOAD",
-            );
+            Self::cpu_ring(scene, t, tr, theme, center, scale, overall);
             let sx = inner.x0 + 138.0 * scale;
             let procs = self.model.processes.len();
             let threads: usize = self.model.processes.iter().map(|p| p.threads).sum();
@@ -2302,19 +2328,7 @@ impl MonitorApp {
         } else {
             // Narrow/stacked: centred ring with the load average beneath it.
             let center = Point::new(inner.center().x, inner.y0 + 84.0 * scale);
-            charts::ring_gauge(
-                scene,
-                t,
-                tr,
-                center,
-                44.0 * scale,
-                9.0 * scale,
-                overall / 100.0,
-                charts::load_color(theme, overall / 100.0),
-                theme,
-                &format!("{overall:.0}%"),
-                "CPU LOAD",
-            );
+            Self::cpu_ring(scene, t, tr, theme, center, scale, overall);
             let la = format!(
                 "load  {:.2}  {:.2}  {:.2}",
                 m.load_avg[0], m.load_avg[1], m.load_avg[2]
@@ -2346,7 +2360,7 @@ impl MonitorApp {
     ) {
         let c = &theme.tokens.colors;
         let m = &self.model.metrics;
-        let mi = charts::panel(scene, t, rect, theme, 12.0);
+        let mi = paint::panel(scene, t, rect, theme, 12.0);
         tr.draw_text_weighted(
             scene,
             "Memory",
@@ -2364,23 +2378,24 @@ impl MonitorApp {
             format_bytes(m.mem_used),
             format_bytes(m.mem_total)
         );
-        charts::bar_gauge(
+        BarGauge::draw_styled(
             scene,
             t,
             tr,
             Rect::new(mi.x0, ram_y, mi.x1, ram_y + gauge_h),
             theme,
             m.mem_frac(),
-            charts::load_color(theme, m.mem_frac()),
+            paint::load_color(theme, m.mem_frac()),
             "RAM",
             &ram_label,
+            &GAUGE,
         );
         let swap_label = format!(
             "{} / {}",
             format_bytes(m.swap_used),
             format_bytes(m.swap_total)
         );
-        charts::bar_gauge(
+        BarGauge::draw_styled(
             scene,
             t,
             tr,
@@ -2395,12 +2410,13 @@ impl MonitorApp {
             c.accent[5],
             "Swap",
             &swap_label,
+            &GAUGE,
         );
         // A memory sparkline fills the remaining height on the taller (abreast
         // or fixed-height) card.
         if mi.height() >= 108.0 * scale {
             let sr = Rect::new(mi.x0, ram_y + 2.0 * gauge_h + 24.0 * scale, mi.x1, mi.y1);
-            charts::sparkline(scene, t, sr, m.mem_hist.as_slice(), 1.0, c.semantic.success);
+            Sparkline::draw_at(scene, t, sr, m.mem_hist.as_slice(), 1.0, c.semantic.success);
         }
     }
 
@@ -2417,7 +2433,7 @@ impl MonitorApp {
         let scale = f64::from(theme.text_scale);
         let c = &theme.tokens.colors;
         let m = &self.model.metrics;
-        let ii = charts::panel(scene, t, rect, theme, 12.0);
+        let ii = paint::panel(scene, t, rect, theme, 12.0);
         tr.draw_text_weighted(
             scene,
             "System",
@@ -2481,7 +2497,7 @@ impl MonitorApp {
     ) {
         let c = &theme.tokens.colors;
         let n = self.model.metrics.cores.len().max(1);
-        let ci = charts::panel(scene, t, core_panel, theme, layout::RAIL_CARD_PAD);
+        let ci = paint::panel(scene, t, core_panel, theme, layout::RAIL_CARD_PAD);
         tr.draw_text_weighted(
             scene,
             &format!("Per-Core Utilisation  ·  {n} threads"),
@@ -2500,16 +2516,17 @@ impl MonitorApp {
             let rowi = i / cols;
             let x0 = ci.x0 + col as f64 * (cell_w + layout::CORE_GAP);
             let y0 = grid_top + rowi as f64 * (layout::CORE_ROW_STRIDE + self.density.core_extra);
-            charts::bar_gauge(
+            BarGauge::draw_styled(
                 scene,
                 t,
                 tr,
                 Rect::new(x0, y0, x0 + cell_w, y0 + 22.0 * scale),
                 theme,
                 usage / 100.0,
-                charts::load_color(theme, usage / 100.0),
+                paint::load_color(theme, usage / 100.0),
                 &format!("C{i}"),
                 &format!("{usage:.0}%"),
+                &GAUGE,
             );
         }
     }
@@ -2606,7 +2623,7 @@ impl MonitorApp {
         theme: &Theme,
         table_panel: Rect,
     ) {
-        let ti = charts::panel(scene, t, table_panel, theme, 0.0);
+        let ti = paint::panel(scene, t, table_panel, theme, 0.0);
         let pad = layout::TABLE_PAD;
         // The columns' content viewport: the card inner box minus left/right
         // padding. Columns are laid out in *content space* (x from 0) and the
@@ -2676,7 +2693,7 @@ impl MonitorApp {
     ) {
         let c = &theme.tokens.colors;
         let hdr = geom.hdr;
-        charts::fill_rrect(scene, t, hdr, 0.0, c.surfaces.base);
+        paint::fill_rrect(scene, t, hdr, 0.0, c.surfaces.base);
         scene.stroke(
             &Stroke::new(1.0),
             t,
@@ -2806,7 +2823,7 @@ impl MonitorApp {
             let (bw, _) = tr.measure(body, sm, None);
             let cx = geom.view.center().x;
             let cy = geom.view.center().y;
-            let title_top = cy - charts::line_box(tr, base) - 0.5;
+            let title_top = cy - paint::line_box(tr, base) - 0.5;
             tr.draw_text_weighted(
                 scene,
                 title,
@@ -2833,8 +2850,8 @@ impl MonitorApp {
                     cx + button_w / 2.0,
                     cy + 28.0 + button_h,
                 );
-                charts::fill_rrect(scene, t, button, 7.0, c.accent[5]);
-                charts::stroke_rrect(scene, t, button, 7.0, c.accent[6], 1.0);
+                paint::fill_rrect(scene, t, button, 7.0, c.accent[5]);
+                paint::stroke_rrect(scene, t, button, 7.0, c.accent[6], 1.0);
                 let icon = Rect::new(
                     button.x0 + 13.0,
                     button.center().y - 7.0,
@@ -2916,7 +2933,7 @@ impl MonitorApp {
         let c = &theme.tokens.colors;
         let selected = self.selected_pid == Some(p.pid);
         if selected {
-            charts::fill_rrect(
+            paint::fill_rrect(
                 scene,
                 t,
                 Rect::new(row.x0, row.y0, row.x1, row.y1),
@@ -2926,7 +2943,7 @@ impl MonitorApp {
             let bar = Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1);
             scene.fill(Fill::NonZero, t, c.accent[5], None, &bar);
         } else if alt {
-            charts::fill_rrect(scene, t, row, 0.0, c.neutral[2]);
+            paint::fill_rrect(scene, t, row, 0.0, c.neutral[2]);
         }
 
         let fs = ts(tr, theme.tokens.typography.scale.sm);
@@ -2969,7 +2986,7 @@ impl MonitorApp {
         // the hue so a hot subtree reads as fully loaded.
         let cpu_frac = (p.cpu / 100.0).clamp(0.0, 1.0);
         let cpu_col = if p.cpu >= 1.0 {
-            charts::load_color(theme, cpu_frac)
+            paint::load_color(theme, cpu_frac)
         } else {
             txt
         };
@@ -3083,7 +3100,7 @@ impl MonitorApp {
         if rows_len > self.rows_per_page {
             let view = geom.view;
             let track = Rect::new(view.x1 - 8.0, view.y0, view.x1 - 1.0, view.y1);
-            charts::fill_rrect(scene, t, track, 2.0, charts::inner_rule(theme, 40));
+            paint::fill_rrect(scene, t, track, 2.0, paint::inner_rule(theme, 40));
             let frac_v = self.rows_per_page as f64 / rows_len as f64;
             let thumb_h = (track.height() * frac_v).max(24.0);
             let max_off = (rows_len - self.rows_per_page) as f64;
@@ -3094,7 +3111,7 @@ impl MonitorApp {
             };
             let ty0 = track.y0 + (track.height() - thumb_h) * pos;
             let thumb = Rect::new(track.x0, ty0, track.x1, ty0 + thumb_h);
-            charts::fill_rrect(scene, t, thumb, 2.0, with_alpha(c.text_dim, 160));
+            paint::fill_rrect(scene, t, thumb, 2.0, with_alpha(c.text_dim, 160));
             self.hit.v_scrollbar = Some(ScrollBarHit {
                 track,
                 thumb,
@@ -3114,13 +3131,13 @@ impl MonitorApp {
                 geom.band.x1,
                 geom.ti.y1 - 1.0,
             );
-            charts::fill_rrect(scene, t, track, 2.0, charts::inner_rule(theme, 40));
+            paint::fill_rrect(scene, t, track, 2.0, paint::inner_rule(theme, 40));
             let frac_h = (geom.avail_w / geom.content_w).clamp(0.0, 1.0);
             let thumb_w = (track.width() * frac_h).max(24.0);
             let pos = (geom.sx / geom.h_overflow).clamp(0.0, 1.0);
             let tx0 = track.x0 + (track.width() - thumb_w) * pos;
             let thumb = Rect::new(tx0, track.y0, tx0 + thumb_w, track.y1);
-            charts::fill_rrect(scene, t, thumb, 2.0, with_alpha(c.text_dim, 160));
+            paint::fill_rrect(scene, t, thumb, 2.0, with_alpha(c.text_dim, 160));
             self.hit.h_scrollbar = Some(ScrollBarHit {
                 track,
                 thumb,
@@ -3326,7 +3343,7 @@ impl MonitorApp {
         let c = &theme.tokens.colors;
         let fs = ts(tr, theme.tokens.typography.scale.sm);
         let radius = rect.height() / 2.0;
-        charts::fill_rrect(
+        paint::fill_rrect(
             scene,
             t,
             rect,
@@ -3337,7 +3354,7 @@ impl MonitorApp {
                 c.lift(0.35)
             },
         );
-        charts::stroke_rrect(
+        paint::stroke_rrect(
             scene,
             t,
             rect,
@@ -3350,7 +3367,7 @@ impl MonitorApp {
             1.0,
         );
         let (lw, _) = tr.measure(label, fs, None);
-        let label_top = rect.center().y - charts::line_box(tr, fs) / 2.0;
+        let label_top = rect.center().y - paint::line_box(tr, fs) / 2.0;
         tr.draw_text(
             scene,
             label,
@@ -3382,7 +3399,7 @@ impl MonitorApp {
             pills_row.y1 - 2.0,
         );
         let on = self.prefs.show_kernel_threads;
-        charts::fill_rrect(
+        paint::fill_rrect(
             scene,
             t,
             kt_r,
@@ -3393,7 +3410,7 @@ impl MonitorApp {
                 c.lift(0.35)
             },
         );
-        charts::stroke_rrect(
+        paint::stroke_rrect(
             scene,
             t,
             kt_r,
@@ -3419,7 +3436,7 @@ impl MonitorApp {
             theme,
             &ToggleFace::new(knob_track, on).on_color(c.accent[5]),
         );
-        let kt_label_top = kt_r.center().y - charts::line_box(tr, fs) / 2.0;
+        let kt_label_top = kt_r.center().y - paint::line_box(tr, fs) / 2.0;
         tr.draw_text(
             scene,
             kt_label,
@@ -3558,14 +3575,14 @@ impl MonitorApp {
             Rect::new(search_row.x0, search_row.y0, right, search_row.y1)
         };
         let radius = search_r.height() / 2.0;
-        charts::fill_rrect(scene, t, search_r, radius, c.surfaces.base);
+        paint::fill_rrect(scene, t, search_r, radius, c.surfaces.base);
         let search_focused = self.search_input.is_focused();
         let border = if search_focused {
             c.border_focus
         } else {
             ui::surface::edge_on(c.surfaces.base)
         };
-        charts::stroke_rrect(
+        paint::stroke_rrect(
             scene,
             t,
             search_r,
@@ -3719,7 +3736,7 @@ impl MonitorApp {
         r: Rect,
     ) {
         let c = &theme.tokens.colors;
-        let inner = charts::panel(scene, t, r, theme, 12.0);
+        let inner = paint::panel(scene, t, r, theme, 12.0);
         self.hit.kill_btn = Rect::ZERO;
         self.hit.stop_btn = Rect::ZERO;
         let Some(p) = self.selected_process() else {
@@ -3798,7 +3815,7 @@ impl MonitorApp {
             None,
             TextWeight::Bold,
         );
-        y += charts::line_box(tr, lg) + 4.0;
+        y += paint::line_box(tr, lg) + 4.0;
         let ident = format!("PID {}   ·   PPID {}   ·   {}", p.pid, ppid, p.user);
         tr.draw_text(
             scene,
@@ -3808,7 +3825,7 @@ impl MonitorApp {
             t * Affine::translate((content.x0, y)),
             None,
         );
-        y += charts::line_box(tr, xs) + 11.5;
+        y += paint::line_box(tr, xs) + 11.5;
 
         tr.draw_text_weighted(
             scene,
@@ -3819,7 +3836,7 @@ impl MonitorApp {
             None,
             TextWeight::Semibold,
         );
-        y += charts::line_box(tr, xs) + 1.5;
+        y += paint::line_box(tr, xs) + 1.5;
         let cmd = Self::truncate(tr, &p.cmd, sm, content.width());
         tr.draw_text(
             scene,
@@ -3829,7 +3846,7 @@ impl MonitorApp {
             t * Affine::translate((content.x0, y)),
             None,
         );
-        y += charts::line_box(tr, sm) + 11.0;
+        y += paint::line_box(tr, sm) + 11.0;
 
         scene.stroke(
             &Stroke::new(1.0),
@@ -3862,7 +3879,7 @@ impl MonitorApp {
         let c = &theme.tokens.colors;
         let xs = ts(tr, theme.tokens.typography.scale.xs);
         let base = ts(tr, theme.tokens.typography.scale.base);
-        let cpu_col = charts::load_color(theme, (p.cpu / 100.0).clamp(0.0, 1.0));
+        let cpu_col = paint::load_color(theme, (p.cpu / 100.0).clamp(0.0, 1.0));
 
         tr.draw_text_weighted(
             scene,
@@ -3886,7 +3903,7 @@ impl MonitorApp {
             None,
             TextWeight::Bold,
         );
-        let y = y + charts::line_box(tr, base) + 2.5;
+        let y = y + paint::line_box(tr, base) + 2.5;
         let grid_h = DETAIL_STAT_COUNT.div_ceil(DETAIL_STAT_COLS) as f64 * self.density.stat_row_h;
         // Sparkline fills the space between the CPU value line and the grid
         // (minus the two 14px divider gaps around it), floored so it stays
@@ -3895,10 +3912,10 @@ impl MonitorApp {
         let spark = Rect::new(content.x0, y, content.x1, y + spark_h);
         // A faint well inside the detail card: a contrast step, not a second
         // edge (HIG §9.5 — a section inside a card gets space, not a box).
-        charts::fill_rrect(scene, t, spark, 6.0, charts::inner_rule(theme, 12));
+        paint::fill_rrect(scene, t, spark, 6.0, paint::inner_rule(theme, 12));
         if let Some(ring) = self.proc_cpu_hist.get(&(p.pid, p.started_at)) {
             let smax = ring.max().max(100.0);
-            charts::sparkline(
+            Sparkline::draw_at(
                 scene,
                 t,
                 layout::inner(spark, 5.0),
@@ -3971,7 +3988,7 @@ impl MonitorApp {
                 None,
             );
             let v = Self::truncate(tr, value, base, cell_w);
-            let value_top = cy + charts::line_box(tr, xs) + 2.5;
+            let value_top = cy + paint::line_box(tr, xs) + 2.5;
             tr.draw_text_weighted(
                 scene,
                 &v,
@@ -4000,7 +4017,7 @@ impl MonitorApp {
         let base = ts(tr, theme.tokens.typography.scale.base);
         let lg = ts(tr, theme.tokens.typography.scale.lg);
         let ppid = p.ppid.map_or_else(|| "—".into(), |x| x.to_string());
-        let cpu_col = charts::load_color(theme, (p.cpu / 100.0).clamp(0.0, 1.0));
+        let cpu_col = paint::load_color(theme, (p.cpu / 100.0).clamp(0.0, 1.0));
 
         let cluster_w = 92.0 + 8.0 + 92.0;
         let bar = Rect::new(inner.x1 - cluster_w, inner.y1 - 32.0, inner.x1, inner.y1);
@@ -4020,7 +4037,7 @@ impl MonitorApp {
             p.pid, ppid, p.user, p.status
         );
         let ident = Self::truncate(tr, &ident, xs, chips_right - inner.x0);
-        let ident_top = inner.y0 + charts::line_box(tr, lg);
+        let ident_top = inner.y0 + paint::line_box(tr, lg);
         tr.draw_text(
             scene,
             &ident,
@@ -4033,8 +4050,8 @@ impl MonitorApp {
         // Chip row along the bottom, stopping before the button cluster. The
         // value line sits on the card's bottom edge and the label stacks on
         // its measured line box, so the pair stays a pair at every text scale.
-        let value_top = inner.y1 - charts::line_box(tr, base) + 1.5;
-        let label_top = value_top - charts::line_box(tr, xs) - 1.5;
+        let value_top = inner.y1 - paint::line_box(tr, base) + 1.5;
+        let label_top = value_top - paint::line_box(tr, xs) - 1.5;
         let chip = |scene: &mut Scene,
                     tr: &mut TextRenderer,
                     x: f64,
@@ -4246,6 +4263,45 @@ impl MonitorApp {
         y
     }
 
+    /// One rolling chart on a raised card: a semibold title, and a faint grid
+    /// that stays inside the card instead of competing with its edge.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a chart card combines paint context and bounds with title, series, numeric ceiling and formatted axis labels"
+    )]
+    fn area_chart(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        rect: Rect,
+        theme: &Theme,
+        title: &str,
+        series: &[Series],
+        max: f32,
+        axis_hi: &str,
+        axis_lo: &str,
+    ) {
+        let inner = paint::panel(scene, t, rect, theme, 12.0);
+        let style = ChartStyle::default()
+            .with_grid(4, Some(paint::inner_rule(theme, 26)))
+            .with_title_weight(TextWeight::Semibold);
+        Chart::draw_styled(
+            scene,
+            t,
+            tr,
+            inner,
+            theme,
+            series,
+            TrendRange::up_to(f64::from(max)),
+            ChartLabels {
+                title,
+                axis_hi,
+                axis_lo,
+            },
+            &style,
+        );
+    }
+
     /// The chart grid: CPU / Memory / Network / Disk, two-up when wide and
     /// one column when narrow, starting at `top`. Each cell keeps a legible
     /// minimum height; when the viewport is short the page scrolls.
@@ -4275,35 +4331,33 @@ impl MonitorApp {
 
         let metrics = &self.model.metrics;
         // CPU%.
-        charts::area_chart(
+        Self::area_chart(
             scene,
             t,
             tr,
             cell(0),
             theme,
             "CPU",
-            &[Series {
-                data: metrics.cpu_hist.as_slice(),
-                color: c.accent[5],
-                legend: format!("{:.0}%", metrics.cpu_overall()),
-            }],
+            &[
+                Series::new(metrics.cpu_hist.as_slice().to_vec(), c.accent[5])
+                    .with_legend(format!("{:.0}%", metrics.cpu_overall())),
+            ],
             100.0,
             "100%",
             "0%",
         );
         // Memory%.
-        charts::area_chart(
+        Self::area_chart(
             scene,
             t,
             tr,
             cell(1),
             theme,
             "Memory",
-            &[Series {
-                data: metrics.mem_hist.as_slice(),
-                color: c.semantic.success,
-                legend: format_bytes(metrics.mem_used),
-            }],
+            &[
+                Series::new(metrics.mem_hist.as_slice().to_vec(), c.semantic.success)
+                    .with_legend(format_bytes(metrics.mem_used)),
+            ],
             1.0,
             "100%",
             "0%",
@@ -4329,7 +4383,7 @@ impl MonitorApp {
             .max(metrics.net_tx_hist.max())
             .max(1.0)
             * 1.2;
-        charts::area_chart(
+        Self::area_chart(
             scene,
             t,
             tr,
@@ -4337,16 +4391,10 @@ impl MonitorApp {
             theme,
             "Network",
             &[
-                Series {
-                    data: metrics.net_rx_hist.as_slice(),
-                    color: c.semantic.info,
-                    legend: format!("↓ {}", fmt_rate(metrics.net_rx)),
-                },
-                Series {
-                    data: metrics.net_tx_hist.as_slice(),
-                    color: c.accent[6],
-                    legend: format!("↑ {}", fmt_rate(metrics.net_tx)),
-                },
+                Series::new(metrics.net_rx_hist.as_slice().to_vec(), c.semantic.info)
+                    .with_legend(format!("↓ {}", fmt_rate(metrics.net_rx))),
+                Series::new(metrics.net_tx_hist.as_slice().to_vec(), c.accent[6])
+                    .with_legend(format!("↑ {}", fmt_rate(metrics.net_tx))),
             ],
             net_max,
             &fmt_rate(net_max),
@@ -4358,7 +4406,7 @@ impl MonitorApp {
             .max(metrics.disk_write_hist.max())
             .max(1.0)
             * 1.2;
-        charts::area_chart(
+        Self::area_chart(
             scene,
             t,
             tr,
@@ -4366,16 +4414,16 @@ impl MonitorApp {
             theme,
             "Disk I/O",
             &[
-                Series {
-                    data: metrics.disk_read_hist.as_slice(),
-                    color: c.semantic.warning,
-                    legend: format!("R {}", fmt_rate(metrics.disk_read)),
-                },
-                Series {
-                    data: metrics.disk_write_hist.as_slice(),
-                    color: c.semantic.danger,
-                    legend: format!("W {}", fmt_rate(metrics.disk_write)),
-                },
+                Series::new(
+                    metrics.disk_read_hist.as_slice().to_vec(),
+                    c.semantic.warning,
+                )
+                .with_legend(format!("R {}", fmt_rate(metrics.disk_read))),
+                Series::new(
+                    metrics.disk_write_hist.as_slice().to_vec(),
+                    c.semantic.danger,
+                )
+                .with_legend(format!("W {}", fmt_rate(metrics.disk_write))),
             ],
             disk_max,
             &fmt_rate(disk_max),
@@ -5987,7 +6035,7 @@ impl MonitorApp {
     ) {
         let track = Rect::new(body.x1 - 8.0, body.y0, body.x1 - 1.0, body.y1);
         let c = &theme.tokens.colors;
-        charts::fill_rrect(scene, t, track, 2.0, charts::inner_rule(theme, 40));
+        paint::fill_rrect(scene, t, track, 2.0, paint::inner_rule(theme, 40));
         let frac_v = (viewport_h / self.content_h).clamp(0.0, 1.0);
         let thumb_h = (track.height() * frac_v).max(24.0);
         let pos = if page_overflow > 0.0 {
@@ -5997,7 +6045,7 @@ impl MonitorApp {
         };
         let ty0 = track.y0 + (track.height() - thumb_h) * pos;
         let thumb = Rect::new(track.x0, ty0, track.x1, ty0 + thumb_h);
-        charts::fill_rrect(scene, t, thumb, 2.0, with_alpha(c.text_dim, 160));
+        paint::fill_rrect(scene, t, thumb, 2.0, with_alpha(c.text_dim, 160));
         self.hit.page_scrollbar = Some(ScrollBarHit {
             track,
             thumb,
@@ -6098,7 +6146,7 @@ impl MonitorApp {
         let c = &theme.tokens.colors;
         for (_idx, rect) in &self.hit.menu_items {
             if rect.contains(cur) {
-                charts::fill_rrect(scene, t, *rect, 4.0, with_alpha(c.accent[5], 70));
+                paint::fill_rrect(scene, t, *rect, 4.0, with_alpha(c.accent[5], 70));
             }
         }
         // Re-draw labels over the highlight so they stay legible.
@@ -6415,7 +6463,7 @@ mod tests {
         let theme = Theme::dark().with_text_scale(2.0);
         let d = Density::measure(&mut tr, &theme);
         let sm = ts(&tr, theme.tokens.typography.scale.sm);
-        let sm_line = charts::line_box(&mut tr, sm);
+        let sm_line = paint::line_box(&mut tr, sm);
         assert!(
             (sm - theme.tokens.typography.scale.sm / 2.0).abs() < 1e-4,
             "the token is fed to the renderer at half size so it paints once at 2×: {sm}"

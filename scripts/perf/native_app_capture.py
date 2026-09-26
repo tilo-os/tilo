@@ -57,7 +57,7 @@ def expand_scenario(scenario):
 
 
 def window_metadata(lines, pointer_passthrough=False):
-    windows=rows(lines,'qos-native-window ')
+    windows=rows(lines,'tilo-native-window ')
     if len(windows)!=1:
         raise ValueError('Missing or repeated native window metadata')
     window=windows[0]
@@ -106,15 +106,15 @@ def diagnostics_drained(lines, expected_cpu_ids):
     Legacy binaries emit none. This is a drain gate, not evidence validation;
     strict shape/identity/clock checks still run on the final complete log.
     """
-    render_prefixes=('qos-native-send ', 'qos-native-worker ', 'qos-native-present-call ')
+    render_prefixes=('tilo-native-send ', 'tilo-native-worker ', 'tilo-native-present-call ')
     groups=[rows(lines,prefix) for prefix in render_prefixes]
-    main=rows(lines,'qos-native-main-stages ')
+    main=rows(lines,'tilo-native-main-stages ')
     if any(groups) or main:
         if any(not expected_cpu_ids <= {r.get('cpu_frame_id') for r in group} for group in groups):
             return False
     if main and not expected_cpu_ids <= {r.get('cpu_frame_id') for r in main}:
         return False
-    handoffs=rows(lines,'qos-native-worker-handoff ')
+    handoffs=rows(lines,'tilo-native-worker-handoff ')
     if handoffs and not expected_cpu_ids <= {r.get('cpu_frame_id') for r in handoffs}:
         return False
     # A handoff is emitted before rendering, including auxiliary frames that
@@ -128,27 +128,27 @@ def diagnostics_drained(lines, expected_cpu_ids):
 
 def main(app_kind='scratchpad'):
     if app_kind == 'scratchpad':
-        app_id = 'dev.qos.scratchpad'
+        app_id = 'dev.tilo.scratchpad'
         fixture_name, open_flag, minimum_lines = 'data', '--data-dir', 1000
         validate_typing, validate_scroll = validate_scratchpad_typing, validate_scratchpad_scroll
         validate_frames = validate_scratchpad_frame_states
     elif app_kind == 'code-editor':
         from code_editor_effects import (validate_code_editor_typing,
             validate_code_editor_scroll, validate_code_editor_frame_states)
-        app_id = 'dev.qos.code-editor'
+        app_id = 'dev.tilo.code-editor'
         fixture_name, open_flag, minimum_lines = 'fixture.rs', '--path', 2000
         validate_typing, validate_scroll = validate_code_editor_typing, validate_code_editor_scroll
         validate_frames = validate_code_editor_frame_states
     elif app_kind == 'file-explorer':
         from file_explorer_effects import (validate_file_explorer_scroll,
             validate_file_explorer_frame_states)
-        app_id = 'dev.qos.file-explorer'
+        app_id = 'dev.tilo.file-explorer'
         fixture_name, open_flag, minimum_lines = 'fixture', None, None
         validate_typing, validate_scroll = None, validate_file_explorer_scroll
         validate_frames = validate_file_explorer_frame_states
     elif app_kind == 'settings':
         from settings_effects import validate_settings_typing, validate_settings_frame_states
-        app_id = 'dev.qos.settings'
+        app_id = 'dev.tilo.settings'
         fixture_name, open_flag, minimum_lines = None, None, None
         validate_typing = lambda scenario, lines, _manifest: validate_settings_typing(scenario, lines)
         validate_scroll = None
@@ -208,15 +208,15 @@ def main(app_kind='scratchpad'):
                     raise ValueError('Directory fixture is too small for this workload')
             elif manifest.get('lines',0)<minimum_lines or manifest.get('body_bytes',0)<10000:
                 raise ValueError('Fixture is too small for this workload')
-        env={key:value for key,value in os.environ.items() if not key.startswith(('QOS_','QUICK_'))}
-        env.update(QOS_PROFILE_PRESENTATION='1',QOS_NATIVE_SCENARIO=str(out/'scenario.json'),
-                   QOS_PROFILE_OUT=str(out/'frames.jsonl'),QOS_PROFILE_WINDOW_FRONT='1',
-                   QOS_PROFILE_WINDOW_NO_ACTIVATE='1' if args.no_activate else '0',
-                   QOS_PROFILE_WINDOW_POSITION='20,60',
-                   QOS_PROFILE_POINTER_PASSTHROUGH='1' if args.pointer_passthrough else '0',QUICK_UI_PRESENT='1',
+        env={key:value for key,value in os.environ.items() if not key.startswith(('TILO_','QUICK_'))}
+        env.update(TILO_PROFILE_PRESENTATION='1',TILO_NATIVE_SCENARIO=str(out/'scenario.json'),
+                   TILO_PROFILE_OUT=str(out/'frames.jsonl'),TILO_PROFILE_WINDOW_FRONT='1',
+                   TILO_PROFILE_WINDOW_NO_ACTIVATE='1' if args.no_activate else '0',
+                   TILO_PROFILE_WINDOW_POSITION='20,60',
+                   TILO_PROFILE_POINTER_PASSTHROUGH='1' if args.pointer_passthrough else '0',QUICK_UI_PRESENT='1',
                    QUICK_APP_ID=app_id,XDG_DATA_HOME=str(out/'xdg'),
                    XDG_CONFIG_HOME=str(out/'config'),XDG_CACHE_HOME=str(out/'cache'),
-                   QOS_WORKSPACE_ID=str(uuid.uuid4()))
+                   TILO_WORKSPACE_ID=str(uuid.uuid4()))
         with (out/'host-processes.txt').open('w') as host_log:
             subprocess.run(['ps','-Ao','pid,pcpu,comm'],stdout=host_log,check=True)
         with (out/'app.log').open('w') as log:
@@ -226,7 +226,7 @@ def main(app_kind='scratchpad'):
             deadline=time.monotonic()+max(60,len(scenario['steps'])*scenario['interval_us']/1e6+30)
             while True:
                 lines=(out/'app.log').read_text().split('\n')[:-1]
-                effects=rows(lines,'qos-native-effect ')
+                effects=rows(lines,'tilo-native-effect ')
                 require_running(process)
                 if len(effects)>=len(scenario['steps']):
                     break
@@ -237,9 +237,9 @@ def main(app_kind='scratchpad'):
             while time.monotonic()<drain:
                 require_running(process)
                 lines=(out/'app.log').read_text().split('\n')[:-1]
-                mapped=rows(lines,'qos-native-frame ')
+                mapped=rows(lines,'tilo-native-frame ')
                 covered={i for row in mapped for i in row['input_ids']}
-                callbacks={r['cpu_frame_id'] for r in rows(lines,'qos-display-frame ')}
+                callbacks={r['cpu_frame_id'] for r in rows(lines,'tilo-display-frame ')}
                 if (covered==set(range(len(scenario['steps'])))
                         and all(r['cpu_frame_id'] in callbacks for r in mapped)
                         and diagnostics_drained(lines,{r['cpu_frame_id'] for r in mapped})):
@@ -260,7 +260,7 @@ def main(app_kind='scratchpad'):
         report['verified_effect_steps']=validate(scenario,lines,manifest)
         report['post_draw_state_frames']=validate_frames(scenario,lines)
         validate_measured_workload(scenario,args.mode,typing_character='z' if app_kind == 'settings' else 'x')
-        mappings=rows(lines,'qos-native-frame ')
+        mappings=rows(lines,'tilo-native-frame ')
         measured=[r['cpu_frame_id'] for r in mappings if min(r['input_ids'])>=scenario['warmup_steps']]
         report['input_associated_presentation']=summarize_presentation(lines,measured)
         active=[r['frame'] for r in frames if min(measured)<=r['frame']<=max(measured)]

@@ -2,7 +2,7 @@
 
 #include <cmath>
 
-namespace qos {
+namespace tilo {
 
 enum class ResizeEffect { Changed, Repaint };
 
@@ -50,4 +50,4 @@ class ViewGeometry {
   double scale_ = 1.0;
 };
 
-}  // namespace qos
+}  // namespace tilo

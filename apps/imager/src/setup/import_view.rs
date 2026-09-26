@@ -1298,7 +1298,7 @@ impl ImportApp {
                     } else {
                         let parent = xdg_paths::data_local_dir()
                             .ok_or("No local user data directory")?
-                            .join("qos/files");
+                            .join("tilo/files");
                         super::migration_store::ensure_private_root(&parent)
                             .map_err(|e| e.to_string())?;
                         parent

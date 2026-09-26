@@ -8,6 +8,13 @@
 //! change it makes carries the run's attribution, the finished run is
 //! recorded as one history run, and undoing that run reverts both changes.
 //! A shortcut whose steps reach outside its grant is refused at save time.
+//!
+//! Triggers start saved shortcuts the same way: a chord pressed in a
+//! compositor session runs the shortcut saved with it, a schedule fires
+//! once per fire time across a restart and catches up (or not) after a
+//! sleep, a step asking for confirmation runs unattended only when its
+//! saver consented in advance, and revoking the saver's membership or
+//! deleting the shortcut stops its triggers.
 
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
@@ -19,6 +26,7 @@ use automerge::{AutoCommit, ReadDoc};
 use collab_types::{PermissionProfileRule, Scope, Verb};
 use ed25519_dalek::{Signer as _, SigningKey};
 use serde_json::{Map, Value, json};
+use shell::shell::automation_triggers::{Firing, ManualClock, TriggerEvent, TriggerHost, armed};
 use shell::shell::state::WorkspaceAuthority as _;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
@@ -29,7 +37,8 @@ use tilo_actions::{
     InvocationUpdate, OperationKind, ParamType, ResultSpec,
 };
 use tilo_automation::{
-    Binding, SHORTCUTS_APP_ID, Selector, Shortcut, Step, StepKind, shortcut_resource_id,
+    Binding, CatchUp, RunId, SHORTCUTS_APP_ID, Schedule, Selector, Shortcut, Step, StepKind,
+    TriggerSpec, UnattendedConsent, shortcut_resource_id,
 };
 use ui::collaboration::{
     CertifiedEndpointIdentity, CollabEvent, CollabRequest, CollaborationManager, ExportedAction,
@@ -43,6 +52,18 @@ const FIXTURE_HANDLE: &str = "drafts";
 const RECORD: &str = "file:drafts.qdoc";
 const INBOX: &str = "fixture.drafts:inbox";
 const DEADLINE: Duration = Duration::from_secs(20);
+/// A member of the room who is not its owner.
+const BOB: &str = "person:bob";
+/// The person a fixture compositor session acts for.
+fn session_person() -> String {
+    shell::shell::state::local_user_id_for_room(
+        &shell::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"),
+    )
+}
+
+fn membership_id(member: &str) -> String {
+    format!("{member}-membership")
+}
 
 fn device_key(handle: &str) -> SigningKey {
     let mut seed = [0_u8; 32];
@@ -124,6 +145,19 @@ fn spawn_broker(
             ),
         )
         .expect("the owner grants the fixture its own surface");
+    for member in [BOB.to_string(), session_person()] {
+        workspace
+            .grant_as(
+                &owner,
+                ui::permissions::CapOverride::membership(
+                    ui::permissions::Subject::person(member.clone()),
+                    workspace.room.to_string(),
+                    ui::permissions::Verb::Write,
+                )
+                .with_id(membership_id(&member)),
+            )
+            .expect("the owner admits a member who may edit");
+    }
     let mut tree = shell::shell::state::WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
@@ -215,6 +249,14 @@ impl FixtureApp {
                     )],
                     ResultSpec::None,
                 ),
+                ExportedAction {
+                    contract_json: serde_json::to_string(&ActionContract {
+                        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                        ..ActionContract::default()
+                    })
+                    .expect("contract JSON"),
+                    ..exported("archive", "Archive inbox", &[], ResultSpec::None)
+                },
             ],
         });
         manager.send(CollabRequest::document_snapshot(doc.save()));
@@ -285,6 +327,12 @@ impl FixtureApp {
                     .expect("publish the draft");
                 ActionOutput::default()
             }
+            "archive" => {
+                self.doc
+                    .put(automerge::ROOT, "archived", true)
+                    .expect("archive the inbox");
+                ActionOutput::default()
+            }
             other => panic!("the fixture publishes no `{other}`"),
         };
         let message = context.and_then(ActionContext::change_message);
@@ -313,7 +361,7 @@ struct Door {
     owner: Caller,
     app: FixtureApp,
     deadline: Instant,
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
 }
 
 impl Door {
@@ -333,9 +381,12 @@ impl Door {
             deadline: Instant::now()
                 .checked_add(DEADLINE)
                 .expect("the deadline fits in an Instant"),
-            _dir: dir,
+            dir,
         };
-        while !(door.offers(FIXTURE, INBOX, "draft") && door.offers(FIXTURE, INBOX, "publish")) {
+        while !["draft", "publish", "archive"]
+            .into_iter()
+            .all(|action| door.offers(FIXTURE, INBOX, action))
+        {
             assert!(
                 Instant::now() < door.deadline,
                 "the fixture's actions were never offered"
@@ -372,10 +423,21 @@ impl Door {
         action: &str,
         arguments: &Value,
     ) -> Result<(InvocationId, ReceiptStatus), ActionHostError> {
+        self.invoke_as(&self.owner, resource, action, arguments)
+    }
+
+    /// Invoke a published action of the room's own provider as `caller`.
+    fn invoke_as(
+        &self,
+        caller: &Caller,
+        resource: &str,
+        action: &str,
+        arguments: &Value,
+    ) -> Result<(InvocationId, ReceiptStatus), ActionHostError> {
         let invocation = InvocationId::new();
         let arguments = arguments.as_object().cloned().unwrap_or_default();
         let receipt = answer(self.host.invoke(
-            &self.owner,
+            caller,
             InvokeRequest {
                 invocation,
                 target: RemoteActionTarget {
@@ -396,9 +458,66 @@ impl Door {
     }
 
     fn save(&self, shortcut: &Shortcut) -> Result<ReceiptStatus, ActionHostError> {
+        self.save_as(&self.owner, shortcut)
+    }
+
+    fn save_as(
+        &self,
+        caller: &Caller,
+        shortcut: &Shortcut,
+    ) -> Result<ReceiptStatus, ActionHostError> {
         let arguments = json!({ "shortcut": serde_json::to_value(shortcut).unwrap() });
-        self.invoke("shortcuts", "create", &arguments)
+        self.invoke_as(caller, "shortcuts", "create", &arguments)
             .map(|(_, status)| status)
+    }
+
+    /// Start `trigger` of `shortcut` as `person` in the room, the way the
+    /// session does when the trigger fires.
+    fn fire(
+        &self,
+        person: &str,
+        shortcut: &str,
+        trigger: &TriggerSpec,
+        run: RunId,
+    ) -> Result<u64, ActionHostError> {
+        self.broker
+            .app_action_broker()
+            .expect("the action broker")
+            .start_triggered_shortcut_run(
+                &Caller::local_person(person).in_room(ROOM.to_string()),
+                &ROOM.to_string(),
+                shortcut,
+                trigger,
+                run,
+            )
+    }
+
+    /// Serve the fixture until broker job `job` ends.
+    fn job_to_end(&mut self, job: u64) -> InvocationUpdate {
+        let broker = self.broker.app_action_broker().expect("the action broker");
+        loop {
+            assert!(Instant::now() < self.deadline, "the run never finished");
+            self.app.pump();
+            match broker.status(job) {
+                Some(
+                    done @ (InvocationUpdate::Succeeded { .. }
+                    | InvocationUpdate::Failed { .. }
+                    | InvocationUpdate::Cancelled { .. }),
+                ) => return done,
+                _ => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+    }
+
+    /// Serve the fixture for a moment, for asserting that nothing arrives.
+    fn serve_briefly(&mut self) {
+        let until = Instant::now()
+            .checked_add(Duration::from_millis(300))
+            .expect("a moment fits in an Instant");
+        while Instant::now() < until {
+            self.app.pump();
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// Serve the fixture until the invocation `run` ends.
@@ -485,6 +604,8 @@ fn publish_draft(id: &str, granted: &[&str]) -> Shortcut {
             })
             .collect(),
         triggers: Vec::new(),
+        consents: Vec::new(),
+        saved_by: None,
     }
 }
 
@@ -523,10 +644,14 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
         ),
         other => panic!("saving completes at once: {other:?}"),
     }
+    let stored = Shortcut {
+        saved_by: Some(owner_principal()),
+        ..shortcut
+    };
     assert_eq!(
         door.membership.read().desktop.workspaces[0].shortcuts,
-        std::slice::from_ref(&shortcut),
-        "the workspace holds the saved shortcut"
+        std::slice::from_ref(&stored),
+        "the workspace holds the saved shortcut, as saved by the owner"
     );
     assert!(
         door.offers(SHORTCUTS_APP_ID, &resource, "run"),
@@ -620,4 +745,442 @@ fn a_shortcut_reaching_outside_its_grant_is_refused() {
     );
     assert!(!door.offers(SHORTCUTS_APP_ID, &shortcut_resource_id("sneaky"), "run"));
     assert!(door.app.served.is_empty(), "nothing ran");
+}
+
+/// "Publish a draft" with a fixed title, so nobody need give it inputs,
+/// started by `triggers`.
+fn triggered_draft(id: &str, triggers: Vec<TriggerSpec>) -> Shortcut {
+    let mut shortcut = publish_draft(id, &["draft", "publish"]);
+    shortcut.inputs.clear();
+    shortcut.steps[0] = invoke_step(
+        "draft",
+        "draft",
+        &[("title", Binding::Literal(json!("Weekly notes")))],
+    );
+    shortcut.triggers = triggers;
+    shortcut
+}
+
+fn hourly(catch_up: CatchUp) -> TriggerSpec {
+    TriggerSpec::Schedule {
+        schedule: Schedule::Interval { seconds: 3600 },
+        catch_up,
+    }
+}
+
+fn at(text: &str) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339(text)
+        .expect("an RFC 3339 instant")
+        .with_timezone(&chrono::Utc)
+}
+
+fn utc_clock(now: &str) -> std::sync::Arc<ManualClock> {
+    std::sync::Arc::new(ManualClock::new(
+        at(now),
+        chrono::FixedOffset::east_opt(0).expect("UTC"),
+    ))
+}
+
+/// What `triggers` fire now for the shortcuts `person` saved in the room.
+fn tick(triggers: &mut TriggerHost, door: &Door, person: &str) -> Vec<Firing> {
+    let tree = door.membership.read();
+    let armed = armed(&tree.desktop.workspaces, |_| person.to_string());
+    let fired = triggers.observe(TriggerEvent::Tick, &armed);
+    drop(tree);
+    fired
+}
+
+fn served_actions(door: &Door) -> Vec<&str> {
+    door.app
+        .served
+        .iter()
+        .map(|(action, _)| action.as_str())
+        .collect()
+}
+
+/// Press `key` with `modifiers` in `host`, after one layout pass.
+fn press(
+    host: &mut shell::shell::overlay_host::ShellOverlayHost,
+    key: winit::keyboard::Key,
+    modifiers: winit::keyboard::ModifiersState,
+) {
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use ui::widget::Widget as _;
+
+    let theme = ui::theme::Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn ui::widget::Widget> = HashMap::new();
+    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(1280.0),
+                    height: Dimension::length(800.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut text = ui::text_render::TextRenderer::new();
+    taffy
+        .compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(1280.0),
+                height: AvailableSpace::Definite(800.0),
+            },
+            |known, available, node_id, _, _| match node_map.get(&node_id) {
+                // SAFETY: the pointers were registered by this layout pass
+                // and the widgets outlive it.
+                Some(&widget) => unsafe { (*widget).measure(known, available, &mut text) },
+                None => Size::ZERO,
+            },
+        )
+        .unwrap();
+    host.apply_layout(&taffy, child, vello::kurbo::Point::ORIGIN);
+
+    // winit's `KeyEvent` carries a private platform field, so the struct is
+    // zero-initialised and every public field overwritten.
+    let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+    event.logical_key = key;
+    event.physical_key =
+        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+    event.location = winit::keyboard::KeyLocation::Standard;
+    event.state = winit::event::ElementState::Pressed;
+    event.repeat = false;
+    let event = winit::event::WindowEvent::KeyboardInput {
+        device_id: unsafe { std::mem::zeroed() },
+        event,
+        is_synthetic: false,
+    };
+    let mut doc = AutoCommit::new();
+    let mut handled = false;
+    let mut focus = None;
+    host.handle_event(
+        &event,
+        1.0,
+        &winit::event::Modifiers::from(modifiers),
+        &mut doc,
+        &automerge::ROOT,
+        &mut handled,
+        &mut focus,
+        child,
+        &taffy,
+    );
+    assert!(handled, "the shell took the chord");
+}
+
+#[test]
+fn a_chord_pressed_in_the_shell_runs_the_shortcut_saved_with_it() {
+    let mut door = Door::open();
+    let session = Caller::local_person(session_person());
+    let chord = TriggerSpec::Keyboard {
+        chord: "Super+Shift+Y".into(),
+    };
+    door.save_as(&session, &triggered_draft("from-keys", vec![chord]))
+        .expect("the shortcut is saved with its keyboard trigger");
+
+    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_handle(
+        std::sync::Arc::clone(&door.membership),
+        false,
+    );
+    host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+        .expect("the built-in shortcut table is valid");
+    host.attach_app_action_broker(door.broker.app_action_broker().expect("the action broker"));
+    host.tick_shortcut_triggers_now();
+    // Building a compositor host is slow on a cold process; the run gets
+    // its own full deadline from here.
+    door.deadline = Instant::now()
+        .checked_add(DEADLINE)
+        .expect("the deadline fits in an Instant");
+    let listed: Vec<(String, String)> = host
+        .action_chords()
+        .iter()
+        .map(|bound| (bound.label.clone(), bound.chord.display()))
+        .collect();
+    assert_eq!(
+        listed,
+        [(
+            "Run Publish a draft".to_string(),
+            "Super+Shift+y".to_string()
+        )],
+        "the guide and Settings list the chord with what it runs"
+    );
+
+    press(
+        &mut host,
+        winit::keyboard::Key::Character("Y".into()),
+        winit::keyboard::ModifiersState::SUPER | winit::keyboard::ModifiersState::SHIFT,
+    );
+    while door.app.served.len() < 2 {
+        assert!(
+            Instant::now() < door.deadline,
+            "the chord never ran the shortcut"
+        );
+        door.app.pump();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(served_actions(&door), ["draft", "publish"]);
+    let finished = door.finished_runs();
+    assert_eq!(finished.len(), 1);
+    assert_eq!(finished[0].report.trigger, "keyboard");
+    assert_eq!(finished[0].invoker, session_person());
+}
+
+#[test]
+fn a_chord_the_desktop_owns_cannot_start_a_shortcut() {
+    let door = Door::open();
+    let fixed = triggered_draft(
+        "steals-alt-tab",
+        vec![TriggerSpec::Keyboard {
+            chord: "Alt+Tab".into(),
+        }],
+    );
+    match door.save(&fixed) {
+        Err(ActionHostError::Refused { reason }) => {
+            assert!(reason.contains("Switch windows"), "{reason}");
+        }
+        other => panic!("a fixed desktop chord must be refused: {other:?}"),
+    }
+    let watching = triggered_draft(
+        "on-open",
+        vec![TriggerSpec::AppOpened {
+            app_id: FIXTURE.into(),
+        }],
+    );
+    assert!(
+        matches!(door.save(&watching), Err(ActionHostError::Refused { .. })),
+        "only keyboard and schedule triggers can be saved"
+    );
+}
+
+#[test]
+fn a_schedule_fires_once_per_fire_time_across_a_restart() {
+    let mut door = Door::open();
+    let owner = owner_principal();
+    let ledger = door.dir.path().join("schedules.json");
+    let clock = utc_clock("2026-09-25T08:00:00Z");
+    door.save(&triggered_draft("hourly", vec![hourly(CatchUp::Skip)]))
+        .expect("the shortcut is saved with its schedule");
+
+    let mut triggers = TriggerHost::new(clock.clone(), Some(ledger.clone()));
+    assert!(
+        tick(&mut triggers, &door, &owner).is_empty(),
+        "arming a schedule fires nothing"
+    );
+    clock.advance(chrono::Duration::minutes(59));
+    assert!(tick(&mut triggers, &door, &owner).is_empty());
+
+    // Restarted before it is due: the persisted fire time still holds.
+    drop(triggers);
+    let mut triggers = TriggerHost::new(clock.clone(), Some(ledger.clone()));
+    clock.advance(chrono::Duration::minutes(1));
+    let fired = tick(&mut triggers, &door, &owner);
+    assert_eq!(fired.len(), 1, "the fire time came: {fired:?}");
+    let job = door
+        .fire(&owner, &fired[0].shortcut, &fired[0].trigger, fired[0].run)
+        .expect("the trigger starts the shortcut");
+    assert!(
+        matches!(door.job_to_end(job), InvocationUpdate::Succeeded { .. }),
+        "the scheduled run completes"
+    );
+
+    // Restarted right after it fired: that fire time is not fired again.
+    drop(triggers);
+    let mut triggers = TriggerHost::new(clock.clone(), Some(ledger));
+    assert!(tick(&mut triggers, &door, &owner).is_empty());
+    clock.advance(chrono::Duration::minutes(30));
+    assert!(tick(&mut triggers, &door, &owner).is_empty());
+    door.serve_briefly();
+    assert_eq!(
+        served_actions(&door),
+        ["draft", "publish"],
+        "the schedule ran exactly once"
+    );
+    let finished = door.finished_runs();
+    assert_eq!(finished[0].report.trigger, "schedule");
+}
+
+#[test]
+fn fire_times_missed_while_asleep_are_skipped_or_caught_up_once() {
+    let mut door = Door::open();
+    let owner = owner_principal();
+    let clock = utc_clock("2026-09-25T08:00:00Z");
+    door.save(&triggered_draft("skips", vec![hourly(CatchUp::Skip)]))
+        .expect("saved");
+    door.save(&triggered_draft(
+        "catches-up",
+        vec![hourly(CatchUp::RunOnce)],
+    ))
+    .expect("saved");
+    let mut triggers = TriggerHost::new(clock.clone(), None);
+    assert!(tick(&mut triggers, &door, &owner).is_empty());
+
+    // Asleep for five fire times.
+    clock.advance(chrono::Duration::hours(5) + chrono::Duration::minutes(10));
+    let fired = tick(&mut triggers, &door, &owner);
+    let names: Vec<&str> = fired
+        .iter()
+        .map(|firing| firing.shortcut.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["catches-up"],
+        "one catch-up run for however many were missed, none for the skipper"
+    );
+    let job = door
+        .fire(&owner, &fired[0].shortcut, &fired[0].trigger, fired[0].run)
+        .expect("the catch-up run starts");
+    assert!(matches!(
+        door.job_to_end(job),
+        InvocationUpdate::Succeeded { .. }
+    ));
+    assert!(tick(&mut triggers, &door, &owner).is_empty());
+
+    // Both are on time again at the next fire time after waking.
+    clock.advance(chrono::Duration::minutes(50));
+    let mut names: Vec<String> = tick(&mut triggers, &door, &owner)
+        .into_iter()
+        .map(|firing| firing.shortcut)
+        .collect();
+    names.sort();
+    assert_eq!(names, ["catches-up", "skips"]);
+}
+
+#[test]
+fn an_unattended_run_takes_a_confirmed_step_only_with_advance_consent() {
+    let mut door = Door::open();
+    let owner = owner_principal();
+    let schedule = hourly(CatchUp::Skip);
+    let mut tidy = triggered_draft("tidy", vec![schedule.clone()]);
+    tidy.steps = vec![invoke_step("archive", "archive", &[])];
+    tidy.output = None;
+    tidy.grant.push(PermissionProfileRule::grant(
+        Scope::Action {
+            app: FIXTURE.into(),
+            action: "archive".into(),
+        },
+        Verb::Write,
+    ));
+    door.save(&tidy).expect("saved without consent");
+    let job = door
+        .fire(&owner, "tidy", &schedule, RunId::new())
+        .expect("the trigger starts the shortcut");
+    match door.job_to_end(job) {
+        InvocationUpdate::Failed { error, .. } => assert!(
+            error.message.contains("needs confirmation"),
+            "{}",
+            error.message
+        ),
+        other => panic!("nobody may confirm an unattended run: {other:?}"),
+    }
+    assert!(door.app.served.is_empty(), "nothing was archived");
+
+    tidy.consents = vec![UnattendedConsent::new(FIXTURE, INBOX, "archive")];
+    door.invoke(
+        "shortcuts",
+        "update",
+        &json!({ "shortcut": serde_json::to_value(&tidy).unwrap() }),
+    )
+    .expect("saved with its saver's advance consent");
+    let run = answer(door.host.query(
+        &door.owner,
+        CatalogueQuery {
+            target: Some(ActionAddress::new(shortcut_resource_id("tidy"), "run")),
+            max_results: MAX_CATALOGUE_PAGE,
+            ..CatalogueQuery::default()
+        },
+    ))
+    .expect("catalogue")
+    .rows
+    .into_iter()
+    .find_map(|row| row.action)
+    .expect("the shortcut is offered");
+    assert!(
+        run.description.as_deref().is_some_and(
+            |text| text.contains("Confirmed in advance: `archive` on fixture.drafts:inbox")
+        ),
+        "the consent is shown with the shortcut: {:?}",
+        run.description
+    );
+    let job = door
+        .fire(&owner, "tidy", &schedule, RunId::new())
+        .expect("the trigger starts the shortcut");
+    assert!(matches!(
+        door.job_to_end(job),
+        InvocationUpdate::Succeeded { .. }
+    ));
+    assert_eq!(served_actions(&door), ["archive"]);
+}
+
+#[test]
+fn revoking_the_savers_membership_or_deleting_the_shortcut_stops_its_triggers() {
+    let mut door = Door::open();
+    let clock = utc_clock("2026-09-25T08:00:00Z");
+    let schedule = hourly(CatchUp::Skip);
+    door.save_as(
+        &Caller::local_person(BOB),
+        &triggered_draft("bobs", vec![schedule.clone()]),
+    )
+    .expect("a member saves a scheduled shortcut");
+    let mut triggers = TriggerHost::new(clock.clone(), None);
+    assert!(
+        tick(&mut triggers, &door, &owner_principal()).is_empty()
+            && tick(&mut triggers, &door, &owner_principal()).is_empty(),
+        "the owner's session does not arm a member's shortcut"
+    );
+    assert!(
+        matches!(
+            door.fire(&owner_principal(), "bobs", &schedule, RunId::new()),
+            Err(ActionHostError::NotPermitted)
+        ),
+        "nor may it start one"
+    );
+
+    assert!(tick(&mut triggers, &door, BOB).is_empty());
+    clock.advance(chrono::Duration::hours(1));
+    let fired = tick(&mut triggers, &door, BOB);
+    assert_eq!(fired.len(), 1);
+    let job = door
+        .fire(BOB, "bobs", &fired[0].trigger, fired[0].run)
+        .expect("the saver's trigger starts it");
+    assert!(matches!(
+        door.job_to_end(job),
+        InvocationUpdate::Succeeded { .. }
+    ));
+
+    // The owner revokes Bob's membership: the next fire starts nothing.
+    let owner = owner_principal();
+    assert!(door.membership.write().revoke_in_workspace(
+        shell::shell::state::WorkspaceId(1),
+        &owner,
+        &membership_id(BOB),
+    ));
+    clock.advance(chrono::Duration::hours(1));
+    let fired = tick(&mut triggers, &door, BOB);
+    assert_eq!(fired.len(), 1, "the schedule itself still comes round");
+    assert!(
+        door.fire(BOB, "bobs", &fired[0].trigger, fired[0].run)
+            .is_err(),
+        "a revoked member's shortcut does not start"
+    );
+    door.serve_briefly();
+    assert_eq!(
+        served_actions(&door),
+        ["draft", "publish"],
+        "only the first run ran"
+    );
+
+    // Deleting the shortcut disarms it altogether.
+    door.invoke("shortcuts", "delete", &json!({ "id": "bobs" }))
+        .expect("the owner deletes it");
+    clock.advance(chrono::Duration::hours(1));
+    assert!(tick(&mut triggers, &door, BOB).is_empty());
+    assert!(matches!(
+        door.fire(BOB, "bobs", &schedule, RunId::new()),
+        Err(ActionHostError::UnknownAction)
+    ));
 }

@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - The first release preserves the existing operating system.
-- Full qOS means native dual boot.
+- Full Tilo means native dual boot.
 - Connected folders are synchronized local copies, not symlinks or direct access to original files.
 - Folder migration grants no collaboration sharing or cloud-upload permission.
 - No support claim follows merely from being Windows/Linux or successfully mounting an image.
@@ -79,7 +79,7 @@ fn windows_does_not_offer_desktop_from_a_malformed_probe() {
   that platform canonicalization, volume identity, case folding, and filesystem
   revalidation are still required before actual I/O.
 - [ ] Run `rustc --edition=2024 --test apps/imager/src/setup/model.rs -o
-  /tmp/qos-guided-setup-model-tests` and the resulting binary. First run must fail
+  /tmp/tilo-guided-setup-model-tests` and the resulting binary. First run must fail
   because the requested behavior is missing; then implement and rerun.
 - [ ] Implement support rules with an explicit match, not host-only detection:
 

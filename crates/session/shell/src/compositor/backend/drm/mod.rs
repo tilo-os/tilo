@@ -1670,6 +1670,17 @@ impl Backend for DrmBackend {
         self.inner.set_pointer_image(image);
     }
 
+    fn set_pointer_constraint(
+        &mut self,
+        constraint: crate::compositor::backend::PointerConstraintRegion,
+    ) {
+        self.inner.set_pointer_constraint(constraint);
+    }
+
+    fn warp_pointer(&mut self, x: f64, y: f64) {
+        self.inner.warp_pointer(x, y);
+    }
+
     fn cancel_touch(&mut self) {
         self.inner.cancel_touch();
     }
@@ -1775,6 +1786,7 @@ mod tests {
                 color_profile: None,
                 refresh_mhz: None,
                 logical_position: (1920, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
             },
         ];
         let (mut paused, mut blanked) = (false, false);

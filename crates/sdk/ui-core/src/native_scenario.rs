@@ -117,7 +117,7 @@ fn parse(contents: &str) -> Result<Scenario, String> {
 /// a mismatched gated source hash, or an invalid scenario.
 pub fn load_from_env() -> Result<Option<Scenario>, String> {
     let gate = GateConfig::from_env()?;
-    let Some(path) = std::env::var_os("QOS_NATIVE_SCENARIO") else {
+    let Some(path) = std::env::var_os("TILO_NATIVE_SCENARIO") else {
         return if gate.is_some() {
             Err("native input gate requires a scenario file".into())
         } else {
@@ -145,7 +145,7 @@ struct GateConfig {
 
 impl GateConfig {
     fn from_env() -> Result<Option<Self>, String> {
-        let contents = match std::env::var("QOS_NATIVE_INPUT_GATE") {
+        let contents = match std::env::var("TILO_NATIVE_INPUT_GATE") {
             Ok(contents) => contents,
             Err(std::env::VarError::NotPresent) => return Ok(None),
             Err(error) => return Err(format!("invalid native input gate environment: {error}")),
@@ -203,7 +203,7 @@ impl InputGate {
         };
         // Re-read at thread creation: the exact bytes must match the collector
         // hash, and those bytes must describe the scenario we will schedule.
-        let path = std::env::var_os("QOS_NATIVE_SCENARIO")
+        let path = std::env::var_os("TILO_NATIVE_SCENARIO")
             .ok_or("native input gate requires a scenario file")?;
         let contents = std::fs::read_to_string(path)
             .map_err(|error| format!("cannot read gated native scenario: {error}"))?;
@@ -376,7 +376,7 @@ pub fn spawn(
         })
         .collect::<Result<Vec<_>, String>>()?;
     std::thread::Builder::new()
-        .name("qos-native-scenario".into())
+        .name("tilo-native-scenario".into())
         .spawn(move || {
             for mut packet in packets {
                 // A late callback never shifts the remaining schedule. Checking
@@ -394,7 +394,7 @@ pub fn spawn(
                     match gate.approve(packet.id) {
                         Ok(expires) => Some(expires),
                         Err(error) => {
-                            log::emit_json("qos-native-gate", serde_json::json!({
+                            log::emit_json("tilo-native-gate", serde_json::json!({
                                 "event":"denied", "step_id":packet.id, "reason":error }));
                             break;
                         }
@@ -404,7 +404,7 @@ pub fn spawn(
                 // Recheck immediately before the callback, including time spent
                 // descheduled after receipt or sampling the diagnostic clock.
                 if expires.is_some_and(|expires| crate::time::now() >= expires) {
-                    log::emit_json("qos-native-gate", serde_json::json!({
+                    log::emit_json("tilo-native-gate", serde_json::json!({
                         "event":"denied", "step_id":packet.id, "reason":"permit expired before delivery" }));
                     break;
                 }
@@ -426,12 +426,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn gate_subprocess_fixture() {
-        if std::env::var_os("QOS_NATIVE_GATE_TEST_CHILD").is_none() {
+        if std::env::var_os("TILO_NATIVE_GATE_TEST_CHILD").is_none() {
             return;
         }
         let result = load_from_env().and_then(|scenario| {
             let mut scenario = scenario.expect("fixture scenario");
-            if std::env::var("QOS_NATIVE_GATE_TEST_CHILD").as_deref()
+            if std::env::var("TILO_NATIVE_GATE_TEST_CHILD").as_deref()
                 == Ok("changed-scheduling-input")
             {
                 scenario.name = "different scheduling input".into();
@@ -496,9 +496,9 @@ mod tests {
                     "native_scenario::tests::gate_subprocess_fixture",
                     "--nocapture",
                 ])
-                .env("QOS_NATIVE_GATE_TEST_CHILD", mode)
-                .env("QOS_NATIVE_SCENARIO", &path)
-                .env("QOS_NATIVE_INPUT_GATE", config.to_string())
+                .env("TILO_NATIVE_GATE_TEST_CHILD", mode)
+                .env("TILO_NATIVE_SCENARIO", &path)
+                .env("TILO_NATIVE_INPUT_GATE", config.to_string())
                 .stdout(file.try_clone().unwrap())
                 .stderr(file);
             // SAFETY: in the forked child, clear CLOEXEC only on our live socket;

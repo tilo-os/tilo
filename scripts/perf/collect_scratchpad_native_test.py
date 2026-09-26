@@ -56,8 +56,8 @@ class CollectorFailureTests(unittest.TestCase):
 
     def test_malformed_evidence_keeps_failure_and_stops_child(self):
         source='''import time
-print('qos-native-effect {}',flush=True)
-print('qos-native-frame {"cpu_frame_id": 1}',flush=True)
+print('tilo-native-effect {}',flush=True)
+print('tilo-native-frame {"cpu_frame_id": 1}',flush=True)
 time.sleep(30)
 '''
         failure,metadata=self.run_failure(source)
@@ -66,7 +66,7 @@ time.sleep(30)
 
     def test_native_window_metadata_requires_real_scale_and_size(self):
         valid=dict(scale_factor=2.0,physical_width=1600,physical_height=1200)
-        lines=lambda row:['qos-native-window '+json.dumps(row)]
+        lines=lambda row:['tilo-native-window '+json.dumps(row)]
         self.assertEqual(collector.window_metadata(lines(valid)),valid)
         for key,value in [('scale_factor',0),('scale_factor',float('nan')),
                           ('physical_width',True),('physical_height',0)]:

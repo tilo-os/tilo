@@ -108,8 +108,8 @@ impl Connections {
             // This prepares a fresh transfer, including managed spawn where
             // the future child PID is not yet known. Never carry an ancestor's
             // automatic-exec ownership or command-resume marker into it.
-            .env_remove("QOS_RUNTIME_CONNECTION_OWNER_PID")
-            .env_remove("QOS_RUNTIME_RESUME_LIVE")
+            .env_remove("TILO_RUNTIME_CONNECTION_OWNER_PID")
+            .env_remove("TILO_RUNTIME_RESUME_LIVE")
             .env("TILO_PACKAGE_ID", app_id)
             .env("TILO_WORKSPACE_ID", room)
             .env("TILO_SVC_COLLAB_FD", collab.as_raw_fd().to_string())

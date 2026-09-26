@@ -1225,11 +1225,20 @@ impl CapnpBrokerState {
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let keymap = settings_store::hardware::ShortcutConfig::load();
         let output = {
             let mut tree = membership.write();
-            let output =
-                automation_host::apply_library(&mut tree, workspace.id, operation, &catalog)
-                    .map_err(|reason| ActionHostError::Refused { reason })?;
+            let output = automation_host::apply_library(
+                &mut tree,
+                workspace.id,
+                operation,
+                &automation_host::SaveContext {
+                    catalog: &catalog,
+                    saver: &actor.id,
+                    keymap: &keymap,
+                },
+            )
+            .map_err(|reason| ActionHostError::Refused { reason })?;
             if action != automation_host::LIST_ACTION {
                 let _ = tree.append_workspace_effect_receipt(
                     workspace.id,
@@ -1281,18 +1290,7 @@ impl CapnpBrokerState {
                 .map(|job| self.receipt_for(request.invocation, job))
                 .ok_or(ActionHostError::UnknownInvocation);
         }
-        let Some(shortcut) = self
-            .workspaces_for(caller)
-            .into_iter()
-            .find(|(workspace, _)| workspace.room.to_string() == room)
-            .and_then(|(workspace, _)| {
-                workspace
-                    .shortcuts
-                    .iter()
-                    .find(|shortcut| shortcut.id == shortcut_id)
-                    .cloned()
-            })
-        else {
+        let Some(shortcut) = self.saved_shortcut(caller, room, shortcut_id) else {
             return Err(abandon(ActionHostError::UnknownAction));
         };
         let inputs = match &request.argument {
@@ -1304,8 +1302,126 @@ impl CapnpBrokerState {
                 }));
             }
         };
+        let job = self
+            .start_shortcut_run(
+                caller,
+                room,
+                shortcut,
+                automation_host::RunStart {
+                    run: tilo_automation::RunId(request.invocation.0),
+                    trigger: tilo_automation::RunTrigger::Manual,
+                    mode: automation_host::run_mode(request.confirmation.as_ref()),
+                    inputs,
+                },
+                automation_host::DoorHooks::new(request.confirmation.clone()),
+            )
+            .map_err(abandon)?;
+        if let Ok(mut ledger) = self.remote_invocations.lock() {
+            ledger.complete(&request.invocation, job);
+        }
+        Ok(self.receipt_for(request.invocation, job))
+    }
+
+    /// Start one of saved shortcut `shortcut_id`'s triggers, `trigger`, in
+    /// `room` on behalf of `caller`, who must be the person who saved it.
+    ///
+    /// Nobody is present at a triggered run: a step asking for confirmation
+    /// proceeds only when its saver consented to exactly that action in
+    /// advance, and a question stops the run. Before anything runs the
+    /// shortcut is checked again against what `caller` is offered now, so a
+    /// shortcut that was deleted, lost the trigger, or reaches past a grant
+    /// that has since been revoked does not start.
+    ///
+    /// # Errors
+    ///
+    /// Why the trigger may not start the shortcut.
+    pub(crate) fn start_triggered_shortcut_run(
+        self: &Arc<Self>,
+        caller: &Caller,
+        room: &str,
+        shortcut_id: &str,
+        trigger: &tilo_automation::TriggerSpec,
+        run: tilo_automation::RunId,
+    ) -> Result<u64, ActionHostError> {
+        let shortcut = self
+            .saved_shortcut(caller, room, shortcut_id)
+            .ok_or(ActionHostError::UnknownAction)?;
+        let actor = BrokerActor::for_caller(caller).id;
+        if shortcut.saved_by.as_deref() != Some(actor.as_str()) {
+            return Err(ActionHostError::NotPermitted);
+        }
+        if !shortcut.triggers.contains(trigger) {
+            return Err(ActionHostError::Refused {
+                reason: "the shortcut no longer has that trigger".into(),
+            });
+        }
+        let catalog = tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, true).0);
+        let others = self
+            .workspaces_for(caller)
+            .into_iter()
+            .find(|(workspace, _)| workspace.room.to_string() == room)
+            .map(|(workspace, _)| workspace.shortcuts)
+            .unwrap_or_default();
+        let resolver = |id: &str| others.iter().find(|other| other.id == id).cloned();
+        tilo_automation::check(&shortcut, &catalog, &resolver).map_err(|errors| {
+            ActionHostError::Refused {
+                reason: errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            }
+        })?;
+        self.start_shortcut_run(
+            caller,
+            room,
+            shortcut,
+            automation_host::RunStart {
+                run,
+                trigger: tilo_automation::RunTrigger::Fired(trigger.clone()),
+                mode: tilo_automation::RunMode::Unattended,
+                inputs: serde_json::Map::new(),
+            },
+            automation_host::DoorHooks::new(None),
+        )
+    }
+
+    /// Shortcut `shortcut_id` as saved in `room`, when `caller` is offered
+    /// that workspace.
+    fn saved_shortcut(
+        &self,
+        caller: &Caller,
+        room: &str,
+        shortcut_id: &str,
+    ) -> Option<tilo_automation::Shortcut> {
+        self.workspaces_for(caller)
+            .into_iter()
+            .find(|(workspace, _)| workspace.room.to_string() == room)
+            .and_then(|(workspace, _)| {
+                workspace
+                    .shortcuts
+                    .iter()
+                    .find(|shortcut| shortcut.id == shortcut_id)
+                    .cloned()
+            })
+    }
+
+    /// Run `shortcut` as `caller` through this broker, reporting on a new
+    /// broker job whose id is returned at once. The saver's advance consents
+    /// go only to a run the saver started.
+    fn start_shortcut_run<K>(
+        self: &Arc<Self>,
+        caller: &Caller,
+        room: &str,
+        shortcut: tilo_automation::Shortcut,
+        start: automation_host::RunStart,
+        hooks: K,
+    ) -> Result<u64, ActionHostError>
+    where
+        K: tilo_automation::RunHooks + Send + 'static,
+    {
         let runtime = crate::session_runtime::runtime()
-            .map_err(|reason| abandon(ActionHostError::Unavailable { reason }))?;
+            .map_err(|reason| ActionHostError::Unavailable { reason })?;
         let actor = BrokerActor::for_caller(caller).id;
         let job = self
             .invocation_id
@@ -1316,15 +1432,14 @@ impl CapnpBrokerState {
             actor.clone(),
             tilo_actions::InvocationUpdate::Accepted { invocation },
         );
-        if let Ok(mut ledger) = self.remote_invocations.lock() {
-            ledger.complete(&request.invocation, job);
-        }
         let host = crate::shell::remote_actions::BrokerActionHost::new(
             crate::shell::collab_broker::AppActionBroker::from_state(Arc::clone(self)),
         );
-        let hooks = automation_host::DoorHooks::new(request.confirmation.clone());
-        let mode = automation_host::run_mode(request.confirmation.as_ref());
-        let run = tilo_automation::RunId(request.invocation.0);
+        let consents = if shortcut.saved_by.as_deref() == Some(actor.as_str()) {
+            shortcut.consents.clone()
+        } else {
+            Vec::new()
+        };
         let state = Arc::clone(self);
         let caller = caller.clone();
         let room = room.to_string();
@@ -1334,11 +1449,12 @@ impl CapnpBrokerState {
                 &hooks,
                 tilo_automation::RunRequest {
                     shortcut: &shortcut,
-                    run,
+                    run: start.run,
                     caller,
-                    mode,
-                    trigger: tilo_automation::RunTrigger::Manual,
-                    inputs,
+                    mode: start.mode,
+                    trigger: start.trigger,
+                    inputs: start.inputs,
+                    consents,
                 },
             )
             .await;
@@ -1356,7 +1472,7 @@ impl CapnpBrokerState {
                     report,
                 });
         });
-        Ok(self.receipt_for(request.invocation, job))
+        Ok(job)
     }
 
     /// Shortcut runs finished since the last call, oldest first.

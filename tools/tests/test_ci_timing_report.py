@@ -13,17 +13,17 @@ SPEC.loader.exec_module(timing)
 
 class TimingTests(unittest.TestCase):
     def test_explicit_run_resolves_ui_number_before_fetching_jobs(self):
-        args = SimpleNamespace(repo="qos/qos", run=[11408])
+        args = SimpleNamespace(repo="tilo/tilo", run=[11408])
         resolved = {"id": 25458, "index_in_repo": 11408, "commit_sha": "a" * 40}
-        run = {**resolved, "repository": {"full_name": "qos/qos"}}
+        run = {**resolved, "repository": {"full_name": "tilo/tilo"}}
         with mock.patch.object(timing, "command_json", return_value={"run": resolved}) as command, \
              mock.patch.object(timing, "api", side_effect=[run, []]) as api:
             evidence = timing.collect(args)
         command.assert_called_once_with(args, ["actions", "run", "view", "11408",
-                                              "--repo", "qos/qos", "--json"])
+                                              "--repo", "tilo/tilo", "--json"])
         self.assertEqual(api.call_args_list, [
-            mock.call(args, "repos/qos/qos/actions/runs/25458"),
-            mock.call(args, "repos/qos/qos/actions/runs/25458/jobs"),
+            mock.call(args, "repos/tilo/tilo/actions/runs/25458"),
+            mock.call(args, "repos/tilo/tilo/actions/runs/25458/jobs"),
         ])
         self.assertEqual(evidence["runs"][0]["index_in_repo"], 11408)
         result = timing.report(evidence)
@@ -31,21 +31,21 @@ class TimingTests(unittest.TestCase):
         self.assertIn("Run 11408 (API ID 25458)", timing.human_summary(result))
 
     def test_explicit_run_rejects_wrong_identity_before_fetching_logs(self):
-        args = SimpleNamespace(repo="qos/qos", run=[11408])
+        args = SimpleNamespace(repo="tilo/tilo", run=[11408])
         resolved = {"id": 25458, "index_in_repo": 11408, "commit_sha": "a" * 40}
         for changed in ({"id": 11408}, {"index_in_repo": 888},
                         {"commit_sha": "b" * 40}, {"repository": {"full_name": "other/repo"}}):
             with self.subTest(changed=changed), \
                  mock.patch.object(timing, "command_json", return_value={"run": resolved}), \
                  mock.patch.object(timing, "api", return_value={
-                     **resolved, "repository": {"full_name": "qos/qos"}, **changed,
+                     **resolved, "repository": {"full_name": "tilo/tilo"}, **changed,
                  }) as api:
                 with self.assertRaisesRegex(ValueError, "identity"):
                     timing.collect(args)
                 self.assertEqual(api.call_count, 1)
 
     def test_explicit_run_rejects_missing_or_wrong_resolution(self):
-        args = SimpleNamespace(repo="qos/qos", run=[11408])
+        args = SimpleNamespace(repo="tilo/tilo", run=[11408])
         for resolved in ({}, {"id": 11408, "index_in_repo": 888, "commit_sha": "a" * 40},
                          {"id": -1, "index_in_repo": 11408, "commit_sha": "a" * 40},
                          {"id": 25458, "index_in_repo": 11408}):
@@ -57,7 +57,7 @@ class TimingTests(unittest.TestCase):
                 api.assert_not_called()
 
     def test_explicit_run_does_not_fall_back_when_resolution_fails(self):
-        args = SimpleNamespace(repo="qos/qos", run=[11408])
+        args = SimpleNamespace(repo="tilo/tilo", run=[11408])
         with mock.patch.object(timing, "command_json", side_effect=RuntimeError("Forgejo command failed")), \
              mock.patch.object(timing, "api") as api:
             with self.assertRaises(RuntimeError):
@@ -348,7 +348,7 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(compared["queue_seconds_delta"], -5)
 
     def test_recent_stream_filters_before_fetching_logs(self):
-        args = SimpleNamespace(repo="qos/qos", recent=20, workflow="check.yml",
+        args = SimpleNamespace(repo="tilo/tilo", recent=20, workflow="check.yml",
                                head=None, fgj="fgj", hostname="example.test")
         listed = [
             {"id": 3, "workflow_id": "check.yml", "status": "failure",
@@ -386,9 +386,9 @@ class TimingTests(unittest.TestCase):
         ])
         self.assertEqual(report["experience"]["runs_with_collection_errors"], 1)
         self.assertCountEqual(calls, [
-            ("repos/qos/qos/actions/runs/3/jobs", False),
-            ("repos/qos/qos/actions/runs/1/jobs", False),
-            ("repos/qos/qos/actions/jobs/7/logs", True),
+            ("repos/tilo/tilo/actions/runs/3/jobs", False),
+            ("repos/tilo/tilo/actions/runs/1/jobs", False),
+            ("repos/tilo/tilo/actions/jobs/7/logs", True),
         ])
 
     def test_partial_snapshot_remains_readable_without_comparison(self):

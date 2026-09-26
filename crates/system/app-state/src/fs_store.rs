@@ -223,22 +223,11 @@ impl FsStore {
         &self.root
     }
 
-    /// A package's directory. A package renamed from `dev.qos.*` keeps
-    /// using the directory its earlier releases wrote until a directory under
-    /// the new name exists.
+    /// A package's directory.
     fn package_dir(&self, package: &str) -> Result<PathBuf, StoreError> {
         validate_package_id(package)?;
         validate_absolute_directory(&self.root)?;
-        let current = self.root.join(package);
-        if matches!(current.try_exists(), Ok(false))
-            && let Some(suffix) = package.strip_prefix("dev.tilo.")
-        {
-            let legacy = self.root.join(format!("dev.qos.{suffix}"));
-            if legacy.is_dir() {
-                return Ok(legacy);
-            }
-        }
-        Ok(current)
+        Ok(self.root.join(package))
     }
 
     fn target(&self, key: &StorageKey) -> Result<Target, SeamError> {
@@ -1212,21 +1201,6 @@ mod tests {
             assert!(directory.join(LOCK_FILE).is_file());
             assert_eq!(store.local_path(&key), Some(directory.join(DOCUMENT_FILE)));
         }
-    }
-
-    #[test]
-    fn a_renamed_package_keeps_its_earlier_directory_until_the_new_one_exists() {
-        let tmp = TempDir::new().unwrap();
-        let earlier = tmp.path().join("dev.qos.notes");
-        fs::create_dir(&earlier).unwrap();
-        let store = FsStore::new(tmp.path());
-        let key = StorageKey::package("dev.tilo.notes");
-        assert_eq!(store.local_path(&key), Some(earlier.join(DOCUMENT_FILE)));
-        fs::create_dir(tmp.path().join("dev.tilo.notes")).unwrap();
-        assert_eq!(
-            store.local_path(&key),
-            Some(tmp.path().join("dev.tilo.notes").join(DOCUMENT_FILE))
-        );
     }
 
     #[test]

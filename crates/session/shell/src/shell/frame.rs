@@ -137,58 +137,6 @@ struct FloatingTransferProxy {
     image: ImageData,
 }
 
-/// Append-only receipt for the capture pass. It avoids cloning a scene merely to detect an
-/// externally appended mirror, while covering both ordinary encoding streams and late resources.
-#[derive(Clone, Copy)]
-struct CaptureSceneLengths {
-    path_tags: usize,
-    path_data: usize,
-    draw_tags: usize,
-    draw_data: usize,
-    transforms: usize,
-    styles: usize,
-    patches: usize,
-    color_stops: usize,
-    glyphs: usize,
-    glyph_runs: usize,
-    normalized_coords: usize,
-}
-
-impl CaptureSceneLengths {
-    fn grew_from(self, before: Self) -> bool {
-        self.path_tags > before.path_tags
-            || self.path_data > before.path_data
-            || self.draw_tags > before.draw_tags
-            || self.draw_data > before.draw_data
-            || self.transforms > before.transforms
-            || self.styles > before.styles
-            || self.patches > before.patches
-            || self.color_stops > before.color_stops
-            || self.glyphs > before.glyphs
-            || self.glyph_runs > before.glyph_runs
-            || self.normalized_coords > before.normalized_coords
-    }
-}
-
-fn capture_scene_lengths(scene: &Scene) -> CaptureSceneLengths {
-    let encoding = scene.encoding();
-    let streams = encoding.stream_offsets();
-    let resources = &encoding.resources;
-    CaptureSceneLengths {
-        path_tags: streams.path_tags,
-        path_data: streams.path_data,
-        draw_tags: streams.draw_tags,
-        draw_data: streams.draw_data,
-        transforms: streams.transforms,
-        styles: streams.styles,
-        patches: resources.patches.len(),
-        color_stops: resources.color_stops.len(),
-        glyphs: resources.glyphs.len(),
-        glyph_runs: resources.glyph_runs.len(),
-        normalized_coords: resources.normalized_coords.len(),
-    }
-}
-
 /// A produced shell scene plus a conservative retained-damage relation to its predecessor.
 /// `None` regions request a dense render; an empty region list is never emitted as sparse work.
 pub struct FramePaint {
@@ -374,7 +322,7 @@ impl VisualAccessibility {
     }
 }
 
-use crate::shell::overlay_host::OutputGeometry;
+use crate::shell::output_scene::{self, OutputGeometry};
 
 /// Layout + paint core shared between `bin/shots`'s `ShellDriver` and
 /// the native compositor's per-frame tick.
@@ -415,7 +363,12 @@ pub struct FrameBuilder {
     night_light: bool,
     night_light_temperature: u32,
     visual_accessibility: VisualAccessibility,
+    /// The logical desktop the shell lays out in: the bounding box of every
+    /// display's logical rectangle.
     viewport: (f64, f64),
+    /// The physical-pixel scene the displays present from. Equal to
+    /// `viewport` unless a display draws at a scale other than 1.
+    scene_size: (f64, f64),
     /// The displays behind `viewport`, when known. The viewport is the
     /// *bounding box* of every output, so on multi-monitor it isn't a
     /// display anyone has — a group sized as a fraction of it would span
@@ -639,6 +592,7 @@ impl FrameBuilder {
             night_light_temperature: 3_700,
             visual_accessibility: VisualAccessibility::default(),
             viewport: (f64::from(viewport.0), f64::from(viewport.1)),
+            scene_size: (f64::from(viewport.0), f64::from(viewport.1)),
             outputs: None,
             presence: {
                 // The broker fans every local app's frame to the whole room
@@ -671,21 +625,73 @@ impl FrameBuilder {
     /// compositor last reported, else a single display the size of the viewport.
     fn effective_outputs(&self) -> Vec<OutputGeometry> {
         self.outputs.clone().unwrap_or_else(|| {
-            vec![OutputGeometry {
-                x: 0.0,
-                width: self.viewport.0,
-                height: self.viewport.1,
-            }]
+            vec![OutputGeometry::unscaled(
+                0.0,
+                0.0,
+                self.viewport.0,
+                self.viewport.1,
+            )]
         })
+    }
+
+    /// The displays the shell lays out and paints across: whatever the
+    /// compositor last reported, else one unscaled display the size of the
+    /// viewport.
+    pub fn output_geometry(&self) -> Vec<OutputGeometry> {
+        self.effective_outputs()
     }
 
     /// Tell the frame builder which displays it's painting across, so a
     /// group's width is a fraction of its own monitor rather than the
-    /// combined desktop. Called at startup and on hotplug/mode change.
+    /// combined desktop, and each display draws the desktop at its own
+    /// scale. The logical viewport and the scene size follow the displays.
+    /// Called at startup and on hotplug/mode change.
     pub fn set_output_geometry(&mut self, outputs: Vec<OutputGeometry>) {
-        if self.outputs.as_deref() != Some(outputs.as_slice()) {
-            self.outputs = Some(outputs);
-            self.rebuild_layout_tree();
+        if outputs.is_empty() || self.outputs.as_deref() == Some(outputs.as_slice()) {
+            return;
+        }
+        let (lw, lh) = output_scene::logical_extent(&outputs);
+        let (sw, sh) = output_scene::scene_extent(&outputs);
+        if lw > 0.0 && lh > 0.0 {
+            self.viewport = (lw, lh);
+        }
+        if sw > 0.0 && sh > 0.0 {
+            self.scene_size = (sw, sh);
+        }
+        self.outputs = Some(outputs);
+        self.rebuild_layout_tree();
+    }
+
+    /// The physical-pixel scene [`Self::paint`] produces: what a renderer
+    /// target or a whole-desktop capture is sized to.
+    pub fn scene_size(&self) -> (f64, f64) {
+        self.scene_size
+    }
+
+    /// A logical desktop point in scene pixels, through the display it is on.
+    pub fn layout_point_to_scene(&self, p: Point) -> Point {
+        match &self.outputs {
+            Some(outputs) => output_scene::point_to_scene(outputs, p),
+            None => p,
+        }
+    }
+
+    /// The scene pixels a logical desktop rectangle covers, across every
+    /// display it touches.
+    pub fn layout_rect_to_scene(&self, rect: Rect) -> Option<Rect> {
+        match &self.outputs {
+            Some(outputs) => output_scene::rect_to_scene(outputs, rect),
+            None => Some(rect),
+        }
+    }
+
+    /// Append a scene drawn in logical desktop coordinates to a painted
+    /// scene, drawn by every display at its own scale — for compositor-owned
+    /// layers (drag feedback, audience surfaces) added after [`Self::paint`].
+    pub fn compose_layout_scene(&self, logical: &Scene, target: &mut Scene) {
+        match &self.outputs {
+            Some(outputs) => output_scene::compose(outputs, logical, target),
+            None => target.append(logical, None),
         }
     }
 
@@ -1092,9 +1098,30 @@ impl FrameBuilder {
         }
     }
 
-    /// Render the current frame into a fresh Vello scene. Caller hands it to
-    /// a renderer (offscreen/live/compositor backend).
+    /// Render the current frame into a fresh Vello scene, in scene pixels:
+    /// every display draws its part of the desktop at its own scale. Caller
+    /// hands it to a renderer (offscreen/live/compositor backend).
     pub fn paint(&mut self) -> Scene {
+        let logical = self.paint_logical();
+        self.to_scene(logical)
+    }
+
+    /// The painted desktop in scene pixels. Passes the logical scene through
+    /// untouched when no display magnifies it.
+    fn to_scene(&self, logical: Scene) -> Scene {
+        match &self.outputs {
+            Some(outputs) if !output_scene::is_identity(outputs) => {
+                let mut scene = Scene::new();
+                output_scene::compose(outputs, &logical, &mut scene);
+                scene
+            }
+            _ => logical,
+        }
+    }
+
+    /// [`Self::paint`] before the displays magnify it: the desktop in
+    /// logical coordinates, the space the widget tree is laid out in.
+    fn paint_logical(&mut self) -> Scene {
         self.refresh_configured_theme();
         let mut scene = Scene::new();
         self.host.draw(
@@ -1294,6 +1321,7 @@ impl FrameBuilder {
         if self.watch_configured_theme {
             self.apply_visual_accessibility(&mut scene);
         }
+        let scene = self.to_scene(scene);
 
         self.last_produced_sections = Some(ProducedSections {
             backdrop: sections.backdrop,
@@ -1402,8 +1430,10 @@ impl FrameBuilder {
         // leave those neighbouring pixels from the previous frame behind.
         // Matches TILE_WIDTH/TILE_HEIGHT in vello_encoding/src/config.rs.
         const CLIP_TILE_EDGE: f64 = 16.0;
-        let rect = rect?;
-        let (width, height) = self.viewport;
+        // Sections are drawn in logical coordinates; the damage is in the
+        // scene pixels each display drew them into.
+        let rect = self.layout_rect_to_scene(rect?)?;
+        let (width, height) = self.scene_size;
         let x0 = ((rect.x0 / CLIP_TILE_EDGE).floor() * CLIP_TILE_EDGE).clamp(0.0, width);
         let y0 = ((rect.y0 / CLIP_TILE_EDGE).floor() * CLIP_TILE_EDGE).clamp(0.0, height);
         let x1 = ((rect.x1 / CLIP_TILE_EDGE).ceil() * CLIP_TILE_EDGE).clamp(0.0, width);
@@ -1884,15 +1914,19 @@ impl FrameBuilder {
     /// recording status out of the encoded pixels.
     /// Returns whether compositor-owned capture chrome appended encoded scene data.
     pub fn draw_capture_overlays(&mut self, scene: &mut Scene) -> bool {
-        let before = capture_scene_lengths(scene);
+        let mut logical = Scene::new();
         self.host.draw_capture_overlays(
-            scene,
+            &mut logical,
             Affine::IDENTITY,
             &mut self.text_renderer,
             &self.theme,
             &self.presence,
         );
-        capture_scene_lengths(scene).grew_from(before)
+        if logical.encoding_eq(&Scene::new()) {
+            return false;
+        }
+        self.compose_layout_scene(&logical, scene);
+        true
     }
 
     pub fn take_closed_capture_mirrors(&mut self) -> Vec<String> {
@@ -2375,11 +2409,18 @@ impl FrameBuilder {
         &mut self.text_renderer
     }
 
-    /// Resize the viewport, triggering a structural rebuild on the next
-    /// `relayout` (the wrapper root node carries an explicit extent). Used
-    /// by the compositor's `BackendEvent::OutputResized` handler.
+    /// Resize the scene the backend presents, triggering a structural
+    /// rebuild on the next `relayout` (the wrapper root node carries an
+    /// explicit extent). Without display geometry the logical viewport is
+    /// this same size; with it, [`Self::set_output_geometry`] owns the
+    /// logical viewport. Used by the compositor's
+    /// `BackendEvent::OutputResized` handler.
     pub fn set_viewport(&mut self, viewport: (u32, u32)) {
-        self.viewport = (f64::from(viewport.0), f64::from(viewport.1));
+        let size = (f64::from(viewport.0), f64::from(viewport.1));
+        self.scene_size = size;
+        if self.outputs.is_none() {
+            self.viewport = size;
+        }
         self.rebuild_layout_tree();
     }
 
@@ -3608,7 +3649,7 @@ mod tests {
             .expect("restored tab must publish its configure rect before the client can draw");
         assert!(rect.width() > 0.0 && rect.height() > 0.0);
         let (width, height) = store
-            .take_pending_configure(SURFACE, 1.0)
+            .take_pending_configure(SURFACE)
             .expect("layout must make the initial client configure available without input");
         assert!(
             fb.needs_animation_frame(),

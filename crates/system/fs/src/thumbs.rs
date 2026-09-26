@@ -1,8 +1,9 @@
 //! Host-side thumbnail generation + caching for the FUSE mount.
 //!
 //! A thumbnail is metadata generated ahead of (or independent of) the content
-//! bytes: a small PNG preview cached under `<cache-dir>/thumbs`, served
-//! through the `user.tilo.thumb` xattr and gossiped via the namespace node.
+//! bytes: a small PNG preview kept in the shared preview cache under
+//! `<cache-dir>/thumbs`, served through the `user.tilo.thumb` xattr and
+//! gossiped via the namespace node.
 //!
 //! Only light, pure-Rust preview types are host-generated (raster images,
 //! EPUB covers) — `thumbnail` uses default features so the daemon never
@@ -11,9 +12,6 @@
 use std::path::Path;
 
 use thumbnail::{FileCategory, ThumbCache, ThumbKey};
-
-/// A file larger than this is never read whole just to make a thumbnail — a pathological source must not stall the FUSE thread or blow up memory.
-const MAX_SOURCE_BYTES: usize = 96 * 1024 * 1024;
 
 /// Longest-edge target for host-generated previews — smaller than the file
 /// manager's grid, on purpose: it must stay under [`MAX_XATTR_THUMB`] to ride the xattr.
@@ -64,7 +62,7 @@ impl ThumbProvider {
         category: FileCategory,
         bytes: &[u8],
     ) -> Option<Vec<u8>> {
-        if !category.has_preview() || bytes.len() > MAX_SOURCE_BYTES {
+        if !category.has_preview() || bytes.len() > thumbnail::MAX_SOURCE_BYTES {
             return None;
         }
         let thumb = thumbnail::generate(&thumbnail::Source::Bytes(bytes), category, self.edge)?;

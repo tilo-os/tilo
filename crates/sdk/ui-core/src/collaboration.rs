@@ -66,16 +66,7 @@ pub fn wifi_continuity_command(
     Err("Wi-Fi continuity requires the certified collaboration service".to_string())
 }
 
-/// Inert, app-owned resume projection sent only to the local shell.
-///
-/// The bytes are deliberately opaque to the toolkit so each app can version
-/// its CRDT-derived schema. The shell validates size and path redaction before
-/// retaining them for same-identity continuation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContinuationMetadata {
-    pub schema_version: u16,
-    pub bytes: Vec<u8>,
-}
+pub use crate::host::ContinuationMetadata;
 
 /// The launcher-only resume payload the host passed this window
 /// ([`crate::host::HostIdentity::continuity_resume`]).
@@ -84,18 +75,6 @@ pub fn continuation_restore_env() -> Option<ContinuationMetadata> {
         .identity
         .continuity_resume
         .clone()
-}
-
-/// Decode a hex resume payload and its schema version. Invalid input is
-/// ignored so an app outside Tilo or an older sender opens normally.
-#[cfg(feature = "native")]
-pub(crate) fn decode_continuation(hex: &str, schema: &str) -> Option<ContinuationMetadata> {
-    let bytes = hex::decode(hex).ok()?;
-    let schema_version = schema.parse().ok()?;
-    (!bytes.is_empty() && bytes.len() <= 32 * 1024).then_some(ContinuationMetadata {
-        schema_version,
-        bytes,
-    })
 }
 
 /// Why a request did not reach the collaboration transport.

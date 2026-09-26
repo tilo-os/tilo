@@ -229,6 +229,11 @@ struct RunHostArgs {
     /// (`com.spotify.Client`, `org.gnome.TextEditor`).
     #[arg(long)]
     desktop_id: String,
+    /// Run this desktop file instead of looking `--desktop-id` up in the
+    /// `applications` directories — how XDG autostart entries, which live in
+    /// `autostart` directories, are started.
+    #[arg(long)]
+    desktop_file: Option<PathBuf>,
     /// Host path of the compositor's Wayland socket. `WAYLAND_DISPLAY` and
     /// `XDG_RUNTIME_DIR` are both derived from it.
     #[arg(long)]
@@ -694,6 +699,7 @@ fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
 fn run_host(args: RunHostArgs) -> ExitCode {
     let RunHostArgs {
         desktop_id,
+        desktop_file,
         wayland_socket,
         x11_display,
         x11_authority,
@@ -712,8 +718,12 @@ fn run_host(args: RunHostArgs) -> ExitCode {
             .unwrap_or_default(),
         urls: open_url.into_iter().collect(),
     };
+    let planned = match desktop_file.as_deref() {
+        Some(path) => launcher::host::plan_host_file(path, &env),
+        None => launcher::host::plan_host(&desktop_id, &env),
+    };
     if dry_run {
-        return match launcher::host::plan_host(&desktop_id, &env) {
+        return match planned {
             Ok(plan) => {
                 println!("desktop-id : {}", plan.desktop_id);
                 println!("name       : {}", plan.display_name);
@@ -736,7 +746,7 @@ fn run_host(args: RunHostArgs) -> ExitCode {
             }
         };
     }
-    match launcher::host::run_host(&desktop_id, &env) {
+    match planned.and_then(|plan| launcher::host::spawn(&plan)) {
         Ok(status) => exit_code(status.code().unwrap_or(1)),
         Err(e) => {
             eprintln!("tilo-launcher: {e}");

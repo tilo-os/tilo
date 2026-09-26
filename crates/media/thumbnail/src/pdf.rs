@@ -4,7 +4,7 @@
 
 use tilo_pdf::{Engine, RenderOptions, Rotation};
 
-use crate::generate::{RgbaThumb, rgba_to_thumb};
+use crate::generate::{RgbaThumb, ThumbSize, rgba_to_thumb};
 
 /// Whether PDF previews are available on this host (so a caller can decide
 /// up front whether PDF previews are available or badge-only).
@@ -12,22 +12,26 @@ pub fn available() -> bool {
     Engine::shared().is_ok()
 }
 
-/// Rasterise the first page of `pdf` to an RGBA thumbnail whose longest edge
-/// is at most `max_edge`. `None` when no engine is available or the document
-/// is unreadable.
-pub fn pdf_thumb(pdf: &[u8], max_edge: u32) -> Option<RgbaThumb> {
+/// Rasterise the first page of `pdf` to an RGBA thumbnail that fits `size`.
+/// `None` when no engine is available or the document is unreadable.
+pub fn pdf_thumb(pdf: &[u8], size: impl Into<ThumbSize>) -> Option<RgbaThumb> {
+    let size = size.into();
     let doc = Engine::shared().ok()?.open_bytes(pdf).ok()?;
-    let size = doc.page_size(0)?;
-    let longest = size.width.max(size.height);
-    if !(longest.is_finite() && longest > 0.0) {
+    let page = doc.page_size(0)?;
+    if !(page.width.is_finite() && page.height.is_finite() && page.width > 0.0 && page.height > 0.0)
+    {
         return None;
     }
+    // Render straight at the size that fits the box, so the helper never
+    // rasterises more pixels than the preview keeps.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "thumbnail boxes are a few hundred pixels"
+    )]
+    let scale =
+        (size.width.max(1) as f32 / page.width).min(size.height.max(1) as f32 / page.height);
     let options = RenderOptions {
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "thumbnail edges are a few hundred pixels"
-        )]
-        scale: max_edge as f32 / longest,
+        scale,
         rotation: Rotation::None,
         region: None,
         annotations: true,
@@ -38,6 +42,6 @@ pub fn pdf_thumb(pdf: &[u8], max_edge: u32) -> Option<RgbaThumb> {
         bitmap.pixels().to_vec(),
         bitmap.width(),
         bitmap.height(),
-        max_edge,
+        size,
     )
 }

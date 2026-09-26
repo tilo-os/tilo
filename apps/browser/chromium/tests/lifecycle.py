@@ -22,7 +22,7 @@ cases = {
 bad = b'\x01' + json.dumps({'op':'focus', 'focused':'yes'}).encode()
 cases['wrong-command-field'] = struct.pack('<I', len(bad)) + bad
 for name, data in cases.items():
-    with tempfile.TemporaryDirectory(prefix='qos-cef-lifecycle-') as profile:
+    with tempfile.TemporaryDirectory(prefix='tilo-cef-lifecycle-') as profile:
         out_file, err_file = tempfile.TemporaryFile(), tempfile.TemporaryFile()
         p = subprocess.Popen([str(host), '--profile='+profile], stdin=subprocess.PIPE, stdout=out_file, stderr=err_file)
         try:

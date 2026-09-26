@@ -21,7 +21,7 @@ SPEC.loader.exec_module(reconcile)
 
 class FakeForge:
     def __init__(self, pulls):
-        self.repository = "qos/qos"
+        self.repository = "tilo/tilo"
         self.dry_run = False
         self.pulls = pulls
         self.closed: list[int] = []
@@ -38,7 +38,7 @@ class FakeForge:
 
 
 def pull(number: int, branch: str) -> dict:
-    return {"number": number, "head": {"ref": branch, "repo": {"full_name": "qos/qos"}},
+    return {"number": number, "head": {"ref": branch, "repo": {"full_name": "tilo/tilo"}},
             "base": {"ref": "main"}}
 
 
@@ -68,7 +68,7 @@ class ReconcileTests(unittest.TestCase):
 
     @staticmethod
     def pin(source: str) -> str:
-        return f"RPMS_REF=code.sandbox.example/qos/rpms@sha256:{'1' * 64}\nRPMS_SOURCE_REVISION={source}\n"
+        return f"RPMS_REF=registry.tilo.so/tilo/rpms@sha256:{'1' * 64}\nRPMS_SOURCE_REVISION={source}\n"
 
     def commit(self, name, files):
         for path, text in files.items():
@@ -142,7 +142,7 @@ class ReconcileTests(unittest.TestCase):
                     raise reconcile.ReconcileError(f"{method} {path}: HTTP 403")
                 return None
 
-        forge = NoIssueWrite("https://forge.invalid", "qos/qos", "token", dry_run=False)
+        forge = NoIssueWrite("https://forge.invalid", "tilo/tilo", "token", dry_run=False)
         forge.close(7, "obsolete")
         self.assertEqual(calls, [("PATCH", "/pulls/7"), ("POST", "/issues/7/comments")])
         forge.schedule_merge(7)  # a refused schedule is a warning, not a failure

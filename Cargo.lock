@@ -300,6 +300,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-automation",
  "tilo-automerge",
  "tilo-content",
  "tilo-model-gateway",
@@ -1584,6 +1585,7 @@ dependencies = [
  "serde",
  "serde_json",
  "taffy",
+ "thumbnail",
  "tilo-actions",
  "tilo-app",
  "tilo-clock",
@@ -3247,6 +3249,7 @@ dependencies = [
  "settings-store",
  "taffy",
  "tempfile",
+ "thumbnail",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
@@ -6199,7 +6202,6 @@ dependencies = [
  "cap-std",
  "hex",
  "libc",
- "qos-ntfs-protocol",
  "reqwest",
  "runtime-dylib",
  "serde",
@@ -6211,6 +6213,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-net",
+ "tilo-ntfs-protocol",
  "tilo-test-env",
  "vello",
  "windows-sys 0.61.2",
@@ -8162,6 +8165,7 @@ dependencies = [
  "sha2 0.11.0",
  "taffy",
  "tempfile",
+ "thumbnail",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
@@ -9931,6 +9935,7 @@ dependencies = [
  "serde_json",
  "taffy",
  "tempfile",
+ "thumbnail",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
@@ -10744,39 +10749,6 @@ dependencies = [
  "image",
  "qdoc",
  "tilo-content",
-]
-
-[[package]]
-name = "qos-chromium-blocker"
-version = "0.1.0"
-dependencies = [
- "adblock",
- "serde_json",
- "url",
-]
-
-[[package]]
-name = "qos-ntfs-helper"
-version = "0.1.0"
-dependencies = [
- "hex",
- "libc",
- "qos-ntfs-protocol",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "wire-frame",
-]
-
-[[package]]
-name = "qos-ntfs-protocol"
-version = "0.1.0"
-dependencies = [
- "hex",
- "libc",
- "serde",
- "serde_json",
- "sha2 0.11.0",
 ]
 
 [[package]]
@@ -12718,6 +12690,7 @@ dependencies = [
  "terminal",
  "thiserror 2.0.18",
  "threshold-identity",
+ "thumbnail",
  "tilo-actions",
  "tilo-automation",
  "tilo-automerge",
@@ -13978,7 +13951,9 @@ dependencies = [
  "moka",
  "serde",
  "tempfile",
+ "tilo-content",
  "tilo-pdf",
+ "xdg-paths",
  "zip",
 ]
 
@@ -14136,6 +14111,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-chromium-blocker"
+version = "0.1.0"
+dependencies = [
+ "adblock",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "tilo-cli"
 version = "0.1.0"
 dependencies = [
@@ -14258,6 +14242,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-host"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "ashpd",
+ "futures-util",
+ "hex",
+ "image",
+ "libc",
+ "mime_guess",
+ "open",
+ "smithay-client-toolkit",
+ "smithay-clipboard",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tilo-rt",
+ "tokio",
+ "tracing",
+ "tts",
+ "unic-langid",
+ "url",
+ "web-time",
+ "windows 0.62.2",
+ "windows-sys 0.61.2",
+ "winit",
+ "zbus",
+]
+
+[[package]]
 name = "tilo-model-gateway"
 version = "0.1.0"
 dependencies = [
@@ -14286,6 +14299,30 @@ dependencies = [
  "reqwest",
  "rustls",
  "rustls-native-certs",
+]
+
+[[package]]
+name = "tilo-ntfs-helper"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tilo-ntfs-protocol",
+ "wire-frame",
+]
+
+[[package]]
+name = "tilo-ntfs-protocol"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -14562,9 +14599,7 @@ dependencies = [
  "adblock",
  "advisory-lock",
  "app-state",
- "arboard",
  "ash",
- "ashpd",
  "atomic-file",
  "automerge",
  "base64",
@@ -14580,7 +14615,6 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "fluent",
  "form_urlencoded",
- "futures-util",
  "getrandom 0.4.1",
  "hex",
  "hmac 0.13.0",
@@ -14589,8 +14623,6 @@ dependencies = [
  "image",
  "libc",
  "media",
- "mime_guess",
- "open",
  "percent-encoding",
  "pkg-config",
  "pollster",
@@ -14611,8 +14643,6 @@ dependencies = [
  "settings-store",
  "sha2 0.11.0",
  "skrifa 0.40.0",
- "smithay-client-toolkit",
- "smithay-clipboard",
  "spellcheck",
  "syntect",
  "taffy",
@@ -14625,6 +14655,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-font-catalog",
  "tilo-headless-schema",
+ "tilo-host",
  "tilo-rt",
  "tilo-seal",
  "tilo-startup-metrics",
@@ -14644,15 +14675,12 @@ dependencies = [
  "uuid",
  "vello",
  "vello_encoding",
- "web-time",
  "wgpu",
  "wgpu-hal",
- "windows 0.62.2",
  "windows-sys 0.61.2",
  "winit",
  "wire-frame",
  "xdg-paths",
- "zbus",
  "zeroize",
 ]
 
@@ -14765,6 +14793,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "settings-store",
  "sha2 0.11.0",
  "tar",
  "tempfile",
@@ -16231,6 +16260,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "taffy",
+ "thumbnail",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",

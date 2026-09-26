@@ -1128,7 +1128,16 @@ impl SettingsApp {
                         }
                         Ok(())
                     }
-                    crate::actions::DisplayOperation::Apply
+                    crate::actions::DisplayOperation::MoveOutput { connector, x, y } => {
+                        let _ = output(&connector)?;
+                        let bound = crate::actions::MAX_DISPLAY_COORDINATE;
+                        if !(-bound..=bound).contains(&x) || !(-bound..=bound).contains(&y) {
+                            return Err("display position is outside the desktop".into());
+                        }
+                        Ok(())
+                    }
+                    crate::actions::DisplayOperation::Identify
+                    | crate::actions::DisplayOperation::Apply
                     | crate::actions::DisplayOperation::Confirm
                     | crate::actions::DisplayOperation::Revert => Ok(()),
                 };

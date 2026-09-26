@@ -5,6 +5,7 @@
 pub mod apply;
 pub mod boot;
 pub mod daemon;
+pub mod display;
 pub mod error;
 pub mod exec;
 mod fsutil;

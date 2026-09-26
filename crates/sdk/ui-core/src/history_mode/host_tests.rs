@@ -13,7 +13,7 @@ use vello::{
 };
 
 static DEFINITION: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.qos.history-fixture",
+    app_id: "dev.tilo.history-fixture",
     scopes: &[HistoryScopeDefinition {
         key: "document",
         title: "Notebook",
@@ -232,7 +232,7 @@ fn pointer_selection_draws_pinned_domain_canvas_and_back_returns_live() {
         targets["activity_timeline"].x1 <= targets["history-preview"].x0,
         "wide activity sits beside the content"
     );
-    if let Ok(directory) = std::env::var("QOS_HISTORY_SHOTS") {
+    if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
         driver.render_window_png(&std::path::Path::new(&directory).join("wide.png"));
     }
     assert_eq!(driver.state_mut().doc.get_heads(), before);
@@ -296,7 +296,7 @@ fn accessible_activation_uses_the_same_canvas_and_narrow_activity_navigation() {
         driver.targets()["history-preview"].y0 <= 104.0,
         "narrow navigation leaves the canvas usable"
     );
-    if let Ok(directory) = std::env::var("QOS_HISTORY_SHOTS") {
+    if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
         driver.render_window_png(&std::path::Path::new(&directory).join("narrow.png"));
     }
     driver.click_named("history-activity").unwrap();
@@ -581,7 +581,7 @@ fn exported_accessibility_activation_preserves_pending_edits_through_back_live()
 #[test]
 fn managed_registration_supports_multiple_scopes_and_refuses_empty_namespace() {
     static MULTI: HistoryDefinition = HistoryDefinition {
-        app_id: "dev.qos.history-fixture",
+        app_id: "dev.tilo.history-fixture",
         scopes: &[
             HistoryScopeDefinition {
                 key: "a",
@@ -638,7 +638,7 @@ fn managed_registration_supports_multiple_scopes_and_refuses_empty_namespace() {
 #[test]
 fn external_history_explains_why_no_versions_exist() {
     static EXTERNAL: HistoryDefinition = HistoryDefinition {
-        app_id: "dev.qos.external-fixture",
+        app_id: "dev.tilo.external-fixture",
         scopes: &[HistoryScopeDefinition {
             key: "session",
             title: "Remote session",
@@ -696,7 +696,7 @@ fn strict_existing_admission_never_reserves_missing_memory_or_persisted_records(
     ));
     let directory = tempfile::tempdir().unwrap();
     let mut owners = crate::record::RecordOwners::new(directory.path().to_path_buf());
-    let persisted = owners.open("dev.qos.history-fixture", "workspace").unwrap();
+    let persisted = owners.open("dev.tilo.history-fixture", "workspace").unwrap();
     assert!(matches!(
         persisted.open_existing_record_checked(&checkout),
         Err(crate::record::RecordOpenError::MissingRecord)
@@ -1143,7 +1143,7 @@ fn pinned_history_announces_live_updates_and_clears_notice_on_return() {
     assert_eq!(node.live(), Some(accesskit::Live::Polite));
     let bounds = node.bounds().unwrap();
     assert!(bounds.x0 >= 0.0 && bounds.x1 <= 390.0 && bounds.y1 <= 650.0);
-    if let Ok(directory) = std::env::var("QOS_HISTORY_SHOTS") {
+    if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
         driver.render_window_png(&std::path::Path::new(&directory).join("narrow-live-update.png"));
         driver.resize((900, 650)).unwrap();
         driver.render_window_png(&std::path::Path::new(&directory).join("wide-live-update.png"));

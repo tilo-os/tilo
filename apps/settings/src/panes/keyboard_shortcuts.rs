@@ -157,6 +157,12 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
             "Make window wider",
             "Increase the focused group's width",
         ),
+        (
+            ShortcutAction::ReopenClosedTab,
+            "shortcuts.reopen_closed_tab",
+            "Reopen closed tab",
+            "Bring back the tab closed most recently in this workspace",
+        ),
     ]
     .to_vec()
 }
@@ -262,10 +268,23 @@ impl ShortcutPane {
                 system.push(row);
             }
         }
-        crate::widgets::cards(vec![
+        let mut cards = vec![
             card("System", rows(system)),
             card("Desktop navigation", rows(desktop)),
-        ])
+        ];
+        if !self.config.actions.is_empty() {
+            let mut actions: Vec<Box<dyn Widget>> = self
+                .config
+                .actions
+                .iter()
+                .map(|bound| crate::widgets::value_row(&bound.label, &bound.chord.display()))
+                .collect();
+            actions.push(crate::widgets::caption(
+                "A saved shortcut's keyboard trigger binds its chord here; change or remove it in the shortcut.",
+            ));
+            cards.push(card("Actions", rows(actions)));
+        }
+        crate::widgets::cards(cards)
     }
 
     fn dispatch(&mut self, state: &mut AutoCommit, action: &SettingsAction) {

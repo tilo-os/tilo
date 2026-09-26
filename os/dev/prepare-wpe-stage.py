@@ -27,13 +27,13 @@ def validate(args):
     if (not re.fullmatch(r'0|[1-9][0-9]{0,11}', args.epoch)
             or int(args.epoch) > 253402300799):
         raise ValueError('WPE epoch must be canonical Unix seconds through year 9999')
-    if not re.fullmatch(r'code\.podesta\.ai/qos/tilo-development-wpe-cache-(?:[a-z0-9-]+-)?'
+    if not re.fullmatch(r'registry\.tilo\.so/tilo/tilo-development-wpe-cache-(?:[a-z0-9-]+-)?'
                         + re.escape(args.architecture), args.cache):
         raise ValueError('WPE cache must be a dedicated development repository for this architecture')
     for name in ('base', 'rpms', 'kernel', 'wpe'):
-        if not re.fullmatch(r'code\.podesta\.ai/qos/[a-z0-9-]+@sha256:[0-9a-f]{64}', getattr(args, name)):
+        if not re.fullmatch(r'(?:registry|code)\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64}', getattr(args, name)):
             raise ValueError(f'{name} must be an immutable input')
-    if not args.wpe.startswith('code.sandbox.example/qos/tilo-wpe-buildroot@'):
+    if not args.wpe.startswith('registry.tilo.so/tilo/tilo-wpe-buildroot@'):
         raise ValueError('WPE dependency input must be a pinned WPE buildroot')
 
 

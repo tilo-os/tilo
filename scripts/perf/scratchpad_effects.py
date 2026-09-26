@@ -34,7 +34,7 @@ def _state(value):
     return value.get('body_hash'),value['body_bytes']
 
 def _effects(scenario,lines):
-    effects=rows(lines,'qos-native-effect ')
+    effects=rows(lines,'tilo-native-effect ')
     if not scenario.get('steps') or len(effects)!=len(scenario['steps']):
         raise ValueError('Missing or extra Scratchpad effect evidence')
     for index,effect in enumerate(effects):
@@ -114,7 +114,7 @@ def validate_scratchpad_scroll(scenario,lines,manifest):
 def validate_scratchpad_frame_states(scenario,lines):
     """Verify state survived drawing; CPU/worker correlation is a separate check."""
     effects=_effects(scenario,lines)
-    frames=rows(lines,'qos-native-frame ')
+    frames=rows(lines,'tilo-native-frame ')
     next_input=0
     previous_frame=-1
     keys=('body_hash','body_bytes','offset_x','offset_y','editor_focused','root_rect')

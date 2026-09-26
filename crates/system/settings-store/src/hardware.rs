@@ -10,6 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
 
+mod profiles;
+
+pub use profiles::{AttachedOutput, DisplayProfile, DisplayProfiles, DisplaySet};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputTransform {
@@ -74,6 +78,44 @@ impl OutputMode {
     }
 }
 
+/// What a sink's EDID says it is. Empty strings mean the EDID did not say.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MonitorIdentity {
+    /// Manufacturer name, or its three-letter PNP id when the name is not
+    /// known, e.g. `Dell` or `XYZ`.
+    pub make: String,
+    /// The monitor-name descriptor, else the product code, e.g.
+    /// `DELL U2720Q` or `0x40a4`.
+    pub model: String,
+    /// The serial-string descriptor, else the numeric serial when non-zero.
+    pub serial: String,
+    pub physical_size_mm: Option<(u32, u32)>,
+}
+
+impl MonitorIdentity {
+    /// The name a person recognises, e.g. `Dell U2720Q`. Monitor-name
+    /// descriptors usually already start with the brand, so it is not
+    /// repeated.
+    pub fn display_name(&self) -> String {
+        let make = self.make.trim();
+        let model = self.model.trim();
+        let model_names_make = model
+            .split_whitespace()
+            .next()
+            .is_some_and(|first| first.eq_ignore_ascii_case(make));
+        match (make.is_empty(), model.is_empty()) {
+            (_, true) => make.to_owned(),
+            (true, false) => model.to_owned(),
+            (false, false) if model_names_make => {
+                let rest = model.get(make.len()..).unwrap_or_default();
+                format!("{make}{rest}")
+            }
+            (false, false) => format!("{make} {model}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputDescriptor {
     /// Collision-free output key used by persisted display intent. This is
@@ -89,6 +131,8 @@ pub struct OutputDescriptor {
     pub hdr: bool,
     pub vrr: bool,
     pub color_profiles: Vec<String>,
+    /// EDID identity, `None` for a sink that exposes no readable EDID.
+    pub monitor: Option<MonitorIdentity>,
 }
 
 impl OutputDescriptor {
@@ -148,6 +192,20 @@ pub struct DisplayHardwareSnapshot {
     /// stale runtime file cannot become trusted after PID reuse.
     pub publisher_start_ticks: u64,
     pub outputs: Vec<DisplayOutputSnapshot>,
+    /// Where each enabled output sits in the compositor's combined desktop
+    /// coordinates right now, after arrangement, mirroring and rotation.
+    pub layout: Vec<LiveOutputPlacement>,
+}
+
+/// One enabled output's live rectangle in combined desktop coordinates.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveOutputPlacement {
+    /// Collision-free output key, as in [`OutputDescriptor::connector`].
+    pub connector: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl DisplayHardwareSnapshot {
@@ -204,6 +262,9 @@ pub enum DisplayTransactionState {
 pub struct DisplayTransaction {
     pub id: u64,
     pub state: DisplayTransactionState,
+    /// The monitors the candidate was arranged for. It applies only while
+    /// exactly this set is attached, and is remembered as its layout.
+    pub set: DisplaySet,
     pub previous: DisplayConfig,
     pub candidate: DisplayConfig,
     pub deadline_unix_ms: Option<u64>,
@@ -215,6 +276,7 @@ impl Default for DisplayTransaction {
         Self {
             id: 0,
             state: DisplayTransactionState::Requested,
+            set: DisplaySet::default(),
             previous: DisplayConfig::default(),
             candidate: DisplayConfig::default(),
             deadline_unix_ms: None,
@@ -229,12 +291,13 @@ impl DisplayTransaction {
     /// # Errors
     ///
     /// Returns an error if the transaction can't be serialised or written.
-    pub fn request(candidate: DisplayConfig) -> std::io::Result<Self> {
+    pub fn request(set: DisplaySet, candidate: DisplayConfig) -> std::io::Result<Self> {
         let now = unix_now_ms();
         let transaction = Self {
             id: now,
             state: DisplayTransactionState::Requested,
-            previous: DisplayConfig::load(),
+            previous: DisplayConfig::load_for(&set),
+            set,
             candidate,
             deadline_unix_ms: None,
             message: None,
@@ -491,22 +554,25 @@ impl DisplayConfig {
         Ok(())
     }
 
-    pub fn load() -> Self {
-        serde_json::from_value(serde_json::Value::Object(super::load_section(
-            "display_outputs",
-        )))
-        .unwrap_or_default()
+    /// The committed layout for this set of monitors, empty for a set never
+    /// arranged before.
+    pub fn load_for(set: &DisplaySet) -> Self {
+        DisplayProfiles::load().layout_for(set).unwrap_or_default()
     }
 
     /// Configuration the compositor should apply right now. A staged
-    /// transaction temporarily overrides committed intent while the user can
-    /// still see and confirm the result; rejection/revert always resolves to
-    /// the last known-good configuration.
-    pub fn load_effective() -> Self {
-        let committed = Self::load();
+    /// transaction for this same set temporarily overrides committed intent
+    /// while the user can still see and confirm the result;
+    /// rejection/revert always resolves to the last known-good
+    /// configuration. A transaction staged for other monitors never applies.
+    pub fn load_effective(set: &DisplaySet) -> Self {
+        let committed = Self::load_for(set);
         let Some(transaction) = DisplayTransaction::load() else {
             return committed;
         };
+        if transaction.set.key != set.key {
+            return committed;
+        }
         match transaction.state {
             DisplayTransactionState::Requested
             | DisplayTransactionState::AwaitingConfirmation
@@ -518,16 +584,15 @@ impl DisplayConfig {
         }
     }
 
+    /// Remember this as the layout for `set`.
+    ///
     /// # Errors
     ///
-    /// Returns an error if `self` can't be serialised or the section can't
-    /// be written.
-    pub fn save(&self) -> std::io::Result<()> {
-        let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
-        super::update_section(
-            "display_outputs",
-            value.as_object().cloned().unwrap_or_default(),
-        )
+    /// Returns an error if the profiles can't be serialised or written.
+    pub fn save_for(&self, set: &DisplaySet) -> std::io::Result<()> {
+        let mut profiles = DisplayProfiles::load();
+        profiles.remember(set, self);
+        profiles.save()
     }
 }
 
@@ -822,6 +887,8 @@ pub enum ShortcutAction {
     MoveGroupRight,
     ResizeNarrower,
     ResizeWider,
+    /// Bring back the most recently closed tab in the current workspace.
+    ReopenClosedTab,
 }
 
 /// Desktop-navigation preferences consumed directly by the shell.
@@ -850,11 +917,13 @@ pub enum QuickSettingsControl {
     NightLight,
     AirplaneMode,
     MobileData,
+    DoNotDisturb,
 }
 
 impl QuickSettingsControl {
-    /// A small, useful surface for a typical laptop.  Airplane mode is an
-    /// available extra, not an always-visible destination.
+    /// A small, useful surface for a typical laptop.  Airplane mode and Do
+    /// Not Disturb are available extras, not always-visible destinations:
+    /// the compact root must still fit a small display with a VPN present.
     pub const DEFAULT: [Self; 4] = [Self::Wifi, Self::Bluetooth, Self::Vpn, Self::NightLight];
 
     /// Wi-Fi remains reachable even after customisation: it is the recovery
@@ -1206,6 +1275,28 @@ impl KeyChord {
 #[serde(default)]
 pub struct ShortcutConfig {
     pub bindings: BTreeMap<ShortcutAction, KeyChord>,
+    /// Chords bound to published actions: anything the action door offers,
+    /// a saved shortcut's `run` included.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ActionChord>,
+}
+
+/// A published action, addressed the way the action door addresses it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ActionChordTarget {
+    /// The provider token (`workspace:<room>` for a workspace's own actions).
+    pub provider: String,
+    pub resource: String,
+    pub action: String,
+}
+
+/// One chord bound to one published action.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionChord {
+    pub chord: KeyChord,
+    pub target: ActionChordTarget,
+    /// What the guide and Settings call it, e.g. "Run Publish a draft".
+    pub label: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1213,6 +1304,70 @@ pub enum ShortcutConfigError {
     ReservedSystemKey,
     InvalidChord,
     Conflict(ShortcutAction),
+    /// The chord is one of the shell's own fixed chords, named here.
+    Fixed(&'static str),
+    /// The chord already runs another published action.
+    TakenByAction,
+}
+
+impl std::fmt::Display for ShortcutConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReservedSystemKey => {
+                f.write_str("F1 and Print Screen are reserved by the desktop")
+            }
+            Self::InvalidChord => f.write_str("that chord is not supported"),
+            Self::Conflict(action) => write!(f, "the chord is already bound to {action:?}"),
+            Self::Fixed(label) => write!(f, "the chord is the desktop's own “{label}”"),
+            Self::TakenByAction => f.write_str("the chord already runs another action"),
+        }
+    }
+}
+
+impl std::error::Error for ShortcutConfigError {}
+
+/// The shell's own chords that no setting can rebind, with what they do.
+/// Configurable [`ShortcutAction`] chords are not listed: they move when
+/// rebound.
+#[must_use]
+pub fn fixed_shell_chords() -> Vec<(&'static str, KeyChord)> {
+    fn chord(modifiers: &[&str], key: &str) -> KeyChord {
+        KeyChord {
+            modifiers: modifiers.iter().map(|m| (*m).to_string()).collect(),
+            key: key.to_string(),
+        }
+    }
+    let mut fixed = vec![
+        ("Switch windows", chord(&["Alt"], "tab")),
+        ("Switch windows", chord(&["Alt", "Shift"], "tab")),
+        ("Close tab", chord(&["Alt"], "f4")),
+        ("Close tab", chord(&["Super"], "w")),
+        ("Previous workspace", chord(&["Super"], "pageup")),
+        ("Next workspace", chord(&["Super"], "pagedown")),
+        ("Lock", chord(&["Super"], "l")),
+        ("Global search", chord(&["Super"], "space")),
+        ("New window", chord(&["Super"], "n")),
+        ("Add tab here", chord(&["Super"], "t")),
+        ("Duplicate tab", chord(&["Super"], "d")),
+        ("Workspace wheel", chord(&["Super"], "s")),
+        ("Workspace activity", chord(&["Super"], "h")),
+        ("Workspace activity", chord(&["Super", "Shift"], "h")),
+        ("Wireless display", chord(&["Super"], "p")),
+        ("Picture in picture", chord(&["Super", "Shift"], "p")),
+        ("Save recent replay", chord(&["Super", "Shift"], "r")),
+        ("Capture screenshot", chord(&["Super", "Shift"], "s")),
+        ("Open terminal", chord(&["Super"], "enter")),
+        ("Desktop help", chord(&[], "f1")),
+        ("Screenshot", chord(&[], "printscreen")),
+        ("Dismiss", chord(&[], "escape")),
+    ];
+    for key in ["h", "j", "k", "l"] {
+        fixed.push(("Vim navigation", chord(&["Super", "Ctrl"], key)));
+    }
+    for key in ["h", "l"] {
+        fixed.push(("Vim navigation", chord(&["Super", "Ctrl", "Shift"], key)));
+    }
+    fixed
 }
 
 impl Default for ShortcutConfig {
@@ -1273,10 +1428,16 @@ impl Default for ShortcutConfig {
             (ShortcutAction::MoveGroupRight, super_shift_chord("right")),
             (ShortcutAction::ResizeNarrower, super_chord("-")),
             (ShortcutAction::ResizeWider, super_chord("=")),
+            // Browsers' reopen-closed-tab chord, on the desktop's own
+            // modifier; plain Super+T keeps adding a tab.
+            (ShortcutAction::ReopenClosedTab, super_shift_chord("t")),
         ]
         .into_iter()
         .collect();
-        Self { bindings }
+        Self {
+            bindings,
+            actions: Vec::new(),
+        }
     }
 }
 
@@ -1307,7 +1468,90 @@ impl ShortcutConfig {
                 return Err(ShortcutConfigError::Conflict(other));
             }
         }
+        for (index, bound) in self.actions.iter().enumerate() {
+            self.check_action_chord(&bound.chord, Some(&bound.target))?;
+            if self
+                .actions
+                .iter()
+                .skip(index.saturating_add(1))
+                .any(|other| other.target == bound.target)
+            {
+                return Err(ShortcutConfigError::TakenByAction);
+            }
+        }
         Ok(())
+    }
+
+    /// Whether `chord` may run the published action `target`: a valid,
+    /// unreserved chord that is neither one of the shell's fixed chords, nor
+    /// bound to a configurable desktop action, nor running another action.
+    ///
+    /// # Errors
+    ///
+    /// Why the chord cannot be bound.
+    pub fn check_action_chord(
+        &self,
+        chord: &KeyChord,
+        target: Option<&ActionChordTarget>,
+    ) -> Result<(), ShortcutConfigError> {
+        if chord.is_reserved_system_key() {
+            return Err(ShortcutConfigError::ReservedSystemKey);
+        }
+        if !chord.is_valid_configurable() {
+            return Err(ShortcutConfigError::InvalidChord);
+        }
+        if let Some((label, _)) = fixed_shell_chords()
+            .into_iter()
+            .find(|(_, fixed)| fixed == chord)
+        {
+            return Err(ShortcutConfigError::Fixed(label));
+        }
+        if let Some((action, _)) = self.bindings.iter().find(|(_, bound)| *bound == chord) {
+            return Err(ShortcutConfigError::Conflict(*action));
+        }
+        if self
+            .actions
+            .iter()
+            .any(|bound| bound.chord == *chord && Some(&bound.target) != target)
+        {
+            return Err(ShortcutConfigError::TakenByAction);
+        }
+        Ok(())
+    }
+
+    /// Bind `chord` to the published action `target`, replacing the chord
+    /// it had.
+    ///
+    /// # Errors
+    ///
+    /// Why the chord cannot be bound; the table is then unchanged.
+    pub fn set_action(
+        &mut self,
+        chord: KeyChord,
+        target: ActionChordTarget,
+        label: impl Into<String>,
+    ) -> Result<(), ShortcutConfigError> {
+        self.check_action_chord(&chord, Some(&target))?;
+        self.actions.retain(|bound| bound.target != target);
+        self.actions.push(ActionChord {
+            chord,
+            target,
+            label: label.into(),
+        });
+        Ok(())
+    }
+
+    /// Unbind whatever chord runs `target`. `false` when none did.
+    pub fn remove_action(&mut self, target: &ActionChordTarget) -> bool {
+        let before = self.actions.len();
+        self.actions.retain(|bound| bound.target != *target);
+        self.actions.len() != before
+    }
+
+    /// The action `chord` runs, when it runs one.
+    #[must_use]
+    pub fn action_for(&self, chord: &KeyChord) -> Option<&ActionChord> {
+        self.actions.iter().find(|bound| bound.chord == *chord)
     }
 
     /// # Errors
@@ -1337,6 +1581,9 @@ impl ShortcutConfig {
             .find(|(a, c)| **a != action && **c == chord)
         {
             return Err(ShortcutConfigError::Conflict(*other));
+        }
+        if self.actions.iter().any(|bound| bound.chord == chord) {
+            return Err(ShortcutConfigError::TakenByAction);
         }
         self.bindings.insert(action, chord);
         Ok(())
@@ -1384,6 +1631,17 @@ impl ShortcutConfig {
             }
             effective.bindings.insert(action, chord);
         }
+        for bound in loaded.actions {
+            // The same rule as a live edit: an action chord never takes a
+            // desktop chord, and the first binding of a chord or target wins.
+            if effective
+                .actions
+                .iter()
+                .all(|other| other.target != bound.target)
+            {
+                let _ = effective.set_action(bound.chord, bound.target, bound.label);
+            }
+        }
         effective
     }
     /// # Errors
@@ -1425,6 +1683,7 @@ mod tests {
             hdr: false,
             vrr: false,
             color_profiles: vec![],
+            monitor: None,
         }
     }
     #[test]
@@ -1456,6 +1715,7 @@ mod tests {
             hdr: false,
             vrr: false,
             color_profiles: vec![],
+            monitor: None,
         };
         let second = OutputDescriptor {
             connector: "pci:0000:03:00.0/HDMI-A-1".into(),
@@ -1464,6 +1724,7 @@ mod tests {
             hdr: false,
             vrr: false,
             color_profiles: vec![],
+            monitor: None,
         };
         let mut config = DisplayConfig::default();
         config.outputs.insert(
@@ -1583,6 +1844,22 @@ mod tests {
     }
 
     #[test]
+    fn a_monitor_is_named_by_brand_and_model_once() {
+        let named = |make: &str, model: &str| {
+            MonitorIdentity {
+                make: make.into(),
+                model: model.into(),
+                ..MonitorIdentity::default()
+            }
+            .display_name()
+        };
+        assert_eq!(named("Dell", "DELL U2720Q"), "Dell U2720Q");
+        assert_eq!(named("LG", "27GL850"), "LG 27GL850");
+        assert_eq!(named("", "Q27G2"), "Q27G2");
+        assert_eq!(named("BOE", ""), "BOE");
+    }
+
+    #[test]
     fn missing_transaction_section_does_not_create_a_phantom_request() {
         assert!(DisplayTransaction::from_section(serde_json::Map::new()).is_none());
     }
@@ -1598,7 +1875,7 @@ mod tests {
             backend: "test".into(),
             publisher_pid: std::process::id(),
             publisher_start_ticks: current.saturating_add(1),
-            outputs: Vec::new(),
+            ..DisplayHardwareSnapshot::default()
         };
         assert_ne!(
             process_start_ticks(stale.publisher_pid),
@@ -1644,6 +1921,16 @@ mod tests {
             "Super+]"
         );
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn reopen_closed_tab_defaults_to_super_shift_t_without_colliding() {
+        let cfg = ShortcutConfig::default();
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::ReopenClosedTab],
+            KeyChord::parse("Super+Shift+T").unwrap()
+        );
+        assert!(cfg.validate().is_ok(), "no other default claims the chord");
     }
     #[test]
     fn shortcut_conflicts_are_rejected_without_overwriting() {
@@ -1742,9 +2029,60 @@ mod tests {
     }
 
     #[test]
+    fn a_chord_runs_any_published_action_but_never_takes_a_desktop_chord() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tilo/settings.json");
+        let target = |resource: &str| ActionChordTarget {
+            provider: "workspace:room".into(),
+            resource: resource.into(),
+            action: "run".into(),
+        };
+        let mut cfg = ShortcutConfig::default();
+        let chord = KeyChord::parse("Super+Shift+N").unwrap();
+        cfg.set_action(chord.clone(), target("shortcuts.shortcut:a"), "Run A")
+            .unwrap();
+        assert_eq!(
+            cfg.action_for(&chord).map(|bound| bound.label.as_str()),
+            Some("Run A")
+        );
+        assert_eq!(
+            cfg.set_action(chord.clone(), target("shortcuts.shortcut:b"), "Run B"),
+            Err(ShortcutConfigError::TakenByAction),
+            "one chord runs one action"
+        );
+        assert_eq!(
+            cfg.set_action(
+                KeyChord::parse("Alt+Tab").unwrap(),
+                target("shortcuts.shortcut:b"),
+                "Run B"
+            ),
+            Err(ShortcutConfigError::Fixed("Switch windows"))
+        );
+        assert_eq!(
+            cfg.set_action(
+                KeyChord::parse("Super+K").unwrap(),
+                target("shortcuts.shortcut:b"),
+                "Run B"
+            ),
+            Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
+        );
+        assert_eq!(
+            cfg.set(ShortcutAction::Search, chord.clone()),
+            Err(ShortcutConfigError::TakenByAction),
+            "a desktop action cannot take an action's chord either"
+        );
+        cfg.save_at(&path).unwrap();
+        let reloaded = ShortcutConfig::load_at(&path);
+        assert_eq!(reloaded, cfg);
+        assert!(reloaded.validate().is_ok());
+        assert!(cfg.remove_action(&target("shortcuts.shortcut:a")));
+        assert!(cfg.action_for(&chord).is_none());
+    }
+
+    #[test]
     fn desktop_navigation_defaults_are_complete_and_conflict_free() {
         let cfg = ShortcutConfig::default();
-        assert_eq!(cfg.bindings.len(), 21);
+        assert_eq!(cfg.bindings.len(), 22);
         let unique: BTreeSet<_> = cfg.bindings.values().collect();
         assert_eq!(unique.len(), cfg.bindings.len());
         assert_eq!(

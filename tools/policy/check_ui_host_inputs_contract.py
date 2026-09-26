@@ -8,7 +8,8 @@ runner reads them from the process, so the same toolkit can be hosted where
 there is no process environment to read.
 
 This check fails on a process-environment read (`env::var`, `env::var_os`,
-`env::vars`, `env::args`) in `crates/sdk/ui-core/src` outside:
+`env::vars`, `env::args`) in `crates/sdk/ui-core/src` and
+`crates/sdk/tilo-host/src` outside:
 
 * the native modules (`src/native/`);
 * test code (`*tests.rs` files and each file's trailing test module);
@@ -28,6 +29,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "crates/sdk/ui-core/src"
+HOST_SRC = ROOT / "crates/sdk/tilo-host/src"
 
 NATIVE_PREFIXES = ("native/",)
 
@@ -99,8 +101,25 @@ def is_exempt(relative: str) -> bool:
     )
 
 
-def audit() -> list[str]:
+def host_audit() -> list[str]:
+    """The host services crate reads the process only in its native backends."""
     violations: list[str] = []
+    for path in sorted(HOST_SRC.rglob("*.rs")):
+        relative = path.relative_to(HOST_SRC).as_posix()
+        if relative.startswith(NATIVE_PREFIXES) or relative.endswith("tests.rs"):
+            continue
+        text = production_source(path.read_text(encoding="utf-8"))
+        for hit in ENV_READ.finditer(text):
+            line = text.count("\n", 0, hit.start()) + 1
+            violations.append(
+                f"crates/sdk/tilo-host/src/{relative}:{line}: reads the process environment "
+                "outside the native backends"
+            )
+    return violations
+
+
+def audit() -> list[str]:
+    violations: list[str] = host_audit()
     readers: set[str] = set()
     for path in sorted(SRC.rglob("*.rs")):
         relative = path.relative_to(SRC).as_posix()

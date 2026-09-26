@@ -2,7 +2,7 @@
 
 ## Objective
 
-Give every qOS app a pleasant balance of useful information and breathing room with less layout work for authors, while preserving fully manual layout. Fix the concrete all-app review findings; do not redesign clear screens merely for uniformity.
+Give every Tilo app a pleasant balance of useful information and breathing room with less layout work for authors, while preserving fully manual layout. Fix the concrete all-app review findings; do not redesign clear screens merely for uniformity.
 
 ## Evidence
 

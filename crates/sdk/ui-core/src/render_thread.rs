@@ -529,7 +529,7 @@ fn log_render_outcome(
         worker_end.duration_since(origin).as_micros(),
         render_duration.map(|duration| duration.as_micros()),
     );
-    eprintln!("qos-render-frame {row}");
+    eprintln!("tilo-render-frame {row}");
 }
 
 fn render_outcome_row(

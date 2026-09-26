@@ -24,7 +24,7 @@ class DesktopCatalogGeneratorTests(unittest.TestCase):
                          "graphical_login": True, "return_to_prior_session": True,
                          "identity_setup": True, "selected_folder_import": True, "source_intact": True}
         self.release = {"id": "test-fedora", "version": "fixture-1", "distro_id": "fedora", "distro_version": "44",
-                        "architecture": "aarch64", "package_format": "rpm", "url": "https://code.sandbox.example/test/package.rpm",
+                        "architecture": "aarch64", "package_format": "rpm", "url": "https://code.tilo.so/test/package.rpm",
                         "artifact": str(self.artifact), "verified_runtime": self.evidence}
 
     def generate(self, releases=None, tag="fixture-1"):
@@ -62,10 +62,10 @@ class DesktopCatalogGeneratorTests(unittest.TestCase):
         self.release["sha256"] = self.digest
         self.assertNotEqual(self.generate()[0].returncode, 0)
         del self.release["sha256"]
-        for url in ["http://code.sandbox.example/p.rpm", "https://example.org/p.rpm", "https://code.sandbox.example:444/p.rpm", "https://user@code.sandbox.example/p.rpm"]:
+        for url in ["http://code.tilo.so/p.rpm", "https://example.org/p.rpm", "https://code.tilo.so:444/p.rpm", "https://user@code.tilo.so/p.rpm"]:
             self.release["url"] = url
             self.assertNotEqual(self.generate()[0].returncode, 0)
-        self.release["url"] = "https://code.sandbox.example/p.rpm"
+        self.release["url"] = "https://code.tilo.so/p.rpm"
         self.artifact.write_bytes(b"")
         self.assertNotEqual(self.generate()[0].returncode, 0)
 

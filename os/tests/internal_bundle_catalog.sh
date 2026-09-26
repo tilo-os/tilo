@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prove build-release-catalog.sh emits CatalogRelease::Internal entries only
-# for exact, valid schema-2 manifests published on code.sandbox.example.
+# for exact, valid schema-2 manifests published on code.tilo.so.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -9,7 +9,7 @@ work="$(mktemp -d /var/tmp/tilo-internal-catalog-test.XXXXXX)"
 trap 'find "$work" -depth -delete' EXIT
 tag=imager-v1.2.3
 media_prefix="https://downloads.example/tilo/public-downloads/releases/download/$tag"
-internal_prefix="https://code.sandbox.example/api/packages/qos/generic/tilo-internal-installer/$tag"
+internal_prefix="https://code.tilo.so/api/packages/tilo/generic/tilo-internal-installer/$tag"
 fail() { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
 
 reset() {

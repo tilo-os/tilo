@@ -123,10 +123,15 @@ impl MediaProvenance {
         let origin = self.target_update_ref.as_deref().ok_or_else(|| {
             "The release catalog is missing a hardware update origin.".to_string()
         })?;
+        // Board images carry private firmware and follow the forge's private
+        // repository; every other image follows the public one.
+        let reference = ["registry.tilo.so/tilo/tilo", "code.tilo.so/tilo/tilo"]
+            .iter()
+            .find_map(|repository| origin.strip_prefix(repository));
         let valid_origin =
-            if let Some(digest) = origin.strip_prefix("code.sandbox.example/qos/tilo@sha256:") {
+            if let Some(digest) = reference.and_then(|rest| rest.strip_prefix("@sha256:")) {
                 validate_digest(digest).is_ok()
-            } else if let Some(tag) = origin.strip_prefix("code.sandbox.example/qos/tilo:") {
+            } else if let Some(tag) = reference.and_then(|rest| rest.strip_prefix(':')) {
                 !tag.is_empty()
                     && tag.len() <= 128
                     && tag
@@ -247,7 +252,7 @@ impl InternalRelease {
 fn trusted_catalog_url(value: &str) -> Result<(), String> {
     let url = reqwest::Url::parse(value).map_err(|_| "Invalid catalog URL.".to_string())?;
     if url.scheme() != "https"
-        || url.host_str() != Some("code.sandbox.example")
+        || url.host_str() != Some("code.tilo.so")
         || url.port_or_known_default() != Some(443)
         || !url.username().is_empty()
         || url.password().is_some()
@@ -749,7 +754,7 @@ fn verified_image_observed(
         .timeout(std::time::Duration::from_secs(60 * 60))
         .build()
         .map_err(|error| format!("Could not initialize the downloader: {error}"))?;
-    let trusted_origin = reqwest::Url::parse("https://code.sandbox.example/")
+    let trusted_origin = reqwest::Url::parse("https://code.tilo.so/")
         .map_err(|error| format!("Could not initialize the trusted release origin: {error}"))?;
     notify(DownloadEvent::Downloading {
         received: archive_part.metadata().map_or(0, |metadata| metadata.len()),
@@ -944,7 +949,7 @@ mod tests {
                 "version": "1.0.0",
                 "channel": "stable",
                 "arch": arch,
-                "url": format!("https://code.sandbox.example/qos/releases/releases/download/imager-v1.0.0/tilo-{arch}.img.zst"),
+                "url": format!("https://code.tilo.so/tilo/releases/releases/download/imager-v1.0.0/tilo-{arch}.img.zst"),
                 "archive_sha256": "a".repeat(64),
                 "archive_size": 32,
                 "image_sha256": "b".repeat(64),
@@ -991,7 +996,7 @@ mod tests {
             "source_image_id": format!("sha256:{}", "d".repeat(64)),
             "input_qcow2_sha256": "e".repeat(64),
             "hardware_profile_sha256": "f".repeat(64),
-            "target_update_ref": "code.sandbox.example/qos/tilo:board-fixture",
+            "target_update_ref": "code.tilo.so/tilo/tilo:board-fixture",
         });
         catalog["releases"].as_array_mut().unwrap().push(board);
         catalog
@@ -1073,6 +1078,24 @@ mod tests {
             catalog["releases"][2]["provenance"][field] = "untrusted".into();
             assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
         }
+        for origin in [
+            "registry.tilo.so/tilo/tilo:gen7".to_owned(),
+            format!("code.tilo.so/tilo/tilo@sha256:{}", "a".repeat(64)),
+        ] {
+            let mut catalog = catalog_with_hardware_variant();
+            catalog["releases"][2]["provenance"]["target_update_ref"] = origin.into();
+            assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_ok());
+        }
+        for origin in [
+            "registry.tilo.so/tilo/tilo-vm:gen7",
+            "registry.tilo.so/tilo/tilo:",
+            "code.tilo.so/tilo/tilo@sha256:short",
+            "example.org/tilo/tilo:gen7",
+        ] {
+            let mut catalog = catalog_with_hardware_variant();
+            catalog["releases"][2]["provenance"]["target_update_ref"] = origin.into();
+            assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+        }
         let mut catalog = catalog_with_hardware_variant();
         let duplicate = catalog["releases"][2].clone();
         catalog["releases"].as_array_mut().unwrap().push(duplicate);
@@ -1121,7 +1144,7 @@ mod tests {
     fn arm64_selection_preserves_catalog_metadata_validation() {
         let catalog = catalog_with_both_architectures();
         for invalid in [
-            catalog.replace("code.sandbox.example", "untrusted.example"),
+            catalog.replace("code.tilo.so", "untrusted.example"),
             catalog.replace(&"a".repeat(64), "invalid-digest"),
             catalog.replace("\"image_size\":64", "\"image_size\":0"),
         ] {
@@ -1148,7 +1171,7 @@ mod tests {
             hardware_profile: "generic".into(),
             local_path: String::new(),
             url:
-                "https://code.sandbox.example/qos/releases/releases/download/imager-v1.0.0/tilo.img.zst"
+                "https://code.tilo.so/tilo/releases/releases/download/imager-v1.0.0/tilo.img.zst"
                     .into(),
             archive_sha256: "a".repeat(64),
             archive_size: 1,
@@ -1370,17 +1393,17 @@ mod tests {
 
     #[test]
     fn trusted_redirect_check_includes_scheme_host_and_port() {
-        let trusted = reqwest::Url::parse("https://code.sandbox.example/").unwrap();
+        let trusted = reqwest::Url::parse("https://code.tilo.so/").unwrap();
         assert!(same_origin(
-            &reqwest::Url::parse("https://code.sandbox.example/releases/file").unwrap(),
+            &reqwest::Url::parse("https://code.tilo.so/releases/file").unwrap(),
             &trusted
         ));
         assert!(!same_origin(
-            &reqwest::Url::parse("https://code.sandbox.example:444/releases/file").unwrap(),
+            &reqwest::Url::parse("https://code.tilo.so:444/releases/file").unwrap(),
             &trusted
         ));
         assert!(!same_origin(
-            &reqwest::Url::parse("http://code.sandbox.example/releases/file").unwrap(),
+            &reqwest::Url::parse("http://code.tilo.so/releases/file").unwrap(),
             &trusted
         ));
     }
@@ -1391,8 +1414,8 @@ mod internal_catalog_tests {
     use super::*;
     use serde_json::{Value, json};
     fn media() -> Value {
-        json!({"name":"qOS","version":"test","channel":"test","arch":"x86_64",
-            "url":"https://code.sandbox.example/test.img.zst","archive_sha256":"a".repeat(64),
+        json!({"name":"Tilo","version":"test","channel":"test","arch":"x86_64",
+            "url":"https://code.tilo.so/test.img.zst","archive_sha256":"a".repeat(64),
             "archive_size":42,"image_sha256":"b".repeat(64),"image_size":84})
     }
     fn catalog(entry: Value) -> String {
@@ -1428,7 +1451,7 @@ mod internal_catalog_tests {
     fn internal(manifest: &[u8]) -> Value {
         json!({"purpose":"tilo-internal-installer","layout":"internal-bundle-v2",
             "release_id":"fixture-only","arch":"x86_64",
-            "manifest_url":"https://code.sandbox.example/fixture/manifest.json",
+            "manifest_url":"https://code.tilo.so/fixture/manifest.json",
             "manifest_sha256":hex::encode(Sha256::digest(manifest)),"manifest_size":manifest.len()})
     }
     /// The catalog `os/tests/staging_helper_loop.sh` writes for its synthetic
@@ -1437,7 +1460,7 @@ mod internal_catalog_tests {
     fn loop_harness_catalog_shape_is_a_valid_catalog() {
         let mut entry = internal(b"{}");
         entry["release_id"] = json!("loop-test");
-        entry["manifest_url"] = json!("https://code.sandbox.example/qos/loop-test/manifest.json");
+        entry["manifest_url"] = json!("https://code.tilo.so/tilo/loop-test/manifest.json");
         let text =
             json!({"schema":1,"tag":"imager-v0.0.0-loop-test","releases":[entry]}).to_string();
         let parsed = parse_catalog(&text).unwrap();
@@ -1490,7 +1513,7 @@ mod internal_catalog_tests {
         let mut entry = internal(&bytes);
         entry["release_id"] = json!("imager-v1.2.3");
         entry["manifest_url"] = json!(
-            "https://code.sandbox.example/api/packages/qos/generic/tilo-internal-installer/imager-v1.2.3/tilo-internal-installer-x86_64.json"
+            "https://code.tilo.so/api/packages/tilo/generic/tilo-internal-installer/imager-v1.2.3/tilo-internal-installer-x86_64.json"
         );
         let raw = json!({"schema":1,"tag":"imager-v1.2.3","releases":[media(), entry]}).to_string();
         let catalog = parse_catalog(&raw).unwrap();
@@ -1550,13 +1573,13 @@ mod internal_catalog_tests {
             ("layout", json!("whole-disk-image")),
             // Schema-1 manifests are retired; so are the catalog tags naming them.
             ("layout", json!("internal-bundle-v1")),
-            ("purpose", json!("qos-internal-installer")),
+            ("purpose", json!("tilo-internal-installer")),
             ("manifest_size", json!(65537)),
             ("manifest_sha256", json!("A".repeat(64))),
             ("purpose", json!("removable-media")),
             (
                 "manifest_url",
-                json!("https://code.sandbox.example:444/manifest"),
+                json!("https://code.tilo.so:444/manifest"),
             ),
         ] {
             let mut value = internal(&bytes);

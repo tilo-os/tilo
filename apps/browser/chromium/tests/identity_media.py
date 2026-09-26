@@ -32,7 +32,7 @@ class Page(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
     def log_message(self,*_):pass
 server=http.server.ThreadingHTTPServer(("127.0.0.1",0),Page);threading.Thread(target=server.serve_forever,daemon=True).start()
-with tempfile.TemporaryDirectory(prefix="qos-identity-") as profile:
+with tempfile.TemporaryDirectory(prefix="tilo-identity-") as profile:
     p=subprocess.Popen([sys.argv[1],"--profile="+profile],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
     def cleanup():
         if p.poll() is None:
@@ -55,7 +55,7 @@ with tempfile.TemporaryDirectory(prefix="qos-identity-") as profile:
                 n,=struct.unpack("<I",exact(4));data=exact(n)
                 if data[0]==1:
                     event=json.loads(data[1:])
-                    if os.environ.get("QOS_IDENTITY_DEBUG"):print(event,flush=True)
+                    if os.environ.get("TILO_IDENTITY_DEBUG"):print(event,flush=True)
                     q.put(event)
         except Exception as error:q.put({"event":"reader_error","message":str(error)})
     threading.Thread(target=reader,daemon=True).start()

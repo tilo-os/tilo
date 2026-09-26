@@ -112,7 +112,7 @@ class InstallTests(fixtures.PublicBundleTests):
         bound = "127.0.0.1:5000/tilo-development/os:test"
         self.assertEqual(installer.origin.install_update_origin(self.image_root), bound)
         self.assertEqual(installer.origin.install_update_origin(self.image_root, bound), bound)
-        for ref in ("code.sandbox.example/qos/tilo:latest", "127.0.0.1:5000/tilo-development/os:other"):
+        for ref in ("registry.tilo.so/tilo/tilo:latest", "127.0.0.1:5000/tilo-development/os:other"):
             with self.assertRaises(ValueError):
                 installer.origin.install_update_origin(self.image_root, ref)
 
@@ -170,8 +170,8 @@ class InstallTests(fixtures.PublicBundleTests):
     def test_development_origin_transport_and_repository_boundaries(self):
         for value in ('https://dev.example/tilo-development/os:test',
                       'user:password@dev.example/tilo-development/os:test',
-                      'code.sandbox.example/tilo-development/os:test',
-                      'dev.example/qos/qos:test',
+                      'registry.tilo.so/tilo-development/os:test',
+                      'dev.example/tilo/tilo:test',
                       'dev.example:0/tilo-development/os:test',
                       'dev.example:05000/tilo-development/os:test',
                       'dev.example/tilo-development/os:test?query',
@@ -184,17 +184,18 @@ class InstallTests(fixtures.PublicBundleTests):
             installer.origin.validate_target_imgref('registry.vm.test:5443/tilo-development/os:test')
 
     def test_retained_registry_has_exact_namespace_and_native_tags(self):
-        repository = 'code.sandbox.example/qos/tilo-development'
+        repository = 'registry.tilo.so/tilo/tilo-development'
         for architecture in ('x86_64', 'aarch64'):
             selected = installer.origin.development_target(repository + ':development-' + architecture, architecture)
             self.assertEqual(selected['repository'], repository)
             self.assertTrue(selected['tls_required'])
         installer.origin.development_target(repository + '@sha256:' + 'a' * 64, 'aarch64')
-        for value in ('code.sandbox.example/qos/tilo:development-aarch64',
-                      'code.sandbox.example/qos/tilo-development/child:development-aarch64',
-                      'code.sandbox.example:443/qos/tilo-development:development-aarch64',
-                      'code.sandbox.example./qos/tilo-development:development-aarch64',
-                      'alias.example/qos/tilo-development:development-aarch64',
+        for value in ('registry.tilo.so/tilo/tilo:development-aarch64',
+                      'registry.tilo.so/tilo/tilo-development/child:development-aarch64',
+                      'registry.tilo.so:443/tilo/tilo-development:development-aarch64',
+                      'registry.tilo.so./tilo/tilo-development:development-aarch64',
+                      'code.tilo.so/tilo/tilo-development:development-aarch64',
+                      'alias.example/tilo/tilo-development:development-aarch64',
                       repository + ':latest', repository + ':development-x86_64'):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 installer.origin.development_target(value, 'aarch64')
@@ -202,7 +203,7 @@ class InstallTests(fixtures.PublicBundleTests):
             installer.origin.validate_target_imgref(repository + ':development-aarch64')
 
     def test_retained_origin_installs_exact_policy_and_rejects_override(self):
-        repository = 'code.sandbox.example/qos/tilo-development'
+        repository = 'registry.tilo.so/tilo/tilo-development'
         target = repository + ':development-aarch64'
         installer.install(self.output, self.official, self.destination, 'development', self.digest,
                           'ab' * 32, target, self.image_root)
@@ -210,7 +211,7 @@ class InstallTests(fixtures.PublicBundleTests):
         policy = json.loads((self.image_root / 'etc/containers/policy.json').read_text())
         self.assertEqual(policy, installer.origin.development_policy(repository))
         self.assertIn('insecure = false', (self.image_root / 'etc/containers/registries.conf.d/99-tilo-development.conf').read_text())
-        for override in (repository + ':development-x86_64', 'code.sandbox.example/qos/tilo:latest'):
+        for override in (repository + ':development-x86_64', 'registry.tilo.so/tilo/tilo:latest'):
             with self.subTest(override=override), self.assertRaises(ValueError):
                 installer.origin.install_update_origin(self.image_root, override)
         (self.destination / 'cosign.pub').write_bytes(b'substituted')

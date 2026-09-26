@@ -1623,7 +1623,7 @@ impl AppHandler {
             if !self.native_input_ids.is_empty() {
                 let cpu_frame_id = p.history().back().map(|sample| sample.frame);
                 crate::native_scenario::log::emit_json(
-                    "qos-native-frame",
+                    "tilo-native-frame",
                     serde_json::json!({
                         "cpu_frame_id": cpu_frame_id,
                         "input_ids": std::mem::take(&mut self.native_input_ids),
@@ -1725,7 +1725,7 @@ impl AppHandler {
             // All three values use the input timeline's monotonic origin.
             // This is a CPU submit attempt, not GPU/display completion.
             crate::native_scenario::log::emit_json(
-                "qos-native-redraw",
+                "tilo-native-redraw",
                 serde_json::json!({
                     "cpu_frame_id": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
                     "redraw_enter_us": entered.duration_since(origin).as_micros(),
@@ -1745,7 +1745,7 @@ impl AppHandler {
         );
         if let Some(bounds) = send_bounds {
             crate::native_scenario::log::emit_json(
-                "qos-native-send",
+                "tilo-native-send",
                 serde_json::json!({
                     "cpu_frame_id": send_cpu_frame_id,
                     "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
@@ -1759,7 +1759,7 @@ impl AppHandler {
         }
         if let Some(stages) = native_main_stages {
             crate::native_scenario::log::emit_json(
-                "qos-native-main-stages",
+                "tilo-native-main-stages",
                 stages.row(send_cpu_frame_id),
             );
         }
@@ -2485,7 +2485,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 if self.native_input_origin.is_none() {
                     let size = window.inner_size();
                     crate::native_scenario::log::emit_json(
-                        "qos-native-window",
+                        "tilo-native-window",
                         serde_json::json!({
                             "scale_factor": window.scale_factor(),
                             "physical_width": size.width,
@@ -2498,7 +2498,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 self.native_input_origin.get_or_insert(packet.origin);
                 let (now, dispatch_host) = crate::native_scenario::host_clock::sample();
                 crate::native_scenario::log::emit_json(
-                    "qos-native-input",
+                    "tilo-native-input",
                     serde_json::json!({
                         "id": packet.id,
                         "warmup": packet.warmup,
@@ -2638,7 +2638,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         if let Some((id, before)) = effect_before {
             crate::native_scenario::log::emit_json(
-                "qos-native-effect",
+                "tilo-native-effect",
                 serde_json::json!({
                     "id": id, "before": before, "after": self.app.native_input_snapshot(),
                 }),
@@ -2673,7 +2673,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
         // Optional profiling placement keeps concurrent benchmark windows from
         // completely occluding one another. Platform window managers may ignore it.
-        let window_attributes = match std::env::var("QOS_PROFILE_WINDOW_POSITION")
+        let window_attributes = match std::env::var("TILO_PROFILE_WINDOW_POSITION")
             .ok()
             .and_then(|value| crate::profiling::profile_window_position(&value))
         {
@@ -2682,7 +2682,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         };
         // Benchmarks can keep their own windows above unrelated desktop apps.
         // This does not change normal application window ordering.
-        let window_attributes = if std::env::var("QOS_PROFILE_WINDOW_FRONT").as_deref() == Ok("1") {
+        let window_attributes = if std::env::var("TILO_PROFILE_WINDOW_FRONT").as_deref() == Ok("1") {
             window_attributes.with_window_level(winit::window::WindowLevel::AlwaysOnTop)
         } else {
             window_attributes
@@ -2692,9 +2692,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         #[cfg(target_os = "linux")]
         let window_attributes = {
             use winit::platform::wayland::WindowAttributesExtWayland;
-            let package_id = std::env::var("TILO_PACKAGE_ID")
-                .or_else(|_| std::env::var("QOS_PACKAGE_ID"))
-                .ok();
+            let package_id = std::env::var("TILO_PACKAGE_ID").ok();
             let app_id = resolve_app_id(
                 self.app.window.app_id.as_deref().or(package_id.as_deref()),
                 std::env::current_exe()
@@ -2724,8 +2722,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         tilo_startup_metrics::mark("primary-window-created");
         self.native_input_pointer_passthrough = false;
         self.native_input_route_isolation = false;
-        if std::env::var("QOS_PROFILE_POINTER_PASSTHROUGH").as_deref() == Ok("1")
-            && std::env::var("QOS_PROFILE_WINDOW_NO_ACTIVATE").as_deref() == Ok("1")
+        if std::env::var("TILO_PROFILE_POINTER_PASSTHROUGH").as_deref() == Ok("1")
+            && std::env::var("TILO_PROFILE_WINDOW_NO_ACTIVATE").as_deref() == Ok("1")
             && (self.native_scenario.is_some() || self.native_input_origin.is_some())
         {
             // Physical pointer movement must not replace the scripted hover.
@@ -2901,7 +2899,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             && let Some(scenario) = self.native_scenario.take()
         {
             crate::native_scenario::log::emit_json(
-                "qos-native-scenario",
+                "tilo-native-scenario",
                 serde_json::json!({
                     "name": scenario.name, "steps": scenario.steps.len(),
                     "warmup_steps": scenario.warmup_steps, "interval_us": scenario.interval_us,
@@ -2915,7 +2913,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .is_ok()
             }) {
                 crate::native_scenario::log::emit_json(
-                    "qos-native-scenario",
+                    "tilo-native-scenario",
                     serde_json::json!({"event":"failed", "error":error}),
                 );
                 event_loop.exit();
@@ -3010,7 +3008,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if app.root_widget.needs_commit() {
             if let Some(origin) = self.native_input_origin {
                 crate::native_scenario::log::emit_json(
-                    "qos-native-commit-redraw",
+                    "tilo-native-commit-redraw",
                     serde_json::json!({
                         "after_cpu_frame": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
                         "at_us": origin.elapsed().as_micros(),
@@ -3390,7 +3388,7 @@ impl App {
             .unwrap_or_else(|error| panic!("invalid native performance scenario: {error}"));
         assert!(
             native_scenario.is_none() || self.profiler.is_some(),
-            "native performance scenarios require QOS_PROFILE_OUT or QOS_PROFILE"
+            "native performance scenarios require TILO_PROFILE_OUT or TILO_PROFILE"
         );
         {
             let _entry = self.enter_wake_scope();
