@@ -112,60 +112,60 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
-    fn json_packet_round_trip_and_eof() {
-        let mut bytes = Vec::new();
-        write_json(
-            &mut bytes,
-            &serde_json::json!({"op":"navigate","url":"https://tilo.so"}),
-        )
-        .unwrap();
-        let mut reader = Cursor::new(bytes);
-        let Some(Packet::Json(value)) = read_packet(&mut reader).unwrap() else {
-            panic!("expected JSON")
-        };
-        assert_eq!(value["url"], "https://tilo.so");
-        assert!(read_packet(&mut reader).unwrap().is_none());
-    }
-
-    /// The helper's packets: a little-endian `u32` length that counts the
-    /// kind byte, the kind, then the body.
-    #[test]
-    fn packet_wire_bytes_are_pinned() {
-        let mut bytes = Vec::new();
-        write_json(&mut bytes, &serde_json::json!({"a": 1})).unwrap();
-        assert_eq!(bytes, b"\x08\0\0\0\x01{\"a\":1}");
-        let Some(Packet::Json(value)) = read_packet(&mut Cursor::new(&bytes)).unwrap() else {
-            panic!("expected JSON")
-        };
-        assert_eq!(value["a"], 1);
-    }
-
-    #[test]
-    fn malformed_packets_are_rejected_before_allocation() {
-        for bytes in [
-            vec![1, 0],
-            vec![0, 0, 0, 0],
-            (MAX_PACKET + 1).to_le_bytes().to_vec(),
-            vec![2, 0, 0, 0, 1],
-            vec![1, 0, 0, 0, 9],
-        ] {
+    fn packets_and_frames_are_pinned_bounded_and_validated() {
+        // phase: json_packet_round_trip_and_eof
+        {
+            let mut bytes = Vec::new();
+            write_json(
+                &mut bytes,
+                &serde_json::json!({"op":"navigate","url":"https://tilo.so"}),
+            )
+            .unwrap();
+            let mut reader = Cursor::new(bytes);
+            let Some(Packet::Json(value)) = read_packet(&mut reader).unwrap() else {
+                panic!("expected JSON")
+            };
+            assert_eq!(value["url"], "https://tilo.so");
+            assert!(read_packet(&mut reader).unwrap().is_none());
+        }
+        // phase: packet_wire_bytes_are_pinned
+        // The helper's packets: a little-endian `u32` length that counts the
+        // kind byte, the kind, then the body.
+        {
+            let mut bytes = Vec::new();
+            write_json(&mut bytes, &serde_json::json!({"a": 1})).unwrap();
+            assert_eq!(bytes, b"\x08\0\0\0\x01{\"a\":1}");
+            let Some(Packet::Json(value)) = read_packet(&mut Cursor::new(&bytes)).unwrap() else {
+                panic!("expected JSON")
+            };
+            assert_eq!(value["a"], 1);
+        }
+        // phase: malformed_packets_are_rejected_before_allocation
+        {
+            for bytes in [
+                vec![1, 0],
+                vec![0, 0, 0, 0],
+                (MAX_PACKET + 1).to_le_bytes().to_vec(),
+                vec![2, 0, 0, 0, 1],
+                vec![1, 0, 0, 0, 9],
+            ] {
+                assert!(read_packet(&mut Cursor::new(bytes)).is_err());
+            }
+        }
+        // phase: bgra_frame_is_validated_and_converted
+        {
+            let mut bytes = 13u32.to_le_bytes().to_vec();
+            bytes.push(2);
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes.extend_from_slice(&[10, 20, 30, 255]);
+            let Some(Packet::Frame(frame)) = read_packet(&mut Cursor::new(&bytes)).unwrap() else {
+                panic!("expected frame")
+            };
+            assert_eq!((frame.width, frame.height), (1, 1));
+            assert_eq!(&*frame.rgba, &[30, 20, 10, 255]);
+            bytes[5..9].copy_from_slice(&8193u32.to_le_bytes());
             assert!(read_packet(&mut Cursor::new(bytes)).is_err());
         }
-    }
-
-    #[test]
-    fn bgra_frame_is_validated_and_converted() {
-        let mut bytes = 13u32.to_le_bytes().to_vec();
-        bytes.push(2);
-        bytes.extend_from_slice(&1u32.to_le_bytes());
-        bytes.extend_from_slice(&1u32.to_le_bytes());
-        bytes.extend_from_slice(&[10, 20, 30, 255]);
-        let Some(Packet::Frame(frame)) = read_packet(&mut Cursor::new(&bytes)).unwrap() else {
-            panic!("expected frame")
-        };
-        assert_eq!((frame.width, frame.height), (1, 1));
-        assert_eq!(&*frame.rgba, &[30, 20, 10, 255]);
-        bytes[5..9].copy_from_slice(&8193u32.to_le_bytes());
-        assert!(read_packet(&mut Cursor::new(bytes)).is_err());
     }
 }

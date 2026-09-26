@@ -694,305 +694,322 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hhmm_extracts_clock() {
-        assert_eq!(hhmm("2026-06-30T09:17:00+02:00"), "09:17");
-        assert_eq!(hhmm("garbage"), "garbage");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn text_parsers_extract_clocks_regions_steps_and_place_labels() {
+        // Phase `hhmm_extracts_clock`.
+        {
+            assert_eq!(hhmm("2026-06-30T09:17:00+02:00"), "09:17");
+            assert_eq!(hhmm("garbage"), "garbage");
+        }
+
+        // Phase `region_from_json_parses_boundingbox`.
+        // A region candidate carries the Nominatim `boundingbox`
+        // ([south, north, west, east]) as a real sw/ne extent, so a download
+        // targets the place's footprint rather than the screen rectangle.
+        {
+            let item = serde_json::json!({
+                "lat": "48.1371", "lon": "11.5754",
+                "name": "Munich",
+                "display_name": "Munich, Bavaria, Germany",
+                "class": "boundary", "type": "administrative",
+                "osm_type": "relation", "osm_id": 62428,
+                "boundingbox": ["48.0616", "48.2482", "11.3608", "11.7229"]
+            });
+            let hit = region_from_json(&item).expect("a region with a coord + box");
+            assert_eq!(hit.name, "Munich");
+            assert!(
+                (hit.sw.lat - 48.0616).abs() < 1e-6,
+                "south from boundingbox[0]"
+            );
+            assert!(
+                (hit.ne.lat - 48.2482).abs() < 1e-6,
+                "north from boundingbox[1]"
+            );
+            assert!(
+                (hit.sw.lon - 11.3608).abs() < 1e-6,
+                "west from boundingbox[2]"
+            );
+            assert!(
+                (hit.ne.lon - 11.7229).abs() < 1e-6,
+                "east from boundingbox[3]"
+            );
+            // The box is a real area, not a degenerate point.
+            assert!(hit.ne.lat > hit.sw.lat && hit.ne.lon > hit.sw.lon);
+        }
+
+        // Phase `region_from_json_falls_back_to_a_small_box`.
+        // Without a `boundingbox`, a result still yields a small square around the
+        // point so a single-building hit downloads its surroundings.
+        {
+            let item = serde_json::json!({
+                "lat": "48.1374", "lon": "11.5755",
+                "name": "Marienplatz",
+                "display_name": "Marienplatz, München",
+                "class": "amenity", "type": "square",
+                "osm_type": "node", "osm_id": 1
+            });
+            let hit = region_from_json(&item).expect("a region from a coord");
+            assert!(
+                hit.ne.lat > hit.sw.lat && hit.ne.lon > hit.sw.lon,
+                "a non-degenerate box"
+            );
+            assert!(
+                (hit.ne.lat - hit.sw.lat) < 0.05,
+                "the fallback box is small"
+            );
+        }
+
+        // Phase `step_instruction_formats`.
+        {
+            assert_eq!(
+                step_instruction(Maneuver::Left, "Main St"),
+                "Turn left onto Main St"
+            );
+            assert_eq!(
+                step_instruction(Maneuver::Arrive, ""),
+                "Arrive at your destination"
+            );
+        }
+
+        // Phase `place_label_prefers_name_then_road_not_house_number`.
+        {
+            // A POI with an explicit name keeps it.
+            let poi = serde_json::json!({
+                "lat": "48.137", "lon": "11.575",
+                "name": "Marienplatz",
+                "display_name": "Marienplatz, Altstadt, München",
+                "class": "tourism", "type": "attraction", "osm_type": "node", "osm_id": 1,
+            });
+            assert_eq!(place_from_json(&poi).unwrap().name, "Marienplatz");
+
+            // A house-number address must NOT be labelled with the bare number —
+            // it must read as the street (+ number). This is the field-label bug.
+            let address = serde_json::json!({
+                "lat": "48.141", "lon": "11.577",
+                "name": "",
+                "display_name": "18, Theatinerstraße, Altstadt, München, 80333",
+                "address": { "house_number": "18", "road": "Theatinerstraße", "city": "München" },
+                "class": "place", "type": "house", "osm_type": "way", "osm_id": 2,
+            });
+            let p = place_from_json(&address).unwrap();
+            assert_eq!(
+                p.name, "Theatinerstraße 18",
+                "must be street + number, never a bare '18'"
+            );
+            assert_ne!(p.name, "18");
+
+            // No name and no address details: skip a leading bare-number fragment.
+            let bare = serde_json::json!({
+                "lat": "48.14", "lon": "11.57",
+                "name": "",
+                "display_name": "12, Sendlinger Straße, München",
+                "class": "place", "type": "house", "osm_type": "way", "osm_id": 3,
+            });
+            assert_eq!(place_from_json(&bare).unwrap().name, "Sendlinger Straße");
+        }
     }
 
-    /// A region candidate carries the Nominatim `boundingbox`
-    /// ([south, north, west, east]) as a real sw/ne extent, so a download
-    /// targets the place's footprint rather than the screen rectangle.
     #[test]
-    fn region_from_json_parses_boundingbox() {
-        let item = serde_json::json!({
-            "lat": "48.1371", "lon": "11.5754",
-            "name": "Munich",
-            "display_name": "Munich, Bavaria, Germany",
-            "class": "boundary", "type": "administrative",
-            "osm_type": "relation", "osm_id": 62428,
-            "boundingbox": ["48.0616", "48.2482", "11.3608", "11.7229"]
-        });
-        let hit = region_from_json(&item).expect("a region with a coord + box");
-        assert_eq!(hit.name, "Munich");
-        assert!(
-            (hit.sw.lat - 48.0616).abs() < 1e-6,
-            "south from boundingbox[0]"
-        );
-        assert!(
-            (hit.ne.lat - 48.2482).abs() < 1e-6,
-            "north from boundingbox[1]"
-        );
-        assert!(
-            (hit.sw.lon - 11.3608).abs() < 1e-6,
-            "west from boundingbox[2]"
-        );
-        assert!(
-            (hit.ne.lon - 11.7229).abs() < 1e-6,
-            "east from boundingbox[3]"
-        );
-        // The box is a real area, not a degenerate point.
-        assert!(hit.ne.lat > hit.sw.lat && hit.ne.lon > hit.sw.lon);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn transit_urls_polylines_and_legs_decode_robustly() {
+        // Phase `transit_url_depart_now_omits_time`.
+        {
+            let from = LatLon::new(48.10, 11.55);
+            let to = LatLon::new(48.14, 11.58);
+            let url = transit_url(from, to, &TransitQuery::default());
+            assert!(url.contains("fromPlace=48.100000,11.550000"), "{url}");
+            assert!(url.contains("toPlace=48.140000,11.580000"), "{url}");
+            assert!(
+                !url.contains("&time="),
+                "depart-now must not pin a time: {url}"
+            );
+            assert!(
+                !url.contains("arriveBy"),
+                "depart-now is not arrive-by: {url}"
+            );
+        }
 
-    /// Without a `boundingbox`, a result still yields a small square around the
-    /// point so a single-building hit downloads its surroundings.
-    #[test]
-    fn region_from_json_falls_back_to_a_small_box() {
-        let item = serde_json::json!({
-            "lat": "48.1374", "lon": "11.5755",
-            "name": "Marienplatz",
-            "display_name": "Marienplatz, München",
-            "class": "amenity", "type": "square",
-            "osm_type": "node", "osm_id": 1
-        });
-        let hit = region_from_json(&item).expect("a region from a coord");
-        assert!(
-            hit.ne.lat > hit.sw.lat && hit.ne.lon > hit.sw.lon,
-            "a non-degenerate box"
-        );
-        assert!(
-            (hit.ne.lat - hit.sw.lat) < 0.05,
-            "the fallback box is small"
-        );
-    }
+        // Phase `transit_url_arrive_by_carries_time_and_flag`.
+        {
+            let from = LatLon::new(48.10, 11.55);
+            let to = LatLon::new(48.14, 11.58);
+            let when = TransitQuery {
+                arrive_by: true,
+                time: Some("2026-07-03T10:15:00+02:00".to_string()),
+            };
+            let url = transit_url(from, to, &when);
+            // The colons/plus of the timestamp must be percent-encoded into the URL.
+            assert!(
+                url.contains("&time=2026-07-03T10%3A15%3A00%2B02%3A00"),
+                "{url}"
+            );
+            assert!(url.contains("&arriveBy=true"), "{url}");
+        }
 
-    #[test]
-    fn step_instruction_formats() {
-        assert_eq!(
-            step_instruction(Maneuver::Left, "Main St"),
-            "Turn left onto Main St"
-        );
-        assert_eq!(
-            step_instruction(Maneuver::Arrive, ""),
-            "Arrive at your destination"
-        );
-    }
+        // Phase `decode_polyline_matches_google_reference`.
+        {
+            // The canonical example from Google's polyline algorithm docs:
+            // `_p~iF~ps|U_ulLnnqC_mqNvxq`@` at precision 5 decodes to three points.
+            let pts = decode_polyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@", 5);
+            assert_eq!(pts.len(), 3);
+            assert!((pts[0].lat - 38.5).abs() < 1e-5, "{:?}", pts[0]);
+            assert!((pts[0].lon - -120.2).abs() < 1e-5, "{:?}", pts[0]);
+            assert!((pts[1].lat - 40.7).abs() < 1e-5, "{:?}", pts[1]);
+            assert!((pts[1].lon - -120.95).abs() < 1e-5, "{:?}", pts[1]);
+            assert!((pts[2].lat - 43.252).abs() < 1e-5, "{:?}", pts[2]);
+            assert!((pts[2].lon - -126.453).abs() < 1e-5, "{:?}", pts[2]);
+        }
 
-    #[test]
-    fn transit_url_depart_now_omits_time() {
-        let from = LatLon::new(48.10, 11.55);
-        let to = LatLon::new(48.14, 11.58);
-        let url = transit_url(from, to, &TransitQuery::default());
-        assert!(url.contains("fromPlace=48.100000,11.550000"), "{url}");
-        assert!(url.contains("toPlace=48.140000,11.580000"), "{url}");
-        assert!(
-            !url.contains("&time="),
-            "depart-now must not pin a time: {url}"
-        );
-        assert!(
-            !url.contains("arriveBy"),
-            "depart-now is not arrive-by: {url}"
-        );
-    }
+        // Phase `decode_polyline_empty_and_malformed_dont_panic`.
+        {
+            assert!(decode_polyline("", 5).is_empty());
+            // A lone continuation byte with no pair is dropped, not panicked on.
+            assert!(decode_polyline("_", 6).is_empty());
+        }
 
-    #[test]
-    fn decode_polyline_matches_google_reference() {
-        // The canonical example from Google's polyline algorithm docs:
-        // `_p~iF~ps|U_ulLnnqC_mqNvxq`@` at precision 5 decodes to three points.
-        let pts = decode_polyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@", 5);
-        assert_eq!(pts.len(), 3);
-        assert!((pts[0].lat - 38.5).abs() < 1e-5, "{:?}", pts[0]);
-        assert!((pts[0].lon - -120.2).abs() < 1e-5, "{:?}", pts[0]);
-        assert!((pts[1].lat - 40.7).abs() < 1e-5, "{:?}", pts[1]);
-        assert!((pts[1].lon - -120.95).abs() < 1e-5, "{:?}", pts[1]);
-        assert!((pts[2].lat - 43.252).abs() < 1e-5, "{:?}", pts[2]);
-        assert!((pts[2].lon - -126.453).abs() < 1e-5, "{:?}", pts[2]);
-    }
-
-    #[test]
-    fn decode_polyline_empty_and_malformed_dont_panic() {
-        assert!(decode_polyline("", 5).is_empty());
-        // A lone continuation byte with no pair is dropped, not panicked on.
-        assert!(decode_polyline("_", 6).is_empty());
-    }
-
-    #[test]
-    fn parse_transit_decodes_leg_geometry() {
-        // A minimal MOTIS-shaped plan response with one itinerary whose transit
-        // leg carries an encoded `legGeometry`. Proves the real parse path
-        // populates `TransitLeg.geometry` (previously always empty).
-        let body = serde_json::json!({
-            "itineraries": [{
-                "startTime": "2026-07-04T09:12:00+02:00",
-                "endTime": "2026-07-04T09:26:00+02:00",
-                "duration": 840,
-                "transfers": 0,
-                "legs": [{
-                    "mode": "SUBWAY",
-                    "routeShortName": "U3",
-                    "routeColor": "eb690b",
-                    "routeTextColor": "#FFFFFF",
-                    "agencyName": "MVG",
-                    "realTime": true,
-                    "headsign": "Moosach",
-                    "from": {"name": "Goetheplatz"},
-                    "to": {"name": "Marienplatz"},
-                    "startTime": "2026-07-04T09:17:00+02:00",
-                    "endTime": "2026-07-04T09:23:00+02:00",
-                    "duration": 360,
-                    "intermediateStops": [{}, {}, {}],
-                    "legGeometry": {"points": "_p~iF~ps|U_ulLnnqC_mqNvxq`@", "precision": 5}
+        // Phase `parse_transit_decodes_leg_geometry`.
+        {
+            // A minimal MOTIS-shaped plan response with one itinerary whose transit
+            // leg carries an encoded `legGeometry`. Proves the real parse path
+            // populates `TransitLeg.geometry` (previously always empty).
+            let body = serde_json::json!({
+                "itineraries": [{
+                    "startTime": "2026-07-04T09:12:00+02:00",
+                    "endTime": "2026-07-04T09:26:00+02:00",
+                    "duration": 840,
+                    "transfers": 0,
+                    "legs": [{
+                        "mode": "SUBWAY",
+                        "routeShortName": "U3",
+                        "routeColor": "eb690b",
+                        "routeTextColor": "#FFFFFF",
+                        "agencyName": "MVG",
+                        "realTime": true,
+                        "headsign": "Moosach",
+                        "from": {"name": "Goetheplatz"},
+                        "to": {"name": "Marienplatz"},
+                        "startTime": "2026-07-04T09:17:00+02:00",
+                        "endTime": "2026-07-04T09:23:00+02:00",
+                        "duration": 360,
+                        "intermediateStops": [{}, {}, {}],
+                        "legGeometry": {"points": "_p~iF~ps|U_ulLnnqC_mqNvxq`@", "precision": 5}
+                    }]
                 }]
-            }]
-        });
-        let js = parse_transit(&body).expect("parses");
-        assert_eq!(js.len(), 1);
-        let leg = &js[0].legs[0];
-        assert_eq!(leg.mode, TransitMode::Subway);
-        assert_eq!(leg.line, "U3");
-        assert_eq!(leg.num_stops, 3);
-        assert_eq!(
-            leg.geometry.len(),
-            3,
-            "legGeometry must decode onto the leg"
-        );
-        assert!((leg.geometry[0].lat - 38.5).abs() < 1e-5);
-        // The authentic feed colour + real-time flag + agency must land on the leg.
-        assert_eq!(
-            leg.color.as_deref(),
-            Some("eb690b"),
-            "GTFS routeColor parsed"
-        );
-        assert_eq!(
-            leg.text_color.as_deref(),
-            Some("FFFFFF"),
-            "routeTextColor parsed, '#' stripped"
-        );
-        assert_eq!(leg.agency, "MVG");
-        assert!(
-            leg.realtime,
-            "realTime flag parsed for the freshness signal"
-        );
+            });
+            let js = parse_transit(&body).expect("parses");
+            assert_eq!(js.len(), 1);
+            let leg = &js[0].legs[0];
+            assert_eq!(leg.mode, TransitMode::Subway);
+            assert_eq!(leg.line, "U3");
+            assert_eq!(leg.num_stops, 3);
+            assert_eq!(
+                leg.geometry.len(),
+                3,
+                "legGeometry must decode onto the leg"
+            );
+            assert!((leg.geometry[0].lat - 38.5).abs() < 1e-5);
+            // The authentic feed colour + real-time flag + agency must land on the leg.
+            assert_eq!(
+                leg.color.as_deref(),
+                Some("eb690b"),
+                "GTFS routeColor parsed"
+            );
+            assert_eq!(
+                leg.text_color.as_deref(),
+                Some("FFFFFF"),
+                "routeTextColor parsed, '#' stripped"
+            );
+            assert_eq!(leg.agency, "MVG");
+            assert!(
+                leg.realtime,
+                "realTime flag parsed for the freshness signal"
+            );
+        }
+
+        // Phase `parse_transit_tolerates_missing_geometry`.
+        {
+            // A leg with no `legGeometry` (some walk legs) must parse with an empty
+            // polyline, not error.
+            let body = serde_json::json!({
+                "itineraries": [{
+                    "duration": 300,
+                    "legs": [{"mode": "WALK", "from": {"name": "A"}, "to": {"name": "B"}}]
+                }]
+            });
+            let js = parse_transit(&body).expect("parses");
+            assert!(js[0].legs[0].geometry.is_empty());
+        }
     }
 
     #[test]
-    fn parse_transit_tolerates_missing_geometry() {
-        // A leg with no `legGeometry` (some walk legs) must parse with an empty
-        // polyline, not error.
-        let body = serde_json::json!({
-            "itineraries": [{
-                "duration": 300,
-                "legs": [{"mode": "WALK", "from": {"name": "A"}, "to": {"name": "B"}}]
-            }]
-        });
-        let js = parse_transit(&body).expect("parses");
-        assert!(js[0].legs[0].geometry.is_empty());
-    }
+    fn overpass_query_encodes_bbox_and_results_map_to_categories() {
+        // Phase `overpass_url_encodes_bbox_and_filters`.
+        {
+            let url = overpass_url(48.10, 11.55, 48.15, 11.60);
+            assert!(url.starts_with("https://overpass-api.de/api/interpreter?data="));
+            // The bbox reaches the query (percent-encoded comma is %2C).
+            assert!(
+                url.contains("48.10000%2C11.55000%2C48.15000%2C11.60000"),
+                "{url}"
+            );
+            // Key categories are present in the (encoded) query.
+            assert!(url.contains("restaurant"));
+            assert!(
+                url.contains("out%20center%20250"),
+                "server-side cap present: {url}"
+            );
+        }
 
-    #[test]
-    fn place_label_prefers_name_then_road_not_house_number() {
-        // A POI with an explicit name keeps it.
-        let poi = serde_json::json!({
-            "lat": "48.137", "lon": "11.575",
-            "name": "Marienplatz",
-            "display_name": "Marienplatz, Altstadt, München",
-            "class": "tourism", "type": "attraction", "osm_type": "node", "osm_id": 1,
-        });
-        assert_eq!(place_from_json(&poi).unwrap().name, "Marienplatz");
+        // Phase `parse_overpass_maps_tags_to_categories_and_details`.
+        {
+            let body = serde_json::json!({
+                "elements": [
+                    { // a node café with rich tags
+                        "type": "node", "id": 1, "lat": 48.137, "lon": 11.575,
+                        "tags": {
+                            "name": "Café Glück", "amenity": "cafe", "cuisine": "coffee_shop",
+                            "opening_hours": "Mo-Fr 08:00-18:00", "website": "https://gluck.example",
+                            "phone": "+49 89 123", "addr:street": "Theatinerstraße", "addr:housenumber": "18",
+                            "addr:city": "München"
+                        }
+                    },
+                    { // a way museum with a center point
+                        "type": "way", "id": 2, "center": {"lat": 48.140, "lon": 11.578},
+                        "tags": {"name": "Stadtmuseum", "tourism": "museum"}
+                    },
+                    { // unnamed node — dropped (noise)
+                        "type": "node", "id": 3, "lat": 48.1, "lon": 11.5, "tags": {"amenity": "bench"}
+                    },
+                    { // no recognised category — dropped
+                        "type": "node", "id": 4, "lat": 48.1, "lon": 11.5, "tags": {"name": "Nowhere"}
+                    },
+                ]
+            });
+            let pois = parse_overpass(&body);
+            assert_eq!(pois.len(), 2, "only named, categorised elements survive");
 
-        // A house-number address must NOT be labelled with the bare number —
-        // it must read as the street (+ number). This is the field-label bug.
-        let address = serde_json::json!({
-            "lat": "48.141", "lon": "11.577",
-            "name": "",
-            "display_name": "18, Theatinerstraße, Altstadt, München, 80333",
-            "address": { "house_number": "18", "road": "Theatinerstraße", "city": "München" },
-            "class": "place", "type": "house", "osm_type": "way", "osm_id": 2,
-        });
-        let p = place_from_json(&address).unwrap();
-        assert_eq!(
-            p.name, "Theatinerstraße 18",
-            "must be street + number, never a bare '18'"
-        );
-        assert_ne!(p.name, "18");
+            let cafe = &pois[0];
+            assert_eq!(cafe.id, "osm-node-1");
+            assert_eq!(cafe.name, "Café Glück");
+            assert_eq!(cafe.category, Category::Cafe);
+            assert_eq!(cafe.address, "Theatinerstraße 18, München");
+            assert_eq!(cafe.opening_hours.as_deref(), Some("Mo-Fr 08:00-18:00"));
+            assert_eq!(cafe.website.as_deref(), Some("https://gluck.example"));
+            assert_eq!(cafe.phone.as_deref(), Some("+49 89 123"));
 
-        // No name and no address details: skip a leading bare-number fragment.
-        let bare = serde_json::json!({
-            "lat": "48.14", "lon": "11.57",
-            "name": "",
-            "display_name": "12, Sendlinger Straße, München",
-            "class": "place", "type": "house", "osm_type": "way", "osm_id": 3,
-        });
-        assert_eq!(place_from_json(&bare).unwrap().name, "Sendlinger Straße");
-    }
-
-    #[test]
-    fn overpass_url_encodes_bbox_and_filters() {
-        let url = overpass_url(48.10, 11.55, 48.15, 11.60);
-        assert!(url.starts_with("https://overpass-api.de/api/interpreter?data="));
-        // The bbox reaches the query (percent-encoded comma is %2C).
-        assert!(
-            url.contains("48.10000%2C11.55000%2C48.15000%2C11.60000"),
-            "{url}"
-        );
-        // Key categories are present in the (encoded) query.
-        assert!(url.contains("restaurant"));
-        assert!(
-            url.contains("out%20center%20250"),
-            "server-side cap present: {url}"
-        );
-    }
-
-    #[test]
-    fn parse_overpass_maps_tags_to_categories_and_details() {
-        let body = serde_json::json!({
-            "elements": [
-                { // a node café with rich tags
-                    "type": "node", "id": 1, "lat": 48.137, "lon": 11.575,
-                    "tags": {
-                        "name": "Café Glück", "amenity": "cafe", "cuisine": "coffee_shop",
-                        "opening_hours": "Mo-Fr 08:00-18:00", "website": "https://gluck.example",
-                        "phone": "+49 89 123", "addr:street": "Theatinerstraße", "addr:housenumber": "18",
-                        "addr:city": "München"
-                    }
-                },
-                { // a way museum with a center point
-                    "type": "way", "id": 2, "center": {"lat": 48.140, "lon": 11.578},
-                    "tags": {"name": "Stadtmuseum", "tourism": "museum"}
-                },
-                { // unnamed node — dropped (noise)
-                    "type": "node", "id": 3, "lat": 48.1, "lon": 11.5, "tags": {"amenity": "bench"}
-                },
-                { // no recognised category — dropped
-                    "type": "node", "id": 4, "lat": 48.1, "lon": 11.5, "tags": {"name": "Nowhere"}
-                },
-            ]
-        });
-        let pois = parse_overpass(&body);
-        assert_eq!(pois.len(), 2, "only named, categorised elements survive");
-
-        let cafe = &pois[0];
-        assert_eq!(cafe.id, "osm-node-1");
-        assert_eq!(cafe.name, "Café Glück");
-        assert_eq!(cafe.category, Category::Cafe);
-        assert_eq!(cafe.address, "Theatinerstraße 18, München");
-        assert_eq!(cafe.opening_hours.as_deref(), Some("Mo-Fr 08:00-18:00"));
-        assert_eq!(cafe.website.as_deref(), Some("https://gluck.example"));
-        assert_eq!(cafe.phone.as_deref(), Some("+49 89 123"));
-
-        let museum = &pois[1];
-        assert_eq!(museum.id, "osm-way-2");
-        assert_eq!(museum.category, Category::Museum);
-        assert!(
-            (museum.pos.lat - 48.140).abs() < 1e-9,
-            "way center becomes the position"
-        );
-    }
-
-    #[test]
-    fn transit_url_arrive_by_carries_time_and_flag() {
-        let from = LatLon::new(48.10, 11.55);
-        let to = LatLon::new(48.14, 11.58);
-        let when = TransitQuery {
-            arrive_by: true,
-            time: Some("2026-07-03T10:15:00+02:00".to_string()),
-        };
-        let url = transit_url(from, to, &when);
-        // The colons/plus of the timestamp must be percent-encoded into the URL.
-        assert!(
-            url.contains("&time=2026-07-03T10%3A15%3A00%2B02%3A00"),
-            "{url}"
-        );
-        assert!(url.contains("&arriveBy=true"), "{url}");
+            let museum = &pois[1];
+            assert_eq!(museum.id, "osm-way-2");
+            assert_eq!(museum.category, Category::Museum);
+            assert!(
+                (museum.pos.lat - 48.140).abs() < 1e-9,
+                "way center becomes the position"
+            );
+        }
     }
 }

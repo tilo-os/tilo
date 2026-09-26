@@ -91,294 +91,297 @@ fn assert_balanced(rtf: &str) {
 }
 
 #[test]
-fn heading_with_bold_run_yields_rtf_header_and_bold() {
-    // A heading whose first word is bold.
-    let mut heading = block_attr("heading", "Bold title", &[("level", AttrVal::Int(1))]);
-    heading
-        .marks
-        .push(mark(0, 4, "strong", MarkValue::Bool(true)));
+#[allow(
+    clippy::too_many_lines,
+    reason = "each phase keeps one former test's body verbatim"
+)]
+fn rtf_export_block_structure() {
+    // Phase `heading_with_bold_run_yields_rtf_header_and_bold`.
+    {
+        // A heading whose first word is bold.
+        let mut heading = block_attr("heading", "Bold title", &[("level", AttrVal::Int(1))]);
+        heading
+            .marks
+            .push(mark(0, 4, "strong", MarkValue::Bool(true)));
 
-    let snap = DocSnapshot {
-        blocks: vec![heading],
-        ..empty_snapshot()
-    };
-    let rtf = render_rtf(&snap);
+        let snap = DocSnapshot {
+            blocks: vec![heading],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
 
-    // RTF header.
-    assert!(rtf.starts_with("{\\rtf1"), "starts with RTF header:\n{rtf}");
-    assert!(rtf.contains("\\ansi"), "ansi declared:\n{rtf}");
-    assert!(rtf.contains("\\fonttbl"), "font table present:\n{rtf}");
-    // A bold control word appears (heading paragraph is \b, and the run is \b).
-    assert!(rtf.contains("\\b"), "bold control word present:\n{rtf}");
-    // Larger heading font (H1 = 24pt → \fs48).
-    assert!(rtf.contains("\\fs48"), "H1 renders at \\fs48:\n{rtf}");
-    // The text survives.
-    assert!(rtf.contains("Bold"), "heading text present:\n{rtf}");
-    assert_balanced(&rtf);
+        // RTF header.
+        assert!(rtf.starts_with("{\\rtf1"), "starts with RTF header:\n{rtf}");
+        assert!(rtf.contains("\\ansi"), "ansi declared:\n{rtf}");
+        assert!(rtf.contains("\\fonttbl"), "font table present:\n{rtf}");
+        // A bold control word appears (heading paragraph is \b, and the run is \b).
+        assert!(rtf.contains("\\b"), "bold control word present:\n{rtf}");
+        // Larger heading font (H1 = 24pt → \fs48).
+        assert!(rtf.contains("\\fs48"), "H1 renders at \\fs48:\n{rtf}");
+        // The text survives.
+        assert!(rtf.contains("Bold"), "heading text present:\n{rtf}");
+        assert_balanced(&rtf);
+    }
+    // Phase `three_item_list_yields_three_pars_and_bullets`.
+    {
+        let snap = DocSnapshot {
+            blocks: vec![
+                block_attr("list_item", "One", &[("level", AttrVal::Int(0))]),
+                block_attr("list_item", "Two", &[("level", AttrVal::Int(0))]),
+                block_attr("list_item", "Three", &[("level", AttrVal::Int(0))]),
+            ],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+
+        assert_eq!(count(&rtf, "\\par}"), 3, "three paragraphs:\n{rtf}");
+        assert_eq!(count(&rtf, "\\bullet"), 3, "three bullets:\n{rtf}");
+        assert!(
+            rtf.contains("One") && rtf.contains("Two") && rtf.contains("Three"),
+            "items present:\n{rtf}"
+        );
+        assert_balanced(&rtf);
+    }
+    // Phase `ordered_list_yields_numbered_markers`.
+    {
+        // Markers are literal text taken from each item's `index` attr (RTF list
+        // tables are out of scope); the snapshot supplies the per-item number.
+        let snap = DocSnapshot {
+            blocks: vec![
+                block_attr(
+                    "list_item",
+                    "First",
+                    &[
+                        ("ordered", AttrVal::Bool(true)),
+                        ("level", AttrVal::Int(0)),
+                        ("index", AttrVal::Int(1)),
+                    ],
+                ),
+                block_attr(
+                    "list_item",
+                    "Second",
+                    &[
+                        ("ordered", AttrVal::Bool(true)),
+                        ("level", AttrVal::Int(0)),
+                        ("index", AttrVal::Int(2)),
+                    ],
+                ),
+            ],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+
+        // Numbered, not bulleted.
+        assert_eq!(
+            count(&rtf, "\\bullet"),
+            0,
+            "ordered list has no bullets:\n{rtf}"
+        );
+        assert!(rtf.contains("1.\\tab "), "first item numbered:\n{rtf}");
+        assert!(rtf.contains("2.\\tab "), "second item numbered:\n{rtf}");
+        assert_balanced(&rtf);
+    }
+    // Phase `empty_document_is_well_formed`.
+    {
+        let rtf = render_rtf(&empty_snapshot());
+        assert!(rtf.starts_with("{\\rtf1"));
+        assert!(
+            rtf.contains("{\\colortbl;}"),
+            "empty color table still emitted:\n{rtf}"
+        );
+        assert_balanced(&rtf);
+    }
+    // Phase `quote_is_indented`.
+    {
+        let snap = DocSnapshot {
+            blocks: vec![block("quote", "wise words")],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+        assert!(rtf.contains("\\li"), "quote carries a left indent:\n{rtf}");
+        assert!(rtf.contains("\\i"), "quote is italic:\n{rtf}");
+        assert_balanced(&rtf);
+    }
+    // Phase `table_emits_rows_and_cells`.
+    {
+        // A 2x2 table as rows-of-cells.
+        let mut r1 = block("table_row", "");
+        r1.children = vec![block("cell", "A"), block("cell", "B")];
+        let mut r2 = block("table_row", "");
+        r2.children = vec![block("cell", "C"), block("cell", "D")];
+        let mut table = block("table", "");
+        table.children = vec![r1, r2];
+
+        let snap = DocSnapshot {
+            blocks: vec![table],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+
+        assert_eq!(count(&rtf, "\\row"), 2, "two rows:\n{rtf}");
+        assert_eq!(count(&rtf, "\\cell "), 4, "four cells:\n{rtf}");
+        assert!(rtf.contains("\\cellx"), "cell boundaries declared:\n{rtf}");
+        assert!(
+            rtf.contains('A') && rtf.contains('D'),
+            "cell contents present:\n{rtf}"
+        );
+        assert_balanced(&rtf);
+    }
 }
 
 #[test]
-fn three_item_list_yields_three_pars_and_bullets() {
-    let snap = DocSnapshot {
-        blocks: vec![
-            block_attr("list_item", "One", &[("level", AttrVal::Int(0))]),
-            block_attr("list_item", "Two", &[("level", AttrVal::Int(0))]),
-            block_attr("list_item", "Three", &[("level", AttrVal::Int(0))]),
-        ],
-        ..empty_snapshot()
-    };
-    let rtf = render_rtf(&snap);
+fn rtf_export_escapes_specials_and_non_ascii() {
+    // Phase `rtf_specials_are_escaped`.
+    {
+        // Text containing every RTF special.
+        let snap = DocSnapshot {
+            blocks: vec![block("paragraph", "a{b}c\\d")],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
 
-    assert_eq!(count(&rtf, "\\par}"), 3, "three paragraphs:\n{rtf}");
-    assert_eq!(count(&rtf, "\\bullet"), 3, "three bullets:\n{rtf}");
-    assert!(
-        rtf.contains("One") && rtf.contains("Two") && rtf.contains("Three"),
-        "items present:\n{rtf}"
-    );
-    assert_balanced(&rtf);
+        // The specials are backslash-escaped in the body.
+        assert!(rtf.contains("a\\{b\\}c\\\\d"), "specials escaped:\n{rtf}");
+        // And the document is still balanced (the escaped braces don't count).
+        assert_balanced(&rtf);
+    }
+    // Phase `non_ascii_emits_unicode_escape`.
+    {
+        // "café" → the é is non-ASCII (U+00E9 = 233).
+        let snap = DocSnapshot {
+            blocks: vec![block("paragraph", "café")],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+        assert!(rtf.contains("caf\\u233?"), "é emitted as \\u233?:\n{rtf}");
+        // The ASCII prefix stays literal.
+        assert!(rtf.contains("caf"));
+        assert_balanced(&rtf);
+    }
+    // Phase `multibyte_text_uses_character_mark_offsets`.
+    {
+        let mut para = block("paragraph", "héllo");
+        para.marks.push(mark(0, 4, "strong", MarkValue::Bool(true)));
+        let rtf = render_rtf(&DocSnapshot {
+            blocks: vec![para],
+            ..empty_snapshot()
+        });
+
+        assert!(
+            rtf.contains("{\\b h\\u233?ll}{o}"),
+            "bold covers four Unicode scalar values, not four bytes:\n{rtf}"
+        );
+        assert_balanced(&rtf);
+    }
 }
 
 #[test]
-fn ordered_list_yields_numbered_markers() {
-    // Markers are literal text taken from each item's `index` attr (RTF list
-    // tables are out of scope); the snapshot supplies the per-item number.
-    let snap = DocSnapshot {
-        blocks: vec![
-            block_attr(
-                "list_item",
-                "First",
-                &[
-                    ("ordered", AttrVal::Bool(true)),
-                    ("level", AttrVal::Int(0)),
-                    ("index", AttrVal::Int(1)),
-                ],
-            ),
-            block_attr(
-                "list_item",
-                "Second",
-                &[
-                    ("ordered", AttrVal::Bool(true)),
-                    ("level", AttrVal::Int(0)),
-                    ("index", AttrVal::Int(2)),
-                ],
-            ),
-        ],
-        ..empty_snapshot()
-    };
-    let rtf = render_rtf(&snap);
+fn rtf_export_marks_map_to_control_words_and_tables() {
+    // Phase `colored_run_registers_color_table_entry_and_cf`.
+    {
+        let mut para = block("paragraph", "red text");
+        para.marks
+            .push(mark(0, 3, "color", MarkValue::Str("#ff0000".into())));
 
-    // Numbered, not bulleted.
-    assert_eq!(
-        count(&rtf, "\\bullet"),
-        0,
-        "ordered list has no bullets:\n{rtf}"
-    );
-    assert!(rtf.contains("1.\\tab "), "first item numbered:\n{rtf}");
-    assert!(rtf.contains("2.\\tab "), "second item numbered:\n{rtf}");
-    assert_balanced(&rtf);
-}
+        let snap = DocSnapshot {
+            blocks: vec![para],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
 
-#[test]
-fn rtf_specials_are_escaped() {
-    // Text containing every RTF special.
-    let snap = DocSnapshot {
-        blocks: vec![block("paragraph", "a{b}c\\d")],
-        ..empty_snapshot()
-    };
-    let rtf = render_rtf(&snap);
+        // The color table carries the registered color.
+        assert!(rtf.contains("{\\colortbl;"), "color table present:\n{rtf}");
+        assert!(
+            rtf.contains("\\red255\\green0\\blue0;"),
+            "red registered in color table:\n{rtf}"
+        );
+        // The run references it (index 1 — index 0 is the reserved auto color).
+        assert!(
+            rtf.contains("\\cf1"),
+            "run references color index 1:\n{rtf}"
+        );
+        assert_balanced(&rtf);
+    }
+    // Phase `hyperlink_mark_emits_field`.
+    {
+        let mut para = block("paragraph", "click here");
+        para.marks.push(mark(
+            0,
+            10,
+            "href",
+            MarkValue::Str("https://example.com".into()),
+        ));
 
-    // The specials are backslash-escaped in the body.
-    assert!(rtf.contains("a\\{b\\}c\\\\d"), "specials escaped:\n{rtf}");
-    // And the document is still balanced (the escaped braces don't count).
-    assert_balanced(&rtf);
-}
+        let snap = DocSnapshot {
+            blocks: vec![para],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
 
-#[test]
-fn colored_run_registers_color_table_entry_and_cf() {
-    let mut para = block("paragraph", "red text");
-    para.marks
-        .push(mark(0, 3, "color", MarkValue::Str("#ff0000".into())));
+        assert!(
+            rtf.contains("{\\field{\\*\\fldinst HYPERLINK \"https://example.com\"}"),
+            "hyperlink field:\n{rtf}"
+        );
+        assert!(rtf.contains("\\fldrslt"), "field result group:\n{rtf}");
+        assert!(rtf.contains("click here"), "link text present:\n{rtf}");
+        assert_balanced(&rtf);
+    }
+    // Phase `font_and_size_marks_map_to_control_words`.
+    {
+        let mut para = block("paragraph", "mono big");
+        para.marks
+            .push(mark(0, 4, "font", MarkValue::Str("mono".into())));
+        para.marks.push(mark(0, 4, "size", MarkValue::Int(18)));
 
-    let snap = DocSnapshot {
-        blocks: vec![para],
-        ..empty_snapshot()
-    };
-    let rtf = render_rtf(&snap);
+        let snap = DocSnapshot {
+            blocks: vec![para],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
 
-    // The color table carries the registered color.
-    assert!(rtf.contains("{\\colortbl;"), "color table present:\n{rtf}");
-    assert!(
-        rtf.contains("\\red255\\green0\\blue0;"),
-        "red registered in color table:\n{rtf}"
-    );
-    // The run references it (index 1 — index 0 is the reserved auto color).
-    assert!(
-        rtf.contains("\\cf1"),
-        "run references color index 1:\n{rtf}"
-    );
-    assert_balanced(&rtf);
-}
+        // mono → \f2 (FONT_MONO); size 18pt → \fs36 (half-points).
+        assert!(rtf.contains("\\f2"), "mono font index:\n{rtf}");
+        assert!(rtf.contains("\\fs36"), "18pt → \\fs36:\n{rtf}");
+        assert_balanced(&rtf);
+    }
+    // Phase `distinct_colors_get_distinct_indices`.
+    {
+        let mut p1 = block("paragraph", "red");
+        p1.marks
+            .push(mark(0, 3, "color", MarkValue::Str("#ff0000".into())));
+        let mut p2 = block("paragraph", "blue");
+        p2.marks
+            .push(mark(0, 4, "color", MarkValue::Str("#0000ff".into())));
+        // A second red reuses index 1.
+        let mut p3 = block("paragraph", "red again");
+        p3.marks
+            .push(mark(0, 3, "color", MarkValue::Str("#ff0000".into())));
 
-#[test]
-fn empty_document_is_well_formed() {
-    let rtf = render_rtf(&empty_snapshot());
-    assert!(rtf.starts_with("{\\rtf1"));
-    assert!(
-        rtf.contains("{\\colortbl;}"),
-        "empty color table still emitted:\n{rtf}"
-    );
-    assert_balanced(&rtf);
-}
+        let snap = DocSnapshot {
+            blocks: vec![p1, p2, p3],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
 
-#[test]
-fn non_ascii_emits_unicode_escape() {
-    // "café" → the é is non-ASCII (U+00E9 = 233).
-    let snap = DocSnapshot {
-        blocks: vec![block("paragraph", "café")],
-        ..empty_snapshot()
-    };
-    let rtf = render_rtf(&snap);
-    assert!(rtf.contains("caf\\u233?"), "é emitted as \\u233?:\n{rtf}");
-    // The ASCII prefix stays literal.
-    assert!(rtf.contains("caf"));
-    assert_balanced(&rtf);
-}
-
-#[test]
-fn multibyte_text_uses_character_mark_offsets() {
-    let mut para = block("paragraph", "héllo");
-    para.marks.push(mark(0, 4, "strong", MarkValue::Bool(true)));
-    let rtf = render_rtf(&DocSnapshot {
-        blocks: vec![para],
-        ..empty_snapshot()
-    });
-
-    assert!(
-        rtf.contains("{\\b h\\u233?ll}{o}"),
-        "bold covers four Unicode scalar values, not four bytes:\n{rtf}"
-    );
-    assert_balanced(&rtf);
-}
-
-#[test]
-fn hyperlink_mark_emits_field() {
-    let mut para = block("paragraph", "click here");
-    para.marks.push(mark(
-        0,
-        10,
-        "href",
-        MarkValue::Str("https://example.com".into()),
-    ));
-
-    let snap = DocSnapshot {
-        blocks: vec![para],
-        ..empty_snapshot()
-    };
-    let rtf = render_rtf(&snap);
-
-    assert!(
-        rtf.contains("{\\field{\\*\\fldinst HYPERLINK \"https://example.com\"}"),
-        "hyperlink field:\n{rtf}"
-    );
-    assert!(rtf.contains("\\fldrslt"), "field result group:\n{rtf}");
-    assert!(rtf.contains("click here"), "link text present:\n{rtf}");
-    assert_balanced(&rtf);
-}
-
-#[test]
-fn font_and_size_marks_map_to_control_words() {
-    let mut para = block("paragraph", "mono big");
-    para.marks
-        .push(mark(0, 4, "font", MarkValue::Str("mono".into())));
-    para.marks.push(mark(0, 4, "size", MarkValue::Int(18)));
-
-    let snap = DocSnapshot {
-        blocks: vec![para],
-        ..empty_snapshot()
-    };
-    let rtf = render_rtf(&snap);
-
-    // mono → \f2 (FONT_MONO); size 18pt → \fs36 (half-points).
-    assert!(rtf.contains("\\f2"), "mono font index:\n{rtf}");
-    assert!(rtf.contains("\\fs36"), "18pt → \\fs36:\n{rtf}");
-    assert_balanced(&rtf);
-}
-
-#[test]
-fn quote_is_indented() {
-    let snap = DocSnapshot {
-        blocks: vec![block("quote", "wise words")],
-        ..empty_snapshot()
-    };
-    let rtf = render_rtf(&snap);
-    assert!(rtf.contains("\\li"), "quote carries a left indent:\n{rtf}");
-    assert!(rtf.contains("\\i"), "quote is italic:\n{rtf}");
-    assert_balanced(&rtf);
-}
-
-#[test]
-fn table_emits_rows_and_cells() {
-    // A 2x2 table as rows-of-cells.
-    let mut r1 = block("table_row", "");
-    r1.children = vec![block("cell", "A"), block("cell", "B")];
-    let mut r2 = block("table_row", "");
-    r2.children = vec![block("cell", "C"), block("cell", "D")];
-    let mut table = block("table", "");
-    table.children = vec![r1, r2];
-
-    let snap = DocSnapshot {
-        blocks: vec![table],
-        ..empty_snapshot()
-    };
-    let rtf = render_rtf(&snap);
-
-    assert_eq!(count(&rtf, "\\row"), 2, "two rows:\n{rtf}");
-    assert_eq!(count(&rtf, "\\cell "), 4, "four cells:\n{rtf}");
-    assert!(rtf.contains("\\cellx"), "cell boundaries declared:\n{rtf}");
-    assert!(
-        rtf.contains('A') && rtf.contains('D'),
-        "cell contents present:\n{rtf}"
-    );
-    assert_balanced(&rtf);
-}
-
-#[test]
-fn distinct_colors_get_distinct_indices() {
-    let mut p1 = block("paragraph", "red");
-    p1.marks
-        .push(mark(0, 3, "color", MarkValue::Str("#ff0000".into())));
-    let mut p2 = block("paragraph", "blue");
-    p2.marks
-        .push(mark(0, 4, "color", MarkValue::Str("#0000ff".into())));
-    // A second red reuses index 1.
-    let mut p3 = block("paragraph", "red again");
-    p3.marks
-        .push(mark(0, 3, "color", MarkValue::Str("#ff0000".into())));
-
-    let snap = DocSnapshot {
-        blocks: vec![p1, p2, p3],
-        ..empty_snapshot()
-    };
-    let rtf = render_rtf(&snap);
-
-    assert!(
-        rtf.contains("\\red255\\green0\\blue0;"),
-        "red registered:\n{rtf}"
-    );
-    assert!(
-        rtf.contains("\\red0\\green0\\blue255;"),
-        "blue registered:\n{rtf}"
-    );
-    // Two distinct colors → exactly two entries in the table (count the `;`
-    // separators after the reserved auto entry by counting color triples).
-    assert_eq!(
-        count(&rtf, "\\green"),
-        2,
-        "exactly two color-table entries:\n{rtf}"
-    );
-    assert!(
-        rtf.contains("\\cf1") && rtf.contains("\\cf2"),
-        "both indices referenced:\n{rtf}"
-    );
-    assert_balanced(&rtf);
+        assert!(
+            rtf.contains("\\red255\\green0\\blue0;"),
+            "red registered:\n{rtf}"
+        );
+        assert!(
+            rtf.contains("\\red0\\green0\\blue255;"),
+            "blue registered:\n{rtf}"
+        );
+        // Two distinct colors → exactly two entries in the table (count the `;`
+        // separators after the reserved auto entry by counting color triples).
+        assert_eq!(
+            count(&rtf, "\\green"),
+            2,
+            "exactly two color-table entries:\n{rtf}"
+        );
+        assert!(
+            rtf.contains("\\cf1") && rtf.contains("\\cf2"),
+            "both indices referenced:\n{rtf}"
+        );
+        assert_balanced(&rtf);
+    }
 }

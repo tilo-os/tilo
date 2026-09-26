@@ -128,98 +128,98 @@ mod tests {
     }
 
     #[test]
-    fn a_head_keeps_a_token_gap_from_its_lane_stripe() {
-        let lane = Rect::new(128.0, 34.0, 1280.0, 96.0);
-        let card = track_head_card(GUTTER, &lane);
-        assert!(
-            ((lane.x0 - card.x1) - (S1)).abs() < 1e-9,
-            "head ↔ lane stripe"
-        );
-        assert!(
-            ((card.y0) - (lane.y0)).abs() < 1e-9,
-            "card.y0 is {}, want {}",
-            card.y0,
-            lane.y0
-        );
-        assert!(
-            ((card.y1) - (lane.y1)).abs() < 1e-9,
-            "card.y1 is {}, want {}",
-            card.y1,
-            lane.y1
-        );
-    }
-
-    #[test]
-    fn the_pills_sit_one_step_apart_on_the_name_band() {
-        let h = head_for(62.0);
-        assert!(((h.lock.x0 - h.solo.x1) - (S1)).abs() < 1e-9, "solo ↔ lock");
-        assert!(((h.mute.x0 - h.lock.x1) - (S1)).abs() < 1e-9, "lock ↔ mute");
-        assert!(
-            ((h.card.x1 - h.mute.x1) - (S2)).abs() < 1e-9,
-            "mute ↔ card edge"
-        );
-        for pill in [h.mute, h.lock, h.solo] {
+    fn lane_heads_and_master_strip_keep_token_gaps() {
+        // Case `a_head_keeps_a_token_gap_from_its_lane_stripe`.
+        {
+            let lane = Rect::new(128.0, 34.0, 1280.0, 96.0);
+            let card = track_head_card(GUTTER, &lane);
             assert!(
-                ((pill.width()) - (HEAD_PILL)).abs() < 1e-9,
-                "pill.width() is {}, want {}",
-                pill.width(),
-                HEAD_PILL
+                ((lane.x0 - card.x1) - (S1)).abs() < 1e-9,
+                "head ↔ lane stripe"
             );
             assert!(
-                ((pill.height()) - (HEAD_PILL)).abs() < 1e-9,
-                "pill.height() is {}, want {}",
-                pill.height(),
-                HEAD_PILL
+                ((card.y0) - (lane.y0)).abs() < 1e-9,
+                "card.y0 is {}, want {}",
+                card.y0,
+                lane.y0
             );
             assert!(
-                ((pill.y0) - (h.name.y0)).abs() < 1e-9,
-                "pills share the name band"
-            );
-            assert!(
-                ((pill.y1) - (h.name.y1)).abs() < 1e-9,
-                "pill.y1 is {}, want {}",
-                pill.y1,
-                h.name.y1
+                ((card.y1) - (lane.y1)).abs() < 1e-9,
+                "card.y1 is {}, want {}",
+                card.y1,
+                lane.y1
             );
         }
-        assert!(
-            ((h.solo.x0 - h.name.x1) - (S1)).abs() < 1e-9,
-            "name ↔ first pill"
-        );
-        assert!(h.name.width() > 0.0, "a 128 px gutter leaves the name room");
-    }
-
-    #[test]
-    fn every_band_clears_the_next_on_the_shortest_lane() {
-        for lane_h in [MIN_LANE_H, 62.0] {
-            let h = head_for(lane_h);
+        // Case `the_pills_sit_one_step_apart_on_the_name_band`.
+        {
+            let h = head_for(62.0);
+            assert!(((h.lock.x0 - h.solo.x1) - (S1)).abs() < 1e-9, "solo ↔ lock");
+            assert!(((h.mute.x0 - h.lock.x1) - (S1)).abs() < 1e-9, "lock ↔ mute");
             assert!(
-                h.kind.y0 - h.name.y1 >= S1,
-                "{lane_h}: name ↔ kind gap {}",
-                h.kind.y0 - h.name.y1
+                ((h.card.x1 - h.mute.x1) - (S2)).abs() < 1e-9,
+                "mute ↔ card edge"
             );
+            for pill in [h.mute, h.lock, h.solo] {
+                assert!(
+                    ((pill.width()) - (HEAD_PILL)).abs() < 1e-9,
+                    "pill.width() is {}, want {}",
+                    pill.width(),
+                    HEAD_PILL
+                );
+                assert!(
+                    ((pill.height()) - (HEAD_PILL)).abs() < 1e-9,
+                    "pill.height() is {}, want {}",
+                    pill.height(),
+                    HEAD_PILL
+                );
+                assert!(
+                    ((pill.y0) - (h.name.y0)).abs() < 1e-9,
+                    "pills share the name band"
+                );
+                assert!(
+                    ((pill.y1) - (h.name.y1)).abs() < 1e-9,
+                    "pill.y1 is {}, want {}",
+                    pill.y1,
+                    h.name.y1
+                );
+            }
             assert!(
-                h.meter.y0 - h.kind.y1 >= S1,
-                "{lane_h}: kind ↔ meter gap {}",
-                h.meter.y0 - h.kind.y1
+                ((h.solo.x0 - h.name.x1) - (S1)).abs() < 1e-9,
+                "name ↔ first pill"
             );
-            assert!(h.name.y0 - h.card.y0 >= S1, "{lane_h}: top inset");
-            assert!(h.card.y1 - h.meter.y1 >= S1, "{lane_h}: bottom inset");
+            assert!(h.name.width() > 0.0, "a 128 px gutter leaves the name room");
         }
-    }
-
-    #[test]
-    fn the_master_strip_centres_its_two_bands_a_step_apart() {
-        let strip = Rect::new(0.0, 0.0, 128.0, 30.0);
-        let m = master_strip(strip);
-        assert!(
-            ((m.meter.y0 - m.readout.y1) - (S1)).abs() < 1e-9,
-            "readout ↔ meter"
-        );
-        assert!(m.readout.y0 >= strip.y0);
-        assert!(m.meter.y1 <= strip.y1);
-        let top = m.readout.y0 - strip.y0;
-        let bottom = strip.y1 - m.meter.y1;
-        assert!((top - bottom).abs() < 1e-9, "centred: {top} vs {bottom}");
+        // Case `every_band_clears_the_next_on_the_shortest_lane`.
+        {
+            for lane_h in [MIN_LANE_H, 62.0] {
+                let h = head_for(lane_h);
+                assert!(
+                    h.kind.y0 - h.name.y1 >= S1,
+                    "{lane_h}: name ↔ kind gap {}",
+                    h.kind.y0 - h.name.y1
+                );
+                assert!(
+                    h.meter.y0 - h.kind.y1 >= S1,
+                    "{lane_h}: kind ↔ meter gap {}",
+                    h.meter.y0 - h.kind.y1
+                );
+                assert!(h.name.y0 - h.card.y0 >= S1, "{lane_h}: top inset");
+                assert!(h.card.y1 - h.meter.y1 >= S1, "{lane_h}: bottom inset");
+            }
+        }
+        // Case `the_master_strip_centres_its_two_bands_a_step_apart`.
+        {
+            let strip = Rect::new(0.0, 0.0, 128.0, 30.0);
+            let m = master_strip(strip);
+            assert!(
+                ((m.meter.y0 - m.readout.y1) - (S1)).abs() < 1e-9,
+                "readout ↔ meter"
+            );
+            assert!(m.readout.y0 >= strip.y0);
+            assert!(m.meter.y1 <= strip.y1);
+            let top = m.readout.y0 - strip.y0;
+            let bottom = strip.y1 - m.meter.y1;
+            assert!((top - bottom).abs() < 1e-9, "centred: {top} vs {bottom}");
+        }
     }
 }

@@ -65,107 +65,105 @@ class OfflineTargetTests(unittest.TestCase):
         attestation = json.dumps([{"payload": base64.b64encode(json.dumps(statement).encode()).decode()}])
         return root, metadata, signature, attestation
 
-    def test_manifest_signature_and_slsa_bind_selected_target(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root, metadata, signature, attestation = self.fixture(directory)
-            key = Path(directory) / "cosign.pub"
-            key.write_text("test public key")
-            executable = Path(directory) / "cosign"
-            executable.write_text("test")
-            receipt = Path(directory) / "run/offline-target.json"
-            with patch.object(target, "ROOT", root), patch.object(target, "KEY", key), \
-                    patch.object(target, "COSIGN", executable), \
-                    patch.object(target, "RECEIPT", receipt), \
-                    patch.object(target.os, "access", return_value=True), \
-                    patch.object(target, "run", side_effect=[signature, attestation]):
-                result = target.verify(root)
-            self.assertEqual(result["target_digest"], metadata["target_digest"])
-            self.assertEqual(result["provenance"]["source_revision"], SOURCE)
-            self.assertEqual(json.loads(receipt.read_text())["update_origin"], UPDATE)
-
-    def test_tampered_manifest_or_origin_fails(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root, metadata, _, attestation = self.fixture(directory)
-            blob = root / "oci/blobs/sha256" / metadata["target_digest"][7:]
-            blob.write_bytes(blob.read_bytes() + b"x")
-            with self.assertRaisesRegex(ValueError, "manifest differs"):
+    def test_signed_target_binding(self):
+        with self.subTest(phase="manifest_signature_and_slsa_bind_selected_target"):
+            with tempfile.TemporaryDirectory() as directory:
+                root, metadata, signature, attestation = self.fixture(directory)
+                key = Path(directory) / "cosign.pub"
+                key.write_text("test public key")
+                executable = Path(directory) / "cosign"
+                executable.write_text("test")
+                receipt = Path(directory) / "run/offline-target.json"
+                with patch.object(target, "ROOT", root), patch.object(target, "KEY", key), \
+                        patch.object(target, "COSIGN", executable), \
+                        patch.object(target, "RECEIPT", receipt), \
+                        patch.object(target.os, "access", return_value=True), \
+                        patch.object(target, "run", side_effect=[signature, attestation]):
+                    result = target.verify(root)
+                self.assertEqual(result["target_digest"], metadata["target_digest"])
+                self.assertEqual(result["provenance"]["source_revision"], SOURCE)
+                self.assertEqual(json.loads(receipt.read_text())["update_origin"], UPDATE)
+        with self.subTest(phase="generic_child_binds_signed_generation_origin"):
+            with tempfile.TemporaryDirectory() as directory:
+                root, metadata, _, attestation = self.fixture(directory)
+                metadata["hardware_profile"] = "generic"
+                metadata["target_ref"] = "registry.tilo.so/tilo/tilo@" + metadata["target_digest"]
+                metadata["update_origin"] = "registry.tilo.so/tilo/tilo:gen2"
+                (root / "target.json").write_text(json.dumps(metadata))
                 target.read_target(root)
-            blob.write_bytes(blob.read_bytes()[:-1])
-            metadata["update_origin"] = UPDATE[:-1] + "b"
-            with self.assertRaisesRegex(ValueError, "SLSA"):
-                target.checked_provenance(attestation, metadata)
+                wrapper = json.loads(attestation)[0]
+                statement = json.loads(base64.b64decode(wrapper["payload"]))
+                external = statement["predicate"]["buildDefinition"]["externalParameters"]
+                external.clear()
+                external["generation"] = 2
+                statement["predicate"]["buildDefinition"]["resolvedDependencies"].pop()
+                wrapper["payload"] = base64.b64encode(json.dumps(statement).encode()).decode()
+                signed = json.dumps([wrapper])
+                provenance = target.checked_provenance(signed, metadata)
+                self.assertEqual(provenance["generation"], 2)
+                self.assertIsNone(provenance["firmware_candidate"])
+                metadata["update_origin"] = "registry.tilo.so/tilo/tilo:gen3"
+                with self.assertRaisesRegex(ValueError, "SLSA"):
+                    target.checked_provenance(signed, metadata)
 
-    def test_generic_child_binds_signed_generation_origin(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root, metadata, _, attestation = self.fixture(directory)
-            metadata["hardware_profile"] = "generic"
-            metadata["target_ref"] = "registry.tilo.so/tilo/tilo@" + metadata["target_digest"]
-            metadata["update_origin"] = "registry.tilo.so/tilo/tilo:gen2"
-            (root / "target.json").write_text(json.dumps(metadata))
-            target.read_target(root)
-            wrapper = json.loads(attestation)[0]
-            statement = json.loads(base64.b64decode(wrapper["payload"]))
-            external = statement["predicate"]["buildDefinition"]["externalParameters"]
-            external.clear()
-            external["generation"] = 2
-            statement["predicate"]["buildDefinition"]["resolvedDependencies"].pop()
-            wrapper["payload"] = base64.b64encode(json.dumps(statement).encode()).decode()
-            signed = json.dumps([wrapper])
-            provenance = target.checked_provenance(signed, metadata)
-            self.assertEqual(provenance["generation"], 2)
-            self.assertIsNone(provenance["firmware_candidate"])
-            metadata["update_origin"] = "registry.tilo.so/tilo/tilo:gen3"
-            with self.assertRaisesRegex(ValueError, "SLSA"):
-                target.checked_provenance(signed, metadata)
-
-    def test_ambiguous_or_unsigned_target_fails(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root, metadata, _, _ = self.fixture(directory)
-            index = json.loads((root / "oci/index.json").read_text())
-            index["manifests"].append(index["manifests"][0])
-            (root / "oci/index.json").write_text(json.dumps(index))
-            with self.assertRaisesRegex(ValueError, "unique target"):
-                target.read_target(root)
-            index["manifests"].pop()
-            (root / "oci/index.json").write_text(json.dumps(index))
-            key = Path(directory) / "cosign.pub"
-            key.write_text("test public key")
-            executable = Path(directory) / "cosign"
-            executable.write_text("test")
-            receipt = Path(directory) / "run/offline-target.json"
-            wrong_signature = json.dumps([{"critical": {"image": {
-                "docker-manifest-digest": "sha256:" + "f" * 64}}}])
-            with patch.object(target, "KEY", key), patch.object(target, "COSIGN", executable), \
-                    patch.object(target, "RECEIPT", receipt), \
-                    patch.object(target.os, "access", return_value=True), \
-                    patch.object(target, "run", return_value=wrong_signature):
-                with self.assertRaisesRegex(ValueError, "signature does not bind"):
-                    target.verify(root)
-
-    def test_tampered_config_fails_before_disk_work(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root, metadata, _, _ = self.fixture(directory)
-            manifest = json.loads((root / "oci/blobs/sha256" /
-                                   metadata["target_digest"][7:]).read_text())
-            config_path = root / "oci/blobs/sha256" / manifest["config"]["digest"][7:]
-            config = json.loads(config_path.read_text())
-            config["architecture"] = "amd64"
-            config_path.write_text(json.dumps(config))
-            with self.assertRaisesRegex(ValueError, "config differs"):
-                target.read_target(root)
-
-    def test_import_rejects_metadata_changed_after_preflight(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root, metadata, _, _ = self.fixture(directory)
-            receipt = Path(directory) / "offline-target.json"
-            receipt.write_text(json.dumps(metadata))
-            metadata["update_origin"] = UPDATE[:-1] + "b"
-            (root / "target.json").write_text(json.dumps(metadata))
-            with patch.object(target, "RECEIPT", receipt), \
-                    patch.object(target, "run") as run:
-                with self.assertRaisesRegex(ValueError, "changed after verified preflight"):
-                    target.import_image(root)
-                run.assert_not_called()
+    def test_tamper_rejections(self):
+        with self.subTest(phase="tampered_manifest_or_origin_fails"):
+            with tempfile.TemporaryDirectory() as directory:
+                root, metadata, _, attestation = self.fixture(directory)
+                blob = root / "oci/blobs/sha256" / metadata["target_digest"][7:]
+                blob.write_bytes(blob.read_bytes() + b"x")
+                with self.assertRaisesRegex(ValueError, "manifest differs"):
+                    target.read_target(root)
+                blob.write_bytes(blob.read_bytes()[:-1])
+                metadata["update_origin"] = UPDATE[:-1] + "b"
+                with self.assertRaisesRegex(ValueError, "SLSA"):
+                    target.checked_provenance(attestation, metadata)
+        with self.subTest(phase="ambiguous_or_unsigned_target_fails"):
+            with tempfile.TemporaryDirectory() as directory:
+                root, metadata, _, _ = self.fixture(directory)
+                index = json.loads((root / "oci/index.json").read_text())
+                index["manifests"].append(index["manifests"][0])
+                (root / "oci/index.json").write_text(json.dumps(index))
+                with self.assertRaisesRegex(ValueError, "unique target"):
+                    target.read_target(root)
+                index["manifests"].pop()
+                (root / "oci/index.json").write_text(json.dumps(index))
+                key = Path(directory) / "cosign.pub"
+                key.write_text("test public key")
+                executable = Path(directory) / "cosign"
+                executable.write_text("test")
+                receipt = Path(directory) / "run/offline-target.json"
+                wrong_signature = json.dumps([{"critical": {"image": {
+                    "docker-manifest-digest": "sha256:" + "f" * 64}}}])
+                with patch.object(target, "KEY", key), patch.object(target, "COSIGN", executable), \
+                        patch.object(target, "RECEIPT", receipt), \
+                        patch.object(target.os, "access", return_value=True), \
+                        patch.object(target, "run", return_value=wrong_signature):
+                    with self.assertRaisesRegex(ValueError, "signature does not bind"):
+                        target.verify(root)
+        with self.subTest(phase="tampered_config_fails_before_disk_work"):
+            with tempfile.TemporaryDirectory() as directory:
+                root, metadata, _, _ = self.fixture(directory)
+                manifest = json.loads((root / "oci/blobs/sha256" /
+                                       metadata["target_digest"][7:]).read_text())
+                config_path = root / "oci/blobs/sha256" / manifest["config"]["digest"][7:]
+                config = json.loads(config_path.read_text())
+                config["architecture"] = "amd64"
+                config_path.write_text(json.dumps(config))
+                with self.assertRaisesRegex(ValueError, "config differs"):
+                    target.read_target(root)
+        with self.subTest(phase="import_rejects_metadata_changed_after_preflight"):
+            with tempfile.TemporaryDirectory() as directory:
+                root, metadata, _, _ = self.fixture(directory)
+                receipt = Path(directory) / "offline-target.json"
+                receipt.write_text(json.dumps(metadata))
+                metadata["update_origin"] = UPDATE[:-1] + "b"
+                (root / "target.json").write_text(json.dumps(metadata))
+                with patch.object(target, "RECEIPT", receipt), \
+                        patch.object(target, "run") as run:
+                    with self.assertRaisesRegex(ValueError, "changed after verified preflight"):
+                        target.import_image(root)
+                    run.assert_not_called()
 
 
 if __name__ == "__main__":

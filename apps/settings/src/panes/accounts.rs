@@ -2237,295 +2237,320 @@ mod tests {
         let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
     }
 
+    /// Sample directories are read-only, real ones get labelled destructive remove buttons, and empty stores stay empty.
     #[test]
-    fn sample_directory_renders_read_only_without_remove_buttons() {
-        // The sample is illustration: one live Add button per provider kind,
-        // and no Remove buttons.
-        let mut pane = AccountsPane::from_dir(sample_directory(), true);
-        lay_out(&mut pane);
-        assert_eq!(
-            count_named(&pane, "Button"),
-            AccountKind::ALL.len(),
-            "every provider kind can be added over the sample"
-        );
+    fn accounts_pane_renders_only_real_accounts_as_removable() {
+        // Case `sample_directory_renders_read_only_without_remove_buttons`.
+        {
+            // The sample is illustration: one live Add button per provider kind,
+            // and no Remove buttons.
+            let mut pane = AccountsPane::from_dir(sample_directory(), true);
+            lay_out(&mut pane);
+            assert_eq!(
+                count_named(&pane, "Button"),
+                AccountKind::ALL.len(),
+                "every provider kind can be added over the sample"
+            );
+        }
+
+        // Case `real_directory_renders_remove_buttons`.
+        {
+            // Without stored passwords, real rows offer removal but do not invent
+            // a reauthentication action.
+            let dir = sample_directory(); // 2 mail + 1 cal + 1 nextcloud = 4 accounts
+            let mut pane = AccountsPane::from_dir(dir, false);
+            lay_out(&mut pane);
+            // One Add per kind + four maintenance actions on each of four accounts.
+            assert_eq!(count_named(&pane, "Button"), AccountKind::ALL.len() + 16);
+        }
+
+        // Case `account_removal_is_labeled_and_visibly_destructive`.
+        {
+            // Real accounts get an explicit Remove action rather than a lone
+            // trash glyph. The confirmation flow still owns the mutation; this
+            // assertion guards the decision point users see before it.
+            let mut pane = AccountsPane::from_dir(sample_directory(), false);
+            lay_out(&mut pane);
+            let mut labels = Vec::new();
+            button_labels(&pane, &mut labels);
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| label.as_str() == "Remove")
+                    .count(),
+                4,
+                "one explicit Remove action per real account"
+            );
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| label.as_str() == "Add account")
+                    .count(),
+                AccountKind::ALL.len(),
+                "each provider card exposes a compact add action"
+            );
+        }
+
+        // Case `live_pane_over_empty_store_does_not_fabricate_sample`.
+        {
+            let (_dir, root) = scratch_root();
+            let pane = AccountsPane::in_root(root);
+            assert!(!pane.is_sample(), "the live pane never flags the sample");
+            assert!(
+                pane.directory().is_empty(),
+                "an empty store renders empty — no fabricated ada@example.com rows"
+            );
+            // And no account of any kind leaked in from the sample.
+            for kind in AccountKind::ALL {
+                assert!(
+                    pane.directory().views_of(kind).is_empty(),
+                    "{kind:?} must be empty"
+                );
+            }
+        }
     }
 
+    /// The inline add form: local drafts, labelled fields, empty-email no-op and rejected adds.
     #[test]
-    fn real_directory_renders_remove_buttons() {
-        // Without stored passwords, real rows offer removal but do not invent
-        // a reauthentication action.
-        let dir = sample_directory(); // 2 mail + 1 cal + 1 nextcloud = 4 accounts
-        let mut pane = AccountsPane::from_dir(dir, false);
-        lay_out(&mut pane);
-        // One Add per kind + four maintenance actions on each of four accounts.
-        assert_eq!(count_named(&pane, "Button"), AccountKind::ALL.len() + 16);
-    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn account_form_drafts_are_local_accessible_and_validated() {
+        // Case `add_button_opens_the_inline_form`.
+        {
+            let mut pane = AccountsPane::from_dir(sample_directory(), true);
+            assert!(!pane.form_open());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let _ = doc.put(&root, ADD_MAIL_KEY, true);
+            pane.sync(&mut doc, &root);
+            assert!(pane.form_open(), "Add opens the form");
+            assert!(
+                pane.take_structure_dirty(),
+                "opening the form requests a rebuild"
+            );
+            // Cancel closes it.
+            let _ = doc.put(&root, FORM_CANCEL_KEY, true);
+            pane.sync(&mut doc, &root);
+            assert!(!pane.form_open(), "Cancel closes the form");
+        }
 
-    #[test]
-    fn account_removal_is_labeled_and_visibly_destructive() {
-        // Real accounts get an explicit Remove action rather than a lone
-        // trash glyph. The confirmation flow still owns the mutation; this
-        // assertion guards the decision point users see before it.
-        let mut pane = AccountsPane::from_dir(sample_directory(), false);
-        lay_out(&mut pane);
-        let mut labels = Vec::new();
-        button_labels(&pane, &mut labels);
-        assert_eq!(
-            labels
+        // Case `form_drafts_are_local_and_every_field_has_explicit_accessibility`.
+        {
+            let commands = ui::LocalState::new(None);
+            let mut pane =
+                AccountsPane::from_dir(sample_directory(), true).with_command_state(&commands);
+            let mut doc = AutoCommit::new();
+            commands.set(Some(AccountViewCommand::Add(AccountKind::WebDav)));
+            pane.sync(&mut doc, &automerge::ROOT);
+            pane.set_form_fields_for_test("Home files", "", "ada", "https://files.example.test");
+            pane.set_form_password_for_test("never-collaborate-this");
+            pane.sync(&mut doc, &automerge::ROOT);
+            for key in [
+                "accounts.form.name",
+                "accounts.form.email",
+                "accounts.form.username",
+                "accounts.form.server",
+                "accounts.form.password",
+            ] {
+                assert!(
+                    doc.get(&automerge::ROOT, key)
+                        .expect("read draft key")
+                        .is_none(),
+                    "device-local form field {key} must never enter Automerge"
+                );
+            }
+
+            lay_out(&mut pane);
+            let mut nodes = Vec::new();
+            access_nodes(&pane, &mut nodes);
+            for name in [
+                "Display name",
+                "Username",
+                "Server URL",
+                "Password or app password",
+            ] {
+                assert!(
+                    nodes.iter().any(|node| {
+                        node.role == ui::a11y::Role::TextInput && node.name.as_deref() == Some(name)
+                    }),
+                    "missing named text input: {name}"
+                );
+            }
+            let password = nodes
                 .iter()
-                .filter(|label| label.as_str() == "Remove")
-                .count(),
-            4,
-            "one explicit Remove action per real account"
-        );
-        assert_eq!(
-            labels
-                .iter()
-                .filter(|label| label.as_str() == "Add account")
-                .count(),
-            AccountKind::ALL.len(),
-            "each provider card exposes a compact add action"
-        );
-    }
-
-    #[test]
-    fn add_button_opens_the_inline_form() {
-        let mut pane = AccountsPane::from_dir(sample_directory(), true);
-        assert!(!pane.form_open());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let _ = doc.put(&root, ADD_MAIL_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert!(pane.form_open(), "Add opens the form");
-        assert!(
-            pane.take_structure_dirty(),
-            "opening the form requests a rebuild"
-        );
-        // Cancel closes it.
-        let _ = doc.put(&root, FORM_CANCEL_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert!(!pane.form_open(), "Cancel closes the form");
-    }
-
-    #[test]
-    fn form_drafts_are_local_and_every_field_has_explicit_accessibility() {
-        let commands = ui::LocalState::new(None);
-        let mut pane =
-            AccountsPane::from_dir(sample_directory(), true).with_command_state(&commands);
-        let mut doc = AutoCommit::new();
-        commands.set(Some(AccountViewCommand::Add(AccountKind::WebDav)));
-        pane.sync(&mut doc, &automerge::ROOT);
-        pane.set_form_fields_for_test("Home files", "", "ada", "https://files.example.test");
-        pane.set_form_password_for_test("never-collaborate-this");
-        pane.sync(&mut doc, &automerge::ROOT);
-        for key in [
-            "accounts.form.name",
-            "accounts.form.email",
-            "accounts.form.username",
-            "accounts.form.server",
-            "accounts.form.password",
-        ] {
-            assert!(
-                doc.get(&automerge::ROOT, key)
-                    .expect("read draft key")
-                    .is_none(),
-                "device-local form field {key} must never enter Automerge"
+                .find(|node| {
+                    node.role == ui::a11y::Role::TextInput
+                        && node.name.as_deref() == Some("Password or app password")
+                })
+                .expect("password field semantics");
+            assert!(password.state.protected);
+            assert_eq!(
+                password.value, None,
+                "screen readers must not receive secrets"
             );
         }
 
-        lay_out(&mut pane);
-        let mut nodes = Vec::new();
-        access_nodes(&pane, &mut nodes);
-        for name in [
-            "Display name",
-            "Username",
-            "Server URL",
-            "Password or app password",
-        ] {
+        // Case `save_with_empty_email_is_a_noop`.
+        {
+            // Guard: saving a blank address must not create an account (and must
+            // not touch disk). We assert the pure guard directly.
+            let (_dir, root) = scratch_root();
             assert!(
-                nodes.iter().any(|node| {
-                    node.role == ui::a11y::Role::TextInput && node.name.as_deref() == Some(name)
-                }),
-                "missing named text input: {name}"
-            );
-        }
-        let password = nodes
-            .iter()
-            .find(|node| {
-                node.role == ui::a11y::Role::TextInput
-                    && node.name.as_deref() == Some("Password or app password")
-            })
-            .expect("password field semantics");
-        assert!(password.state.protected);
-        assert_eq!(
-            password.value, None,
-            "screen readers must not receive secrets"
-        );
-    }
-
-    #[test]
-    fn live_pane_over_empty_store_does_not_fabricate_sample() {
-        let (_dir, root) = scratch_root();
-        let pane = AccountsPane::in_root(root);
-        assert!(!pane.is_sample(), "the live pane never flags the sample");
-        assert!(
-            pane.directory().is_empty(),
-            "an empty store renders empty — no fabricated ada@example.com rows"
-        );
-        // And no account of any kind leaked in from the sample.
-        for kind in AccountKind::ALL {
-            assert!(
-                pane.directory().views_of(kind).is_empty(),
-                "{kind:?} must be empty"
-            );
-        }
-    }
-
-    #[test]
-    fn save_with_empty_email_is_a_noop() {
-        // Guard: saving a blank address must not create an account (and must
-        // not touch disk). We assert the pure guard directly.
-        let (_dir, root) = scratch_root();
-        assert!(
-            AccountsPane::save_account(&root, AccountKind::Mail, None, "Nobody", "  ", "", "", "")
+                AccountsPane::save_account(
+                    &root,
+                    AccountKind::Mail,
+                    None,
+                    "Nobody",
+                    "  ",
+                    "",
+                    "",
+                    ""
+                )
                 .is_err()
-        );
-        assert!(root.store().is_empty());
+            );
+            assert!(root.store().is_empty());
+        }
+
+        // Case `add_rejection_keeps_the_draft_open_and_persists_nothing`.
+        {
+            let (_dir, root) = scratch_root();
+            let commands = ui::LocalState::new(None);
+            let mut pane = AccountsPane::in_root(root.clone())
+                .with_command_state(&commands)
+                .with_account_tester(std::sync::Arc::new(RejectCandidate));
+            let mut doc = AutoCommit::new();
+            commands.set(Some(AccountViewCommand::Add(AccountKind::Mail)));
+            pane.sync(&mut doc, &automerge::ROOT);
+            pane.set_form_fields_for_test(
+                "Rejected",
+                "rejected@example.test",
+                "rejected@example.test",
+                "",
+            );
+            pane.set_form_password_for_test("candidate-password");
+            commands.set(Some(AccountViewCommand::Submit));
+            pane.sync(&mut doc, &automerge::ROOT);
+            settle_probes(&mut pane, &mut doc);
+            assert_eq!(
+                pane.form_error.as_deref(),
+                Some("server rejected candidate")
+            );
+            assert!(pane.form_open(), "a rejected draft remains editable");
+            assert!(root.store().is_empty());
+            assert!(
+                root.vault()
+                    .get(&accounts::AccountId::from("rejected@example.test"))
+                    .is_none(),
+                "a rejected credential never reaches the vault"
+            );
+        }
     }
 
+    /// Edits keep unknown config and toggles; re-authentication probes before persisting.
     #[test]
-    fn edit_preserves_envelope_unknown_config_and_service_toggles() {
-        let (_dir, root) = scratch_root();
-        let id = accounts::AccountId::from("nextcloud-stable-id");
-        let mut original = accounts::Account::new(id.clone(), crate::accounts::NEXTCLOUD_TYPE);
-        original.display_name = "Old label".into();
-        original.enabled = false;
-        original.tint = 7;
-        original.owner = Some("local-owner".into());
-        original.config = serde_json::json!({
-            "id": "nextcloud-stable-id",
-            "label": "Old label",
-            "server_url": "https://old.example",
-            "username": "old-user",
-            "use_files": false,
-            "use_calendar": true,
-            "use_mail": false,
-            "future_provider_field": {"kept": true}
-        });
-        let mut store = accounts::AccountStore::new();
-        store.upsert(original);
-        root.save_store(&store).expect("seed canonical account");
-        let mut vault = root.vault();
-        vault.put(
-            &id,
-            &accounts::Secret {
-                password: "old-password".into(),
-                token: Some("future-provider-token".into()),
-            },
-        );
-        vault.try_save().expect("seed credential");
+    fn account_edits_preserve_config_and_probe_before_persisting() {
+        // Case `edit_preserves_envelope_unknown_config_and_service_toggles`.
+        {
+            let (_dir, root) = scratch_root();
+            let id = accounts::AccountId::from("nextcloud-stable-id");
+            let mut original = accounts::Account::new(id.clone(), crate::accounts::NEXTCLOUD_TYPE);
+            original.display_name = "Old label".into();
+            original.enabled = false;
+            original.tint = 7;
+            original.owner = Some("local-owner".into());
+            original.config = serde_json::json!({
+                "id": "nextcloud-stable-id",
+                "label": "Old label",
+                "server_url": "https://old.example",
+                "username": "old-user",
+                "use_files": false,
+                "use_calendar": true,
+                "use_mail": false,
+                "future_provider_field": {"kept": true}
+            });
+            let mut store = accounts::AccountStore::new();
+            store.upsert(original);
+            root.save_store(&store).expect("seed canonical account");
+            let mut vault = root.vault();
+            vault.put(
+                &id,
+                &accounts::Secret {
+                    password: "old-password".into(),
+                    token: Some("future-provider-token".into()),
+                },
+            );
+            vault.try_save().expect("seed credential");
 
-        AccountsPane::save_account(
-            &root,
-            AccountKind::Nextcloud,
-            Some(id.as_str()),
-            "New label",
-            "new-user",
-            "",
-            "https://new.example/",
-            "",
-        )
-        .expect("edit account");
+            AccountsPane::save_account(
+                &root,
+                AccountKind::Nextcloud,
+                Some(id.as_str()),
+                "New label",
+                "new-user",
+                "",
+                "https://new.example/",
+                "",
+            )
+            .expect("edit account");
 
-        let saved = root.store().get(&id).cloned().expect("saved account");
-        assert!(!saved.enabled);
-        assert_eq!(saved.tint, 7);
-        assert_eq!(saved.owner.as_deref(), Some("local-owner"));
-        assert_eq!(saved.config["use_files"], false);
-        assert_eq!(saved.config["use_calendar"], true);
-        assert_eq!(saved.config["use_mail"], false);
-        assert_eq!(saved.config["future_provider_field"]["kept"], true);
-        assert_eq!(saved.config["server_url"], "https://new.example");
-        assert_eq!(saved.config["username"], "new-user");
-        assert_eq!(
-            root.vault().get(&id),
-            Some(accounts::Secret {
-                password: "old-password".into(),
-                token: Some("future-provider-token".into()),
-            })
-        );
-    }
+            let saved = root.store().get(&id).cloned().expect("saved account");
+            assert!(!saved.enabled);
+            assert_eq!(saved.tint, 7);
+            assert_eq!(saved.owner.as_deref(), Some("local-owner"));
+            assert_eq!(saved.config["use_files"], false);
+            assert_eq!(saved.config["use_calendar"], true);
+            assert_eq!(saved.config["use_mail"], false);
+            assert_eq!(saved.config["future_provider_field"]["kept"], true);
+            assert_eq!(saved.config["server_url"], "https://new.example");
+            assert_eq!(saved.config["username"], "new-user");
+            assert_eq!(
+                root.vault().get(&id),
+                Some(accounts::Secret {
+                    password: "old-password".into(),
+                    token: Some("future-provider-token".into()),
+                })
+            );
+        }
 
-    #[test]
-    fn reauthentication_probes_candidate_before_persisting() {
-        let (_dir, root) = scratch_root();
-        let id = accounts::AccountId::from("reauth@example.test");
-        let mut account = accounts::Account::new(id.clone(), "email");
-        account.display_name = "Reauth".into();
-        account.config = serde_json::json!({
-            "email": id.as_str(), "username": id.as_str(),
-            "imap_host": "imap.example.test", "imap_port": 993
-        });
-        let mut store = accounts::AccountStore::new();
-        store.upsert(account);
-        root.save_store(&store).expect("seed account");
-        let mut vault = root.vault();
-        vault.put(&id, &accounts::Secret::password("old-password"));
-        vault.try_save().expect("seed credential");
+        // Case `reauthentication_probes_candidate_before_persisting`.
+        {
+            let (_dir, root) = scratch_root();
+            let id = accounts::AccountId::from("reauth@example.test");
+            let mut account = accounts::Account::new(id.clone(), "email");
+            account.display_name = "Reauth".into();
+            account.config = serde_json::json!({
+                "email": id.as_str(), "username": id.as_str(),
+                "imap_host": "imap.example.test", "imap_port": 993
+            });
+            let mut store = accounts::AccountStore::new();
+            store.upsert(account);
+            root.save_store(&store).expect("seed account");
+            let mut vault = root.vault();
+            vault.put(&id, &accounts::Secret::password("old-password"));
+            vault.try_save().expect("seed credential");
 
-        let commands = ui::LocalState::new(None);
-        let mut pane = AccountsPane::in_root(root.clone())
-            .with_command_state(&commands)
-            .with_account_tester(std::sync::Arc::new(RejectCandidate));
-        let mut doc = AutoCommit::new();
-        commands.set(Some(AccountViewCommand::Reauthenticate(id.to_string())));
-        pane.sync(&mut doc, &automerge::ROOT);
-        pane.set_reauth_password_for_test("candidate-password");
-        commands.set(Some(AccountViewCommand::SubmitReauthentication));
-        pane.sync(&mut doc, &automerge::ROOT);
-        settle_probes(&mut pane, &mut doc);
-        assert_eq!(
-            pane.reauth_error_for_test(),
-            Some("server rejected candidate")
-        );
-        assert_eq!(
-            root.vault().get(&id).map(|secret| secret.password),
-            Some("old-password".into()),
-            "rejected candidate must never replace the stored credential"
-        );
-    }
-
-    #[test]
-    fn add_rejection_keeps_the_draft_open_and_persists_nothing() {
-        let (_dir, root) = scratch_root();
-        let commands = ui::LocalState::new(None);
-        let mut pane = AccountsPane::in_root(root.clone())
-            .with_command_state(&commands)
-            .with_account_tester(std::sync::Arc::new(RejectCandidate));
-        let mut doc = AutoCommit::new();
-        commands.set(Some(AccountViewCommand::Add(AccountKind::Mail)));
-        pane.sync(&mut doc, &automerge::ROOT);
-        pane.set_form_fields_for_test(
-            "Rejected",
-            "rejected@example.test",
-            "rejected@example.test",
-            "",
-        );
-        pane.set_form_password_for_test("candidate-password");
-        commands.set(Some(AccountViewCommand::Submit));
-        pane.sync(&mut doc, &automerge::ROOT);
-        settle_probes(&mut pane, &mut doc);
-        assert_eq!(
-            pane.form_error.as_deref(),
-            Some("server rejected candidate")
-        );
-        assert!(pane.form_open(), "a rejected draft remains editable");
-        assert!(root.store().is_empty());
-        assert!(
-            root.vault()
-                .get(&accounts::AccountId::from("rejected@example.test"))
-                .is_none(),
-            "a rejected credential never reaches the vault"
-        );
+            let commands = ui::LocalState::new(None);
+            let mut pane = AccountsPane::in_root(root.clone())
+                .with_command_state(&commands)
+                .with_account_tester(std::sync::Arc::new(RejectCandidate));
+            let mut doc = AutoCommit::new();
+            commands.set(Some(AccountViewCommand::Reauthenticate(id.to_string())));
+            pane.sync(&mut doc, &automerge::ROOT);
+            pane.set_reauth_password_for_test("candidate-password");
+            commands.set(Some(AccountViewCommand::SubmitReauthentication));
+            pane.sync(&mut doc, &automerge::ROOT);
+            settle_probes(&mut pane, &mut doc);
+            assert_eq!(
+                pane.reauth_error_for_test(),
+                Some("server rejected candidate")
+            );
+            assert_eq!(
+                root.vault().get(&id).map(|secret| secret.password),
+                Some("old-password".into()),
+                "rejected candidate must never replace the stored credential"
+            );
+        }
     }
 }

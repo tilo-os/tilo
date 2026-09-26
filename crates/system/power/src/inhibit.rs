@@ -159,71 +159,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_registry_is_not_inhibited() {
-        let r = InhibitRegistry::new();
-        assert!(!r.is_inhibited());
-        assert_eq!(r.count(), 0);
-        assert!(r.active_reasons().is_empty());
-    }
-
-    #[test]
-    fn a_held_token_inhibits_and_dropping_releases() {
-        let r = InhibitRegistry::new();
-        {
-            let _t = r.acquire("media playback");
-            assert!(r.is_inhibited());
-            assert_eq!(r.count(), 1);
-            assert_eq!(r.active_reasons(), vec!["media playback".to_string()]);
-        }
-        // Token dropped at end of scope → released.
-        assert!(!r.is_inhibited());
-        assert_eq!(r.count(), 0);
-    }
-
-    #[test]
-    fn overlapping_holds_compose_and_release_independently() {
-        let r = InhibitRegistry::new();
-        let a = r.acquire("media");
-        let b = r.acquire("backup task");
-        assert_eq!(r.count(), 2);
-        assert!(r.is_inhibited());
-        drop(a);
-        // Still inhibited: the backup task holds it.
-        assert!(r.is_inhibited());
-        assert_eq!(r.active_reasons(), vec!["backup task".to_string()]);
-        drop(b);
-        assert!(!r.is_inhibited());
-    }
-
-    #[test]
-    fn clones_share_state() {
-        let r = InhibitRegistry::new();
-        let r2 = r.clone();
-        let _t = r.acquire("x");
-        // The hold taken on `r` is visible through the clone `r2`.
-        assert!(r2.is_inhibited());
-        assert_eq!(r2.count(), 1);
-    }
-
-    #[test]
-    fn operation_scopes_do_not_cross_inhibit() {
-        let registry = InhibitRegistry::new();
-        let _logout = registry.acquire_for("unsaved work", INHIBIT_LOGOUT);
-        assert!(registry.is_inhibited_for(INHIBIT_LOGOUT));
-        assert!(!registry.is_inhibited_for(INHIBIT_POWER));
-        assert!(registry.active_reasons().is_empty());
-    }
-
-    #[test]
-    fn token_outliving_registry_is_harmless() {
-        let token;
+    fn inhibitor_tokens_compose_share_state_and_release_on_drop() {
+        // Phase `empty_registry_is_not_inhibited`.
         {
             let r = InhibitRegistry::new();
-            token = r.acquire("x");
-            assert_eq!(r.count(), 1);
+            assert!(!r.is_inhibited());
+            assert_eq!(r.count(), 0);
+            assert!(r.active_reasons().is_empty());
         }
-        // Registry dropped; dropping the token must not panic (Weak upgrade
-        // fails and the drop is a no-op).
-        drop(token);
+        // Phase `a_held_token_inhibits_and_dropping_releases`.
+        {
+            let r = InhibitRegistry::new();
+            {
+                let _t = r.acquire("media playback");
+                assert!(r.is_inhibited());
+                assert_eq!(r.count(), 1);
+                assert_eq!(r.active_reasons(), vec!["media playback".to_string()]);
+            }
+            // Token dropped at end of scope → released.
+            assert!(!r.is_inhibited());
+            assert_eq!(r.count(), 0);
+        }
+        // Phase `overlapping_holds_compose_and_release_independently`.
+        {
+            let r = InhibitRegistry::new();
+            let a = r.acquire("media");
+            let b = r.acquire("backup task");
+            assert_eq!(r.count(), 2);
+            assert!(r.is_inhibited());
+            drop(a);
+            // Still inhibited: the backup task holds it.
+            assert!(r.is_inhibited());
+            assert_eq!(r.active_reasons(), vec!["backup task".to_string()]);
+            drop(b);
+            assert!(!r.is_inhibited());
+        }
+        // Phase `clones_share_state`.
+        {
+            let r = InhibitRegistry::new();
+            let r2 = r.clone();
+            let _t = r.acquire("x");
+            // The hold taken on `r` is visible through the clone `r2`.
+            assert!(r2.is_inhibited());
+            assert_eq!(r2.count(), 1);
+        }
+        // Phase `operation_scopes_do_not_cross_inhibit`.
+        {
+            let registry = InhibitRegistry::new();
+            let _logout = registry.acquire_for("unsaved work", INHIBIT_LOGOUT);
+            assert!(registry.is_inhibited_for(INHIBIT_LOGOUT));
+            assert!(!registry.is_inhibited_for(INHIBIT_POWER));
+            assert!(registry.active_reasons().is_empty());
+        }
+        // Phase `token_outliving_registry_is_harmless`.
+        {
+            let token;
+            {
+                let r = InhibitRegistry::new();
+                token = r.acquire("x");
+                assert_eq!(r.count(), 1);
+            }
+            // Registry dropped; dropping the token must not panic (Weak upgrade
+            // fails and the drop is a no-op).
+            drop(token);
+        }
     }
 }

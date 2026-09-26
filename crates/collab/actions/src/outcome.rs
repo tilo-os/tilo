@@ -192,7 +192,15 @@ fn bounded_identifier(value: &str, fallback: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Content resource addresses round-trip without guessing and effect receipts redact terminal
+    /// payloads.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn outcomes_address_content_exactly_and_redact_terminal_payloads() {
+        content_resource_addresses_round_trip_without_guessing();
+        effect_receipt_redacts_terminal_payloads();
+    }
+
     fn content_resource_addresses_round_trip_without_guessing() {
         let address = content_resource("abc123").expect("a content hash has an address");
         assert_eq!(address, "tilo.content:abc123");
@@ -202,7 +210,6 @@ mod tests {
         assert_eq!(content_hash("files.entry:/tmp/a"), None);
     }
 
-    #[test]
     fn effect_receipt_redacts_terminal_payloads() {
         let invocation = InvocationId::new();
         let update = InvocationUpdate::Failed {

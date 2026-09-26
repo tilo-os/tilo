@@ -963,51 +963,56 @@ mod version_identity_tests {
     }
 
     #[test]
-    fn source_hash_cannot_create_a_second_artifact_at_the_same_precedence() {
-        assert!(same_version_identity(
-            &version("0.1.1-dev.10+g111"),
-            &version("0.1.1-dev.10+g222")
-        ));
-        assert!(!same_version_identity(
-            &version("0.1.1-dev.10+g111"),
-            &version("0.1.1-dev.11+g000")
-        ));
-        assert!(
-            compare_registry_versions(&version("0.1.1-dev.10+g111"), &version("0.1.1-dev.9+gzzz"))
+    fn version_identity_is_unique_per_precedence_and_target() {
+        // phase: source_hash_cannot_create_a_second_artifact_at_the_same_precedence
+        {
+            assert!(same_version_identity(
+                &version("0.1.1-dev.10+g111"),
+                &version("0.1.1-dev.10+g222")
+            ));
+            assert!(!same_version_identity(
+                &version("0.1.1-dev.10+g111"),
+                &version("0.1.1-dev.11+g000")
+            ));
+            assert!(
+                compare_registry_versions(
+                    &version("0.1.1-dev.10+g111"),
+                    &version("0.1.1-dev.9+gzzz")
+                )
                 .is_lt()
-        );
-    }
+            );
+        }
+        // phase: slower_release_is_stale_only_for_the_same_target
+        {
+            let current = version("0.1.42+gnew");
+            let entry = registry_types::RegistryEntry {
+                package_id: "so.tilo.browser".into(),
+                name: "Browser".into(),
+                description: "Browser".into(),
+                tagline: "Browse".into(),
+                images: registry_types::LocalizedImages::default(),
+                supported_languages: vec!["en".into()],
+                categories: Vec::new(),
+                source_url: None,
+                homepage: None,
+                publisher_pubkey_hex: String::new(),
+                versions: vec![current],
+                updated_at_unix: 0,
+                signature_hex: String::new(),
+            };
 
-    #[test]
-    fn slower_release_is_stale_only_for_the_same_target() {
-        let current = version("0.1.42+gnew");
-        let entry = registry_types::RegistryEntry {
-            package_id: "so.tilo.browser".into(),
-            name: "Browser".into(),
-            description: "Browser".into(),
-            tagline: "Browse".into(),
-            images: registry_types::LocalizedImages::default(),
-            supported_languages: vec!["en".into()],
-            categories: Vec::new(),
-            source_url: None,
-            homepage: None,
-            publisher_pubkey_hex: String::new(),
-            versions: vec![current],
-            updated_at_unix: 0,
-            signature_hex: String::new(),
-        };
-
-        assert!(candidate_is_older_than_published(
-            &entry,
-            &version("0.1.41+gold")
-        ));
-        assert!(!candidate_is_older_than_published(
-            &entry,
-            &version("0.1.43+gnext")
-        ));
-        let mut arm = version("0.1.1+gold");
-        arm.target.architecture = "aarch64".into();
-        arm.target.isa = "aarch64-v8.2".into();
-        assert!(!candidate_is_older_than_published(&entry, &arm));
+            assert!(candidate_is_older_than_published(
+                &entry,
+                &version("0.1.41+gold")
+            ));
+            assert!(!candidate_is_older_than_published(
+                &entry,
+                &version("0.1.43+gnext")
+            ));
+            let mut arm = version("0.1.1+gold");
+            arm.target.architecture = "aarch64".into();
+            arm.target.isa = "aarch64-v8.2".into();
+            assert!(!candidate_is_older_than_published(&entry, &arm));
+        }
     }
 }

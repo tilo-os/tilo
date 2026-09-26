@@ -256,39 +256,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn proxy_url_is_local_and_carries_id_and_itag() {
-        let url = proxy_media_url("https://yewtu.be/", "dQw4w9WgXcQ", 18);
-        assert_eq!(
-            url,
-            "https://yewtu.be/latest_version?id=dQw4w9WgXcQ&itag=18&local=true"
-        );
-        // `local=true` is what makes the instance proxy the bytes (and thus serve
-        // arbitrary ranges over the whole file).
-        assert!(url.contains("local=true"), "must proxy locally: {url}");
+    fn proxy_urls_and_instances_are_built_locally() {
+        // Case `proxy_url_is_local_and_carries_id_and_itag`.
+        {
+            let url = proxy_media_url("https://yewtu.be/", "dQw4w9WgXcQ", 18);
+            assert_eq!(
+                url,
+                "https://yewtu.be/latest_version?id=dQw4w9WgXcQ&itag=18&local=true"
+            );
+            // `local=true` is what makes the instance proxy the bytes (and thus serve
+            // arbitrary ranges over the whole file).
+            assert!(url.contains("local=true"), "must proxy locally: {url}");
+        }
+        // Case `video_info_url_builds_api_path`.
+        {
+            assert_eq!(
+                video_info_url("https://inv.nadeko.net", "abc123"),
+                "https://inv.nadeko.net/api/v1/videos/abc123"
+            );
+        }
+        // Case `instances_honours_env_override_first`.
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_TUBE_INVIDIOUS", "https://my.inv, https://two.inv");
+            let list = instances();
+            assert_eq!(list[0], "https://my.inv");
+            assert_eq!(list[1], "https://two.inv");
+            assert!(list.len() > 2, "defaults are appended after the override");
+        }
     }
 
     #[test]
-    fn video_info_url_builds_api_path() {
-        assert_eq!(
-            video_info_url("https://inv.nadeko.net", "abc123"),
-            "https://inv.nadeko.net/api/v1/videos/abc123"
-        );
-    }
-
-    #[test]
-    fn known_muxed_itags_prefer_higher_quality_first() {
-        // 22 (720p) is probed before 18 (360p), so the best available muxed
-        // stream is committed to first.
-        assert_eq!(KNOWN_MUXED_ITAGS[0].0, 22);
-        assert_eq!(KNOWN_MUXED_ITAGS[1].0, 18);
-    }
-
-    #[test]
-    fn parse_and_pick_best_prefers_highest_mp4() {
-        // Mirrors an Invidious `/api/v1/videos/{id}` body: muxed formatStreams
-        // plus (ignored) adaptive video-only formats. `resolution`/`itag` come as
-        // strings (as Invidious sends them).
-        let json: serde_json::Value = serde_json::from_str(
+    fn muxed_stream_selection_prefers_highest_quality_mp4() {
+        // Case `known_muxed_itags_prefer_higher_quality_first`.
+        {
+            // 22 (720p) is probed before 18 (360p), so the best available muxed
+            // stream is committed to first.
+            assert_eq!(KNOWN_MUXED_ITAGS[0].0, 22);
+            assert_eq!(KNOWN_MUXED_ITAGS[1].0, 18);
+        }
+        // Case `parse_and_pick_best_prefers_highest_mp4`.
+        {
+            // Mirrors an Invidious `/api/v1/videos/{id}` body: muxed formatStreams
+            // plus (ignored) adaptive video-only formats. `resolution`/`itag` come as
+            // strings (as Invidious sends them).
+            let json: serde_json::Value = serde_json::from_str(
             r#"{
                 "lengthSeconds": 212,
                 "adaptiveFormats": [
@@ -301,38 +313,28 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let muxed = parse_format_streams(&json);
-        // Only the two muxed formatStreams are kept (the adaptive one is dropped).
-        assert_eq!(muxed.len(), 2, "only progressive muxed formats: {muxed:?}");
-        let best = best_muxed(&muxed).expect("a best muxed format");
-        assert_eq!(best.itag, 22, "prefers the 720p muxed MP4 over 360p");
-        assert_eq!(best.quality, "720p");
-        assert_eq!(best.height, 720);
-        assert!(best.is_mp4());
-    }
-
-    #[test]
-    fn best_muxed_falls_back_when_no_mp4() {
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"formatStreams":[
+            let muxed = parse_format_streams(&json);
+            // Only the two muxed formatStreams are kept (the adaptive one is dropped).
+            assert_eq!(muxed.len(), 2, "only progressive muxed formats: {muxed:?}");
+            let best = best_muxed(&muxed).expect("a best muxed format");
+            assert_eq!(best.itag, 22, "prefers the 720p muxed MP4 over 360p");
+            assert_eq!(best.quality, "720p");
+            assert_eq!(best.height, 720);
+            assert!(best.is_mp4());
+        }
+        // Case `best_muxed_falls_back_when_no_mp4`.
+        {
+            let json: serde_json::Value = serde_json::from_str(
+                r#"{"formatStreams":[
                 {"itag":"43","type":"video/webm; codecs=\"vp8, vorbis\"","resolution":"640x360"}
             ]}"#,
-        )
-        .unwrap();
-        let muxed = parse_format_streams(&json);
-        let best = best_muxed(&muxed).expect("best muxed");
-        assert_eq!(best.itag, 43, "the only muxed stream wins even if webm");
-        assert!(!best.is_mp4());
-    }
-
-    #[test]
-    fn instances_honours_env_override_first() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_TUBE_INVIDIOUS", "https://my.inv, https://two.inv");
-        let list = instances();
-        assert_eq!(list[0], "https://my.inv");
-        assert_eq!(list[1], "https://two.inv");
-        assert!(list.len() > 2, "defaults are appended after the override");
+            )
+            .unwrap();
+            let muxed = parse_format_streams(&json);
+            let best = best_muxed(&muxed).expect("best muxed");
+            assert_eq!(best.itag, 43, "the only muxed stream wins even if webm");
+            assert!(!best.is_mp4());
+        }
     }
 
     /// Integration check: resolve a real, widely-available video and prove the

@@ -791,49 +791,50 @@ mod tests {
     }
 
     #[test]
-    fn peer_store_survives_restart_and_keeps_revocation_tombstone() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = PeerStore::new(dir.path().join("peers.json"));
-        let record = PeerRecord {
-            id: "public-key".into(),
-            name: "Phone".into(),
-            descriptor: descriptor("public-key"),
-            approved_at: 7,
-            pending_approval: false,
-            revoked_at: Some(9),
-            last_sync_at: None,
-            last_error: None,
-        };
-        store.save(std::slice::from_ref(&record)).unwrap();
-        assert_eq!(store.load().unwrap(), vec![record]);
-        let text = fs::read_to_string(dir.path().join("peers.json")).unwrap();
-        assert!(!text.contains("private"));
-        assert!(!text.contains("pairingCode"));
-    }
-
-    #[test]
-    fn independently_derived_device_keys_are_stable_and_distinct() {
-        let a = DeviceKey::from_private(&[1; 32]).unwrap();
-        let a_restart = DeviceKey::from_private(&[1; 32]).unwrap();
-        let b = DeviceKey::from_private(&[2; 32]).unwrap();
-        assert_eq!(a.public_base64(), a_restart.public_base64());
-        assert_ne!(a.public_base64(), b.public_base64());
-    }
-
-    #[test]
-    fn collaborative_merge_is_additive_and_never_adds_unknown_entities() {
-        let mut model = crate::sample::model();
-        let channel = model.channels[0].clone();
-        let video = model.videos[0].clone();
-        model.subscriptions.clear();
-        model.history.clear();
-        let remote = SyncState {
-            subscriptions: vec![format!("https://youtube.com/{}", channel.handle)],
-            watch_history: vec![video.id.clone(), "unknown-secret-looking-value".into()],
-            settings: None,
-        };
-        assert!(merge_remote_state(&mut model, &remote));
-        assert_eq!(model.subscriptions, vec![channel.id]);
-        assert_eq!(model.history, vec![video.id]);
+    fn device_sync_lifecycle_persists_keys_peers_and_merges_additively() {
+        // Case `peer_store_survives_restart_and_keeps_revocation_tombstone`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = PeerStore::new(dir.path().join("peers.json"));
+            let record = PeerRecord {
+                id: "public-key".into(),
+                name: "Phone".into(),
+                descriptor: descriptor("public-key"),
+                approved_at: 7,
+                pending_approval: false,
+                revoked_at: Some(9),
+                last_sync_at: None,
+                last_error: None,
+            };
+            store.save(std::slice::from_ref(&record)).unwrap();
+            assert_eq!(store.load().unwrap(), vec![record]);
+            let text = fs::read_to_string(dir.path().join("peers.json")).unwrap();
+            assert!(!text.contains("private"));
+            assert!(!text.contains("pairingCode"));
+        }
+        // Case `independently_derived_device_keys_are_stable_and_distinct`.
+        {
+            let a = DeviceKey::from_private(&[1; 32]).unwrap();
+            let a_restart = DeviceKey::from_private(&[1; 32]).unwrap();
+            let b = DeviceKey::from_private(&[2; 32]).unwrap();
+            assert_eq!(a.public_base64(), a_restart.public_base64());
+            assert_ne!(a.public_base64(), b.public_base64());
+        }
+        // Case `collaborative_merge_is_additive_and_never_adds_unknown_entities`.
+        {
+            let mut model = crate::sample::model();
+            let channel = model.channels[0].clone();
+            let video = model.videos[0].clone();
+            model.subscriptions.clear();
+            model.history.clear();
+            let remote = SyncState {
+                subscriptions: vec![format!("https://youtube.com/{}", channel.handle)],
+                watch_history: vec![video.id.clone(), "unknown-secret-looking-value".into()],
+                settings: None,
+            };
+            assert!(merge_remote_state(&mut model, &remote));
+            assert_eq!(model.subscriptions, vec![channel.id]);
+            assert_eq!(model.history, vec![video.id]);
+        }
     }
 }

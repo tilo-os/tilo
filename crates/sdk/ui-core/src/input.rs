@@ -433,60 +433,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mac_legends_use_the_symbols_printed_on_apple_keyboards() {
-        let binding = KeyboardBinding::new(
-            [
-                KeyboardModifier::Command,
-                KeyboardModifier::Alt,
-                KeyboardModifier::Shift,
-            ],
-            KeyLegend::Enter,
-        );
-        assert_eq!(
-            binding.keycap_labels(PlatformConventions::new(Platform::MacOs)),
-            ["⌘", "⌥", "⇧", "↩"]
-        );
-        let external_apple = KeyboardBinding::new(
-            [KeyboardModifier::System, KeyboardModifier::Alt],
-            KeyLegend::Enter,
-        );
-        assert_eq!(
-            external_apple.keycap_labels_for(
-                PlatformConventions::new(Platform::Linux),
-                KeyboardFamily::Apple,
-            ),
-            ["⌘", "⌥", "↩"]
-        );
-    }
+    fn input_legends_follow_the_device_and_rebinding_reports_conflicts() {
+        // Case `mac_legends_use_the_symbols_printed_on_apple_keyboards`.
+        {
+            let binding = KeyboardBinding::new(
+                [
+                    KeyboardModifier::Command,
+                    KeyboardModifier::Alt,
+                    KeyboardModifier::Shift,
+                ],
+                KeyLegend::Enter,
+            );
+            assert_eq!(
+                binding.keycap_labels(PlatformConventions::new(Platform::MacOs)),
+                ["⌘", "⌥", "⇧", "↩"]
+            );
+            let external_apple = KeyboardBinding::new(
+                [KeyboardModifier::System, KeyboardModifier::Alt],
+                KeyLegend::Enter,
+            );
+            assert_eq!(
+                external_apple.keycap_labels_for(
+                    PlatformConventions::new(Platform::Linux),
+                    KeyboardFamily::Apple,
+                ),
+                ["⌘", "⌥", "↩"]
+            );
+        }
 
-    #[test]
-    fn face_button_labels_follow_the_connected_controller() {
-        assert_eq!(ControllerButton::South.label(ControllerFamily::Xbox), "A");
-        assert_eq!(
-            ControllerButton::South.label(ControllerFamily::PlayStation),
-            "×"
-        );
-        assert_eq!(
-            ControllerButton::South.label(ControllerFamily::Nintendo),
-            "B"
-        );
-        assert_eq!(
-            ControllerButton::South.label(ControllerFamily::JoyConLeft),
-            "←"
-        );
-    }
+        // Case `face_button_labels_follow_the_connected_controller`.
+        {
+            assert_eq!(ControllerButton::South.label(ControllerFamily::Xbox), "A");
+            assert_eq!(
+                ControllerButton::South.label(ControllerFamily::PlayStation),
+                "×"
+            );
+            assert_eq!(
+                ControllerButton::South.label(ControllerFamily::Nintendo),
+                "B"
+            );
+            assert_eq!(
+                ControllerButton::South.label(ControllerFamily::JoyConLeft),
+                "←"
+            );
+        }
 
-    #[test]
-    fn rebinding_reports_the_action_that_already_owns_a_chord() {
-        let chord = InputBinding::Keyboard(KeyboardBinding::command("k"));
-        let mut set = BindingSet::default();
-        set.insert_action("search", "Search", vec![chord.clone()]);
-        set.insert_action("link", "Insert link", vec![]);
-        assert_eq!(
-            set.rebind("link", 0, chord, false),
-            Err(BindingConflict {
-                action_id: "search".into()
-            })
-        );
+        // Case `rebinding_reports_the_action_that_already_owns_a_chord`.
+        {
+            let chord = InputBinding::Keyboard(KeyboardBinding::command("k"));
+            let mut set = BindingSet::default();
+            set.insert_action("search", "Search", vec![chord.clone()]);
+            set.insert_action("link", "Insert link", vec![]);
+            assert_eq!(
+                set.rebind("link", 0, chord, false),
+                Err(BindingConflict {
+                    action_id: "search".into()
+                })
+            );
+        }
     }
 }

@@ -220,36 +220,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn minted_ids_carry_salt_and_count_up() {
-        let mut minter = IdMinter::new(0x1234);
-        let a = minter.mint();
-        let b = minter.mint();
-        assert_eq!(peer_salt_of(a), 0x1234);
-        assert_eq!(counter_of(a), 1);
-        assert_eq!(counter_of(b), 2);
-    }
-
-    #[test]
-    fn unsalted_minter_yields_small_literals() {
-        let mut minter = IdMinter::default();
-        assert_eq!(minter.mint(), 1);
-        assert_eq!(minter.mint(), 2);
-    }
-
-    #[test]
-    fn observe_skips_only_ids_under_own_salt() {
-        let mut minter = IdMinter::new(0x1111);
-        minter.observe(compose_id(0x1111, 5));
-        minter.observe(compose_id(0x2222, 1000));
-        assert_eq!(minter.next_counter(), 6);
-        minter.observe(compose_id(0x1111, 2));
-        assert_eq!(minter.next_counter(), 6, "observing never moves backwards");
-    }
-
-    #[test]
-    fn counter_overflow_stays_inside_its_bits() {
-        let id = compose_id(0xFFFF, u64::MAX);
-        assert_eq!(peer_salt_of(id), 0xFFFF);
-        assert_eq!(counter_of(id), PEER_ID_COUNTER_MASK);
+    fn id_minter_salts_counts_and_observes_within_its_bits() {
+        // Phase `minted_ids_carry_salt_and_count_up`.
+        {
+            let mut minter = IdMinter::new(0x1234);
+            let a = minter.mint();
+            let b = minter.mint();
+            assert_eq!(peer_salt_of(a), 0x1234);
+            assert_eq!(counter_of(a), 1);
+            assert_eq!(counter_of(b), 2);
+        }
+        // Phase `unsalted_minter_yields_small_literals`.
+        {
+            let mut minter = IdMinter::default();
+            assert_eq!(minter.mint(), 1);
+            assert_eq!(minter.mint(), 2);
+        }
+        // Phase `observe_skips_only_ids_under_own_salt`.
+        {
+            let mut minter = IdMinter::new(0x1111);
+            minter.observe(compose_id(0x1111, 5));
+            minter.observe(compose_id(0x2222, 1000));
+            assert_eq!(minter.next_counter(), 6);
+            minter.observe(compose_id(0x1111, 2));
+            assert_eq!(minter.next_counter(), 6, "observing never moves backwards");
+        }
+        // Phase `counter_overflow_stays_inside_its_bits`.
+        {
+            let id = compose_id(0xFFFF, u64::MAX);
+            assert_eq!(peer_salt_of(id), 0xFFFF);
+            assert_eq!(counter_of(id), PEER_ID_COUNTER_MASK);
+        }
     }
 }

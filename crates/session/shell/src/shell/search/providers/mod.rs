@@ -11,6 +11,7 @@ pub mod files;
 pub mod host_applications;
 pub mod live_app_actions;
 pub mod notes;
+pub mod now_playing;
 pub mod records;
 pub mod session_actions;
 pub mod shortcuts;

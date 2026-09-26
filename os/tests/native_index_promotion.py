@@ -15,6 +15,18 @@ promotion = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(promotion)
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class PromotionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -56,55 +68,57 @@ class PromotionTests(unittest.TestCase):
             return promotion.promote("registry.tilo.so/tilo/rpms", ["latest", self.revision],
                                      self.revision, self.directory, Path("keys/cosign.pub"), "env://COSIGN_PRIVATE_KEY")
 
-    def test_signed_complete_index_precedes_release_tags(self):
-        self.assertTrue(self.promote().endswith("@" + self.digest))
-        sign = next(i for i, call in enumerate(self.calls) if call[:2] == ("cosign", "sign"))
-        copies = [(i, call) for i, call in enumerate(self.calls) if call[:2] == ("skopeo", "copy")]
-        self.assertEqual(len(copies), 2)
-        for i, call in copies:
-            self.assertGreater(i, sign)
-            self.assertIn("--all", call)
-            self.assertIn("--preserve-digests", call)
+    def test_promotion_order_and_candidate_checks(self):
+        with self.subTest(phase="signed_complete_index_precedes_release_tags"):
+            self.assertTrue(self.promote().endswith("@" + self.digest))
+            sign = next(i for i, call in enumerate(self.calls) if call[:2] == ("cosign", "sign"))
+            copies = [(i, call) for i, call in enumerate(self.calls) if call[:2] == ("skopeo", "copy")]
+            self.assertEqual(len(copies), 2)
+            for i, call in copies:
+                self.assertGreater(i, sign)
+                self.assertIn("--all", call)
+                self.assertIn("--preserve-digests", call)
+        restart_fixture(self)
+        with self.subTest(phase="candidate_digest_mismatch_never_promotes_tags"):
+            self.raw += b" "
+            with self.assertRaisesRegex(ValueError, "unexpected index content"):
+                self.promote()
+            self.assertFalse(any(call[:2] == ("skopeo", "copy") for call in self.calls))
+        restart_fixture(self)
+        with self.subTest(phase="candidate_missing_platform_never_signed"):
+            self.index["manifests"].pop()
+            self.raw = json.dumps(self.index).encode()
+            self.digest = "sha256:" + hashlib.sha256(self.raw).hexdigest()
+            with self.assertRaises(ValueError):
+                self.promote()
+            self.assertFalse(any(call[:2] == ("cosign", "sign") for call in self.calls))
 
-    def test_wrong_architecture_source_or_signature_never_creates_candidate(self):
-        for flag in ("bad_arch", "bad_revision", "bad_signature"):
-            with self.subTest(flag=flag):
-                setattr(self, flag, True)
-                self.calls.clear()
-                with self.assertRaises((ValueError, subprocess.CalledProcessError)):
-                    self.promote()
-                self.assertFalse(any(call[0] == "podman" for call in self.calls))
-                setattr(self, flag, False)
-
-    def test_missing_child_rejected_before_remote_access(self):
-        (self.directory / "aarch64.json").unlink()
-        with self.assertRaises(ValueError):
-            self.promote()
-        self.assertEqual(self.calls, [])
-
-    def test_candidate_digest_mismatch_never_promotes_tags(self):
-        self.raw += b" "
-        with self.assertRaisesRegex(ValueError, "unexpected index content"):
-            self.promote()
-        self.assertFalse(any(call[:2] == ("skopeo", "copy") for call in self.calls))
-
-    def test_candidate_missing_platform_never_signed(self):
-        self.index["manifests"].pop()
-        self.raw = json.dumps(self.index).encode()
-        self.digest = "sha256:" + hashlib.sha256(self.raw).hexdigest()
-        with self.assertRaises(ValueError):
-            self.promote()
-        self.assertFalse(any(call[:2] == ("cosign", "sign") for call in self.calls))
-
-    def test_malformed_indexes_rejected(self):
-        for document in ([], {}, {"schemaVersion": 2, "manifests": [None]},
-                         {"schemaVersion": 2, "manifests": [{"platform": []}]}):
-            with self.subTest(document=document), self.assertRaises(ValueError):
-                promotion.verify_index(document, self.children)
-
-    def test_foreign_revision_descriptor_rejected(self):
-        with self.assertRaises(ValueError):
-            promotion.load_children(self.directory, "b" * 40)
+    def test_rejects_invalid_sources(self):
+        with self.subTest(phase="wrong_architecture_source_or_signature_never_creates_candidate"):
+            for flag in ("bad_arch", "bad_revision", "bad_signature"):
+                with self.subTest(flag=flag):
+                    setattr(self, flag, True)
+                    self.calls.clear()
+                    with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                        self.promote()
+                    self.assertFalse(any(call[0] == "podman" for call in self.calls))
+                    setattr(self, flag, False)
+        restart_fixture(self)
+        with self.subTest(phase="missing_child_rejected_before_remote_access"):
+            (self.directory / "aarch64.json").unlink()
+            with self.assertRaises(ValueError):
+                self.promote()
+            self.assertEqual(self.calls, [])
+        restart_fixture(self)
+        with self.subTest(phase="malformed_indexes_rejected"):
+            for document in ([], {}, {"schemaVersion": 2, "manifests": [None]},
+                             {"schemaVersion": 2, "manifests": [{"platform": []}]}):
+                with self.subTest(document=document), self.assertRaises(ValueError):
+                    promotion.verify_index(document, self.children)
+        restart_fixture(self)
+        with self.subTest(phase="foreign_revision_descriptor_rejected"):
+            with self.assertRaises(ValueError):
+                promotion.load_children(self.directory, "b" * 40)
 
 
 if __name__ == "__main__":

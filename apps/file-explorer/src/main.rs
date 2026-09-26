@@ -886,56 +886,64 @@ fn render_shot_to_png(
 mod actor_tests {
     use super::{distinct_actor, navigate_launch_directory, shot_viewport};
 
+    /// The launch directory resolves relative paths and surfaces missing ones; the screenshot viewport honours the standard value unless overridden.
     #[test]
-    fn launch_directory_uses_relative_paths_and_surfaces_missing_directories() {
-        let cwd = std::env::current_dir().unwrap();
-        let fixture = tempfile::tempdir_in(&cwd).unwrap();
-        let relative = fixture.path().strip_prefix(&cwd).unwrap();
-        let mut widget = file_explorer::FileExplorerWidget::with_persistence(
-            None,
-            Some(fixture.path().to_path_buf()),
-        );
-        navigate_launch_directory(&mut widget, relative).unwrap();
-        assert_eq!(widget.current_path(), fixture.path());
-        assert!(widget.error().is_none());
-        let missing = fixture.path().join("missing-folder");
-        navigate_launch_directory(&mut widget, &missing).unwrap();
-        assert_eq!(widget.current_path(), missing);
-        assert!(widget.error().is_some());
+    fn launch_options_resolve_directory_and_viewport() {
+        // --- phase: launch_directory_uses_relative_paths_and_surfaces_missing_directories ---
+        {
+            let cwd = std::env::current_dir().unwrap();
+            let fixture = tempfile::tempdir_in(&cwd).unwrap();
+            let relative = fixture.path().strip_prefix(&cwd).unwrap();
+            let mut widget = file_explorer::FileExplorerWidget::with_persistence(
+                None,
+                Some(fixture.path().to_path_buf()),
+            );
+            navigate_launch_directory(&mut widget, relative).unwrap();
+            assert_eq!(widget.current_path(), fixture.path());
+            assert!(widget.error().is_none());
+            let missing = fixture.path().join("missing-folder");
+            navigate_launch_directory(&mut widget, &missing).unwrap();
+            assert_eq!(widget.current_path(), missing);
+            assert!(widget.error().is_some());
+        }
+
+        // --- phase: screenshot_viewport_honors_standard_value_unless_size_overrides_it ---
+        {
+            assert_eq!(shot_viewport(Some((480, 900)), None), (480, 900));
+            assert_eq!(
+                shot_viewport(Some((480, 900)), Some((640, 480))),
+                (640, 480)
+            );
+        }
     }
 
+    /// Two replicas in one process get distinct actors that still name the application.
     #[test]
-    fn screenshot_viewport_honors_standard_value_unless_size_overrides_it() {
-        assert_eq!(shot_viewport(Some((480, 900)), None), (480, 900));
-        assert_eq!(
-            shot_viewport(Some((480, 900)), Some((640, 480))),
-            (640, 480)
-        );
-    }
-
-    /// The regression, stated as the property it broke.
-    ///
-    /// Both ids below are minted inside one process, so anything derived from
-    /// the process — a pid, which is 2 in every sandbox on this system —
-    /// produces the same string twice. Automerge then refuses the second
-    /// replica's frames with `duplicate seq 1 found for actor`, and a change
-    /// made on one machine never reaches the other.
-    #[test]
-    fn two_replicas_in_one_process_do_not_share_an_actor() {
-        let a = automerge::AutoCommit::new();
-        let b = automerge::AutoCommit::new();
-        assert_ne!(
-            distinct_actor("files", a.get_actor()),
-            distinct_actor("files", b.get_actor()),
-            "two replicas were given the same actor id, which is the failure \
+    fn replicas_get_distinct_actors_naming_the_app() {
+        // --- phase: two_replicas_in_one_process_do_not_share_an_actor ---
+        // The regression, stated as the property it broke.
+        //
+        // Both ids below are minted inside one process, so anything derived from
+        // the process — a pid, which is 2 in every sandbox on this system —
+        // produces the same string twice. Automerge then refuses the second
+        // replica's frames with `duplicate seq 1 found for actor`, and a change
+        // made on one machine never reaches the other.
+        {
+            let a = automerge::AutoCommit::new();
+            let b = automerge::AutoCommit::new();
+            assert_ne!(
+                distinct_actor("files", a.get_actor()),
+                distinct_actor("files", b.get_actor()),
+                "two replicas were given the same actor id, which is the failure \
              that silently drops one of them's changes",
-        );
-    }
+            );
+        }
 
-    /// And it still says what it is, so a history can be read.
-    #[test]
-    fn the_actor_still_names_the_application() {
-        let doc = automerge::AutoCommit::new();
-        assert!(distinct_actor("files", doc.get_actor()).starts_with("files-"));
+        // --- phase: the_actor_still_names_the_application ---
+        // And it still says what it is, so a history can be read.
+        {
+            let doc = automerge::AutoCommit::new();
+            assert!(distinct_actor("files", doc.get_actor()).starts_with("files-"));
+        }
     }
 }

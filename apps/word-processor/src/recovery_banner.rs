@@ -270,50 +270,55 @@ mod tests {
         ))
     }
 
+    /// The threshold persists and clear removes the recovery copy; click resolution consumes the offer and
+    /// its file.
     #[test]
-    fn threshold_persists_and_clear_removes_the_recovery_copy() {
-        let dir = temp_dir("threshold");
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut banner = RecoveryBanner::default();
-        banner.set_base_dir(dir.clone());
-        let document = Path::new("draft.md");
+    fn the_recovery_banner_persists_its_threshold_and_consumes_its_offer() {
+        // Phase: threshold_persists_and_clear_removes_the_recovery_copy.
+        {
+            let dir = temp_dir("threshold");
+            let _ = std::fs::remove_dir_all(&dir);
+            let mut banner = RecoveryBanner::default();
+            banner.set_base_dir(dir.clone());
+            let document = Path::new("draft.md");
 
-        for _ in 0..AUTOSAVE_EDIT_THRESHOLD - 1 {
-            banner.note_edit(Some(document), || Some(b"not yet".to_vec()));
+            for _ in 0..AUTOSAVE_EDIT_THRESHOLD - 1 {
+                banner.note_edit(Some(document), || Some(b"not yet".to_vec()));
+            }
+            let path = banner.path_for(Some(document));
+            assert!(!path.exists());
+            banner.note_edit(Some(document), || Some(b"latest".to_vec()));
+            assert_eq!(std::fs::read(&path).unwrap(), b"latest");
+
+            banner.clear(Some(document));
+            assert!(!path.exists());
+            let _ = std::fs::remove_dir_all(dir);
         }
-        let path = banner.path_for(Some(document));
-        assert!(!path.exists());
-        banner.note_edit(Some(document), || Some(b"latest".to_vec()));
-        assert_eq!(std::fs::read(&path).unwrap(), b"latest");
 
-        banner.clear(Some(document));
-        assert!(!path.exists());
-        let _ = std::fs::remove_dir_all(dir);
-    }
+        // Phase: click_resolution_consumes_the_offer_and_its_file.
+        {
+            let dir = temp_dir("click");
+            let _ = std::fs::remove_dir_all(&dir);
+            let mut banner = RecoveryBanner::default();
+            banner.set_base_dir(dir.clone());
+            let document = Path::new("draft.md");
+            let path = banner.path_for(Some(document));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"recovered").unwrap();
+            assert!(banner.check(Some(document)));
 
-    #[test]
-    fn click_resolution_consumes_the_offer_and_its_file() {
-        let dir = temp_dir("click");
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut banner = RecoveryBanner::default();
-        banner.set_base_dir(dir.clone());
-        let document = Path::new("draft.md");
-        let path = banner.path_for(Some(document));
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"recovered").unwrap();
-        assert!(banner.check(Some(document)));
-
-        // This focused test supplies the same hit geometry draw() owns, avoiding
-        // a font-system dependency while exercising production click routing.
-        banner
-            .buttons
-            .push((RecoveryAction::Restore, Rect::new(10.0, 10.0, 30.0, 30.0)));
-        assert_eq!(
-            banner.handle_click(Point::new(20.0, 20.0)),
-            Some(RecoveryDecision::Restore(b"recovered".to_vec()))
-        );
-        assert!(!banner.is_active());
-        assert!(!path.exists());
-        let _ = std::fs::remove_dir_all(dir);
+            // This focused test supplies the same hit geometry draw() owns, avoiding
+            // a font-system dependency while exercising production click routing.
+            banner
+                .buttons
+                .push((RecoveryAction::Restore, Rect::new(10.0, 10.0, 30.0, 30.0)));
+            assert_eq!(
+                banner.handle_click(Point::new(20.0, 20.0)),
+                Some(RecoveryDecision::Restore(b"recovered".to_vec()))
+            );
+            assert!(!banner.is_active());
+            assert!(!path.exists());
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }

@@ -117,7 +117,7 @@ impl ResourceApp for App {
         let cancel_binding = tilo_actions::ActionBinding::static_json_for(
             &resource,
             "cancel",
-            serde_json::Map::from_iter([("cancel".into(), serde_json::json!(true))]),
+            ui::serde_json::Map::from_iter([("cancel".into(), ui::serde_json::json!(true))]),
         )
         .expect("the cancel button matches the exported action");
 
@@ -158,9 +158,9 @@ impl ResourceApp for App {
         let cancel_task = task.clone();
         ui::widget::resource_actions::background(root, resource, move |payload| {
             let (sender, receiver) = std::sync::mpsc::channel();
-            if serde_json::from_slice::<serde_json::Value>(payload)
+            if ui::serde_json::from_slice::<ui::serde_json::Value>(payload)
                 .ok()
-                .and_then(|value| value.get("cancel").and_then(serde_json::Value::as_bool))
+                .and_then(|value| value.get("cancel").and_then(ui::serde_json::Value::as_bool))
                 == Some(true)
             {
                 cancel_task.cancel(LoadState::Idle);

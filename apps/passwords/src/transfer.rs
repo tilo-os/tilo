@@ -384,48 +384,94 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backup_key_derivation_is_stable_across_argon2_releases() {
-        // Recorded from the original `Argon2::default()` derivation; existing
-        // backups only open if this never changes.
-        let key = derive_backup_key("correct horse battery", b"0123456789abcdef").unwrap();
-        assert_eq!(
-            *key.expose_secret(),
-            [
-                0xeb, 0xd2, 0x3b, 0xa8, 0x28, 0xc3, 0x4e, 0xc4, 0x30, 0x85, 0x0a, 0x85, 0xbe, 0x94,
-                0x09, 0x8a, 0xa1, 0x08, 0xd2, 0x51, 0x90, 0xbf, 0x10, 0xbc, 0xe1, 0xf5, 0xc4, 0xd0,
-                0xab, 0x71, 0x71, 0xae,
-            ]
-        );
+    fn backup_envelope_format_is_stable_versioned_and_backward_compatible() {
+        eprintln!("phase backup_key_derivation_is_stable_across_argon2_releases");
+        {
+            // Recorded from the original `Argon2::default()` derivation; existing
+            // backups only open if this never changes.
+            let key = derive_backup_key("correct horse battery", b"0123456789abcdef").unwrap();
+            assert_eq!(
+                *key.expose_secret(),
+                [
+                    0xeb, 0xd2, 0x3b, 0xa8, 0x28, 0xc3, 0x4e, 0xc4, 0x30, 0x85, 0x0a, 0x85, 0xbe,
+                    0x94, 0x09, 0x8a, 0xa1, 0x08, 0xd2, 0x51, 0x90, 0xbf, 0x10, 0xbc, 0xe1, 0xf5,
+                    0xc4, 0xd0, 0xab, 0x71, 0x71, 0xae,
+                ]
+            );
+        }
+
+        eprintln!("phase restores_v1_backup_created_by_the_previous_windows_app");
+        {
+            let backup = include_bytes!("../tests/fixtures/backup-v1.tilopw");
+            let items = import_encrypted_backup(backup, "Owned backup fixture 52!").unwrap();
+            assert_eq!(items.len(), 1);
+            let item = items.first().unwrap();
+            assert_eq!(item.title, "Native Grün 🌍");
+            assert_eq!(item.username, "proof@example.invalid");
+            assert_eq!(item.password, "Owned fixture password 92!");
+            assert!(item.origins.contains("https://example.invalid"));
+        }
+
+        eprintln!("phase new_backups_are_version_2_envelopes_that_cannot_be_downgraded");
+        {
+            let item = SecretItem::login("Mail", "ada", "strong secret");
+            let backup = export_encrypted_backup(
+                std::slice::from_ref(&item),
+                "a sufficiently long password",
+            )
+            .unwrap();
+            assert!(backup.starts_with(BACKUP_V2_PREFIX));
+            assert!(envelope::is_envelope(&backup[BACKUP_V2_PREFIX.len()..]));
+            assert_eq!(
+                import_encrypted_backup(&backup, "a sufficiently long password").unwrap(),
+                vec![item]
+            );
+            assert!(import_encrypted_backup(&backup, "another long password!").is_err());
+            for index in [BACKUP_V2_PREFIX.len() + 8, backup.len() / 2] {
+                let mut tampered = backup.to_vec();
+                tampered[index] ^= 0x01;
+                assert!(
+                    import_encrypted_backup(&tampered, "a sufficiently long password").is_err(),
+                    "byte {index}"
+                );
+            }
+            let mut downgraded = backup.to_vec();
+            downgraded[BACKUP_MAGIC.len()] = BACKUP_V1;
+            assert!(import_encrypted_backup(&downgraded, "a sufficiently long password").is_err());
+        }
     }
 
     #[test]
-    fn parses_chrome_firefox_and_quoted_fields() {
-        let csv = "name,url,username,password,note\r\n\"Bank, personal\",https://bank.example,ada,\"p\"\"ass\",\"line 1\nline 2\"\r\n";
-        let rows = parse_browser_csv(csv.as_bytes()).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].title.as_str(), "Bank, personal");
-        assert_eq!(rows[0].password.as_str(), "p\"ass");
-        assert_eq!(rows[0].notes.as_str(), "line 1\nline 2");
-    }
+    fn browser_csv_parses_limits_and_round_trips_quoted_fields() {
+        eprintln!("phase parses_chrome_firefox_and_quoted_fields");
+        {
+            let csv = "name,url,username,password,note\r\n\"Bank, personal\",https://bank.example,ada,\"p\"\"ass\",\"line 1\nline 2\"\r\n";
+            let rows = parse_browser_csv(csv.as_bytes()).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].title.as_str(), "Bank, personal");
+            assert_eq!(rows[0].password.as_str(), "p\"ass");
+            assert_eq!(rows[0].notes.as_str(), "line 1\nline 2");
+        }
 
-    #[test]
-    fn rejects_oversized_input_and_fields() {
-        let oversized = vec![b'x'; usize::try_from(MAX_IMPORT_BYTES).unwrap() + 1];
-        assert!(parse_browser_csv(oversized.as_slice()).is_err());
-        let field = "x".repeat(MAX_FIELD_BYTES + 1);
-        assert!(parse_browser_csv(format!("name,password\na,{field}").as_bytes()).is_err());
-    }
+        eprintln!("phase rejects_oversized_input_and_fields");
+        {
+            let oversized = vec![b'x'; usize::try_from(MAX_IMPORT_BYTES).unwrap() + 1];
+            assert!(parse_browser_csv(oversized.as_slice()).is_err());
+            let field = "x".repeat(MAX_FIELD_BYTES + 1);
+            assert!(parse_browser_csv(format!("name,password\na,{field}").as_bytes()).is_err());
+        }
 
-    #[test]
-    fn export_round_trips_quotes_and_newlines() {
-        let mut item = SecretItem::login("A, \"quoted\"", "ada", "line\nsecret");
-        item.notes = "memo\nline".into();
-        item.add_origin("https://example.com").unwrap();
-        let csv = export_browser_csv(&[item]);
-        let rows = parse_browser_csv(csv.as_bytes()).unwrap();
-        assert_eq!(rows[0].title.as_str(), "A, \"quoted\"");
-        assert_eq!(rows[0].password.as_str(), "line\nsecret");
-        assert_eq!(rows[0].notes.as_str(), "memo\nline");
+        eprintln!("phase export_round_trips_quotes_and_newlines");
+        {
+            let mut item = SecretItem::login("A, \"quoted\"", "ada", "line\nsecret");
+            item.notes = "memo\nline".into();
+            item.add_origin("https://example.com").unwrap();
+            let csv = export_browser_csv(&[item]);
+            let rows = parse_browser_csv(csv.as_bytes()).unwrap();
+            assert_eq!(rows[0].title.as_str(), "A, \"quoted\"");
+            assert_eq!(rows[0].password.as_str(), "line\nsecret");
+            assert_eq!(rows[0].notes.as_str(), "memo\nline");
+        }
     }
 
     #[test]
@@ -448,104 +494,75 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_backup_round_trips_every_vault_field_without_plaintext() {
-        let mut item = SecretItem::login("Payroll", "ada@example.com", "UniqueSecret-1942");
-        item.kind = accounts::SecretItemKind::ApiKey;
-        item.notes = "Recovery belongs to Finance".into();
-        item.add_origin("https://people.example/login").unwrap();
-        item.add_origin("https://sso.example/payroll").unwrap();
-        item.fields.insert("tenant".into(), "northstar".into());
-        item.tags.extend(["work".into(), "favorite".into()]);
-        let expected = item.clone();
+    fn encrypted_backup_round_trips_and_rejects_invalid_input() {
+        eprintln!("phase encrypted_backup_round_trips_every_vault_field_without_plaintext");
+        {
+            let mut item = SecretItem::login("Payroll", "ada@example.com", "UniqueSecret-1942");
+            item.kind = accounts::SecretItemKind::ApiKey;
+            item.notes = "Recovery belongs to Finance".into();
+            item.add_origin("https://people.example/login").unwrap();
+            item.add_origin("https://sso.example/payroll").unwrap();
+            item.fields.insert("tenant".into(), "northstar".into());
+            item.tags.extend(["work".into(), "favorite".into()]);
+            let expected = item.clone();
 
-        let backup = export_encrypted_backup(&[item], "correct horse battery staple").unwrap();
-        assert!(backup.starts_with(BACKUP_MAGIC));
-        assert!(
-            !backup
-                .windows(b"UniqueSecret-1942".len())
-                .any(|w| w == b"UniqueSecret-1942")
-        );
-        assert!(!backup.windows(b"Payroll".len()).any(|w| w == b"Payroll"));
-        let restored = import_encrypted_backup(&backup, "correct horse battery staple").unwrap();
-        assert_eq!(restored, vec![expected]);
-    }
-
-    #[test]
-    fn restores_v1_backup_created_by_the_previous_windows_app() {
-        let backup = include_bytes!("../tests/fixtures/backup-v1.tilopw");
-        let items = import_encrypted_backup(backup, "Owned backup fixture 52!").unwrap();
-        assert_eq!(items.len(), 1);
-        let item = items.first().unwrap();
-        assert_eq!(item.title, "Native Grün 🌍");
-        assert_eq!(item.username, "proof@example.invalid");
-        assert_eq!(item.password, "Owned fixture password 92!");
-        assert!(item.origins.contains("https://example.invalid"));
-    }
-
-    #[test]
-    fn backup_export_refuses_item_counts_that_restore_cannot_accept() {
-        let items = vec![SecretItem::login("Fixture", "user", "secret"); MAX_ROWS + 1];
-        assert!(export_encrypted_backup(&items, "a sufficiently long password").is_err());
-    }
-
-    #[test]
-    fn every_truncated_backup_header_is_rejected_without_decryption() {
-        let backup = export_encrypted_backup(&[], "a sufficiently long password").unwrap();
-        // Prefix plus the whole v2 envelope header (magic .. nonce).
-        let v2_header_len = BACKUP_V2_PREFIX.len() + 8 + 12 + 1 + 16 + BACKUP_NONCE_BYTES;
-        for length in 0..=v2_header_len {
+            let backup = export_encrypted_backup(&[item], "correct horse battery staple").unwrap();
+            assert!(backup.starts_with(BACKUP_MAGIC));
             assert!(
-                import_encrypted_backup(
-                    backup.get(..length).unwrap(),
-                    "a sufficiently long password"
-                )
-                .is_err()
+                !backup
+                    .windows(b"UniqueSecret-1942".len())
+                    .any(|w| w == b"UniqueSecret-1942")
+            );
+            assert!(!backup.windows(b"Payroll".len()).any(|w| w == b"Payroll"));
+            let restored =
+                import_encrypted_backup(&backup, "correct horse battery staple").unwrap();
+            assert_eq!(restored, vec![expected]);
+        }
+
+        eprintln!("phase backup_export_refuses_item_counts_that_restore_cannot_accept");
+        {
+            let items = vec![SecretItem::login("Fixture", "user", "secret"); MAX_ROWS + 1];
+            assert!(export_encrypted_backup(&items, "a sufficiently long password").is_err());
+        }
+
+        eprintln!("phase every_truncated_backup_header_is_rejected_without_decryption");
+        {
+            let backup = export_encrypted_backup(&[], "a sufficiently long password").unwrap();
+            // Prefix plus the whole v2 envelope header (magic .. nonce).
+            let v2_header_len = BACKUP_V2_PREFIX.len() + 8 + 12 + 1 + 16 + BACKUP_NONCE_BYTES;
+            for length in 0..=v2_header_len {
+                assert!(
+                    import_encrypted_backup(
+                        backup.get(..length).unwrap(),
+                        "a sufficiently long password"
+                    )
+                    .is_err()
+                );
+            }
+            let v1 = include_bytes!("../tests/fixtures/backup-v1.tilopw");
+            for length in 0..=BACKUP_V1_HEADER_BYTES {
+                assert!(
+                    import_encrypted_backup(&v1[..length], "Owned backup fixture 52!").is_err()
+                );
+            }
+            let mut unsupported = backup;
+            *unsupported.get_mut(BACKUP_MAGIC.len()).unwrap() = 255;
+            assert!(import_encrypted_backup(&unsupported, "a sufficiently long password").is_err());
+        }
+
+        eprintln!("phase encrypted_backup_rejects_wrong_password_tampering_and_weak_passwords");
+        {
+            let item = SecretItem::login("Mail", "ada", "strong secret");
+            assert!(export_encrypted_backup(std::slice::from_ref(&item), "short").is_err());
+            let mut backup =
+                export_encrypted_backup(&[item], "a sufficiently long password").unwrap();
+            assert!(import_encrypted_backup(&backup, "a different long password").is_err());
+            let last = backup.len() - 1;
+            backup[last] ^= 0x80;
+            assert!(import_encrypted_backup(&backup, "a sufficiently long password").is_err());
+            assert!(
+                import_encrypted_backup(b"not a backup", "a sufficiently long password").is_err()
             );
         }
-        let v1 = include_bytes!("../tests/fixtures/backup-v1.tilopw");
-        for length in 0..=BACKUP_V1_HEADER_BYTES {
-            assert!(import_encrypted_backup(&v1[..length], "Owned backup fixture 52!").is_err());
-        }
-        let mut unsupported = backup;
-        *unsupported.get_mut(BACKUP_MAGIC.len()).unwrap() = 255;
-        assert!(import_encrypted_backup(&unsupported, "a sufficiently long password").is_err());
-    }
-
-    #[test]
-    fn new_backups_are_version_2_envelopes_that_cannot_be_downgraded() {
-        let item = SecretItem::login("Mail", "ada", "strong secret");
-        let backup =
-            export_encrypted_backup(std::slice::from_ref(&item), "a sufficiently long password")
-                .unwrap();
-        assert!(backup.starts_with(BACKUP_V2_PREFIX));
-        assert!(envelope::is_envelope(&backup[BACKUP_V2_PREFIX.len()..]));
-        assert_eq!(
-            import_encrypted_backup(&backup, "a sufficiently long password").unwrap(),
-            vec![item]
-        );
-        assert!(import_encrypted_backup(&backup, "another long password!").is_err());
-        for index in [BACKUP_V2_PREFIX.len() + 8, backup.len() / 2] {
-            let mut tampered = backup.to_vec();
-            tampered[index] ^= 0x01;
-            assert!(
-                import_encrypted_backup(&tampered, "a sufficiently long password").is_err(),
-                "byte {index}"
-            );
-        }
-        let mut downgraded = backup.to_vec();
-        downgraded[BACKUP_MAGIC.len()] = BACKUP_V1;
-        assert!(import_encrypted_backup(&downgraded, "a sufficiently long password").is_err());
-    }
-
-    #[test]
-    fn encrypted_backup_rejects_wrong_password_tampering_and_weak_passwords() {
-        let item = SecretItem::login("Mail", "ada", "strong secret");
-        assert!(export_encrypted_backup(std::slice::from_ref(&item), "short").is_err());
-        let mut backup = export_encrypted_backup(&[item], "a sufficiently long password").unwrap();
-        assert!(import_encrypted_backup(&backup, "a different long password").is_err());
-        let last = backup.len() - 1;
-        backup[last] ^= 0x80;
-        assert!(import_encrypted_backup(&backup, "a sufficiently long password").is_err());
-        assert!(import_encrypted_backup(b"not a backup", "a sufficiently long password").is_err());
     }
 }

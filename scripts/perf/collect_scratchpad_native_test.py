@@ -41,28 +41,27 @@ class CollectorFailureTests(unittest.TestCase):
             self.assertTrue((run/'app.log').is_file())
             return failure,metadata
 
-    def test_early_process_exit_retains_failure_and_executable_identity(self):
-        failure,metadata=self.run_failure('raise SystemExit(7)\n')
-        self.assertIn('exited early: 7',failure['capture_error'])
-        self.assertEqual(metadata['exit_code'],7)
-        self.assertEqual(metadata['hashes_before'],metadata['hashes_after'])
-
-    def test_removed_executable_preserves_initial_hash_and_failure(self):
-        failure,metadata=self.run_failure('from pathlib import Path\nPath(__file__).unlink()\nraise SystemExit(7)\n')
-        self.assertTrue(metadata['hashes_before'])
-        self.assertTrue(metadata['final_hash_errors'])
-        self.assertEqual(metadata['exit_code'],7)
-        self.assertIn('exited early',failure['capture_error'])
-
-    def test_malformed_evidence_keeps_failure_and_stops_child(self):
-        source='''import time
+    def test_failed_capture_retains_failure_report_and_executable_identity(self):
+        with self.subTest(case='early process exit'):
+            failure,metadata=self.run_failure('raise SystemExit(7)\n')
+            self.assertIn('exited early: 7',failure['capture_error'])
+            self.assertEqual(metadata['exit_code'],7)
+            self.assertEqual(metadata['hashes_before'],metadata['hashes_after'])
+        with self.subTest(case='removed executable preserves initial hash'):
+            failure,metadata=self.run_failure('from pathlib import Path\nPath(__file__).unlink()\nraise SystemExit(7)\n')
+            self.assertTrue(metadata['hashes_before'])
+            self.assertTrue(metadata['final_hash_errors'])
+            self.assertEqual(metadata['exit_code'],7)
+            self.assertIn('exited early',failure['capture_error'])
+        with self.subTest(case='malformed evidence keeps failure and stops child'):
+            source='''import time
 print('tilo-native-effect {}',flush=True)
 print('tilo-native-frame {"cpu_frame_id": 1}',flush=True)
 time.sleep(30)
 '''
-        failure,metadata=self.run_failure(source)
-        self.assertIn('input_ids',failure['capture_error'])
-        self.assertLess(metadata['exit_code'],0)
+            failure,metadata=self.run_failure(source)
+            self.assertIn('input_ids',failure['capture_error'])
+            self.assertLess(metadata['exit_code'],0)
 
     def test_native_window_metadata_requires_real_scale_and_size(self):
         valid=dict(scale_factor=2.0,physical_width=1600,physical_height=1200)
@@ -72,7 +71,7 @@ time.sleep(30)
                           ('physical_width',True),('physical_height',0)]:
             with self.subTest(key=key),self.assertRaises(ValueError):
                 collector.window_metadata(lines(dict(valid,**{key:value})))
-        with self.assertRaises(ValueError):
+        with self.subTest(case='no window record'),self.assertRaises(ValueError):
             collector.window_metadata([])
 
 

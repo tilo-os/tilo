@@ -60,20 +60,23 @@ mod tests {
         pixels
     }
     #[test]
-    fn decodes_signed_scroll_acknowledgement_from_pixels() {
-        assert_eq!(decode(&frame([0xb3, 0, 65, 0xf2]), 128, 4), Some(65));
-        assert_eq!(decode(&frame([0xb3, 255, 191, 0xf3]), 128, 4), Some(-65));
-    }
-    #[test]
-    fn rejects_baseline_corruption_transparency_and_truncated_frames() {
-        for bytes in [[0xb3, 0, 0, 0xb3], [0xb2, 0, 65, 0xf3], [0xb3, 0, 65, 0]] {
-            assert_eq!(decode(&frame(bytes), 128, 4), None);
+    fn scroll_markers_decode_signed_acknowledgements_and_reject_corruption() {
+        // phase: decodes_signed_scroll_acknowledgement_from_pixels
+        {
+            assert_eq!(decode(&frame([0xb3, 0, 65, 0xf2]), 128, 4), Some(65));
+            assert_eq!(decode(&frame([0xb3, 255, 191, 0xf3]), 128, 4), Some(-65));
         }
-        let mut pixels = frame([0xb3, 0, 65, 0xf2]);
-        pixels[(2 * 128 + 2) * 4 + 3] = 0;
-        assert_eq!(decode(&pixels, 128, 4), None);
-        assert_eq!(decode(&pixels[..5], 128, 4), None);
-        assert_eq!(decode(&pixels, 127, 4), None);
-        assert_eq!(decode(&pixels, u32::MAX, u32::MAX), None);
+        // phase: rejects_baseline_corruption_transparency_and_truncated_frames
+        {
+            for bytes in [[0xb3, 0, 0, 0xb3], [0xb2, 0, 65, 0xf3], [0xb3, 0, 65, 0]] {
+                assert_eq!(decode(&frame(bytes), 128, 4), None);
+            }
+            let mut pixels = frame([0xb3, 0, 65, 0xf2]);
+            pixels[(2 * 128 + 2) * 4 + 3] = 0;
+            assert_eq!(decode(&pixels, 128, 4), None);
+            assert_eq!(decode(&pixels[..5], 128, 4), None);
+            assert_eq!(decode(&pixels, 127, 4), None);
+            assert_eq!(decode(&pixels, u32::MAX, u32::MAX), None);
+        }
     }
 }

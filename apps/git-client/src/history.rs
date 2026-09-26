@@ -830,10 +830,17 @@ fn ref_colors(theme: &Theme, kind: RefKind) -> (Color, Color) {
 mod tests {
     use super::*;
 
+    /// History rows: the measured row reproduces 68 px at 1x and grows at 2x, and
+    /// rows keep an `s1` gap on every preset. Each phase is a former test with its own fresh fixture.
+    #[test]
+    fn history_rows_follow_text_scale_and_keep_token_gaps() {
+        row_metrics_match_the_constant_at_1x_and_follow_the_text_scale();
+        commit_rows_keep_a_token_gap_on_every_preset();
+    }
+
     /// The measured row reproduces the historical 68 px pitch at 1× and grows
     /// with its three text lines at 2×, so ref pills, summary and meta line
     /// never share pixels.
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
@@ -871,7 +878,6 @@ mod tests {
     /// HIG §7 "nothing touches": the list pitch is the row plus an `s1`
     /// gap, so the graph dot centre, the row rect and the separator all
     /// agree and neighbouring commit rows never share pixels.
-    #[test]
     fn commit_rows_keep_a_token_gap_on_every_preset() {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             let mut tr = TextRenderer::new();

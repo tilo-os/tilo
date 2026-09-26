@@ -1364,334 +1364,348 @@ mod tests {
     }
 
     #[test]
-    fn exact_route_consent_and_local_app_approval_gate_chunks() {
-        let phone = DeviceId::new("phone").unwrap();
-        let laptop = DeviceId::new("laptop").unwrap();
-        let now = Instant::now();
-        let mut target_runtime = runtime();
-        let request_action = target_runtime
-            .request(
-                app(),
-                phone.clone(),
-                laptop.clone(),
-                "Camera".into(),
-                profile(),
-            )
-            .unwrap();
-        let request_id = match &request_action {
-            PersonalFabricAction::RemoteCaptureSignal {
-                signal: RemoteCaptureSignal::Request(request),
-            } => request.request_id,
-            _ => unreachable!(),
-        };
-
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let mut source_runtime = runtime_with(
-            FakeAdapter::default(),
-            FakeSource {
-                fail_start: false,
-                chunks: Arc::clone(&captured),
-            },
-        );
-        assert!(source_runtime.handle_action(&envelope(&laptop, &phone, request_action), now));
-        assert_eq!(source_runtime.consents().len(), 1);
-        let (decision_target, decision) = source_runtime.decide(request_id, true, now).unwrap();
-        assert_eq!(decision_target, laptop);
-        target_runtime.handle_action(&envelope(&phone, &laptop, decision), now);
-
-        let (&session_id, source_grant) = source_runtime
-            .source_sessions
-            .iter()
-            .next()
-            .map(|(session_id, session)| (session_id, session.grant))
-            .unwrap();
-        captured.lock().unwrap().push(CapturedRemoteChunk {
-            session_id,
-            offset: 0,
-            total_bytes: 4,
-            page_index: None,
-            end_of_unit: true,
-            payload: vec![1, 2, 3, 4],
-        });
-        source_runtime.pump(now);
-        let (action_target, action) = source_runtime.drain_outgoing().pop().unwrap();
-        assert_eq!(action_target, laptop);
-        let PersonalFabricAction::RemoteCaptureChunk { chunk } = &action else {
-            panic!("source pump did not publish its captured chunk");
-        };
-        assert_eq!(chunk.grant, source_grant);
-        assert_eq!(chunk.sequence, 1);
-        for _ in 0..100 {
-            target_runtime.pump(now);
-            if target_runtime.target_sessions.contains_key(&session_id) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        assert!(target_runtime.target_sessions.contains_key(&session_id));
-        target_runtime.handle_action(&envelope(&phone, &laptop, action.clone()), now);
-        assert_eq!(
-            target_runtime.registry.phase(session_id),
-            Some(crate::shell::remote_capture::device::RemoteCapturePhase::Granted)
-        );
-        target_runtime.approve_target(session_id, now).unwrap();
-        target_runtime.handle_action(
-            &envelope(&DeviceId::new("spoof").unwrap(), &laptop, action.clone()),
-            now,
-        );
-        assert_eq!(
-            target_runtime.registry.phase(session_id),
-            Some(crate::shell::remote_capture::device::RemoteCapturePhase::Granted)
-        );
-        target_runtime.handle_action(&envelope(&phone, &laptop, action), now);
-        assert_eq!(
-            target_runtime.registry.phase(session_id),
-            Some(crate::shell::remote_capture::device::RemoteCapturePhase::Streaming)
-        );
-    }
-
-    #[test]
-    fn peer_and_policy_teardown_remove_pending_and_live_authority() {
-        let phone = DeviceId::new("phone").unwrap();
-        let laptop = DeviceId::new("laptop").unwrap();
-        let mut runtime = runtime();
-        let action = runtime
-            .request(app(), phone.clone(), laptop, "Camera".into(), profile())
-            .unwrap();
-        assert!(matches!(
-            action,
-            PersonalFabricAction::RemoteCaptureSignal { .. }
-        ));
-        runtime.teardown_peer(&phone);
-        assert!(runtime.outbound.is_empty());
-        runtime.teardown_all();
-        assert!(runtime.consents().is_empty());
-        assert_eq!(RemoteCaptureKind::Camera, profile().kind());
-    }
-
-    #[test]
-    fn focus_teardown_revokes_only_the_previous_target_app() {
-        let phone = DeviceId::new("phone").unwrap();
-        let laptop = DeviceId::new("laptop").unwrap();
-        let now = Instant::now();
-        let mut target = runtime();
-        let request = target
-            .request(
-                app(),
-                phone.clone(),
-                laptop.clone(),
-                "Camera".into(),
-                profile(),
-            )
-            .unwrap();
-        let request_id = match &request {
-            PersonalFabricAction::RemoteCaptureSignal {
-                signal: RemoteCaptureSignal::Request(request),
-            } => request.request_id,
-            _ => unreachable!(),
-        };
-        let mut source = runtime();
-        source.handle_action(&envelope(&laptop, &phone, request), now);
-        let (_, decision) = source.decide(request_id, true, now).unwrap();
-        target.handle_action(&envelope(&phone, &laptop, decision), now);
-
-        for _ in 0..100 {
-            target.pump(now);
-            if !target.target_sessions.is_empty() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        let (&session_id, grant) = target
-            .target_sessions
-            .iter()
-            .next()
-            .map(|(id, session)| (id, session.grant))
-            .expect("target endpoint was provisioned");
-        target
-            .request(
-                other_app(),
-                phone.clone(),
-                laptop,
-                "Calls".into(),
-                profile(),
-            )
-            .unwrap();
-
-        target.teardown_target_app("so.tilo.Camera", "workspace-a");
-
-        assert!(target.target_sessions.is_empty());
-        assert_eq!(target.registry.phase(session_id), None);
-        assert_eq!(target.outbound.len(), 1);
-        assert_eq!(
-            target.outbound.values().next().unwrap().app.app_id(),
-            "so.tilo.Calls"
-        );
-        assert!(target.approve_target(session_id, now).is_err());
-        assert!(matches!(
-            target.drain_outgoing().as_slice(),
-            [(
-                peer,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn capture_runtime_gates_chunks_on_consent_approval_and_bounded_profiles() {
+        // Phase `exact_route_consent_and_local_app_approval_gate_chunks`.
+        {
+            let phone = DeviceId::new("phone").unwrap();
+            let laptop = DeviceId::new("laptop").unwrap();
+            let now = Instant::now();
+            let mut target_runtime = runtime();
+            let request_action = target_runtime
+                .request(
+                    app(),
+                    phone.clone(),
+                    laptop.clone(),
+                    "Camera".into(),
+                    profile(),
+                )
+                .unwrap();
+            let request_id = match &request_action {
                 PersonalFabricAction::RemoteCaptureSignal {
-                    signal: RemoteCaptureSignal::Stop {
-                        session_id: stopped,
-                        grant: stopped_grant
+                    signal: RemoteCaptureSignal::Request(request),
+                } => request.request_id,
+                _ => unreachable!(),
+            };
+
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            let mut source_runtime = runtime_with(
+                FakeAdapter::default(),
+                FakeSource {
+                    fail_start: false,
+                    chunks: Arc::clone(&captured),
+                },
+            );
+            assert!(source_runtime.handle_action(&envelope(&laptop, &phone, request_action), now));
+            assert_eq!(source_runtime.consents().len(), 1);
+            let (decision_target, decision) = source_runtime.decide(request_id, true, now).unwrap();
+            assert_eq!(decision_target, laptop);
+            target_runtime.handle_action(&envelope(&phone, &laptop, decision), now);
+
+            let (&session_id, source_grant) = source_runtime
+                .source_sessions
+                .iter()
+                .next()
+                .map(|(session_id, session)| (session_id, session.grant))
+                .unwrap();
+            captured.lock().unwrap().push(CapturedRemoteChunk {
+                session_id,
+                offset: 0,
+                total_bytes: 4,
+                page_index: None,
+                end_of_unit: true,
+                payload: vec![1, 2, 3, 4],
+            });
+            source_runtime.pump(now);
+            let (action_target, action) = source_runtime.drain_outgoing().pop().unwrap();
+            assert_eq!(action_target, laptop);
+            let PersonalFabricAction::RemoteCaptureChunk { chunk } = &action else {
+                panic!("source pump did not publish its captured chunk");
+            };
+            assert_eq!(chunk.grant, source_grant);
+            assert_eq!(chunk.sequence, 1);
+            for _ in 0..100 {
+                target_runtime.pump(now);
+                if target_runtime.target_sessions.contains_key(&session_id) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert!(target_runtime.target_sessions.contains_key(&session_id));
+            target_runtime.handle_action(&envelope(&phone, &laptop, action.clone()), now);
+            assert_eq!(
+                target_runtime.registry.phase(session_id),
+                Some(crate::shell::remote_capture::device::RemoteCapturePhase::Granted)
+            );
+            target_runtime.approve_target(session_id, now).unwrap();
+            target_runtime.handle_action(
+                &envelope(&DeviceId::new("spoof").unwrap(), &laptop, action.clone()),
+                now,
+            );
+            assert_eq!(
+                target_runtime.registry.phase(session_id),
+                Some(crate::shell::remote_capture::device::RemoteCapturePhase::Granted)
+            );
+            target_runtime.handle_action(&envelope(&phone, &laptop, action), now);
+            assert_eq!(
+                target_runtime.registry.phase(session_id),
+                Some(crate::shell::remote_capture::device::RemoteCapturePhase::Streaming)
+            );
+        }
+
+        // Phase `unanswered_requests_expire_without_leaving_authority`.
+        {
+            let phone = DeviceId::new("phone").unwrap();
+            let laptop = DeviceId::new("laptop").unwrap();
+            let mut runtime = runtime();
+            runtime
+                .request(app(), phone, laptop, "Camera".into(), profile())
+                .unwrap();
+            assert_eq!(runtime.outbound.len(), 1);
+
+            runtime.pump(Instant::now() + REMOTE_CAPTURE_GRANT_TTL);
+
+            assert!(runtime.outbound.is_empty());
+            assert!(runtime.source_sessions.is_empty());
+            assert!(runtime.target_sessions.is_empty());
+        }
+
+        // Phase `standard_profiles_fit_the_bounded_transport_and_views_hide_backend_ids`.
+        {
+            for kind in [
+                RemoteCaptureKind::Camera,
+                RemoteCaptureKind::Microphone,
+                RemoteCaptureKind::DocumentScanner,
+            ] {
+                assert!(standard_profile(kind).valid());
+            }
+            let phone = DeviceId::new("phone").unwrap();
+            let laptop = DeviceId::new("laptop").unwrap();
+            let mut runtime = runtime();
+            runtime
+                .request_standard(
+                    app(),
+                    phone.clone(),
+                    laptop,
+                    "Camera".into(),
+                    RemoteCaptureKind::Camera,
+                )
+                .unwrap();
+            let view = runtime.view();
+            assert_eq!(view.sessions.len(), 1);
+            assert_eq!(view.sessions[0].peer, phone);
+            assert_eq!(view.sessions[0].session_id, None);
+            assert_eq!(
+                view.sessions[0].phase,
+                RemoteCaptureSessionPhase::Requesting
+            );
+            assert!(view.local_sources.camera);
+            assert!(view.local_receivers.camera);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn capture_runtime_teardown_revokes_exactly_the_affected_authority() {
+        // Phase `peer_and_policy_teardown_remove_pending_and_live_authority`.
+        {
+            let phone = DeviceId::new("phone").unwrap();
+            let laptop = DeviceId::new("laptop").unwrap();
+            let mut runtime = runtime();
+            let action = runtime
+                .request(app(), phone.clone(), laptop, "Camera".into(), profile())
+                .unwrap();
+            assert!(matches!(
+                action,
+                PersonalFabricAction::RemoteCaptureSignal { .. }
+            ));
+            runtime.teardown_peer(&phone);
+            assert!(runtime.outbound.is_empty());
+            runtime.teardown_all();
+            assert!(runtime.consents().is_empty());
+            assert_eq!(RemoteCaptureKind::Camera, profile().kind());
+        }
+
+        // Phase `focus_teardown_revokes_only_the_previous_target_app`.
+        {
+            let phone = DeviceId::new("phone").unwrap();
+            let laptop = DeviceId::new("laptop").unwrap();
+            let now = Instant::now();
+            let mut target = runtime();
+            let request = target
+                .request(
+                    app(),
+                    phone.clone(),
+                    laptop.clone(),
+                    "Camera".into(),
+                    profile(),
+                )
+                .unwrap();
+            let request_id = match &request {
+                PersonalFabricAction::RemoteCaptureSignal {
+                    signal: RemoteCaptureSignal::Request(request),
+                } => request.request_id,
+                _ => unreachable!(),
+            };
+            let mut source = runtime();
+            source.handle_action(&envelope(&laptop, &phone, request), now);
+            let (_, decision) = source.decide(request_id, true, now).unwrap();
+            target.handle_action(&envelope(&phone, &laptop, decision), now);
+
+            for _ in 0..100 {
+                target.pump(now);
+                if !target.target_sessions.is_empty() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let (&session_id, grant) = target
+                .target_sessions
+                .iter()
+                .next()
+                .map(|(id, session)| (id, session.grant))
+                .expect("target endpoint was provisioned");
+            target
+                .request(
+                    other_app(),
+                    phone.clone(),
+                    laptop,
+                    "Calls".into(),
+                    profile(),
+                )
+                .unwrap();
+
+            target.teardown_target_app("so.tilo.Camera", "workspace-a");
+
+            assert!(target.target_sessions.is_empty());
+            assert_eq!(target.registry.phase(session_id), None);
+            assert_eq!(target.outbound.len(), 1);
+            assert_eq!(
+                target.outbound.values().next().unwrap().app.app_id(),
+                "so.tilo.Calls"
+            );
+            assert!(target.approve_target(session_id, now).is_err());
+            assert!(matches!(
+                target.drain_outgoing().as_slice(),
+                [(
+                    peer,
+                    PersonalFabricAction::RemoteCaptureSignal {
+                        signal: RemoteCaptureSignal::Stop {
+                            session_id: stopped,
+                            grant: stopped_grant
+                        }
+                    }
+                )] if peer == &phone && stopped == &session_id && stopped_grant == &grant
+            ));
+        }
+
+        // Phase `source_backend_failure_returns_a_denial_without_authority`.
+        {
+            let phone = DeviceId::new("phone").unwrap();
+            let laptop = DeviceId::new("laptop").unwrap();
+            let now = Instant::now();
+            let mut target = runtime();
+            let request = target
+                .request(
+                    app(),
+                    phone.clone(),
+                    laptop.clone(),
+                    "Camera".into(),
+                    profile(),
+                )
+                .unwrap();
+            let request_id = match &request {
+                PersonalFabricAction::RemoteCaptureSignal {
+                    signal: RemoteCaptureSignal::Request(request),
+                } => request.request_id,
+                _ => unreachable!(),
+            };
+            let mut source = runtime_with(
+                FakeAdapter::default(),
+                FakeSource {
+                    fail_start: true,
+                    ..FakeSource::default()
+                },
+            );
+            source.handle_action(&envelope(&laptop, &phone, request), now);
+            let (_, decision) = source.decide(request_id, true, now).unwrap();
+            assert!(matches!(
+                decision,
+                PersonalFabricAction::RemoteCaptureSignal {
+                    signal: RemoteCaptureSignal::Decision {
+                        accepted: false,
+                        session_id: None,
+                        grant: None,
+                        ..
                     }
                 }
-            )] if peer == &phone && stopped == &session_id && stopped_grant == &grant
-        ));
-    }
-
-    #[test]
-    fn unanswered_requests_expire_without_leaving_authority() {
-        let phone = DeviceId::new("phone").unwrap();
-        let laptop = DeviceId::new("laptop").unwrap();
-        let mut runtime = runtime();
-        runtime
-            .request(app(), phone, laptop, "Camera".into(), profile())
-            .unwrap();
-        assert_eq!(runtime.outbound.len(), 1);
-
-        runtime.pump(Instant::now() + REMOTE_CAPTURE_GRANT_TTL);
-
-        assert!(runtime.outbound.is_empty());
-        assert!(runtime.source_sessions.is_empty());
-        assert!(runtime.target_sessions.is_empty());
-    }
-
-    #[test]
-    fn source_backend_failure_returns_a_denial_without_authority() {
-        let phone = DeviceId::new("phone").unwrap();
-        let laptop = DeviceId::new("laptop").unwrap();
-        let now = Instant::now();
-        let mut target = runtime();
-        let request = target
-            .request(
-                app(),
-                phone.clone(),
-                laptop.clone(),
-                "Camera".into(),
-                profile(),
-            )
-            .unwrap();
-        let request_id = match &request {
-            PersonalFabricAction::RemoteCaptureSignal {
-                signal: RemoteCaptureSignal::Request(request),
-            } => request.request_id,
-            _ => unreachable!(),
-        };
-        let mut source = runtime_with(
-            FakeAdapter::default(),
-            FakeSource {
-                fail_start: true,
-                ..FakeSource::default()
-            },
-        );
-        source.handle_action(&envelope(&laptop, &phone, request), now);
-        let (_, decision) = source.decide(request_id, true, now).unwrap();
-        assert!(matches!(
-            decision,
-            PersonalFabricAction::RemoteCaptureSignal {
-                signal: RemoteCaptureSignal::Decision {
-                    accepted: false,
-                    session_id: None,
-                    grant: None,
-                    ..
-                }
-            }
-        ));
-        assert!(source.source_sessions.is_empty());
-        assert_eq!(
-            source.view().degraded[0].reason,
-            RemoteCaptureDegradedReason::SourceUnavailable
-        );
-    }
-
-    #[test]
-    fn target_adapter_failure_revokes_grant_and_stops_exact_source() {
-        let phone = DeviceId::new("phone").unwrap();
-        let laptop = DeviceId::new("laptop").unwrap();
-        let now = Instant::now();
-        let mut target = runtime_with(
-            FakeAdapter {
-                fail_provision: true,
-                ..FakeAdapter::default()
-            },
-            FakeSource::default(),
-        );
-        let request = target
-            .request(
-                app(),
-                phone.clone(),
-                laptop.clone(),
-                "Camera".into(),
-                profile(),
-            )
-            .unwrap();
-        let request_id = match &request {
-            PersonalFabricAction::RemoteCaptureSignal {
-                signal: RemoteCaptureSignal::Request(request),
-            } => request.request_id,
-            _ => unreachable!(),
-        };
-        let mut source = runtime();
-        source.handle_action(&envelope(&laptop, &phone, request), now);
-        let (_, decision) = source.decide(request_id, true, now).unwrap();
-        target.handle_action(&envelope(&phone, &laptop, decision), now);
-        for _ in 0..100 {
-            target.pump(now);
-            if !target.outgoing.is_empty() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            ));
+            assert!(source.source_sessions.is_empty());
+            assert_eq!(
+                source.view().degraded[0].reason,
+                RemoteCaptureDegradedReason::SourceUnavailable
+            );
         }
-        assert!(target.target_sessions.is_empty());
-        assert!(target.provisioning.is_empty());
-        assert!(matches!(
-            target.drain_outgoing().as_slice(),
-            [(
-                peer,
+
+        // Phase `target_adapter_failure_revokes_grant_and_stops_exact_source`.
+        {
+            let phone = DeviceId::new("phone").unwrap();
+            let laptop = DeviceId::new("laptop").unwrap();
+            let now = Instant::now();
+            let mut target = runtime_with(
+                FakeAdapter {
+                    fail_provision: true,
+                    ..FakeAdapter::default()
+                },
+                FakeSource::default(),
+            );
+            let request = target
+                .request(
+                    app(),
+                    phone.clone(),
+                    laptop.clone(),
+                    "Camera".into(),
+                    profile(),
+                )
+                .unwrap();
+            let request_id = match &request {
                 PersonalFabricAction::RemoteCaptureSignal {
-                    signal: RemoteCaptureSignal::Stop { .. }
+                    signal: RemoteCaptureSignal::Request(request),
+                } => request.request_id,
+                _ => unreachable!(),
+            };
+            let mut source = runtime();
+            source.handle_action(&envelope(&laptop, &phone, request), now);
+            let (_, decision) = source.decide(request_id, true, now).unwrap();
+            target.handle_action(&envelope(&phone, &laptop, decision), now);
+            for _ in 0..100 {
+                target.pump(now);
+                if !target.outgoing.is_empty() {
+                    break;
                 }
-            )] if peer == &phone
-        ));
-        assert_eq!(
-            target.view().degraded[0].reason,
-            RemoteCaptureDegradedReason::ReceiverUnavailable
-        );
-    }
-
-    #[test]
-    fn standard_profiles_fit_the_bounded_transport_and_views_hide_backend_ids() {
-        for kind in [
-            RemoteCaptureKind::Camera,
-            RemoteCaptureKind::Microphone,
-            RemoteCaptureKind::DocumentScanner,
-        ] {
-            assert!(standard_profile(kind).valid());
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert!(target.target_sessions.is_empty());
+            assert!(target.provisioning.is_empty());
+            assert!(matches!(
+                target.drain_outgoing().as_slice(),
+                [(
+                    peer,
+                    PersonalFabricAction::RemoteCaptureSignal {
+                        signal: RemoteCaptureSignal::Stop { .. }
+                    }
+                )] if peer == &phone
+            ));
+            assert_eq!(
+                target.view().degraded[0].reason,
+                RemoteCaptureDegradedReason::ReceiverUnavailable
+            );
         }
-        let phone = DeviceId::new("phone").unwrap();
-        let laptop = DeviceId::new("laptop").unwrap();
-        let mut runtime = runtime();
-        runtime
-            .request_standard(
-                app(),
-                phone.clone(),
-                laptop,
-                "Camera".into(),
-                RemoteCaptureKind::Camera,
-            )
-            .unwrap();
-        let view = runtime.view();
-        assert_eq!(view.sessions.len(), 1);
-        assert_eq!(view.sessions[0].peer, phone);
-        assert_eq!(view.sessions[0].session_id, None);
-        assert_eq!(
-            view.sessions[0].phase,
-            RemoteCaptureSessionPhase::Requesting
-        );
-        assert!(view.local_sources.camera);
-        assert!(view.local_receivers.camera);
     }
 }

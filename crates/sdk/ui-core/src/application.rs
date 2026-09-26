@@ -1182,12 +1182,16 @@ mod cleanup_tests {
         );
     }
     #[test]
-    fn root_panic_still_drops_registry_under_closed_scope_and_propagates() {
-        assert_closed_cleanup("root");
-    }
-    #[test]
-    fn registry_panic_propagates_after_both_closed_scope_drops() {
-        assert_closed_cleanup("registry");
+    fn panics_propagate_after_the_registry_drops_under_a_closed_scope() {
+        // Case `root_panic_still_drops_registry_under_closed_scope_and_propagates`.
+        {
+            assert_closed_cleanup("root");
+        }
+
+        // Case `registry_panic_propagates_after_both_closed_scope_drops`.
+        {
+            assert_closed_cleanup("registry");
+        }
     }
 }
 
@@ -1283,134 +1287,142 @@ mod bound_lifetime_tests {
         ))
     }
     #[test]
-    fn actual_component_reopen_refuses_queued_old_wakes_and_busy_store_entry() {
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::record::RecordOwners::new(temp.path().into());
-        let records = owners.open("so.tilo.mount-probe", "A").unwrap();
-        let views = Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
-        let definition = ApplicationDefinition {
-            app_id: "so.tilo.mount-probe",
-            title: "Mount probe",
-            icon: IconDescriptor::Glyph("P"),
-            record_kind: RecordKind::new("probe"),
-            required: vec![],
-            optional: vec![],
-            create: factory,
-        };
-        let prepare = |target: &LaunchTarget| {
-            HostContext::prepare(
+    fn component_lifetimes_refuse_stale_wakes_loans_and_busy_entries() {
+        // Case `actual_component_reopen_refuses_queued_old_wakes_and_busy_store_entry`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let mut owners = crate::record::RecordOwners::new(temp.path().into());
+            let records = owners.open("so.tilo.mount-probe", "A").unwrap();
+            let views =
+                Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
+            let definition = ApplicationDefinition {
+                app_id: "so.tilo.mount-probe",
+                title: "Mount probe",
+                icon: IconDescriptor::Glyph("P"),
+                record_kind: RecordKind::new("probe"),
+                required: vec![],
+                optional: vec![],
+                create: factory,
+            };
+            let prepare = |target: &LaunchTarget| {
+                HostContext::prepare(
+                    &definition,
+                    records.clone(),
+                    views.clone(),
+                    "D".into(),
+                    7,
+                    Rc::new(RefCell::new(PermissionContext::permissive())),
+                    UserId("probe-author".into()),
+                    tilo_actions::ActionContext::default(),
+                    target,
+                )
+                .unwrap()
+            };
+            let mut old = definition
+                .instantiate(
+                    prepare(&LaunchTarget::New),
+                    LaunchTarget::New,
+                    RestoreInput::None,
+                )
+                .unwrap();
+            let binding = old.callback_binding();
+            let target = LaunchTarget::Record {
+                checkout: old.record().clone(),
+                reveal: None,
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            old.mount(move |event| {
+                tx.send(event).unwrap();
+            })
+            .unwrap();
+            let local = binding
+                .read_document(&AutoCommit::new(), |_, _| crate::LocalState::new(0))
+                .unwrap();
+            assert!(local.writer().try_set(1));
+            let queued = rx.try_recv().unwrap();
+            assert!(old.context.wake_scope.accepts(&queued));
+            records
+                .with(&old.record().id, |_| {
+                    assert!(matches!(
+                        binding
+                            .with_document(&mut AutoCommit::new(), |_, _| panic!("busy entry ran")),
+                        Err(crate::bound_dispatch::BoundDispatchError::Record(
+                            RecordOpenError::Busy
+                        ))
+                    ));
+                })
+                .unwrap();
+            old.close();
+            let mut reopened = definition
+                .instantiate(prepare(&target), target, RestoreInput::None)
+                .unwrap();
+            let (tx, new_rx) = std::sync::mpsc::channel();
+            reopened
+                .mount(move |event| {
+                    tx.send(event).unwrap();
+                })
+                .unwrap();
+            assert!(!old.context.wake_scope.accepts(&queued));
+            assert!(!reopened.context.wake_scope.accepts(&queued));
+            assert!(!local.writer().try_set(2));
+            assert!(new_rx.try_recv().is_err());
+            assert!(matches!(
+                binding.with_document(&mut AutoCommit::new(), |_, _| panic!("closed entry ran")),
+                Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+            ));
+        }
+
+        // Case `task4_component_loan_checks_captured_registry_and_lifetime_before_delivery`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let mut owners = crate::record::RecordOwners::new(temp.path().into());
+            let records = owners.open("so.tilo.mount-probe", "A").unwrap();
+            let views =
+                Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
+            let definition = ApplicationDefinition {
+                app_id: "so.tilo.mount-probe",
+                title: "Mount probe",
+                icon: IconDescriptor::Glyph("P"),
+                record_kind: RecordKind::new("probe"),
+                required: vec![],
+                optional: vec![],
+                create: factory,
+            };
+            let context = HostContext::prepare(
                 &definition,
-                records.clone(),
-                views.clone(),
+                records,
+                views,
                 "D".into(),
                 7,
                 Rc::new(RefCell::new(PermissionContext::permissive())),
                 UserId("probe-author".into()),
                 tilo_actions::ActionContext::default(),
-                target,
-            )
-            .unwrap()
-        };
-        let mut old = definition
-            .instantiate(
-                prepare(&LaunchTarget::New),
-                LaunchTarget::New,
-                RestoreInput::None,
+                &LaunchTarget::New,
             )
             .unwrap();
-        let binding = old.callback_binding();
-        let target = LaunchTarget::Record {
-            checkout: old.record().clone(),
-            reveal: None,
-        };
-        let (tx, rx) = std::sync::mpsc::channel();
-        old.mount(move |event| {
-            tx.send(event).unwrap();
-        })
-        .unwrap();
-        let local = binding
-            .read_document(&AutoCommit::new(), |_, _| crate::LocalState::new(0))
-            .unwrap();
-        assert!(local.writer().try_set(1));
-        let queued = rx.try_recv().unwrap();
-        assert!(old.context.wake_scope.accepts(&queued));
-        records
-            .with(&old.record().id, |_| {
-                assert!(matches!(
-                    binding.with_document(&mut AutoCommit::new(), |_, _| panic!("busy entry ran")),
-                    Err(crate::bound_dispatch::BoundDispatchError::Record(
-                        RecordOpenError::Busy
-                    ))
-                ));
-            })
-            .unwrap();
-        old.close();
-        let mut reopened = definition
-            .instantiate(prepare(&target), target, RestoreInput::None)
-            .unwrap();
-        let (tx, new_rx) = std::sync::mpsc::channel();
-        reopened
-            .mount(move |event| {
-                tx.send(event).unwrap();
-            })
-            .unwrap();
-        assert!(!old.context.wake_scope.accepts(&queued));
-        assert!(!reopened.context.wake_scope.accepts(&queued));
-        assert!(!local.writer().try_set(2));
-        assert!(new_rx.try_recv().is_err());
-        assert!(matches!(
-            binding.with_document(&mut AutoCommit::new(), |_, _| panic!("closed entry ran")),
-            Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
-        ));
-    }
-
-    #[test]
-    fn task4_component_loan_checks_captured_registry_and_lifetime_before_delivery() {
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::record::RecordOwners::new(temp.path().into());
-        let records = owners.open("so.tilo.mount-probe", "A").unwrap();
-        let views = Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
-        let definition = ApplicationDefinition {
-            app_id: "so.tilo.mount-probe",
-            title: "Mount probe",
-            icon: IconDescriptor::Glyph("P"),
-            record_kind: RecordKind::new("probe"),
-            required: vec![],
-            optional: vec![],
-            create: factory,
-        };
-        let context = HostContext::prepare(
-            &definition,
-            records,
-            views,
-            "D".into(),
-            7,
-            Rc::new(RefCell::new(PermissionContext::permissive())),
-            UserId("probe-author".into()),
-            tilo_actions::ActionContext::default(),
-            &LaunchTarget::New,
-        )
-        .unwrap();
-        let mut component = definition
-            .instantiate(context, LaunchTarget::New, RestoreInput::None)
-            .unwrap();
-        let binding = component.callback_binding();
-        component
-            .with_live_component(&binding, |admitted, root, _registry| {
-                assert_eq!(admitted.instance_id, 7);
-                assert_eq!(root.app_title(), "Mount probe");
-            })
-            .unwrap();
-        let mut foreign = binding.clone();
-        foreign.registry_owner = std::rc::Weak::new();
-        assert!(matches!(
-            component.with_live_component(&foreign, |_, _, _| panic!("foreign registry delivered")),
-            Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
-        ));
-        component.close();
-        assert!(matches!(
-            component.with_live_component(&binding, |_, _, _| panic!("closed component delivered")),
-            Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
-        ));
+            let mut component = definition
+                .instantiate(context, LaunchTarget::New, RestoreInput::None)
+                .unwrap();
+            let binding = component.callback_binding();
+            component
+                .with_live_component(&binding, |admitted, root, _registry| {
+                    assert_eq!(admitted.instance_id, 7);
+                    assert_eq!(root.app_title(), "Mount probe");
+                })
+                .unwrap();
+            let mut foreign = binding.clone();
+            foreign.registry_owner = std::rc::Weak::new();
+            assert!(matches!(
+                component
+                    .with_live_component(&foreign, |_, _, _| panic!("foreign registry delivered")),
+                Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+            ));
+            component.close();
+            assert!(matches!(
+                component
+                    .with_live_component(&binding, |_, _, _| panic!("closed component delivered")),
+                Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+            ));
+        }
     }
 }

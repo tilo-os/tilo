@@ -506,168 +506,173 @@ mod tests {
     use getrandom::{SysRng, rand_core::UnwrapErr};
 
     #[test]
-    fn signature_binds_role_expiry_and_body() {
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let mut request = sign_moderation_mutation(
-            "request-1".into(),
-            10,
-            20,
-            ModerationActorRole::Reporter,
-            ModerationMutation::FileReport {
-                package_id: "so.tilo.notes".into(),
-                category: "security".into(),
-                summary: "Unexpected network access".into(),
-                evidence_digest_hex: "aa".repeat(32),
-            },
-            &key,
-        )
-        .unwrap();
-        verify_moderation_mutation(&request).unwrap();
-        request.expires_at_unix = 21;
-        assert_eq!(
-            verify_moderation_mutation(&request),
-            Err(ModerationWireError::InvalidSignature)
-        );
-    }
-
-    #[test]
-    fn transparency_chain_detects_edit() {
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let request = sign_moderation_mutation(
-            "r".into(),
-            1,
-            20,
-            ModerationActorRole::Reporter,
-            ModerationMutation::FileReport {
-                package_id: "so.tilo.notes".into(),
-                category: "quality".into(),
-                summary: "broken application".into(),
-                evidence_digest_hex: "bb".repeat(32),
-            },
-            &key,
-        )
-        .unwrap();
-        let mut event = ModerationEvent {
-            sequence: 1,
-            case_id: "case".into(),
-            package_id: "so.tilo.notes".into(),
-            publisher_pubkey_hex: "dd".repeat(32),
-            recorded_at_unix: 1,
-            actor_role: ModerationActorRole::Reporter,
-            actor_pubkey_hex: request.actor_pubkey_hex.clone(),
-            request_id: "r".into(),
-            event: ModerationEventKind::ReportFiled {
-                category: "quality".into(),
-                summary: "broken application".into(),
-                evidence_digest_hex: "bb".repeat(32),
-            },
-            actor_signature_hex: request.signature_hex.clone(),
-            signed_mutation: request,
-            previous_hash_hex: String::new(),
-            record_hash_hex: String::new(),
-        };
-        event.record_hash_hex = transparency_event_hash(&event).unwrap();
-        verify_transparency_chain(&[event.clone()], "").unwrap();
-        event.package_id.push_str(".evil");
-        assert!(verify_transparency_chain(&[event], "").is_err());
-    }
-
-    #[test]
-    fn verified_case_derives_status_and_rejects_forged_reviewer() {
-        let reporter = SigningKey::from_bytes(&[1; 32]);
-        let owner = SigningKey::from_bytes(&[2; 32]);
-        let outsider = SigningKey::from_bytes(&[3; 32]);
-        let report = sign_moderation_mutation(
-            "report".into(),
-            10,
-            20,
-            ModerationActorRole::Reporter,
-            ModerationMutation::FileReport {
-                package_id: "so.tilo.notes".into(),
-                category: "security".into(),
-                summary: "unexpected network".into(),
-                evidence_digest_hex: "aa".repeat(32),
-            },
-            &reporter,
-        )
-        .unwrap();
-        let mut first = ModerationEvent {
-            sequence: 1,
-            case_id: "case-one".into(),
-            package_id: "so.tilo.notes".into(),
-            publisher_pubkey_hex: "44".repeat(32),
-            recorded_at_unix: 11,
-            actor_role: report.actor_role,
-            actor_pubkey_hex: report.actor_pubkey_hex.clone(),
-            request_id: report.request_id.clone(),
-            event: ModerationEventKind::ReportFiled {
-                category: "security".into(),
-                summary: "unexpected network".into(),
-                evidence_digest_hex: "aa".repeat(32),
-            },
-            actor_signature_hex: report.signature_hex.clone(),
-            signed_mutation: report,
-            previous_hash_hex: String::new(),
-            record_hash_hex: String::new(),
-        };
-        first.record_hash_hex = transparency_event_hash(&first).unwrap();
-
-        let decision_for = |key: &SigningKey| {
-            sign_moderation_mutation(
-                "decision".into(),
-                12,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn moderation_records_bind_their_signatures_and_chain() {
+        // phase: signature_binds_role_expiry_and_body
+        {
+            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let mut request = sign_moderation_mutation(
+                "request-1".into(),
+                10,
                 20,
-                ModerationActorRole::Reviewer,
-                ModerationMutation::ReviewerDecision {
-                    case_id: "case-one".into(),
-                    decision: ModerationDecision::Quarantine,
-                    reason: "confirmed".into(),
+                ModerationActorRole::Reporter,
+                ModerationMutation::FileReport {
+                    package_id: "so.tilo.notes".into(),
+                    category: "security".into(),
+                    summary: "Unexpected network access".into(),
+                    evidence_digest_hex: "aa".repeat(32),
                 },
-                key,
+                &key,
             )
-            .unwrap()
-        };
-        let make_second = |request: SignedModerationMutation| {
+            .unwrap();
+            verify_moderation_mutation(&request).unwrap();
+            request.expires_at_unix = 21;
+            assert_eq!(
+                verify_moderation_mutation(&request),
+                Err(ModerationWireError::InvalidSignature)
+            );
+        }
+        // phase: transparency_chain_detects_edit
+        {
+            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let request = sign_moderation_mutation(
+                "r".into(),
+                1,
+                20,
+                ModerationActorRole::Reporter,
+                ModerationMutation::FileReport {
+                    package_id: "so.tilo.notes".into(),
+                    category: "quality".into(),
+                    summary: "broken application".into(),
+                    evidence_digest_hex: "bb".repeat(32),
+                },
+                &key,
+            )
+            .unwrap();
             let mut event = ModerationEvent {
-                sequence: 2,
-                case_id: "case-one".into(),
+                sequence: 1,
+                case_id: "case".into(),
                 package_id: "so.tilo.notes".into(),
-                publisher_pubkey_hex: "44".repeat(32),
-                recorded_at_unix: 13,
-                actor_role: request.actor_role,
+                publisher_pubkey_hex: "dd".repeat(32),
+                recorded_at_unix: 1,
+                actor_role: ModerationActorRole::Reporter,
                 actor_pubkey_hex: request.actor_pubkey_hex.clone(),
-                request_id: request.request_id.clone(),
-                event: ModerationEventKind::ReviewerDecided {
-                    decision: ModerationDecision::Quarantine,
-                    reason: "confirmed".into(),
+                request_id: "r".into(),
+                event: ModerationEventKind::ReportFiled {
+                    category: "quality".into(),
+                    summary: "broken application".into(),
+                    evidence_digest_hex: "bb".repeat(32),
                 },
                 actor_signature_hex: request.signature_hex.clone(),
                 signed_mutation: request,
-                previous_hash_hex: first.record_hash_hex.clone(),
+                previous_hash_hex: String::new(),
                 record_hash_hex: String::new(),
             };
             event.record_hash_hex = transparency_event_hash(&event).unwrap();
-            event
-        };
-        let forged = make_second(decision_for(&outsider));
-        assert!(matches!(
-            derive_verified_case(
-                &[first.clone(), forged.clone()],
+            verify_transparency_chain(&[event.clone()], "").unwrap();
+            event.package_id.push_str(".evil");
+            assert!(verify_transparency_chain(&[event], "").is_err());
+        }
+        // phase: verified_case_derives_status_and_rejects_forged_reviewer
+        {
+            let reporter = SigningKey::from_bytes(&[1; 32]);
+            let owner = SigningKey::from_bytes(&[2; 32]);
+            let outsider = SigningKey::from_bytes(&[3; 32]);
+            let report = sign_moderation_mutation(
+                "report".into(),
+                10,
+                20,
+                ModerationActorRole::Reporter,
+                ModerationMutation::FileReport {
+                    package_id: "so.tilo.notes".into(),
+                    category: "security".into(),
+                    summary: "unexpected network".into(),
+                    evidence_digest_hex: "aa".repeat(32),
+                },
+                &reporter,
+            )
+            .unwrap();
+            let mut first = ModerationEvent {
+                sequence: 1,
+                case_id: "case-one".into(),
+                package_id: "so.tilo.notes".into(),
+                publisher_pubkey_hex: "44".repeat(32),
+                recorded_at_unix: 11,
+                actor_role: report.actor_role,
+                actor_pubkey_hex: report.actor_pubkey_hex.clone(),
+                request_id: report.request_id.clone(),
+                event: ModerationEventKind::ReportFiled {
+                    category: "security".into(),
+                    summary: "unexpected network".into(),
+                    evidence_digest_hex: "aa".repeat(32),
+                },
+                actor_signature_hex: report.signature_hex.clone(),
+                signed_mutation: report,
+                previous_hash_hex: String::new(),
+                record_hash_hex: String::new(),
+            };
+            first.record_hash_hex = transparency_event_hash(&first).unwrap();
+
+            let decision_for = |key: &SigningKey| {
+                sign_moderation_mutation(
+                    "decision".into(),
+                    12,
+                    20,
+                    ModerationActorRole::Reviewer,
+                    ModerationMutation::ReviewerDecision {
+                        case_id: "case-one".into(),
+                        decision: ModerationDecision::Quarantine,
+                        reason: "confirmed".into(),
+                    },
+                    key,
+                )
+                .unwrap()
+            };
+            let make_second = |request: SignedModerationMutation| {
+                let mut event = ModerationEvent {
+                    sequence: 2,
+                    case_id: "case-one".into(),
+                    package_id: "so.tilo.notes".into(),
+                    publisher_pubkey_hex: "44".repeat(32),
+                    recorded_at_unix: 13,
+                    actor_role: request.actor_role,
+                    actor_pubkey_hex: request.actor_pubkey_hex.clone(),
+                    request_id: request.request_id.clone(),
+                    event: ModerationEventKind::ReviewerDecided {
+                        decision: ModerationDecision::Quarantine,
+                        reason: "confirmed".into(),
+                    },
+                    actor_signature_hex: request.signature_hex.clone(),
+                    signed_mutation: request,
+                    previous_hash_hex: first.record_hash_hex.clone(),
+                    record_hash_hex: String::new(),
+                };
+                event.record_hash_hex = transparency_event_hash(&event).unwrap();
+                event
+            };
+            let forged = make_second(decision_for(&outsider));
+            assert!(matches!(
+                derive_verified_case(
+                    &[first.clone(), forged.clone()],
+                    "case-one",
+                    &hex::encode(owner.verifying_key().to_bytes()),
+                    &forged.record_hash_hex
+                ),
+                Err(ModerationWireError::UnauthorizedActor(2))
+            ));
+            let approved = make_second(decision_for(&owner));
+            let case = derive_verified_case(
+                &[first, approved.clone()],
                 "case-one",
                 &hex::encode(owner.verifying_key().to_bytes()),
-                &forged.record_hash_hex
-            ),
-            Err(ModerationWireError::UnauthorizedActor(2))
-        ));
-        let approved = make_second(decision_for(&owner));
-        let case = derive_verified_case(
-            &[first, approved.clone()],
-            "case-one",
-            &hex::encode(owner.verifying_key().to_bytes()),
-            &approved.record_hash_hex,
-        )
-        .unwrap();
-        assert_eq!(case.status, ModerationCaseStatus::Quarantined);
-        assert_eq!(case.latest_sequence, 2);
+                &approved.record_hash_hex,
+            )
+            .unwrap();
+            assert_eq!(case.status, ModerationCaseStatus::Quarantined);
+            assert_eq!(case.latest_sequence, 2);
+        }
     }
 }

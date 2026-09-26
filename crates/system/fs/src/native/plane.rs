@@ -1019,8 +1019,8 @@ impl Engine {
         }
     }
 
-    /// Marks files written in place (same inode, extents shared with the
-    /// previous version) as lease-class.
+    /// Marks files written in place (same inode, some of the previous
+    /// version's bytes kept where they were) as lease-class.
     fn detect_in_place(
         &mut self,
         cs: &Changeset,
@@ -1057,8 +1057,19 @@ impl Engine {
             let Ok(changed) = fs_native::extents::diff_files(&old, &new) else {
                 continue;
             };
-            let changed_bytes: u64 = changed.iter().map(|r| r.end.saturating_sub(r.start)).sum();
-            if changed_bytes < now.size && self.leases.classify(path) {
+            let (Ok(old_meta), Ok(new_meta)) = (old.metadata(), new.metadata()) else {
+                continue;
+            };
+            let Ok(in_place) = super::lease::kept_bytes_in_place(
+                &old,
+                &new,
+                &changed,
+                old_meta.len(),
+                new_meta.len(),
+            ) else {
+                continue;
+            };
+            if in_place && self.leases.classify(path) {
                 println!(
                     "{} is modified in place: it now takes a write lease per writing session",
                     path.display()

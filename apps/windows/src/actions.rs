@@ -545,137 +545,140 @@ mod tests {
     }
 
     #[test]
-    fn route_policy_is_deterministic_and_reset_removes_it() {
-        let mut doc = Doc::new();
-        WindowsAction::SetRoute {
-            app_id: "reader".into(),
-            route: Route::Proton,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        let (_, map) = doc.get(&ROOT, ROOT_KEY).unwrap().unwrap();
-        assert_eq!(
-            doc.get(&map, "reader").unwrap().unwrap().0.as_str(),
-            Some("Proton")
-        );
-        WindowsAction::ResetRoute {
-            app_id: "reader".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        assert!(doc.get(&map, "reader").unwrap().is_none());
-    }
-    #[test]
-    fn every_catalogue_app_has_explicit_routes() {
-        let res = provide_resources(&crate::provider::SampleProvider::new().catalogue());
-        let flattened = tilo_actions::flatten(&res);
-        let manager = res.first().expect("manager root");
-        assert!(
-            manager
-                .children
-                .iter()
-                .filter(|resource| resource.kind == "windows.compat-app")
-                .all(|resource| resource.actions.iter().any(|action| action.id == "launch"))
-        );
-        assert!(flattened.iter().map(|action| action.action).any(|action| {
-            action.id == "delete-data" && action.contract.risk == RiskLevel::Destructive
-        }));
-    }
-
-    #[test]
-    fn every_background_operation_declares_a_job_result() {
-        let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
-        for action in tilo_actions::flatten(&resources)
-            .into_iter()
-            .map(|action| action.action)
+    fn route_policy_is_explicit_deterministic_and_resettable() {
+        // Case `route_policy_is_deterministic_and_reset_removes_it`.
         {
-            if matches!(action.contract.execution, ExecutionMode::Background { .. }) {
-                assert_eq!(action.contract.result, ResultSpec::Job, "{}", action.id);
-                assert!(
-                    action.contract.validate_declaration().is_empty(),
-                    "{}",
-                    action.id
-                );
+            let mut doc = Doc::new();
+            WindowsAction::SetRoute {
+                app_id: "reader".into(),
+                route: Route::Proton,
+            }
+            .apply(&mut doc)
+            .unwrap();
+            let (_, map) = doc.get(&ROOT, ROOT_KEY).unwrap().unwrap();
+            assert_eq!(
+                doc.get(&map, "reader").unwrap().unwrap().0.as_str(),
+                Some("Proton")
+            );
+            WindowsAction::ResetRoute {
+                app_id: "reader".into(),
+            }
+            .apply(&mut doc)
+            .unwrap();
+            assert!(doc.get(&map, "reader").unwrap().is_none());
+        }
+        // Case `every_catalogue_app_has_explicit_routes`.
+        {
+            let res = provide_resources(&crate::provider::SampleProvider::new().catalogue());
+            let flattened = tilo_actions::flatten(&res);
+            let manager = res.first().expect("manager root");
+            assert!(
+                manager
+                    .children
+                    .iter()
+                    .filter(|resource| resource.kind == "windows.compat-app")
+                    .all(|resource| resource.actions.iter().any(|action| action.id == "launch"))
+            );
+            assert!(flattened.iter().map(|action| action.action).any(|action| {
+                action.id == "delete-data" && action.contract.risk == RiskLevel::Destructive
+            }));
+        }
+        // Case `every_background_operation_declares_a_job_result`.
+        {
+            let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
+            for action in tilo_actions::flatten(&resources)
+                .into_iter()
+                .map(|action| action.action)
+            {
+                if matches!(action.contract.execution, ExecutionMode::Background { .. }) {
+                    assert_eq!(action.contract.result, ResultSpec::Job, "{}", action.id);
+                    assert!(
+                        action.contract.validate_declaration().is_empty(),
+                        "{}",
+                        action.id
+                    );
+                }
             }
         }
     }
 
     #[test]
-    fn resources_form_a_manager_appliance_application_hierarchy() {
-        let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
-        let manager = resources.first().expect("manager root");
-        assert_eq!(manager.id.as_str(), "windows.manager");
-        let appliance = manager
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "windows.appliance")
-            .expect("appliance child");
-        for expected in [
-            "start",
-            "restart",
-            "suspend",
-            "resume",
-            "shutdown",
-            "temporary-network",
-            "update-network",
-            "revoke-network",
-        ] {
-            assert!(
-                appliance.actions.iter().any(|action| action.id == expected),
-                "missing appliance action {expected}"
-            );
-        }
-        assert_eq!(
-            manager
+    fn windows_resources_form_an_honest_hierarchy() {
+        // Case `resources_form_a_manager_appliance_application_hierarchy`.
+        {
+            let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
+            let manager = resources.first().expect("manager root");
+            assert_eq!(manager.id.as_str(), "windows.manager");
+            let appliance = manager
                 .children
                 .iter()
-                .filter(|resource| resource.kind == "windows.compat-app")
-                .count(),
-            3
-        );
-    }
-
-    #[test]
-    fn private_capsules_are_hierarchical_resources_with_recovery_actions() {
-        let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
-        let manager = resources.first().expect("manager root");
-        let reader = manager
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "windows.app:adobe-reader")
-            .expect("reader resource");
-        let prefix = reader
-            .children
-            .iter()
-            .find(|resource| resource.kind == "windows.prefix")
-            .expect("private prefix resource");
-        assert!(
-            prefix
+                .find(|resource| resource.id.as_str() == "windows.appliance")
+                .expect("appliance child");
+            for expected in [
+                "start",
+                "restart",
+                "suspend",
+                "resume",
+                "shutdown",
+                "temporary-network",
+                "update-network",
+                "revoke-network",
+            ] {
+                assert!(
+                    appliance.actions.iter().any(|action| action.id == expected),
+                    "missing appliance action {expected}"
+                );
+            }
+            assert_eq!(
+                manager
+                    .children
+                    .iter()
+                    .filter(|resource| resource.kind == "windows.compat-app")
+                    .count(),
+                3
+            );
+        }
+        // Case `private_capsules_are_hierarchical_resources_with_recovery_actions`.
+        {
+            let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
+            let manager = resources.first().expect("manager root");
+            let reader = manager
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == "windows.app:adobe-reader")
+                .expect("reader resource");
+            let prefix = reader
+                .children
+                .iter()
+                .find(|resource| resource.kind == "windows.prefix")
+                .expect("private prefix resource");
+            assert!(
+                prefix
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "delete-data")
+            );
+            assert!(prefix.actions.iter().any(|action| action.id == "uninstall"));
+        }
+        // Case `unavailable_guest_file_bridge_is_not_advertised_as_actionable`.
+        {
+            let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
+            let manager = resources.first().expect("manager root");
+            let studio = manager
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == "windows.app:visual-studio")
+                .expect("Visual Studio resource");
+            let open_file = studio
                 .actions
                 .iter()
-                .any(|action| action.id == "delete-data")
-        );
-        assert!(prefix.actions.iter().any(|action| action.id == "uninstall"));
-    }
-
-    #[test]
-    fn unavailable_guest_file_bridge_is_not_advertised_as_actionable() {
-        let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
-        let manager = resources.first().expect("manager root");
-        let studio = manager
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "windows.app:visual-studio")
-            .expect("Visual Studio resource");
-        let open_file = studio
-            .actions
-            .iter()
-            .find(|action| action.id == "open-file")
-            .expect("file operation is published for the guest application");
-        assert!(matches!(
-            open_file.contract.availability,
-            Availability::Unavailable { .. }
-        ));
-        assert_eq!(open_file.contract.permission, PermissionRequirement::Read);
+                .find(|action| action.id == "open-file")
+                .expect("file operation is published for the guest application");
+            assert!(matches!(
+                open_file.contract.availability,
+                Availability::Unavailable { .. }
+            ));
+            assert_eq!(open_file.contract.permission, PermissionRequirement::Read);
+        }
     }
 }

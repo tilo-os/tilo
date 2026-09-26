@@ -637,47 +637,51 @@ impl Widget for StoragePane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Only real roots are reported and only authority-approved files are reclaimed.
     #[test]
-    fn pane_reports_only_real_roots() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache = tmp.path().join("cache");
-        std::fs::create_dir_all(cache.join("so.tilo.browser")).unwrap();
-        std::fs::write(cache.join("so.tilo.browser/http"), vec![0u8; 24]).unwrap();
-        let pane = StoragePane::with_roots(StorageRoots {
-            app_payloads: None,
-            room_data: None,
-            app_cache: Some(cache),
-            sync_replica: None,
-        });
-        assert_eq!(pane.snapshot.reclaimable_bytes(), 24);
-        assert_eq!(pane.cleanup.as_ref().unwrap().total_bytes, 24);
-    }
+    fn storage_pane_reports_real_roots_and_reclaims_only_approved_files() {
+        // Case `pane_reports_only_real_roots`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let cache = tmp.path().join("cache");
+            std::fs::create_dir_all(cache.join("so.tilo.browser")).unwrap();
+            std::fs::write(cache.join("so.tilo.browser/http"), vec![0u8; 24]).unwrap();
+            let pane = StoragePane::with_roots(StorageRoots {
+                app_payloads: None,
+                room_data: None,
+                app_cache: Some(cache),
+                sync_replica: None,
+            });
+            assert_eq!(pane.snapshot.reclaimable_bytes(), 24);
+            assert_eq!(pane.cleanup.as_ref().unwrap().total_bytes, 24);
+        }
 
-    #[test]
-    fn settings_submits_only_authority_approved_reclaimable_files() {
-        let file = |identity: &str, reclaimable_bytes| runtime_fs::storage::SyncedFileState {
-            workspace: "work".into(),
-            app: None,
-            logical_path: format!("/{identity}"),
-            identity: identity.into(),
-            inode: 1,
-            version: "v".into(),
-            logical_bytes: 10,
-            hydrated_bytes: 10,
-            remote_only: false,
-            dirty: reclaimable_bytes == 0,
-            pinned: false,
-            in_flight: false,
-            remotely_durable: reclaimable_bytes > 0,
-            reclaimable_bytes,
-        };
-        let snapshot = SyncStorageSnapshot {
-            online: true,
-            files: vec![file("clean", 10), file("dirty", 0)],
-            ..SyncStorageSnapshot::default()
-        };
-        let selected = reclaimable_selections(&snapshot);
-        assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].identity, "clean");
+        // Case `settings_submits_only_authority_approved_reclaimable_files`.
+        {
+            let file = |identity: &str, reclaimable_bytes| runtime_fs::storage::SyncedFileState {
+                workspace: "work".into(),
+                app: None,
+                logical_path: format!("/{identity}"),
+                identity: identity.into(),
+                inode: 1,
+                version: "v".into(),
+                logical_bytes: 10,
+                hydrated_bytes: 10,
+                remote_only: false,
+                dirty: reclaimable_bytes == 0,
+                pinned: false,
+                in_flight: false,
+                remotely_durable: reclaimable_bytes > 0,
+                reclaimable_bytes,
+            };
+            let snapshot = SyncStorageSnapshot {
+                online: true,
+                files: vec![file("clean", 10), file("dirty", 0)],
+                ..SyncStorageSnapshot::default()
+            };
+            let selected = reclaimable_selections(&snapshot);
+            assert_eq!(selected.len(), 1);
+            assert_eq!(selected[0].identity, "clean");
+        }
     }
 }

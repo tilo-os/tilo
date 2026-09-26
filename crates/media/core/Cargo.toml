@@ -80,6 +80,7 @@ pipewire = { version = "0.10.1", optional = true, features = ["v0_3_50"] }
 # rest of the workspace uses, so log filtering behaves identically.
 tracing-subscriber.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+tempfile.workspace = true
 
 [lints]
 workspace = true

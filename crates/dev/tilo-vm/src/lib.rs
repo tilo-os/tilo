@@ -3,6 +3,7 @@
 //! host's hypervisor through thin adapters.
 
 pub mod app;
+pub mod appsets;
 pub mod build;
 pub mod ci;
 pub mod cli;

@@ -470,98 +470,96 @@ mod tests {
     use super::*;
 
     #[test]
-    fn headless_backend_new_at_default_size() {
-        let backend = HeadlessBackend::new(DEFAULT_WIDTH, DEFAULT_HEIGHT)
-            .expect("HeadlessBackend::new at default size");
-        let outs = backend.outputs();
-        assert_eq!(
-            outs.len(),
-            1,
-            "headless backend exposes one synthetic output"
-        );
-        assert_eq!(outs[0].size, (DEFAULT_WIDTH, DEFAULT_HEIGHT));
-        assert_eq!(outs[0].id, OutputId(0));
-    }
-
-    #[test]
-    fn frame_size_matches_constructor_arg() {
-        let backend = HeadlessBackend::new(800, 600).expect("HeadlessBackend::new at 800x600");
-        assert_eq!(backend.frame_size(), (800, 600));
-    }
-
-    #[test]
-    fn submit_frame_writes_non_uniform_rgba() {
-        // Paint a real FrameBuilder scene so the readback is something
-        // the chrome actually emits. A blank scene with the cleared
-        // background colour would be uniform — we want to assert
-        // there are at least 3 distinct pixel values, which proves
-        // (a) the offscreen pipeline ran end-to-end and (b) the
-        // FrameBuilder's scene reached the texture (not a no-op).
-        let mut fb = crate::compositor::frame::FrameBuilder::new((400, 300));
-        // Paint twice — the first paint primes layout caches, the
-        // second is what we actually capture. Mirrors the
-        // `paint_settled` pattern used by `bin/shots`.
-        let _ = fb.paint();
-        let scene = fb.paint_settled();
-        let mut backend = HeadlessBackend::new(400, 300)
-            .expect("HeadlessBackend::new at 400x300 for submit_frame test");
-        backend.submit_frame(&scene, OutputId(0));
-        let frame = backend.last_frame();
-        assert_eq!(
-            frame.len(),
-            400 * 300 * 4,
-            "RGBA frame buffer length must be width * height * 4"
-        );
-        let mut seen = std::collections::HashSet::new();
-        for chunk in frame.chunks_exact(4) {
-            seen.insert([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            if seen.len() >= 3 {
-                break;
-            }
+    fn headless_backend_sizes_frames_and_keeps_the_loop_warm() {
+        // Phase `headless_backend_new_at_default_size`.
+        {
+            let backend = HeadlessBackend::new(DEFAULT_WIDTH, DEFAULT_HEIGHT)
+                .expect("HeadlessBackend::new at default size");
+            let outs = backend.outputs();
+            assert_eq!(
+                outs.len(),
+                1,
+                "headless backend exposes one synthetic output"
+            );
+            assert_eq!(outs[0].size, (DEFAULT_WIDTH, DEFAULT_HEIGHT));
+            assert_eq!(outs[0].id, OutputId(0));
         }
-        assert!(
-            seen.len() >= 3,
-            "expected at least 3 distinct RGBA values in the rendered frame \
-             (got {}); the offscreen pipeline either ran a no-op paint or \
-             the FrameBuilder's chrome didn't reach the texture",
-            seen.len()
-        );
-    }
-
-    #[test]
-    fn poll_events_emits_redraw_to_keep_loop_warm() {
-        let mut backend = HeadlessBackend::new(640, 480)
-            .expect("HeadlessBackend::new at 640x480 for poll_events test");
-        let mut seen = Vec::new();
-        backend.poll_events(&mut |ev| seen.push(ev));
-        // Exactly one Redraw on this first call — a heartbeat so anything
-        // downstream sees the backend wake up. Subsequent calls emit
-        // nothing; see the source comment on `poll_events` for why.
-        assert_eq!(
-            seen.len(),
-            1,
-            "poll_events emits exactly one event per tick"
-        );
-        assert!(
-            matches!(seen[0], BackendEvent::Redraw),
-            "headless poll_events emits Redraw to keep the loop warm; got {:?}",
-            seen[0]
-        );
+        // Phase `frame_size_matches_constructor_arg`.
+        {
+            let backend = HeadlessBackend::new(800, 600).expect("HeadlessBackend::new at 800x600");
+            assert_eq!(backend.frame_size(), (800, 600));
+        }
+        // Phase `submit_frame_writes_non_uniform_rgba`.
+        {
+            // Paint a real FrameBuilder scene so the readback is something
+            // the chrome actually emits. A blank scene with the cleared
+            // background colour would be uniform — we want to assert
+            // there are at least 3 distinct pixel values, which proves
+            // (a) the offscreen pipeline ran end-to-end and (b) the
+            // FrameBuilder's scene reached the texture (not a no-op).
+            let mut fb = crate::compositor::frame::FrameBuilder::new((400, 300));
+            // Paint twice — the first paint primes layout caches, the
+            // second is what we actually capture. Mirrors the
+            // `paint_settled` pattern used by `bin/shots`.
+            let _ = fb.paint();
+            let scene = fb.paint_settled();
+            let mut backend = HeadlessBackend::new(400, 300)
+                .expect("HeadlessBackend::new at 400x300 for submit_frame test");
+            backend.submit_frame(&scene, OutputId(0));
+            let frame = backend.last_frame();
+            assert_eq!(
+                frame.len(),
+                400 * 300 * 4,
+                "RGBA frame buffer length must be width * height * 4"
+            );
+            let mut seen = std::collections::HashSet::new();
+            for chunk in frame.chunks_exact(4) {
+                seen.insert([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                if seen.len() >= 3 {
+                    break;
+                }
+            }
+            assert!(
+                seen.len() >= 3,
+                "expected at least 3 distinct RGBA values in the rendered frame \
+                 (got {}); the offscreen pipeline either ran a no-op paint or \
+                 the FrameBuilder's chrome didn't reach the texture",
+                seen.len()
+            );
+        }
+        // Phase `poll_events_emits_redraw_to_keep_loop_warm`.
+        {
+            let mut backend = HeadlessBackend::new(640, 480)
+                .expect("HeadlessBackend::new at 640x480 for poll_events test");
+            let mut seen = Vec::new();
+            backend.poll_events(&mut |ev| seen.push(ev));
+            // Exactly one Redraw on this first call — a heartbeat so anything
+            // downstream sees the backend wake up. Subsequent calls emit
+            // nothing; see the source comment on `poll_events` for why.
+            assert_eq!(
+                seen.len(),
+                1,
+                "poll_events emits exactly one event per tick"
+            );
+            assert!(
+                matches!(seen[0], BackendEvent::Redraw),
+                "headless poll_events emits Redraw to keep the loop warm; got {:?}",
+                seen[0]
+            );
+        }
     }
 
     // ---- env-var parser ---------------------------------------------
 
     #[test]
-    fn parse_headless_size_accepts_valid_wxh() {
+    fn parse_headless_size_accepts_wxh_and_rejects_malformed_values() {
+        // Phase `parse_headless_size_accepts_valid_wxh`.
         assert_eq!(parse_headless_size(Some("1280x720")), Some((1280, 720)));
         assert_eq!(parse_headless_size(Some("800X600")), Some((800, 600)));
         // Tolerate surrounding whitespace — shell expansions sometimes
         // sneak in trailing spaces.
         assert_eq!(parse_headless_size(Some("  640x480  ")), Some((640, 480)));
-    }
-
-    #[test]
-    fn parse_headless_size_rejects_malformed_values() {
+        // Phase `parse_headless_size_rejects_malformed_values`.
         assert_eq!(parse_headless_size(None), None);
         assert_eq!(parse_headless_size(Some("")), None);
         assert_eq!(parse_headless_size(Some("garbage")), None);

@@ -147,32 +147,35 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     #[test]
-    fn trusted_policy_persists() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("policy.json");
-        let b = LockdownBackend::at_path(&p);
-        b.set_policy(LockdownPolicy {
-            disable_camera: true,
-            ..LockdownPolicy::default()
-        })
-        .unwrap();
-        assert!(LockdownBackend::at_path(p).policy().disable_camera);
-        assert_eq!(
-            fs::metadata(dir.path().join("policy.json"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-    }
-    #[test]
-    fn dbus_setter_is_denied() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(
-            LockdownBackend::at_path(dir.path().join("lockdown.json"))
-                .set_disable_camera(false)
-                .is_err()
-        );
+    fn lockdown_policy_is_trusted_persistent_and_not_dbus_settable() {
+        // Phase `trusted_policy_persists`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let p = dir.path().join("policy.json");
+            let b = LockdownBackend::at_path(&p);
+            b.set_policy(LockdownPolicy {
+                disable_camera: true,
+                ..LockdownPolicy::default()
+            })
+            .unwrap();
+            assert!(LockdownBackend::at_path(p).policy().disable_camera);
+            assert_eq!(
+                fs::metadata(dir.path().join("policy.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        // Phase `dbus_setter_is_denied`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(
+                LockdownBackend::at_path(dir.path().join("lockdown.json"))
+                    .set_disable_camera(false)
+                    .is_err()
+            );
+        }
     }
 }

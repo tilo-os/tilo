@@ -58,6 +58,8 @@ mod canonical_import;
 
 #[path = "canonical_component.rs"]
 mod canonical_component;
+#[path = "support/captures.rs"]
+mod captures;
 #[path = "support/component.rs"]
 mod component_support;
 
