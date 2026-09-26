@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
-use word_processor::actions::{self as wp, WordProcessorAction};
+use word_processor::actions::{self as wp, RichTextAction};
 
 use crate::surface::{self, NoMatch, Offer};
 
@@ -551,7 +551,7 @@ pub const NOTHING_FITS: &str = "none";
 
 /// One thing the agent can do, and the exported actions it does it with.
 ///
-/// `actions` names [`WordProcessorAction`] variants. Nothing here is taken on
+/// `actions` names [`RichTextAction`] variants. Nothing here is taken on
 /// trust: [`dispatched`] builds those very actions with the word processor's
 /// own builders, and `the_catalogue_only_offers_actions_the_app_exports`
 /// checks the names against what the app's encoder puts on the wire. A
@@ -589,7 +589,7 @@ pub const CATALOGUE: &[Capability] = &[
 /// The actions a capability dispatches, built with the word processor's own
 /// builders — the same calls [`crate::session`] makes to carry the work out.
 /// The arguments are placeholders; only the shape of the action matters.
-pub fn dispatched(id: &str) -> Vec<WordProcessorAction> {
+pub fn dispatched(id: &str) -> Vec<RichTextAction> {
     let block = || "block".to_string();
     match id {
         "table" => vec![
@@ -618,7 +618,7 @@ pub fn dispatched(id: &str) -> Vec<WordProcessorAction> {
 /// The name the word processor's own encoder gives an action: the key of the
 /// envelope `encode` puts on the wire. Reading it back from the app rather
 /// than writing it down here is what makes the catalogue's claims checkable.
-pub fn exported_name(action: &WordProcessorAction) -> Option<String> {
+pub fn exported_name(action: &RichTextAction) -> Option<String> {
     let encoded = wp::encode(action);
     match serde_json::from_slice::<serde_json::Value>(&encoded.payload).ok()? {
         serde_json::Value::Object(map) => map.keys().next().cloned(),

@@ -105,6 +105,7 @@ word-processor = { path = "../../../apps/word-processor" }
 qdoc = { path = "../../doc/qdoc" }
 tilo-content = { path = "../../system/content" }
 qdoc-codecs = { path = "../../doc/qdoc-codecs", default-features = false }
+tilo-resource = { path = "../../sdk/tilo-resource" }
 mime_guess = "2.0.5"
 # Shared OS-action shell-outs (brightnessctl/wpctl/nmcli/bluetoothctl/
 # powerprofilesctl). Kept outside `shell::shell::quick_settings::actions` so the

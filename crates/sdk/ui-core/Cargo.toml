@@ -180,11 +180,14 @@ open = { workspace = true, features = ["shellexecute-on-windows"], optional = tr
 collab-types = { path = "../../collab/collab-types" }
 channel-crypto = { path = "../../collab/channel-crypto" }
 # The canonical document model. `history_source` reads a live document's
-# change graph through `qdoc::history` (`versions` / `materialize_at`) and
+# change graph through `tilo_resource::history`, materialises past versions
+# with `qdoc::snapshot::at` and
 # turns it into the `HistoryEntry` rows the timeline + scrubber render, and
 # uses `qdoc`'s structural snapshot diff to write each row's summary. Pure
 # model code — no renderer, no I/O — so this stays a cheap dep.
 qdoc = { path = "../../doc/qdoc" }
+# Version history, stamped commits and replay of any document.
+tilo-resource = { path = "../tilo-resource" }
 # The Tilo ACTION model: serializable, replayable CRDT-mutation actions + the
 # nested Resource tree apps publish. `command_palette` + `action_palette` +
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the
