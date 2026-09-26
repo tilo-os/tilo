@@ -614,6 +614,30 @@ impl AuthenticatedPersonalRoute {
 pub(crate) struct ReceivedPersonalFabricAction {
     pub(crate) envelope: crate::shell::device_fabric::PersonalFabricActionEnvelope,
     pub(crate) route: AuthenticatedPersonalRoute,
+    /// [`fabric_monotonic_us`] when the bytes came off the connection, before
+    /// validation and queueing, so clock probes exclude local queueing time.
+    pub(crate) received_monotonic_us: u64,
+}
+
+/// This device's `CLOCK_MONOTONIC` in microseconds: the clock the device
+/// fabric exchanges for peer clock estimation, and the one `PipeWire` schedules
+/// audio against.
+#[must_use]
+pub fn fabric_monotonic_us() -> u64 {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `time` is a valid, writable timespec for the duration of the
+    // call, and CLOCK_MONOTONIC is always available on Linux.
+    let status = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut time) };
+    if status != 0 {
+        return 0;
+    }
+    u64::try_from(time.tv_sec)
+        .unwrap_or_default()
+        .saturating_mul(1_000_000)
+        .saturating_add(u64::try_from(time.tv_nsec).unwrap_or_default() / 1_000)
 }
 
 impl PersonalFabricEnvelopeRef for ReceivedPersonalFabricAction {
@@ -4720,6 +4744,7 @@ impl ShellNetwork {
         route: AuthenticatedPersonalRoute,
         bytes: &[u8],
     ) {
+        let received_monotonic_us = fabric_monotonic_us();
         if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_ACTION_BYTES {
             tracing::warn!(peer = %peer, "dropping oversized personal fabric action");
             return;
@@ -4773,7 +4798,11 @@ impl ShellNetwork {
         };
         let outcome = queue_personal_fabric_action(
             &mut actions,
-            ReceivedPersonalFabricAction { envelope, route },
+            ReceivedPersonalFabricAction {
+                envelope,
+                route,
+                received_monotonic_us,
+            },
         );
         if outcome == PersonalFabricQueueOutcome::Saturated {
             tracing::warn!(
