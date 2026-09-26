@@ -971,7 +971,7 @@ impl MapsApp {
 
     /// Live-verify helper: a fully live app (real tile worker, real network,
     /// `online == true`) whose on-disk tile cache is rooted at `cache_dir`
-    /// instead of the shared default. Identical production path to [`new`] —
+    /// instead of the shared default. Identical production path to `new` —
     /// the only difference is a redirectable cache — so a live integration
     /// test can start from a clean cache and inspect exactly the PNGs the
     /// worker writes. Not used by the live app or `--shots`.

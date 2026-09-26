@@ -98,6 +98,16 @@ impl ShellDriver {
         }
     }
 
+    /// Lay the shell out across `outputs` — the displays the live
+    /// compositor would report — rather than one display the size of the
+    /// viewport, so each window group's width is a fraction of its own
+    /// monitor.
+    pub fn set_outputs(&mut self, outputs: &[shell::compositor::backend::Output]) {
+        self.fb
+            .set_output_geometry(shell::compositor::backend::output_geometry(outputs));
+        self.relayout();
+    }
+
     /// Run `compute_layout` + `apply_layout` against the current tree. The
     /// host's animation state is preserved because we don't rebuild the
     /// taffy tree — only the layout pass re-runs.

@@ -1577,11 +1577,7 @@ impl QuickSettingsRoot {
             power_label_size,
             text_width as f32,
         );
-        let battery_detail = if state.battery.present {
-            format!("{}% battery", state.battery.capacity)
-        } else {
-            "AC power".to_string()
-        };
+        let battery_detail = power_detail(state);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
@@ -2130,7 +2126,11 @@ impl QuickSettingsRoot {
             root.children.push(bounded(
                 AccessNode::new(Role::Button)
                     .with_name("Change power profile")
-                    .with_value(state.power_profile.label().to_string())
+                    .with_value(format!(
+                        "{}, {}",
+                        state.power_profile.label(),
+                        power_detail(state)
+                    ))
                     .with_state(AccessState::new().focusable(true)),
                 self.power_geometry(self.panel, state),
             ));
@@ -2168,10 +2168,48 @@ impl QuickSettingsRoot {
     }
 }
 
+/// The power row's second line: the battery, and whichever app is keeping
+/// the screen from sleeping.
+fn power_detail(state: &QuickSettingsState) -> String {
+    let power = if state.battery.present {
+        format!("{}% battery", state.battery.capacity)
+    } else {
+        "AC power".to_string()
+    };
+    match state.awake_holders.as_slice() {
+        [] => power,
+        [app, rest @ ..] if rest.iter().all(|other| other == app) => {
+            format!("{power} · {app} is preventing sleep")
+        }
+        many => format!("{power} · {} apps are preventing sleep", many.len()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     const PANEL: Rect = Rect::new(100., 48., 500., 560.);
+
+    #[test]
+    fn the_power_row_names_the_app_keeping_the_screen_awake() {
+        let mut state = QuickSettingsState::fixture();
+        assert_eq!(power_detail(&state), "AC power");
+        state.awake_holders = vec!["Firefox".into()];
+        assert_eq!(
+            power_detail(&state),
+            "AC power \u{b7} Firefox is preventing sleep"
+        );
+        state.awake_holders = vec!["Firefox".into(), "Firefox".into()];
+        assert_eq!(
+            power_detail(&state),
+            "AC power \u{b7} Firefox is preventing sleep"
+        );
+        state.awake_holders = vec!["Firefox".into(), "VLC".into()];
+        assert_eq!(
+            power_detail(&state),
+            "AC power \u{b7} 2 apps are preventing sleep"
+        );
+    }
 
     #[test]
     fn semantic_targets_cover_every_visible_root_control_and_edit_action() {

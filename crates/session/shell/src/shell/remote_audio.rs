@@ -5,6 +5,11 @@
 //! shell asks for explicit consent, and approval mints a random capability
 //! bound to the exact `(source, target, session)` tuple. PCM is deliberately a
 //! small version-1 transport: 48 kHz stereo S16LE in bounded 20 ms frames.
+//!
+//! The transport is lossy by design: each frame travels on its own stream and
+//! a slow send is dropped rather than retried. The receiver therefore plays
+//! any newer frame, conceals short gaps with silence, and relies on
+//! keepalives from both peers to tell a paused source from a dead link.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
@@ -20,14 +25,32 @@ use rand_core::Rng;
 use crate::shell::device_fabric::{
     MAX_REMOTE_AUDIO_FRAME_BYTES, MAX_REMOTE_AUDIO_SESSIONS, PersonalFabricAction,
     PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
-    REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
+    REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_FRAME_BYTES, REMOTE_AUDIO_SAMPLE_RATE_HZ,
 };
-use crate::shell::network::ShellNetwork;
+use crate::shell::network::{PersonalFabricSendError, ShellNetwork};
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::physical_gamepad::PhysicalGamepadBinding;
 
 const PENDING_TTL: Duration = Duration::from_secs(30);
-const SESSION_TTL: Duration = Duration::from_secs(15 * 60);
+/// How long a source waits for the target's consent decision. Longer than
+/// the target's own consent window so its decline, when it arrives, wins.
+const CONSENT_WAIT_TTL: Duration = Duration::from_secs(60);
+/// An approved route that carries no audio for this long expires, even while
+/// both peers keep it alive with keepalives.
+const IDLE_SESSION_TTL: Duration = Duration::from_secs(15 * 60);
+/// An approved route whose peer sent nothing authenticated for this long has
+/// lost its link and is interrupted.
+const PEER_SILENCE_TIMEOUT: Duration = Duration::from_secs(3);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
+/// Lost frames are concealed with at most this many frames of silence
+/// (100 ms); a longer outage resumes at the newest frame instead of adding
+/// latency.
+const MAX_CONCEALED_FRAMES: u64 = 5;
+/// How long an interrupted route stays listed so the loss is visible.
+const INTERRUPTED_NOTICE_TTL: Duration = Duration::from_secs(30);
+/// How stale the cached application-stream list may get before the picker
+/// refreshes it off the calling thread.
+const AUDIO_GRAPH_REFRESH: Duration = Duration::from_secs(2);
 const CAPTURE_QUEUE: usize = 12;
 const PLAYBACK_QUEUE: usize = 12;
 const PIPE_BUFFER: usize = 16 * 1024;
@@ -54,24 +77,37 @@ fn selection_focus_valid(
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "compares each claimed frame field against its expected value side by side"
-)]
 fn frame_matches(
     source: &DeviceId,
     target: &DeviceId,
     authorization: [u8; 16],
-    last_sequence: u64,
     claimed_source: &DeviceId,
     claimed_target: &DeviceId,
     claimed_authorization: [u8; 16],
-    sequence: u64,
 ) -> bool {
-    claimed_source == source
-        && claimed_target == target
-        && claimed_authorization == authorization
-        && sequence == last_sequence.saturating_add(1)
+    claimed_source == source && claimed_target == target && claimed_authorization == authorization
+}
+
+/// Decide whether a frame is playable after `last_sequence`. Returns how many
+/// lost frames to conceal before it, or `None` for a duplicate or a frame
+/// that arrived after a newer one.
+fn admit_sequence(last_sequence: u64, sequence: u64) -> Option<u64> {
+    (sequence > last_sequence).then(|| {
+        sequence
+            .saturating_sub(last_sequence)
+            .saturating_sub(1)
+            .min(MAX_CONCEALED_FRAMES)
+    })
+}
+
+/// Prefix one received frame with silence standing in for lost frames.
+fn with_concealment(concealed_frames: u64, pcm_s16le: &[u8]) -> Vec<u8> {
+    let silence = usize::try_from(concealed_frames)
+        .unwrap_or(0)
+        .saturating_mul(MAX_REMOTE_AUDIO_FRAME_BYTES);
+    let mut pcm = vec![0; silence];
+    pcm.extend_from_slice(pcm_s16le);
+    pcm
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +121,9 @@ pub struct RemoteAudioSourceView {
 pub enum RemoteAudioPhase {
     AwaitingConsent,
     Streaming,
+    /// The link or a local audio endpoint failed and the route stopped. The
+    /// row stays briefly so the loss is visible; stopping it dismisses it.
+    Interrupted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -124,7 +163,11 @@ struct OutboundRoute {
     selection: LocalAudioSelection,
     authorization: Option<[u8; 16]>,
     sequence: u64,
-    created: Instant,
+    /// When the request was sent, then when the last frame was sent.
+    last_audio: Instant,
+    /// When the target last sent an authenticated keepalive.
+    last_heard: Instant,
+    last_keepalive: Instant,
     capture: Option<PcmCapture>,
     pending_pcm: Vec<u8>,
 }
@@ -135,8 +178,19 @@ struct InboundRoute {
     label: String,
     authorization: [u8; 16],
     last_sequence: u64,
-    created: Instant,
+    /// When the route was approved, then when the last frame was played.
+    last_audio: Instant,
+    /// When the source last sent any authenticated frame or keepalive.
+    last_heard: Instant,
+    last_keepalive: Instant,
     sink: Option<PcmSink>,
+}
+
+struct InterruptedRoute {
+    peer: DeviceId,
+    label: String,
+    inbound: bool,
+    at: Instant,
 }
 
 #[derive(Default)]
@@ -145,6 +199,75 @@ struct RemoteAudioState {
     pending: BTreeMap<[u8; 16], PendingInbound>,
     outbound: BTreeMap<[u8; 16], OutboundRoute>,
     inbound: BTreeMap<[u8; 16], InboundRoute>,
+    interrupted: BTreeMap<[u8; 16], InterruptedRoute>,
+}
+
+fn record_interruption(
+    state: &mut RemoteAudioState,
+    session_id: [u8; 16],
+    route: InterruptedRoute,
+) {
+    while state.interrupted.len() >= MAX_REMOTE_AUDIO_SESSIONS {
+        let Some(oldest) = state
+            .interrupted
+            .iter()
+            .min_by_key(|(_, notice)| notice.at)
+            .map(|(id, _)| *id)
+        else {
+            break;
+        };
+        state.interrupted.remove(&oldest);
+    }
+    state.interrupted.insert(session_id, route);
+}
+
+/// Why lifecycle reconciliation ends an active route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RouteEnd {
+    /// Policy, focus, consent timeout or idleness: an orderly stop.
+    Expired,
+    /// The peer went away or fell silent while the route was approved.
+    Interrupted,
+}
+
+fn inbound_end(
+    route: &InboundRoute,
+    online: &BTreeSet<DeviceId>,
+    now: Instant,
+) -> Option<RouteEnd> {
+    if !online.contains(&route.source)
+        || now.duration_since(route.last_heard) > PEER_SILENCE_TIMEOUT
+    {
+        Some(RouteEnd::Interrupted)
+    } else if now.duration_since(route.last_audio) > IDLE_SESSION_TTL {
+        Some(RouteEnd::Expired)
+    } else {
+        None
+    }
+}
+
+fn outbound_end(
+    route: &OutboundRoute,
+    online: &BTreeSet<DeviceId>,
+    focus: Option<&PhysicalGamepadBinding>,
+    now: Instant,
+) -> Option<RouteEnd> {
+    let online = online.contains(&route.target);
+    if route.authorization.is_none() {
+        return (!online
+            || now.duration_since(route.last_audio) > CONSENT_WAIT_TTL
+            || !selection_focus_valid(&route.selection, focus))
+        .then_some(RouteEnd::Expired);
+    }
+    if !online || now.duration_since(route.last_heard) > PEER_SILENCE_TIMEOUT {
+        Some(RouteEnd::Interrupted)
+    } else if now.duration_since(route.last_audio) > IDLE_SESSION_TTL
+        || !selection_focus_valid(&route.selection, focus)
+    {
+        Some(RouteEnd::Expired)
+    } else {
+        None
+    }
 }
 
 struct Egress {
@@ -228,6 +351,7 @@ fn reconcile_lifecycle(
                 None,
             );
         }
+        state.interrupted.clear();
         return egress;
     }
 
@@ -259,21 +383,32 @@ fn reconcile_lifecycle(
         .inbound
         .iter()
         .filter_map(|(session_id, route)| {
-            (now.duration_since(route.created) > SESSION_TTL || !online.contains(&route.source))
-                .then_some(*session_id)
+            inbound_end(route, online, now).map(|end| (*session_id, end))
         })
         .collect::<Vec<_>>();
-    for session_id in stale_inbound {
+    for (session_id, end) in stale_inbound {
         if let Some(route) = state.inbound.remove(&session_id) {
             queue_egress(
                 &mut egress,
-                route.source,
+                route.source.clone(),
                 PersonalFabricAction::RemoteAudioStop {
                     session_id,
                     authorization: route.authorization,
                 },
                 None,
             );
+            if end == RouteEnd::Interrupted {
+                record_interruption(
+                    state,
+                    session_id,
+                    InterruptedRoute {
+                        peer: route.source,
+                        label: route.label,
+                        inbound: true,
+                        at: now,
+                    },
+                );
+            }
         }
     }
 
@@ -281,13 +416,10 @@ fn reconcile_lifecycle(
         .outbound
         .iter()
         .filter_map(|(session_id, route)| {
-            (now.duration_since(route.created) > SESSION_TTL
-                || !online.contains(&route.target)
-                || !selection_focus_valid(&route.selection, focus))
-            .then_some(*session_id)
+            outbound_end(route, online, focus, now).map(|end| (*session_id, end))
         })
         .collect::<Vec<_>>();
-    for session_id in stale_outbound {
+    for (session_id, end) in stale_outbound {
         if let Some(route) = state.outbound.remove(&session_id) {
             let action = route.authorization.map_or(
                 PersonalFabricAction::RemoteAudioCancel { session_id },
@@ -296,15 +428,92 @@ fn reconcile_lifecycle(
                     authorization,
                 },
             );
-            queue_egress(&mut egress, route.target, action, Some(session_id));
+            queue_egress(&mut egress, route.target.clone(), action, Some(session_id));
+            if end == RouteEnd::Interrupted {
+                record_interruption(
+                    state,
+                    session_id,
+                    InterruptedRoute {
+                        peer: route.target,
+                        label: route.label,
+                        inbound: false,
+                        at: now,
+                    },
+                );
+            }
+        }
+    }
+
+    state
+        .interrupted
+        .retain(|_, notice| now.duration_since(notice.at) <= INTERRUPTED_NOTICE_TTL);
+    egress
+}
+
+/// Queue keepalives for every approved route whose interval elapsed, in both
+/// directions, so each peer can tell a paused route from a lost link.
+fn due_keepalives(state: &mut RemoteAudioState, now: Instant) -> Vec<Egress> {
+    let mut egress = Vec::new();
+    for (session_id, route) in &mut state.outbound {
+        let Some(authorization) = route.authorization else {
+            continue;
+        };
+        if now.duration_since(route.last_keepalive) >= KEEPALIVE_INTERVAL {
+            route.last_keepalive = now;
+            queue_egress(
+                &mut egress,
+                route.target.clone(),
+                PersonalFabricAction::RemoteAudioKeepalive {
+                    session_id: *session_id,
+                    authorization,
+                },
+                Some(*session_id),
+            );
+        }
+    }
+    for (session_id, route) in &mut state.inbound {
+        if now.duration_since(route.last_keepalive) >= KEEPALIVE_INTERVAL {
+            route.last_keepalive = now;
+            queue_egress(
+                &mut egress,
+                route.source.clone(),
+                PersonalFabricAction::RemoteAudioKeepalive {
+                    session_id: *session_id,
+                    authorization: route.authorization,
+                },
+                None,
+            );
         }
     }
     egress
 }
 
-fn apply_send_failure(state: &mut RemoteAudioState, outbound_session: Option<[u8; 16]>) {
-    if let Some(session_id) = outbound_session {
-        state.outbound.remove(&session_id);
+/// A full transport queue drops only the message that met it: live media
+/// favours the next frame over a torn-down route. Any other failure cannot
+/// succeed on retry and interrupts the exact route that sent it.
+fn apply_send_failure(
+    state: &mut RemoteAudioState,
+    outbound_session: Option<[u8; 16]>,
+    error: &PersonalFabricSendError,
+    now: Instant,
+) {
+    if matches!(error, PersonalFabricSendError::Backpressure) {
+        return;
+    }
+    if let Some(session_id) = outbound_session
+        && let Some(route) = state.outbound.remove(&session_id)
+        && route.authorization.is_some()
+    {
+        record_interruption(
+            state,
+            session_id,
+            InterruptedRoute {
+                peer: route.target,
+                label: route.label,
+                inbound: false,
+                at: now,
+            },
+        );
     }
 }
 
@@ -385,30 +594,55 @@ fn reconcile_source_tokens(
         .collect()
 }
 
-/// Refresh the shell-owned source picker. Tokens are process-local and are
-/// retained only while their freshly enumerated source and focus binding stay
-/// available, so neither apps nor peers ever see node ids.
-pub fn snapshot(focus: Option<&PhysicalGamepadBinding>) -> RemoteAudioView {
-    let graph = media::audio::enumerate();
-    let Ok(mut state) = state().lock() else {
-        return RemoteAudioView::default();
+#[derive(Default)]
+struct PlaybackStreamCache {
+    /// `(serial, label)` of each application playback stream, capped to the
+    /// picker's size, with when it was enumerated.
+    streams: Option<(Instant, Vec<(u32, String)>)>,
+    refreshing: bool,
+}
+
+fn playback_stream_cache() -> &'static Mutex<PlaybackStreamCache> {
+    static CACHE: OnceLock<Mutex<PlaybackStreamCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(PlaybackStreamCache::default()))
+}
+
+/// The most recently enumerated application playback streams. Enumeration
+/// spawns `pw-dump`, so a stale list is refreshed on a worker thread and the
+/// caller — the compositor thread when Quick Settings polls — never waits.
+fn cached_playback_streams(now: Instant) -> Vec<(u32, String)> {
+    let Ok(mut cache) = playback_stream_cache().lock() else {
+        return Vec::new();
     };
-    let mut desired = vec![LocalAudioSelection::System];
-    if let Some(focus) = focus {
-        for stream in graph.playback_streams.into_iter().take(64) {
-            let label = stream.label();
-            let selection = LocalAudioSelection::Application {
-                serial: stream.serial,
-                label,
-                focus: focus.clone(),
-            };
-            if !desired.contains(&selection) {
-                desired.push(selection);
-            }
-        }
+    let stale = cache
+        .streams
+        .as_ref()
+        .is_none_or(|(at, _)| now.duration_since(*at) >= AUDIO_GRAPH_REFRESH);
+    if stale && !cache.refreshing {
+        let spawned = std::thread::Builder::new()
+            .name("tilo-remote-audio-sources".into())
+            .spawn(|| {
+                let streams = media::audio::enumerate()
+                    .playback_streams
+                    .into_iter()
+                    .take(64)
+                    .map(|stream| (stream.serial, stream.label()))
+                    .collect();
+                if let Ok(mut cache) = playback_stream_cache().lock() {
+                    cache.streams = Some((Instant::now(), streams));
+                    cache.refreshing = false;
+                }
+            });
+        cache.refreshing = spawned.is_ok();
     }
-    let sources = reconcile_source_tokens(&mut state, desired);
-    let mut routes = state
+    cache
+        .streams
+        .as_ref()
+        .map_or_else(Vec::new, |(_, streams)| streams.clone())
+}
+
+fn route_views(state: &RemoteAudioState, include_interrupted: bool) -> Vec<RemoteAudioRouteView> {
+    let outbound = state
         .outbound
         .iter()
         .map(|(session_id, route)| RemoteAudioRouteView {
@@ -421,21 +655,71 @@ pub fn snapshot(focus: Option<&PhysicalGamepadBinding>) -> RemoteAudioView {
             } else {
                 RemoteAudioPhase::AwaitingConsent
             },
-        })
-        .chain(
-            state
-                .inbound
-                .iter()
-                .map(|(session_id, route)| RemoteAudioRouteView {
-                    session_id: *session_id,
-                    peer: route.source.clone(),
-                    label: route.label.clone(),
-                    inbound: true,
-                    phase: RemoteAudioPhase::Streaming,
-                }),
-        )
+        });
+    let inbound = state
+        .inbound
+        .iter()
+        .map(|(session_id, route)| RemoteAudioRouteView {
+            session_id: *session_id,
+            peer: route.source.clone(),
+            label: route.label.clone(),
+            inbound: true,
+            phase: RemoteAudioPhase::Streaming,
+        });
+    let interrupted = state
+        .interrupted
+        .iter()
+        .filter(|_| include_interrupted)
+        .map(|(session_id, notice)| RemoteAudioRouteView {
+            session_id: *session_id,
+            peer: notice.peer.clone(),
+            label: notice.label.clone(),
+            inbound: notice.inbound,
+            phase: RemoteAudioPhase::Interrupted,
+        });
+    let mut routes = outbound
+        .chain(inbound)
+        .chain(interrupted)
         .collect::<Vec<_>>();
     routes.sort_by(|left, right| left.label.cmp(&right.label));
+    routes
+}
+
+/// Active routes only, without touching the source picker.
+pub fn active_routes() -> Vec<RemoteAudioRouteView> {
+    state()
+        .lock()
+        .map_or_else(|_| Vec::new(), |state| route_views(&state, false))
+}
+
+/// Refresh the shell-owned source picker. Tokens are process-local and are
+/// retained only while their enumerated source and focus binding stay
+/// available, so neither apps nor peers ever see node ids. Starting a route
+/// re-checks the stream against a fresh enumeration.
+pub fn snapshot(focus: Option<&PhysicalGamepadBinding>) -> RemoteAudioView {
+    let streams = if focus.is_some() {
+        cached_playback_streams(Instant::now())
+    } else {
+        Vec::new()
+    };
+    let Ok(mut state) = state().lock() else {
+        return RemoteAudioView::default();
+    };
+    let mut desired = vec![LocalAudioSelection::System];
+    if let Some(focus) = focus {
+        for (serial, label) in streams {
+            let selection = LocalAudioSelection::Application {
+                serial,
+                label,
+                focus: focus.clone(),
+            };
+            if !desired.contains(&selection) {
+                desired.push(selection);
+            }
+        }
+    }
+    let sources = reconcile_source_tokens(&mut state, desired);
+    let routes = route_views(&state, true);
     let mut consents = state
         .pending
         .iter()
@@ -501,6 +785,7 @@ pub fn request(
             LocalAudioSelection::Application { label, .. } => label.clone(),
         };
         let session_id = random_nonzero_16();
+        let now = Instant::now();
         state.outbound.insert(
             session_id,
             OutboundRoute {
@@ -509,7 +794,9 @@ pub fn request(
                 selection: selection.clone(),
                 authorization: None,
                 sequence: 0,
-                created: Instant::now(),
+                last_audio: now,
+                last_heard: now,
+                last_keepalive: now,
                 capture: None,
                 pending_pcm: Vec::new(),
             },
@@ -572,6 +859,7 @@ pub fn authorize(
             state.pending.insert(session_id, pending);
             return Err("too many remote audio routes are active".into());
         }
+        let now = Instant::now();
         state.inbound.insert(
             session_id,
             InboundRoute {
@@ -580,7 +868,9 @@ pub fn authorize(
                 label: pending.label,
                 authorization,
                 last_sequence: 0,
-                created: Instant::now(),
+                last_audio: now,
+                last_heard: now,
+                last_keepalive: now,
                 sink: Some(sink),
             },
         );
@@ -607,12 +897,16 @@ pub fn authorize(
 /// # Errors
 ///
 /// Returns a message when the service is unavailable, the route is no longer
-/// active, or the peer cannot be notified.
+/// active, or the peer cannot be notified. Stopping an interrupted route only
+/// dismisses its notice; its peer was already told when it ended.
 pub fn stop(network: &ShellNetwork, session_id: [u8; 16]) -> Result<(), String> {
     let stopped = {
         let mut state = state()
             .lock()
             .map_err(|_| "remote audio service is unavailable".to_string())?;
+        if state.interrupted.remove(&session_id).is_some() {
+            return Ok(());
+        }
         if let Some(route) = state.outbound.remove(&session_id) {
             let action = route.authorization.map_or(
                 PersonalFabricAction::RemoteAudioCancel { session_id },
@@ -690,9 +984,11 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
                     if let Some(authorization) = authorization {
                         match PcmCapture::start(&route.selection) {
                             Ok(capture) => {
+                                let now = Instant::now();
                                 route.authorization = Some(*authorization);
                                 route.capture = Some(capture);
-                                route.created = Instant::now();
+                                route.last_audio = now;
+                                route.last_heard = now;
                             }
                             Err(_) => remove = true,
                         }
@@ -728,25 +1024,41 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
                         &route.source,
                         &route.target,
                         route.authorization,
-                        route.last_sequence,
                         &envelope.source,
                         &envelope.target,
                         *authorization,
-                        *sequence,
                     )
                 {
-                    if route
-                        .sink
-                        .as_mut()
-                        .is_some_and(|sink| sink.try_write(pcm_s16le.clone()).is_ok())
-                    {
-                        route.last_sequence = *sequence;
-                    } else {
-                        failed = true;
+                    let now = Instant::now();
+                    route.last_heard = now;
+                    // Frames travel on independent streams and a slow send
+                    // is dropped, so play any newer frame, conceal the gap,
+                    // and ignore duplicates or frames overtaken in flight.
+                    if let Some(concealed) = admit_sequence(route.last_sequence, *sequence) {
+                        let pcm = with_concealment(concealed, pcm_s16le);
+                        if route
+                            .sink
+                            .as_mut()
+                            .is_some_and(|sink| sink.try_write(pcm).is_ok())
+                        {
+                            route.last_sequence = *sequence;
+                            route.last_audio = now;
+                        } else {
+                            failed = true;
+                        }
                     }
                 }
-                if failed {
-                    state.inbound.remove(session_id);
+                if failed && let Some(route) = state.inbound.remove(session_id) {
+                    record_interruption(
+                        &mut state,
+                        *session_id,
+                        InterruptedRoute {
+                            peer: route.source,
+                            label: route.label,
+                            inbound: true,
+                            at: Instant::now(),
+                        },
+                    );
                 }
             }
             if failed {
@@ -768,14 +1080,47 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
                 let remove_inbound = state.inbound.get(session_id).is_some_and(|route| {
                     route.source == envelope.source && route.authorization == *authorization
                 });
+                // A route still awaiting consent accepts the target's stop
+                // too: the target minted the capability, and its decision
+                // may have been lost on the way here.
                 let remove_outbound = state.outbound.get(session_id).is_some_and(|route| {
-                    route.target == envelope.source && route.authorization == Some(*authorization)
+                    route.target == envelope.source
+                        && route
+                            .authorization
+                            .is_none_or(|issued| issued == *authorization)
                 });
                 if remove_inbound {
                     state.inbound.remove(session_id);
                 }
                 if remove_outbound {
                     state.outbound.remove(session_id);
+                }
+            }
+            true
+        }
+        PersonalFabricAction::RemoteAudioKeepalive {
+            session_id,
+            authorization,
+        } => {
+            if let Ok(mut state) = state().lock() {
+                let now = Instant::now();
+                if let Some(route) = state.inbound.get_mut(session_id)
+                    && frame_matches(
+                        &route.source,
+                        &route.target,
+                        route.authorization,
+                        &envelope.source,
+                        &envelope.target,
+                        *authorization,
+                    )
+                {
+                    route.last_heard = now;
+                }
+                if let Some(route) = state.outbound.get_mut(session_id)
+                    && route.target == envelope.source
+                    && route.authorization == Some(*authorization)
+                {
+                    route.last_heard = now;
                 }
             }
             true
@@ -849,6 +1194,7 @@ pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepa
             let Some(authorization) = route.authorization else {
                 break;
             };
+            route.last_audio = now;
             queue_egress(
                 &mut egress,
                 route.target.clone(),
@@ -862,15 +1208,14 @@ pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepa
             );
         }
     }
+    egress.extend(due_keepalives(&mut guard, now));
     drop(guard);
     for message in egress {
         let outbound_session = message.outbound_session;
-        if network
-            .send_personal_fabric_action(&message.target, message.action)
-            .is_err()
+        if let Err(error) = network.try_send_personal_fabric_action(&message.target, message.action)
             && let Ok(mut state) = state().lock()
         {
-            apply_send_failure(&mut state, outbound_session);
+            apply_send_failure(&mut state, outbound_session, &error, Instant::now());
         }
     }
 }
@@ -1052,17 +1397,41 @@ fn raw_audio_args() -> [&'static str; 12] {
     ]
 }
 
+/// Split off every whole stereo S16LE sample frame, leaving a torn trailing
+/// frame in `pending` for the next read to complete.
+fn take_whole_sample_frames(pending: &mut Vec<u8>) -> Vec<u8> {
+    let torn = pending
+        .len()
+        .checked_rem(REMOTE_AUDIO_SAMPLE_FRAME_BYTES)
+        .unwrap_or(0);
+    let whole = pending.len().saturating_sub(torn);
+    let tail = pending.split_off(whole);
+    std::mem::replace(pending, tail)
+}
+
+/// Forward capture in whole sample frames only. A pipe read can end mid
+/// frame, and dropping such a chunk under backpressure would shift every
+/// later sample by a byte or a channel; whole-frame chunks can be dropped
+/// without misaligning the stream.
 fn read_capture(mut stdout: impl Read, sender: &SyncSender<Vec<u8>>) {
     let mut buffer = vec![0_u8; PIPE_BUFFER];
-    while let Ok(read) = stdout.read(&mut buffer) {
-        if read == 0 {
-            break;
-        }
+    let mut pending = Vec::with_capacity(PIPE_BUFFER + REMOTE_AUDIO_SAMPLE_FRAME_BYTES);
+    loop {
+        let read = match stdout.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
         #[expect(
             clippy::indexing_slicing,
             reason = "Read::read never reports more bytes than the buffer it was given"
         )]
-        let chunk = buffer[..read].to_vec();
+        pending.extend_from_slice(&buffer[..read]);
+        let chunk = take_whole_sample_frames(&mut pending);
+        if chunk.is_empty() {
+            continue;
+        }
         match sender.try_send(chunk) {
             Ok(()) | Err(TrySendError::Full(_)) => {}
             Err(TrySendError::Disconnected(_)) => break,
@@ -1094,7 +1463,7 @@ mod tests {
         target: &DeviceId,
         selection: LocalAudioSelection,
         authorization: Option<[u8; 16]>,
-        created: Instant,
+        at: Instant,
     ) -> OutboundRoute {
         OutboundRoute {
             target: target.clone(),
@@ -1102,14 +1471,34 @@ mod tests {
             selection,
             authorization,
             sequence: 0,
-            created,
+            last_audio: at,
+            last_heard: at,
+            last_keepalive: at,
             capture: None,
             pending_pcm: Vec::new(),
         }
     }
 
+    fn inbound(source: &DeviceId, target: &DeviceId, at: Instant) -> InboundRoute {
+        InboundRoute {
+            source: source.clone(),
+            target: target.clone(),
+            label: "Podcast".into(),
+            authorization: [5; 16],
+            last_sequence: 7,
+            last_audio: at,
+            last_heard: at,
+            last_keepalive: at,
+            sink: None,
+        }
+    }
+
+    fn before(now: Instant, elapsed: Duration) -> Instant {
+        now.checked_sub(elapsed).unwrap()
+    }
+
     #[test]
-    fn replay_and_foreign_capabilities_cannot_advance_an_inbound_route() {
+    fn foreign_capabilities_cannot_feed_an_inbound_route() {
         let source = DeviceId::new("source").unwrap();
         let target = DeviceId::new("target").unwrap();
         let authorization = [7; 16];
@@ -1117,42 +1506,401 @@ mod tests {
             &source,
             &target,
             authorization,
-            8,
             &source,
             &target,
             authorization,
-            9,
         ));
         assert!(!frame_matches(
             &source,
             &target,
             authorization,
-            8,
-            &source,
-            &target,
-            authorization,
-            8,
-        ));
-        assert!(!frame_matches(
-            &source,
-            &target,
-            authorization,
-            8,
             &DeviceId::new("other").unwrap(),
             &target,
             authorization,
-            9,
         ));
         assert!(!frame_matches(
             &source,
             &target,
             authorization,
-            8,
+            &source,
+            &DeviceId::new("other").unwrap(),
+            authorization,
+        ));
+        assert!(!frame_matches(
+            &source,
+            &target,
+            authorization,
             &source,
             &target,
             [9; 16],
-            9,
         ));
+    }
+
+    #[test]
+    fn the_next_frame_plays_without_concealment() {
+        assert_eq!(admit_sequence(0, 1), Some(0));
+        assert_eq!(admit_sequence(8, 9), Some(0));
+    }
+
+    #[test]
+    fn duplicate_and_overtaken_frames_are_dropped() {
+        assert_eq!(admit_sequence(8, 8), None, "duplicate");
+        assert_eq!(admit_sequence(8, 7), None, "arrived after a newer frame");
+        assert_eq!(admit_sequence(u64::MAX, 1), None);
+    }
+
+    #[test]
+    fn a_lost_frame_is_concealed_and_the_route_keeps_playing() {
+        // Frame 9 was lost; 10 still plays, preceded by one frame of silence.
+        let concealed = admit_sequence(8, 10).unwrap();
+        assert_eq!(concealed, 1);
+        let frame = vec![1; MAX_REMOTE_AUDIO_FRAME_BYTES];
+        let pcm = with_concealment(concealed, &frame);
+        assert_eq!(pcm.len(), 2 * MAX_REMOTE_AUDIO_FRAME_BYTES);
+        assert!(
+            pcm[..MAX_REMOTE_AUDIO_FRAME_BYTES]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+        assert!(
+            pcm[MAX_REMOTE_AUDIO_FRAME_BYTES..]
+                .iter()
+                .all(|byte| *byte == 1)
+        );
+    }
+
+    #[test]
+    fn a_long_outage_conceals_only_a_bounded_amount_of_silence() {
+        let concealed = admit_sequence(8, 1_008).unwrap();
+        assert_eq!(concealed, MAX_CONCEALED_FRAMES);
+        let pcm = with_concealment(concealed, &[1; 4]);
+        assert_eq!(
+            pcm.len(),
+            5 * MAX_REMOTE_AUDIO_FRAME_BYTES + 4,
+            "100 ms of silence at most"
+        );
+    }
+
+    #[test]
+    fn reordered_frames_play_the_newest_and_drop_the_straggler() {
+        let mut last = 8;
+        let mut played = Vec::new();
+        for sequence in [10, 9, 11] {
+            if admit_sequence(last, sequence).is_some() {
+                last = sequence;
+                played.push(sequence);
+            }
+        }
+        assert_eq!(played, vec![10, 11]);
+    }
+
+    #[test]
+    fn a_silent_inbound_link_is_interrupted_and_surfaced() {
+        let source = DeviceId::new("source").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        let mut route = inbound(&source, &target, now);
+        route.last_heard = before(
+            now,
+            PEER_SILENCE_TIMEOUT.saturating_add(Duration::from_millis(1)),
+        );
+        state.inbound.insert([4; 16], route);
+        state
+            .inbound
+            .insert([6; 16], inbound(&source, &target, now));
+
+        let egress = reconcile_lifecycle(
+            &mut state,
+            true,
+            &BTreeSet::from([source.clone()]),
+            None,
+            now,
+        );
+
+        assert_eq!(
+            state.inbound.keys().copied().collect::<Vec<_>>(),
+            vec![[6; 16]]
+        );
+        assert_eq!(egress.len(), 1);
+        assert_eq!(
+            egress[0].action,
+            PersonalFabricAction::RemoteAudioStop {
+                session_id: [4; 16],
+                authorization: [5; 16],
+            }
+        );
+        let routes = route_views(&state, true);
+        let interrupted = routes
+            .iter()
+            .find(|route| route.session_id == [4; 16])
+            .unwrap();
+        assert_eq!(interrupted.phase, RemoteAudioPhase::Interrupted);
+        assert!(interrupted.inbound);
+        assert_eq!(interrupted.peer, source);
+        assert!(
+            route_views(&state, false)
+                .iter()
+                .all(|route| route.phase != RemoteAudioPhase::Interrupted),
+            "active route counts exclude interrupted notices"
+        );
+    }
+
+    #[test]
+    fn a_paused_but_alive_route_is_neither_interrupted_nor_expired() {
+        let source = DeviceId::new("source").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        let mut route = inbound(&source, &target, now);
+        // No audio for a minute, but the source's keepalives keep arriving.
+        route.last_audio = before(now, Duration::from_secs(60));
+        state.inbound.insert([4; 16], route);
+        let mut outgoing = outbound(&target, LocalAudioSelection::System, Some([9; 16]), now);
+        outgoing.last_audio = before(now, Duration::from_secs(60));
+        state.outbound.insert([7; 16], outgoing);
+
+        let egress = reconcile_lifecycle(
+            &mut state,
+            true,
+            &BTreeSet::from([source, target]),
+            None,
+            now,
+        );
+        assert!(egress.is_empty());
+        assert!(state.inbound.contains_key(&[4; 16]));
+        assert!(state.outbound.contains_key(&[7; 16]));
+        assert!(state.interrupted.is_empty());
+    }
+
+    #[test]
+    fn active_routes_outlive_the_idle_window_while_audio_flows() {
+        let source = DeviceId::new("source").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let now = Instant::now();
+        let approved_long_ago = before(
+            now,
+            IDLE_SESSION_TTL.saturating_add(Duration::from_secs(60)),
+        );
+        let mut state = RemoteAudioState::default();
+        let mut streaming = inbound(&source, &target, approved_long_ago);
+        streaming.last_audio = now;
+        streaming.last_heard = now;
+        state.inbound.insert([1; 16], streaming);
+        let mut idle = inbound(&source, &target, approved_long_ago);
+        idle.last_heard = now;
+        state.inbound.insert([2; 16], idle);
+
+        let egress = reconcile_lifecycle(&mut state, true, &BTreeSet::from([source]), None, now);
+        assert_eq!(
+            state.inbound.keys().copied().collect::<Vec<_>>(),
+            vec![[1; 16]]
+        );
+        assert_eq!(egress.len(), 1, "the idle route still expires");
+        assert!(
+            state.interrupted.is_empty(),
+            "expiry is not an interruption"
+        );
+    }
+
+    #[test]
+    fn a_source_without_target_keepalives_is_interrupted() {
+        let target = DeviceId::new("target").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        let mut route = outbound(&target, LocalAudioSelection::System, Some([9; 16]), now);
+        route.last_heard = before(
+            now,
+            PEER_SILENCE_TIMEOUT.saturating_add(Duration::from_millis(1)),
+        );
+        state.outbound.insert([1; 16], route);
+        // Awaiting consent has no keepalives yet and must not time out early.
+        let mut awaiting = outbound(&target, LocalAudioSelection::System, None, now);
+        awaiting.last_heard = before(now, Duration::from_secs(10));
+        state.outbound.insert([2; 16], awaiting);
+
+        let egress = reconcile_lifecycle(&mut state, true, &BTreeSet::from([target]), None, now);
+        assert_eq!(
+            state.outbound.keys().copied().collect::<Vec<_>>(),
+            vec![[2; 16]]
+        );
+        assert_eq!(egress.len(), 1);
+        assert_eq!(
+            state.interrupted.get(&[1; 16]).map(|notice| notice.inbound),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn interrupted_notices_expire_and_stay_bounded() {
+        let peer = DeviceId::new("peer").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        let notice = |age_secs: u64| InterruptedRoute {
+            peer: peer.clone(),
+            label: "Music".into(),
+            inbound: true,
+            at: before(now, Duration::from_secs(age_secs)),
+        };
+        for (id, age) in [(1, 20), (2, 19), (3, 18), (4, 17), (5, 16)] {
+            record_interruption(&mut state, [id; 16], notice(age));
+        }
+        assert_eq!(state.interrupted.len(), MAX_REMOTE_AUDIO_SESSIONS);
+        assert!(
+            !state.interrupted.contains_key(&[1; 16]),
+            "the oldest notice made room"
+        );
+
+        record_interruption(&mut state, [9; 16], notice(0));
+        let later = now.checked_add(Duration::from_secs(20)).unwrap();
+        reconcile_lifecycle(&mut state, true, &BTreeSet::new(), None, later);
+        assert_eq!(
+            state.interrupted.keys().copied().collect::<Vec<_>>(),
+            vec![[9; 16]],
+            "only notices inside the window remain"
+        );
+        reconcile_lifecycle(&mut state, false, &BTreeSet::new(), None, later);
+        assert!(state.interrupted.is_empty(), "disabling clears notices");
+    }
+
+    #[test]
+    fn keepalives_flow_both_ways_once_per_interval() {
+        let source = DeviceId::new("source").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let now = Instant::now();
+        let due = before(now, KEEPALIVE_INTERVAL);
+        let mut state = RemoteAudioState::default();
+        state.outbound.insert(
+            [1; 16],
+            outbound(&target, LocalAudioSelection::System, Some([9; 16]), due),
+        );
+        state.outbound.insert(
+            [2; 16],
+            outbound(&target, LocalAudioSelection::System, None, due),
+        );
+        state
+            .inbound
+            .insert([3; 16], inbound(&source, &target, due));
+
+        let egress = due_keepalives(&mut state, now);
+        assert_eq!(egress.len(), 2, "no keepalive before consent");
+        assert!(egress.iter().any(|message| {
+            message.target == target
+                && message.outbound_session == Some([1; 16])
+                && message.action
+                    == PersonalFabricAction::RemoteAudioKeepalive {
+                        session_id: [1; 16],
+                        authorization: [9; 16],
+                    }
+        }));
+        assert!(egress.iter().any(|message| {
+            message.target == source
+                && message.action
+                    == PersonalFabricAction::RemoteAudioKeepalive {
+                        session_id: [3; 16],
+                        authorization: [5; 16],
+                    }
+        }));
+        assert!(due_keepalives(&mut state, now).is_empty());
+    }
+
+    #[test]
+    fn a_full_transport_queue_drops_the_frame_but_keeps_the_route() {
+        let target = DeviceId::new("target").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        state.outbound.insert(
+            [1; 16],
+            outbound(&target, LocalAudioSelection::System, Some([4; 16]), now),
+        );
+
+        apply_send_failure(
+            &mut state,
+            Some([1; 16]),
+            &PersonalFabricSendError::Backpressure,
+            now,
+        );
+        assert!(state.outbound.contains_key(&[1; 16]));
+        assert!(state.interrupted.is_empty());
+    }
+
+    #[test]
+    fn capture_reads_forward_only_whole_sample_frames() {
+        struct TornReads {
+            chunks: Vec<Vec<u8>>,
+        }
+        impl Read for TornReads {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.chunks.is_empty() {
+                    return Ok(0);
+                }
+                let chunk = self.chunks.remove(0);
+                buffer[..chunk.len()].copy_from_slice(&chunk);
+                Ok(chunk.len())
+            }
+        }
+        let stream = (0..40_u8).collect::<Vec<_>>();
+        let reads = TornReads {
+            chunks: vec![
+                stream[..3].to_vec(),
+                stream[3..4].to_vec(),
+                stream[4..11].to_vec(),
+                stream[11..13].to_vec(),
+                stream[13..40].to_vec(),
+            ],
+        };
+        let (sender, receiver) = sync_channel(16);
+        read_capture(reads, &sender);
+        drop(sender);
+        let chunks = receiver.iter().collect::<Vec<_>>();
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.len() % 4 == 0 && !chunk.is_empty())
+        );
+        assert_eq!(chunks.concat(), stream);
+    }
+
+    #[test]
+    fn capture_backpressure_drops_whole_frames_and_stays_aligned() {
+        struct OddReads {
+            remaining: usize,
+            next: u8,
+        }
+        impl Read for OddReads {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let len = self.remaining.min(7);
+                for byte in &mut buffer[..len] {
+                    *byte = self.next;
+                    self.next = self.next.wrapping_add(1);
+                }
+                self.remaining = self.remaining.saturating_sub(len);
+                Ok(len)
+            }
+        }
+        // A one-slot queue that is never drained keeps only the first chunk
+        // and drops the rest; what survives still starts on a frame boundary.
+        let (sender, receiver) = sync_channel(1);
+        read_capture(
+            OddReads {
+                remaining: 7 * 20,
+                next: 0,
+            },
+            &sender,
+        );
+        let kept = receiver.try_recv().unwrap();
+        assert_eq!(kept, vec![0, 1, 2, 3]);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn whole_sample_frames_carry_the_torn_remainder() {
+        let mut pending = vec![1, 2, 3, 4, 5, 6];
+        assert_eq!(take_whole_sample_frames(&mut pending), vec![1, 2, 3, 4]);
+        assert_eq!(pending, vec![5, 6]);
+        pending.extend_from_slice(&[7, 8]);
+        assert_eq!(take_whole_sample_frames(&mut pending), vec![5, 6, 7, 8]);
+        assert!(pending.is_empty());
     }
 
     #[test]
@@ -1244,18 +1992,9 @@ mod tests {
             [2; 16],
             outbound(&target, LocalAudioSelection::System, Some([3; 16]), now),
         );
-        state.inbound.insert(
-            [4; 16],
-            InboundRoute {
-                source: source.clone(),
-                target: target.clone(),
-                label: "Podcast".into(),
-                authorization: [5; 16],
-                last_sequence: 7,
-                created: now,
-                sink: None,
-            },
-        );
+        state
+            .inbound
+            .insert([4; 16], inbound(&source, &target, now));
 
         let egress = reconcile_lifecycle(&mut state, false, &BTreeSet::new(), None, now);
         assert!(state.pending.is_empty());
@@ -1379,7 +2118,7 @@ mod tests {
     }
 
     #[test]
-    fn send_failure_is_terminal_for_only_its_exact_route() {
+    fn transport_failure_interrupts_only_its_exact_route() {
         let target = DeviceId::new("target").unwrap();
         let now = Instant::now();
         let mut state = RemoteAudioState::default();
@@ -1392,9 +2131,21 @@ mod tests {
             outbound(&target, LocalAudioSelection::System, Some([5; 16]), now),
         );
 
-        apply_send_failure(&mut state, Some([1; 16]));
+        apply_send_failure(
+            &mut state,
+            Some([1; 16]),
+            &PersonalFabricSendError::Rejected("personal fabric transport is closed".into()),
+            now,
+        );
         assert!(!state.outbound.contains_key(&[1; 16]));
         assert!(state.outbound.contains_key(&[2; 16]));
+        assert_eq!(
+            route_views(&state, true)
+                .iter()
+                .find(|route| route.session_id == [1; 16])
+                .map(|route| route.phase),
+            Some(RemoteAudioPhase::Interrupted)
+        );
     }
 
     #[test]

@@ -6021,7 +6021,7 @@ impl Widget for SheetsApp {
 
     /// Announce which sheet the local user is viewing, so peers can flag
     /// that tab. Keyed by sheet name (the same key
-    /// [`Self::draw_sheet_tab_presence`] reads on the receiving side).
+    /// `Self::draw_sheet_tab_presence` reads on the receiving side).
     fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
         let name = self.sheet_names.get(self.active_sheet)?;
         Some((
@@ -6064,7 +6064,7 @@ impl Widget for SheetsApp {
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its action, so it records one undo boundary bracketing it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }

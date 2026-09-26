@@ -1,7 +1,7 @@
 //! Saved cities as a Tilo global-search source.
 //!
-//! Mirrors the reference wiring in [`apps/contacts`]: Weather declares its
-//! searchable type by implementing [`SearchProvider`] over a snapshot of the
+//! Mirrors the reference wiring in `apps/contacts`: Weather declares its
+//! searchable type by implementing `SearchProvider` over a snapshot of the
 //! user's **saved** cities, so a saved location is findable from the unified
 //! Ctrl+K palette by name, region, or country. Every row addresses the saved
 //! location resource's exported `open` View action, so search, accessibility

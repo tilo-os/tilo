@@ -197,5 +197,9 @@ else
 fi
 has "$image_script" 'cosign verify --key "$TILO_REPO/keys/cosign.pub"' \
   'release helper verifies the WPE buildroot signature'
+has "$snapshot_workflow" 'cmp -s pinned-packages.txt new-packages.txt' \
+  'a WPE buildroot refresh compares its package set with the pinned buildroot'
+has "$snapshot_workflow" "echo '::notice::both buildroots install exactly the pinned packages; keeping the pins and the WPE layer cache'" \
+  'an unchanged WPE package set keeps the pins, so the engine layer cache stays valid'
 
 exit "$fail"

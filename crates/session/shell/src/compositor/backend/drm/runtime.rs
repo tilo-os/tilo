@@ -1177,8 +1177,16 @@ impl DrmDispatchState {
                 .map(|(entry, &size)| (entry.position, size)),
         );
 
-        self.output_meta = self
-            .live
+        self.output_meta = self.output_meta_for(&config);
+        self.rebuild_cursor_routing();
+    }
+
+    /// The public output table for the current live set and `config`.
+    fn output_meta_for(
+        &self,
+        config: &settings_store::hardware::DisplayConfig,
+    ) -> HashMap<OutputId, Output> {
+        self.live
             .iter()
             .map(|l| {
                 (
@@ -1203,12 +1211,11 @@ impl DrmDispatchState {
                             .and_then(|output| output.color_profile.as_ref())
                             .filter(|profile| self.color_profiles.contains_key(*profile))
                             .cloned(),
+                        refresh_mhz: l.refresh.and_then(crate::compositor::backend::interval_to_mhz),
                     },
                 )
             })
-            .collect();
-
-        self.rebuild_cursor_routing();
+            .collect()
     }
 
     /// Point every cursor plane at its output's rectangle in the *new* layout — a stale rect routes the pointer onto the wrong monitor.
@@ -2068,9 +2075,10 @@ impl DrmDispatchState {
     /// to keep that dispatcher short. Raw touch always reaches the shell's
     /// touch arena first. The first one or two contacts also reach `wl_touch`,
     /// but a third transfers the complete stream to shell gestures and sends
-    /// `wl_touch.cancel` for the partial client stream. A pointer click is
-    /// synthesized only after a confirmed one-finger tap ends, so no
-    /// multi-touch stream can press or drag the client or shell chrome.
+    /// `wl_touch.cancel` for the partial client stream. A confirmed
+    /// one-finger tap additionally ends in [`BackendEvent::TouchTap`], which
+    /// the compositor may turn into a chrome click, so no multi-touch stream
+    /// can press or drag the client or shell chrome.
     fn handle_libinput_touch_event(&mut self, event: InputEvent<LibinputInputBackend>) {
         match event {
             InputEvent::TouchDown { event } => {
@@ -2188,15 +2196,7 @@ impl DrmDispatchState {
             self.push(BackendEvent::Touch(TiloTouchEvent::Up { slot: id }));
         }
         if emulate_pointer {
-            self.push(BackendEvent::Input(cursor_moved_event(x, y)));
-            self.push(BackendEvent::Input(mouse_input_event(
-                ElementState::Pressed,
-                MouseButton::Left,
-            )));
-            self.push(BackendEvent::Input(mouse_input_event(
-                ElementState::Released,
-                MouseButton::Left,
-            )));
+            self.push(BackendEvent::TouchTap { x, y });
         }
     }
 
@@ -4985,7 +4985,7 @@ mod tests {
                 event,
                 BackendEvent::Input(
                     WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
-                )
+                ) | BackendEvent::TouchTap { .. }
             )),
             "a shell-owned multi-touch stream must not synthesize client/chrome pointer motion, press, drag, or click"
         );
@@ -5015,7 +5015,7 @@ mod tests {
     }
 
     #[test]
-    fn a_single_touch_keeps_client_touch_and_becomes_one_chrome_click_at_release() {
+    fn a_single_touch_keeps_client_touch_and_reports_one_tap_at_release() {
         let mut state = DrmDispatchState::default();
         let key = test_touch_key("panel", 7);
         state.handle_direct_touch_down(key.clone(), 320.0, 240.0);
@@ -5046,37 +5046,27 @@ mod tests {
                 TiloTouchEvent::Up { slot: 0 },
             ]
         );
-        let pointer_events: Vec<_> = state
+        let taps: Vec<_> = state
             .events
             .iter()
             .filter_map(|event| match event {
-                BackendEvent::Input(WindowEvent::CursorMoved { position, .. }) => {
-                    Some(("move", position.x, position.y))
-                }
-                BackendEvent::Input(WindowEvent::MouseInput { state, button, .. }) => Some((
-                    if *state == ElementState::Pressed {
-                        "press"
-                    } else {
-                        "release"
-                    },
-                    0.0,
-                    if *button == MouseButton::Left {
-                        1.0
-                    } else {
-                        0.0
-                    },
-                )),
+                BackendEvent::TouchTap { x, y } => Some((*x, *y)),
                 _ => None,
             })
             .collect();
         assert_eq!(
-            pointer_events,
-            [
-                ("move", 324.0, 242.0),
-                ("press", 0.0, 1.0),
-                ("release", 0.0, 1.0)
-            ],
-            "the release-confirmed click keeps ordinary one-finger chrome controls usable"
+            taps,
+            [(324.0, 242.0)],
+            "the release-confirmed tap is reported once, at the release position"
+        );
+        assert!(
+            !state.events.iter().any(|event| matches!(
+                event,
+                BackendEvent::Input(
+                    WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+                )
+            )),
+            "the backend must not click on its own: only the compositor knows whether the tap already reached a client"
         );
     }
 
@@ -5227,7 +5217,7 @@ mod tests {
                 event,
                 BackendEvent::Input(
                     WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
-                )
+                ) | BackendEvent::TouchTap { .. }
             )),
             "a movement beyond touch slop is deliberately not converted into a late click"
         );

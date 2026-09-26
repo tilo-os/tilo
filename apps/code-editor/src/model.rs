@@ -237,7 +237,7 @@ impl Project {
         id
     }
 
-    /// The id [`alloc`](Self::alloc) will hand out next. Captured at authoring
+    /// The id `alloc` will hand out next. Captured at authoring
     /// time so the Ctrl+K "New file" action and the app's own `New File` command
     /// target the same buffer node id (and therefore build the identical action).
     pub fn peek_next_id(&self) -> NodeId {
@@ -248,7 +248,7 @@ impl Project {
     /// Ctrl+K "New file" action or by a peer) as a tracked in-memory file under
     /// the root, using its document-assigned `id` verbatim so the in-memory node
     /// and the buffer key stay in agreement. Idempotent, and bumps the allocator
-    /// past `id` so a later [`alloc`](Self::alloc) cannot collide with it. The
+    /// past `id` so a later `alloc` cannot collide with it. The
     /// buffer's text stays in the CRDT; this only creates the in-memory shell the
     /// tree and tabs read from — no persisted file model is invented.
     pub fn adopt_file(&mut self, id: NodeId, name: &str) {
@@ -713,7 +713,7 @@ impl Project {
     /// repository the size of this one instant — the alternative, walking the
     /// whole tree up front, would read hundreds of thousands of entries before
     /// the first frame. Build output and VCS internals are skipped entirely
-    /// (see [`crate::disk::IGNORED_DIRS`]): `target/` here holds more files
+    /// (see `crate::disk::IGNORED_DIRS`): `target/` here holds more files
     /// than the rest of the repository by two orders of magnitude, and none of
     /// them is source anyone opens.
     ///
@@ -915,7 +915,7 @@ pub struct OpenBuffer {
     pub path: Option<PathBuf>,
     /// The state the file was in when we last agreed with it — set on open and
     /// on every successful save. Save re-stats against this to refuse
-    /// clobbering someone else's write; see [`crate::disk::save`].
+    /// clobbering someone else's write; see `crate::disk::save`.
     pub stamp: Option<crate::disk::Stamp>,
     /// The text as last read from or written to disk. Dirty is
     /// `buffer_text != saved_text` — a real comparison rather than a flag that

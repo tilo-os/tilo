@@ -877,6 +877,9 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(values["shard_count"], "1")
         self.assertEqual(values["estimated_cost"], str(plan["estimated_cost"]))
         self.assertEqual(json.loads(values["clippy_matrix"]), plan["matrix"])
+        # An x86_64-only plan needs no standalone check: Clippy covers it.
+        self.assertEqual(json.loads(values["check_matrix"]), {"include": []})
+        self.assertEqual(values["check_required"], "false")
 
     def test_clippy_matrix_lints_each_package_set_once_on_x86(self) -> None:
         self.install_builder_recipe()
@@ -890,6 +893,15 @@ class SelectorTests(unittest.TestCase):
                          sorted(row["packages"] for row in rows if row["arch"] == "aarch64"))
         for row in rows:
             self.assertEqual(row["check_runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
+        # Architectures Clippy does not lint keep a standalone all-target check.
+        check = plan["check_matrix"]["include"]
+        self.assertEqual(check, [row for row in rows if row["arch"] != "x86_64"])
+        self.assertEqual(sorted(row["packages"] for row in check),
+                         sorted(row["packages"] for row in clippy))
+        output = self.root / "github-output"
+        ci_select.emit_github(plan, output)
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        self.assertEqual(values["check_required"], "true")
 
     def test_changed_files_fails_when_merge_base_is_unavailable(self) -> None:
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
