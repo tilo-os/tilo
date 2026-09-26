@@ -443,6 +443,10 @@ mod tests {
     fn boolean_flags_default_off_and_are_found_anywhere() {
         type Parse = fn(&[&str]) -> bool;
         // (flag, parser, argument lists that must parse false, argument lists that must parse true)
+        #[allow(
+            clippy::type_complexity,
+            reason = "one row per flag: name, parser, accepted and rejected argv sets"
+        )]
         let cases: &[(&str, Parse, &[&[&str]], &[&[&str]])] = &[
             // Peer sync is default-on elsewhere; the legacy enable flag is not required for it.
             (
@@ -566,6 +570,10 @@ mod tests {
     fn marker_path_prefers_xdg_then_home_and_treats_empty_as_unset() {
         use std::ffi::OsStr;
         use std::path::PathBuf;
+        #[allow(
+            clippy::type_complexity,
+            reason = "one row per case: name and the three optional inputs"
+        )]
         let cases: &[(&str, Option<&str>, Option<&str>, Option<&str>)] = &[
             (
                 "prefers XDG_CONFIG_HOME",

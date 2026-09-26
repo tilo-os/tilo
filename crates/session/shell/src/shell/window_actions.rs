@@ -556,26 +556,10 @@ mod tests {
     #[test]
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the borrow feeds a chain of derived references (strip -> window_groups -> \
-    group -> tab) used through the assertions right after; ending it earlier \
-    would mean cloning test fixture data for no real gain"
-    )]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "each borrow feeds a chain of derived references (strip -> window_groups -> \
-    original) used through the assertion right after; ending it earlier would mean \
+        reason = "each phase's borrow feeds a chain of derived references (strip -> \
+    window_groups -> group -> tab) used through the assertions right after, or only builds \
+    the fixture and is dropped at its block's closing brace; ending it earlier would mean \
     cloning test fixture data for no real gain"
-    )]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "each borrow feeds a chain of derived references used through the assertion \
-    right after; ending it earlier would mean cloning test fixture data for no \
-    real gain"
-    )]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the mutable borrow's only job in this block is building the fixture; it's \
-    already dropped at the block's closing brace, right after its last use"
     )]
     #[allow(
         clippy::too_many_lines,
