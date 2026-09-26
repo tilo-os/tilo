@@ -12,8 +12,11 @@ real home directory and their original confinement model, and Tilo labels them
 as unconfined host apps rather than implying they use Tilo package policy. On
 Fedora, `xwayland-satellite` is a hard package dependency so legacy X11-only
 applications continue to open; native Wayland applications still use the Tilo
-socket directly. The complete Tilo image remains Wayland-only—this compatibility
-bridge is enabled only by the explicit host-desktop session mode.
+socket directly. The complete Tilo image ships the same bridge. Because X11 does
+not isolate its clients from each other, every workspace gets its own X server,
+display number and authority cookie, started when its first X11 client connects
+and stopped when the workspace closes or no X client remains; an app only ever
+receives the display of the workspace it opens in.
 
 The wrapper owns `graphical-session.target` for the lifetime of Tilo, clears
 display variables left by the preceding desktop before starting it, and removes
