@@ -3,6 +3,7 @@
 //! Enter invokes the selected entry's `on_select` with the CRDT handle and
 //! root path directly — there is no message layer.
 
+use crate::search::fuzzy_score;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -363,39 +364,6 @@ fn elide_middle(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> Str
         }
     }
     "\u{2026}".to_string()
-}
-
-/// `Some(match_count - gap_penalty)` when `query` matches `text` as a
-/// case-insensitive subsequence; `None` otherwise.
-fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
-    if query.is_empty() {
-        return Some(0);
-    }
-    let q: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
-    let t: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
-    let mut qi = 0usize;
-    let mut matches = 0i32;
-    let mut gaps = 0i32;
-    let mut prev_match: Option<usize> = None;
-    for (ti, ch) in t.iter().enumerate() {
-        if q.get(qi) == Some(ch) {
-            if let Some(pm) = prev_match {
-                let gap = ti.saturating_sub(pm).saturating_sub(1);
-                gaps = gaps.saturating_add(i32::try_from(gap).unwrap_or(i32::MAX));
-            }
-            prev_match = Some(ti);
-            qi = qi.saturating_add(1);
-            matches = matches.saturating_add(1);
-            if qi == q.len() {
-                break;
-            }
-        }
-    }
-    if qi < q.len() {
-        None
-    } else {
-        Some(matches.saturating_sub(gaps))
-    }
 }
 
 /// Narrows a layout/measurement value to `f32` for vello/taffy. Every call

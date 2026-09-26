@@ -43,14 +43,13 @@ pub fn menu_id(key: &str, id: i32) -> String {
     format!("menu:{id}:{key}")
 }
 
+/// The shared ranker over a tray row's names, each of which names it.
 fn matches(needle: &str, haystacks: &[&str]) -> Option<i32> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    haystacks
+    let fields: Vec<ui::search::RankField<'_>> = haystacks
         .iter()
-        .any(|text| text.to_lowercase().contains(needle))
-        .then_some(60)
+        .map(|text| ui::search::RankField::new(text, ui::search::FieldWeight::TITLE))
+        .collect();
+    crate::shell::search::rank_fields(needle, &fields)
 }
 
 fn row(

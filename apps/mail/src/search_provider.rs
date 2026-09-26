@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
-    SearchPage, SearchProvider, SearchResult,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, FieldWeight, SearchCatalog,
+    SearchCursor, SearchPage, SearchProvider, SearchRecord, SearchResult,
 };
 
 use crate::model::{Folder, Mailbox};
@@ -135,7 +135,7 @@ impl MailSearchProvider {
     fn replace_snapshot(
         &self,
         revision: u64,
-        catalog_rows: Vec<(String, String, SearchResult)>,
+        catalog_rows: Vec<SearchRecord>,
         resource_rows: HashMap<String, crate::actions::MessageRow>,
     ) -> Result<(), String> {
         let mut state = self
@@ -148,7 +148,7 @@ impl MailSearchProvider {
         {
             return Ok(());
         }
-        if let Err(error) = self.catalog.replace_all(catalog_rows) {
+        if let Err(error) = self.catalog.replace_all_records(catalog_rows) {
             let error = format!("Mail search could not replace its catalogue: {error}");
             state.last_error = Some(error.clone());
             return Err(error);
@@ -180,7 +180,7 @@ impl MailSearchProvider {
         self.materialized_resources.load(Ordering::Relaxed)
     }
 
-    fn message_catalog_row(message: &crate::model::Message) -> (String, String, SearchResult) {
+    fn message_catalog_row(message: &crate::model::Message) -> SearchRecord {
         let resource_id = format!("mail.message:{}", message.id);
         let result = SearchResult::for_action(
             MAIL_KIND,
@@ -193,44 +193,40 @@ impl MailSearchProvider {
         )
         .with_subtitle(message.from.display())
         .with_icon(Icon::Mail);
-        (
-            resource_id,
-            format!(
-                "{}\n{}\n{}\n{}\n{}",
-                message.subject,
-                message.from.display(),
-                message.from.email,
-                message.body,
-                message.labels.join(" ")
-            ),
-            result,
-        )
+        SearchRecord::new(resource_id, result)
+            .field(&message.subject, FieldWeight::TITLE)
+            .field(message.from.display(), FieldWeight::SUBTITLE)
+            .field(&message.from.email, FieldWeight::IDENTITY)
+            .field(message.labels.join(" "), FieldWeight::METADATA)
+            .field(&message.body, FieldWeight::BODY)
     }
 
-    fn folder_catalog_row(folder: Folder) -> (String, String, SearchResult) {
+    fn folder_catalog_row(folder: Folder) -> SearchRecord {
         let address = Self::folder_address(folder);
-        (
+        SearchRecord::new(
             address.resource.clone(),
-            folder.title().to_string(),
             SearchResult::for_action(FOLDER_KIND, folder.title(), address)
                 .with_subtitle("Mail folder")
                 .with_icon(folder.icon()),
         )
+        .field(folder.title(), FieldWeight::TITLE)
     }
 
     #[cfg(test)]
     pub(crate) fn inject_snapshot_failure_for_test(&self) {
         let error = self.replace_snapshot(
             u64::MAX,
-            vec![(
-                "mail.message:not-the-address".to_string(),
-                "invalid row".to_string(),
-                SearchResult::for_action(
-                    MAIL_KIND,
-                    "Invalid row",
-                    Self::message_address(uuid::Uuid::nil()),
-                ),
-            )],
+            vec![
+                SearchRecord::new(
+                    "mail.message:not-the-address",
+                    SearchResult::for_action(
+                        MAIL_KIND,
+                        "Invalid row",
+                        Self::message_address(uuid::Uuid::nil()),
+                    ),
+                )
+                .field("invalid row", FieldWeight::TITLE),
+            ],
             HashMap::new(),
         );
         debug_assert!(error.is_err(), "test fixture must reject the bad row");
@@ -699,15 +695,17 @@ mod tests {
         let existing = mailbox.messages.values().next().unwrap();
         let error = provider.replace_snapshot(
             mailbox.search_revision() + 1,
-            vec![(
-                "mail.message:not-the-address".to_string(),
-                "invalid row".to_string(),
-                SearchResult::for_action(
-                    MAIL_KIND,
-                    "Invalid row",
-                    MailSearchProvider::message_address(existing.id),
-                ),
-            )],
+            vec![
+                SearchRecord::new(
+                    "mail.message:not-the-address",
+                    SearchResult::for_action(
+                        MAIL_KIND,
+                        "Invalid row",
+                        MailSearchProvider::message_address(existing.id),
+                    ),
+                )
+                .field("invalid row", FieldWeight::TITLE),
+            ],
             HashMap::new(),
         );
         assert!(

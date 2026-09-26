@@ -8,6 +8,8 @@
 use std::fmt::Write as _;
 use std::rc::Rc;
 
+use ui::search::{FieldWeight, RankField};
+
 use crate::shell::chrome_state::Chrome;
 use crate::shell::search::action_api::{ActionArgs, ActionError};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
@@ -15,23 +17,13 @@ use crate::shell::state::{GroupId, TabId, TileContent};
 
 pub const PROVIDER_ID: &str = "desktop-windows";
 
+/// The shared ranker over a window's names, every one of which names it.
 fn score(needle: &str, fields: &[&str]) -> Option<i32> {
-    let needle = needle.trim().to_lowercase();
-    if needle.is_empty() {
-        return Some(0);
-    }
-    fields.iter().find_map(|field| {
-        let field = field.to_lowercase();
-        if field == needle {
-            Some(100)
-        } else if field.starts_with(&needle) {
-            Some(90)
-        } else if field.contains(&needle) {
-            Some(60)
-        } else {
-            None
-        }
-    })
+    let fields: Vec<RankField<'_>> = fields
+        .iter()
+        .map(|field| RankField::new(field, FieldWeight::TITLE))
+        .collect();
+    crate::shell::search::rank_fields(needle, &fields)
 }
 
 fn close_contract() -> tilo_actions::ActionContract {
