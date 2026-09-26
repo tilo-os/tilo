@@ -353,9 +353,27 @@ fn parse_public_room_command<'a>(
             })?;
             json!({ "op": "room_status", "room": room })
         }
+        "grant" => {
+            let (Some(room), Some(person)) = (iter.next(), iter.next()) else {
+                return Err(ParseError::Usage(
+                    "public-room grant ROOM PERSON [--role viewer|commenter|editor]".to_string(),
+                ));
+            };
+            let role = match (iter.next().map(String::as_str), iter.next()) {
+                (None, _) => "editor".to_string(),
+                (Some("--role"), Some(role)) => role.clone(),
+                _ => {
+                    return Err(ParseError::Usage(
+                        "public-room grant ROOM PERSON [--role viewer|commenter|editor]"
+                            .to_string(),
+                    ));
+                }
+            };
+            json!({ "op": "room_grant", "room": room, "person": person, "role": role })
+        }
         other => {
             return Err(ParseError::Usage(format!(
-                "public-room: unknown verb `{other}` (create, invite, status)"
+                "public-room: unknown verb `{other}` (create, invite, status, grant)"
             )));
         }
     };
@@ -1142,6 +1160,8 @@ fn print_usage() {
          \x20 public-room invite ROOM [--role viewer|commenter] [--expires-in SECONDS]\n\
          \x20                               mint its standing invitation (multi-use, max commenter)\n\
          \x20 public-room status ROOM       a room's channel class and your role in it\n\
+         \x20 public-room grant ROOM PERSON [--role viewer|commenter|editor]\n\
+         \x20                               grant a role in a room you govern (default editor)\n\
          \x20 inspect apps                  list app connections that answer inspection\n\
          \x20                               (PEER id, app id, room, record)\n\
          \x20                               PEER below may also be surface:ID, a window's surface\n\

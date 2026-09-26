@@ -197,6 +197,13 @@ pub enum Command {
     /// A room's channel class, whether governance stated it, and this
     /// session's role in it.
     RoomStatus { room: String },
+    /// Grant `person` (a person id) `role` (viewer, commenter or editor) in a
+    /// room this machine governs.
+    RoomGrant {
+        room: String,
+        person: String,
+        role: String,
+    },
     /// Read the latest broker lifecycle state for an invocation receipt id.
     ActionsStatus { invocation_id: u64 },
     /// Request cooperative cancellation for an invocation receipt id.
@@ -678,7 +685,8 @@ pub fn dispatch_command<S: ControlState>(
         | Command::CommunityDirectRoom { .. }
         | Command::PublicRoomCreate { .. }
         | Command::StandingInvite { .. }
-        | Command::RoomStatus { .. } => (community(state, cmd), Vec::new()),
+        | Command::RoomStatus { .. }
+        | Command::RoomGrant { .. } => (community(state, cmd), Vec::new()),
         Command::CheckAction {
             actor,
             app,
@@ -1143,6 +1151,26 @@ fn community<S: ControlState>(state: &S, cmd: &Command) -> Response {
             }
         }
         Command::RoomStatus { room } => CommunityRequest::RoomStatus { room: room.clone() },
+        Command::RoomGrant { room, person, role } => {
+            let role = match role.as_str() {
+                "viewer" => InviteRole::Viewer,
+                "commenter" => InviteRole::Commenter,
+                "editor" => InviteRole::Editor,
+                other => {
+                    return Response::Err {
+                        code: "parse_error".into(),
+                        message: format!(
+                            "a room role is viewer, commenter or editor, not {other:?}"
+                        ),
+                    };
+                }
+            };
+            CommunityRequest::GrantRole {
+                room: room.clone(),
+                person: person.clone(),
+                role,
+            }
+        }
         _ => {
             return Response::Err {
                 code: "parse_error".into(),
