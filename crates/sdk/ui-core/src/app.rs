@@ -523,6 +523,9 @@ pub struct App {
     /// Studio. Throttled so the render loop does not stat the file per frame.
     theme_store_stamp: Option<crate::time::SystemTime>,
     last_theme_store_check: Instant,
+    /// The schedule an "Automatic" theme follows and whether it was night
+    /// when last applied: sunrise and sunset re-theme without a file change.
+    theme_schedule: Option<(settings_store::day_schedule::Scheduled, bool)>,
     input: InputRuntime,
 
     focus_history: HistoryRuntime,
@@ -1266,6 +1269,7 @@ impl App {
             appearance_reconcile: false,
             theme_store_stamp: (inputs.theme_store_stamp)(),
             last_theme_store_check: crate::time::now(),
+            theme_schedule: None,
             focus_history: HistoryRuntime::new(),
             collaboration: CollaborationRuntime::new(
                 inputs.collab_manager,
@@ -1681,6 +1685,21 @@ impl App {
 
     #[cfg(feature = "native")]
     fn reconcile_configured_theme(&mut self) -> bool {
+        let now = crate::time::now();
+        if self.watch_system_settings
+            && now.saturating_duration_since(self.last_theme_store_check)
+                >= Duration::from_millis(750)
+            && self.theme_schedule.is_some_and(|(schedule, night)| {
+                schedule.is_night(crate::theme::local_moment()) != night
+            })
+        {
+            self.last_theme_store_check = now;
+            self.apply_configured_theme();
+            self.rebuild_theme();
+            self.layout.layout_dirty = true;
+            self.layout.structure_dirty = true;
+            return true;
+        }
         self.reconcile_configured_theme_with(
             crate::time::now(),
             || {
@@ -1721,6 +1740,9 @@ impl App {
     #[cfg(feature = "native")]
     fn apply_configured_theme(&mut self) {
         self.accessibility.base_theme = Theme::configured();
+        self.theme_schedule =
+            Theme::automatic_schedule_from(settings_store::settings_path().as_deref())
+                .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
