@@ -1558,6 +1558,7 @@ impl LiveAppActionsProvider {
             app_id: root.app_id.clone(),
             resource: row.resource.id.clone(),
             label: row.resource.label.clone(),
+            kind: row.resource.kind.clone(),
         };
         let title = row.resource.label.clone();
         Some(SearchResult {
@@ -3253,6 +3254,7 @@ mod tests {
                 app_id: "so.tilo.reader".into(),
                 resource: "book:42".into(),
                 label: "Book of Tilo".into(),
+                kind: "book".into(),
             })
         );
         let chrome_ref = chrome.borrow();

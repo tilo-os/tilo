@@ -2836,6 +2836,14 @@ impl FrameHarness {
             self.touch_pointer = touch_pointer;
             self.dispatch_touch_pointer(touch.device_id, pointer_events);
         }
+        // Mouse side buttons navigate the tree's history, as in the live host.
+        if let Some(direction) = crate::interaction::mouse_nav_direction(event)
+            && self
+                .root
+                .on_nav_gesture(direction, &mut self.state.doc, &self.state.root)
+        {
+            return;
+        }
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
         let standalone_input = self.history_event(event, &mut handled, &mut focus_target);

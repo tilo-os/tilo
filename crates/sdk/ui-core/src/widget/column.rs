@@ -5,6 +5,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
+use std::any::Any;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -20,6 +21,9 @@ pub struct Column {
     /// Retained Taffy identities for `children`. Rebuilt only with the layout
     /// tree; hot event/layout traversal must not allocate `taffy.children()`.
     child_nodes: Vec<NodeId>,
+    /// Stable graph / test identity when this column was built from a
+    /// serialized UI node.
+    id: Option<String>,
     rect: vello::kurbo::Rect,
     /// Overflow extent used for culling independently of an exact allocation.
     paint_rect: vello::kurbo::Rect,
@@ -62,6 +66,7 @@ impl Column {
         Self {
             children: Vec::new(),
             child_nodes: Vec::new(),
+            id: None,
             rect: vello::kurbo::Rect::ZERO,
             paint_rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
@@ -105,6 +110,44 @@ impl Column {
     pub fn push(mut self, child: Box<dyn Widget>) -> Self {
         self.children.push(child);
         self
+    }
+
+    /// Address this column by a stable id in inspection and graph reconcile.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Take ownership of the child list for identity-preserving reconcile.
+    pub fn take_children(&mut self) -> Vec<Box<dyn Widget>> {
+        self.child_nodes.clear();
+        self.cache_present = false;
+        std::mem::take(&mut self.children)
+    }
+
+    /// Replace the child list after a graph reconcile pass.
+    pub fn set_children(&mut self, children: Vec<Box<dyn Widget>>) {
+        self.children = children;
+        self.child_nodes.clear();
+        self.cache_present = false;
+    }
+
+    /// Apply layout flags from a serialized column node without rebuilding.
+    pub fn apply_graph_props(
+        &mut self,
+        id: &str,
+        gap: Option<f32>,
+        no_padding: bool,
+        intrinsic_height: bool,
+        fill_remaining_height: bool,
+    ) {
+        self.id = Some(id.to_owned());
+        self.gap_override = gap;
+        self.no_padding = no_padding;
+        self.intrinsic_height = intrinsic_height;
+        self.fill_remaining_height = fill_remaining_height;
+        self.cache_present = false;
     }
 
     /// Extra padding on the left, on top of the default
@@ -487,6 +530,14 @@ impl Widget for Column {
 
     fn name(&self) -> &'static str {
         "Column"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
     }
 
     fn is_focused(&self) -> bool {
