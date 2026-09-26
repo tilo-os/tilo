@@ -1940,6 +1940,18 @@ pub(crate) fn plural(n: usize, singular: &str, plural: &str) -> String {
 }
 
 impl Widget for TypstApp {
+    /// A failed compile is what the preview's warning banner reports.
+    fn open_overlays(&self) -> Vec<ui::view::OverlayState> {
+        if self.preview.is_stale() {
+            vec![ui::view::OverlayState::Banner {
+                severity: ui::view::OverlaySeverity::Warning,
+                title: Some(PreviewPane::STALE_NOTICE.into()),
+            }]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
     }

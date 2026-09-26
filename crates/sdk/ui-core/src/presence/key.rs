@@ -236,7 +236,7 @@ mod view_key_tests {
                 },
                 OpenOverlay {
                     owner: "w7".into(),
-                    state: OverlayState::Dialog,
+                    state: OverlayState::Dialog { dialog: None },
                 },
                 OpenOverlay {
                     owner: "w9".into(),

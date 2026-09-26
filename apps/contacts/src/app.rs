@@ -45,6 +45,7 @@ use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 use ui::tokens::colors::{Colors, over};
 use ui::tokens::spacing::Spacing;
 use ui::tokens::typography::TypeScale;
+use ui::widget::modal_frame::{ModalAction, ModalFrame, ModalHit, ModalSpec};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Avatar, Button, ButtonFace, ButtonStyle, Checkbox, CheckboxFace, Chip, ChipLead, ChipStyle,
@@ -1325,6 +1326,9 @@ pub struct ContactsApp {
     /// When switching to another contact would lose unsaved edits, the
     /// target id parks here while the "Save changes?" modal is shown.
     pending_switch: Option<ContactId>,
+    /// The shared modal frame's layout for the unsaved-changes prompt, as
+    /// last painted.
+    unsaved_layout: Option<ui::widget::modal_frame::ModalLayout>,
     unsaved_focus: UnsavedFocus,
 
     // geometry
@@ -1502,6 +1506,7 @@ impl ContactsApp {
             duplicate_candidate_heads: Vec::new(),
             export_dialog: ExportDialog::new(),
             pending_switch: None,
+            unsaved_layout: None,
             unsaved_focus: UnsavedFocus::Cancel,
             rect: Rect::ZERO,
             split_pos: 0.34,
@@ -3820,6 +3825,8 @@ impl ContactsApp {
         }
         if self.pending_switch.is_some() {
             self.draw_unsaved_modal(scene, transform, tr, theme);
+        } else {
+            self.unsaved_layout = None;
         }
         if !self.import_conflicts.is_empty() {
             self.ensure_import_conflict_dialog();
@@ -5552,87 +5559,61 @@ impl ContactsApp {
     }
 
     /// The "Save changes?" guard modal shown when the user tries to switch
-    /// contacts while an edit form holds unsaved changes.
+    /// contacts while an edit form holds unsaved changes, framed by the shared
+    /// modal chrome. The painted layout is kept so hit testing and the
+    /// accessibility bounds use exactly what was drawn.
     fn draw_unsaved_modal(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let c = &theme.tokens.colors;
-        let scale = self.layout_scale();
-        scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &self.rect);
-        let g = self.unsaved_geometry();
-        menu_panel(scene, t, theme, g.panel);
-        tr.draw_text_weighted(
-            scene,
-            "Save changes?",
-            16.0,
-            c.text_primary,
-            t * Affine::translate((g.panel.x0 + 20.0, g.panel.y0 + 20.0 * scale)),
-            None,
-            TextWeight::Bold,
-        );
         let name = self
             .form
             .as_ref()
             .map(|f| f.draft.display_name())
             .unwrap_or_default();
+        let body = format!("You have unsaved changes to \u{201C}{name}\u{201D}.");
+        let m = self.last_mouse;
+        let hovered = self
+            .unsaved_layout
+            .as_ref()
+            .and_then(|layout| layout.hit(m));
+        let focus = match self.unsaved_focus {
+            UnsavedFocus::Cancel => 0,
+            UnsavedFocus::Discard => 1,
+            UnsavedFocus::Save => 2,
+        };
+        let mut actions = [
+            ModalAction::secondary("Cancel"),
+            ModalAction::secondary("Discard"),
+            ModalAction::primary("Save"),
+        ];
+        for (index, action) in actions.iter_mut().enumerate() {
+            action.focused = focus == index;
+            action.hovered = hovered == Some(ModalHit::Action(index));
+        }
+        let size = theme.tokens.typography.scale.sm;
+        let spec = ModalSpec::new("Save changes?")
+            .actions(&actions)
+            .dismiss_on_scrim(false);
+        let preliminary = ModalFrame::layout(self.rect, &spec, tr, theme);
+        let width = ui::num::f32_of_f64(preliminary.body.width().max(1.0));
+        let (_, measured) = tr.measure(&body, size, Some(width));
+        let spec = spec.body_height(f64::from(measured) + 8.0);
+        let layout = ModalFrame::layout(self.rect, &spec, tr, theme);
+        ModalFrame::paint_backdrop(scene, t, tr, theme, &layout, &spec);
         tr.draw_text(
             scene,
-            &format!("You have unsaved changes to \u{201C}{name}\u{201D}."),
-            13.0,
-            c.text_dim,
-            t * Affine::translate((g.panel.x0 + 20.0, g.panel.y0 + 48.0 * scale)),
-            Some((g.panel.width() - 40.0) as f32),
+            &body,
+            size,
+            ModalFrame::ink(theme).0,
+            t * Affine::translate((layout.body.x0, layout.body.y0)),
+            Some(width),
         );
-        let m = self.last_mouse;
-        toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
-            g.cancel,
-            "Cancel",
-            false,
-            g.cancel.contains(m),
-            false,
-        );
-        toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
-            g.discard,
-            "Discard",
-            false,
-            g.discard.contains(m),
-            false,
-        );
-        toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
-            g.save,
-            "Save",
-            true,
-            g.save.contains(m),
-            false,
-        );
-        let focused = match self.unsaved_focus {
-            UnsavedFocus::Cancel => g.cancel,
-            UnsavedFocus::Discard => g.discard,
-            UnsavedFocus::Save => g.save,
-        };
-        scene.stroke(
-            &Stroke::new(2.0),
-            t,
-            c.border_focus,
-            None,
-            &RoundedRect::from_rect(focused.inflate(2.0, 2.0), f64::from(theme.tokens.radii.md)),
-        );
+        ModalFrame::paint_actions(scene, t, tr, theme, &layout, &spec);
+        self.unsaved_layout = Some(layout);
     }
 
     /// Build the shared destructive confirmation for one contact. Callback
@@ -5995,6 +5976,18 @@ struct UnsavedGeom {
 
 impl ContactsApp {
     fn unsaved_geometry(&self) -> UnsavedGeom {
+        if let Some(layout) = &self.unsaved_layout
+            && let [cancel, discard, save] = layout.actions[..]
+        {
+            return UnsavedGeom {
+                panel: layout.card,
+                save,
+                discard,
+                cancel,
+            };
+        }
+        // Before the first paint: the same centred card, for hit tests that
+        // arrive in the frame the prompt opens.
         let scale = self.layout_scale();
         let w = (420.0 * scale).min((self.rect.width() - 32.0).max(280.0));
         let h = (156.0 * scale).min((self.rect.height() - 32.0).max(220.0));

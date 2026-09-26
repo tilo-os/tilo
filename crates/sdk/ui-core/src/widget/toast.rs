@@ -858,27 +858,31 @@ fn paint_card_text(
 }
 
 impl Widget for ToastStack {
-    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
-        (!self.toasts.is_empty()).then(|| crate::view::OverlayState::Toasts {
-            toasts: self
-                .toasts
-                .iter()
-                .map(|toast| crate::view::ToastView {
-                    severity: toast.kind.into(),
-                    text: Some(toast.text.clone()),
-                })
-                .collect(),
-        })
+    fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
+        (!self.toasts.is_empty())
+            .then(|| crate::view::OverlayState::Toasts {
+                toasts: self
+                    .toasts
+                    .iter()
+                    .map(|toast| crate::view::ToastView {
+                        severity: toast.kind.into(),
+                        text: Some(toast.text.clone()),
+                    })
+                    .collect(),
+            })
+            .into_iter()
+            .collect()
     }
 
     /// Toasts are this participant's own notifications. A View only adds
     /// them back when it carries their text (a thaw); a broadcast View
     /// (follow, replay) never clears or replaces them.
-    fn restore_overlay(
+    fn restore_overlays(
         &mut self,
-        state: Option<&crate::view::OverlayState>,
+        states: &[crate::view::OverlayState],
         _presentation: crate::view::OverlayPresentation,
     ) {
+        let state = states.first();
         let Some(crate::view::OverlayState::Toasts { toasts }) = state else {
             return;
         };

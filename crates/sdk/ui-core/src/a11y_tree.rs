@@ -987,7 +987,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                 } else {
                     (SemanticId(path.clone()), false, true)
                 };
-                if let Some(state) = w.open_overlay() {
+                for state in w.open_overlays() {
                     self.overlays.push(crate::view::OpenOverlay {
                         owner: id.as_str().to_string(),
                         state,

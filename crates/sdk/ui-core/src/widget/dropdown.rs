@@ -668,22 +668,26 @@ impl Dropdown {
 }
 
 impl Widget for Dropdown {
-    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
+    fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
         // The typed filter is the person's own input, not presentation; the
         // list re-opens unfiltered.
-        self.open.then(|| {
-            crate::view::OverlayState::menu(
-                crate::view::OverlayAnchor::Owner,
-                self.filter.is_empty().then_some(self.highlight),
-            )
-        })
+        self.open
+            .then(|| {
+                crate::view::OverlayState::menu(
+                    crate::view::OverlayAnchor::Owner,
+                    self.filter.is_empty().then_some(self.highlight),
+                )
+            })
+            .into_iter()
+            .collect()
     }
 
-    fn restore_overlay(
+    fn restore_overlays(
         &mut self,
-        state: Option<&crate::view::OverlayState>,
+        states: &[crate::view::OverlayState],
         _presentation: crate::view::OverlayPresentation,
     ) {
+        let state = states.first();
         match state {
             None => {
                 if self.open {

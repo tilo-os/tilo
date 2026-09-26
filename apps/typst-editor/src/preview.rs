@@ -15,7 +15,7 @@
 //! vertically.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::MouseScrollDelta;
 use winit::keyboard::ModifiersState;
@@ -812,8 +812,13 @@ impl PreviewPane {
         }
     }
 
-    /// A floating banner across the top of the preview telling the user the
-    /// pages below are from the last good compile, not the current source.
+    /// What the stale-render banner says. Shared with the app's View so a
+    /// follower or a recording knows a compile failed.
+    pub(crate) const STALE_NOTICE: &'static str = "Compile failed — showing last successful render";
+
+    /// The shared warning banner across the top of the preview telling the
+    /// user the pages below are from the last good compile, not the current
+    /// source.
     fn draw_stale_banner(
         &self,
         scene: &mut Scene,
@@ -821,40 +826,24 @@ impl PreviewPane {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let c = &theme.tokens.colors;
         let main = self.main_rect();
-        let text = "Compile failed — showing last successful render";
-        let font = 12.0;
-        let (tw, _) = tr.measure(text, font, None);
-        let pad_x = 12.0;
-        let h = 26.0;
-        let w = (f64::from(tw) + pad_x * 2.0).min(main.width() - 20.0);
+        let scale = f64::from(theme.text_scale);
+        let w = (460.0 * scale).min(main.width() - 20.0);
         let x0 = main.x0 + (main.width() - w) * 0.5;
         let y0 = main.y0 + 10.0;
-        let banner = Rect::new(x0, y0, x0 + w, y0 + h);
-        // Soft shadow, then a warning-toned pill.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.surfaces.overlay,
-            None,
-            &RoundedRect::from_rect(banner.inflate(2.0, 2.0), 9.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.semantic.warning,
-            None,
-            &RoundedRect::from_rect(banner, 8.0),
-        );
-        let ty = y0 + (h - f64::from(font) * 1.25) / 2.0;
-        tr.draw_text(
+        let banner = Rect::new(x0, y0, x0 + w, y0 + 44.0 * scale);
+        ui::widget::Banner::paint(
             scene,
-            text,
-            font,
-            c.on_surface(c.semantic.warning).ink,
-            transform * Affine::translate((x0 + pad_x, ty)),
-            Some((w - pad_x * 2.0) as f32),
+            transform,
+            tr,
+            theme,
+            banner,
+            ui::widget::BannerKind::Warning,
+            ui::widget::BannerKind::Warning.default_icon(),
+            Self::STALE_NOTICE,
+            None,
+            false,
+            Point::ZERO,
         );
     }
 

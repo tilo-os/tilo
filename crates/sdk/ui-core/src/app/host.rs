@@ -3001,10 +3001,21 @@ impl App {
             .map(|open| open.owner.clone())
             .collect::<Vec<_>>();
         for owner in stale {
-            self.restore_overlay_at(&owner, None, presentation);
+            self.restore_overlay_at(&owner, &[], presentation);
         }
+        let mut owners: Vec<&str> = Vec::new();
         for overlay in overlays {
-            self.restore_overlay_at(&overlay.owner, Some(&overlay.state), presentation);
+            if !owners.contains(&overlay.owner.as_str()) {
+                owners.push(&overlay.owner);
+            }
+        }
+        for owner in owners {
+            let states = overlays
+                .iter()
+                .filter(|overlay| overlay.owner == owner)
+                .map(|overlay| overlay.state.clone())
+                .collect::<Vec<_>>();
+            self.restore_overlay_at(owner, &states, presentation);
         }
     }
 
@@ -3032,7 +3043,7 @@ impl App {
     fn restore_overlay_at(
         &mut self,
         owner: &str,
-        state: Option<&crate::view::OverlayState>,
+        states: &[crate::view::OverlayState],
         presentation: crate::view::OverlayPresentation,
     ) {
         let Some(node) =
@@ -3041,7 +3052,7 @@ impl App {
             return;
         };
         if self
-            .mutate_node(node, |widget| widget.restore_overlay(state, presentation))
+            .mutate_node(node, |widget| widget.restore_overlays(states, presentation))
             .is_ok()
         {
             self.layout.layout_dirty = true;
@@ -3750,8 +3761,9 @@ mod view_presence_tests {
 
     /// A live follower sees the followed participant's dialog but keeps the
     /// controls: it traps no focus, captures no pointer, and the follower's
-    /// first key press breaks away and closes it. In replay the same dialog
-    /// is fully modal and the viewer's input does not end the follow.
+    /// first input closes it before landing. The follow itself ends through
+    /// the session's follow control. In replay the same dialog is fully modal
+    /// and the viewer's input does not end the follow.
     #[test]
     fn a_mirrored_modal_never_takes_a_live_followers_controls() {
         fn leader_view() -> PresenceKey {
@@ -3773,7 +3785,7 @@ mod view_presence_tests {
             <App as FreezeThaw>::capture_view(app)
                 .overlays
                 .iter()
-                .any(|overlay| overlay.state == crate::view::OverlayState::Dialog)
+                .any(|overlay| matches!(overlay.state, crate::view::OverlayState::Dialog { .. }))
         }
         fn follower(mode: crate::view::FollowMode) -> App {
             let mut app = App::new(State::new(), crate::view::overlay_test_root(false, None));
@@ -3809,14 +3821,27 @@ mod view_presence_tests {
             "a mirrored dialog traps none of the follower's focus"
         );
         press_key(&mut live);
-        assert_eq!(
-            live.followed_peer(),
-            None,
-            "the follower's input breaks away"
-        );
         assert!(
             !dialog_open(&mut live),
-            "breaking away closes what was only mirrored"
+            "the follower's input never lands on what was only mirrored"
+        );
+        assert_eq!(
+            live.followed_peer(),
+            Some("alice"),
+            "whether that input ends the follow is the session's decision"
+        );
+        // The shell releases follow on that same input and tells every app of
+        // the room through the one follow control.
+        live.apply_collab_event_for_test(CollabEvent::FollowChanged { peer_id: None });
+        assert_eq!(live.followed_peer(), None);
+        live.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+            user_id: "alice".into(),
+            key: leader_view(),
+            payload: PresencePayload::Arrived,
+        });
+        assert!(
+            !dialog_open(&mut live),
+            "after the release alice's overlays are hers alone again"
         );
 
         let mut replay = follower(crate::view::FollowMode::Replay);

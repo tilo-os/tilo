@@ -3912,10 +3912,12 @@ impl Drop for TextInput {
 }
 
 impl Widget for TextInput {
-    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
+    fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
         self.context_menu
             .is_open()
             .then(|| self.context_menu.overlay_state())
+            .into_iter()
+            .collect()
     }
 
     /// The edit menu is rebuilt for the text under its anchor, exactly as a
@@ -3924,11 +3926,12 @@ impl Widget for TextInput {
         clippy::cast_possible_truncation,
         reason = "menu anchors are surface coordinates, well inside f32 range"
     )]
-    fn restore_overlay(
+    fn restore_overlays(
         &mut self,
-        state: Option<&crate::view::OverlayState>,
+        states: &[crate::view::OverlayState],
         _presentation: crate::view::OverlayPresentation,
     ) {
+        let state = states.first();
         match state {
             None => self.context_menu.close(),
             Some(menu @ crate::view::OverlayState::Menu { anchor, .. }) => {

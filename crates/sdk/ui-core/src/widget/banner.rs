@@ -369,18 +369,22 @@ impl Widget for Banner {
     /// A shown banner is part of what the participant sees. Which banner is
     /// shown is the app's model, so a View never creates one: restoring only
     /// brings back one this app still declares but the person dismissed.
-    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
-        (!self.dismissed).then(|| crate::view::OverlayState::Banner {
-            severity: self.kind.into(),
-            title: Some(self.title.clone()),
-        })
+    fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
+        (!self.dismissed)
+            .then(|| crate::view::OverlayState::Banner {
+                severity: self.kind.into(),
+                title: Some(self.title.clone()),
+            })
+            .into_iter()
+            .collect()
     }
 
-    fn restore_overlay(
+    fn restore_overlays(
         &mut self,
-        state: Option<&crate::view::OverlayState>,
+        states: &[crate::view::OverlayState],
         presentation: crate::view::OverlayPresentation,
     ) {
+        let state = states.first();
         if presentation == crate::view::OverlayPresentation::Owned
             && matches!(state, Some(crate::view::OverlayState::Banner { .. }))
         {

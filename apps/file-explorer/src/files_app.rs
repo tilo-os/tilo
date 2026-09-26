@@ -7272,8 +7272,8 @@ enum FilesMenu {
     Favorite(PathBuf),
 }
 
-impl Widget for FileExplorerWidget {
-    fn open_overlay(&self) -> Option<ui::view::OverlayState> {
+impl FileExplorerWidget {
+    fn menu_overlay(&self) -> Option<ui::view::OverlayState> {
         if !self.context_menu.is_open() {
             return None;
         }
@@ -7301,11 +7301,7 @@ impl Widget for FileExplorerWidget {
 
     /// Re-open the menu a View named through the same opener a click uses,
     /// so its rows reflect this app's current selection and settings.
-    fn restore_overlay(
-        &mut self,
-        state: Option<&ui::view::OverlayState>,
-        _presentation: ui::view::OverlayPresentation,
-    ) {
+    fn restore_menu_overlay(&mut self, state: Option<&ui::view::OverlayState>) {
         let Some(
             restored @ ui::view::OverlayState::Menu {
                 anchor,
@@ -7342,6 +7338,25 @@ impl Widget for FileExplorerWidget {
             }
             _ => {}
         }
+    }
+}
+
+impl Widget for FileExplorerWidget {
+    fn open_overlays(&self) -> Vec<ui::view::OverlayState> {
+        self.menu_overlay().into_iter().collect()
+    }
+
+    /// Write a View's overlays into the state this app shows them from, so a
+    /// restored menu or dialog is the app's own again.
+    fn restore_overlays(
+        &mut self,
+        states: &[ui::view::OverlayState],
+        _presentation: ui::view::OverlayPresentation,
+    ) {
+        let menu = states
+            .iter()
+            .find(|state| matches!(state, ui::view::OverlayState::Menu { .. }));
+        self.restore_menu_overlay(menu);
     }
 
     fn history_registration(

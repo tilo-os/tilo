@@ -129,7 +129,7 @@ impl App {
             *handled = true;
             return true;
         }
-        self.break_away_on_local_input(event);
+        self.yield_mirrored_overlays_to_local_input(event);
         self.observe_press_on_disabled_control(event, scale);
         if self.history_controls_event(event, scale) {
             *handled |= self.dispatch_framework_history_event(event, scale);

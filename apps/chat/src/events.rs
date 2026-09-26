@@ -1930,21 +1930,27 @@ mod tests {
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 900.0, 700.0);
         app.last_mouse = Point::new(120.0, 140.0);
         app.on_right_click(Hit::Channel("c_crit".into()));
-        let captured = app.open_overlay().expect("an open menu is an overlay");
+        let captured = app
+            .open_overlays()
+            .pop()
+            .expect("an open menu is an overlay");
         assert!(matches!(
             &captured,
             ui::view::OverlayState::Menu { menu: Some(menu), target: Some(target), .. }
                 if menu == "channel" && target == "c_crit"
         ));
 
-        app.restore_overlay(None, ui::view::OverlayPresentation::Owned);
+        app.restore_overlays(&[], ui::view::OverlayPresentation::Owned);
         assert!(app.menu.is_none(), "restoring no overlay closes it");
 
-        app.restore_overlay(Some(&captured), ui::view::OverlayPresentation::Owned);
+        app.restore_overlays(
+            std::slice::from_ref(&captured),
+            ui::view::OverlayPresentation::Owned,
+        );
         let menu = app.menu.as_ref().expect("the menu is open again");
         assert_eq!(menu.target, MenuTarget::Channel("c_crit".into()));
         assert_eq!(menu.items, MenuAction::for_channel().to_vec());
-        assert_eq!(app.open_overlay(), Some(captured));
+        assert_eq!(app.open_overlays(), vec![captured]);
     }
 
     /// Exercise a domain action through the retained menu's semantic

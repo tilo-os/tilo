@@ -125,9 +125,10 @@ pub enum OverlayState {
     },
     /// A popover holding arbitrary content next to its owner.
     Popover,
-    /// A dialog. Which dialog it is, is the owner: dialogs are declared in the
-    /// tree and opened, never constructed from this state.
-    Dialog,
+    /// A dialog, never constructed from this state: the owner opens its own.
+    /// `dialog` is the owner's name for which of its dialogs this is, when it
+    /// has more than one; a shared dialog widget is its own owner and has none.
+    Dialog { dialog: Option<String> },
     /// The toasts currently shown by a notification stack, oldest first.
     Toasts { toasts: Vec<ToastView> },
     /// An inline alert, the classic "what went wrong" signal. Its title is
@@ -336,7 +337,7 @@ impl View {
         if self.overlays.iter().any(|overlay| match &overlay.state {
             OverlayState::Menu { anchor, .. } => !anchor.is_finite(),
             OverlayState::Popover
-            | OverlayState::Dialog
+            | OverlayState::Dialog { .. }
             | OverlayState::Toasts { .. }
             | OverlayState::Banner { .. } => false,
         }) {
@@ -379,7 +380,7 @@ pub(crate) fn any_overlay_open_bound(root: &dyn crate::widget::Widget) -> bool {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(root) else {
         return false;
     };
-    root.open_overlay().is_some()
+    !root.open_overlays().is_empty()
         || root
             .children()
             .into_iter()
@@ -834,7 +835,7 @@ mod tests {
             .map(|overlay| match &overlay.state {
                 OverlayState::Menu { .. } => "menu",
                 OverlayState::Popover => "popover",
-                OverlayState::Dialog => "dialog",
+                OverlayState::Dialog { .. } => "dialog",
                 OverlayState::Toasts { .. } => "toasts",
                 OverlayState::Banner { .. } => "banner",
             })

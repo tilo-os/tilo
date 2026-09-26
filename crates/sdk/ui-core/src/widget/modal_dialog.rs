@@ -495,18 +495,22 @@ impl<C: Widget + 'static> ModalDialog<C> {
 }
 
 impl<C: Widget + 'static> Widget for ModalDialog<C> {
-    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
-        self.open.then_some(crate::view::OverlayState::Dialog)
+    fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
+        self.open
+            .then_some(crate::view::OverlayState::Dialog { dialog: None })
+            .into_iter()
+            .collect()
     }
 
-    fn restore_overlay(
+    fn restore_overlays(
         &mut self,
-        state: Option<&crate::view::OverlayState>,
+        states: &[crate::view::OverlayState],
         presentation: crate::view::OverlayPresentation,
     ) {
+        let state = states.first();
         match state {
             None => self.set_open(false),
-            Some(crate::view::OverlayState::Dialog) => {
+            Some(crate::view::OverlayState::Dialog { .. }) => {
                 self.set_open(true);
                 self.mirrored = presentation == crate::view::OverlayPresentation::Mirrored;
             }

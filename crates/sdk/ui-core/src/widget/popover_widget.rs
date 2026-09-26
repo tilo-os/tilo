@@ -93,6 +93,8 @@ pub struct PopoverWidget<C: Widget> {
     /// longer supplies a theme, so this snapshot keeps measurement and hit
     /// geometry aligned with large-text and UI-scale preferences.
     layout_theme: Theme,
+    /// Fluent id of the panel's accessible name.
+    accessible_name: Option<String>,
 }
 
 impl<C: Widget> PopoverWidget<C> {
@@ -112,7 +114,24 @@ impl<C: Widget> PopoverWidget<C> {
             resolved_side: side,
             last_cursor: Point::ZERO,
             layout_theme: Theme::dark(),
+            accessible_name: None,
         }
+    }
+
+    /// Name the panel for assistive technology (a Fluent id).
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
+    }
+
+    /// Show or hide the panel after construction.
+    pub fn set_open(&mut self, open: bool) {
+        self.open = open;
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.open
     }
 
     /// Set the popover's open state. When `false`, the widget paints
@@ -462,6 +481,44 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         "PopoverWidget"
     }
 
+    /// The panel is a node whether or not it is open, so it can own the
+    /// overlay it shows: a View names it by this node's id.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let name = self
+            .accessible_name
+            .as_ref()
+            .map(|name| crate::i18n!(name))
+            .filter(|name| !name.is_empty());
+        Some(
+            AccessNode::new(Role::Group)
+                .with_optional_name(name)
+                .with_state(AccessState {
+                    hidden: !self.open,
+                    expanded: Some(self.open),
+                    ..Default::default()
+                }),
+        )
+    }
+
+    fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
+        if self.open {
+            vec![crate::view::OverlayState::Popover]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn restore_overlays(
+        &mut self,
+        states: &[crate::view::OverlayState],
+        _presentation: crate::view::OverlayPresentation,
+    ) {
+        self.open = states
+            .iter()
+            .any(|state| matches!(state, crate::view::OverlayState::Popover));
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -595,6 +652,31 @@ mod tests {
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
         p.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    /// The panel is a semantic node open or not, so it can own the overlay
+    /// it shows and a View can re-open it.
+    #[test]
+    fn a_popover_panel_owns_its_overlay() {
+        let mut p =
+            PopoverWidget::new(Rect::ZERO, TestContent::new(10.0, 10.0), PopoverSide::Below)
+                .with_accessible_name("popover-test");
+        let closed = p
+            .accessibility()
+            .expect("a closed popover still has a node");
+        assert!(closed.state.hidden);
+        assert!(p.open_overlays().is_empty());
+
+        p.restore_overlays(
+            &[crate::view::OverlayState::Popover],
+            crate::view::OverlayPresentation::Owned,
+        );
+        assert!(p.is_open());
+        assert_eq!(p.open_overlays(), vec![crate::view::OverlayState::Popover]);
+        assert!(!p.accessibility().unwrap().state.hidden);
+
+        p.restore_overlays(&[], crate::view::OverlayPresentation::Owned);
+        assert!(!p.is_open());
     }
 
     #[test]

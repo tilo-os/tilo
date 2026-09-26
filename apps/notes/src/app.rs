@@ -3786,8 +3786,8 @@ impl ui::widget::AppWidget for NotesApp {
 const NOTE_MENU_PAGE: &str = "page";
 const NOTE_MENU_EDITOR: &str = "editor";
 
-impl Widget for NotesApp {
-    fn open_overlay(&self) -> Option<ui::view::OverlayState> {
+impl NotesApp {
+    fn menu_overlay(&self) -> Option<ui::view::OverlayState> {
         if !self.note_menu.is_open() {
             return None;
         }
@@ -3816,11 +3816,7 @@ impl Widget for NotesApp {
 
     /// Re-open the note menu for the page it named, if that page is the one
     /// shown here; a menu for another page has nothing to act on.
-    fn restore_overlay(
-        &mut self,
-        state: Option<&ui::view::OverlayState>,
-        _presentation: ui::view::OverlayPresentation,
-    ) {
+    fn restore_menu_overlay(&mut self, state: Option<&ui::view::OverlayState>) {
         let Some(
             restored @ ui::view::OverlayState::Menu {
                 anchor,
@@ -3861,6 +3857,34 @@ impl Widget for NotesApp {
         self.note_menu_editor = editor;
         self.build_note_menu(anchor, page);
         self.note_menu.restore_overlay_state(Some(restored));
+    }
+}
+
+impl Widget for NotesApp {
+    fn open_overlays(&self) -> Vec<ui::view::OverlayState> {
+        let mut overlays: Vec<ui::view::OverlayState> = self.menu_overlay().into_iter().collect();
+        if self.shortcuts.is_visible() {
+            overlays.push(ui::view::OverlayState::Dialog {
+                dialog: Some("shortcuts".into()),
+            });
+        }
+        overlays
+    }
+
+    /// Write a View's overlays into the state this app shows them from, so a
+    /// restored menu or dialog is the app's own again.
+    fn restore_overlays(
+        &mut self,
+        states: &[ui::view::OverlayState],
+        _presentation: ui::view::OverlayPresentation,
+    ) {
+        let menu = states
+            .iter()
+            .find(|state| matches!(state, ui::view::OverlayState::Menu { .. }));
+        self.restore_menu_overlay(menu);
+        self.shortcuts.set_visible(states.iter().any(|state| {
+            matches!(state, ui::view::OverlayState::Dialog { dialog: Some(dialog) } if dialog == "shortcuts")
+        }));
     }
 
     fn has_pending_control_invocation(&self) -> bool {

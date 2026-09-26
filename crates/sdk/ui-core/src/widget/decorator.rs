@@ -667,16 +667,16 @@ pub trait Decorator {
         self.inner_mut().restore_view_state(view);
     }
 
-    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
-        self.inner().open_overlay()
+    fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
+        self.inner().open_overlays()
     }
 
-    fn restore_overlay(
+    fn restore_overlays(
         &mut self,
-        state: Option<&crate::view::OverlayState>,
+        states: &[crate::view::OverlayState],
         presentation: crate::view::OverlayPresentation,
     ) {
-        self.inner_mut().restore_overlay(state, presentation);
+        self.inner_mut().restore_overlays(states, presentation);
     }
 
     fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
@@ -1453,16 +1453,16 @@ impl<T: Decorator> Widget for T {
         Decorator::restore_view_state(self, view);
     }
 
-    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
-        Decorator::open_overlay(self)
+    fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
+        Decorator::open_overlays(self)
     }
 
-    fn restore_overlay(
+    fn restore_overlays(
         &mut self,
-        state: Option<&crate::view::OverlayState>,
+        states: &[crate::view::OverlayState],
         presentation: crate::view::OverlayPresentation,
     ) {
-        Decorator::restore_overlay(self, state, presentation);
+        Decorator::restore_overlays(self, states, presentation);
     }
 
     fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {

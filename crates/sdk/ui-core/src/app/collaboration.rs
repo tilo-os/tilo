@@ -361,7 +361,7 @@ impl App {
         self.presence.followed_peer = None;
         self.presence.follow_mode = crate::view::FollowMode::Live;
         for owner in std::mem::take(&mut self.presence.mirrored_overlays) {
-            self.restore_overlay_at(&owner, None, crate::view::OverlayPresentation::Owned);
+            self.restore_overlay_at(&owner, &[], crate::view::OverlayPresentation::Owned);
         }
     }
 
@@ -369,13 +369,23 @@ impl App {
         self.presence.follow_mode
     }
 
-    /// A live follower's own input breaks away from following, before the
-    /// input is dispatched: the person has taken the controls back, so what
-    /// they were only watching must neither receive it nor stay open. Replay
-    /// has no such input; its viewer drives nothing.
-    pub(super) fn break_away_on_local_input(&mut self, event: &WindowEvent) {
+    /// A live follower's own input must never land on an overlay they were
+    /// only watching.
+    ///
+    /// Whether that input ends the follow is not this app's decision. Follow
+    /// belongs to the session: the shell owns it, releases it on the same
+    /// input (the first key, which it consumes, and the first workspace click
+    /// or wheel, which it forwards), and fans the release to every app of the
+    /// room as `CollabEvent::FollowChanged { peer_id: None }` while
+    /// republishing its `Following` presence, so chrome, presence and apps
+    /// agree. The forwarded click can reach this app before that release
+    /// does, so the mirrored overlays close here first; the follow itself
+    /// ends when the shell says so. Replay has no such input: its viewer
+    /// drives nothing.
+    pub(super) fn yield_mirrored_overlays_to_local_input(&mut self, event: &WindowEvent) {
         if self.presence.followed_peer.is_none()
             || self.presence.follow_mode != crate::view::FollowMode::Live
+            || self.presence.mirrored_overlays.is_empty()
         {
             return;
         }
@@ -390,7 +400,9 @@ impl App {
             _ => false,
         };
         if takes_control {
-            self.unfollow();
+            for owner in std::mem::take(&mut self.presence.mirrored_overlays) {
+                self.restore_overlay_at(&owner, &[], crate::view::OverlayPresentation::Owned);
+            }
         }
     }
 

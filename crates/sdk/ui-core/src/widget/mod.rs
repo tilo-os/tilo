@@ -1510,22 +1510,24 @@ pub trait Widget {
 
     fn restore_view_state(&mut self, _view: &crate::view::ViewContribution) {}
 
-    /// The toolkit-owned overlay this widget has open: a menu, popover,
-    /// dialog or toast stack it owns. The App collects it into
+    /// The toolkit-owned overlays this widget has open: the menus, popovers,
+    /// dialogs, toasts and banners it owns. The App collects them into
     /// [`View::overlays`](crate::view::View::overlays) under this widget's
-    /// semantic id, so a thawed app, a follower and a replay can re-open it.
-    /// Unlike [`view_state`](Self::view_state) this is asked of every widget
-    /// in the tree; containers need not forward it.
-    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
-        None
+    /// semantic id, so a thawed app, a follower and a replay can re-open them.
+    /// An app that keeps its dialogs and menus in its own state reports them
+    /// here from that state. Unlike [`view_state`](Self::view_state) this is
+    /// asked of every widget in the tree; containers need not forward it.
+    fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
+        Vec::new()
     }
 
-    /// Re-open this widget's overlay from a View (`Some`), or close it
-    /// (`None`). A state this widget cannot show (another kind, or a toast
-    /// whose text was not carried) is ignored.
-    fn restore_overlay(
+    /// Make exactly `states` open: re-open each, close any other this widget
+    /// owns. An app writes them into the same state it reports them from, so
+    /// a restored overlay is the app's own again. A state this widget cannot
+    /// show (another kind, or a toast whose text was not carried) is ignored.
+    fn restore_overlays(
         &mut self,
-        _state: Option<&crate::view::OverlayState>,
+        _states: &[crate::view::OverlayState],
         _presentation: crate::view::OverlayPresentation,
     ) {
     }

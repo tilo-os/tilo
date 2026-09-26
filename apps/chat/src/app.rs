@@ -3588,8 +3588,8 @@ impl FloatingSurfaceProvider for ChatApp {
     }
 }
 
-impl Widget for ChatApp {
-    fn open_overlay(&self) -> Option<ui::view::OverlayState> {
+impl ChatApp {
+    fn menu_overlay(&self) -> Option<ui::view::OverlayState> {
         let menu = self.menu.as_ref().filter(|menu| menu.widget.is_open())?;
         let ui::view::OverlayState::Menu {
             anchor,
@@ -3610,11 +3610,7 @@ impl Widget for ChatApp {
 
     /// Re-open the structure menu over the channel, category, message or
     /// workspace it named, with the rows a right-click there offers.
-    fn restore_overlay(
-        &mut self,
-        state: Option<&ui::view::OverlayState>,
-        _presentation: ui::view::OverlayPresentation,
-    ) {
+    fn restore_menu_overlay(&mut self, state: Option<&ui::view::OverlayState>) {
         let Some(
             restored @ ui::view::OverlayState::Menu {
                 anchor,
@@ -3641,6 +3637,25 @@ impl Widget for ChatApp {
         let mut menu = ContextMenu::new(target, at, items, self.rect);
         menu.widget.restore_overlay_state(Some(restored));
         self.menu = Some(menu);
+    }
+}
+
+impl Widget for ChatApp {
+    fn open_overlays(&self) -> Vec<ui::view::OverlayState> {
+        self.menu_overlay().into_iter().collect()
+    }
+
+    /// Write a View's overlays into the state this app shows them from, so a
+    /// restored menu or dialog is the app's own again.
+    fn restore_overlays(
+        &mut self,
+        states: &[ui::view::OverlayState],
+        _presentation: ui::view::OverlayPresentation,
+    ) {
+        let menu = states
+            .iter()
+            .find(|state| matches!(state, ui::view::OverlayState::Menu { .. }));
+        self.restore_menu_overlay(menu);
     }
 
     fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {

@@ -9281,14 +9281,48 @@ impl WordProcessorWidget {
     }
 }
 
-impl Widget for WordProcessorWidget {
+impl WordProcessorWidget {
     /// Reported so followers and recordings see the open menu. It is not
     /// re-opened from a View: its rows are derived from the document under
     /// the click, which only a pointer event carries.
-    fn open_overlay(&self) -> Option<ui::view::OverlayState> {
+    fn menu_overlay(&self) -> Option<ui::view::OverlayState> {
         self.context_menu
             .is_open()
             .then(|| self.context_menu.overlay_state())
+    }
+}
+
+impl Widget for WordProcessorWidget {
+    fn open_overlays(&self) -> Vec<ui::view::OverlayState> {
+        let mut overlays: Vec<ui::view::OverlayState> = self.menu_overlay().into_iter().collect();
+        if self.unsaved_changes.is_open() {
+            overlays.push(ui::view::OverlayState::Dialog {
+                dialog: Some("unsaved-changes".into()),
+            });
+        }
+        overlays
+    }
+
+    /// Write a View's overlays into the state this app shows them from, so a
+    /// restored menu or dialog is the app's own again.
+    fn restore_overlays(
+        &mut self,
+        states: &[ui::view::OverlayState],
+        presentation: ui::view::OverlayPresentation,
+    ) {
+        let wanted = states.iter().any(|state| {
+            matches!(state, ui::view::OverlayState::Dialog { dialog: Some(dialog) } if dialog == "unsaved-changes")
+        });
+        // Asking to save is this participant's own close; a follower only
+        // sees that it was asked.
+        if presentation == ui::view::OverlayPresentation::Owned {
+            if wanted && !self.unsaved_changes.is_open() {
+                self.unsaved_changes.open();
+            } else if !wanted && self.unsaved_changes.is_open() {
+                self.unsaved_changes.close();
+            }
+        }
+        self.lifecycle.dirty = true;
     }
 
     fn native_input_snapshot(

@@ -33,8 +33,8 @@ use std::sync::mpsc::TryRecvError;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size as TSize, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -47,6 +47,7 @@ use ui::portal::{
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::modal_frame::{ModalAction, ModalFrame, ModalHit, ModalLayout, ModalSpec};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Button, ButtonFace, EmptyState, NavPane, NavShell, SegmentedFace, TextInput, Toggle,
@@ -60,7 +61,7 @@ use crate::doc::MailDoc;
 use ui::surface::pill;
 
 use crate::draw::fill_rect;
-use crate::draw::{elide, fill_round, stroke_round};
+use crate::draw::{elide, fill_round};
 use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
 use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
@@ -311,6 +312,7 @@ pub struct MailApp {
     /// is local presentation state; the actual purge remains one canonical
     /// `MailAction` only after the person confirms.
     bulk_purge_confirmation: Option<usize>,
+    bulk_purge_layout: Option<ModalLayout>,
 
     // account-setup sheet (Settings owns this in production; offered in-app too)
     setup_open: bool,
@@ -501,6 +503,7 @@ impl MailApp {
             editing_draft: None,
             context_menu: None,
             bulk_purge_confirmation: None,
+            bulk_purge_layout: None,
             setup_open: false,
             setup_inputs: build_setup_inputs(&cfg),
             setup_metrics: SetupMetrics::default(),
@@ -2915,138 +2918,58 @@ impl MailApp {
         }
     }
 
+    /// The confirmation card as last painted by the shared modal frame, or
+    /// the whole app before its first paint.
     fn bulk_purge_confirmation_rect(&self) -> Rect {
-        let r = self.rect;
-        let w = 420.0_f64.min(r.width() - 40.0);
-        let h = 206.0_f64.min(r.height() - 40.0);
-        let x0 = f64::midpoint(r.x0, r.x1) - w / 2.0;
-        let y0 = f64::midpoint(r.y0, r.y1) - h / 2.0;
-        Rect::new(x0, y0, x0 + w, y0 + h)
+        self.bulk_purge_layout
+            .as_ref()
+            .map_or(self.rect, |layout| layout.card)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the compact confirmation is one visual component whose geometry and semantics are easier to audit together"
-    )]
+    fn bulk_purge_body(count: usize) -> String {
+        let noun = if count == 1 { "message" } else { "messages" };
+        format!(
+            "{count} trashed {noun} will be removed from this mailbox. This cannot be undone or recovered from the server."
+        )
+    }
+
+    /// The permanent-delete confirmation, framed by the shared modal chrome
+    /// so it has the same scrim, card, focus ring and action geometry as
+    /// every other Tilo dialog.
     fn draw_bulk_purge_confirmation(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
         let Some(count) = self.bulk_purge_confirmation else {
+            self.bulk_purge_layout = None;
             return;
         };
-        let c = &theme.tokens.colors;
-        let panel = self.bulk_purge_confirmation_rect();
-        fill_rect(scene, t, self.rect, c.surfaces.overlay);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            Color::from_rgba8(0, 0, 0, 100),
-            None,
-            &RoundedRect::from_rect(
-                Rect::new(panel.x0, panel.y0 + 6.0, panel.x1, panel.y1 + 10.0),
-                16.0,
-            ),
-        );
-        fill_round(scene, t, panel, 16.0, c.surfaces.raised);
-        stroke_round(scene, t, panel, 16.0, c.border_standard, 1.0);
-        Icon::Trash2.draw(
-            scene,
-            t,
-            Rect::new(
-                panel.x0 + 24.0,
-                panel.y0 + 24.0,
-                panel.x0 + 52.0,
-                panel.y0 + 52.0,
-            ),
-            c.semantic.danger,
-        );
-        tr.draw_text_weighted(
-            scene,
-            "Delete permanently?",
-            20.0,
-            c.text_primary,
-            t * Affine::translate((panel.x0 + 64.0, panel.y0 + 27.0)),
-            None,
-            TextWeight::Bold,
-        );
-        let noun = if count == 1 { "message" } else { "messages" };
+        let body = Self::bulk_purge_body(count);
+        let actions = [
+            ModalAction::secondary("Cancel"),
+            ModalAction::danger("Delete permanently"),
+        ];
+        let size = theme.tokens.typography.scale.sm;
+        let spec = ModalSpec::new("Delete permanently?").actions(&actions);
+        let preliminary = ModalFrame::layout(self.rect, &spec, tr, theme);
+        let width = ui::num::f32_of_f64(preliminary.body.width().max(1.0));
+        let (_, measured) = tr.measure(&body, size, Some(width));
+        let spec = spec.body_height(f64::from(measured) + 8.0);
+        let layout = ModalFrame::layout(self.rect, &spec, tr, theme);
+        ModalFrame::paint_backdrop(scene, t, tr, theme, &layout, &spec);
         tr.draw_text(
             scene,
-            &format!("{count} trashed {noun} will be removed from this mailbox."),
-            13.0,
-            c.text_primary,
-            t * Affine::translate((panel.x0 + 24.0, panel.y0 + 76.0)),
-            None,
+            &body,
+            size,
+            ModalFrame::ink(theme).0,
+            t * Affine::translate((layout.body.x0, layout.body.y0)),
+            Some(width),
         );
-        tr.draw_text(
-            scene,
-            "This cannot be undone or recovered from the server.",
-            13.0,
-            c.text_dim,
-            t * Affine::translate((panel.x0 + 24.0, panel.y0 + 100.0)),
-            None,
-        );
-        let (cancel, confirm) = Self::bulk_purge_confirmation_buttons(panel);
-        for (rect, label, danger) in [
-            (cancel, "Cancel", false),
-            (confirm, "Delete permanently", true),
-        ] {
-            fill_round(
-                scene,
-                t,
-                rect,
-                9.0,
-                if danger {
-                    c.semantic.danger
-                } else {
-                    c.lift(0.55)
-                },
-            );
-            stroke_round(
-                scene,
-                t,
-                rect,
-                9.0,
-                if danger {
-                    c.semantic.danger
-                } else {
-                    c.border_standard
-                },
-                1.0,
-            );
-            let (width, _) = tr.measure_weighted(label, 12.5, None, TextWeight::Semibold);
-            tr.draw_text_weighted(
-                scene,
-                label,
-                12.5,
-                if danger {
-                    c.surfaces.base
-                } else {
-                    c.text_primary
-                },
-                t * Affine::translate((
-                    f64::midpoint(rect.x0, rect.x1) - f64::from(width) / 2.0,
-                    rect.y0 + 11.0,
-                )),
-                None,
-                TextWeight::Semibold,
-            );
-        }
-    }
-
-    fn bulk_purge_confirmation_buttons(panel: Rect) -> (Rect, Rect) {
-        let confirm = Rect::new(
-            panel.x1 - 166.0,
-            panel.y1 - 52.0,
-            panel.x1 - 24.0,
-            panel.y1 - 18.0,
-        );
-        let cancel = Rect::new(confirm.x0 - 96.0, confirm.y0, confirm.x0 - 10.0, confirm.y1);
-        (cancel, confirm)
+        ModalFrame::paint_actions(scene, t, tr, theme, &layout, &spec);
+        self.bulk_purge_layout = Some(layout);
     }
 
     fn draw_setup(
@@ -4133,14 +4056,18 @@ impl MailApp {
                 ..
             }
         ) {
-            let panel = self.bulk_purge_confirmation_rect();
-            let (cancel, confirm) = Self::bulk_purge_confirmation_buttons(panel);
             let point = self.shared.borrow().last_mouse;
-            if confirm.contains(point) {
-                self.confirm_bulk_purge(ctx.state);
-            } else if cancel.contains(point) || !panel.contains(point) {
-                self.bulk_purge_confirmation = None;
-                self.dirty = true;
+            match self
+                .bulk_purge_layout
+                .as_ref()
+                .and_then(|layout| layout.hit(point))
+            {
+                Some(ModalHit::Action(1)) => self.confirm_bulk_purge(ctx.state),
+                Some(ModalHit::Action(_) | ModalHit::Close | ModalHit::Scrim) => {
+                    self.bulk_purge_confirmation = None;
+                    self.dirty = true;
+                }
+                Some(ModalHit::Card) | None => {}
             }
         }
         *ctx.handled = true;
@@ -4856,8 +4783,8 @@ impl MailApp {
     }
 }
 
-impl Widget for MailApp {
-    fn open_overlay(&self) -> Option<ui::view::OverlayState> {
+impl MailApp {
+    fn menu_overlay(&self) -> Option<ui::view::OverlayState> {
         let menu = self.context_menu.as_ref()?;
         Some(ui::view::OverlayState::Menu {
             anchor: ui::view::OverlayAnchor::Point {
@@ -4872,11 +4799,7 @@ impl Widget for MailApp {
 
     /// Re-open the row menu for the message it named, if that message is
     /// still here.
-    fn restore_overlay(
-        &mut self,
-        state: Option<&ui::view::OverlayState>,
-        _presentation: ui::view::OverlayPresentation,
-    ) {
+    fn restore_menu_overlay(&mut self, state: Option<&ui::view::OverlayState>) {
         match state {
             None => self.context_menu = None,
             Some(ui::view::OverlayState::Menu {
@@ -4897,6 +4820,93 @@ impl Widget for MailApp {
             }
             Some(_) => {}
         }
+    }
+}
+
+impl Widget for MailApp {
+    fn open_overlays(&self) -> Vec<ui::view::OverlayState> {
+        let mut overlays: Vec<ui::view::OverlayState> = self.menu_overlay().into_iter().collect();
+        for (open, dialog, target) in [
+            (self.shortcuts.visible(), "shortcuts", None),
+            (
+                self.setup_open,
+                "setup",
+                self.setup_editing.map(|index| index.to_string()),
+            ),
+            (self.bulk_purge_confirmation.is_some(), "bulk-purge", None),
+        ] {
+            if open {
+                overlays.push(ui::view::OverlayState::Dialog {
+                    dialog: Some(match target {
+                        Some(target) => format!("{dialog}:{target}"),
+                        None => dialog.into(),
+                    }),
+                });
+            }
+        }
+        if let Some(text) = self.shared.borrow().status.clone() {
+            overlays.push(ui::view::OverlayState::Toasts {
+                toasts: vec![ui::view::ToastView {
+                    severity: ui::view::OverlaySeverity::Info,
+                    text: Some(text),
+                }],
+            });
+        }
+        overlays
+    }
+
+    /// Write a View's overlays into the state this app shows them from, so a
+    /// restored menu or dialog is the app's own again.
+    fn restore_overlays(
+        &mut self,
+        states: &[ui::view::OverlayState],
+        _presentation: ui::view::OverlayPresentation,
+    ) {
+        let menu = states
+            .iter()
+            .find(|state| matches!(state, ui::view::OverlayState::Menu { .. }));
+        self.restore_menu_overlay(menu);
+        let dialog = |name: &str| {
+            states.iter().find_map(|state| match state {
+                ui::view::OverlayState::Dialog {
+                    dialog: Some(dialog),
+                } => {
+                    let (base, target) = dialog.split_once(':').unwrap_or((dialog, ""));
+                    (base == name).then(|| target.to_string())
+                }
+                _ => None,
+            })
+        };
+        if dialog("shortcuts").is_some() {
+            self.shortcuts.show();
+        } else if self.shortcuts.visible() {
+            self.shortcuts.hide();
+        }
+        match dialog("setup") {
+            Some(target) if !self.setup_open => self.open_setup_edit(target.parse().ok()),
+            None if self.setup_open => self.close_setup(),
+            _ => {}
+        }
+        // The count is re-derived from the selection it confirms, exactly as
+        // the request that opened it derived it.
+        self.bulk_purge_confirmation = dialog("bulk-purge").and_then(|_| {
+            let count = self.shared.borrow().selected_bulk_ids().len();
+            (count > 0).then_some(count)
+        });
+        // The status toast is this person's own: only a View that carries its
+        // text (a local thaw) puts it back, and none ever clears it.
+        let restored = states.iter().find_map(|state| match state {
+            ui::view::OverlayState::Toasts { toasts } => {
+                toasts.last().and_then(|toast| toast.text.clone())
+            }
+            _ => None,
+        });
+        if let Some(text) = restored
+            && self.shared.borrow().status.is_none()
+        {
+            self.shared.borrow_mut().status = Some(text);
+        }
+        self.dirty = true;
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -5380,13 +5390,10 @@ impl Widget for MailApp {
             return Some(self.shortcuts.accessibility());
         }
         if let Some(count) = self.bulk_purge_confirmation {
-            let noun = if count == 1 { "message" } else { "messages" };
             return Some(
                 AccessNode::new(Role::Dialog)
                     .with_name("Delete permanently?")
-                    .with_description(format!(
-                        "{count} trashed {noun} will be removed from this mailbox and cannot be recovered from the server."
-                    ))
+                    .with_description(Self::bulk_purge_body(count))
                     .with_bounds(self.bulk_purge_confirmation_rect())
                     .with_state(AccessState::new().modal(true))
                     .with_children(vec![
@@ -7143,6 +7150,54 @@ mod tests {
             heads_before,
             "an unsaved compose buffer remains local presentation state"
         );
+    }
+
+    #[test]
+    fn the_apps_own_dialogs_are_its_view_and_restore_writes_them_back() {
+        use ui::Widget as _;
+        let (mut app, _doc) = app();
+        let ids: Vec<MessageId> = app
+            .shared
+            .borrow()
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .into_iter()
+            .take(2)
+            .map(|message| message.id)
+            .collect();
+        {
+            let mut mail = app.shared.borrow_mut();
+            mail.set_bulk_selecting(true);
+            for id in &ids {
+                mail.mailbox.move_to(*id, Folder::Trash);
+                mail.toggle_bulk_selection(*id);
+            }
+            mail.push_intent(Intent::ConfirmBulkPurge);
+        }
+        app.process_intents();
+        app.shortcuts.show();
+        let captured = app.open_overlays();
+        for dialog in ["bulk-purge", "shortcuts"] {
+            assert!(
+                captured.iter().any(|state| matches!(
+                    state,
+                    ui::view::OverlayState::Dialog { dialog: Some(name) } if name == dialog
+                )),
+                "{dialog} is part of the View: {captured:?}"
+            );
+        }
+
+        app.restore_overlays(&[], ui::view::OverlayPresentation::Owned);
+        assert_eq!(app.bulk_purge_confirmation, None);
+        assert!(!app.shortcuts.visible());
+
+        app.restore_overlays(&captured, ui::view::OverlayPresentation::Owned);
+        assert_eq!(
+            app.bulk_purge_confirmation,
+            Some(2),
+            "restore writes the app's own state, re-deriving what it confirms"
+        );
+        assert!(app.shortcuts.visible());
     }
 
     #[test]
