@@ -73,8 +73,9 @@ pub struct BackupEntry {
     pub size: u64,
     pub sha256: Option<String>,
     pub link_target: Option<PathBuf>,
-    /// Unix permission bits, recorded where the platform has them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Unix permission bits; `null` on platforms without them. The key is
+    /// required in every manifest.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub mode: Option<u32>,
 }
 
@@ -722,6 +723,15 @@ fn create_symlink(target: &Path, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_entries_require_the_mode_key() {
+        let entry = r#"{"path":"a","kind":"file","size":0,"sha256":null,"link_target":null"#;
+        assert!(serde_json::from_str::<BackupEntry>(&format!("{entry}}}")).is_err());
+        let parsed: BackupEntry =
+            serde_json::from_str(&format!("{entry},\"mode\":null}}")).unwrap();
+        assert_eq!(parsed.mode, None);
+    }
 
     #[test]
     fn create_verify_and_restore_round_trip() {
