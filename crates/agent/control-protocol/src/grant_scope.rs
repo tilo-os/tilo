@@ -173,20 +173,52 @@ pub struct PackagePin {
 }
 
 /// Host-enforced per-task budgets: steps, wall-clock time, content removal
-/// and invocation rate. The defaults are conservative limits for one
-/// unattended task.
+/// and invocation rate. They bound what one unattended task can do before
+/// its owner looks again; a scope may carry tighter values, and several
+/// covering scopes take the pointwise minimum ([`Self::tightest`]).
+///
+/// The defaults are sized so an ordinary edit (drafting or restructuring a
+/// few sections of one document) finishes well inside them, while a task
+/// that runs away, loops or deletes stops before it can do lasting damage:
+/// every refusal leaves the document recoverable from its history and the
+/// owner can resume with a new task.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScopeBudgets {
+    /// Steps (operations) one task may bind. Default 200: a long edit is a
+    /// few dozen operations; a loop reaches the cap in about 40 seconds at
+    /// the sustained invocation rate below.
     pub max_steps: u32,
+    /// Seconds from the task's acceptance to its last admitted step.
+    /// Default 15 minutes: one task's model turns fit comfortably; a task
+    /// still running after that is stalled or looping, and ending it bounds
+    /// how long an unattended agent acts on one request.
     pub wall_clock_secs: u32,
+    /// Bytes of covered document text one step may remove. Default 2 KiB:
+    /// about a paragraph, enough to rewrite a passage, while replacing a
+    /// whole section needs the owner's approval.
     pub removed_bytes_per_step: u32,
+    /// Bytes of covered text the whole task may remove. Default 8 KiB:
+    /// a few paragraphs. It is further capped by
+    /// [`Self::removed_percent_per_task`].
     pub removed_bytes_per_task: u32,
     /// Also bounds removal per task to this percentage of the document size
-    /// at the task's first step, whichever is smaller.
+    /// at the task's first step, whichever is smaller (never below
+    /// [`crate::MIN_TASK_REMOVAL_BYTES`], so a tiny document can still be
+    /// corrected). Default 10: at most a tenth of a document is lost to one
+    /// task, whatever the document's size.
     pub removed_percent_per_task: u8,
+    /// Largest `count` a counted delete operation may name in one step.
+    /// Default 256: bulk clean-up of list items or table rows still works,
+    /// while "delete everything" in one call needs the owner's approval.
     pub max_delete_count: u32,
+    /// Sustained invocations per second of one task. Default 5: faster
+    /// than a model produces considered operations, slow enough that a
+    /// runaway loop is visible and bounded by [`Self::max_steps`].
     pub invocations_per_sec: u16,
+    /// Invocations one task may make back to back before the sustained rate
+    /// applies. Default 20: one planned batch (for example filling a table)
+    /// runs without waiting, a burst cannot flood the collaboration relay.
     pub invocation_burst: u16,
 }
 impl Default for ScopeBudgets {
