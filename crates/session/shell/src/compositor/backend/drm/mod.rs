@@ -1708,6 +1708,10 @@ impl Backend for DrmBackend {
     fn set_output_power(&mut self, output: OutputId, on: bool) {
         self.inner.set_output_power(output, on);
     }
+
+    fn set_device_rotation(&mut self, rotation: Option<settings_store::hardware::OutputTransform>) {
+        self.inner.set_device_rotation(rotation);
+    }
 }
 
 #[cfg(test)]

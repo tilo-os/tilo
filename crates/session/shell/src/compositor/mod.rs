@@ -24,6 +24,8 @@ pub mod client_input;
 pub mod controller_nav;
 pub mod cursor;
 pub mod dev_env;
+#[cfg(target_os = "linux")]
+pub mod device_rotation;
 pub mod drag_feedback;
 #[cfg(target_os = "linux")]
 pub mod floating_service;
