@@ -799,6 +799,35 @@ pub const ROOM_RECORDS_KEY: &str = "records";
 /// Key of the withdrawal mark on a room record entry.
 pub const ROOM_RECORD_REMOVED_KEY: &str = "removed";
 
+/// Key of a room record entry's bringing-in: `"<nonce> <by> <signature>"`,
+/// or just `"<nonce>"` from a machine with nothing to sign with.
+pub const ROOM_RECORD_ADDED_KEY: &str = "added";
+
+/// Key of a room record entry's withdrawal seal: `"<by> <signature>"`.
+pub const ROOM_RECORD_WITHDRAWN_KEY: &str = "withdrawn";
+
+/// What a machine did to a room record, for its host to seal: who acted,
+/// signed over the act. The nonce names one bringing-in, so a withdrawal
+/// seals the bringing-in it takes back and cannot be replayed on a later
+/// one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomRecordAct<'a> {
+    Added { id: &'a str, nonce: &'a str },
+    Withdrawn { id: &'a str, nonce: &'a str },
+}
+
+/// A seal a host makes for an act: `"<by> <signature>"`, or `None` when it
+/// has no identity to sign with.
+pub type RoomRecordSeal<'s> = &'s dyn Fn(RoomRecordAct<'_>) -> Option<String>;
+
+/// A room record's bringing-in, as a room document holds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoomRecordAdded {
+    pub nonce: String,
+    /// `(by, signature)`, when the machine that brought it in sealed it.
+    pub seal: Option<(String, String)>,
+}
+
 /// The actor that makes every room document's record map. No machine
 /// writes as it; it makes only the change in [`room_records_genesis`].
 const ROOM_RECORDS_GENESIS_ACTOR: [u8; 16] = *b"tilo-room-recs\0\0";
@@ -860,6 +889,7 @@ pub fn project_room_records(
     doc: &mut AutoCommit,
     held: &std::collections::BTreeMap<String, String>,
     previous: Option<&std::collections::BTreeMap<String, String>>,
+    seal: RoomRecordSeal<'_>,
 ) -> Result<(), automerge::AutomergeError> {
     use automerge::{ObjType, ReadDoc, transaction::Transactable};
 
@@ -876,10 +906,10 @@ pub fn project_room_records(
     }
     let records_id = room_records_map(doc)?;
     for (id, kind) in held {
-        let entry = match doc.get(&records_id, id.as_str()).ok().flatten() {
-            Some((_, obj)) => obj,
+        let (entry, brought_in) = match doc.get(&records_id, id.as_str()).ok().flatten() {
+            Some((_, obj)) => (obj, false),
             None => match doc.put_object(&records_id, id.as_str(), ObjType::Map) {
-                Ok(obj) => obj,
+                Ok(obj) => (obj, true),
                 Err(_) => continue,
             },
         };
@@ -898,8 +928,18 @@ pub fn project_room_records(
         // Brought in again during this session after being taken out: the
         // later act clears the mark. A record merely still held does not.
         let re_referenced = previous.is_some_and(|previous| !previous.contains_key(id));
-        if re_referenced && entry_removed(doc, &entry) {
+        let brought_back = re_referenced && entry_removed(doc, &entry);
+        if brought_back {
             let _ = doc.put(&entry, ROOM_RECORD_REMOVED_KEY, false);
+        }
+        // Who brought it in, sealed: whom a withdrawal is checked against.
+        if brought_in || brought_back {
+            let nonce = uuid::Uuid::new_v4().simple().to_string();
+            let added = match seal(RoomRecordAct::Added { id, nonce: &nonce }) {
+                Some(sealed) => format!("{nonce} {sealed}"),
+                None => nonce,
+            };
+            let _ = doc.put(&entry, ROOM_RECORD_ADDED_KEY, added);
         }
     }
     for id in withdrawn {
@@ -907,9 +947,72 @@ pub fn project_room_records(
             && !entry_removed(doc, &entry)
         {
             let _ = doc.put(&entry, ROOM_RECORD_REMOVED_KEY, true);
+            // Sealed over the bringing-in it takes back.
+            if let Some(nonce) = added_values(doc, &entry)
+                .first()
+                .map(|added| added.nonce.clone())
+                && let Some(sealed) = seal(RoomRecordAct::Withdrawn { id, nonce: &nonce })
+            {
+                let _ = doc.put(&entry, ROOM_RECORD_WITHDRAWN_KEY, sealed);
+            }
         }
     }
     Ok(())
+}
+
+fn strings_at(doc: &AutoCommit, entry: &automerge::ObjId, key: &str) -> Vec<String> {
+    use automerge::{ScalarValue, Value};
+    doc.get_all(entry, key)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(value, _)| match value {
+            Value::Scalar(v) => match v.as_ref() {
+                ScalarValue::Str(s) => Some(s.to_string()),
+                _ => None,
+            },
+            Value::Object(_) => None,
+        })
+        .collect()
+}
+
+fn added_values(doc: &AutoCommit, entry: &automerge::ObjId) -> Vec<RoomRecordAdded> {
+    strings_at(doc, entry, ROOM_RECORD_ADDED_KEY)
+        .into_iter()
+        .filter_map(|value| {
+            let mut parts = value.split(' ');
+            let nonce = parts.next().filter(|nonce| !nonce.is_empty())?.to_string();
+            let seal = match (parts.next(), parts.next()) {
+                (Some(by), Some(sig)) => Some((by.to_string(), sig.to_string())),
+                _ => None,
+            };
+            Some(RoomRecordAdded { nonce, seal })
+        })
+        .collect()
+}
+
+fn record_entry(doc: &AutoCommit, id: &str) -> Option<automerge::ObjId> {
+    use automerge::{ROOT, ReadDoc};
+    let (_, records) = doc.get(&ROOT, ROOM_RECORDS_KEY).ok().flatten()?;
+    doc.get(&records, id).ok().flatten().map(|(_, entry)| entry)
+}
+
+/// Every bringing-in of record `id` the room document holds — more than one
+/// only when members brought it in concurrently.
+pub fn room_record_added(doc: &AutoCommit, id: &str) -> Vec<RoomRecordAdded> {
+    record_entry(doc, id).map_or_else(Vec::new, |entry| added_values(doc, &entry))
+}
+
+/// Every withdrawal seal on record `id`, as `(by, signature)`.
+pub fn room_record_withdrawals(doc: &AutoCommit, id: &str) -> Vec<(String, String)> {
+    record_entry(doc, id).map_or_else(Vec::new, |entry| {
+        strings_at(doc, &entry, ROOM_RECORD_WITHDRAWN_KEY)
+            .into_iter()
+            .filter_map(|value| {
+                let (by, sig) = value.split_once(' ')?;
+                Some((by.to_string(), sig.to_string()))
+            })
+            .collect()
+    })
 }
 
 /// Whether an entry is marked removed. Every concurrent value counts, so a

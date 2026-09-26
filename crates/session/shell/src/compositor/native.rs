@@ -3852,6 +3852,7 @@ fn load_session_tree(
         match crate::network::behaviour::load_or_create_keypair(&peer_key_path) {
             Ok(kp) => {
                 tracing::info!(endpoint = %kp.public(), "peer-sync: device identity loaded");
+                crate::shell::state::WorkspaceTree::set_process_room_record_signer(kp);
             }
             Err(e) => {
                 peer_sync_possible = false;

@@ -280,6 +280,7 @@ fn prepare_workspace_namespace(enable_peer_sync: bool, state_path: &std::path::P
     match load_or_create_keypair(&key_path) {
         Ok(keypair) => {
             tracing::info!(endpoint = %keypair.public(), "peer-sync: device identity loaded");
+            WorkspaceTree::set_process_room_record_signer(keypair);
             true
         }
         Err(error) => {

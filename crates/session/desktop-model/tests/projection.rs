@@ -186,7 +186,7 @@ fn tasks_and_record_references_round_trip() {
     let held = [("rec-1".to_string(), "note".to_string())]
         .into_iter()
         .collect();
-    project_room_records(&mut doc, &held, None).unwrap();
+    project_room_records(&mut doc, &held, None, &|_| None).unwrap();
     assert_eq!(
         room_records_of(&doc),
         vec![("rec-1".to_string(), "note".to_string())]
@@ -207,8 +207,8 @@ fn two_members_starting_a_rooms_records_share_one_map() {
     let from_bob = [("rec-b".to_string(), "sheet".to_string())]
         .into_iter()
         .collect();
-    project_room_records(&mut alice, &from_alice, None).unwrap();
-    project_room_records(&mut bob, &from_bob, None).unwrap();
+    project_room_records(&mut alice, &from_alice, None, &|_| None).unwrap();
+    project_room_records(&mut bob, &from_bob, None, &|_| None).unwrap();
 
     let alice_bytes = alice.save();
     let bob_bytes = bob.save();
