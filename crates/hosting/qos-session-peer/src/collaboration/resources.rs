@@ -197,11 +197,13 @@ mod tests {
             )
             .unwrap();
         let mut state = owner.collaboration_state().clone();
-        assert!(
-            !state.join_completions[0]
+        assert_eq!(
+            state.join_completions[0]
                 .bootstrap
                 .governance_messages
-                .is_empty()
+                .len(),
+            1,
+            "a completion receipt keeps one digest entry, not the publication"
         );
         let before = state.retained_serialized_capacity().unwrap();
         assert!(before >= state.invitations[0].issued.signed_invitation.len());
