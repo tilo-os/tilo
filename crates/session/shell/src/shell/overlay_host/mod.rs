@@ -8030,6 +8030,9 @@ impl ShellOverlayHost {
             return false;
         };
         self.harvest_widget_only_groups_into_tree();
+        // A drop lands in the strip at an exact seam, which only a Tilo tile
+        // can honour; a host application opens its own window elsewhere, so
+        // drops it would handle stay with the shell's own document tile.
         let owned = matches!(
             crate::shell::doc_open::resolve(path),
             crate::shell::doc_open::DocumentTarget::App { .. }
@@ -12033,6 +12036,7 @@ impl ShellOverlayHost {
             ShortcutAction::DetachTab,
             ShortcutAction::AttachTabLeft,
             ShortcutAction::AttachTabRight,
+            ShortcutAction::ReopenClosedTab,
         ];
         if let Some(action) = navigation
             .into_iter()
@@ -12063,6 +12067,11 @@ impl ShellOverlayHost {
                 ShortcutAction::AttachTabRight => {
                     if !repeat {
                         let _ = self.attach_focused_tab(1);
+                    }
+                }
+                ShortcutAction::ReopenClosedTab => {
+                    if !repeat && let Some(chrome) = self.chrome.clone() {
+                        let _ = chrome.borrow_mut().reopen_closed_tab();
                     }
                 }
                 ShortcutAction::ResizeNarrower => {
@@ -27206,7 +27215,6 @@ mod palette_dispatch_tests {
     /// maps a toplevel. The opening acknowledgement retires immediately while
     /// the placement promise remains available for the bounded handoff grace.
     #[test]
-    #[serial_test::serial(launch_events)]
     fn clean_launch_exit_retires_its_pending_open_notice() {
         let (mut host, chrome) = host_with_launch_polling();
         let package_id = "so.tilo.exit-before-window-fixture";
@@ -27403,7 +27411,7 @@ mod palette_dispatch_tests {
             "Screenshot:Print Screen",
             "Switch windows:Alt+Tab",
             "Close tab:Alt+F4  /  Super+W",
-            "Change workspace:Super+Page Up / Down",
+            "Reopen closed tab:Super+Shift+T",
             "New window:Super+N",
             "Add tab here:Super+T",
             "Duplicate tab:Super+D",
@@ -27479,7 +27487,7 @@ mod palette_dispatch_tests {
             "Screenshot",
             "Switch windows",
             "Close tab",
-            "Change workspace",
+            "Reopen closed tab",
         ] {
             assert!(rows.iter().any(|(label, _)| *label == essential));
         }
@@ -28241,7 +28249,6 @@ mod palette_dispatch_tests {
     /// retire the moment the window's own place says which app is coming —
     /// otherwise it's noise, or a stale "Loading…" under "isn't responding".
     #[test]
-    #[serial_test::serial(launch_events)]
     fn the_loading_indication_stands_until_the_window_place_speaks_for_itself() {
         const SURFACE: u64 = 918_273;
         let (h, chrome) = host_with_launch_polling();
@@ -28323,7 +28330,6 @@ mod palette_dispatch_tests {
     /// The other way the hand-over can happen: an app fast enough to paint
     /// before the card was ever due still settles the open.
     #[test]
-    #[serial_test::serial(launch_events)]
     fn a_window_that_paints_before_the_card_is_due_settles_the_open_too() {
         const SURFACE: u64 = 918_274;
         let (h, chrome) = host_with_launch_polling();
@@ -33918,7 +33924,6 @@ mod tests {
     /// after its app was uninstalled). That refusal must consume any staged
     /// placement and leave one finite, bounded recovery notice for retry.
     #[test]
-    #[serial_test::serial(launch_events)]
     fn room_activity_preflight_failure_clears_placement_and_emits_one_notice() {
         let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
         let app_id = "org.tilo.missing-history-fixture-9f1e";

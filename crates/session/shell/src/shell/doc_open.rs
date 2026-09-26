@@ -16,7 +16,6 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use ui::record::RecordId;
 
@@ -35,6 +34,11 @@ pub enum DocumentTarget {
         /// `false` for a type an app claims that `qdoc` has no codec
         /// for — still a good open, just not a document one.
         editable_document: bool,
+    },
+    /// A host desktop entry opens it: nothing Tilo packaged claims the type,
+    /// or the person chose this host application.
+    HostApp {
+        app: Box<crate::shell::host_apps::HostApp>,
     },
     /// An editable document with no installed owner, distinct from
     /// [`Self::Unclaimed`] because it's actionable: the store can name an editor.
@@ -60,17 +64,24 @@ pub enum Opened {
         app: InstalledApp,
         tab: Option<TabId>,
     },
+    /// Handed to an unconfined host application, which owns its own windows
+    /// and file access.
+    HostLaunched {
+        app: crate::shell::host_apps::HostApp,
+    },
 }
 
 impl Opened {
-    pub fn app(&self) -> &InstalledApp {
+    /// The Tilo package that holds the document; `None` for a host application.
+    pub fn app(&self) -> Option<&InstalledApp> {
         match self {
-            Opened::Launched { app } | Opened::Focused { app, .. } => app,
+            Opened::Launched { app } | Opened::Focused { app, .. } => Some(app),
+            Opened::HostLaunched { .. } => None,
         }
     }
 
     pub fn launched(&self) -> bool {
-        matches!(self, Opened::Launched { .. })
+        matches!(self, Opened::Launched { .. } | Opened::HostLaunched { .. })
     }
 }
 
@@ -134,21 +145,44 @@ pub fn resolve_for(
     let ext = extension_of(path);
     let editable_document = ext.as_deref().is_some_and(qdoc_codecs::is_supported_ext);
     let mime = mime_guess::from_path(path).first_raw();
-    let app = mime
+    let by_mime = mime
         .and_then(|mime| desktop_policy::ResourceKind::mime(mime).ok())
         .and_then(|resource| {
-            launcher::app_for_resource_with_policy(&resource, user_id, workspace_defaults)
-        })
-        .or_else(|| {
-            ext.as_deref().and_then(|ext| {
-                launcher::app_for_extension_with_policy(ext, user_id, workspace_defaults)
-            })
+            launcher::handler_for_resource_with_policy(&resource, user_id, workspace_defaults)
         });
-    match app {
-        Some(app) => DocumentTarget::App {
+    let by_extension = || {
+        ext.as_deref().and_then(|ext| {
+            launcher::app_for_extension_with_policy(ext, user_id, workspace_defaults)
+        })
+    };
+    // A host application only wins over a package claiming the extension
+    // when the person or workspace chose it; otherwise Tilo's own app opens it.
+    let handler = match by_mime {
+        Some((launcher::ResourceHandler::Host(host), source))
+            if !matches!(
+                source,
+                desktop_policy::defaults::SelectionSource::SystemDefault
+                    | desktop_policy::defaults::SelectionSource::DeterministicFallback
+            ) =>
+        {
+            Some(launcher::ResourceHandler::Host(host))
+        }
+        Some((launcher::ResourceHandler::Host(host), _)) => Some(
+            by_extension().map_or(launcher::ResourceHandler::Host(host), |app| {
+                launcher::ResourceHandler::Package(app)
+            }),
+        ),
+        Some((handler, _)) => Some(handler),
+        None => by_extension().map(launcher::ResourceHandler::Package),
+    };
+    match handler {
+        Some(launcher::ResourceHandler::Package(app)) => DocumentTarget::App {
             app: Box::new(app),
             editable_document,
         },
+        Some(launcher::ResourceHandler::Host(app)) => {
+            DocumentTarget::HostApp { app: Box::new(app) }
+        }
         None if editable_document => DocumentTarget::NoAppForDocument {
             ext: ext.unwrap_or_default(),
         },
@@ -215,6 +249,7 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
     };
     let app = match target {
         DocumentTarget::App { app, .. } => app,
+        DocumentTarget::HostApp { app } => return open_with_host(&app, path, chrome, placement),
         DocumentTarget::NoAppForDocument { ext } => {
             return Err(OpenError::NoHandler {
                 path: path.to_path_buf(),
@@ -312,6 +347,42 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
     }
 }
 
+/// Hand `path` to a host application. It runs unconfined with the person's
+/// own files, so there is no read grant to record and no sandbox to open in;
+/// the workspace only attributes its portal requests.
+fn open_with_host(
+    app: &crate::shell::host_apps::HostApp,
+    path: &Path,
+    chrome: &Chrome,
+    placement: Option<Placement>,
+) -> Result<Opened, OpenError> {
+    // Re-read the catalogue: the resolution may be seconds old.
+    let Some(app) = crate::shell::host_apps::find(&app.desktop_id) else {
+        return Err(OpenError::NoHandler {
+            path: path.to_path_buf(),
+            ext: extension_of(path),
+        });
+    };
+    if let Some(placement) = placement.or_else(|| placement_for_document_open(chrome)) {
+        crate::shell::host_apps::note_placement(&app, placement);
+    }
+    let portal_workspace_id = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        tree.desktop
+            .active_workspace()
+            .map(|workspace| workspace.room.to_string())
+    };
+    crate::shell::host_apps::launch_resolved_with_activation(
+        app,
+        Some(path),
+        portal_workspace_id,
+        None,
+    )
+    .map(|app| Opened::HostLaunched { app })
+    .map_err(OpenError::Launch)
+}
+
 /// A document opened elsewhere belongs *with* whatever asked for it —
 /// a tab in the focused group rather than a new column.
 fn placement_for_document_open(chrome: &Chrome) -> Option<Placement> {
@@ -362,7 +433,7 @@ pub fn report_open_failure(chrome: &Chrome, path: &Path, detail: &str, surface: 
 // ---------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-struct OpenDocument {
+pub(crate) struct OpenDocument {
     record: RecordId,
     /// Kept only in the local process so continuation can read the FUSE
     /// record projection. It is never serialized into a checkpoint.
@@ -373,17 +444,15 @@ struct OpenDocument {
     surface: Option<u64>,
 }
 
-/// Process-wide: a document is open in *this session*, not in one
-/// workspace or one widget tree.
-static OPEN_DOCUMENTS: Mutex<Vec<OpenDocument>> = Mutex::new(Vec::new());
-
-/// Lock [`OPEN_DOCUMENTS`], recovering from poisoning instead of
-/// panicking: a panic while holding this lock doesn't corrupt the open
-/// document list it protects, so a poisoned lock is treated the same
-/// as a healthy one rather than wedging every future caller in this
-/// process.
-fn lock_open_documents() -> std::sync::MutexGuard<'static, Vec<OpenDocument>> {
-    OPEN_DOCUMENTS
+/// The documents open in *this session* (not one workspace or one widget
+/// tree): `session`'s list, `session` being [`launcher::LaunchSession::current`].
+/// A poisoned lock is recovered: a panic while holding it doesn't corrupt the
+/// list, so it is treated as healthy rather than wedging every later caller.
+fn lock_open_documents(
+    session: &launcher::LaunchSession,
+) -> std::sync::MutexGuard<'_, Vec<OpenDocument>> {
+    session
+        .open_documents
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -408,7 +477,8 @@ enum Existing {
 /// Keyed by record, so re-noting the same document replaces rather
 /// than duplicates.
 fn note_opening(record: &RecordId, path: &Path, package_id: &str) {
-    let mut open = lock_open_documents();
+    let session = launcher::LaunchSession::current();
+    let mut open = lock_open_documents(&session);
     open.retain(|d| &d.record != record);
     open.push(OpenDocument {
         record: record.clone(),
@@ -419,11 +489,11 @@ fn note_opening(record: &RecordId, path: &Path, package_id: &str) {
 }
 
 fn forget_document(record: &RecordId) {
-    lock_open_documents().retain(|d| &d.record != record);
+    lock_open_documents(&launcher::LaunchSession::current()).retain(|d| &d.record != record);
 }
 
 pub fn clear_open_documents() {
-    lock_open_documents().clear();
+    lock_open_documents(&launcher::LaunchSession::current()).clear();
 }
 
 /// Return a privacy-safe continuation reference for a document surface.  The
@@ -433,7 +503,8 @@ pub fn clear_open_documents() {
 pub fn continuation_file_reference_for_surface(
     surface_id: u64,
 ) -> Option<crate::shell::personal_continuity::LaunchIntent> {
-    let open = lock_open_documents();
+    let session = launcher::LaunchSession::current();
+    let open = lock_open_documents(&session);
     let path = open
         .iter()
         .find(|document| document.surface == Some(surface_id))?
@@ -552,7 +623,8 @@ fn resolve_continuity_file_reference_in_roots(
 /// order) when one app opens two documents at once. Idempotent per
 /// surface — one that already holds a note must not steal a second.
 pub fn claim_surface_for_document(app_id: &str, surface_id: u64) {
-    let mut open = lock_open_documents();
+    let session = launcher::LaunchSession::current();
+    let mut open = lock_open_documents(&session);
     if open.iter().any(|d| d.surface == Some(surface_id)) {
         return;
     }
@@ -568,7 +640,8 @@ pub fn claim_surface_for_document(app_id: &str, surface_id: u64) {
 /// the caller launches for real rather than focusing nothing.
 fn existing_window_for(record: &RecordId, chrome: &Chrome) -> Option<Existing> {
     let surface = {
-        let open = lock_open_documents();
+        let session = launcher::LaunchSession::current();
+        let open = lock_open_documents(&session);
         let surface_opt = open.iter().find(|d| &d.record == record)?.surface;
         drop(open);
         match surface_opt {
@@ -730,7 +803,10 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
         let got = std::fs::read_to_string(log).unwrap_or_default();
-        panic!("expected {want} launch(es); the launcher recorded:\n{got}");
+        let events = launcher::drain_events();
+        panic!(
+            "expected {want} launch(es); the launcher recorded:\n{got}\nlaunch events: {events:?}"
+        );
     }
 
     fn reset_session_state() {
@@ -748,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env, launch_events)]
+    #[serial_test::serial(process_env)]
     fn continuation_uses_root_catalog_when_file_xattr_is_unavailable() {
         let root = tempfile::tempdir().unwrap();
         let document = root.path().join("deep/report.pdf");
@@ -797,7 +873,7 @@ mod tests {
     /// command the compositor executed and the events it queued, not
     /// what `open_in_workspace` handed back.
     #[test]
-    #[serial_test::serial(process_env, launch_events)]
+    #[serial_test::serial(process_env)]
     fn each_format_opens_in_the_package_that_declares_it() {
         let tmp = tempfile::tempdir().unwrap();
         install(
@@ -858,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env, launch_events)]
+    #[serial_test::serial(process_env)]
     fn explicit_drop_placement_survives_launch_until_toplevel_adoption() {
         let tmp = tempfile::tempdir().unwrap();
         install(
@@ -946,7 +1022,7 @@ mod tests {
     /// One instance, one launch — asserted against the tree the
     /// compositor paints and the commands it ran.
     #[test]
-    #[serial_test::serial(process_env, launch_events)]
+    #[serial_test::serial(process_env)]
     fn opening_an_open_document_focuses_it_instead_of_launching_again() {
         const SURFACE: u64 = 4242;
         let tmp = tempfile::tempdir().unwrap();
@@ -1069,7 +1145,7 @@ mod tests {
     /// production route ([`crate::shell::install_document_opener`]) —
     /// the wiring is under test, not a direct call.
     #[test]
-    #[serial_test::serial(process_env, launch_events)]
+    #[serial_test::serial(process_env)]
     fn the_file_explorer_opens_a_document_in_the_app_that_owns_it() {
         let tmp = tempfile::tempdir().unwrap();
         let apps = tmp.path().join("apps");
@@ -1139,7 +1215,7 @@ mod tests {
 
     /// A type nothing claims is refused in words the explorer shows.
     #[test]
-    #[serial_test::serial(process_env, launch_events)]
+    #[serial_test::serial(process_env)]
     fn the_file_explorer_reports_a_type_nothing_opens() {
         let tmp = tempfile::tempdir().unwrap();
         let apps = tmp.path().join("apps");
@@ -1193,7 +1269,7 @@ mod tests {
 
     /// A closed window means the next activation launches for real.
     #[test]
-    #[serial_test::serial(process_env, launch_events)]
+    #[serial_test::serial(process_env)]
     fn a_closed_window_means_the_document_is_no_longer_open() {
         let tmp = tempfile::tempdir().unwrap();
         install(
@@ -1245,7 +1321,7 @@ mod tests {
     /// Resolution must land on the declaring package, not a name the
     /// compositor made up.
     #[test]
-    #[serial_test::serial(process_env, launch_events)]
+    #[serial_test::serial(process_env)]
     fn declared_extension_resolves_to_the_declaring_package() {
         let tmp = tempfile::tempdir().unwrap();
         install(
@@ -1284,7 +1360,7 @@ mod tests {
     /// A format with nothing installed is its own answer — different
     /// from "this file is not a document".
     #[test]
-    #[serial_test::serial(process_env, launch_events)]
+    #[serial_test::serial(process_env)]
     fn document_with_no_installed_handler_is_distinguishable() {
         let tmp = tempfile::tempdir().unwrap();
         install(tmp.path(), "so.tilo.calculator", "Calculator", &[]);
@@ -1315,7 +1391,7 @@ mod tests {
     /// (no Wayland socket in a unit test), which is the point: the
     /// grant is recorded *before* the launch, so it's observable either way.
     #[test]
-    #[serial_test::serial(process_env, launch_events)]
+    #[serial_test::serial(process_env)]
     fn opening_a_document_grants_read_for_that_path() {
         use crate::shell::state::{Effect, Scope, Subject};
 
@@ -1389,7 +1465,7 @@ mod tests {
     /// Nothing installed claims `.zzz`, so the open is refused rather
     /// than silently launching something arbitrary.
     #[test]
-    #[serial_test::serial(process_env, launch_events)]
+    #[serial_test::serial(process_env)]
     fn unclaimed_extension_refuses_with_a_reportable_reason() {
         let tmp = tempfile::tempdir().unwrap();
         install(tmp.path(), "so.tilo.calculator", "Calculator", &[]);
@@ -1448,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env, launch_events)]
+    #[serial_test::serial(process_env)]
     fn remote_file_reference_resolves_a_projected_record_without_source_path() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("hydrated-on-read.md");

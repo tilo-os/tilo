@@ -822,6 +822,8 @@ pub enum ShortcutAction {
     MoveGroupRight,
     ResizeNarrower,
     ResizeWider,
+    /// Bring back the most recently closed tab in the current workspace.
+    ReopenClosedTab,
 }
 
 /// Desktop-navigation preferences consumed directly by the shell.
@@ -1273,6 +1275,9 @@ impl Default for ShortcutConfig {
             (ShortcutAction::MoveGroupRight, super_shift_chord("right")),
             (ShortcutAction::ResizeNarrower, super_chord("-")),
             (ShortcutAction::ResizeWider, super_chord("=")),
+            // Browsers' reopen-closed-tab chord, on the desktop's own
+            // modifier; plain Super+T keeps adding a tab.
+            (ShortcutAction::ReopenClosedTab, super_shift_chord("t")),
         ]
         .into_iter()
         .collect();
@@ -1645,6 +1650,16 @@ mod tests {
         );
         assert!(cfg.validate().is_ok());
     }
+
+    #[test]
+    fn reopen_closed_tab_defaults_to_super_shift_t_without_colliding() {
+        let cfg = ShortcutConfig::default();
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::ReopenClosedTab],
+            KeyChord::parse("Super+Shift+T").unwrap()
+        );
+        assert!(cfg.validate().is_ok(), "no other default claims the chord");
+    }
     #[test]
     fn shortcut_conflicts_are_rejected_without_overwriting() {
         let mut cfg = ShortcutConfig::default();
@@ -1744,7 +1759,7 @@ mod tests {
     #[test]
     fn desktop_navigation_defaults_are_complete_and_conflict_free() {
         let cfg = ShortcutConfig::default();
-        assert_eq!(cfg.bindings.len(), 21);
+        assert_eq!(cfg.bindings.len(), 22);
         let unique: BTreeSet<_> = cfg.bindings.values().collect();
         assert_eq!(unique.len(), cfg.bindings.len());
         assert_eq!(

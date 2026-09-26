@@ -607,3 +607,27 @@ wayland-backend = { path = "vendor/wayland-backend" }
 vello_encoding = { path = "vendor/vello_encoding" }
 vello_shaders = { path = "vendor/vello_shaders" }
 vello = { path = "vendor/vello" }
+# Git forks on code.tilo.so. Cargo reads these revisions from `vendor/git`
+# (see `.cargo/config.toml` and `vendor/PATCHES.md`); upstream contributions
+# are prepared in tilo/upstream-contribs. Drop the entries once upstream
+# releases the changes.
+#
+# accesskit_unix and atspi enable zbus's async-io backend unconditionally, so
+# the tokio-only accessibility stack also built a second async runtime
+# (async-executor, async-io, async-process, blocking, ...). These forks make
+# the backend follow the crates' `async-io`/`tokio` features.
+#
+# The accesskit crates the fork's accesskit_unix depends on by path come from
+# the same revision (identical to their crates.io releases), so each resolves
+# to one copy.
+accesskit = { git = "ssh://git@code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
+accesskit_atspi_common = { git = "ssh://git@code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
+accesskit_consumer = { git = "ssh://git@code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
+accesskit_unix = { git = "ssh://git@code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
+atspi = { git = "ssh://git@code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
+atspi-common = { git = "ssh://git@code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
+atspi-proxies = { git = "ssh://git@code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
+# rustypipe 0.11.4 uses reqwest 0.12, which kept reqwest 0.12, its QUIC stack
+# (quinn) and fancy-regex 0.14 in the lock. The fork ports 0.11.4 to reqwest
+# 0.13 and fancy-regex 0.16.
+rustypipe = { git = "ssh://git@code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760" }

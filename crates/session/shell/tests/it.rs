@@ -141,6 +141,8 @@ mod qs_actions_click_routing;
 mod real_apps_visual;
 #[path = "remote_cursors_test.rs"]
 mod remote_cursors_test;
+#[path = "reopen_closed_tab.rs"]
+mod reopen_closed_tab;
 #[path = "sandbox_check.rs"]
 mod sandbox_check;
 #[path = "server_side_decorations.rs"]
@@ -165,6 +167,8 @@ mod surface_substream_e2e;
 mod system_monitor_test;
 #[path = "tilo_e2e_test.rs"]
 mod tilo_e2e_test;
+#[path = "toplevel_configure_states.rs"]
+mod toplevel_configure_states;
 #[path = "two_netns_share.rs"]
 mod two_netns_share;
 #[path = "wayland_test.rs"]

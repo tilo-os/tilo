@@ -67,7 +67,7 @@ tokio = { workspace = true, optional = true, features = ["rt", "macros", "time"]
 # Pure-Rust InnerTube (YouTube / YouTube Music) client: search + stream
 # resolution. Embeds `rquickjs` for signature deobfuscation — no external
 # interpreter, downloader, or JS runtime binary. Gated behind `live`.
-rustypipe = { workspace = true, optional = true, features = ["rustls-tls-webpki-roots"] }
+rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 
 [target.'cfg(all(windows, target_arch = "aarch64"))'.dependencies]
 # QuickJS does not ship Windows ARM64 bindings; generate the actual target ABI.

@@ -68,6 +68,11 @@ pub struct ClientInput {
     surfaces: HashMap<u64, WlSurface>,
     /// Surface currently holding the seat's keyboard focus, or `None` when the shell chrome owns the keyboard.
     keyboard_focus: Option<u64>,
+    /// Toplevel configured with `xdg_toplevel.state.activated` — the focused
+    /// tile, which draws itself as the active window. Unlike
+    /// [`Self::keyboard_focus`] it survives a shell overlay briefly taking the
+    /// keyboard, so opening the palette does not repaint every app inactive.
+    activated: Option<u64>,
     /// Surface the pointer is currently inside (and therefore focused on at the seat), or `None` when the pointer is over chrome.
     pointer_focus: Option<u64>,
     /// Last known cursor position in global coordinates; `None` until
@@ -329,6 +334,39 @@ impl State {
     }
 
     /// Point the seat's keyboard at `surface_id` (or nothing when `None`), sending `leave`/`enter` and the keymap; idempotent, so the run loop can call it unconditionally every tick.
+    /// Configure `surface_id` as the activated toplevel and the previous one
+    /// as no longer activated. A toplevel that has not had its opening
+    /// configure keeps the state pending, so it rides that configure.
+    pub fn set_activated_toplevel(&mut self, surface_id: Option<u64>) {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as Xdg;
+        let previous = std::mem::replace(&mut self.client_input.activated, surface_id);
+        if previous == surface_id {
+            return;
+        }
+        for toplevel in self.xdg_shell_state.toplevel_surfaces() {
+            let id = crate::compositor::state::surface_id(toplevel.wl_surface());
+            if Some(id) != previous && Some(id) != surface_id {
+                continue;
+            }
+            let activated = Some(id) == surface_id;
+            toplevel.with_pending_state(|pending| {
+                if activated {
+                    pending.states.set(Xdg::Activated);
+                } else {
+                    pending.states.unset(Xdg::Activated);
+                }
+            });
+            if toplevel.is_initial_configure_sent() {
+                toplevel.send_pending_configure();
+            }
+        }
+    }
+
+    /// The toplevel currently configured as activated.
+    pub fn activated_toplevel(&self) -> Option<u64> {
+        self.client_input.activated
+    }
+
     pub fn set_client_keyboard_focus(&mut self, surface_id: Option<u64>) {
         if self.client_input.keyboard_focus == surface_id {
             return;
@@ -684,22 +722,34 @@ pub fn touch_target(
         && state.osk_surface == Some(surface_id)
         && state.client_input.surfaces.contains_key(&surface_id)
     {
-        return Some((surface_id, (rect.x0, rect.y0)));
+        return Some((
+            surface_id,
+            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+        ));
     }
     if let Some((surface_id, rect)) = fb.transient_surface_hit((*x, *y))
         && state.client_input.surfaces.contains_key(&surface_id)
     {
-        return Some((surface_id, (rect.x0, rect.y0)));
+        return Some((
+            surface_id,
+            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+        ));
     }
     if let Some((surface_id, rect)) = fb.fullscreen_surface_hit((*x, *y))
         && state.client_input.surfaces.contains_key(&surface_id)
     {
-        return Some((surface_id, (rect.x0, rect.y0)));
+        return Some((
+            surface_id,
+            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+        ));
     }
     if let Some((surface_id, rect)) = fb.floating_surface_hit((*x, *y))
         && state.client_input.surfaces.contains_key(&surface_id)
     {
-        return Some((surface_id, (rect.x0, rect.y0)));
+        return Some((
+            surface_id,
+            crate::compositor::foreign::store().surface_origin(surface_id, rect),
+        ));
     }
     let hit = {
         let chrome = fb.chrome();
@@ -709,15 +759,15 @@ pub fn touch_target(
     if !state.client_input.surfaces.contains_key(&hit.surface_id) {
         return None;
     }
-    let local_x = *x - hit.rect.x0;
-    let local_y = *y - hit.rect.y0;
+    let origin = crate::compositor::foreign::store().surface_origin(hit.surface_id, hit.rect);
+    let local_x = *x - origin.0;
+    let local_y = *y - origin.1;
     Some(
         crate::compositor::foreign::store()
             .child_at(hit.surface_id, local_x, local_y)
-            .map_or(
-                (hit.surface_id, (hit.rect.x0, hit.rect.y0)),
-                |(child, child_x, child_y)| (child, (*x - child_x, *y - child_y)),
-            ),
+            .map_or((hit.surface_id, origin), |(child, child_x, child_y)| {
+                (child, (*x - child_x, *y - child_y))
+            }),
     )
 }
 
@@ -869,6 +919,7 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
                     && crate::compositor::foreign::store().is_mapped(*id)
             })
         });
+    state.set_activated_toplevel(candidate);
     state.set_client_keyboard_focus(gate_keyboard_focus(candidate, captured));
 }
 
@@ -1708,11 +1759,12 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
 fn deliver_pointer(state: &mut State, hit: Option<TileHit>) {
     let global = state.client_input.cursor();
     let target = hit.map(|h| {
-        let local_x = global.0 - h.rect.x0;
-        let local_y = global.1 - h.rect.y0;
+        let origin = crate::compositor::foreign::store().surface_origin(h.surface_id, h.rect);
+        let local_x = global.0 - origin.0;
+        let local_y = global.1 - origin.1;
         crate::compositor::foreign::store()
             .child_at(h.surface_id, local_x, local_y)
-            .map_or((h.surface_id, (h.rect.x0, h.rect.y0)), |(child, x, y)| {
+            .map_or((h.surface_id, origin), |(child, x, y)| {
                 (child, (global.0 - x, global.1 - y))
             })
     });

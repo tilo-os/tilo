@@ -1771,6 +1771,47 @@ impl State {
     /// dispatch. `wl_shm` is copied here; a dmabuf worker result was staged by
     /// the pre-commit barrier and is activated here. A buffer neither path can
     /// decode is recorded as an error the tile renders, never a silently stale frame.
+    /// Hand the frame store the window geometry an xdg toplevel's commit just
+    /// applied, so the tile shows the window and not the shadow and resize
+    /// border a client-side-decorating toolkit draws around it. A compositor
+    /// floating surface is skipped: its soft silhouette is meant to be seen.
+    fn note_foreign_window_geometry(surface: &WlSurface, surface_id: u64) {
+        let toplevel_geometry = wl_compositor::with_states(surface, |states| {
+            states.data_map.get::<XdgToplevelSurfaceData>()?;
+            let Some(declared) = states
+                .cached_state
+                .get::<smithay::wayland::shell::xdg::SurfaceCachedState>()
+                .current()
+                .geometry
+            else {
+                return Some(None);
+            };
+            let buffer_scale = states
+                .cached_state
+                .get::<wl_compositor::SurfaceAttributes>()
+                .current()
+                .buffer_scale;
+            let logical_size = states
+                .cached_state
+                .get::<smithay::wayland::viewporter::ViewportCachedState>()
+                .current()
+                .dst
+                .map(|size| (size.w, size.h));
+            Some(Some(crate::compositor::foreign::WindowGeometry {
+                x: declared.loc.x,
+                y: declared.loc.y,
+                width: declared.size.w,
+                height: declared.size.h,
+                logical_size,
+                buffer_scale,
+            }))
+        });
+        // Only toplevels: an entry made for any other surface would never be forgotten.
+        if let Some(geometry) = toplevel_geometry {
+            crate::compositor::foreign::store().note_window_geometry(surface_id, geometry);
+        }
+    }
+
     fn capture_foreign_surface(surface: &WlSurface, surface_id: u64) {
         use crate::compositor::foreign::{CaptureOutcome, store};
         wl_compositor::with_states(surface, |states| {
@@ -2477,10 +2518,11 @@ impl RemoteInputSink for State {
                             .get(&surface)
                             .cloned()
                             .and_then(|wl_surface| {
-                                self.remote_input_firewall
-                                    .view()
-                                    .rect(surface)
-                                    .map(|rect| (wl_surface, (rect.x0, rect.y0).into()))
+                                self.remote_input_firewall.view().rect(surface).map(|rect| {
+                                    let origin = crate::compositor::foreign::store()
+                                        .surface_origin(surface, rect);
+                                    (wl_surface, origin.into())
+                                })
                             });
                     pointer.motion(
                         self,
@@ -2510,10 +2552,11 @@ impl RemoteInputSink for State {
                             .get(&surface)
                             .cloned()
                             .and_then(|wl_surface| {
-                                self.remote_input_firewall
-                                    .view()
-                                    .rect(surface)
-                                    .map(|rect| (wl_surface, (rect.x0, rect.y0).into()))
+                                self.remote_input_firewall.view().rect(surface).map(|rect| {
+                                    let origin = crate::compositor::foreign::store()
+                                        .surface_origin(surface, rect);
+                                    (wl_surface, origin.into())
+                                })
                             });
                     pointer.motion(
                         self,
@@ -2975,6 +3018,9 @@ impl CompositorHandler for State {
         }
         if let Some(root) = foreign_root {
             self.refresh_foreign_subsurface_tree(&root);
+        }
+        if !self.is_floating_toplevel(surface_id) {
+            Self::note_foreign_window_geometry(surface, surface_id);
         }
         let floating_has_new_buffer = self.is_floating_toplevel(surface_id)
             && wl_compositor::with_states(surface, |states| {

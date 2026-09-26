@@ -277,6 +277,24 @@ pub fn active_tab_id(st: &ChromeState) -> Option<TabId> {
 /// [`TabActionError::UnknownTab`] when the tab is not in the tree or the
 /// document refuses the deletion (nothing changed either way).
 pub fn close_tab(st: &mut ChromeState, tab_id: TabId) -> Result<(), TabActionError> {
+    let closed = crate::shell::closed_tabs::capture_tab(&st.tree(), tab_id);
+    close_tab_unrecorded(st, tab_id)?;
+    if let Some(entry) = closed {
+        st.remember_closed_tab(entry);
+    }
+    Ok(())
+}
+
+/// [`close_tab`] without remembering it for reopening, for a caller that
+/// records a larger close itself (a whole window group).
+///
+/// # Errors
+///
+/// As [`close_tab`].
+pub(crate) fn close_tab_unrecorded(
+    st: &mut ChromeState,
+    tab_id: TabId,
+) -> Result<(), TabActionError> {
     let surface = {
         let tree = st.tree();
         tree.desktop

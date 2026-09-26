@@ -37,6 +37,11 @@ mod tests {
             "continuity-dismiss-title",
             "continuity-dismiss-subtitle",
             "continuity-other-device",
+            "tab-closed-toast",
+            "tab-closed-group-toast",
+            "tab-closed-undo",
+            "tab-closed-undo-hint",
+            "tab-closed-undo-hint-unbound",
         ] {
             let s = t(key);
             assert_ne!(s, key, "{key} has no entry in the catalogue");
