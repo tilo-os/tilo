@@ -928,6 +928,8 @@ pub struct ChatApp {
     legacy_migration_attempted: bool,
     /// Feedback channels, reference chips and record cards on this peer.
     pub(crate) feedback: crate::feedback::FeedbackUi,
+    /// What people wrote in feedback channels, in records they own.
+    pub(crate) comments: crate::comments::Comments,
 }
 
 impl Default for ChatApp {
@@ -945,6 +947,8 @@ impl ChatApp {
     pub fn new() -> Self {
         let mut app = Self::bare(ContentStore::for_app());
         app.is_live = true;
+        app.comments =
+            crate::comments::Comments::new(ui::record::RecordStore::open("so.tilo.chat"));
         app.me = LocalIdentity::resolve();
         // Select the live transport, but defer its endpoint bind until the
         // user explicitly joins a call. Tests/`--shots` keep the deterministic
@@ -1100,6 +1104,7 @@ impl ChatApp {
             screen_share_needs_sync: false,
             legacy_migration_attempted: false,
             feedback: crate::feedback::FeedbackUi::default(),
+            comments: crate::comments::Comments::new(ui::record::RecordStore::in_memory()),
         }
     }
 
@@ -1134,6 +1139,94 @@ impl ChatApp {
     /// asks: the record is theirs to share. Posting a message by any path
     /// (the composer, the palette, a remark from another app, an agent) ends
     /// here, so there is one place a share can be forgotten, not five.
+    /// A channel's messages: the conversation document's, and in a feedback
+    /// channel also those people wrote in their own comment records, with
+    /// the reactions their reaction records carry and the status Editors set.
+    pub(crate) fn channel_messages(&mut self, doc: &AutoCommit, channel: &str) -> Vec<Message> {
+        let mut messages = ChatDoc::list_messages(doc, channel);
+        if !ChatDoc::is_feedback_channel(doc, channel) {
+            return messages;
+        }
+        for message in &mut messages {
+            for reaction in self.comments.reactions_on_conversation_message(&message.id) {
+                match message
+                    .reactions
+                    .iter_mut()
+                    .find(|r| r.emoji == reaction.emoji)
+                {
+                    Some(existing) => {
+                        for user in reaction.users {
+                            if !existing.users.contains(&user) {
+                                existing.users.push(user);
+                            }
+                        }
+                    }
+                    None => message.reactions.push(reaction),
+                }
+            }
+        }
+        let mut commented = self.comments.messages(channel);
+        for message in &mut commented {
+            message.report = ChatDoc::comment_report(doc, &message.id);
+        }
+        messages.extend(commented);
+        messages
+    }
+
+    /// In a feedback channel, a message, reply or reaction is written to the
+    /// author's own comment record rather than the conversation document.
+    /// `None` when `action` is not one of those, or this peer has no
+    /// collaboration identity to write comment records with.
+    fn perform_as_comment(
+        &mut self,
+        doc: &AutoCommit,
+        action: &ChatAction,
+    ) -> Option<Result<(), String>> {
+        if !self.comments.available() {
+            return None;
+        }
+        let in_feedback = |channel: &str| ChatDoc::is_feedback_channel(doc, channel);
+        Some(match action {
+            ChatAction::SendMessage {
+                channel,
+                id,
+                author,
+                ts,
+                text,
+                parent,
+                attachment,
+                mentions,
+                reference,
+            } if in_feedback(channel) => self.comments.post(&crate::comments::CommentMessage {
+                channel: channel.clone(),
+                id: id.clone(),
+                author: author.clone(),
+                ts: *ts,
+                text: text.clone(),
+                parent: parent.clone(),
+                mentions: mentions.clone(),
+                reference: reference.clone(),
+                attachment: attachment.clone(),
+            }),
+            ChatAction::AddReaction {
+                channel,
+                msg,
+                emoji,
+                user,
+            } if in_feedback(channel) => self.comments.react(msg, emoji, user, true),
+            ChatAction::RemoveReaction {
+                channel,
+                msg,
+                emoji,
+                user,
+            } if in_feedback(channel) => self.comments.react(msg, emoji, user, false),
+            ChatAction::WithdrawAttachment { msg, .. } if self.comments.holds(msg) => {
+                self.comments.withdraw(msg)
+            }
+            _ => return None,
+        })
+    }
+
     fn reconcile_record_sharing(&mut self) {
         let mine: Vec<(Id, bool)> = self
             .search_messages
@@ -1203,6 +1296,20 @@ impl ChatApp {
     /// in-memory projection is reconciled from the document by the caller's
     /// `reload`. This app supplies only its domain: the action and its type.
     pub(crate) fn perform_action(&mut self, doc: &mut AutoCommit, action: &ChatAction) {
+        match self.perform_as_comment(doc, action) {
+            Some(Ok(())) => {
+                self.reload(doc);
+                return;
+            }
+            Some(Err(reason)) => {
+                self.feedback.notice = Some(crate::i18n::t_args(
+                    "chat-notice-failed",
+                    &[("reason", ui::i18n::ArgValue::Text(reason))],
+                ));
+                return;
+            }
+            None => {}
+        }
         self.actions.dispatch_with_context(
             doc,
             actions::CHAT_ACTION_TYPE,
@@ -2556,12 +2663,20 @@ impl ChatApp {
                 ChatDoc::unread_count(doc, &c.id, &self.me.id)
             };
         }
-        self.messages = ChatDoc::list_messages(doc, &self.active_channel);
+        let feedback_channels: Vec<Id> = self
+            .channels
+            .iter()
+            .filter(|c| c.feedback)
+            .map(|c| c.id.clone())
+            .collect();
+        self.comments.follow(&feedback_channels);
+        self.messages = self.channel_messages(doc, &self.active_channel.clone());
         self.arrange_reports();
         self.search_messages = self
             .channels
+            .clone()
             .iter()
-            .flat_map(|channel| ChatDoc::list_messages(doc, &channel.id))
+            .flat_map(|channel| self.channel_messages(doc, &channel.id))
             .collect();
         self.search_users = ChatDoc::list_users(doc);
         // Cache voice membership for this workspace only. The document's
@@ -3682,6 +3797,9 @@ impl Widget for ChatApp {
         self.media.poll_binding()
     }
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+        while let Some(action) = self.feedback.pending.pop_front() {
+            self.perform_action(doc, &action);
+        }
         self.apply_realtime_stop(doc);
         self.establish_realtime_target();
         self.settle_screen_capture();
@@ -4341,9 +4459,10 @@ impl Widget for ChatApp {
             return Ok(false);
         };
         match &operation {
-            crate::actions::ChatOperation::ImportAttachment { .. } => {
+            crate::actions::ChatOperation::ImportAttachment { .. }
+            | crate::actions::ChatOperation::Comment { .. } => {
                 if kind != tilo_actions::OperationKind::Effect {
-                    return Err("attachment import requires an Effect operation".into());
+                    return Err("this operation is an Effect".into());
                 }
             }
             _ if !chat_navigation_kind(kind)? => return Ok(false),
@@ -4451,8 +4570,14 @@ impl Widget for ChatApp {
                     return Err("not a feedback channel".into());
                 }
                 self.feedback.views.insert(channel, view);
-                self.messages = ChatDoc::list_messages(doc, &self.active_channel);
+                self.messages = self.channel_messages(doc, &self.active_channel.clone());
                 self.arrange_reports();
+            }
+            crate::actions::ChatOperation::Comment { action } => {
+                // Performed on the next sync, which holds the document the
+                // fallback needs; the comment record path needs none.
+                self.feedback.pending.push_back(*action);
+                self.relayout = true;
             }
             crate::actions::ChatOperation::ImportAttachment { channel, path } => {
                 if path.is_empty() {
@@ -4475,6 +4600,28 @@ impl Widget for ChatApp {
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.feedback.controls.pop_front()
+    }
+
+    fn joined_records(&self) -> Option<&ui::record::JoinedRecords> {
+        Some(self.comments.joined())
+    }
+
+    fn room_index_changed(&mut self, index: &AutoCommit) {
+        let channels: Vec<Id> = self
+            .channels
+            .iter()
+            .filter(|c| c.feedback)
+            .map(|c| c.id.clone())
+            .collect();
+        self.comments.index_changed(index, &channels);
+        self.relayout = true;
+    }
+
+    /// A live Chat keeps the room's conversation as a record, so the room's
+    /// unqualified route is free for the room's index — the index is where
+    /// people's comment records become discoverable.
+    fn record_intent(&self) -> Option<ui::record::RecordCheckout> {
+        self.is_live.then(crate::comments::conversation)
     }
 
     fn has_pending_control_invocation(&self) -> bool {

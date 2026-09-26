@@ -82,7 +82,10 @@ impl JoinedRecords {
         self.author.get()
     }
 
-    pub(crate) fn set_comment_author(&self, author: Option<[u8; 32]>) {
+    /// Set by the host from the collaboration connection. A test stands in
+    /// for the host here; setting another device's key gains nothing, as
+    /// every receiver checks a comment record's changes against its author.
+    pub fn set_comment_author(&self, author: Option<[u8; 32]>) {
         self.author.set(author);
     }
 

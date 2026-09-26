@@ -83,7 +83,7 @@ pub const CHAT_OPERATION_TYPE: &str = "chat.operation";
 /// deliberately separate from [`ChatAction`]: opening a conversation, message,
 /// or person changes only this peer's view and must never enter the shared
 /// document or its undo/history stream.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ChatOperation {
     OpenWorkspace {
         workspace: String,
@@ -116,6 +116,14 @@ pub enum ChatOperation {
     SetReportView {
         channel: String,
         view: crate::feedback::ReportView,
+    },
+    /// Post, reply or react in a feedback channel. Chat writes it to the
+    /// author's own comment record (see [`crate::comments`]), which is the
+    /// only change a Commenter may make, so it is an operation Chat performs
+    /// rather than a change to the conversation document. Without a
+    /// collaboration identity it falls back to the conversation document.
+    Comment {
+        action: Box<ChatAction>,
     },
 }
 
@@ -178,6 +186,85 @@ pub(crate) fn workspace_request_spec(
         },
     )
     .requiring(permission)
+}
+
+/// A participation action: in a feedback channel, the comment operation that
+/// carries it; anywhere else, the document action itself.
+#[allow(
+    clippy::expect_used,
+    reason = "ChatOperation is serde-derived from serializable fields; ActionSpec requires an immediate value"
+)]
+fn participation_spec(id: &str, label: &str, feedback: bool, action: &ChatAction) -> ActionSpec {
+    if feedback {
+        ActionSpec::operation(
+            id,
+            label,
+            OperationKind::Effect,
+            CHAT_OPERATION_TYPE,
+            &ChatOperation::Comment {
+                action: Box::new(action.clone()),
+            },
+        )
+        .expect("ChatOperation is always serializable")
+        .requiring(PermissionRequirement::Comment)
+    } else {
+        immediate_spec(id, label, action).requiring(PermissionRequirement::Comment)
+    }
+}
+
+/// A prompted participation action (post, reply, react): the comment
+/// operation in a feedback channel, the document action elsewhere.
+fn participation_prompt(
+    id: &str,
+    label: &str,
+    prompt: &str,
+    placeholder: &str,
+    feedback: bool,
+    build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
+) -> ActionSpec {
+    let spec = if feedback {
+        ActionSpec::prompted_operation(
+            id,
+            label,
+            prompt,
+            placeholder,
+            OperationKind::Effect,
+            CHAT_OPERATION_TYPE,
+            move |text: &str| as_comment(build(text)),
+        )
+    } else {
+        ActionSpec::prompted(
+            id,
+            label,
+            prompt,
+            placeholder,
+            ExecutionLocus::ClientLocal,
+            build,
+        )
+    };
+    spec.requiring(PermissionRequirement::Comment)
+}
+
+/// Wrap a built participation action as the comment operation, for a
+/// feedback channel's prompted and typed actions.
+#[allow(
+    clippy::expect_used,
+    reason = "ChatOperation is serde-derived from serializable fields"
+)]
+fn as_comment(encoded: EncodedAction) -> EncodedAction {
+    if encoded.type_id != CHAT_ACTION_TYPE {
+        return encoded;
+    }
+    let Ok(action) = serde_json::from_slice::<ChatAction>(&encoded.payload) else {
+        return encoded;
+    };
+    EncodedAction::encode_operation(
+        CHAT_OPERATION_TYPE,
+        &ChatOperation::Comment {
+            action: Box::new(action),
+        },
+    )
+    .expect("ChatOperation is always serializable")
 }
 
 /// Every collaborative operation Chat exports on the shared workspace.
@@ -1428,6 +1515,17 @@ fn workspace_resource(id: &str, name: &str) -> Resource {
         },
     ))
     .with_action(new_channel_action_spec(id))
+    .with_action(immediate_spec(
+        "add-feedback-channel",
+        "Add the feedback channel",
+        &create_channel_action(
+            id,
+            "",
+            tilo_reference::FEEDBACK_CHANNEL,
+            "feedback",
+            ChannelKind::Text,
+        ),
+    ))
     .with_action(new_category_action_spec(id))
 }
 
@@ -1742,12 +1840,12 @@ fn build_channel_resource(
     // Post a message (Send, from the palette). Id + timestamp minted in the
     // closure at authoring time so the payload is self-contained.
     channel = channel.with_action(
-        ActionSpec::prompted(
+        participation_prompt(
             "post",
             "Post message",
             "Message",
             "type a message…",
-            ExecutionLocus::ClientLocal,
+            ch.feedback,
             {
                 let cid = ch.id.clone();
                 let me = ctx.me.clone();
@@ -1799,7 +1897,7 @@ fn build_channel_resource(
 
     // A remark composed elsewhere — something said about a resource, with the
     // recording of what happened — posted as an ordinary message here.
-    channel = channel.with_action(remark_spec(&ch.id, &ctx.me));
+    channel = channel.with_action(remark_spec(&ch.id, &ctx.me, ch.feedback));
 
     // Rename — a prompted action carrying the new name.
     channel = channel.with_action(ActionSpec::prompted(
@@ -2008,19 +2106,12 @@ fn build_message_resource(
 
     // React — prompted for an emoji; adds the local peer's reaction.
     message = message.with_action(
-        ActionSpec::prompted(
-            "react",
-            "Add reaction",
-            "Emoji",
-            "👍",
-            ExecutionLocus::ClientLocal,
-            {
-                let cid = ch.id.clone();
-                let mid = m.id.clone();
-                let me = ctx.me.clone();
-                move |emoji: &str| encode(&add_reaction_action(&cid, &mid, emoji.trim(), &me))
-            },
-        )
+        participation_prompt("react", "Add reaction", "Emoji", "👍", ch.feedback, {
+            let cid = ch.id.clone();
+            let mid = m.id.clone();
+            let me = ctx.me.clone();
+            move |emoji: &str| encode(&add_reaction_action(&cid, &mid, emoji.trim(), &me))
+        })
         .requiring(PermissionRequirement::Comment),
     );
 
@@ -2091,12 +2182,12 @@ fn with_participation_actions(
     // Reply in the message's thread. A reply to a reply lands in the same
     // thread, which is the only depth a thread has.
     message = message.with_action(
-        ActionSpec::prompted(
+        participation_prompt(
             "reply",
             "Reply in thread",
             "Reply",
             "type a reply…",
-            ExecutionLocus::ClientLocal,
+            ch.feedback,
             {
                 let cid = ch.id.clone();
                 let parent = m.parent.clone().unwrap_or_else(|| m.id.clone());
@@ -2131,18 +2222,16 @@ fn with_participation_actions(
     ));
 
     if let Some(report) = &m.report {
-        message = message.with_action(
-            immediate_spec(
-                if report.voted_by_me { "unvote" } else { "vote" },
-                if report.voted_by_me {
-                    "Remove my vote"
-                } else {
-                    "Vote for this report"
-                },
-                &vote_action(&ch.id, &m.id, &ctx.me, !report.voted_by_me),
-            )
-            .requiring(PermissionRequirement::Comment),
-        );
+        message = message.with_action(participation_spec(
+            if report.voted_by_me { "unvote" } else { "vote" },
+            if report.voted_by_me {
+                "Remove my vote"
+            } else {
+                "Vote for this report"
+            },
+            ch.feedback,
+            &vote_action(&ch.id, &m.id, &ctx.me, !report.voted_by_me),
+        ));
         message = message.with_action(set_status_spec(&ch.id, &m.id, &ctx.me));
     }
     message
@@ -2293,51 +2382,66 @@ fn build_reference_resource(
 /// about, and optionally a record attached by reference. The fields a
 /// [`tilo_reference::Remark`] carries, as typed arguments, so the shell's
 /// composer, an agent and tilo-control post one the same way.
-fn remark_spec(channel: &str, me: &str) -> ActionSpec {
+fn remark_spec(channel: &str, me: &str, feedback: bool) -> ActionSpec {
     let channel = channel.to_string();
     let me = me.to_string();
-    ActionSpec::typed(
-        "remark",
-        "Post a remark",
-        "the times contradict the prose",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required("text", ParamType::Text, "What is being said"),
-            ActionParam::required(
-                "reference",
-                ParamType::Object,
-                "What it is about: a tilo-reference ResourceRef {kind, id, label, span}",
-            ),
-            ActionParam::optional(
-                "attachment",
-                ParamType::Object,
-                "A record shown with it: a tilo-reference RecordAttachment",
-            ),
-            ActionParam::optional(
-                "mentions",
-                ParamType::Array,
-                "Who the text pings: tilo-reference MentionRefs",
-            ),
-        ],
-        move |args| match remark_from_args(args) {
-            Ok((text, reference, attachment, mentions)) => encode(&ChatAction::SendMessage {
-                channel: channel.clone(),
-                id: format!("m_{}", uuid::Uuid::new_v4().simple()),
-                author: me.clone(),
-                ts: unix_now_i64(),
-                text,
-                parent: None,
-                attachment: attachment.map(|record| Attachment::Record(Box::new(record))),
-                mentions,
-                reference: Some(reference),
-            }),
-            Err(reason) => EncodedAction {
-                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                payload: reason.into_bytes(),
-            },
+    let params = vec![
+        ActionParam::required("text", ParamType::Text, "What is being said"),
+        ActionParam::required(
+            "reference",
+            ParamType::Object,
+            "What it is about: a tilo-reference ResourceRef {kind, id, label, span}",
+        ),
+        ActionParam::optional(
+            "attachment",
+            ParamType::Object,
+            "A record shown with it: a tilo-reference RecordAttachment",
+        ),
+        ActionParam::optional(
+            "mentions",
+            ParamType::Array,
+            "Who the text pings: tilo-reference MentionRefs",
+        ),
+    ];
+    let build = move |args: &tilo_actions::ActionArgs| match remark_from_args(args) {
+        Ok((text, reference, attachment, mentions)) => encode(&ChatAction::SendMessage {
+            channel: channel.clone(),
+            id: format!("m_{}", uuid::Uuid::new_v4().simple()),
+            author: me.clone(),
+            ts: unix_now_i64(),
+            text,
+            parent: None,
+            attachment: attachment.map(|record| Attachment::Record(Box::new(record))),
+            mentions,
+            reference: Some(reference),
+        }),
+        Err(reason) => EncodedAction {
+            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+            payload: reason.into_bytes(),
         },
-    )
-    .requiring(PermissionRequirement::Comment)
+    };
+    let (id, label, placeholder) = ("remark", "Post a remark", "the times contradict the prose");
+    let spec = if feedback {
+        ActionSpec::typed_operation(
+            id,
+            label,
+            placeholder,
+            OperationKind::Effect,
+            CHAT_OPERATION_TYPE,
+            params,
+            move |args| as_comment(build(args)),
+        )
+    } else {
+        ActionSpec::typed(
+            id,
+            label,
+            placeholder,
+            ExecutionLocus::ClientLocal,
+            params,
+            build,
+        )
+    };
+    spec.requiring(PermissionRequirement::Comment)
 }
 
 type RemarkParts = (
@@ -3289,6 +3393,16 @@ mod feedback_tests {
         dispatch_encoded(doc, encode(action));
     }
 
+    /// A feedback channel's participation is a comment operation. Without a
+    /// collaboration identity Chat performs the action it carries on the
+    /// conversation document, which is what this does.
+    fn perform_comment(doc: &mut AutoCommit, encoded: &EncodedAction) {
+        match decode_operation(&encoded.type_id, &encoded.payload) {
+            Ok(Some(ChatOperation::Comment { action })) => dispatch(doc, &action),
+            other => panic!("not a comment operation: {other:?}"),
+        }
+    }
+
     fn built(
         spec: &ActionSpec,
         args: &serde_json::Map<String, serde_json::Value>,
@@ -3496,9 +3610,10 @@ mod feedback_tests {
         let report = resolved(&doc, "u_milo", "chat.message:m_r");
         let vote = action(&report, "vote").expect("a report offers a vote");
         assert_eq!(vote.contract.permission, PermissionRequirement::Comment);
-        dispatch_encoded(
+        assert_eq!(vote.kind, OperationKind::Effect, "a comment Chat performs");
+        perform_comment(
             &mut doc,
-            ui::testing::action_contract::spec_encoding(vote, None),
+            &ui::testing::action_contract::spec_encoding(vote, None),
         );
         assert_eq!(vote_count(&message(&doc, "m_r")), 2);
         let report = resolved(&doc, "u_milo", "chat.message:m_r");
@@ -3722,7 +3837,7 @@ mod feedback_tests {
             "attachment".into(),
             serde_json::to_value(recording()).unwrap(),
         );
-        dispatch_encoded(&mut doc, built(spec, &args));
+        perform_comment(&mut doc, &built(spec, &args));
         let m = ChatDoc::list_messages(&doc, "c_fb").remove(0);
         assert_eq!(m.author, model::ME);
         assert_eq!(m.reference.unwrap().id, "mail.draft:d_42");

@@ -39,16 +39,27 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
 
+const APP_ID: &str = "so.tilo.chat";
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
-fn open_state(app_id: &'static str) -> (ui::State, ui::persist::DocWriter) {
-    // An older release kept the workspace in its own file. Hand that path to
-    // `open_migrating` so existing history is merged into the shared store on
-    // first launch rather than orphaned; the merge is idempotent.
-    match chat::storage::data_dir() {
-        Some(dir) => ui::persist::open_migrating(app_id, &chat::storage::workspace_path(&dir)),
-        None => ui::persist::open(app_id),
-    }
+/// The room's conversation is a record ([`chat::comments::conversation`]),
+/// so the room's own index rides the unqualified route beside it: that index
+/// is where the comment records people write in a feedback channel become
+/// discoverable.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::LegacyPreparer"
+)]
+fn prepare_launch(_args: &LaunchArgs) -> Result<ui::launch::LegacyLaunchInputs, LaunchError> {
+    let records = ui::RecordSet::open(APP_ID);
+    let (room, autosave) = ui::persist::open_room(APP_ID, records.home());
+    let mut registry = tilo_actions::ActionRegistry::new();
+    chat::actions::register(&mut registry);
+    Ok(
+        ui::launch::LegacyLaunchInputs::new(ui::State::new(), chat::app_root(), autosave)
+            .with_records(records, room.doc)
+            .with_registry(registry),
+    )
 }
 
 fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
@@ -74,7 +85,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("so.tilo.chat", chat::app_root)
+        &LaunchSpec::new(APP_ID, chat::app_root)
             .shot_handler(shot_handler)
             .scenarios(&[
                 "narrow",
@@ -102,7 +113,7 @@ pub fn main() {
                 "floating-call-returning",
                 "floating-call-returned",
             ])
-            .open_state(open_state)
+            .prepare_legacy_with_args(prepare_launch)
             .configure_app(|app| chat::actions::register(app.action_registry_mut())),
     );
 }

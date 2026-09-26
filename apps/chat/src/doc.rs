@@ -1884,6 +1884,11 @@ impl ChatDoc {
         name: &str,
         kind: ChannelKind,
     ) {
+        // A second create of a known id (a well-known channel added twice)
+        // keeps the channel as it is rather than renaming or moving it.
+        if Self::channel_exists(doc, id) {
+            return;
+        }
         let order = Self::next_channel_order(doc, ws, category);
         Self::put_channel(doc, id, ws, category, name, "", kind, order);
     }
@@ -1930,6 +1935,10 @@ impl ChatDoc {
             return;
         }
         let Some(block) = Self::find_message_obj(doc, channel, msg_id) else {
+            // A report written by a Commenter lives in their own comment
+            // record, which this document cannot see. Its status is still
+            // the Editors', so it is kept here, keyed by the message.
+            Self::set_comment_report_status(doc, msg_id, state);
             return;
         };
         if !read_str(doc, &block, "parent")
@@ -1953,6 +1962,35 @@ impl ChatDoc {
         if let Ok(json) = serde_json::to_string(state) {
             let _ = doc.put(&block, "report", json.as_str());
         }
+    }
+
+    fn set_comment_report_status(
+        doc: &mut AutoCommit,
+        msg_id: &str,
+        state: &crate::feedback::ReportState,
+    ) {
+        if !Self::valid_message_id(msg_id) {
+            return;
+        }
+        if let crate::feedback::ReportStatus::Duplicate { of } = &state.status
+            && (of == msg_id || !Self::valid_message_id(of))
+        {
+            return;
+        }
+        if Self::comment_report(doc, msg_id).as_ref() == Some(state) {
+            return;
+        }
+        let reports = get_or_map(doc, &ROOT, "reports");
+        if let Ok(json) = serde_json::to_string(state) {
+            let _ = doc.put(&reports, msg_id, json.as_str());
+        }
+    }
+
+    /// The status of a report that lives in its author's comment record.
+    pub fn comment_report(doc: &AutoCommit, msg_id: &str) -> Option<crate::feedback::ReportState> {
+        let reports = map_at(doc, &ROOT, "reports")?;
+        let raw = read_str(doc, &reports, msg_id)?;
+        serde_json::from_str(&raw).ok()
     }
 
     /// Withdraw a message's attached record from the room. The card stays,

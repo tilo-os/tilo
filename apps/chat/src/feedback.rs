@@ -201,6 +201,9 @@ pub struct FeedbackUi {
     /// Records this session has already asked the room to reference (`true`)
     /// or to drop (`false`), by message id, so each is asked once.
     pub shared: std::collections::HashSet<(String, bool)>,
+    /// Comment operations invoked through the resource surface, performed on
+    /// the next sync.
+    pub pending: std::collections::VecDeque<crate::actions::ChatAction>,
     /// A report waiting for the Editor to pick the report it duplicates.
     pub duplicate_pick: Option<String>,
     /// Where this frame's report strip left room for the fixed-generation
