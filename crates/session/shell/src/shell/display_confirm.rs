@@ -35,12 +35,12 @@ use crate::shell::i18n::{t, t_args};
 /// How often a shown prompt re-reads the transaction, so it follows the
 /// backend (applied elsewhere, restored on timeout) without per-frame I/O.
 const POLL: Duration = Duration::from_millis(250);
+
 /// Height of the Keep/Revert band: a title line and a status line with the
 /// two buttons beside them.
-pub(crate) const BAND_HEIGHT: f64 = 76.0;
-const CARD_WIDTH: f64 = 460.0;
-const CARD_PADDING: f64 = 12.0;
-const ALWAYS_ROW_HEIGHT: f64 = 44.0;
+pub(crate) fn band_height() -> f64 {
+    76.0
+}
 
 /// Which button of a Keep/Revert band has keyboard focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,6 +194,10 @@ struct Pending {
 #[derive(Default)]
 pub(crate) struct DisplayConfirmPrompt {
     pending: Option<Pending>,
+    /// The theme's spacing and metrics as of the last paint, so hit-testing
+    /// between paints uses the geometry that was drawn.
+    spacing: ui::tokens::Spacing,
+    metrics: ui::tokens::Metrics,
 }
 
 impl DisplayConfirmPrompt {
@@ -402,22 +406,26 @@ impl DisplayConfirmPrompt {
             return Vec::new();
         }
         let trusted_row = self.tool().is_some();
-        let height =
-            CARD_PADDING * 2.0 + BAND_HEIGHT + if trusted_row { ALWAYS_ROW_HEIGHT } else { 0.0 };
+        let padding = f64::from(self.spacing.s3);
+        let row = f64::from(self.metrics.panel_row_height);
+        let height = padding * 2.0 + band_height() + if trusted_row { row } else { 0.0 };
+        let edge = f64::from(self.spacing.s4);
         outputs
             .iter()
             .filter(|output| output.width() > 0.0 && output.height() > 0.0)
             .map(|output| {
-                let width = CARD_WIDTH.min(output.width() - 32.0).max(260.0);
+                let width = f64::from(self.metrics.panel_width_sheet)
+                    .min(output.width() - edge * 2.0)
+                    .max(f64::from(self.metrics.panel_width_utility));
                 let card = Rect::from_center_size(output.center(), (width, height));
-                let band = Self::band_rect(card);
+                let band = self.band_rect(card);
                 let BandButtons { keep, revert } = band_buttons(band);
                 let always_keep = if trusted_row {
                     Rect::new(
                         band.x0,
-                        band.y1 + 8.0,
+                        band.y1 + f64::from(self.spacing.s2),
                         band.x1,
-                        band.y1 + ALWAYS_ROW_HEIGHT - 4.0,
+                        band.y1 + row - f64::from(self.spacing.s1),
                     )
                 } else {
                     Rect::ZERO
@@ -432,12 +440,13 @@ impl DisplayConfirmPrompt {
             .collect()
     }
 
-    fn band_rect(card: Rect) -> Rect {
+    fn band_rect(&self, card: Rect) -> Rect {
+        let padding = f64::from(self.spacing.s3);
         Rect::new(
-            card.x0 + CARD_PADDING,
-            card.y0 + CARD_PADDING,
-            card.x1 - CARD_PADDING,
-            card.y0 + CARD_PADDING + BAND_HEIGHT,
+            card.x0 + padding,
+            card.y0 + padding,
+            card.x1 - padding,
+            card.y0 + padding + band_height(),
         )
     }
 
@@ -510,13 +519,15 @@ impl DisplayConfirmPrompt {
     }
 
     pub(crate) fn draw(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         outputs: &[Rect],
     ) {
+        self.spacing = theme.tokens.spacing;
+        self.metrics = theme.tokens.metrics;
         let Some(pending) = self.pending.as_ref() else {
             return;
         };
@@ -553,7 +564,7 @@ impl DisplayConfirmPrompt {
                 transform,
                 text_renderer,
                 theme,
-                Self::band_rect(card.card),
+                self.band_rect(card.card),
                 &title,
                 &status,
                 band_focus,

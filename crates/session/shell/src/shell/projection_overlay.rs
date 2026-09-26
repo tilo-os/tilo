@@ -999,7 +999,7 @@ impl ProjectionOverlay {
     /// Height of the Keep/Revert band: a title line and a status line with
     /// the two buttons beside them.
     fn confirm_band_height() -> f64 {
-        crate::shell::display_confirm::BAND_HEIGHT
+        crate::shell::display_confirm::band_height()
     }
 
     /// Receiver rows are 56 px with an 8 px gap between them.
