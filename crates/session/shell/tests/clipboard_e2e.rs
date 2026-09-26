@@ -289,6 +289,7 @@ impl Compositor {
         identity_root: &Path,
         host_desktop: bool,
     ) -> Child {
+        tilo_test_env::require_isolated_desktop();
         let mut command = Command::new(env!("CARGO_BIN_EXE_shell"));
         if let Some(home) = home {
             command.env("HOME", home).env("TILO_USER_HOME", home);

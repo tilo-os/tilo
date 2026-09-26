@@ -20,7 +20,8 @@
 # is an exact file. Pushes to main run every group, so an input list that
 # misses a real dependency is caught at the merge that broke the suite.
 #
-# Each suite runs as `python3 PATH` or `bash PATH` from the repository root in
+# Each suite runs as `python3 PATH` or `bash PATH` inside
+# tools/with-test-environment.sh (no desktop session), from the repository root in
 # the ci-fast image, as root, without network. A Python suite that defines
 # unittest cases must call unittest.main() so direct execution runs them.
 #
