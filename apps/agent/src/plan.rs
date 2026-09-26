@@ -1090,6 +1090,7 @@ mod tests {
                 address: tilo_actions::door::ActionAddress::new(resource, action),
                 resource_kind: format!("{app}.thing"),
                 resource_label: resource.rsplit(':').next().unwrap_or(resource).to_string(),
+                resource_sensitivity: tilo_actions::Sensitivity::Public,
                 action_label: label.to_string(),
                 description: None,
                 locus: tilo_actions::ExecutionLocus::ClientLocal,

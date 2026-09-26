@@ -758,6 +758,7 @@ impl Session {
                 id: action.resource.clone(),
                 kind: action.resource_kind.clone(),
                 label: action.resource_label.clone(),
+                sensitivity: tilo_actions::Sensitivity::Public,
             },
             anchor: if let Some(id) = action.resource.strip_prefix("ui:") {
                 tilo_actions::InteractionAnchor::SemanticControl { id: id.into() }
@@ -2022,6 +2023,7 @@ impl Session {
                 id: resource_id.clone(),
                 kind: "word-processor.document".into(),
                 label: resource_label.clone(),
+                sensitivity: tilo_actions::Sensitivity::Public,
             },
             anchor: word_action_anchor(action, focus),
             group: group.clone(),

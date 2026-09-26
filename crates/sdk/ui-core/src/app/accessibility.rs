@@ -1,5 +1,9 @@
 // Accessibility configuration, semantic focus, announcements, and action routing.
 
+/// The shortest time between two semantic change reports: a UI that changes
+/// every frame is described to watchers a few times a second, not sixty.
+const SEMANTIC_CHANGE_INTERVAL: crate::time::Duration = crate::time::Duration::from_millis(250);
+
 impl App {
     fn persisted_accessibility_bool(key: &str) -> bool {
         settings_store::load_section("accessibility")
@@ -1320,6 +1324,45 @@ impl App {
         }
         self.refresh_semantic_tree();
         self.accessibility.semantic_tree.inspect(request)
+    }
+
+    /// Note that the UI may have changed, so the next
+    /// [`report_semantic_change`](Self::report_semantic_change) compares the
+    /// tree again.
+    pub(super) fn mark_semantics_dirty(&mut self) {
+        self.accessibility.semantic_watch.dirty = true;
+    }
+
+    /// Tell the session the semantic tree changed, at most every
+    /// [`SEMANTIC_CHANGE_INTERVAL`] and only when a refresh finds a
+    /// difference, so a watcher inspects again instead of polling. Returns
+    /// whether a change was reported.
+    pub(super) fn report_semantic_change(&mut self) -> bool {
+        let now = crate::time::now();
+        let watch = &self.accessibility.semantic_watch;
+        if !watch.dirty
+            || !self.collaboration.manager.is_connected()
+            || watch
+                .last_check
+                .is_some_and(|last| now.saturating_duration_since(last) < SEMANTIC_CHANGE_INTERVAL)
+        {
+            return false;
+        }
+        self.accessibility.semantic_watch.dirty = false;
+        self.accessibility.semantic_watch.last_check = Some(now);
+        self.refresh_semantic_tree();
+        let revision = self.accessibility.semantic_tree.revision();
+        let watch = &mut self.accessibility.semantic_watch;
+        if watch.reported_revision == Some(revision) {
+            return false;
+        }
+        watch.reported_revision = Some(revision);
+        watch.generation = watch.generation.saturating_add(1);
+        let generation = watch.generation;
+        self.collaboration
+            .manager
+            .send(crate::collaboration::CollabRequest::ReportSemanticChange { generation });
+        true
     }
 
     pub(super) fn answer_inspection(&mut self, id: u64, request: &crate::inspect::InspectRequest) {

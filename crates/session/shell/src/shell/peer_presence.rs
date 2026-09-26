@@ -734,6 +734,7 @@ mod tests {
                 id: "report:q3".into(),
                 kind: "document".into(),
                 label: "Q3 report".into(),
+                sensitivity: tilo_actions::Sensitivity::Public,
             },
             anchor: tilo_actions::InteractionAnchor::Resource,
             group: None,

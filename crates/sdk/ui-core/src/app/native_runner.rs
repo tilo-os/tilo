@@ -1566,11 +1566,26 @@ impl AppHandler {
                         .and_then(|node| node.bounds),
                     tilo_actions::InteractionAnchor::ListItems { .. }
                     | tilo_actions::InteractionAnchor::Resource => {
+                        // The resource's address names the row presenting it;
+                        // its label may arrive redacted from another device.
+                        let by_reference = app.semantic_tree().iter().any(|node| {
+                            node.reference
+                                .as_ref()
+                                .is_some_and(|reference| reference.id == interaction.resource.id)
+                                && node.bounds.is_some()
+                        });
                         let mut matches = app
                             .semantic_tree()
                             .iter()
                             .filter(|node| {
-                                node.name.as_deref() == Some(interaction.resource.label.as_str())
+                                if by_reference {
+                                    node.reference.as_ref().is_some_and(|reference| {
+                                        reference.id == interaction.resource.id
+                                    })
+                                } else {
+                                    node.name.as_deref()
+                                        == Some(interaction.resource.label.as_str())
+                                }
                             })
                             .filter_map(|node| node.bounds);
                         let only = matches.next();

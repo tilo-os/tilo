@@ -1028,6 +1028,7 @@ pub fn history_context(action: &CalendarAction) -> tilo_actions::ActionContext {
         },
         kind: kind.to_string(),
         label: title,
+        sensitivity: tilo_actions::Sensitivity::Public,
     });
     context
 }

@@ -328,6 +328,13 @@ interface ChannelHandle {
   # redacted for the request's audience. The session redacts it again
   # before handing it on.
   completeInspection @44 (id :UInt64, replyJson :Text) -> ();
+
+  # Tell the session this application's semantic tree changed, so a watcher
+  # (the session recorder, pick mode) inspects again instead of polling.
+  # `generation` increases with every report from this connection; the
+  # application debounces, and reports only a tree that actually changed.
+  # Carries no content: whoever wants it inspects, checked as usual.
+  reportSemanticChange @45 (generation :UInt64) -> ();
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is
@@ -378,6 +385,8 @@ struct ActionDirectoryRow {
   # Bounded declarative metadata. The shell parses this into its own themed
   # primitives; application drawing code never crosses this boundary.
   resourcePresentationJson @9 :Text;
+  # As ExportedAction.resourceSensitivity, for container rows.
+  resourceSensitivity @10 :Text;
 }
 
 struct ActionDirectoryPage {
@@ -453,6 +462,10 @@ struct ExportedAction {
   # Optional explicit resource-view metadata. Absence means this action is
   # invokable but is not advertised as a view for its resource.
   view @10 :ResourceViewDescriptor;
+  # How far `resourceLabel` may travel: `public`, `personal` or `secret`
+  # (tilo_actions::Sensitivity). Empty means public. A host redacts the
+  # label for any caller beyond this device.
+  resourceSensitivity @11 :Text;
 }
 
 struct ResourceViewDescriptor {

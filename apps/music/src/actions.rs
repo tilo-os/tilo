@@ -417,6 +417,7 @@ pub fn history_context(action: &MusicAction) -> tilo_actions::ActionContext {
         id: format!("{kind}:{id}"),
         kind: kind.to_string(),
         label: resource_label.to_string(),
+        sensitivity: tilo_actions::Sensitivity::Public,
     });
     context
 }

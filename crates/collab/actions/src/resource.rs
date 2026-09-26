@@ -1253,6 +1253,7 @@ pub struct FlatAction<'a> {
     pub resource_id: ResourceId,
     pub resource_kind: String,
     pub resource_label: String,
+    pub resource_sensitivity: crate::Sensitivity,
     pub resource_presentation: Option<ResourcePresentation>,
     pub action: &'a ActionSpec,
 }
@@ -1274,6 +1275,7 @@ fn flatten_into<'a>(resource: &'a Resource, out: &mut Vec<FlatAction<'a>>) {
             resource_id: resource.id.clone(),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
+            resource_sensitivity: resource.sensitivity,
             resource_presentation: resource.presentation.clone(),
             action,
         });

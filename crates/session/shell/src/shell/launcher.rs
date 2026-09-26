@@ -116,6 +116,21 @@ struct LaunchedProcess {
 static LAUNCHED_PROCESSES: std::sync::LazyLock<Mutex<HashMap<u32, LaunchedProcess>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// One launch the compositor supervises: the launched process, pinned by
+/// its kernel start time so a reused pid names a different launch.
+///
+/// Everything a launched app opens — its Wayland connection, each of its
+/// collaboration connections — descends from this process, so this is what
+/// ties a window to the broker connections that speak for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LaunchInstance {
+    pub pid: u32,
+    pub start_time: u64,
+}
+
+static SURFACE_LAUNCH_INSTANCES: std::sync::LazyLock<Mutex<HashMap<u64, LaunchInstance>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceLaunchIdentity {
     pub app_id: String,
@@ -382,6 +397,8 @@ pub(crate) struct VerifiedLaunchIdentity {
     pub package_id: String,
     pub workspace_id: Option<String>,
     pub confined: bool,
+    /// The launch this process descends from.
+    pub instance: LaunchInstance,
 }
 
 /// Resolve a descendant to the exact live launch record that owns it.
@@ -399,6 +416,7 @@ pub(crate) fn verified_launch_for_descendant(mut pid: u32) -> Option<VerifiedLau
                 package_id: known.package_id.clone(),
                 workspace_id: known.workspace_id.clone(),
                 confined: known.confined,
+                instance: LaunchInstance { pid, start_time },
             });
         }
         if parent_pid == 0 || parent_pid == pid {
@@ -2558,8 +2576,25 @@ pub(crate) fn attribute_surface_launch(surface_id: u64, launch_key: &str) {
     lock(&SURFACE_LAUNCH_KEYS).insert(surface_id, launch_key.to_string());
 }
 
+/// Bind an accepted surface to the launch its Wayland connection descends
+/// from, as proven from `SO_PEERCRED` and the launch registry.
+pub(crate) fn attribute_surface_instance(surface_id: u64, instance: LaunchInstance) {
+    lock(&SURFACE_LAUNCH_INSTANCES).insert(surface_id, instance);
+}
+
+/// The launch that owns this mapped surface, when it is a supervised app.
+pub fn launch_instance_for_surface(surface_id: u64) -> Option<LaunchInstance> {
+    lock(&SURFACE_LAUNCH_INSTANCES).get(&surface_id).copied()
+}
+
+/// The launch a connecting process descends from.
+pub(crate) fn launch_instance_for_descendant(pid: u32) -> Option<LaunchInstance> {
+    verified_launch_for_descendant(pid).map(|launch| launch.instance)
+}
+
 pub(crate) fn forget_surface_launch(surface_id: u64) {
     lock(&SURFACE_LAUNCH_KEYS).remove(&surface_id);
+    lock(&SURFACE_LAUNCH_INSTANCES).remove(&surface_id);
 }
 
 /// Forget every launch this session has recorded — for tests asserting
@@ -4278,6 +4313,10 @@ mod tests {
                 package_id: "so.tilo.mail".into(),
                 workspace_id: Some("room-mail".into()),
                 confined: true,
+                instance: LaunchInstance {
+                    pid: parent,
+                    start_time: proc_stat(parent).expect("live parent").1,
+                },
             })
         );
         unregister_launched_process(parent);

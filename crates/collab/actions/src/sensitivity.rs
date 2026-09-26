@@ -36,7 +36,7 @@ pub enum Sensitivity {
 }
 
 /// Where presented content is going, which decides what of it survives.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Audience {
     /// This machine's own session: its compositor chrome, its screen reader,
@@ -50,6 +50,27 @@ pub enum Audience {
 impl Sensitivity {
     pub fn is_secret(self) -> bool {
         self == Self::Secret
+    }
+
+    /// The spelling carried in wire text fields (`public`, `personal`,
+    /// `secret`), the same as the serde form.
+    pub const fn as_wire(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Personal => "personal",
+            Self::Secret => "secret",
+        }
+    }
+
+    /// Read a wire text field. Empty is public: a field nobody set declares
+    /// nothing. Anything else unknown is refused rather than guessed.
+    pub fn from_wire(text: &str) -> Option<Self> {
+        match text {
+            "" | "public" => Some(Self::Public),
+            "personal" => Some(Self::Personal),
+            "secret" => Some(Self::Secret),
+            _ => None,
+        }
     }
 
     /// The form of `content` that `audience` may receive, or `None` when it

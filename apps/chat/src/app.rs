@@ -2568,7 +2568,9 @@ impl ChatApp {
         let mut t = TextInput::local()
             .multiline(true)
             .with_enter_submits(true)
-            .with_font_size(15.0);
+            .with_font_size(15.0)
+            // A message is in someone's own words.
+            .with_sensitivity(ui::a11y::Sensitivity::Personal);
         t.set_plain_chrome(true);
         t
     }
@@ -2581,6 +2583,7 @@ impl ChatApp {
             .with_enter_submits(true)
             .with_plain_chrome()
             .with_font_size(15.0)
+            .with_sensitivity(ui::a11y::Sensitivity::Personal)
     }
 
     /// A single-line local field for channel/category names. The host commits

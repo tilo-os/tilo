@@ -199,6 +199,29 @@ pub(super) struct AccessibilityRuntime {
     pub(super) text_scale: f32,
     pub(super) ui_scale: f32,
     pub(super) semantic_tree: crate::a11y_tree::SemanticTree,
+    /// Whether a frame was drawn since the semantic tree was last compared,
+    /// when that was, and how many changes have been reported.
+    pub(super) semantic_watch: SemanticWatch,
+}
+
+pub(super) struct SemanticWatch {
+    pub(super) dirty: bool,
+    pub(super) last_check: Option<crate::time::Instant>,
+    pub(super) generation: u64,
+    /// The tree revision last reported, `None` before the first report.
+    pub(super) reported_revision: Option<u64>,
+}
+
+impl Default for SemanticWatch {
+    /// Dirty from the start: the first tree an app has is news to a watcher.
+    fn default() -> Self {
+        Self {
+            dirty: true,
+            last_check: None,
+            generation: 0,
+            reported_revision: None,
+        }
+    }
 }
 
 impl AccessibilityRuntime {
@@ -217,6 +240,7 @@ impl AccessibilityRuntime {
             text_scale: 1.0,
             ui_scale: 1.0,
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
+            semantic_watch: SemanticWatch::default(),
         }
     }
 }

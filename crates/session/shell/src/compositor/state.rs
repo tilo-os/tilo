@@ -2762,6 +2762,9 @@ pub struct ClientState {
     /// Whether package/app-id equality is part of this connection's sandbox
     /// boundary. Unconfined host launches keep their desktop compatibility ids.
     pub enforce_package_id: bool,
+    /// The supervised launch this connection descends from, which ties its
+    /// windows to that launch's collaboration connections.
+    pub launch_instance: Option<crate::shell::launcher::LaunchInstance>,
 }
 
 /// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
@@ -2777,6 +2780,7 @@ impl Default for ClientState {
             package_id: None,
             workspace_id: None,
             enforce_package_id: false,
+            launch_instance: None,
         }
     }
 }
@@ -2801,6 +2805,7 @@ impl ClientState {
             package_id: Some(identity.package_id),
             workspace_id: identity.workspace_id,
             enforce_package_id: identity.confined,
+            launch_instance: Some(identity.instance),
             ..Self::default()
         })
     }
@@ -3643,6 +3648,13 @@ impl XdgShellHandler for State {
         });
         if let Some(launch_key) = authenticated_launch_key.as_deref() {
             crate::shell::launcher::attribute_surface_launch(surface_id, launch_key);
+        }
+        if let Some(instance) = surface.wl_surface().client().and_then(|client| {
+            client
+                .get_data::<ClientState>()
+                .and_then(|data| data.launch_instance)
+        }) {
+            crate::shell::launcher::attribute_surface_instance(surface_id, instance);
         }
         let announced_app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
@@ -4530,6 +4542,10 @@ mod osk_identity_tests {
             package_id: "so.tilo.notes".into(),
             workspace_id: Some(room.to_string()),
             confined: true,
+            instance: crate::shell::launcher::LaunchInstance {
+                pid: 1,
+                start_time: 1,
+            },
         });
         assert_eq!(
             authenticated_toplevel_identity(Some(&client), None),
@@ -4548,6 +4564,10 @@ mod osk_identity_tests {
                 package_id: "so.tilo.notes".into(),
                 workspace_id: Some("not-a-room".into()),
                 confined: true,
+                instance: crate::shell::launcher::LaunchInstance {
+                    pid: 1,
+                    start_time: 1,
+                },
             });
         assert!(authenticated_toplevel_identity(Some(&attributed), None).is_err());
         assert_eq!(
@@ -4562,6 +4582,10 @@ mod osk_identity_tests {
             package_id: "host.desktop-entry".into(),
             workspace_id: Some(room.to_string()),
             confined: false,
+            instance: crate::shell::launcher::LaunchInstance {
+                pid: 1,
+                start_time: 1,
+            },
         });
         assert_eq!(
             authenticated_toplevel_identity(Some(&host), Some("LegacyStartupWMClass".into())),

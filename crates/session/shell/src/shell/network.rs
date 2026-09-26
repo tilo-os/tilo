@@ -11541,6 +11541,7 @@ mod tests {
                 action: "refresh".into(),
                 resource_kind: "files.entry".into(),
                 resource_label: "report".into(),
+                resource_sensitivity: tilo_actions::Sensitivity::Public,
                 action_label: "Refresh".into(),
                 description: None,
                 operation_kind: tilo_actions::OperationKind::Effect,

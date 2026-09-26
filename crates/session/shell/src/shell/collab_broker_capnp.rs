@@ -378,7 +378,9 @@ fn nearby_source_from_grants(
 mod action_host;
 mod inspection;
 
-pub use inspection::{INSPECTION_TIMEOUT, InspectCaller, InspectableApp, InspectionJob};
+pub use inspection::{
+    INSPECTION_TIMEOUT, InspectCaller, InspectableApp, InspectionJob, SemanticChange,
+};
 
 fn nearby_policy_enabled(
     policy: crate::shell::continuity_policy::ContinuityPolicySnapshot,
@@ -891,6 +893,9 @@ pub struct PublishedAction {
     pub action: String,
     pub resource_kind: String,
     pub resource_label: String,
+    /// How far `resource_label` may travel. Every answer to a caller beyond
+    /// this device carries it redacted.
+    pub resource_sensitivity: tilo_actions::Sensitivity,
     pub action_label: String,
     pub description: Option<String>,
     pub operation_kind: tilo_actions::OperationKind,
@@ -3370,6 +3375,7 @@ impl CapnpBrokerState {
             &resource.kind,
             &resource.label,
         )
+        .with_resource_sensitivity(resource.sensitivity)
         .with_app(
             crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
             "Workspace permissions",
@@ -3686,6 +3692,7 @@ impl CapnpBrokerState {
             &offered.1.resource_kind,
             &offered.1.resource_label,
         )
+        .with_resource_sensitivity(offered.1.resource_sensitivity)
         .with_app(&offered.0.app_id, &offered.0.app_id);
         if let Some(ambient) = &context {
             receipt_context = receipt_context.enriched_by(ambient);
@@ -4770,6 +4777,9 @@ struct CapnpCollabService {
     /// The launcher-authenticated application behind this connection, if
     /// it arrived through the launcher.
     launch: Option<LaunchScope>,
+    /// The supervised launch the connecting process descends from, proven
+    /// from its peer credentials; what ties it to that launch's windows.
+    launch_instance: Option<crate::shell::launcher::LaunchInstance>,
 }
 
 impl collab_service::Server for CapnpCollabService {
@@ -4869,6 +4879,7 @@ impl collab_service::Server for CapnpCollabService {
                 peer_id,
                 verified_identity,
                 launch: self.launch.clone(),
+                launch_instance: self.launch_instance,
             };
             let client: channel_handle::Client = capnp_rpc::new_client(handle);
             results.get().set_handle(client);
@@ -4886,6 +4897,7 @@ struct CapnpChannelHandle {
     peer_id: u64,
     verified_identity: AdmittedJoinIdentity,
     launch: Option<LaunchScope>,
+    launch_instance: Option<crate::shell::launcher::LaunchInstance>,
 }
 
 const MAX_PRIVATE_PLAYBACK_REPORT_BYTES: usize = 256 * 1024;
@@ -5975,6 +5987,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             offered.resource_kind,
             offered.resource_label,
         )
+        .with_resource_sensitivity(offered.resource_sensitivity)
         .with_app(&surface.app_id, &surface.app_id);
         let actor = current.broker_actor().id;
         let Some(membership) = &self.state.membership else {
@@ -6346,6 +6359,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                     action,
                     resource_kind: row.get_resource_kind()?.to_str()?.to_owned(),
                     resource_label: row.get_resource_label()?.to_str()?.to_owned(),
+                    resource_sensitivity: tilo_actions::Sensitivity::from_wire(
+                        row.get_resource_sensitivity()?.to_str()?,
+                    )
+                    .ok_or_else(|| {
+                        capnp::Error::failed("unknown exported resource sensitivity".into())
+                    })?,
                     action_label: row.get_action_label()?.to_str()?.to_owned(),
                     description: (!description.is_empty()).then_some(description),
                     operation_kind: match row.get_operation_kind()?.to_str()? {
@@ -6565,13 +6584,36 @@ impl channel_handle::Server for CapnpChannelHandle {
         {
             return Promise::err(error);
         }
-        match self.state.inspections.subscribe(self.peer_id, self.route()) {
+        match self
+            .state
+            .inspections
+            .subscribe(self.peer_id, self.route(), self.launch_instance)
+        {
             Ok(server) => {
                 let client: runtime_collab::raw::inspection_stream::Client =
                     capnp_rpc::new_client(server);
                 results.get().set_stream(client);
                 Promise::ok(())
             }
+            Err(error) => Promise::err(capnp::Error::failed(error)),
+        }
+    }
+
+    fn report_semantic_change(
+        self: Rc<Self>,
+        params: channel_handle::ReportSemanticChangeParams,
+        _results: channel_handle::ReportSemanticChangeResults,
+    ) -> Promise<(), capnp::Error> {
+        let generation = match params.get() {
+            Ok(request) => request.get_generation(),
+            Err(error) => return Promise::err(error),
+        };
+        match self
+            .state
+            .inspections
+            .report_change(self.peer_id, generation)
+        {
+            Ok(()) => Promise::ok(()),
             Err(error) => Promise::err(capnp::Error::failed(error)),
         }
     }
@@ -7413,6 +7455,11 @@ fn permits_directory_row(
         DIRECTORY_MAX_LABEL_BYTES,
         true,
     )?;
+    if tilo_actions::Sensitivity::from_wire(&row.resource_sensitivity).is_none() {
+        return Err(capnp::Error::failed(
+            "unknown directory resource sensitivity".into(),
+        ));
+    }
     let presentation = if row.resource_presentation_json.is_empty() {
         None
     } else {
@@ -7435,6 +7482,7 @@ fn permits_directory_row(
                 || descriptor.action != *action
                 || descriptor.resource_kind != row.resource_kind
                 || descriptor.resource_label != row.resource_label
+                || descriptor.resource_sensitivity != row.resource_sensitivity
                 || row.has_children
                 || row.visibility_action.as_deref() != Some(action)
                 || row.visibility_contract_json != descriptor.contract_json
@@ -7634,6 +7682,10 @@ fn published_directory_action(
         action: descriptor.action.clone(),
         resource_kind: descriptor.resource_kind.clone(),
         resource_label: descriptor.resource_label.clone(),
+        resource_sensitivity: tilo_actions::Sensitivity::from_wire(
+            &descriptor.resource_sensitivity,
+        )
+        .ok_or_else(|| capnp::Error::failed("unknown exported resource sensitivity".into()))?,
         action_label: descriptor.action_label.clone(),
         description: descriptor.description.clone(),
         operation_kind,
@@ -8979,6 +9031,12 @@ async fn drive_connection(
     peer_id: u64,
 ) -> Result<(), capnp::Error> {
     let mut stream = stream;
+    let launch_instance = stream
+        .peer_cred()
+        .ok()
+        .and_then(|credentials| credentials.pid())
+        .and_then(|pid| u32::try_from(pid).ok())
+        .and_then(crate::shell::launcher::launch_instance_for_descendant);
     let launch = authenticate_launcher_handoff(&mut stream).await?;
     let (reader, writer) = stream.into_split();
     let reader = reader.compat();
@@ -8994,6 +9052,7 @@ async fn drive_connection(
         directories,
         peer_id,
         launch,
+        launch_instance,
     };
     let client: collab_service::Client = capnp_rpc::new_client(service);
     let rpc = RpcSystem::new(network, Some(client.client));
@@ -9914,6 +9973,7 @@ pub(crate) mod tests {
                 action: "open".into(),
                 resource_kind: "workspace".into(),
                 resource_label: "Atlas".into(),
+                resource_sensitivity: String::new(),
                 action_label: "Open Atlas".into(),
                 description: Some("Open the Atlas workspace".into()),
                 operation_kind: "view".into(),
@@ -9927,6 +9987,7 @@ pub(crate) mod tests {
                 resource: descriptor.resource.clone(),
                 resource_kind: descriptor.resource_kind.clone(),
                 resource_label: descriptor.resource_label.clone(),
+                resource_sensitivity: String::new(),
                 resource_presentation_json: String::new(),
                 action: Some(descriptor.action.clone()),
                 descriptor: Some(descriptor),
@@ -10116,6 +10177,7 @@ pub(crate) mod tests {
                     agent_id: None,
                 },
                 launch: None,
+                launch_instance: None,
             });
             let mut request = client.update_invocation_request();
             request.get().set_id(id);
@@ -11424,6 +11486,7 @@ pub(crate) mod tests {
                         action: "reveal".into(),
                         resource_kind: "files.entry".into(),
                         resource_label: "report".into(),
+                        resource_sensitivity: tilo_actions::Sensitivity::Public,
                         action_label: "Reveal".into(),
                         description: None,
                         operation_kind: tilo_actions::OperationKind::View,
@@ -11437,6 +11500,7 @@ pub(crate) mod tests {
                         action: "erase".into(),
                         resource_kind: "files.entry".into(),
                         resource_label: "report".into(),
+                        resource_sensitivity: tilo_actions::Sensitivity::Public,
                         action_label: "Erase".into(),
                         description: None,
                         operation_kind: tilo_actions::OperationKind::Effect,
@@ -11454,6 +11518,7 @@ pub(crate) mod tests {
                         action: "refresh".into(),
                         resource_kind: "files.entry".into(),
                         resource_label: "report".into(),
+                        resource_sensitivity: tilo_actions::Sensitivity::Public,
                         action_label: "Refresh".into(),
                         description: None,
                         operation_kind: tilo_actions::OperationKind::Effect,
@@ -11654,6 +11719,7 @@ pub(crate) mod tests {
                 action: "new-window".into(),
                 resource_kind: "files.app".into(),
                 resource_label: "Files".into(),
+                resource_sensitivity: tilo_actions::Sensitivity::Public,
                 action_label: "New window".into(),
                 description: None,
                 operation_kind: tilo_actions::OperationKind::View,
@@ -12262,6 +12328,7 @@ pub(crate) mod tests {
             action: action.into(),
             resource_kind: "note".into(),
             resource_label: "One".into(),
+            resource_sensitivity: tilo_actions::Sensitivity::Public,
             action_label: "Open".into(),
             description: None,
             operation_kind: tilo_actions::OperationKind::View,

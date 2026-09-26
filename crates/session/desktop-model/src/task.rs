@@ -109,6 +109,7 @@ impl WorkspaceTask {
                 id: resource.id.clone(),
                 kind: resource.kind.clone(),
                 label: resource.label.clone(),
+                sensitivity: tilo_actions::Sensitivity::Public,
             });
             if let (Some(id), Some(label)) = (&resource.app_id, &resource.app_label) {
                 context = context.with_app(id.clone(), label.clone());

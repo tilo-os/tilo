@@ -37,6 +37,7 @@ fn draw_frame_content(
     t_draw_start: Option<crate::time::Instant>,
 ) -> (Affine, KurboRect, u128) {
     let __prof_resources = app.profiler.as_ref().map(|_| crate::time::now());
+    app.mark_semantics_dirty();
     app.refresh_control_action_availability();
     if let Some(p) = app.profiler.as_mut() {
         p.record_since(

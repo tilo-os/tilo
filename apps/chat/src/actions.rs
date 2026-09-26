@@ -639,6 +639,9 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
         } else {
             channel.clone()
         },
+        // Channel names are chosen by the people in them, and a direct
+        // channel is named after a person.
+        sensitivity: tilo_actions::Sensitivity::Personal,
     });
     context
 }
@@ -1472,6 +1475,7 @@ pub(crate) fn person_resource(me: &str, user: &crate::model::User) -> Resource {
         "chat.person",
         user.name.clone(),
     )
+    .with_sensitivity(tilo_actions::Sensitivity::Personal)
     .with_action(view_operation(
         "open",
         "Open person",
@@ -1842,6 +1846,7 @@ fn build_channel_resource(
         "chat.channel",
         channel_label(ch),
     )
+    .with_sensitivity(tilo_actions::Sensitivity::Personal)
     .with_action(view_operation(
         "open",
         "Open conversation",
@@ -2008,6 +2013,7 @@ fn build_call_resource(
         "chat.call",
         format!("Call: {}", channel_label(ch)),
     )
+    .with_sensitivity(tilo_actions::Sensitivity::Personal)
     .with_action(view_operation(
         "open",
         "Open call conversation",
@@ -2093,6 +2099,7 @@ fn build_message_resource(
         "chat.message",
         m.label.clone(),
     )
+    .with_sensitivity(tilo_actions::Sensitivity::Personal)
     .with_action(view_operation(
         "open",
         "Reveal message",
@@ -2267,6 +2274,7 @@ fn build_attachment_resource(
         "chat.attachment",
         attachment.name.clone(),
     )
+    .with_sensitivity(tilo_actions::Sensitivity::Personal)
     .with_action(view_operation(
         "open-message",
         "Reveal shared message",

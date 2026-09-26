@@ -81,6 +81,7 @@ pub struct Caller {
     user_public_key: Option<[u8; 32]>,
     device_public_key: Option<[u8; 32]>,
     room: Option<String>,
+    audience: crate::Audience,
 }
 
 impl Caller {
@@ -93,6 +94,7 @@ impl Caller {
             user_public_key: Some(user_public_key),
             device_public_key: Some(device_public_key),
             room: None,
+            audience: crate::Audience::BeyondDevice,
         }
     }
 
@@ -105,6 +107,7 @@ impl Caller {
             user_public_key: None,
             device_public_key: None,
             room: None,
+            audience: crate::Audience::LocalSession,
         }
     }
 
@@ -116,6 +119,8 @@ impl Caller {
             user_public_key: None,
             device_public_key: None,
             room: None,
+            // What an agent reads it hands to a model, which may not run here.
+            audience: crate::Audience::BeyondDevice,
         }
     }
 
@@ -125,6 +130,21 @@ impl Caller {
     pub fn in_room(mut self, room: impl Into<String>) -> Self {
         self.room = Some(room.into());
         self
+    }
+
+    /// Treat whatever this caller reads as leaving the device: a local
+    /// bridge that hands answers to a model or another machine.
+    #[must_use]
+    pub const fn beyond_device(mut self) -> Self {
+        self.audience = crate::Audience::BeyondDevice;
+        self
+    }
+
+    /// Who reads what this caller is answered: a remote device and an agent
+    /// are beyond this device; a person on this session is not.
+    #[must_use]
+    pub const fn audience(&self) -> crate::Audience {
+        self.audience
     }
 
     #[must_use]
@@ -923,6 +943,7 @@ mod tests {
             address: ActionAddress::new(resource, action),
             resource_kind: "notes.note".into(),
             resource_label: "Groceries".into(),
+            resource_sensitivity: crate::Sensitivity::Public,
             action_label: "Archive".into(),
             description: Some("Move the note to the archive".into()),
             locus: ExecutionLocus::ClientLocal,
@@ -1027,6 +1048,7 @@ mod tests {
                 kind: "notes.note".into(),
                 label: "Groceries".into(),
                 presentation: None,
+                sensitivity: crate::Sensitivity::Public,
             },
             action: Some(descriptor(resource, action)),
             has_children: false,

@@ -691,6 +691,7 @@ impl App {
             action: descriptor.address.action.clone(),
             resource_kind: descriptor.resource_kind.clone(),
             resource_label: descriptor.resource_label.clone(),
+            resource_sensitivity: descriptor.resource_sensitivity,
             action_label: descriptor.action_label.clone(),
             description: descriptor.description.clone(),
             operation_kind: descriptor.kind.as_str().to_string(),
@@ -762,6 +763,7 @@ impl App {
             action: descriptor.address.action.clone(),
             resource_kind: descriptor.resource_kind.clone(),
             resource_label: descriptor.resource_label.clone(),
+            resource_sensitivity: descriptor.resource_sensitivity.as_wire().to_owned(),
             action_label: descriptor.action_label.clone(),
             description: descriptor.description.clone(),
             operation_kind: descriptor.kind.as_str().to_string(),
@@ -837,6 +839,7 @@ impl App {
             resource: resource.id.as_str().to_owned(),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
+            resource_sensitivity: resource.sensitivity.as_wire().to_owned(),
             resource_presentation_json: resource
                 .presentation
                 .as_ref()
@@ -867,6 +870,7 @@ impl App {
             resource: resource.id.as_str().to_owned(),
             resource_kind: exported.resource_kind.clone(),
             resource_label: exported.resource_label.clone(),
+            resource_sensitivity: exported.resource_sensitivity.clone(),
             resource_presentation_json: String::new(),
             action: Some(action_id.to_owned()),
             descriptor: Some(exported.clone()),

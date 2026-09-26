@@ -43,6 +43,7 @@ fn descriptor(action: &PublishedAction) -> ActionDescriptor {
         address: ActionAddress::new(&action.resource, &action.action),
         resource_kind: action.resource_kind.clone(),
         resource_label: action.resource_label.clone(),
+        resource_sensitivity: action.resource_sensitivity,
         action_label: action.action_label.clone(),
         description: action.description.clone(),
         // The host runs the action wherever its app lives; a published
@@ -79,6 +80,7 @@ fn app_open_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor
         ),
         resource_kind: "applications.app".into(),
         resource_label: display_name.to_string(),
+        resource_sensitivity: tilo_actions::Sensitivity::Public,
         action_label: format!("Open {display_name}"),
         description: Some("Launch this application into the current workspace".into()),
         locus: ExecutionLocus::default(),
@@ -343,7 +345,20 @@ impl CapnpBrokerState {
     /// One page of what `caller` is offered. A provider publishing a live
     /// directory is browsed there, on the broker's local set; everything
     /// else is answered at once from the eager surfaces.
+    /// Every caller's catalogue goes through here, so this is where labels
+    /// are redacted for whoever reads them: a remote device, an agent or an
+    /// MCP bridge receives each resource label as its sensitivity allows.
     pub(crate) fn action_query(
+        self: &Arc<Self>,
+        caller: &Caller,
+        query: &CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        let audience = caller.audience();
+        self.action_query_unredacted(caller, query)
+            .map(move |page| page.map(|page| page.redacted_for(audience)))
+    }
+
+    fn action_query_unredacted(
         self: &Arc<Self>,
         caller: &Caller,
         query: &CatalogueQuery,
@@ -1216,6 +1231,7 @@ fn action_row(provider: String, app_id: &str, action: ActionDescriptor) -> Catal
             kind: action.resource_kind.clone(),
             label: action.resource_label.clone(),
             presentation: None,
+            sensitivity: action.resource_sensitivity,
         },
         action: Some(action),
         has_children: false,
@@ -1247,6 +1263,10 @@ fn directory_row(
             )
             .ok()
             .filter(tilo_actions::ResourcePresentation::is_valid),
+            // Validated on arrival; an unreadable declaration is treated as
+            // the most restrictive one rather than as public.
+            sensitivity: tilo_actions::Sensitivity::from_wire(&row.resource_sensitivity)
+                .unwrap_or(tilo_actions::Sensitivity::Secret),
         },
         action,
         has_children: row.has_children,

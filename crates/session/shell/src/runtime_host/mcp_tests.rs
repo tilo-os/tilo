@@ -528,6 +528,7 @@ fn container_rows_preserve_their_canonical_visibility_contract() {
             kind: "document".into(),
             label: "A decorative label".into(),
             presentation: None,
+            sensitivity: tilo_actions::Sensitivity::Public,
         },
         action: None,
         has_children: true,

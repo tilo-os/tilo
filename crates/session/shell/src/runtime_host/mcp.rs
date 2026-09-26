@@ -377,7 +377,11 @@ impl McpServer {
     }
     /// The fixed profile actor, confined to the profile's workspace.
     fn caller(&self) -> Caller {
-        Caller::local_person(self.actor.clone()).in_room(self.room.clone())
+        // What an MCP client reads it hands to a model, which may not run
+        // here.
+        Caller::local_person(self.actor.clone())
+            .in_room(self.room.clone())
+            .beyond_device()
     }
     fn status(&self, id: tilo_actions::InvocationId) -> Result<Value, String> {
         self.host()

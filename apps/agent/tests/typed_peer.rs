@@ -188,6 +188,7 @@ pub fn exported_actions(resources: &[Resource]) -> Vec<ExportedAction> {
             action: descriptor.address.action,
             resource_kind: descriptor.resource_kind,
             resource_label: descriptor.resource_label,
+            resource_sensitivity: descriptor.resource_sensitivity,
             action_label: descriptor.action_label,
             description: descriptor.description,
             operation_kind: descriptor.kind.as_str().to_string(),

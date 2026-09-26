@@ -747,6 +747,8 @@ pub fn history_context(action: &ContactsAction) -> tilo_actions::ActionContext {
         } else {
             name
         },
+        // A contact's name is about a person.
+        sensitivity: tilo_actions::Sensitivity::Personal,
     });
     context
 }
@@ -1525,7 +1527,8 @@ fn book_resource(ctx: &ContactsResourceCtx) -> Resource {
             format!("contacts.import-conflict:{}", conflict.token),
             "contacts.import-conflict",
             format!("Import review: {}", conflict.incoming_name),
-        );
+        )
+        .with_sensitivity(tilo_actions::Sensitivity::Personal);
         let keep = ContactsOperation::KeepImportConflict {
             token: conflict.token.clone(),
         };
@@ -1563,7 +1566,8 @@ pub fn contact_resource(contact: &Contact, export_busy: bool) -> Resource {
         contact_resource_id(contact.id),
         "contacts.contact",
         contact.display_name(),
-    );
+    )
+    .with_sensitivity(tilo_actions::Sensitivity::Personal);
     if let Some(open) = contact_operation(
         "open",
         "Open contact",
@@ -1654,7 +1658,8 @@ pub fn contact_resource(contact: &Contact, export_busy: bool) -> Resource {
 /// `ContactsApp` from the authoritative CRDT projection, not copied into the
 /// search index.
 pub fn contact_open_resource(id: ContactId, label: &str) -> Resource {
-    let mut resource = Resource::new(contact_resource_id(id), "contacts.contact", label);
+    let mut resource = Resource::new(contact_resource_id(id), "contacts.contact", label)
+        .with_sensitivity(tilo_actions::Sensitivity::Personal);
     if let Some(open) = contact_operation(
         "open",
         "Open contact",
@@ -1710,7 +1715,8 @@ pub fn duplicate_resource(duplicate: &DuplicateResource) -> Resource {
             duplicate.survivor.display_name(),
             duplicate.source.display_name()
         ),
-    );
+    )
+    .with_sensitivity(tilo_actions::Sensitivity::Personal);
     let operation = ContactsOperation::OpenDuplicateReview {
         survivor_id: candidate.survivor_id.to_string(),
         source_id: candidate.source_id.to_string(),
@@ -1825,7 +1831,8 @@ pub fn resolve_resource(ctx: &ContactsResourceCtx, id: &str) -> Option<Resource>
             id,
             "contacts.import-conflict",
             format!("Import review: {}", conflict.incoming_name),
-        );
+        )
+        .with_sensitivity(tilo_actions::Sensitivity::Personal);
         let keep = ContactsOperation::KeepImportConflict {
             token: conflict.token.clone(),
         };

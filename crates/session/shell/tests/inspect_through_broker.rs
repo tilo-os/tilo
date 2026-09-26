@@ -144,15 +144,15 @@ fn by_label<'a>(reply: &'a InspectReply, label: &str) -> &'a ui::inspect::Inspec
         .unwrap_or_else(|| panic!("no node labelled {label}: {reply:#?}"))
 }
 
-#[test]
-fn the_shell_inspects_a_live_app_through_the_broker() {
-    let dir = tempfile::tempdir().expect("socket dir");
-    let path = dir.path().join("collab.sock");
-    let handle = broker(&path);
-    let broker = handle.app_action_broker().expect("typed broker state");
-    let mut app = app(&path);
+/// Wait until the app answers inspection and has reported its semantic
+/// tree, and return its connection.
+fn announced_peer(
+    broker: &AppActionBroker,
+    changes: &std::sync::mpsc::Receiver<shell::shell::collab_broker_capnp::SemanticChange>,
+    app: &mut ui::App,
+) -> u64 {
     pump_until(
-        &mut app,
+        app,
         || !broker.inspectable_apps().is_empty(),
         "the app to answer inspection",
     );
@@ -161,6 +161,30 @@ fn the_shell_inspects_a_live_app_through_the_broker() {
     assert_eq!(listed[0].app_id, APP_ID);
     assert_eq!(listed[0].room, ROOM.to_string());
     let peer = listed[0].peer_id;
+    pump_until(
+        app,
+        || changes.try_iter().any(|change| change.peer_id == peer),
+        "the app to report its semantic tree",
+    );
+    assert!(
+        broker
+            .inspectable_apps()
+            .iter()
+            .any(|app| app.peer_id == peer && app.semantic_generation >= 1),
+        "the report is kept as the connection's generation"
+    );
+    peer
+}
+
+#[test]
+fn the_shell_inspects_a_live_app_through_the_broker() {
+    let dir = tempfile::tempdir().expect("socket dir");
+    let path = dir.path().join("collab.sock");
+    let handle = broker(&path);
+    let broker = handle.app_action_broker().expect("typed broker state");
+    let changes = broker.watch_semantic_changes();
+    let mut app = app(&path);
+    let peer = announced_peer(&broker, &changes, &mut app);
 
     let local = InspectCaller {
         person: owner(),

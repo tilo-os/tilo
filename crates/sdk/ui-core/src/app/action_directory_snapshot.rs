@@ -60,6 +60,7 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
                     resource: descriptor.address.resource.clone(),
                     resource_kind: descriptor.resource_kind.clone(),
                     resource_label: descriptor.resource_label.clone(),
+                    resource_sensitivity: descriptor.resource_sensitivity.as_wire().to_owned(),
                     resource_presentation_json: resource
                         .presentation
                         .as_ref()
@@ -99,6 +100,7 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
                     resource: resource.id.as_str().to_owned(),
                     resource_kind: resource.kind.clone(),
                     resource_label: resource.label.clone(),
+                    resource_sensitivity: resource.sensitivity.as_wire().to_owned(),
                     resource_presentation_json: resource
                         .presentation
                         .as_ref()

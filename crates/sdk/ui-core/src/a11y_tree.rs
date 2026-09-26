@@ -303,6 +303,8 @@ pub struct SemanticTree {
     duplicate_ids: Vec<SemanticId>,
     /// Toolkit-owned overlays open this frame, each named by its owner's id.
     overlays: Vec<crate::view::OpenOverlay>,
+    /// Bumped by every refresh that changed the tree, whoever asked for it.
+    revision: u64,
 }
 
 impl Default for SemanticTree {
@@ -324,6 +326,7 @@ impl SemanticTree {
             bound_actions: HashMap::new(),
             duplicate_ids: Vec::new(),
             overlays: Vec::new(),
+            revision: 0,
         }
     }
 
@@ -462,6 +465,9 @@ impl SemanticTree {
         self.bound_actions = builder.bound_actions;
         self.duplicate_ids = builder.duplicate_ids;
         self.overlays = builder.overlays;
+        if !delta.is_empty() {
+            self.revision = self.revision.saturating_add(1);
+        }
         delta
     }
 
@@ -487,6 +493,14 @@ impl SemanticTree {
 
     pub fn root(&self) -> &SemanticId {
         &self.root
+    }
+
+    /// How many refreshes have changed the tree. Every consumer that refreshes
+    /// (AccessKit, the action surface, inspection) advances the same count,
+    /// so a watcher compares revisions rather than depending on seeing each
+    /// delta itself.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// The overlays open as of the last refresh, in reading order. An

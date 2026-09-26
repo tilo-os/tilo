@@ -49,11 +49,13 @@ fn row(
             kind: kind.into(),
             label: resource.into(),
             presentation: None,
+            sensitivity: tilo_actions::Sensitivity::Public,
         },
         action: Some(ActionDescriptor {
             address: ActionAddress::new(resource, action),
             resource_kind: kind.into(),
             resource_label: resource.into(),
+            resource_sensitivity: tilo_actions::Sensitivity::Public,
             action_label: action.into(),
             description: None,
             locus: ExecutionLocus::ClientLocal,

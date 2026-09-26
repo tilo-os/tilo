@@ -667,6 +667,7 @@ mod tests {
                 address: ActionAddress::new("calculator.range:main", "sample"),
                 resource_kind: "calculator.range".into(),
                 resource_label: "Main range".into(),
+                resource_sensitivity: tilo_actions::Sensitivity::Public,
                 action_label: "Sample values".into(),
                 description: Some("Generate a bounded sample".into()),
                 locus: ExecutionLocus::ClientLocal,

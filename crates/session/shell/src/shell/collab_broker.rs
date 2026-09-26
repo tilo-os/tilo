@@ -621,6 +621,51 @@ impl AppActionBroker {
         self.state.inspectable_apps()
     }
 
+    /// The application connection that answers for the window `surface_id`
+    /// (a tab's surface): the one descended from the same supervised launch
+    /// as the window's Wayland client. `None` for a window the shell did not
+    /// launch or whose app does not answer inspection.
+    pub fn inspectable_app_for_surface(
+        &self,
+        surface_id: u64,
+    ) -> Option<crate::shell::collab_broker_capnp::InspectableApp> {
+        self.state.inspectable_app_for_surface(surface_id)
+    }
+
+    /// Every later report that an application's semantic tree changed. The
+    /// app debounces; a watcher inspects the peer again on each report.
+    pub fn watch_semantic_changes(
+        &self,
+    ) -> std::sync::mpsc::Receiver<crate::shell::collab_broker_capnp::SemanticChange> {
+        self.state.watch_semantic_changes()
+    }
+
+    /// Start an inspection without waiting for it; collect the answer with
+    /// [`inspection_answer`](Self::inspection_answer). For callers that must
+    /// never block: chrome in its frame loop, the control socket.
+    ///
+    /// # Errors
+    ///
+    /// As [`inspect`](Self::inspect).
+    pub fn start_inspection(
+        &self,
+        peer_id: u64,
+        query: ui::inspect::InspectQuery,
+        caller: &crate::shell::collab_broker_capnp::InspectCaller,
+    ) -> Result<u64, String> {
+        self.state.start_detached_inspection(peer_id, query, caller)
+    }
+
+    /// The answer to an inspection from
+    /// [`start_inspection`](Self::start_inspection), `None` while pending.
+    ///
+    /// # Errors
+    ///
+    /// When the id is unknown or already collected, or the app refused.
+    pub fn inspection_answer(&self, id: u64) -> Result<Option<ui::inspect::InspectReply>, String> {
+        self.state.inspection_answer(id)
+    }
+
     /// Ask application connection `peer_id` what its semantic tree holds —
     /// the node at a surface point, a node by id, or a bounded subtree — and
     /// return the job to [`wait`](crate::shell::collab_broker_capnp::InspectionJob::wait)

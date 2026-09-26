@@ -408,6 +408,7 @@ pub fn history_context(action: &SheetsAction) -> tilo_actions::ActionContext {
         id,
         kind: kind.to_string(),
         label: resource_label,
+        sensitivity: tilo_actions::Sensitivity::Public,
     });
     context
 }

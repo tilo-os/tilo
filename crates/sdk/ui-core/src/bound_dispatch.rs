@@ -1026,7 +1026,8 @@ pub(crate) fn execute_resource_operation(
             resource.id.as_str(),
             &resource.kind,
             &resource.label,
-        );
+        )
+        .with_resource_sensitivity(resource.sensitivity);
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }

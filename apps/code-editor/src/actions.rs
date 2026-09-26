@@ -332,6 +332,7 @@ pub fn history_context(
         },
         kind: format!("code_editor.{kind}"),
         label: file_name.to_string(),
+        sensitivity: tilo_actions::Sensitivity::Public,
     });
     if let Some(extension) = file_name.rsplit_once('.').map(|(_, extension)| extension) {
         context

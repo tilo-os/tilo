@@ -637,6 +637,7 @@ mod tests {
                 id: "file:draft".into(),
                 kind: "files.entry".into(),
                 label: "Draft.md".into(),
+                sensitivity: tilo_actions::Sensitivity::Public,
             },
             anchor: tilo_actions::InteractionAnchor::Resource,
             group: None,

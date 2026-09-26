@@ -256,6 +256,10 @@ pub enum CollabRequest {
         id: u64,
         reply: Box<crate::inspect::InspectReply>,
     },
+    /// The semantic tree changed; `generation` increases with each report.
+    ReportSemanticChange {
+        generation: u64,
+    },
     /// Terminal receipt for an Effect initiated by this app's local UI.
     RecordLocalEffect {
         address: tilo_actions::ActionAddress,
@@ -344,6 +348,9 @@ pub struct ExportedAction {
     pub action: String,
     pub resource_kind: String,
     pub resource_label: String,
+    /// How far `resource_label` may travel; the session redacts it for any
+    /// caller beyond this device.
+    pub resource_sensitivity: tilo_actions::Sensitivity,
     pub action_label: String,
     pub description: Option<String>,
     pub operation_kind: String,

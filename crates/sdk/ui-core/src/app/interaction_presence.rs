@@ -66,11 +66,13 @@ impl App {
                 id: address.resource.clone(),
                 kind: "tilo.unknown".into(),
                 label: address.resource.clone(),
+                sensitivity: tilo_actions::Sensitivity::Public,
             },
             |(resource, _)| tilo_actions::ActionResource {
                 id: resource.id.as_str().to_string(),
                 kind: resource.kind.clone(),
                 label: resource.label.clone(),
+                sensitivity: resource.sensitivity,
             },
         );
         let label = found

@@ -915,7 +915,8 @@ impl ActionPalette {
             flattened.resource_id.as_str(),
             &flattened.resource_kind,
             &flattened.resource_label,
-        );
+        )
+        .with_resource_sensitivity(flattened.resource_sensitivity);
         if let Some(ambient) = self.ambient_context.as_ref() {
             context = context.enriched_by(ambient);
         }
@@ -1155,7 +1156,8 @@ impl ActionPalette {
             fa.resource_id.as_str(),
             &fa.resource_kind,
             &fa.resource_label,
-        );
+        )
+        .with_resource_sensitivity(fa.resource_sensitivity);
         if let Some(ambient) = self.ambient_context.as_ref() {
             context = context.enriched_by(ambient);
         }

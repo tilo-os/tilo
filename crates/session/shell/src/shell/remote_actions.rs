@@ -135,6 +135,7 @@ mod tests {
             action: name.into(),
             resource_kind: "files.entry".into(),
             resource_label: "report".into(),
+            resource_sensitivity: tilo_actions::Sensitivity::Public,
             action_label: name.into(),
             description: None,
             operation_kind: tilo_actions::OperationKind::Effect,
@@ -239,6 +240,68 @@ mod tests {
             },
         ))
         .expect("catalogue")
+    }
+
+    #[test]
+    fn a_personal_label_reaches_a_local_person_and_leaves_the_device_only_as_a_placeholder() {
+        let mut contact = action("refresh", tilo_actions::ActionContract::default());
+        contact.resource = "contacts.person:ada".into();
+        contact.resource_label = "Ada Lovelace".into();
+        contact.resource_sensitivity = tilo_actions::Sensitivity::Personal;
+        let (host, _) = host_with(vec![contact]);
+        let label = |page: &CataloguePage| {
+            page.rows
+                .iter()
+                .find(|row| row.resource.id == "contacts.person:ada")
+                .map(|row| {
+                    (
+                        row.resource.label.clone(),
+                        row.action
+                            .as_ref()
+                            .map(|action| action.resource_label.clone()),
+                    )
+                })
+                .expect("the contact row is offered")
+        };
+        let room = host
+            .broker
+            .surfaces()
+            .first()
+            .map(|surface| surface.route.cluster_id.clone())
+            .expect("fixture surface");
+        let local = catalogue(&host, &Caller::local_person("a1".repeat(32)).in_room(&room));
+        assert_eq!(
+            label(&local),
+            ("Ada Lovelace".into(), Some("Ada Lovelace".into()))
+        );
+        let placeholder = "▮▮▮ ▮▮▮▮▮▮▮▮".to_owned();
+        for caller in [
+            owner(),
+            Caller::local_person("a1".repeat(32))
+                .in_room(&room)
+                .beyond_device(),
+            Caller::local_agent("scribe").in_room(&room),
+        ] {
+            let page = catalogue(&host, &caller);
+            if page
+                .rows
+                .iter()
+                .any(|row| row.resource.id == "contacts.person:ada")
+            {
+                assert_eq!(
+                    label(&page),
+                    (placeholder.clone(), Some(placeholder.clone())),
+                    "{caller:?} is beyond this device"
+                );
+            }
+        }
+        assert!(
+            catalogue(&host, &owner())
+                .rows
+                .iter()
+                .any(|row| row.resource.id == "contacts.person:ada"),
+            "a remote owner is offered the row, redacted"
+        );
     }
 
     #[test]

@@ -52,7 +52,27 @@ pub struct InspectableApp {
     pub room: String,
     /// The record the connection edits, empty for a whole-app document.
     pub record: String,
+    /// The supervised launch the connection belongs to, which is what ties
+    /// it to that launch's windows. `None` for a process the shell did not
+    /// launch.
+    pub launch: Option<crate::shell::launcher::LaunchInstance>,
+    /// How many times the app has reported that its semantic tree changed.
+    /// Zero until the first report.
+    pub semantic_generation: u64,
 }
+
+/// An application's report that its semantic tree changed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticChange {
+    pub peer_id: u64,
+    /// Monotonic per connection; a watcher that missed reports compares it
+    /// with the last generation it inspected.
+    pub generation: u64,
+}
+
+/// How many detached inspections (started by a caller that polls rather
+/// than blocks) are kept before the oldest is dropped.
+const MAX_DETACHED_INSPECTIONS: usize = 64;
 
 /// An admitted inspection. [`wait`](Self::wait) blocks for the answer.
 pub struct InspectionJob {
@@ -106,6 +126,8 @@ pub(super) struct InspectionEnvelope {
 struct InspectionSubscription {
     route: CrdtRoute,
     tx: mpsc::UnboundedSender<InspectionEnvelope>,
+    launch: Option<crate::shell::launcher::LaunchInstance>,
+    generation: u64,
 }
 
 struct PendingInspection {
@@ -119,6 +141,8 @@ pub(super) struct InspectionRegistry {
     subscribers: Mutex<HashMap<u64, InspectionSubscription>>,
     pending: Mutex<HashMap<u64, PendingInspection>>,
     next_id: AtomicU64,
+    watchers: Mutex<Vec<std::sync::mpsc::Sender<SemanticChange>>>,
+    detached: Mutex<std::collections::VecDeque<InspectionJob>>,
 }
 
 impl Default for InspectionRegistry {
@@ -127,6 +151,8 @@ impl Default for InspectionRegistry {
             subscribers: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            watchers: Mutex::new(Vec::new()),
+            detached: Mutex::new(std::collections::VecDeque::new()),
         }
     }
 }
@@ -138,12 +164,21 @@ impl InspectionRegistry {
         &self,
         peer_id: u64,
         route: CrdtRoute,
+        launch: Option<crate::shell::launcher::LaunchInstance>,
     ) -> Result<InspectionStreamServer, String> {
         let (tx, rx) = mpsc::unbounded_channel();
         self.subscribers
             .lock()
             .map_err(|_| "inspection registry unavailable".to_string())?
-            .insert(peer_id, InspectionSubscription { route, tx });
+            .insert(
+                peer_id,
+                InspectionSubscription {
+                    route,
+                    tx,
+                    launch,
+                    generation: 0,
+                },
+            );
         Ok(InspectionStreamServer {
             rx: Rc::new(AsyncMutex::new(rx)),
         })
@@ -169,6 +204,70 @@ impl InspectionRegistry {
         let malformed = answer.as_ref().err().cloned();
         let _ = job.tx.send(answer);
         malformed.map_or(Ok(()), Err)
+    }
+
+    /// Record that `peer_id`'s semantic tree changed and tell every watcher.
+    /// A generation that does not advance is ignored, so a replayed or
+    /// reordered report cannot make a watcher re-inspect for nothing.
+    pub(super) fn report_change(&self, peer_id: u64, generation: u64) -> Result<(), String> {
+        {
+            let mut subscribers = self
+                .subscribers
+                .lock()
+                .map_err(|_| "inspection registry unavailable".to_string())?;
+            let subscription = subscribers
+                .get_mut(&peer_id)
+                .ok_or_else(|| "subscribe to inspections before reporting changes".to_string())?;
+            if generation <= subscription.generation {
+                return Ok(());
+            }
+            subscription.generation = generation;
+            drop(subscribers);
+        }
+        let change = SemanticChange {
+            peer_id,
+            generation,
+        };
+        if let Ok(mut watchers) = self.watchers.lock() {
+            watchers.retain(|watcher| watcher.send(change.clone()).is_ok());
+        }
+        Ok(())
+    }
+
+    fn watch(&self) -> std::sync::mpsc::Receiver<SemanticChange> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Ok(mut watchers) = self.watchers.lock() {
+            watchers.push(tx);
+        }
+        rx
+    }
+
+    fn keep_detached(&self, job: InspectionJob) -> u64 {
+        let id = job.id;
+        if let Ok(mut detached) = self.detached.lock() {
+            while detached.len() >= MAX_DETACHED_INSPECTIONS {
+                detached.pop_front();
+            }
+            detached.push_back(job);
+        }
+        id
+    }
+
+    fn detached_answer(&self, id: u64) -> Result<Option<InspectReply>, String> {
+        let mut detached = self
+            .detached
+            .lock()
+            .map_err(|_| "inspection registry unavailable".to_string())?;
+        let index = detached
+            .iter()
+            .position(|job| job.id == id)
+            .ok_or_else(|| format!("no inspection {id} is outstanding"))?;
+        let answer = detached.get(index).and_then(InspectionJob::try_answer);
+        if answer.is_some() {
+            detached.remove(index);
+        }
+        drop(detached);
+        answer.transpose()
     }
 
     /// Forget `peer_id`: its stream closes and whatever it was asked fails.
@@ -202,6 +301,8 @@ impl InspectionRegistry {
                         app_id: subscription.route.app_id.clone(),
                         room: subscription.route.cluster_id.clone(),
                         record: subscription.route.record_id.clone(),
+                        launch: subscription.launch,
+                        semantic_generation: subscription.generation,
                     })
                     .collect::<Vec<_>>()
             })
@@ -215,6 +316,54 @@ impl CapnpBrokerState {
     /// Every application connection that currently answers inspection.
     pub fn inspectable_apps(&self) -> Vec<InspectableApp> {
         self.inspections.apps()
+    }
+
+    /// The application connection that answers for the window `surface_id`:
+    /// the one descended from the same supervised launch. When a launch
+    /// holds several connections (a document route and a room index), the
+    /// one that has reported semantic changes speaks for its tree, then the
+    /// earliest.
+    pub fn inspectable_app_for_surface(&self, surface_id: u64) -> Option<InspectableApp> {
+        let launch = crate::shell::launcher::launch_instance_for_surface(surface_id)?;
+        self.inspections
+            .apps()
+            .into_iter()
+            .filter(|app| app.launch == Some(launch))
+            .min_by_key(|app| (app.semantic_generation == 0, app.peer_id))
+    }
+
+    /// Every later report of a semantic tree change, from any application.
+    /// The receiver is dropped from the watch list once it hangs up.
+    pub fn watch_semantic_changes(&self) -> std::sync::mpsc::Receiver<SemanticChange> {
+        self.inspections.watch()
+    }
+
+    /// Start an inspection whose answer is collected later with
+    /// [`inspection_answer`](Self::inspection_answer), for a caller that
+    /// must not block (the control socket, a frame loop).
+    ///
+    /// # Errors
+    ///
+    /// As [`start_inspection`](Self::start_inspection).
+    pub fn start_detached_inspection(
+        &self,
+        peer_id: u64,
+        query: InspectQuery,
+        caller: &InspectCaller,
+    ) -> Result<u64, String> {
+        let job = self.start_inspection(peer_id, query, caller)?;
+        Ok(self.inspections.keep_detached(job))
+    }
+
+    /// The answer to detached inspection `id`: `None` while the application
+    /// has not answered. Once returned, the answer is forgotten.
+    ///
+    /// # Errors
+    ///
+    /// When `id` is unknown or already collected, or the application refused
+    /// or disconnected.
+    pub fn inspection_answer(&self, id: u64) -> Result<Option<InspectReply>, String> {
+        self.inspections.detached_answer(id)
     }
 
     /// Ask application connection `peer_id` what its semantic tree holds.
@@ -313,5 +462,119 @@ impl inspection_stream::Server for InspectionStreamServer {
             result.set_request_json(&envelope.request_json);
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::launcher::LaunchInstance;
+
+    fn route(record: &str) -> CrdtRoute {
+        CrdtRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "room".into(),
+            record_id: record.into(),
+        }
+    }
+
+    #[test]
+    fn a_window_resolves_to_the_connection_of_its_own_launch() {
+        let broker = CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let state = broker.state();
+        let launch = LaunchInstance {
+            pid: 4_000_001,
+            start_time: 77,
+        };
+        let other = LaunchInstance {
+            pid: 4_000_002,
+            start_time: 78,
+        };
+        let _index = state
+            .inspections
+            .subscribe(10, route("room-index"), Some(launch))
+            .expect("subscribe");
+        let _document = state
+            .inspections
+            .subscribe(11, route("doc"), Some(launch))
+            .expect("subscribe");
+        let _stranger = state
+            .inspections
+            .subscribe(12, route("doc"), Some(other))
+            .expect("subscribe");
+        let _unlaunched = state
+            .inspections
+            .subscribe(13, route("doc"), None)
+            .expect("subscribe");
+        crate::shell::launcher::attribute_surface_instance(900_001, launch);
+        assert_eq!(
+            state
+                .inspectable_app_for_surface(900_001)
+                .map(|app| app.peer_id),
+            Some(10),
+            "the launch's earliest connection answers until one reports changes"
+        );
+        state.inspections.report_change(11, 1).expect("report");
+        assert_eq!(
+            state
+                .inspectable_app_for_surface(900_001)
+                .map(|app| app.peer_id),
+            Some(11),
+            "the connection that describes its tree speaks for the window"
+        );
+        assert_eq!(state.inspectable_app_for_surface(900_404), None);
+        crate::shell::launcher::forget_surface_launch(900_001);
+        assert_eq!(state.inspectable_app_for_surface(900_001), None);
+    }
+
+    #[test]
+    fn semantic_changes_reach_watchers_once_per_advancing_generation() {
+        let broker = CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let state = broker.state();
+        let watcher = state.watch_semantic_changes();
+        assert!(
+            state.inspections.report_change(5, 1).is_err(),
+            "a connection reports only after it answers inspection"
+        );
+        let _stream = state
+            .inspections
+            .subscribe(5, route("doc"), None)
+            .expect("subscribe");
+        state.inspections.report_change(5, 1).expect("report");
+        state
+            .inspections
+            .report_change(5, 1)
+            .expect("replayed report");
+        state.inspections.report_change(5, 3).expect("report");
+        let changes: Vec<_> = watcher.try_iter().collect();
+        assert_eq!(
+            changes,
+            [
+                SemanticChange {
+                    peer_id: 5,
+                    generation: 1
+                },
+                SemanticChange {
+                    peer_id: 5,
+                    generation: 3
+                },
+            ]
+        );
+        assert_eq!(state.inspectable_apps()[0].semantic_generation, 3);
+    }
+
+    #[test]
+    fn a_detached_inspection_is_answered_later_and_collected_once() {
+        let broker = CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let state = broker.state();
+        let (tx, reply) = std::sync::mpsc::channel();
+        let id = state
+            .inspections
+            .keep_detached(InspectionJob { id: 42, reply });
+        assert_eq!(id, 42);
+        assert_eq!(state.inspection_answer(42), Ok(None), "pending");
+        tx.send(Ok(InspectReply::empty())).expect("answer");
+        assert_eq!(state.inspection_answer(42), Ok(Some(InspectReply::empty())));
+        assert!(state.inspection_answer(42).is_err(), "collected once");
     }
 }

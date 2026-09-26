@@ -122,6 +122,7 @@ pub fn history_context(action: &BrowserAction) -> ActionContext {
         id,
         kind: kind.into(),
         label: resource_label,
+        sensitivity: tilo_actions::Sensitivity::Public,
     });
     context
 }

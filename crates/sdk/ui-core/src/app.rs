@@ -1522,6 +1522,7 @@ impl App {
             address: tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
+            resource_sensitivity: resource.sensitivity,
             action_label: action.label.clone(),
             description: action.description.clone(),
             locus: action.locus,

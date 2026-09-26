@@ -1071,7 +1071,10 @@ fn best_field_in_direction(
 
 /// Build a single form field input seeded with `value`.
 fn field(slot: Slot, value: &str) -> FieldInput {
-    let mut input = TextInput::local().with_initial_value(value);
+    // Every field of a contact is about that person.
+    let mut input = TextInput::local()
+        .with_initial_value(value)
+        .with_sensitivity(ui::a11y::Sensitivity::Personal);
     input.set_multiline(slot == Slot::Notes);
     FieldInput { slot, ti: input }
 }
@@ -2372,7 +2375,9 @@ impl ContactsApp {
                 .iter()
                 .map(|f| FieldInput {
                     slot: f.slot,
-                    ti: TextInput::local().with_initial_value(f.ti.value()),
+                    ti: TextInput::local()
+                        .with_initial_value(f.ti.value())
+                        .with_sensitivity(ui::a11y::Sensitivity::Personal),
                 })
                 .collect(),
         };

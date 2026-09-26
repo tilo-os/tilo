@@ -129,6 +129,9 @@ pub struct ActionDescriptor {
     pub resource_kind: String,
     /// The resource's human label, as the app words it.
     pub resource_label: String,
+    /// How far [`resource_label`](Self::resource_label) may travel.
+    #[serde(default)]
+    pub resource_sensitivity: crate::Sensitivity,
     pub action_label: String,
     pub description: Option<String>,
     pub locus: ExecutionLocus,
@@ -142,6 +145,19 @@ pub struct ActionDescriptor {
     /// unrelated local view operations carry `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<ResourceViewDescriptor>,
+}
+
+impl ActionDescriptor {
+    /// This descriptor as `audience` may receive it: the resource label is
+    /// redacted by its declared sensitivity.
+    #[must_use]
+    pub fn redacted_for(mut self, audience: crate::Audience) -> Self {
+        self.resource_label = self
+            .resource_sensitivity
+            .present(&self.resource_label, audience)
+            .unwrap_or_default();
+        self
+    }
 }
 
 /// Serializable data describing one explicitly declared resource view.
@@ -271,6 +287,7 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
             address: ActionAddress::new(resource.id.as_str(), &action.id),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
+            resource_sensitivity: resource.sensitivity,
             action_label: action.label.clone(),
             description: action.description.clone(),
             locus: action.locus,
@@ -638,7 +655,8 @@ fn dispatch_encoded_with_context(
         resource.id.as_str(),
         &resource.kind,
         &resource.label,
-    );
+    )
+    .with_resource_sensitivity(resource.sensitivity);
     if let Some(ambient) = provenance.ambient {
         context = context.enriched_by(ambient);
     }

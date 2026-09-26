@@ -493,6 +493,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::FetchScrollback { .. }
         | CollabRequest::OpenWorkspaceControl { .. }
         | CollabRequest::CloseWorkspaceControl { .. }
+        | CollabRequest::ReportSemanticChange { .. }
         | CollabRequest::RequestDocumentSnapshot => {}
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
         CollabRequest::PublishActions { app_id, actions } => {
@@ -3384,6 +3385,7 @@ fn write_directory_descriptor(
     out.set_action(&descriptor.action);
     out.set_resource_kind(&descriptor.resource_kind);
     out.set_resource_label(&descriptor.resource_label);
+    out.set_resource_sensitivity(&descriptor.resource_sensitivity);
     out.set_action_label(&descriptor.action_label);
     out.set_description(descriptor.description.as_deref().unwrap_or(""));
     out.set_operation_kind(&descriptor.operation_kind);
@@ -3413,6 +3415,7 @@ fn write_directory_row(
     out.set_resource(&row.resource);
     out.set_resource_kind(&row.resource_kind);
     out.set_resource_label(&row.resource_label);
+    out.set_resource_sensitivity(&row.resource_sensitivity);
     out.set_resource_presentation_json(&row.resource_presentation_json);
     out.set_action(row.action.as_deref().unwrap_or(""));
     out.set_has_children(row.has_children);
@@ -3725,6 +3728,7 @@ async fn dispatch_sdk_request(
                     action: action.action,
                     resource_kind: action.resource_kind,
                     resource_label: action.resource_label,
+                    resource_sensitivity: action.resource_sensitivity.as_wire().to_owned(),
                     action_label: action.action_label,
                     description: action.description,
                     operation_kind: action.operation_kind,
@@ -3886,6 +3890,11 @@ async fn dispatch_sdk_request(
             }
             Err(error) => tracing::warn!(%error, id, "collab: encoding an inspection failed"),
         },
+        CollabRequest::ReportSemanticChange { generation } => {
+            if let Err(error) = route.channel.report_semantic_change(generation).await {
+                tracing::debug!(%error, generation, "collab: reporting a semantic change failed");
+            }
+        }
         CollabRequest::UpdateInvocation { id, update } => match serde_json::to_string(&update) {
             Ok(json) => {
                 if let Err(error) = route.channel.update_invocation(id, &json).await {

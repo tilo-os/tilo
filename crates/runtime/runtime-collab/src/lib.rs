@@ -1224,6 +1224,7 @@ impl ChannelHandle {
                 row.set_action(&a.action);
                 row.set_resource_kind(&a.resource_kind);
                 row.set_resource_label(&a.resource_label);
+                row.set_resource_sensitivity(&a.resource_sensitivity);
                 row.set_action_label(&a.action_label);
                 row.set_description(a.description.as_deref().unwrap_or(""));
                 row.set_operation_kind(&a.operation_kind);
@@ -1339,6 +1340,19 @@ impl ChannelHandle {
             b.set_id(id);
             b.set_reply_json(reply_json);
         }
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Report that this application's semantic tree changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or refuses the report.
+    pub async fn report_semantic_change(&self, generation: u64) -> Result<(), NotAvailable> {
+        let mut req = self.inner.report_semantic_change_request();
+        req.get().set_generation(generation);
         req.send().promise.await?;
         Ok(())
     }
@@ -1863,6 +1877,9 @@ pub struct ExportedAction {
     pub action: String,
     pub resource_kind: String,
     pub resource_label: String,
+    /// How far `resource_label` may travel, in `tilo_actions::Sensitivity`'s
+    /// wire spelling. Empty means public.
+    pub resource_sensitivity: String,
     pub action_label: String,
     pub description: Option<String>,
     /// `document`, `effect`, or `view`.
@@ -1907,6 +1924,8 @@ pub struct ActionDirectoryRow {
     /// shape without parsing raw resource identifiers.
     pub resource_kind: String,
     pub resource_label: String,
+    /// As [`ExportedAction::resource_sensitivity`].
+    pub resource_sensitivity: String,
     pub resource_presentation_json: String,
     pub action: Option<String>,
     pub descriptor: Option<ExportedAction>,
@@ -1988,6 +2007,7 @@ fn decode_exported_action(
         action: capnp_text(row.get_action()?)?,
         resource_kind: capnp_text(row.get_resource_kind()?)?,
         resource_label: capnp_text(row.get_resource_label()?)?,
+        resource_sensitivity: capnp_text(row.get_resource_sensitivity()?)?,
         action_label: capnp_text(row.get_action_label()?)?,
         description: (!description.is_empty()).then_some(description),
         operation_kind: capnp_text(row.get_operation_kind()?)?,
@@ -2015,6 +2035,7 @@ fn decode_action_directory_row(
         resource: capnp_text(row.get_resource()?)?,
         resource_kind: capnp_text(row.get_resource_kind()?)?,
         resource_label: capnp_text(row.get_resource_label()?)?,
+        resource_sensitivity: capnp_text(row.get_resource_sensitivity()?)?,
         resource_presentation_json: capnp_text(row.get_resource_presentation_json()?)?,
         action: (!action.is_empty()).then_some(action),
         descriptor,

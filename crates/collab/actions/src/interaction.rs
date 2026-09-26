@@ -295,6 +295,14 @@ pub struct SemanticInteraction {
 pub type InteractionUpdate = SemanticInteraction;
 
 impl SemanticInteraction {
+    /// This interaction as `audience` may receive it: the resource label is
+    /// redacted by its declared sensitivity.
+    #[must_use]
+    pub fn redacted_for(mut self, audience: crate::Audience) -> Self {
+        self.resource = self.resource.redacted_for(audience);
+        self
+    }
+
     /// Replace attribution with the identity authenticated by the broker.
     ///
     /// `actor` in decoded application/agent input is an untrusted claim. A
@@ -522,6 +530,7 @@ mod tests {
                 id: "sheets.sheet:budget".into(),
                 kind: "sheets.sheet".into(),
                 label: "Budget".into(),
+                sensitivity: crate::Sensitivity::Public,
             },
             anchor,
             group: Some(ActionGroup {

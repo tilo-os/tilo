@@ -88,6 +88,7 @@ pub fn interaction() -> (
             id: "mail.draft:1".into(),
             kind: "mail.draft".into(),
             label: "Draft".into(),
+            sensitivity: tilo_actions::Sensitivity::Public,
         },
         anchor: tilo_actions::InteractionAnchor::Resource,
         group: None,

@@ -752,7 +752,8 @@ pub(crate) fn message_resource(message: &MessageRow) -> Resource {
         format!("mail.message:{}", message.id),
         "mail.message",
         message_label(message),
-    );
+    )
+    .with_sensitivity(tilo_actions::Sensitivity::Personal);
     resource = resource.with_action(view_spec(
         "open",
         "Open message",
@@ -877,6 +878,7 @@ fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRo
             ui::format::bytes(attachment.size)
         ),
     )
+    .with_sensitivity(tilo_actions::Sensitivity::Personal)
     .with_action(if attachment.downloadable {
         save
     } else {
@@ -1055,6 +1057,7 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
                         label.clone()
                     },
                 )
+                .with_sensitivity(tilo_actions::Sensitivity::Personal)
                 .with_action(view_spec(
                     "open",
                     "Open account",
@@ -1097,6 +1100,7 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
                             thread_subject
                         },
                     )
+                    .with_sensitivity(tilo_actions::Sensitivity::Personal)
                     .with_children(messages.into_iter().map(message_resource)),
                 );
             }
@@ -1231,6 +1235,7 @@ impl ResourceProvider for crate::app::MailApp {
                         subject
                     },
                 )
+                .with_sensitivity(tilo_actions::Sensitivity::Personal)
                 .with_children(messages.iter().map(message_resource)),
             );
         }

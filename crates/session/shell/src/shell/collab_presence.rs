@@ -28,9 +28,17 @@ pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPrese
         PresencePayload::Following { target } => PeerPresencePayload::Following {
             target: target.clone(),
         },
-        PresencePayload::Interaction(update) => {
-            PeerPresencePayload::InteractionJson(serde_json::to_string(update).ok()?)
-        }
+        // Presence frames leave this device, so the resource label travels as
+        // its declared sensitivity allows.
+        PresencePayload::Interaction(update) => PeerPresencePayload::InteractionJson(
+            serde_json::to_string(
+                &update
+                    .as_ref()
+                    .clone()
+                    .redacted_for(tilo_actions::Audience::BeyondDevice),
+            )
+            .ok()?,
+        ),
         PresencePayload::Status { text, automatic } => PeerPresencePayload::Status {
             text: text.clone(),
             automatic: *automatic,
@@ -109,6 +117,7 @@ mod tests {
                     id: "file:draft".into(),
                     kind: "files.entry".into(),
                     label: "Draft.md".into(),
+                    sensitivity: tilo_actions::Sensitivity::Public,
                 },
                 anchor: tilo_actions::InteractionAnchor::ListItems {
                     ids: vec!["file:draft".into()],
@@ -126,6 +135,53 @@ mod tests {
             let decoded = PeerPresence::from_bytes(&bytes).expect("decode canonical peer bytes");
             assert_eq!(from_peer(decoded), Some((key.clone(), payload)));
         }
+    }
+
+    #[test]
+    fn a_personal_resource_label_leaves_the_device_as_a_placeholder() {
+        let key = PresenceKey::surface_pointer("contacts/list");
+        let interaction = tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(9)),
+            sequence: 1,
+            actor: tilo_actions::InteractionActor {
+                id: "ada".into(),
+                kind: tilo_actions::InteractionActorKind::Person,
+            },
+            phase: tilo_actions::InteractionPhase::Committed,
+            action: tilo_actions::InteractionAction {
+                id: "rename".into(),
+                label: "Rename".into(),
+                app: None,
+            },
+            resource: tilo_actions::ActionResource {
+                id: "contacts.person:1".into(),
+                kind: "contacts.person".into(),
+                label: "Grace Hopper".into(),
+                sensitivity: tilo_actions::Sensitivity::Personal,
+            },
+            anchor: tilo_actions::InteractionAnchor::ListItems {
+                ids: vec!["contacts.person:1".into()],
+            },
+            group: None,
+        };
+        let wire = to_peer(&key, &PresencePayload::Interaction(Box::new(interaction)))
+            .expect("encode typed presence");
+        let bytes = wire.to_bytes().expect("canonical peer bytes");
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("Grace"),
+            "a personal label must not leave the device"
+        );
+        let Some((_, PresencePayload::Interaction(update))) =
+            from_peer(PeerPresence::from_bytes(&bytes).expect("decode"))
+        else {
+            panic!("interaction survives the boundary");
+        };
+        assert_eq!(update.resource.label, "▮▮▮▮▮ ▮▮▮▮▮▮");
+        assert_eq!(
+            update.resource.id, "contacts.person:1",
+            "the address is kept"
+        );
     }
 
     #[test]

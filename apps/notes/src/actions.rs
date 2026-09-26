@@ -618,6 +618,7 @@ pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
         id: resource_id,
         kind: kind.to_string(),
         label: title,
+        sensitivity: tilo_actions::Sensitivity::Public,
     });
     context
 }

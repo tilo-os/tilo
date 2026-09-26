@@ -105,7 +105,7 @@ enum Command {
     InspectApps,
     /// Read one app's semantic tree through the broker.
     Inspect {
-        peer: u64,
+        target: InspectTarget,
         query: serde_json::Value,
         local: bool,
     },
@@ -544,6 +544,18 @@ fn parse_feedback_start<'a>(
     ))
 }
 
+/// The app an `inspect` names: a broker connection, or one of its windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InspectTarget {
+    Peer(u64),
+    Surface(u64),
+}
+
+/// How long the CLI waits for an app to answer, polling the compositor
+/// (which itself never waits).
+const INSPECT_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
+const INSPECT_POLL: std::time::Duration = std::time::Duration::from_millis(40);
+
 const INSPECT_USAGE: &str = "inspect requires `apps`, `at PEER X Y`, `node PEER ID` or \
      `tree PEER [--root ID] [--depth N]` (try --help)";
 
@@ -566,9 +578,13 @@ fn parse_inspect_command<'a>(
             "inspect {verb} requires the PEER id of an app connection (list them with `inspect apps`)"
         ))
     })?;
-    let peer = peer_raw.parse::<u64>().map_err(|_| {
+    let target = match peer_raw.strip_prefix("surface:") {
+        Some(surface) => surface.parse::<u64>().map(InspectTarget::Surface),
+        None => peer_raw.parse::<u64>().map(InspectTarget::Peer),
+    }
+    .map_err(|_| {
         ParseError::Usage(format!(
-            "inspect {verb}: `{peer_raw}` is not a PEER id (list them with `inspect apps`)"
+            "inspect {verb}: `{peer_raw}` is not a PEER id or surface:ID (list peers with `inspect apps`)"
         ))
     })?;
     let mut positional: Vec<&String> = Vec::new();
@@ -629,7 +645,11 @@ fn parse_inspect_command<'a>(
         }
         _ => return Err(ParseError::Usage(INSPECT_USAGE.to_string())),
     };
-    Ok(Command::Inspect { peer, query, local })
+    Ok(Command::Inspect {
+        target,
+        query,
+        local,
+    })
 }
 
 /// Pull the next argv slot and parse it as `f64`. Helper for the
@@ -742,8 +762,16 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         }
         Command::Community { wire } => wire.clone(),
         Command::InspectApps => json!({ "op": "inspect_apps" }),
-        Command::Inspect { peer, query, local } => {
-            json!({ "op": "inspect", "peer": peer, "query": query, "local": local })
+        Command::Inspect {
+            target,
+            query,
+            local,
+        } => {
+            let (peer, surface) = match target {
+                InspectTarget::Peer(peer) => (Some(*peer), None),
+                InspectTarget::Surface(surface) => (None, Some(*surface)),
+            };
+            json!({ "op": "inspect", "peer": peer, "surface": surface, "query": query, "local": local })
         }
         Command::Raw { json } => {
             // Validate here: a `parse_error` from the compositor can't tell
@@ -776,6 +804,46 @@ fn round_trip(stream: &mut UnixStream, cmd_json: &str) -> std::io::Result<serde_
     reader.read_line(&mut response)?;
     serde_json::from_str(response.trim())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// Poll the compositor for the answer to the inspection `started` names,
+/// returning the final response envelope.
+fn await_inspection(
+    socket: &PathBuf,
+    started: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let Some(inspection) = started
+        .get("answer")
+        .and_then(|answer| answer.get("inspection"))
+        .and_then(serde_json::Value::as_u64)
+    else {
+        // A refusal: print it as it came.
+        return Ok(started);
+    };
+    let deadline = std::time::Instant::now()
+        .checked_add(INSPECT_WAIT)
+        .ok_or("the inspection deadline does not fit the clock")?;
+    let request = json!({ "op": "inspect_answer", "inspection": inspection }).to_string();
+    loop {
+        let mut stream = connect(socket).map_err(|error| format!("connect: {error}"))?;
+        let response =
+            round_trip(&mut stream, &request).map_err(|error| format!("round-trip: {error}"))?;
+        let pending = response
+            .get("answer")
+            .and_then(|answer| answer.get("pending"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if !pending {
+            return Ok(response);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "the application did not answer inspection {inspection} within {} s",
+                INSPECT_WAIT.as_secs()
+            ));
+        }
+        std::thread::sleep(INSPECT_POLL);
+    }
 }
 
 /// Print the compositor's response in the format each subcommand
@@ -1000,6 +1068,8 @@ fn print_usage() {
          \x20 public-room status ROOM       a room's channel class and your role in it\n\
          \x20 inspect apps                  list app connections that answer inspection\n\
          \x20                               (PEER id, app id, room, record)\n\
+         \x20                               PEER below may also be surface:ID, a window's surface\n\
+         \x20                               id, to inspect the app behind that window\n\
          \x20 inspect at PEER X Y [--local] the semantic node under X,Y (that app's surface\n\
          \x20                               coordinates, logical px) and its path from the root\n\
          \x20 inspect node PEER ID [--local]\n\
@@ -1086,6 +1156,20 @@ fn main() -> ExitCode {
             eprintln!("tilo-control: socket round-trip: {e}");
             return ExitCode::from(2);
         }
+    };
+
+    // The compositor answers an inspection at once with its id; the app's
+    // answer is collected here, so the compositor never waits on an app.
+    let response = if matches!(invocation.command, Command::Inspect { .. }) {
+        match await_inspection(&socket, response) {
+            Ok(response) => response,
+            Err(message) => {
+                eprintln!("tilo-control: {message}");
+                return ExitCode::from(1);
+            }
+        }
+    } else {
+        response
     };
 
     let code = print_response(&invocation.command, &response);
@@ -1353,6 +1437,10 @@ mod tests {
         let at = wire(&["inspect", "at", "7", "12.5", "40"]);
         assert_eq!(at["op"], "inspect");
         assert_eq!(at["peer"], 7);
+        assert!(at["surface"].is_null());
+        let window = wire(&["inspect", "tree", "surface:12"]);
+        assert_eq!(window["surface"], 12);
+        assert!(window["peer"].is_null());
         assert_eq!(at["local"], false);
         let query: ui::inspect::InspectQuery = serde_json::from_value(at["query"].clone()).unwrap();
         assert_eq!(query, ui::inspect::InspectQuery::At { x: 12.5, y: 40.0 });

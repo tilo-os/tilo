@@ -543,6 +543,15 @@ impl App {
                         );
                     }
                 }
+                CollabEvent::Inspection { id, request } => {
+                    let reply = self.inspect(&request);
+                    if let Some(manager) = self.collaboration.room_manager.as_mut() {
+                        manager.send(crate::collaboration::CollabRequest::CompleteInspection {
+                            id,
+                            reply: Box::new(reply),
+                        });
+                    }
+                }
                 CollabEvent::DocumentSnapshotRequested { .. } => {
                     if let (Some(manager), Some(room)) = (
                         self.collaboration.room_manager.as_mut(),
@@ -581,6 +590,10 @@ impl App {
         }
         let (drained, action_surface_may_have_changed) = self.drain_collab_presence_events();
         any |= drained;
+        if drained {
+            self.mark_semantics_dirty();
+        }
+        self.report_semantic_change();
         any |= self.observe_collaboration_state();
         if any {
             self.invalidate_widget_resource_cache();

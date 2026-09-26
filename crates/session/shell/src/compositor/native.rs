@@ -1667,35 +1667,48 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "app_id": app.app_id,
                     "room": app.room,
                     "record": app.record,
+                    "launch_pid": app.launch.map(|launch| launch.pid),
+                    "semantic_generation": app.semantic_generation,
                 })
             })
             .collect();
         Ok(serde_json::json!({ "apps": apps }))
     }
 
-    /// Inspect through the broker as the local person of the app's room.
-    /// Blocks this control command, never the app, for at most the broker's
-    /// inspection timeout.
-    fn inspect(
+    /// Start an inspection through the broker as the local person of the
+    /// app's room. Never waits: the app answers on its own time and the
+    /// caller collects it with [`inspection_answer`](Self::inspection_answer).
+    fn start_inspection(
         &self,
-        peer: u64,
+        target: test_control::InspectTarget,
         query: &ui::inspect::InspectQuery,
         local: bool,
     ) -> Result<serde_json::Value, String> {
-        use crate::shell::collab_broker_capnp::{INSPECTION_TIMEOUT, InspectCaller};
+        use crate::shell::collab_broker_capnp::InspectCaller;
         let broker = self
             .fb
             .host()
             .app_action_broker()
             .cloned()
             .ok_or_else(|| "this session has no application broker".to_string())?;
-        let app = broker
-            .inspectable_apps()
-            .into_iter()
-            .find(|app| app.peer_id == peer)
-            .ok_or_else(|| {
-                format!("no application connection {peer} answers inspection (see `inspect apps`)")
-            })?;
+        let app = match target {
+            test_control::InspectTarget::Peer(peer) => broker
+                .inspectable_apps()
+                .into_iter()
+                .find(|app| app.peer_id == peer)
+                .ok_or_else(|| {
+                    format!(
+                        "no application connection {peer} answers inspection (see `inspect apps`)"
+                    )
+                })?,
+            test_control::InspectTarget::Surface(surface) => broker
+                .inspectable_app_for_surface(surface)
+                .ok_or_else(|| {
+                    format!(
+                        "no application connection answers for window {surface}: the shell did not launch it, or it does not answer inspection"
+                    )
+                })?,
+        };
         let person = {
             let chrome = self.fb.chrome();
             let tree_handle = chrome.tree_handle();
@@ -1713,10 +1726,25 @@ impl ControlState for FrameBuilderControlState<'_> {
         } else {
             ui::a11y::Audience::BeyondDevice
         };
-        let reply = broker
-            .inspect(peer, query.clone(), &InspectCaller { person, audience })?
-            .wait(INSPECTION_TIMEOUT)?;
-        serde_json::to_value(reply).map_err(|error| error.to_string())
+        let inspection = broker.start_inspection(
+            app.peer_id,
+            query.clone(),
+            &InspectCaller { person, audience },
+        )?;
+        Ok(serde_json::json!({ "inspection": inspection, "peer": app.peer_id }))
+    }
+
+    fn inspection_answer(&self, inspection: u64) -> Result<serde_json::Value, String> {
+        let broker = self
+            .fb
+            .host()
+            .app_action_broker()
+            .cloned()
+            .ok_or_else(|| "this session has no application broker".to_string())?;
+        match broker.inspection_answer(inspection)? {
+            Some(reply) => serde_json::to_value(reply).map_err(|error| error.to_string()),
+            None => Ok(serde_json::json!({ "pending": true })),
+        }
     }
 
     /// Enumerate the exported action surface through the *same* provider
@@ -10413,6 +10441,7 @@ mod tests {
                     kind: "calculator.graph".into(),
                     label: "A presentation label without routing metadata".into(),
                     presentation: None,
+                    sensitivity: tilo_actions::Sensitivity::Public,
                 },
                 action: Some(tilo_actions::ActionDescriptor {
                     address: tilo_actions::ActionAddress::new(
@@ -10421,6 +10450,7 @@ mod tests {
                     ),
                     resource_kind: "calculator.graph".into(),
                     resource_label: "A presentation label without routing metadata".into(),
+                    resource_sensitivity: tilo_actions::Sensitivity::Public,
                     action_label: "Hide".into(),
                     description: Some("Do not infer identity from this text".into()),
                     locus: tilo_actions::ExecutionLocus::default(),

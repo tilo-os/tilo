@@ -340,15 +340,18 @@ pub struct ComposeWindow {
 
 impl ComposeWindow {
     pub fn new(format: ComposeFormat) -> Self {
+        // Recipients, subject and body are all about people.
         let mk = || {
-            let mut t = TextInput::local();
+            let mut t = TextInput::local().with_sensitivity(ui::a11y::Sensitivity::Personal);
             t.set_plain_chrome(true);
             t
         };
         // The recipients hint belongs to the shared field so it shares the
         // typed text's font, gutter and centre line (the header used to paint
         // its own placeholder over the box at a fixed offset).
-        let mut to = TextInput::local().with_placeholder("mail-compose-placeholder-to");
+        let mut to = TextInput::local()
+            .with_placeholder("mail-compose-placeholder-to")
+            .with_sensitivity(ui::a11y::Sensitivity::Personal);
         to.set_plain_chrome(true);
         Self {
             open: false,
@@ -366,7 +369,8 @@ impl ComposeWindow {
             plain_body: {
                 let mut b = TextInput::local()
                     .multiline(true)
-                    .with_placeholder("Write your message…");
+                    .with_placeholder("Write your message…")
+                    .with_sensitivity(ui::a11y::Sensitivity::Personal);
                 b.set_plain_chrome(true); // the body area draws its own card
                 b
             },

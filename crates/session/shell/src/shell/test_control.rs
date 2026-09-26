@@ -194,12 +194,28 @@ pub enum Command {
     /// Read one application's semantic tree through the collaboration broker: the node at a point of that app's surface, a node by stable semantic id, or a bounded subtree. The same read the pick mode and the session recorder make; the broker checks the local person may read the app's room.
     ///
     /// Without `local`, the answer is redacted as for anything leaving the device (personal content becomes a same-length placeholder). With it, personal content is shown as this session sees it. A secret is never included.
+    ///
+    /// Names the app either by broker `peer` or by the `surface` id of one of its windows. Never waits for the app: the reply carries an `inspection` id to collect with [`Command::InspectAnswer`].
     Inspect {
-        peer: u64,
+        #[serde(default)]
+        peer: Option<u64>,
+        #[serde(default)]
+        surface: Option<u64>,
         query: ui::inspect::InspectQuery,
         #[serde(default)]
         local: bool,
     },
+    /// Collect the answer to an [`Command::Inspect`]: `{"pending": true}` until the app answers, then the answer itself (once).
+    InspectAnswer { inspection: u64 },
+}
+
+/// Which application an inspection addresses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InspectTarget {
+    /// A broker application connection, as `inspect apps` lists it.
+    Peer(u64),
+    /// The app behind one of its windows, by the window's surface id.
+    Surface(u64),
 }
 
 /// Top-level response envelope: an `ok` payload (per-command shape) or a structured `err`.
@@ -347,18 +363,28 @@ pub trait ControlState {
         Err("no application broker on this control state".to_string())
     }
 
-    /// Ask application connection `peer` what its semantic tree holds.
+    /// Start asking an application what its semantic tree holds, without
+    /// waiting for the answer.
     ///
     /// # Errors
     ///
-    /// When there is no broker, the connection does not answer inspection,
-    /// the local person may not read its room, or the app does not answer.
-    fn inspect(
+    /// When there is no broker, nothing answers for `target`, or the local
+    /// person may not read its room.
+    fn start_inspection(
         &self,
-        _peer: u64,
+        _target: InspectTarget,
         _query: &ui::inspect::InspectQuery,
         _local: bool,
     ) -> Result<serde_json::Value, String> {
+        Err("no application broker on this control state".to_string())
+    }
+
+    /// The answer to a started inspection, or `{"pending": true}`.
+    ///
+    /// # Errors
+    ///
+    /// When the id is unknown, or the application refused or disconnected.
+    fn inspection_answer(&self, _inspection: u64) -> Result<serde_json::Value, String> {
         Err("no application broker on this control state".to_string())
     }
 
@@ -693,8 +719,30 @@ pub fn dispatch_command<S: ControlState>(
             answer_or_err(state.inspectable_apps(), "inspect_failed"),
             Vec::new(),
         ),
-        Command::Inspect { peer, query, local } => (
-            answer_or_err(state.inspect(*peer, query, *local), "inspect_failed"),
+        Command::Inspect {
+            peer,
+            surface,
+            query,
+            local,
+        } => (
+            match (peer, surface) {
+                (Some(peer), None) => answer_or_err(
+                    state.start_inspection(InspectTarget::Peer(*peer), query, *local),
+                    "inspect_failed",
+                ),
+                (None, Some(surface)) => answer_or_err(
+                    state.start_inspection(InspectTarget::Surface(*surface), query, *local),
+                    "inspect_failed",
+                ),
+                _ => Response::Err {
+                    code: "invalid_arguments".into(),
+                    message: "inspect names exactly one of `peer` or `surface`".into(),
+                },
+            },
+            Vec::new(),
+        ),
+        Command::InspectAnswer { inspection } => (
+            answer_or_err(state.inspection_answer(*inspection), "inspect_failed"),
             Vec::new(),
         ),
     }

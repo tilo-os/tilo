@@ -92,9 +92,30 @@ impl ActionContext {
                 id: id.into(),
                 kind: kind.into(),
                 label: label.into(),
+                sensitivity: crate::Sensitivity::Public,
             }),
             ..Self::default()
         }
+    }
+
+    /// Declare how far the resource's label may travel, from the published
+    /// resource's own declaration.
+    #[must_use]
+    pub fn with_resource_sensitivity(mut self, sensitivity: crate::Sensitivity) -> Self {
+        if let Some(resource) = &mut self.resource {
+            resource.sensitivity = sensitivity;
+        }
+        self
+    }
+
+    /// This context as `audience` may receive it: the resource label is
+    /// redacted by its declared sensitivity.
+    #[must_use]
+    pub fn redacted_for(mut self, audience: crate::Audience) -> Self {
+        self.resource = self
+            .resource
+            .map(|resource| resource.redacted_for(audience));
+        self
     }
 
     #[must_use]
@@ -261,6 +282,26 @@ pub struct ActionResource {
     pub id: String,
     pub kind: String,
     pub label: String,
+    /// How far [`label`](Self::label) may travel: the published resource's
+    /// own [`Sensitivity`](crate::Sensitivity), carried so every copy of this
+    /// context (a receipt, a presence frame, a recorded trace) can redact it
+    /// for its audience.
+    #[serde(default)]
+    pub sensitivity: crate::Sensitivity,
+}
+
+impl ActionResource {
+    /// This resource as `audience` may receive it. A secret label is empty;
+    /// the address is kept, because it names the resource rather than
+    /// describing it.
+    #[must_use]
+    pub fn redacted_for(mut self, audience: crate::Audience) -> Self {
+        self.label = self
+            .sensitivity
+            .present(&self.label, audience)
+            .unwrap_or_default();
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,6 +334,26 @@ impl ActionFacet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_context_carries_its_resource_sensitivity_and_redacts_by_it() {
+        let context = ActionContext::for_resource("Rename", "contacts.person:1", "person", "Ada")
+            .with_resource_sensitivity(crate::Sensitivity::Personal);
+        let json = serde_json::to_string(&context).unwrap();
+        let decoded: ActionContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            decoded
+                .resource
+                .as_ref()
+                .map(|resource| resource.sensitivity),
+            Some(crate::Sensitivity::Personal),
+            "the declaration survives every copy"
+        );
+        let local = decoded.clone().redacted_for(crate::Audience::LocalSession);
+        assert_eq!(local.resource.unwrap().label, "Ada");
+        let shared = decoded.redacted_for(crate::Audience::BeyondDevice);
+        assert_eq!(shared.resource.unwrap().label, "▮▮▮");
+    }
 
     #[test]
     fn change_message_round_trips_context() {

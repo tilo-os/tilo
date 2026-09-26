@@ -385,6 +385,7 @@ pub fn history_context(action: &SharedAction) -> ActionContext {
         id,
         kind: kind.into(),
         label: label.into(),
+        sensitivity: tilo_actions::Sensitivity::Public,
     });
     context
 }

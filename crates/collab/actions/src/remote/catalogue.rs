@@ -110,6 +110,27 @@ pub struct CatalogueResource {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presentation: Option<ResourcePresentation>,
+    /// How far [`label`](Self::label) and the presentation's text may travel.
+    #[serde(default)]
+    pub sensitivity: crate::Sensitivity,
+}
+
+impl CatalogueResource {
+    /// This resource as `audience` may receive it. Presentation text is
+    /// dropped rather than masked when it may not travel: it is decoration,
+    /// and a placeholder in it helps nobody.
+    #[must_use]
+    pub fn redacted_for(mut self, audience: crate::Audience) -> Self {
+        let present = |text: &str| self.sensitivity.present(text, audience);
+        self.label = present(&self.label).unwrap_or_default();
+        if self.sensitivity.is_secret()
+            || (self.sensitivity != crate::Sensitivity::Public
+                && audience == crate::Audience::BeyondDevice)
+        {
+            self.presentation = None;
+        }
+        self
+    }
 }
 
 /// One row: an action on a resource, or a resource that contains more.
@@ -136,6 +157,14 @@ pub struct CatalogueRow {
 }
 
 impl CatalogueRow {
+    /// This row as `audience` may receive it.
+    #[must_use]
+    pub fn redacted_for(mut self, audience: crate::Audience) -> Self {
+        self.resource = self.resource.redacted_for(audience);
+        self.action = self.action.map(|action| action.redacted_for(audience));
+        self
+    }
+
     /// The target that invokes this row's action.
     #[must_use]
     pub fn target(&self) -> Option<RemoteActionTarget> {
@@ -210,6 +239,18 @@ pub struct CataloguePage {
 }
 
 impl CataloguePage {
+    /// This page as `audience` may receive it: every row's labels redacted
+    /// by the resource's declared sensitivity.
+    #[must_use]
+    pub fn redacted_for(mut self, audience: crate::Audience) -> Self {
+        self.rows = self
+            .rows
+            .into_iter()
+            .map(|row| row.redacted_for(audience))
+            .collect();
+        self
+    }
+
     /// Filter and page rows a host holds in memory: parent, needle, exact
     /// target and the offset cursor, all against `revision`.
     #[must_use]
@@ -276,11 +317,13 @@ mod tests {
                 kind: "notes.note".into(),
                 label: resource.into(),
                 presentation: None,
+                sensitivity: crate::Sensitivity::Public,
             },
             action: action.map(|action| ActionDescriptor {
                 address: ActionAddress::new(resource, action),
                 resource_kind: "notes.note".into(),
                 resource_label: resource.into(),
+                resource_sensitivity: crate::Sensitivity::Public,
                 action_label: action.into(),
                 description: None,
                 locus: ExecutionLocus::ClientLocal,
