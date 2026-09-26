@@ -3261,6 +3261,34 @@ impl ShellOverlayHost {
         }
     }
 
+    /// The chrome as the shell narrator reads it: the overlay semantics
+    /// published to AT-SPI, the notification stack's live region, and the
+    /// hardware-key readout as a polite live status.
+    pub fn chrome_narration_snapshot(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, Politeness, Role};
+        let mut root = Widget::accessibility(self)
+            .unwrap_or_else(|| AccessNode::new(Role::Group).with_name("Tilo workspace"));
+        if let Some(stack) = self.notification_stack.as_ref()
+            && let Some(node) = Widget::accessibility(stack)
+        {
+            root.children.push(node);
+        }
+        let readout = self.chrome.as_ref().and_then(|chrome| {
+            chrome
+                .borrow()
+                .osd
+                .filter(|osd| osd.is_live(Instant::now()))
+                .map(|osd| osd.caption())
+        });
+        root.children.push(
+            AccessNode::new(Role::StaticText)
+                .with_name("Status readout")
+                .with_live(Politeness::Polite)
+                .with_value(readout.unwrap_or_default()),
+        );
+        root
+    }
+
     /// Paint the transient hardware-key readout, if one is up.
     fn draw_osd(
         &self,
