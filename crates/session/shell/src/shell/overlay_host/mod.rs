@@ -1875,6 +1875,9 @@ pub struct ShellOverlayHost {
     /// Shared toolkit capture selector. The shell only hosts it and drains
     /// semantic intents; compositor readback/encoding stays below this layer.
     capture_studio: ui::widget::CaptureStudio,
+    /// Shift/Alt+Print captures, which skip the chooser and wait here for
+    /// the compositor's next clean scene alongside the chooser's intents.
+    instant_captures: Vec<ui::widget::CaptureIntent>,
     capture_node: Option<NodeId>,
     /// Native exact-pixel screenshot editor. It lives in the shared UI crate;
     /// the shell supplies only artifact bytes and drains semantic commands.
@@ -1947,6 +1950,41 @@ const PALETTE_ROW_BUDGET: usize = 8;
 /// Glyph that stands for a result kind in the palette. Giving each kind
 /// a picture is what replaced the bracketed kind literal the shell used
 /// to prepend to every subtitle.
+/// The Shift+Print capture: everything on `viewport`, saved and copied.
+fn instant_screen_capture(viewport: Rect) -> ui::widget::CaptureIntent {
+    instant_capture(ui::widget::SourceMode::Display, vec![viewport], Vec::new())
+}
+
+/// The Alt+Print capture: the focused window as it is on screen.
+fn instant_window_capture(target: ui::widget::CaptureTarget) -> ui::widget::CaptureIntent {
+    instant_capture(
+        ui::widget::SourceMode::Window,
+        vec![target.visible_rect],
+        vec![target],
+    )
+}
+
+fn instant_capture(
+    source: ui::widget::SourceMode,
+    regions: Vec<Rect>,
+    targets: Vec<ui::widget::CaptureTarget>,
+) -> ui::widget::CaptureIntent {
+    ui::widget::CaptureIntent {
+        mode: ui::widget::CaptureMode::Screenshot,
+        source,
+        destination: ui::widget::CaptureDestination::FileAndClipboard,
+        regions,
+        include_pointer: false,
+        audio: ui::widget::AudioCaptureMode::None,
+        extent: ui::widget::CaptureExtent::Visible,
+        pip_layout: ui::widget::PipLayout::Auto,
+        targets,
+        recording_command: None,
+        replay_command: None,
+        screenshot_command: None,
+    }
+}
+
 fn icon_for_kind(kind: &crate::shell::search::ResourceKind) -> ui::icons::Icon {
     use crate::shell::search::ResourceKind as K;
     use ui::icons::Icon;
@@ -3307,6 +3345,7 @@ impl ShellOverlayHost {
             follow_stop_rect: Rect::ZERO,
             follow_cursor_targets: Vec::new(),
             capture_studio: ui::widget::CaptureStudio::default(),
+            instant_captures: Vec::new(),
             capture_node: None,
             screenshot_markup: None,
             screenshot_markup_node: None,
@@ -3435,7 +3474,8 @@ impl ShellOverlayHost {
     /// Drained by the compositor after it has built a clean scene (the picker
     /// closes before an intent is queued, so its chrome is never captured).
     pub fn take_capture_intents(&mut self) -> Vec<ui::widget::CaptureIntent> {
-        let intents = self.capture_studio.take_intents();
+        let mut intents = std::mem::take(&mut self.instant_captures);
+        intents.extend(self.capture_studio.take_intents());
         if !self.capture_studio.is_open()
             && let Some(chrome) = self.chrome.as_ref()
         {
@@ -7809,10 +7849,26 @@ impl ShellOverlayHost {
         candidates
     }
 
+    /// The window Alt+Print photographs: the focused group, which
+    /// [`Self::capture_targets`] lists first.
+    fn focused_capture_target(&self) -> Option<ui::widget::CaptureTarget> {
+        self.capture_target_candidates()
+            .into_iter()
+            .find(|(focused, target)| *focused && target.visible_rect.area() > 0.0)
+            .map(|(_, target)| target)
+    }
+
     /// Live app surfaces offered by the capture studio. The full virtual rect
     /// is retained even when Tilo's continuous strip has moved most of the app
     /// past this monitor; only `visible_rect` is clipped to the output.
     fn capture_targets(&self) -> Vec<ui::widget::CaptureTarget> {
+        let mut targets = self.capture_target_candidates();
+        targets.sort_by_key(|(focused, _)| !*focused);
+        targets.into_iter().map(|(_, target)| target).collect()
+    }
+
+    /// Every capturable window group, paired with whether it holds focus.
+    fn capture_target_candidates(&self) -> Vec<(bool, ui::widget::CaptureTarget)> {
         let viewport = self.get_rect();
         let mut targets = Vec::new();
         for &ptr in self.group_row_ptrs.values() {
@@ -7849,8 +7905,7 @@ impl ShellOverlayHost {
                 ));
             }
         }
-        targets.sort_by_key(|(focused, _)| !*focused);
-        targets.into_iter().map(|(_, target)| target).collect()
+        targets
     }
 
     /// Pull at most one freshly-emitted request from every strip. Individual
@@ -11530,11 +11585,29 @@ impl ShellOverlayHost {
     /// Apply the Print Screen policy. Existing capture work is the only flow
     /// that blocks a new capture; ordinary dialogs remain mounted below the
     /// temporary Capture Studio input owner.
-    fn apply_print_screen_priority(&mut self) {
+    ///
+    /// Shift+Print photographs the whole screen and Alt+Print the focused
+    /// window at once, with no chooser: saved to the screenshots folder,
+    /// copied, and announced by the same receipt a chooser capture leaves.
+    /// Alt+Print with no window to photograph opens the chooser instead of
+    /// doing nothing.
+    fn apply_print_screen_priority(&mut self, modifiers: winit::keyboard::ModifiersState) {
         match self.arbitrate_print_screen() {
             PrintScreenArbitration::OpenCapture => {
                 self.dismiss_transient_chrome_for_capture();
-                let _ = self.open_capture_studio(ui::widget::CaptureMode::Screenshot);
+                let instant = match (modifiers.shift_key(), modifiers.alt_key()) {
+                    (true, false) => Some(instant_screen_capture(self.get_rect())),
+                    (false, true) => self.focused_capture_target().map(instant_window_capture),
+                    _ => None,
+                };
+                if let Some(intent) = instant {
+                    self.instant_captures.push(intent);
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        chrome.borrow_mut().bump();
+                    }
+                } else {
+                    let _ = self.open_capture_studio(ui::widget::CaptureMode::Screenshot);
+                }
             }
             PrintScreenArbitration::Blocked(reason) => {
                 tracing::debug!(reason, "Print Screen deferred by modal workflow");
@@ -11545,7 +11618,12 @@ impl ShellOverlayHost {
     /// Returns `true` only for a Print Screen press.  It runs before modal
     /// event gates; [`Self::apply_print_screen_priority`] is also used by the
     /// normal keyboard dispatcher so the policy cannot drift.
-    fn handle_print_screen_priority(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+    fn handle_print_screen_priority(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::keyboard::ModifiersState,
+        handled: &mut bool,
+    ) -> bool {
         let WindowEvent::KeyboardInput { event: key, .. } = event else {
             return false;
         };
@@ -11555,7 +11633,7 @@ impl ShellOverlayHost {
             return false;
         }
         if !key.repeat {
-            self.apply_print_screen_priority();
+            self.apply_print_screen_priority(modifiers);
         }
         *handled = true;
         true
@@ -11658,7 +11736,7 @@ impl ShellOverlayHost {
         // future backend that enters through this keyboard-only helper.
         if matches!(logical_key, Key::Named(NamedKey::PrintScreen)) {
             if !repeat {
-                self.apply_print_screen_priority();
+                self.apply_print_screen_priority(modifiers.state());
             }
             *handled = true;
             return true;
@@ -16554,7 +16632,7 @@ impl Widget for ShellOverlayHost {
         // OOBE, portal and consent gates so Capture Studio can temporarily
         // own input above those preserved workflows instead of being consumed
         // by whichever modal was first in the dispatch chain.
-        if self.handle_print_screen_priority(event, handled) {
+        if self.handle_print_screen_priority(event, modifiers.state(), handled) {
             return;
         }
         // Capture Studio is deliberately above every ordinary session modal:
@@ -32090,6 +32168,101 @@ mod tests {
             ui::widget::CaptureMode::Screenshot
         );
         assert!(h.chrome.borrow().overlays.capture);
+    }
+
+    #[test]
+    fn shift_print_captures_the_whole_screen_without_a_chooser() {
+        let mut h = build_harness();
+        h.host.palette_visible = true;
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::from(ModifiersState::SHIFT)
+        ));
+
+        assert!(
+            !h.host.capture_studio.is_open(),
+            "no chooser for Shift+Print"
+        );
+        assert!(
+            !h.host.palette_visible,
+            "transient chrome closes before the scene is photographed"
+        );
+        let intents = h.host.take_capture_intents();
+        assert_eq!(intents.len(), 1, "{intents:?}");
+        let intent = &intents[0];
+        assert_eq!(intent.mode, ui::widget::CaptureMode::Screenshot);
+        assert_eq!(intent.source, ui::widget::SourceMode::Display);
+        assert_eq!(
+            intent.destination,
+            ui::widget::CaptureDestination::FileAndClipboard,
+            "saved and copied, since there is no chooser to pick one"
+        );
+        assert_eq!(intent.regions, vec![h.host.get_rect()]);
+        assert!(
+            h.host.take_capture_intents().is_empty(),
+            "one press is one capture"
+        );
+    }
+
+    #[test]
+    fn alt_print_without_a_window_opens_the_chooser_instead_of_nothing() {
+        let mut h = build_harness();
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::from(ModifiersState::ALT)
+        ));
+
+        assert!(h.host.capture_studio.is_open());
+        assert!(h.host.take_capture_intents().is_empty());
+    }
+
+    #[test]
+    fn alt_print_photographs_the_focused_window_as_shown() {
+        let target = ui::widget::CaptureTarget {
+            id: "group:4:tab:9".into(),
+            title: "Notes".into(),
+            app_id: "Notes".into(),
+            visible_rect: Rect::new(100.0, 40.0, 900.0, 860.0),
+            virtual_rect: Rect::new(100.0, 40.0, 1400.0, 860.0),
+            complete_rect: Some(Rect::new(100.0, 40.0, 900.0, 4000.0)),
+        };
+        let intent = instant_window_capture(target.clone());
+        assert_eq!(intent.source, ui::widget::SourceMode::Window);
+        assert_eq!(
+            intent.extent,
+            ui::widget::CaptureExtent::Visible,
+            "the window as it is on screen, not its whole document"
+        );
+        assert_eq!(intent.regions, vec![target.visible_rect]);
+        assert_eq!(intent.targets, vec![target]);
+        assert_eq!(
+            intent.destination,
+            ui::widget::CaptureDestination::FileAndClipboard
+        );
+    }
+
+    #[test]
+    fn instant_capture_waits_while_a_capture_is_in_progress() {
+        let mut h = build_harness();
+        assert!(
+            h.host
+                .open_capture_studio(ui::widget::CaptureMode::Screenshot)
+        );
+
+        pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::from(ModifiersState::SHIFT),
+        );
+
+        assert!(
+            h.host.take_capture_intents().is_empty(),
+            "an open chooser is finished first, like plain Print"
+        );
     }
 
     #[test]
