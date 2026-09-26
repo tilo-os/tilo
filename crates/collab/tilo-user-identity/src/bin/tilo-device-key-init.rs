@@ -5,8 +5,8 @@ use std::io;
 use std::path::Path;
 
 use tilo_user_identity::persist::{
-    DeviceKeyOutcome, IdentityPaths, adopt_device_key, adopt_legacy_system_identity,
-    load_or_create_device_key, read_device_cert, read_device_key, read_legacy_device_key,
+    DeviceKeyOutcome, IdentityPaths, adopt_device_key, load_or_create_device_key, read_device_cert,
+    read_device_key, read_legacy_device_key,
 };
 
 fn main() {
@@ -21,8 +21,6 @@ fn provision() -> Result<(), String> {
         return Err("must run as root".into());
     }
     let paths = IdentityPaths::default_system();
-    adopt_legacy_system_identity(&paths, Path::new("/var/lib/qos"))
-        .map_err(|error| error.to_string())?;
     migrate_legacy_key(&paths, Path::new("/var/lib/tilo/device/keypair.bin"))
         .map_err(|error| error.to_string())?;
     let (_, outcome) = load_or_create_device_key(&paths).map_err(|error| error.to_string())?;
@@ -96,16 +94,7 @@ mod tests {
         ));
         assert!(
             unit.lines()
-                .any(|line| line == "ConditionPathExists=|/var/lib/qos/device/keypair.bin")
-        );
-        assert!(
-            unit.lines()
-                .any(|line| line == "ReadWritePaths=/var/lib/tilo/user-identity")
-        );
-        assert!(
-            !unit
-                .lines()
-                .any(|line| line.starts_with("ReadWritePaths=") && line.contains("/var/lib/qos"))
+                .any(|line| line == "ConditionPathExists=|/var/lib/tilo/device/keypair.bin")
         );
     }
 

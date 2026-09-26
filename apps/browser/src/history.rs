@@ -4,8 +4,7 @@
 //! navigation calls [`History::record`], which de-duplicates by URL
 //! (bumping the visit count and refreshing the title + timestamp) so the
 //! list stays one-row-per-page. It persists as a JSON array under
-//! `xdg_paths::data_dir()/qos-browser/history.json`. The legacy directory name is
-//! retained so an upgrade does not strand a user's existing history.
+//! `xdg_paths::data_dir()/qos-browser/history.json`.
 //!
 //! [`History::suggest`] powers the address-bar overlay. It fuzzy-matches
 //! the query as a case-insensitive *subsequence* of each entry's title

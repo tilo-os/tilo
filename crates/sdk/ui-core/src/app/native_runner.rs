@@ -2684,9 +2684,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         #[cfg(target_os = "linux")]
         let window_attributes = {
             use winit::platform::wayland::WindowAttributesExtWayland;
-            let package_id = std::env::var("TILO_PACKAGE_ID")
-                .or_else(|_| std::env::var("QOS_PACKAGE_ID"))
-                .ok();
+            let package_id = std::env::var("TILO_PACKAGE_ID").ok();
             let app_id = resolve_app_id(
                 self.app.window.app_id.as_deref().or(package_id.as_deref()),
                 std::env::current_exe()

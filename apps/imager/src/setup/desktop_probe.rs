@@ -407,7 +407,6 @@ fn sandbox_environment_marker_present(mut present: impl FnMut(&str) -> bool) -> 
         "SNAP",
         "SNAP_NAME",
         "container",
-        "QOS_IMAGER_FLATPAK",
         "TILO_IMAGER_FLATPAK",
     ]
     .into_iter()
@@ -900,7 +899,6 @@ mod tests {
             "SNAP",
             "SNAP_NAME",
             "container",
-            "QOS_IMAGER_FLATPAK",
             "TILO_IMAGER_FLATPAK",
         ] {
             let observations = HashMap::from([(marker, "")]);
