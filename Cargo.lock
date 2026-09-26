@@ -12941,6 +12941,7 @@ dependencies = [
  "thiserror 2.0.18",
  "threshold-identity",
  "tilo-actions",
+ "tilo-automation",
  "tilo-automerge",
  "tilo-bluez",
  "tilo-callstream",
@@ -14455,6 +14456,8 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tilo-actions",
+ "tilo-automation",
+ "tilo-automerge",
  "uuid",
 ]
 

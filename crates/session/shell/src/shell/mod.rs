@@ -20,6 +20,7 @@
 
 pub mod actions;
 pub(crate) mod animation_diagnostics;
+pub mod automation_host;
 pub(crate) mod capture_surface;
 pub mod catalogue;
 pub mod chrome_state;

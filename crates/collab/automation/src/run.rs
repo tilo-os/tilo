@@ -196,7 +196,7 @@ pub enum StepFailure {
     #[error("the host refused: {error}")]
     Host { error: ActionHostError },
     #[error("the action failed: {}", error.message)]
-    Action { error: ActionFailure },
+    Action { error: Box<ActionFailure> },
     #[error("the action was cancelled")]
     Cancelled { message: Option<String> },
     #[error("the action broke its declared contract: {reason}")]
@@ -779,7 +779,11 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         loop {
             status = match status {
                 ReceiptStatus::Completed { output } => return Ok(output),
-                ReceiptStatus::Failed { error } => return Err(StepFailure::Action { error }),
+                ReceiptStatus::Failed { error } => {
+                    return Err(StepFailure::Action {
+                        error: Box::new(error),
+                    });
+                }
                 ReceiptStatus::Rejected { error } => return Err(StepFailure::Host { error }),
                 ReceiptStatus::Cancelled { message } => {
                     return Err(StepFailure::Cancelled { message });
