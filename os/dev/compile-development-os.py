@@ -298,12 +298,12 @@ def adopted_wpe_receipt(path, digest, architecture):
 
 
 def cache_configuration(environment):
-    # These are the deployed broker's public S3 identities on both runner
-    # placements. Do not send existing credentials to a redirected endpoint.
+    # The CI fleet's public S3 identity (the workflow env binds it). Do not
+    # send existing credentials to a redirected endpoint.
     expected = {
-        'SCCACHE_ENDPOINT': 'https://s3.eu-central-1.amazonaws.com',
-        'SCCACHE_BUCKET': 'podesta-agent-sccache-125650147312-eu-central-1',
-        'SCCACHE_REGION': 'eu-central-1', 'SCCACHE_S3_USE_SSL': 'true',
+        'SCCACHE_ENDPOINT': 'https://s3.us-west-2.amazonaws.com',
+        'SCCACHE_BUCKET': 'tilo-ci-sccache-125650147312-us-west-2',
+        'SCCACHE_REGION': 'us-west-2', 'SCCACHE_S3_USE_SSL': 'true',
     }
     if any(environment.get(name) != value for name, value in expected.items()):
         raise ValueError('remote compiler cache configuration differs from the reviewed runner S3 identity')
@@ -349,7 +349,7 @@ def cache_credentials():
 def cache_counters(raw, prefix):
     payload = json.loads(raw)
     location = payload.get('cache_location', '')
-    expected_location = f's3, name: podesta-agent-sccache-125650147312-eu-central-1, prefix: /{prefix}/'
+    expected_location = f's3, name: tilo-ci-sccache-125650147312-us-west-2, prefix: /{prefix}/'
     if location != expected_location:
         raise ValueError('compiler probe did not use the requested remote S3 cache')
     counters = payload.get('stats', {})
