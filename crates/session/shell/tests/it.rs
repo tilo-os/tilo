@@ -113,6 +113,8 @@ mod lock_screen_visual;
 mod maximize_persist_wireup_test;
 #[path = "multi_output.rs"]
 mod multi_output;
+#[path = "notification_center.rs"]
+mod notification_center;
 #[path = "onboarding_visual.rs"]
 mod onboarding_visual;
 #[path = "opening_configure_carries_the_tab_size.rs"]

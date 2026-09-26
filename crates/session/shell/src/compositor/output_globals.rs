@@ -16,6 +16,11 @@
 //! Matching by [`OutputId`] — which the DRM registry mints per
 //! `(device, connector)` and keeps stable across re-enumeration — is what
 //! makes that possible.
+//!
+//! A different monitor on the same connector keeps the [`OutputId`] but is
+//! still a different display to a client — `wl_output` sends its name,
+//! make and model only once per bind — so an identity change replaces the
+//! global.
 
 use std::collections::HashMap;
 
@@ -27,7 +32,7 @@ use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Size, Transform};
 
-use super::backend::{Output, OutputId};
+use super::backend::{Output, OutputId, OutputIdentity};
 
 /// One change to the advertised set.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -38,13 +43,17 @@ pub enum GlobalChange {
     /// existing global rather than replacing it, so clients see a mode
     /// change instead of a monitor disappearing.
     Update(OutputId),
+    /// A different monitor now sits behind this output — withdraw the old
+    /// global and advertise a new one, since clients never re-read a bound
+    /// output's name, make or model.
+    Replace(OutputId),
     /// The output is gone — withdraw its global.
     Destroy(OutputId),
 }
 
 /// What one advertised output currently looks like. Compared against the
 /// backend's list to decide whether an update is needed at all.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AdvertisedState {
     pub size: (u32, u32),
     /// Where clients are told the output sits: its logical position.
@@ -52,6 +61,7 @@ pub struct AdvertisedState {
     pub scale: f32,
     pub transform: settings_store::hardware::OutputTransform,
     pub refresh_mhz: Option<u32>,
+    pub identity: OutputIdentity,
 }
 
 impl From<&Output> for AdvertisedState {
@@ -62,6 +72,7 @@ impl From<&Output> for AdvertisedState {
             scale: o.scale,
             transform: o.transform,
             refresh_mhz: o.refresh_mhz,
+            identity: o.identity.clone(),
         }
     }
 }
@@ -76,6 +87,9 @@ pub fn plan(advertised: &[(OutputId, AdvertisedState)], desired: &[Output]) -> V
     for want in desired {
         match advertised.iter().find(|(id, _)| *id == want.id) {
             None => changes.push(GlobalChange::Create(want.id)),
+            Some((_, have)) if have.identity != want.identity => {
+                changes.push(GlobalChange::Replace(want.id));
+            }
             Some((_, have)) if *have != AdvertisedState::from(want) => {
                 changes.push(GlobalChange::Update(want.id));
             }
@@ -187,8 +201,11 @@ impl OutputGlobals {
 
     /// Snapshot of what is advertised, in the shape [`plan`] compares.
     fn snapshot(&self) -> Vec<(OutputId, AdvertisedState)> {
-        let mut v: Vec<(OutputId, AdvertisedState)> =
-            self.live.iter().map(|(id, l)| (*id, l.state)).collect();
+        let mut v: Vec<(OutputId, AdvertisedState)> = self
+            .live
+            .iter()
+            .map(|(id, l)| (*id, l.state.clone()))
+            .collect();
         v.sort_by_key(|(id, _)| id.0);
         v
     }
@@ -217,22 +234,27 @@ impl OutputGlobals {
     {
         for change in plan(&self.snapshot(), desired) {
             match change {
-                GlobalChange::Create(id) => {
+                GlobalChange::Create(id) | GlobalChange::Replace(id) => {
                     let Some(out) = desired.iter().find(|o| o.id == id) else {
                         continue;
                     };
+                    if let Some(old) = self.live.remove(&id) {
+                        dh.remove_global::<D>(old.global);
+                        tracing::info!(output = id.0, "wl_output: withdrawn for a new monitor");
+                    }
                     let handle = WlOutputHandle::new(
-                        format!("Tilo-{}", id.0),
+                        advertised_name(out, desired),
                         PhysicalProperties {
-                            // The backend reports pixels and derives the
-                            // scale itself; the physical millimetres are
-                            // not carried through the `Output` struct, so
-                            // advertise zero rather than a fabricated
-                            // size a client might compute a DPI from.
-                            size: Size::from((0, 0)),
+                            // Zero when neither EDID nor the connector
+                            // reported a size: a fabricated one would give
+                            // clients a wrong DPI.
+                            size: Size::from((
+                                i32::try_from(out.identity.physical_mm.0).unwrap_or(0),
+                                i32::try_from(out.identity.physical_mm.1).unwrap_or(0),
+                            )),
                             subpixel: Subpixel::Unknown,
-                            make: "Tilo".into(),
-                            model: format!("Output {}", id.0),
+                            make: non_empty_or(&out.identity.make, "Unknown"),
+                            model: non_empty_or(&out.identity.model, "Unknown"),
                         },
                     );
                     let mode = mode_for(out, fallback_refresh_mhz);
@@ -246,6 +268,8 @@ impl OutputGlobals {
                     let global = handle.create_global::<D>(dh);
                     tracing::info!(
                         output = id.0,
+                        name = %handle.name(),
+                        description = %handle.description(),
                         size = ?out.size,
                         position = ?out.logical_position,
                         scale = out.scale,
@@ -321,6 +345,32 @@ fn mode_for(out: &Output, fallback_refresh_mhz: Option<u32>) -> OutputMode {
     }
 }
 
+/// The `wl_output` name: the connector (`DP-2`), as other compositors
+/// advertise it, so clients and users can refer to a monitor by port. It
+/// must be unique, so a connector label repeated across GPUs, or an output
+/// without one, gets its id appended.
+fn advertised_name(out: &Output, desired: &[Output]) -> String {
+    let connector = &out.identity.connector;
+    let repeated = desired
+        .iter()
+        .any(|other| other.id != out.id && other.identity.connector == *connector);
+    if connector.is_empty() {
+        format!("Tilo-{}", out.id.0)
+    } else if repeated {
+        format!("{connector}-{}", out.id.0)
+    } else {
+        connector.clone()
+    }
+}
+
+fn non_empty_or(value: &str, fallback: &str) -> String {
+    if value.is_empty() {
+        fallback.to_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
 fn wayland_transform(transform: settings_store::hardware::OutputTransform) -> Transform {
     use settings_store::hardware::OutputTransform as O;
     match transform {
@@ -345,6 +395,7 @@ mod tests {
             color_profile: None,
             refresh_mhz: None,
             logical_position: position,
+            identity: crate::compositor::backend::OutputIdentity::default(),
         }
     }
 
@@ -500,6 +551,35 @@ mod tests {
             plan(&[advertised(&before)], &[after]),
             vec![GlobalChange::Update(OutputId(0))]
         );
+    }
+
+    #[test]
+    fn another_monitor_on_the_same_connector_replaces_the_global() {
+        let mut before = out(1, (0, 0), (2560, 1440), 1.0);
+        before.identity.connector = "DP-2".into();
+        before.identity.model = "DELL U2720Q".into();
+        let mut after = before.clone();
+        after.identity.model = "LG HDR 4K".into();
+        assert_eq!(
+            plan(&[advertised(&before)], &[after]),
+            vec![GlobalChange::Replace(OutputId(1))]
+        );
+    }
+
+    #[test]
+    fn outputs_are_named_by_connector_and_kept_unique() {
+        let mut laptop = out(0, (0, 0), (1920, 1080), 1.0);
+        laptop.identity.connector = "eDP-1".into();
+        let mut left = out(1, (1920, 0), (1920, 1080), 1.0);
+        left.identity.connector = "HDMI-A-1".into();
+        let mut right = out(2, (3840, 0), (1920, 1080), 1.0);
+        right.identity.connector = "HDMI-A-1".into();
+        let unnamed = out(3, (5760, 0), (1920, 1080), 1.0);
+        let all = [laptop.clone(), left.clone(), right.clone(), unnamed.clone()];
+        assert_eq!(advertised_name(&laptop, &all), "eDP-1");
+        assert_eq!(advertised_name(&left, &all), "HDMI-A-1-1");
+        assert_eq!(advertised_name(&right, &all), "HDMI-A-1-2");
+        assert_eq!(advertised_name(&unnamed, &all), "Tilo-3");
     }
 
     #[test]
