@@ -428,6 +428,9 @@ rquickjs = "0.9"
 # mobile FFI/logging defaults: tilo-projector is a native Rust broker.
 fcast-sender-sdk = { version = "0.3.0", default-features = false, features = ["fcast", "chromecast", "discovery"] }
 mdns-sd = "=0.20.3"
+# FFT for acoustic calibration: deconvolving a recorded sweep into the
+# speaker's impulse response and reading its magnitude response.
+rustfft = "6.2"
 
 # ---------------------------------------------------------------------------
 # Desktop and platform integration
