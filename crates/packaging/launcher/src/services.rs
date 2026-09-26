@@ -678,9 +678,12 @@ fn write_compat_handoff(
     stream.flush()
 }
 
+/// The gateway's app principal (`tilo_model_gateway::Principal::App`); the
+/// desktop session presents `{"protocol":2,"principal":"session"}` itself.
 fn write_model_gateway_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(&serde_json::json!({
-        "protocol": 1,
+        "protocol": 2,
+        "principal": "app",
         "app_id": app_id,
     }))
     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
@@ -793,13 +796,16 @@ mod tests {
             fields
         );
 
-        let app_only = serde_json::json!({"protocol": 1, "app_id": "so.tilo.notes"});
+        let gateway_app =
+            serde_json::json!({"protocol": 2, "principal": "app", "app_id": "so.tilo.notes"});
         let bytes = written(|stream| write_model_gateway_handoff(stream, "so.tilo.notes"));
-        assert_eq!(bytes[..4], [39, 0, 0, 0]);
+        assert_eq!(bytes[..4], [57, 0, 0, 0]);
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
-            app_only
+            gateway_app
         );
+
+        let app_only = serde_json::json!({"protocol": 1, "app_id": "so.tilo.notes"});
 
         let bytes = written(|stream| write_app_host_handoff(stream, "so.tilo.notes"));
         assert_eq!(bytes[..8], *b"QAH1\0\0\0\x27");

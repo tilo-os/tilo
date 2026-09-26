@@ -59,7 +59,7 @@ upstream inputs:
   (vLLM 0.10.1), saved as a verified OCI archive for `x86_64` NVIDIA CUDA.
 
 It deliberately creates no CPU fallback and no biometric capability. The
-model is catalogued with `vision: true` and `face_recognition: false`; it can
+model is catalogued with `"capabilities": ["vision"]` only; it can
 serve the bounded Photos caption/label/pet/OCR request, but cannot enable the
 separate face clustering route.
 

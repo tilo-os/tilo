@@ -13,15 +13,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use accounts::{AccountId, Secret, SecretVault};
-use agent_provider_config::{EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol};
+use agent_provider_config::{ModelCapability, ProviderConfig, ProviderProfile, ProviderProtocol};
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
 use tilo_model_gateway::{
-    ClientError, FaceImage, Frame, RPC_VERSION, Request, Response, VisionImage,
+    ClientError, FaceImage, Frame, Principal, RPC_VERSION, Request, Response, VisionImage,
 };
 use tokio::net::UnixStream;
 use tokio::sync::Semaphore;
 use zeroize::{Zeroize, Zeroizing};
+
+mod review;
 
 #[derive(Parser)]
 #[command(name = "tilo-model-gateway", about = "Tilo hosted model gateway")]
@@ -48,8 +50,6 @@ enum Action {
     },
 }
 
-/// The launcher's handoff: a little-endian `u32` length, then JSON.
-const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(4096);
 const SETTINGS_APP: &str = "so.tilo.settings";
 const AGENT_APP: &str = "so.tilo.agent";
 const PHOTOS_APP: &str = "so.tilo.photos";
@@ -64,12 +64,6 @@ const VISION_TIMEOUT: Duration = Duration::from_secs(45);
 /// same-user apps; past this, new connections wait in the listen backlog.
 const MAX_CLIENTS: usize = 64;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
-
-#[derive(serde::Deserialize)]
-struct Handoff {
-    protocol: u16,
-    app_id: String,
-}
 
 fn main() {
     let cli = Cli::parse();
@@ -213,13 +207,13 @@ async fn serve_client(mut stream: UnixStream, http: &reqwest::Client) {
     if !same_user(&stream) {
         return;
     }
-    let Ok(handoff) = read_handoff(&mut stream).await else {
+    let Ok(principal) = read_handoff(&mut stream).await else {
         return;
     };
     loop {
         let response = match read_frame::<Frame<Request>>(&mut stream).await {
             Ok(frame) if frame.version == RPC_VERSION => {
-                handle(&handoff.app_id, frame.value, http).await
+                handle(&principal, frame.value, http).await
             }
             Ok(_) => rejected("unsupported gateway RPC version"),
             Err(_) => return,
@@ -264,8 +258,11 @@ async fn read_frame<T: for<'a> serde::Deserialize<'a>>(
         .map_err(|_| ClientError::Protocol("invalid gateway request".into()))
 }
 
-async fn read_handoff(stream: &mut UnixStream) -> Result<Handoff, String> {
-    let body = match HANDOFF_FRAMING.read_async(stream).await {
+/// Read the connection's [`Principal`]. An app principal is written by the
+/// launcher before the app holds the descriptor; the session principal can
+/// only come from a process that reaches this socket, which no sandbox does.
+async fn read_handoff(stream: &mut UnixStream) -> Result<Principal, String> {
+    let body = match tilo_model_gateway::HANDOFF_FRAMING.read_async(stream).await {
         Ok(Some(body)) => body,
         Ok(None) => return Err("missing launcher authentication".into()),
         Err(wire_frame::FrameError::TooLarge(_)) => {
@@ -273,19 +270,18 @@ async fn read_handoff(stream: &mut UnixStream) -> Result<Handoff, String> {
         }
         Err(_) => return Err("truncated launcher authentication".into()),
     };
-    let handoff: Handoff =
-        serde_json::from_slice(&body).map_err(|_| "invalid launcher authentication".to_string())?;
-    if handoff.protocol != 1
-        || (handoff.app_id != SETTINGS_APP
-            && handoff.app_id != AGENT_APP
-            && handoff.app_id != PHOTOS_APP)
-    {
-        return Err("launcher is not authorized for the model gateway".into());
+    let principal = Principal::from_handoff(&body).map_err(|error| error.to_string())?;
+    match principal.app_id() {
+        Some(app) if app != SETTINGS_APP && app != AGENT_APP && app != PHOTOS_APP => {
+            Err("app is not authorized for the model gateway".into())
+        }
+        _ => Ok(principal),
     }
-    Ok(handoff)
 }
 
-async fn handle(app_id: &str, request: Request, http: &reqwest::Client) -> Response {
+async fn handle(principal: &Principal, request: Request, http: &reqwest::Client) -> Response {
+    let app_id = principal.app_id().unwrap_or_default();
+    let session = *principal == Principal::Session;
     let output = |output| Response {
         ok: true,
         output: Some(output),
@@ -333,6 +329,12 @@ async fn handle(app_id: &str, request: Request, http: &reqwest::Client) -> Respo
             .map(output),
         Request::ClusterFaces { .. } => {
             Err("only Photos may request fixed local face clustering".into())
+        }
+        Request::ReviewTrace { trace } if session => {
+            review::review_trace(http, trace).await.map(output)
+        }
+        Request::ReviewTrace { .. } => {
+            Err("only the desktop session may request feedback review".into())
         }
         Request::SecretStatus { profile_id } if app_id == SETTINGS_APP => {
             blocking(move || secret_status(&profile_id))
@@ -507,24 +509,12 @@ fn vision_request(
     image: &VisionImage,
 ) -> Result<(ProviderProfile, serde_json::Value), String> {
     validate_vision_image(image)?;
-    let profile = configured_profile(profile_id)?;
-    if profile.location != EndpointLocation::ThisDevice
-        || profile.protocol != ProviderProtocol::OpenAiCompatible
-        || !loopback_http_endpoint(&profile.endpoint)
-    {
-        return Err("image analysis requires a supervised loopback OpenAI-compatible model".into());
-    }
-    let model = profile
-        .models
-        .iter()
-        .find(|model| model.id == model_id)
-        .ok_or_else(|| "model is not configured for this provider".to_string())?;
-    if !model.vision {
-        return Err("the selected local model does not declare image-analysis capability".into());
-    }
-    if !model.revision.as_deref().is_some_and(is_pinned_revision) {
-        return Err("the selected local vision model has no pinned revision".into());
-    }
+    let profile = local_profile(
+        configured_profile(profile_id)?,
+        model_id,
+        ModelCapability::Vision,
+        "image analysis",
+    )?;
     let body = local_vision_body(model_id, image);
     Ok((profile, body))
 }
@@ -560,24 +550,12 @@ fn face_request(
     images: &[FaceImage],
 ) -> Result<(ProviderProfile, serde_json::Value), String> {
     validate_face_images(images)?;
-    let profile = configured_profile(profile_id)?;
-    if profile.location != EndpointLocation::ThisDevice
-        || profile.protocol != ProviderProtocol::OpenAiCompatible
-        || !loopback_http_endpoint(&profile.endpoint)
-    {
-        return Err("face clustering requires a supervised loopback local model".into());
-    }
-    let model = profile
-        .models
-        .iter()
-        .find(|model| model.id == model_id)
-        .ok_or_else(|| "model is not configured for this provider".to_string())?;
-    if !model.face_recognition {
-        return Err("the selected local model does not declare face-recognition capability".into());
-    }
-    if !model.revision.as_deref().is_some_and(is_pinned_revision) {
-        return Err("the selected local face model has no pinned revision".into());
-    }
+    let profile = local_profile(
+        configured_profile(profile_id)?,
+        model_id,
+        ModelCapability::FaceRecognition,
+        "face clustering",
+    )?;
     let body = local_face_body(model_id, images);
     Ok((profile, body))
 }
@@ -656,28 +634,37 @@ fn validate_face_images(images: &[FaceImage]) -> Result<(), String> {
     Ok(())
 }
 
-fn loopback_http_endpoint(endpoint: &str) -> bool {
-    let Ok(url) = url::Url::parse(endpoint) else {
-        return false;
-    };
-    if !matches!(url.scheme(), "http" | "https") || url.username() != "" || url.password().is_some()
-    {
-        return false;
+/// `profile`, when it may serve the fixed local verb `purpose` with
+/// `model_id`: a device-local loopback endpoint whose model declares the
+/// capability in signed metadata and has a pinned revision. Hosted and
+/// private-network profiles are refused, whatever their models claim.
+fn local_profile(
+    profile: ProviderProfile,
+    model_id: &str,
+    capability: ModelCapability,
+    purpose: &str,
+) -> Result<ProviderProfile, String> {
+    if !profile.is_device_local() {
+        return Err(format!(
+            "{purpose} requires a supervised loopback OpenAI-compatible model on this device"
+        ));
     }
-    match url.host() {
-        Some(url::Host::Domain("localhost")) => true,
-        Some(url::Host::Ipv4(address)) => address.is_loopback(),
-        Some(url::Host::Ipv6(address)) => address.is_loopback(),
-        _ => false,
+    let model = profile
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .ok_or_else(|| "model is not configured for this provider".to_string())?;
+    if !model.declares(capability) {
+        return Err(format!(
+            "the selected local model does not declare {purpose} capability"
+        ));
     }
-}
-
-fn is_pinned_revision(revision: &str) -> bool {
-    matches!(revision.len(), 40 | 64)
-        && revision
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+    if profile.pinned_local_model(model_id, capability).is_none() {
+        return Err(format!(
+            "the selected local {purpose} model has no pinned revision"
+        ));
+    }
+    Ok(profile)
 }
 
 fn local_vision_body(model_id: &str, image: &VisionImage) -> serde_json::Value {
@@ -884,6 +871,8 @@ fn same_user(stream: &UnixStream) -> bool {
 mod tests {
     use std::cell::RefCell;
 
+    use agent_provider_config::{EndpointLocation, ModelDescriptor};
+
     use super::*;
 
     fn vision_image() -> VisionImage {
@@ -894,55 +883,239 @@ mod tests {
         }
     }
 
-    /// The launcher's handoff: a little-endian `u32` length, then JSON.
-    #[test]
-    fn launcher_handoff_bytes_are_pinned() {
+    fn read_principal(body: &[u8]) -> Result<Principal, String> {
         use std::io::Write as _;
-        let (mut launcher, gateway) = std::os::unix::net::UnixStream::pair().unwrap();
-        launcher.write_all(&[39, 0, 0, 0]).unwrap();
-        launcher
-            .write_all(br#"{"protocol":1,"app_id":"so.tilo.agent"}"#)
+        let (mut peer, gateway) = std::os::unix::net::UnixStream::pair().unwrap();
+        peer.write_all(&u32::try_from(body.len()).unwrap().to_le_bytes())
             .unwrap();
+        peer.write_all(body).unwrap();
         gateway.set_nonblocking(true).unwrap();
         let runtime = tilo_rt::daemon("gateway-test").workers(1).build().unwrap();
-        let handoff = runtime.block_on(async {
+        runtime.block_on(async {
             let mut gateway = UnixStream::from_std(gateway).unwrap();
             read_handoff(&mut gateway).await
-        });
-        assert_eq!(handoff.unwrap().app_id, AGENT_APP);
+        })
+    }
+
+    /// The handoff: a little-endian `u32` length, then JSON. The launcher
+    /// writes the app form, the desktop session the session form.
+    #[test]
+    fn handoff_bytes_are_pinned() {
+        assert_eq!(
+            read_principal(br#"{"protocol":2,"principal":"app","app_id":"so.tilo.agent"}"#),
+            Ok(Principal::App {
+                app_id: AGENT_APP.into()
+            })
+        );
+        assert_eq!(
+            read_principal(br#"{"protocol":2,"principal":"session"}"#),
+            Ok(Principal::Session)
+        );
+        assert_eq!(
+            Principal::Session.handoff().unwrap(),
+            br#"{"protocol":2,"principal":"session"}"#
+        );
     }
 
     #[test]
-    fn local_vision_input_is_closed_and_bounded() {
-        assert!(validate_vision_image(&vision_image()).is_ok());
-        let mut foreign = vision_image();
-        foreign.media_type = "image/svg+xml".into();
-        assert!(validate_vision_image(&foreign).is_err());
-        let mut corrupt = vision_image();
-        corrupt.data_base64 = "not base64".into();
-        assert!(validate_vision_image(&corrupt).is_err());
-        let mut bad_hash = vision_image();
-        bad_hash.source_content_hash = "x".repeat(64);
-        assert!(validate_vision_image(&bad_hash).is_err());
+    fn unknown_apps_and_malformed_handoffs_are_refused() {
+        for body in [
+            br#"{"protocol":2,"principal":"app","app_id":"so.tilo.notes"}"#.as_slice(),
+            br#"{"protocol":1,"app_id":"so.tilo.agent"}"#,
+            br#"{"protocol":2,"principal":"session","app_id":"so.tilo.agent"}"#,
+            br#"{"protocol":2,"principal":"root"}"#,
+            br#"{"protocol":2,"principal":"app"}"#,
+            br#"{"protocol":2,"principal":"session","extra":true}"#,
+        ] {
+            assert!(
+                read_principal(body).is_err(),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
+
+    fn profile(
+        location: EndpointLocation,
+        endpoint: &str,
+        revision: Option<&str>,
+    ) -> ProviderProfile {
+        ProviderProfile {
+            id: "local".into(),
+            location,
+            endpoint: endpoint.into(),
+            models: vec![ModelDescriptor {
+                revision: revision.map(Into::into),
+                capabilities: [
+                    ModelCapability::Vision,
+                    ModelCapability::FaceRecognition,
+                    ModelCapability::TraceReview,
+                ]
+                .into(),
+                ..ModelDescriptor::new("m")
+            }],
+            ..ProviderProfile::default()
+        }
+    }
+
+    const VERBS: [(ModelCapability, &str); 3] = [
+        (ModelCapability::Vision, "image analysis"),
+        (ModelCapability::FaceRecognition, "face clustering"),
+        (ModelCapability::TraceReview, "trace review"),
+    ];
+
+    #[test]
+    fn local_verbs_run_only_on_a_pinned_loopback_model() {
+        let pinned = "a".repeat(40);
+        for (capability, purpose) in VERBS {
+            let run = |profile| local_profile(profile, "m", capability, purpose);
+            assert!(
+                run(profile(
+                    EndpointLocation::ThisDevice,
+                    "http://127.0.0.1:8123/v1",
+                    Some(&pinned)
+                ))
+                .is_ok()
+            );
+            assert!(
+                run(profile(
+                    EndpointLocation::ThisDevice,
+                    "http://[::1]:8123/v1",
+                    Some(&pinned)
+                ))
+                .is_ok()
+            );
+            for refused in [
+                profile(
+                    EndpointLocation::Hosted,
+                    "https://models.example.test/v1",
+                    Some(&pinned),
+                ),
+                profile(
+                    EndpointLocation::PrivateNetwork,
+                    "http://192.168.1.20:8123/v1",
+                    Some(&pinned),
+                ),
+                // Claiming to be local does not make a remote endpoint local.
+                profile(
+                    EndpointLocation::ThisDevice,
+                    "https://models.example.test/v1",
+                    Some(&pinned),
+                ),
+                profile(
+                    EndpointLocation::ThisDevice,
+                    "http://localhost.evil.test:8123/v1",
+                    Some(&pinned),
+                ),
+                profile(
+                    EndpointLocation::ThisDevice,
+                    "http://127.0.0.1:8123/v1",
+                    Some("main"),
+                ),
+                profile(
+                    EndpointLocation::ThisDevice,
+                    "http://127.0.0.1:8123/v1",
+                    Some(&"A".repeat(40)),
+                ),
+                profile(
+                    EndpointLocation::ThisDevice,
+                    "http://127.0.0.1:8123/v1",
+                    None,
+                ),
+            ] {
+                assert!(run(refused.clone()).is_err(), "{purpose}: {refused:?}");
+            }
+            let mut undeclared = profile(
+                EndpointLocation::ThisDevice,
+                "http://127.0.0.1:8123/v1",
+                Some(&pinned),
+            );
+            undeclared.models = vec![ModelDescriptor {
+                revision: Some(pinned.clone()),
+                ..ModelDescriptor::new("m")
+            }];
+            assert!(run(undeclared).is_err(), "{purpose} must be declared");
+            assert!(
+                local_profile(
+                    profile(
+                        EndpointLocation::ThisDevice,
+                        "http://127.0.0.1:8123/v1",
+                        Some(&pinned)
+                    ),
+                    "other",
+                    capability,
+                    purpose
+                )
+                .is_err()
+            );
+        }
+    }
+
+    fn handled(principal: &Principal, request: Request) -> Response {
+        let runtime = tilo_rt::daemon("gateway-test").workers(1).build().unwrap();
+        let http = provider_client().unwrap();
+        runtime.block_on(handle(principal, request, &http))
+    }
+
+    fn review_request() -> Request {
+        Request::ReviewTrace {
+            trace: tilo_feedback_review::ReviewTraceRequest { steps: Vec::new() },
+        }
     }
 
     #[test]
-    fn local_vision_never_routes_to_a_lan_or_hosted_endpoint() {
-        assert!(loopback_http_endpoint("http://127.0.0.1:8123/v1"));
-        assert!(loopback_http_endpoint("http://[::1]:8123/v1"));
-        assert!(!loopback_http_endpoint("http://192.168.1.20:8123/v1"));
-        assert!(!loopback_http_endpoint("https://models.example.test/v1"));
-        assert!(!loopback_http_endpoint(
-            "http://localhost.evil.test:8123/v1"
-        ));
+    fn only_the_desktop_session_may_review_a_trace() {
+        for app in [SETTINGS_APP, AGENT_APP, PHOTOS_APP] {
+            let response = handled(&Principal::App { app_id: app.into() }, review_request());
+            assert!(!response.ok);
+            assert_eq!(
+                response.error.as_deref(),
+                Some("only the desktop session may request feedback review"),
+                "{app}"
+            );
+        }
+        // The session gets past authorization; this request then fails the
+        // contract before any profile is read.
+        let response = handled(&Principal::Session, review_request());
+        assert!(!response.ok);
+        assert_ne!(
+            response.error.as_deref(),
+            Some("only the desktop session may request feedback review")
+        );
     }
 
     #[test]
-    fn local_vision_requires_an_immutable_model_revision() {
-        assert!(is_pinned_revision(&"a".repeat(40)));
-        assert!(is_pinned_revision(&"b".repeat(64)));
-        assert!(!is_pinned_revision("main"));
-        assert!(!is_pinned_revision(&"A".repeat(40)));
+    fn the_desktop_session_is_authorized_for_review_only() {
+        let refused = [
+            Request::SecretStatus {
+                profile_id: "hosted".into(),
+            },
+            Request::SetApiKey {
+                profile_id: "hosted".into(),
+                api_key: "owned fixture".into(),
+            },
+            Request::Plan {
+                profile_id: "hosted".into(),
+                model_id: "m".into(),
+                body: serde_json::Value::Null,
+                timeout_ms: 1,
+            },
+            Request::AnalyzeImage {
+                profile_id: "local".into(),
+                model_id: "m".into(),
+                image: vision_image(),
+            },
+        ];
+        for request in refused {
+            let response = handled(&Principal::Session, request);
+            assert!(!response.ok);
+            let error = response.error.unwrap_or_default();
+            assert!(
+                error.starts_with("only ")
+                    || error == "caller is not authorized for this gateway operation",
+                "{error}"
+            );
+        }
     }
 
     #[test]
@@ -1087,8 +1260,11 @@ mod tests {
         client
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
-        let handoff =
-            serde_json::to_vec(&serde_json::json!({ "protocol": 1, "app_id": AGENT_APP })).unwrap();
+        let handoff = Principal::App {
+            app_id: AGENT_APP.into(),
+        }
+        .handoff()
+        .unwrap();
         client
             .write_all(&u32::try_from(handoff.len()).unwrap().to_le_bytes())
             .unwrap();

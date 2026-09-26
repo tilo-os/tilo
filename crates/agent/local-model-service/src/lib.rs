@@ -106,6 +106,39 @@ pub struct VllmCommand {
     pub runtime_extension_id: String,
 }
 
+/// The vLLM arguments for `model`, built only from signed catalog fields.
+///
+/// The model is served under its catalog id, which is what the provider
+/// profile and the gateway name in every request; vLLM would otherwise answer
+/// only to the container path. The context is capped at the signed window so
+/// the KV cache is sized for it rather than for the model's maximum, and a
+/// signed accelerator share keeps headroom on a card the desktop also uses.
+#[must_use]
+pub fn vllm_args(model: &LocalModelRelease, model_container_path: &str, port: u16) -> Vec<String> {
+    let mut args = vec![
+        "serve".into(),
+        // The supervisor mounts this verified host object at this stable,
+        // container-visible path. Never pass a host path to vLLM inside the
+        // OCI container.
+        model_container_path.into(),
+        "--served-model-name".into(),
+        model.id.clone(),
+        "--max-model-len".into(),
+        model.context_window.to_string(),
+        "--host".into(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        port.to_string(),
+    ];
+    if let Some(percent) = model.accelerator_memory_percent {
+        args.extend([
+            "--gpu-memory-utilization".into(),
+            format!("{:.2}", f64::from(percent) / 100.0),
+        ]);
+    }
+    args
+}
+
 /// A desired runtime must have passed `system-extension`'s signed desired-state
 /// transaction. The content-addressed runtime artifact itself is the program;
 /// a production OCI supervisor may interpret that verified object as an image
@@ -630,17 +663,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         let command = VllmCommand {
             runtime_image: runtime.release.oci_image.clone(),
             runtime_kind: runtime.release.kind,
-            args: vec![
-                "serve".into(),
-                // The supervisor mounts this verified host object at this
-                // stable, container-visible path. Never pass a host path to
-                // vLLM inside the OCI container.
-                model_container_path.into(),
-                "--host".into(),
-                "127.0.0.1".into(),
-                "--port".into(),
-                port.to_string(),
-            ],
+            args: vllm_args(model, model_container_path, port),
             model_path,
             model_container_path: model_container_path.into(),
             endpoint: endpoint.clone(),
@@ -1019,9 +1042,34 @@ mod tests {
             required_memory_mib: 1,
             required_accelerator_mib: 0,
             context_window: 1,
-            vision: false,
-            face_recognition: false,
+            capabilities: std::collections::BTreeSet::new(),
+            accelerator_memory_percent: None,
         }
+    }
+
+    #[test]
+    fn vllm_serves_the_catalog_id_within_the_signed_context_and_memory_share() {
+        let mut release = model(b"weights");
+        release.id = "qwen/qwen3-4b-awq".into();
+        release.context_window = 8192;
+        let args = vllm_args(&release, "/models/model", 8123);
+        let after = |flag: &str| {
+            args.iter()
+                .position(|arg| arg == flag)
+                .and_then(|index| args.get(index + 1))
+                .map(String::as_str)
+        };
+        assert_eq!(args.get(1).map(String::as_str), Some("/models/model"));
+        assert_eq!(after("--served-model-name"), Some("qwen/qwen3-4b-awq"));
+        assert_eq!(after("--max-model-len"), Some("8192"));
+        assert_eq!(after("--host"), Some("127.0.0.1"));
+        assert_eq!(after("--gpu-memory-utilization"), None);
+        release.accelerator_memory_percent = Some(70);
+        let args = vllm_args(&release, "/models/model", 8123);
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--gpu-memory-utilization", "0.70"])
+        );
     }
 
     fn snapshot(entries: &[(&str, &[u8])]) -> Vec<u8> {

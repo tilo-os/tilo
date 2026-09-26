@@ -5,7 +5,7 @@
 //! fixed-argv systemd user service. No subcommand accepts a URL, command, tag,
 //! model path, or arbitrary process argument.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use agent_provider_config::ModelCapability;
 use agent_provider_config::local::{
     Accelerator, HardwareSnapshot, LocalEndpoint, LocalModelCatalog, LocalModelRelease,
     LocalModelStatus, RuntimeDecision, RuntimeKind, select_runtime,
@@ -190,8 +191,7 @@ struct LocalModelPackage {
     license_url: String,
     download_bytes: u64,
     installed_bytes: u64,
-    vision: bool,
-    face_recognition: bool,
+    capabilities: BTreeSet<ModelCapability>,
 }
 #[derive(Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -652,8 +652,7 @@ fn package(model: &LocalModelRelease) -> LocalModelPackage {
         license_url: model.license_url.clone(),
         download_bytes: model.artifact.size_bytes,
         installed_bytes: model.installed_size_bytes,
-        vision: model.vision,
-        face_recognition: model.face_recognition,
+        capabilities: model.capabilities.clone(),
     }
 }
 fn runtime_kind_for(

@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 agent-provider-config = { path = "../provider-config" }
+tilo-feedback-review = { path = "../../collab/feedback-review" }
 accounts = { path = "../../system/accounts" }
 reqwest = { workspace = true, features = ["json"] }
 tilo-net = { path = "../../system/tilo-net", features = ["http"] }
@@ -29,7 +30,6 @@ wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 clap.workspace = true
 libc.workspace = true
 base64.workspace = true
-url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

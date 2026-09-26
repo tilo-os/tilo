@@ -102,6 +102,23 @@ impl SecretReference {
     }
 }
 
+/// A fixed gateway protocol a model declares it serves. For locally managed
+/// models the set is copied from the signed catalogue; for hosted profiles it
+/// remains an explicit user or provider claim. It is never inferred from a
+/// model's name, and no capability implies another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCapability {
+    /// Accepts bounded image input: Photos' captions, labels and OCR.
+    Vision,
+    /// The dedicated local Photos face-clustering protocol. Generic image
+    /// description never enables biometrics.
+    FaceRecognition,
+    /// The feedback-review protocol: redaction proposals and step titles over
+    /// the text of a recording.
+    TraceReview,
+}
+
 /// One model advertised by a profile. A model list is metadata, not a
 /// capability grant: individual agent tasks still require their own action
 /// permissions.
@@ -119,15 +136,9 @@ pub struct ModelDescriptor {
     /// means "not attested", never "latest".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
-    /// A declared capability, not an inference from a model's friendly name.
-    /// For locally managed models this value is copied from the signed
-    /// catalogue; hosted profiles remain an explicit user/provider claim.
-    pub vision: bool,
-    /// Signed declaration that this exact local model exposes the bounded
-    /// Photos face-detection/embedding/clustering protocol. This is separate
-    /// from generic vision: image descriptions must never enable biometrics.
-    #[serde(default)]
-    pub face_recognition: bool,
+    /// The fixed gateway protocols this model declares.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub capabilities: BTreeSet<ModelCapability>,
     pub tool_calling: bool,
 }
 
@@ -138,14 +149,18 @@ impl Default for ModelDescriptor {
             label: String::new(),
             context_window: None,
             revision: None,
-            vision: false,
-            face_recognition: false,
+            capabilities: BTreeSet::new(),
             tool_calling: true,
         }
     }
 }
 
 impl ModelDescriptor {
+    #[must_use]
+    pub fn declares(&self, capability: ModelCapability) -> bool {
+        self.capabilities.contains(&capability)
+    }
+
     pub fn new(id: impl Into<String>) -> Self {
         let id = id.into();
         Self {
@@ -260,6 +275,62 @@ impl ProviderProfile {
             && self.location == EndpointLocation::ThisDevice
             && (self.endpoint.contains(":8000") || self.label.to_ascii_lowercase().contains("vllm"))
     }
+
+    /// Whether this is an enabled OpenAI-compatible endpoint on this device's
+    /// loopback interface: the only kind of profile the gateway's fixed local
+    /// verbs (image analysis, face clustering, trace review) run on.
+    pub fn is_device_local(&self) -> bool {
+        self.enabled
+            && self.location == EndpointLocation::ThisDevice
+            && self.protocol == ProviderProtocol::OpenAiCompatible
+            && is_loopback_endpoint(&self.endpoint)
+    }
+
+    /// `model_id` of this profile when the profile is device-local, the model
+    /// declares `capability`, and its revision is pinned.
+    pub fn pinned_local_model(
+        &self,
+        model_id: &str,
+        capability: ModelCapability,
+    ) -> Option<&ModelDescriptor> {
+        if !self.is_device_local() {
+            return None;
+        }
+        self.models.iter().find(|model| {
+            model.id == model_id
+                && model.declares(capability)
+                && model.revision.as_deref().is_some_and(is_pinned_revision)
+        })
+    }
+}
+
+/// Whether `endpoint` is plain `http(s)` to the loopback interface, with no
+/// credentials in it. `localhost.example` is not loopback.
+pub fn is_loopback_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        _ => false,
+    }
+}
+
+/// Whether `revision` is an immutable 40- or 64-character lowercase hex
+/// commit, never a branch or tag.
+pub fn is_pinned_revision(revision: &str) -> bool {
+    matches!(revision.len(), 40 | 64)
+        && revision
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// A portable profile list and the user's deliberate default. Kept separate
@@ -471,6 +542,61 @@ fn is_safe_endpoint(endpoint: &str, location: EndpointLocation) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_means_the_loopback_interface_only() {
+        assert!(is_loopback_endpoint("http://127.0.0.1:8123/v1"));
+        assert!(is_loopback_endpoint("http://[::1]:8123/v1"));
+        assert!(is_loopback_endpoint("http://localhost:8123/v1"));
+        assert!(!is_loopback_endpoint("http://192.168.1.20:8123/v1"));
+        assert!(!is_loopback_endpoint("https://models.example.test/v1"));
+        assert!(!is_loopback_endpoint("http://localhost.evil.test:8123/v1"));
+        assert!(!is_loopback_endpoint("http://user:pw@127.0.0.1:8123/v1"));
+    }
+
+    #[test]
+    fn a_pinned_revision_is_an_exact_lowercase_commit() {
+        assert!(is_pinned_revision(&"a".repeat(40)));
+        assert!(is_pinned_revision(&"b".repeat(64)));
+        assert!(!is_pinned_revision("main"));
+        assert!(!is_pinned_revision(&"A".repeat(40)));
+        assert!(!is_pinned_revision(&"g".repeat(40)));
+    }
+
+    #[test]
+    fn a_hosted_profile_never_offers_a_pinned_local_model() {
+        let model = ModelDescriptor {
+            revision: Some("a".repeat(40)),
+            capabilities: [ModelCapability::TraceReview].into(),
+            ..ModelDescriptor::new("m")
+        };
+        let mut local = ProviderProfile::local_vllm();
+        local.models = vec![model];
+        assert!(
+            local
+                .pinned_local_model("m", ModelCapability::TraceReview)
+                .is_some()
+        );
+        assert!(
+            local
+                .pinned_local_model("m", ModelCapability::Vision)
+                .is_none()
+        );
+        let mut hosted = local.clone();
+        hosted.location = EndpointLocation::Hosted;
+        assert!(
+            hosted
+                .pinned_local_model("m", ModelCapability::TraceReview)
+                .is_none()
+        );
+        let mut disabled = local;
+        disabled.enabled = false;
+        assert!(
+            disabled
+                .pinned_local_model("m", ModelCapability::TraceReview)
+                .is_none()
+        );
+    }
 
     #[test]
     fn local_vllm_is_openai_compatible_and_plainly_local() {

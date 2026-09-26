@@ -111,6 +111,7 @@ members = [
     "crates/collab/channel-crypto",
     "crates/collab/collab-fixtures",
     "crates/collab/collab-types",
+    "crates/collab/feedback-review",
     "crates/collab/neighbour-wire",
     "crates/collab/reference",
     "crates/collab/threshold-identity",

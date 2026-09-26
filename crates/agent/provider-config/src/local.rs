@@ -133,15 +133,17 @@ pub struct LocalModelRelease {
     pub required_memory_mib: u64,
     pub required_accelerator_mib: u64,
     pub context_window: u32,
-    /// Signed statement that this exact model revision accepts image input.
-    /// The model manager propagates it into provider metadata; no app guesses
-    /// this based on a model id or a manual label.
+    /// Signed statement of the fixed gateway protocols this exact revision
+    /// serves. The model manager propagates it into provider metadata; no app
+    /// guesses a capability from a model id or a manual label.
     #[serde(default)]
-    pub vision: bool,
-    /// Signed declaration for the dedicated local Photos face protocol.
-    /// Generic vision labels/descriptions never imply this capability.
-    #[serde(default)]
-    pub face_recognition: bool,
+    pub capabilities: BTreeSet<crate::ModelCapability>,
+    /// Share of the accelerator's memory, in percent, the runtime may claim
+    /// for weights and KV cache. `None` keeps the runtime's default, which
+    /// assumes a dedicated card; a model meant to run beside the desktop sets
+    /// this so the card keeps headroom.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accelerator_memory_percent: Option<u8>,
 }
 
 /// Catalogs are supplied by a signed/pinned desktop update channel. They are
@@ -188,6 +190,19 @@ impl LocalModelCatalog {
             {
                 return Err(ProvisionError::InvalidCatalog(
                     "model release metadata must include description, license id, and HTTPS license URL",
+                ));
+            }
+            if model
+                .accelerator_memory_percent
+                .is_some_and(|percent| !(10..=95).contains(&percent))
+            {
+                return Err(ProvisionError::InvalidCatalog(
+                    "accelerator memory share must be 10 through 95 percent",
+                ));
+            }
+            if model.context_window == 0 {
+                return Err(ProvisionError::InvalidCatalog(
+                    "model context window must be non-zero",
                 ));
             }
             if model.installed_size_bytes < model.artifact.size_bytes {
@@ -591,8 +606,8 @@ mod tests {
                 required_memory_mib: 8192,
                 required_accelerator_mib: 0,
                 context_window: 8192,
-                vision: false,
-                face_recognition: false,
+                capabilities: BTreeSet::new(),
+                accelerator_memory_percent: None,
             }],
         }
     }

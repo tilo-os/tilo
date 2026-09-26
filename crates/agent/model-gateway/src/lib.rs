@@ -1,8 +1,14 @@
-//! Tilo hosted-model gateway protocol.
+//! Tilo model gateway protocol.
 //!
 //! The API key is accepted only by the per-user gateway and is never part of
 //! Settings' CRDT/settings payload or an agent process. Sandboxed callers use
 //! one launcher-passed connected Unix descriptor (`TILO_SVC_MODEL_GATEWAY_FD`).
+//!
+//! Every connection starts with a [`Principal`] handoff that fixes who it acts
+//! for. The launcher writes [`Principal::App`] before a sandboxed app holds its
+//! descriptor; the desktop session connects to the service socket itself,
+//! which is outside every sandbox, and writes [`Principal::Session`]
+//! ([`session`]).
 
 #[cfg(unix)]
 use std::io::Write;
@@ -19,7 +25,11 @@ use zeroize::Zeroizing;
 
 pub const SERVICE_NAME: &str = "model-gateway";
 pub const SERVICE_FD_ENV: &str = "TILO_SVC_MODEL_GATEWAY_FD";
-pub const RPC_VERSION: u16 = 3;
+pub const RPC_VERSION: u16 = 4;
+/// Version of the [`Principal`] handoff frame.
+pub const HANDOFF_PROTOCOL: u16 = 2;
+/// The handoff: a little-endian `u32` length, then JSON.
+pub const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(4 * 1024);
 /// Every gateway request and response: a little-endian `u32` length, then
 /// JSON.
 pub const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(2 * 1024 * 1024);
@@ -45,6 +55,78 @@ pub struct FaceImage {
     pub media_type: String,
     pub data_base64: String,
     pub source_content_hash: String,
+}
+
+/// Who a gateway connection acts for, fixed by its first frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Principal {
+    /// A sandboxed app, named by the launcher that connected on its behalf.
+    App { app_id: String },
+    /// The desktop session itself (the shell).
+    Session,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HandoffFrame {
+    protocol: u16,
+    principal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    app_id: Option<String>,
+}
+
+impl Principal {
+    /// The handoff body for this principal: `{"protocol":2,"principal":"app",
+    /// "app_id":…}` or `{"protocol":2,"principal":"session"}`. The launcher
+    /// writes the same bytes for apps.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::Protocol`] if the frame cannot be encoded.
+    pub fn handoff(&self) -> Result<Vec<u8>, ClientError> {
+        let frame = match self {
+            Self::App { app_id } => HandoffFrame {
+                protocol: HANDOFF_PROTOCOL,
+                principal: "app".into(),
+                app_id: Some(app_id.clone()),
+            },
+            Self::Session => HandoffFrame {
+                protocol: HANDOFF_PROTOCOL,
+                principal: "session".into(),
+                app_id: None,
+            },
+        };
+        serde_json::to_vec(&frame).map_err(|error| ClientError::Protocol(error.to_string()))
+    }
+
+    /// Decode a handoff body.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::Protocol`] for a malformed frame, another
+    /// protocol version or an unknown principal.
+    pub fn from_handoff(body: &[u8]) -> Result<Self, ClientError> {
+        let invalid = |why: &str| ClientError::Protocol(why.to_owned());
+        let frame: HandoffFrame =
+            serde_json::from_slice(body).map_err(|_| invalid("malformed gateway handoff"))?;
+        if frame.protocol != HANDOFF_PROTOCOL {
+            return Err(invalid("unsupported gateway handoff protocol"));
+        }
+        match (frame.principal.as_str(), frame.app_id) {
+            ("app", Some(app_id)) if !app_id.is_empty() => Ok(Self::App { app_id }),
+            ("session", None) => Ok(Self::Session),
+            _ => Err(invalid("gateway handoff names an unknown principal")),
+        }
+    }
+
+    /// The app id, for an app principal.
+    #[must_use]
+    pub fn app_id(&self) -> Option<&str> {
+        match self {
+            Self::App { app_id } => Some(app_id),
+            Self::Session => None,
+        }
+    }
 }
 
 /// A request that can cross the sandbox boundary. `SetApiKey` is only sent by
@@ -75,6 +157,17 @@ pub enum Request {
         profile_id: String,
         model_id: String,
         images: Vec<FaceImage>,
+    },
+    /// Fixed-shape, device-local review of a feedback recording: redaction
+    /// proposals and step titles. The gateway owns the prompt and the output
+    /// schema, validates the model's answer against `trace`, and refuses
+    /// hosted, unpinned or undeclared profiles. Only the desktop session may
+    /// ask, because review runs there. The caller names no profile or model:
+    /// the gateway picks the device-local review model ([`review_model`]).
+    /// The answer is a JSON [`ReviewAnswer`] holding model proposals only;
+    /// the caller merges them over its own deterministic floor.
+    ReviewTrace {
+        trace: tilo_feedback_review::ReviewTraceRequest,
     },
     SecretStatus {
         profile_id: String,
@@ -334,6 +427,207 @@ pub fn read_frame<T: for<'a> Deserialize<'a>>(stream: &mut UnixStream) -> Result
         .map_err(|_| ClientError::Protocol("invalid gateway response".into()))
 }
 
+/// A device-local model whose signed metadata declares trace review.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewModel {
+    pub profile_id: String,
+    pub model_id: String,
+    pub revision: String,
+}
+
+/// The gateway's answer to [`Request::ReviewTrace`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewAnswer {
+    /// The model that answered; `None` when no device-local model declares
+    /// trace review, in which case `proposals` is empty.
+    pub model: Option<ReviewModel>,
+    /// The model's proposals only, checked against the request.
+    pub proposals: tilo_feedback_review::ReviewProposals,
+}
+
+/// The configured device-local model that reviews traces, if any: the first
+/// enabled loopback profile whose default model, or else another of its
+/// models, declares `trace_review` with a pinned revision. A hosted or
+/// private-network profile never qualifies, whatever its models claim.
+#[must_use]
+pub fn review_model(config: &agent_provider_config::ProviderConfig) -> Option<ReviewModel> {
+    config
+        .profiles
+        .iter()
+        .filter(|profile| profile.is_device_local())
+        .find_map(|profile| {
+            let preferred = profile.default_model.iter();
+            let others = profile.models.iter().map(|model| &model.id);
+            preferred.chain(others).find_map(|id| {
+                let model = profile
+                    .pinned_local_model(id, agent_provider_config::ModelCapability::TraceReview)?;
+                Some(ReviewModel {
+                    profile_id: profile.id.clone(),
+                    model_id: model.id.clone(),
+                    revision: model.revision.clone()?,
+                })
+            })
+        })
+}
+
+/// The desktop session's own gateway calls.
+///
+/// The shell is not sandboxed and is not launched through the launcher, so it
+/// has no launcher-issued descriptor. It connects to the gateway's service
+/// socket itself (`launcher::services::socket_for("model-gateway")`, the path
+/// the systemd socket unit listens on) and names itself with
+/// [`Principal::Session`]. The socket is outside every sandbox and `0600`, so
+/// only an unsandboxed process of the same user can present that principal:
+/// the same trust root the launcher's app handoff already rests on.
+#[cfg(unix)]
+pub mod session {
+    use std::path::Path;
+
+    use tilo_feedback_review::{ContractError, ReviewProposals, ReviewTraceRequest, floor, merge};
+
+    use super::{
+        ClientError, Frame, HANDOFF_FRAMING, Principal, RPC_VERSION, Request, Response,
+        ReviewAnswer, ReviewModel, read_frame, write_frame,
+    };
+
+    /// How long a session call may wait for the gateway's answer. Review on a
+    /// laptop GPU is the slowest verb the session uses.
+    const ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// A session connection to the gateway.
+    pub struct Connection(std::os::unix::net::UnixStream);
+
+    impl Connection {
+        /// Connect to the gateway at `socket` and present the session handoff.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`ClientError::Unavailable`] when the gateway cannot be
+        /// reached.
+        pub fn open(socket: &Path) -> Result<Self, ClientError> {
+            let mut stream = std::os::unix::net::UnixStream::connect(socket)
+                .map_err(|_| ClientError::Unavailable)?;
+            stream
+                .set_read_timeout(Some(ANSWER_TIMEOUT))
+                .map_err(|_| ClientError::Unavailable)?;
+            HANDOFF_FRAMING
+                .write(&mut stream, &Principal::Session.handoff()?)
+                .map_err(|_| ClientError::Unavailable)?;
+            Ok(Self(stream))
+        }
+
+        /// Send one request and read its answer.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`ClientError`] when the gateway is unreachable, answers
+        /// malformed, or refuses.
+        pub fn request(&mut self, request: Request) -> Result<Response, ClientError> {
+            write_frame(
+                &mut self.0,
+                &Frame {
+                    version: RPC_VERSION,
+                    value: request,
+                },
+            )?;
+            let response: Response = read_frame(&mut self.0)?;
+            if response.ok {
+                Ok(response)
+            } else {
+                Err(ClientError::Rejected(
+                    response.error.unwrap_or_else(|| "request rejected".into()),
+                ))
+            }
+        }
+
+        /// Ask the device-local review model about `trace`. The proposals
+        /// were checked by the gateway and are checked again here against the
+        /// same request.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`ClientError`] when the gateway refuses (malformed model
+        /// output, unreachable runtime) or is unreachable.
+        pub fn review_trace(
+            &mut self,
+            trace: &ReviewTraceRequest,
+        ) -> Result<ReviewAnswer, ClientError> {
+            let response = self.request(Request::ReviewTrace {
+                trace: trace.clone(),
+            })?;
+            let output = response
+                .output
+                .ok_or_else(|| ClientError::Protocol("gateway returned no review".into()))?;
+            let answer: ReviewAnswer = serde_json::from_str(&output)
+                .map_err(|_| ClientError::Protocol("gateway returned a malformed review".into()))?;
+            if answer.model.is_none() && answer.proposals != ReviewProposals::default() {
+                return Err(ClientError::Protocol(
+                    "gateway reviewed without a model".into(),
+                ));
+            }
+            answer
+                .proposals
+                .validate_against(trace)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            Ok(answer)
+        }
+    }
+
+    /// What the local model contributed to a review.
+    #[derive(Debug)]
+    pub enum ModelContribution {
+        /// Its proposals were merged over the floor.
+        Merged(ReviewModel),
+        /// No device-local model declares trace review. The caller may offer
+        /// to install one; review is complete without it.
+        NoLocalModel,
+        /// The gateway or the model did not answer usably; the floor stands.
+        Failed(ClientError),
+    }
+
+    /// The result of reviewing one request.
+    #[derive(Debug)]
+    pub struct ReviewOutcome {
+        pub proposals: ReviewProposals,
+        pub model: ModelContribution,
+    }
+
+    /// Review `trace`: always the deterministic floor, with the local model's
+    /// proposals merged on top when the gateway has a declared model and it
+    /// answers. Blocking; run it off the compositor's event loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContractError`] when `trace` breaks the review contract's
+    /// bounds; split long recordings into several requests.
+    pub fn review(
+        socket: &Path,
+        trace: &ReviewTraceRequest,
+    ) -> Result<ReviewOutcome, ContractError> {
+        trace.validate()?;
+        let floor = floor(trace);
+        let answer = Connection::open(socket).and_then(|mut gateway| gateway.review_trace(trace));
+        Ok(match answer {
+            Ok(ReviewAnswer {
+                model: Some(model),
+                proposals,
+            }) => ReviewOutcome {
+                proposals: merge(trace, floor, Some(proposals)),
+                model: ModelContribution::Merged(model),
+            },
+            Ok(ReviewAnswer { model: None, .. }) => ReviewOutcome {
+                proposals: merge(trace, floor, None),
+                model: ModelContribution::NoLocalModel,
+            },
+            Err(error) => ReviewOutcome {
+                proposals: merge(trace, floor, None),
+                model: ModelContribution::Failed(error),
+            },
+        })
+    }
+}
+
 #[cfg(all(test, unix))]
 mod wire_tests {
     use super::*;
@@ -362,6 +656,210 @@ mod wire_tests {
         gateway.write_all(br#"{"ok":false}"#).unwrap();
         let response: Response = read_frame(&mut client).unwrap();
         assert!(!response.ok);
+    }
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod session_tests {
+    use agent_provider_config::{
+        ModelCapability, ModelDescriptor, ProviderConfig, ProviderProfile,
+    };
+    use tilo_feedback_review::{
+        Confidence, DeclaredSensitivity, RedactionBasis, RedactionCategory, RedactionProposal,
+        ReviewProposals, ReviewStep, ReviewText, ReviewTraceRequest, Span, StepKind, StepOutcome,
+        StepTitle, TextOrigin, TitleBasis,
+    };
+
+    use super::session::{ModelContribution, review};
+    use super::*;
+
+    fn trace() -> ReviewTraceRequest {
+        ReviewTraceRequest {
+            steps: vec![ReviewStep {
+                kind: StepKind::Edited,
+                outcome: StepOutcome::Done,
+                app: "Mail".into(),
+                action: "Message".into(),
+                resource_kind: "mail.draft".into(),
+                texts: vec![ReviewText {
+                    node: "r:body".into(),
+                    sensitivity: DeclaredSensitivity::Public,
+                    kind: None,
+                    origin: TextOrigin::Semantic,
+                    text: "Hi Petr, mail petr@example.cz".into(),
+                }],
+            }],
+        }
+    }
+
+    fn config(trace_review: bool, endpoint: &str) -> ProviderConfig {
+        ProviderConfig {
+            profiles: vec![ProviderProfile {
+                id: "local".into(),
+                endpoint: endpoint.into(),
+                location: agent_provider_config::EndpointLocation::ThisDevice,
+                models: vec![
+                    ModelDescriptor {
+                        revision: Some("b".repeat(40)),
+                        capabilities: [ModelCapability::Vision].into(),
+                        ..ModelDescriptor::new("vision")
+                    },
+                    ModelDescriptor {
+                        revision: Some("a".repeat(40)),
+                        capabilities: if trace_review {
+                            [ModelCapability::TraceReview].into()
+                        } else {
+                            std::collections::BTreeSet::new()
+                        },
+                        ..ModelDescriptor::new("reviewer")
+                    },
+                ],
+                default_model: Some("vision".into()),
+                ..ProviderProfile::default()
+            }],
+            default_profile: Some("local".into()),
+        }
+    }
+
+    fn reviewer() -> ReviewModel {
+        ReviewModel {
+            profile_id: "local".into(),
+            model_id: "reviewer".into(),
+            revision: "a".repeat(40),
+        }
+    }
+
+    /// A gateway stand-in that checks the session handoff and answers one
+    /// review with `answer`.
+    fn gateway(
+        answer: ReviewAnswer,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::thread::JoinHandle<()>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model-gateway.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let serving = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let handoff = HANDOFF_FRAMING.read(&mut stream).unwrap().unwrap();
+            assert_eq!(
+                Principal::from_handoff(&handoff).unwrap(),
+                Principal::Session
+            );
+            let frame: Frame<Request> = read_frame(&mut stream).unwrap();
+            assert_eq!(frame.version, RPC_VERSION);
+            assert!(matches!(frame.value, Request::ReviewTrace { .. }));
+            write_frame(
+                &mut stream,
+                &Response {
+                    ok: true,
+                    output: Some(serde_json::to_string(&answer).unwrap()),
+                    configured: None,
+                    error: None,
+                },
+            )
+            .unwrap();
+        });
+        (dir, path, serving)
+    }
+
+    fn petr(span: Span) -> ReviewAnswer {
+        ReviewAnswer {
+            model: Some(reviewer()),
+            proposals: ReviewProposals {
+                redactions: vec![RedactionProposal {
+                    step: 0,
+                    node: "r:body".into(),
+                    span,
+                    category: RedactionCategory::Name,
+                    confidence: Confidence::new(80).unwrap(),
+                    basis: RedactionBasis::Model,
+                }],
+                titles: vec![StepTitle {
+                    step: 0,
+                    title: "You wrote to Petr".into(),
+                    basis: TitleBasis::Model,
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn only_a_declared_pinned_local_model_reviews() {
+        assert_eq!(
+            review_model(&config(true, "http://127.0.0.1:9000/v1")),
+            Some(reviewer())
+        );
+        assert_eq!(
+            review_model(&config(false, "http://127.0.0.1:9000/v1")),
+            None
+        );
+        assert_eq!(
+            review_model(&config(true, "https://api.example.test/v1")),
+            None
+        );
+    }
+
+    #[test]
+    fn the_model_is_merged_over_the_floor() {
+        let (_dir, socket, serving) = gateway(petr(Span { start: 3, end: 7 }));
+        let outcome = review(&socket, &trace()).unwrap();
+        serving.join().unwrap();
+        assert!(matches!(outcome.model, ModelContribution::Merged(_)));
+        let bases: Vec<RedactionBasis> = outcome
+            .proposals
+            .redactions
+            .iter()
+            .map(|p| p.basis)
+            .collect();
+        assert_eq!(bases, [RedactionBasis::Model, RedactionBasis::Pattern]);
+        assert_eq!(
+            outcome.proposals.titles[0].title,
+            "You wrote to \u{25AE}\u{25AE}\u{25AE}\u{25AE}"
+        );
+    }
+
+    #[test]
+    fn an_answer_that_misaddresses_the_request_leaves_only_the_floor() {
+        let (_dir, socket, serving) = gateway(petr(Span { start: 3, end: 400 }));
+        let outcome = review(&socket, &trace()).unwrap();
+        serving.join().unwrap();
+        assert!(matches!(
+            outcome.model,
+            ModelContribution::Failed(ClientError::Protocol(_))
+        ));
+        assert_eq!(outcome.proposals.redactions.len(), 1);
+        assert_eq!(
+            outcome.proposals.redactions[0].basis,
+            RedactionBasis::Pattern
+        );
+        assert_eq!(outcome.proposals.titles[0].basis, TitleBasis::ActionLabel);
+    }
+
+    #[test]
+    fn without_a_local_model_review_is_the_floor() {
+        let (_dir, socket, serving) = gateway(ReviewAnswer {
+            model: None,
+            proposals: ReviewProposals::default(),
+        });
+        let outcome = review(&socket, &trace()).unwrap();
+        serving.join().unwrap();
+        assert!(matches!(outcome.model, ModelContribution::NoLocalModel));
+        assert_eq!(outcome.proposals.redactions.len(), 1);
+
+        let unreachable = review(
+            std::path::Path::new("/nonexistent/model-gateway.sock"),
+            &trace(),
+        )
+        .unwrap();
+        assert!(matches!(
+            unreachable.model,
+            ModelContribution::Failed(ClientError::Unavailable)
+        ));
+        assert_eq!(unreachable.proposals.redactions.len(), 1);
     }
 }
 

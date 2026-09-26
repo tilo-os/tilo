@@ -10,7 +10,7 @@
 
 use std::io::Cursor;
 
-use agent_provider_config::{EndpointLocation, ProviderConfig, ProviderProtocol};
+use agent_provider_config::{ModelCapability, ProviderConfig};
 use base64::Engine as _;
 use image::{DynamicImage, GenericImageView, ImageEncoder};
 use serde::{Deserialize, Serialize};
@@ -80,19 +80,9 @@ pub struct FaceCluster {
 #[must_use]
 pub fn discover_local_face_capability(config: &ProviderConfig) -> Option<LocalFaceCapability> {
     let profile = config.active_profile()?;
-    if !profile.enabled
-        || profile.location != EndpointLocation::ThisDevice
-        || profile.protocol != ProviderProtocol::OpenAiCompatible
-        || !loopback_endpoint(&profile.endpoint)
-    {
-        return None;
-    }
     let model_id = profile.default_model.as_ref()?;
-    let model = profile.models.iter().find(|model| &model.id == model_id)?;
-    let revision = model.revision.as_ref()?.trim();
-    if !model.face_recognition || !pinned_revision(revision) {
-        return None;
-    }
+    let model = profile.pinned_local_model(model_id, ModelCapability::FaceRecognition)?;
+    let revision = model.revision.as_deref()?;
     Some(LocalFaceCapability {
         profile_id: profile.id.clone(),
         model_id: model.id.clone(),
@@ -168,19 +158,9 @@ impl Error {
 #[must_use]
 pub fn discover_local_capability(config: &ProviderConfig) -> Option<LocalVisionCapability> {
     let profile = config.active_profile()?;
-    if !profile.enabled
-        || profile.location != EndpointLocation::ThisDevice
-        || profile.protocol != ProviderProtocol::OpenAiCompatible
-        || !loopback_endpoint(&profile.endpoint)
-    {
-        return None;
-    }
     let model_id = profile.default_model.as_ref()?;
-    let model = profile.models.iter().find(|model| &model.id == model_id)?;
-    let revision = model.revision.as_ref()?.trim();
-    if !model.vision || !pinned_revision(revision) {
-        return None;
-    }
+    let model = profile.pinned_local_model(model_id, ModelCapability::Vision)?;
+    let revision = model.revision.as_deref()?;
     Some(LocalVisionCapability {
         profile_id: profile.id.clone(),
         model_id: model.id.clone(),
@@ -473,30 +453,6 @@ fn bounded_text(value: &str, limit: usize) -> String {
         .to_string()
 }
 
-fn loopback_endpoint(endpoint: &str) -> bool {
-    let Ok(url) = url::Url::parse(endpoint) else {
-        return false;
-    };
-    if !matches!(url.scheme(), "http" | "https") || url.username() != "" || url.password().is_some()
-    {
-        return false;
-    }
-    match url.host() {
-        Some(url::Host::Domain("localhost")) => true,
-        Some(url::Host::Ipv4(address)) => address.is_loopback(),
-        Some(url::Host::Ipv6(address)) => address.is_loopback(),
-        _ => false,
-    }
-}
-
-fn pinned_revision(revision: &str) -> bool {
-    matches!(revision.len(), 40 | 64)
-        && revision
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
 #[cfg(test)]
 mod tests {
     use agent_provider_config::{ModelDescriptor, ProviderProfile};
@@ -514,8 +470,11 @@ mod tests {
             label: "Vision 1".into(),
             context_window: Some(8_192),
             revision: Some("a".repeat(40)),
-            vision,
-            face_recognition: false,
+            capabilities: if vision {
+                [ModelCapability::Vision].into()
+            } else {
+                std::collections::BTreeSet::new()
+            },
             tool_calling: false,
         }];
         ProviderConfig {

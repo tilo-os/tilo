@@ -15,8 +15,8 @@ manifest = (root / "model-files.sha256").read_text().splitlines()
 
 assert "a3992d502a8714ce2f6207fde3507ccf9503f224" in recipe
 assert "c62343ee72f094ef574ab3af2717d0c60fec5e0808b238f19ac4c0d22fd152f7" in recipe
-assert '"vision": true' in recipe
-assert '"face_recognition": false' in recipe
+assert '"capabilities": ["vision"]' in recipe
+assert 'face_recognition' not in recipe
 assert "latest" not in recipe
 assert any(line.endswith("  model.safetensors") for line in manifest)
 for line in manifest:

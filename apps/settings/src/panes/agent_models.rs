@@ -4,12 +4,13 @@
 //! privileged model manager that pins Hugging Face snapshots and supervises
 //! vLLM. Settings never downloads model bytes or starts a server itself.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use agent_provider_config::{
-    EndpointLocation, ModelDescriptor, ProviderConfig, ProviderProfile, ProviderProtocol,
+    EndpointLocation, ModelCapability, ModelDescriptor, ProviderConfig, ProviderProfile,
+    ProviderProtocol,
 };
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use serde::{Deserialize, Serialize};
@@ -99,14 +100,11 @@ pub struct LocalModelPackage {
     pub license_url: String,
     pub download_bytes: u64,
     pub installed_bytes: u64,
-    /// Signed capability reported by the local-model manager for this exact
-    /// revision. It is not inferred from a model name.
+    /// Signed capabilities reported by the local-model manager for this exact
+    /// revision. They are not inferred from a model name, and none implies
+    /// another: a general image model never gains face recognition.
     #[serde(default)]
-    pub vision: bool,
-    /// Signed biometric capability for a distinct local face runtime.  A
-    /// general image-analysis model must not gain this capability implicitly.
-    #[serde(default)]
-    pub face_recognition: bool,
+    pub capabilities: BTreeSet<ModelCapability>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -476,8 +474,7 @@ fn synced_local_profile(
             label: model.package.name.clone(),
             context_window: None,
             revision: Some(model.package.revision.clone()),
-            vision: model.package.vision,
-            face_recognition: model.package.face_recognition,
+            capabilities: model.package.capabilities.clone(),
             tool_calling: true,
         })
         .collect();
@@ -1580,8 +1577,7 @@ mod tests {
             license_url: "https://example.test/license".into(),
             download_bytes: 5_368_709_120,
             installed_bytes: 10_737_418_240,
-            vision: false,
-            face_recognition: false,
+            capabilities: BTreeSet::new(),
         }
     }
 
@@ -1780,8 +1776,12 @@ mod tests {
     #[test]
     fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
         let mut package = package();
-        package.vision = true;
-        package.face_recognition = true;
+        package.capabilities = [
+            ModelCapability::Vision,
+            ModelCapability::FaceRecognition,
+            ModelCapability::TraceReview,
+        ]
+        .into();
         let model_id = package.id.clone();
         let models = vec![InstalledLocalModel {
             package,
@@ -1800,8 +1800,7 @@ mod tests {
             profile.models[0].revision.as_deref(),
             Some("0123456789abcdef")
         );
-        assert!(profile.models[0].vision);
-        assert!(profile.models[0].face_recognition);
+        assert_eq!(profile.models[0].capabilities.len(), 3);
         assert!(profile.enabled);
     }
 

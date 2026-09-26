@@ -153,8 +153,8 @@ cat > "$output/local-models.json" <<EOF
     "required_memory_mib": 16384,
     "required_accelerator_mib": 8192,
     "context_window": 8192,
-    "vision": true,
-    "face_recognition": false
+    "capabilities": ["vision"],
+    "accelerator_memory_percent": 60
   }]
 }
 EOF

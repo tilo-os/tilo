@@ -39,7 +39,7 @@ def main():
     args = parser.parse_args()
 
     request = {
-        "version": 3,
+        "version": 4,
         "verb": "analyze_image",
         "profile_id": args.profile,
         "model_id": args.model,
@@ -53,7 +53,7 @@ def main():
         stream.connect(args.socket)
         # This socket is an explicitly developer-created gateway listener.
         # Normal desktop calls receive this handoff only from the launcher.
-        write_frame(stream, {"protocol": 1, "app_id": "so.tilo.photos"})
+        write_frame(stream, {"protocol": 2, "principal": "app", "app_id": "so.tilo.photos"})
         write_frame(stream, request)
         length = struct.unpack("<I", read_exact(stream, 4))[0]
         response = json.loads(read_exact(stream, length))

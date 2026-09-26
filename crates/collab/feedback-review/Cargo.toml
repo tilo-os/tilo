@@ -1,0 +1,25 @@
+[package]
+name = "tilo-feedback-review"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The bounded review contract for a feedback recording: what the device-local review model may see, what it may answer, and the deterministic floor that runs without it."
+
+[lib]
+name = "tilo_feedback_review"
+path = "src/lib.rs"
+
+# Pure data and detectors, no IPC: the shell (caller) and the model gateway
+# (which validates the model's answer) both link this.
+
+[dependencies]
+regex.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
