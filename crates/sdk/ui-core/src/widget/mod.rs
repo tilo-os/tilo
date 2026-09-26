@@ -1487,6 +1487,33 @@ pub trait Widget {
 
     fn restore_view_state(&mut self, _view: &crate::view::ViewContribution) {}
 
+    /// Route history when this widget, or one it contains, is a [`Router`](router::Router).
+    ///
+    /// Dev reload writes this beside the document so the same screen is showing
+    /// after the process is replaced. Containers forward to the first child
+    /// that has one. A [`Router`](router::Router) reports its own stack and
+    /// does not look inside the current screen.
+    fn dev_route(&self) -> Option<router::RouteSnapshot> {
+        for child in self.children() {
+            if let Some(route) = child.dev_route() {
+                return Some(route);
+            }
+        }
+        None
+    }
+
+    /// Put `route` back. Returns whether a router in this subtree accepted it.
+    ///
+    /// An unknown route name is refused and the existing screen stays up.
+    fn restore_dev_route(&mut self, route: &router::RouteSnapshot) -> bool {
+        for child in self.children_mut() {
+            if child.restore_dev_route(route) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Theme/high-contrast/reduced-motion/scale, polled under
     /// [`crate::app::App::appearance_reconcile`] — how a settings pane
     /// re-themes the running app live without a back-channel.
@@ -2386,7 +2413,7 @@ pub use stack::Stack;
 mod container;
 pub use container::Container;
 mod router;
-pub use router::{RouteError, RouteHandle, Router};
+pub use router::{RouteError, RouteHandle, RouteSnapshot, Router};
 mod document_view;
 pub use document_view::ModelView;
 mod divider;

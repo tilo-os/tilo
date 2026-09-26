@@ -54,6 +54,7 @@ use runtime::{
     WindowRuntime,
 };
 include!("app/continuation.rs");
+include!("app/dev_session.rs");
 include!("app/actions.rs");
 include!("app/accessibility.rs");
 include!("app/collaboration.rs");
@@ -162,6 +163,10 @@ pub enum UserEvent {
     /// Synchronize and redraw after typed state was changed by a worker.
     /// Created automatically by [`crate::LocalStateWriter`].
     Wake(crate::wake::WakeEvent),
+    /// `tilo-app dev` is replacing this process. Flush the document and write
+    /// the route and caret, then leave the event loop so the next process can
+    /// read them.
+    DevSessionStop,
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
     #[cfg(feature = "native")]
     AccessKit(accesskit_winit::WindowEvent),
@@ -1931,6 +1936,13 @@ impl App {
     /// Lets headless tests stand the App up without spinning a winit loop.
     #[doc(hidden)]
     pub fn init_layout(&mut self) {
+        let dev_view = self.consume_dev_checkpoint();
+        self.init_layout_with_dev_view(dev_view);
+    }
+
+    /// Headless and dev-reload startup. `dev_view` is the presentation captured
+    /// from the previous process; shell continuation still wins when both exist.
+    pub(crate) fn init_layout_with_dev_view(&mut self, dev_view: Option<crate::view::View>) {
         let _entry = self.enter_wake_scope();
         self.refresh_control_action_availability();
         self.component_close_reports
@@ -1940,6 +1952,8 @@ impl App {
         self.build_history_presentation();
         self.update_focusable_order();
         if let Some(view) = self.continuation.pending_view.take() {
+            <Self as crate::view::FreezeThaw>::restore_view(self, &view);
+        } else if let Some(view) = dev_view {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
         }
         if self.autofocus_first
