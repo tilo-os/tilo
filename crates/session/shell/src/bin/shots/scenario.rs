@@ -824,9 +824,8 @@ fn apply_hosted_window_and_wheel_drag(driver: &mut ShellDriver, action: &Action)
             });
         }
         Action::EnableNativeAppSearch => {
-            match shell::shell::hosted_inputs::HostedTileInputs::for_host_directory(
-                &std::env::temp_dir(),
-            ) {
+            let home = super::fixture_home::path().unwrap_or_else(std::env::temp_dir);
+            match shell::shell::hosted_inputs::HostedTileInputs::for_host_directory(&home) {
                 Ok(inputs) => {
                     driver.with_chrome(|st| st.set_hosted_inputs_for_capture(inputs));
                 }

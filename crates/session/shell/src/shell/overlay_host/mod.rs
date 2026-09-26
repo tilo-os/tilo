@@ -55,8 +55,9 @@ use history::{
 use shortcuts::configured_shortcut_matches;
 pub(crate) use shortcuts::shortcut_chord_matches;
 use shortcuts::{
-    configured_shortcut_action, shortcut_action_label, shortcut_chord_from_event,
-    shortcut_guide_chord, shortcut_reference_columns, shortcut_reference_group_height,
+    SHORTCUT_NAVIGATION_COLUMNS, configured_shortcut_action, shortcut_action_label,
+    shortcut_chord_from_event, shortcut_guide_chord, shortcut_navigation_height,
+    shortcut_navigation_step, shortcut_reference_columns, shortcut_reference_group_height,
     shortcut_reference_rows, shortcut_reference_step,
 };
 #[cfg(test)]
@@ -20351,8 +20352,9 @@ impl ShellOverlayHost {
                     ),
                 ];
                 let compact = body.height() < 450.0;
-                let navigation_step = if compact { 41.0 } else { 44.0 };
-                let navigation_height = if compact { 154.0 } else { 168.0 };
+                let navigation_step = shortcut_navigation_step(compact);
+                let navigation_columns = SHORTCUT_NAVIGATION_COLUMNS;
+                let navigation_height = shortcut_navigation_height(compact, rows.len());
                 let navigation_surface =
                     Rect::new(body.x0, body.y0, body.x1, body.y0 + navigation_height);
                 scene.fill(
@@ -20372,9 +20374,12 @@ impl ShellOverlayHost {
                     TextWeight::Semibold,
                 );
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
-                    let column = index % 2;
-                    let row = index / 2;
-                    let column_width = (navigation_surface.width() - 36.0) / 2.0;
+                    let column = index % navigation_columns;
+                    let row = index / navigation_columns;
+                    let column_width = (navigation_surface.width()
+                        - 28.0
+                        - 8.0 * usize_to_f64_lossy(navigation_columns.saturating_sub(1)))
+                        / usize_to_f64_lossy(navigation_columns);
                     let x = navigation_surface.x0
                         + 14.0
                         + usize_to_f64_lossy(column) * (column_width + 8.0);
@@ -20420,9 +20425,9 @@ impl ShellOverlayHost {
                     }
 
                     let reset = Rect::new(
-                        hit_rects[1].x1 + 12.0,
+                        hit_rects[1].x1 + 8.0,
                         y + 18.0,
-                        hit_rects[1].x1 + 34.0,
+                        hit_rects[1].x1 + 30.0,
                         y + 40.0,
                     );
                     let changed = actions.into_iter().any(|action| {
@@ -27924,6 +27929,25 @@ mod palette_dispatch_tests {
             "saying something about what is on screen is a desktop essential"
         );
         assert!(rows.iter().all(|(label, _)| *label != "Shortcut guide"));
+    }
+
+    #[test]
+    fn every_navigation_shortcut_fits_its_panel_above_the_essentials() {
+        // Windows, Tabs, Move tab, Strips, Workspaces, Move group, Resize.
+        let rows: usize = 7;
+        for compact in [true, false] {
+            let lines = rows.div_ceil(SHORTCUT_NAVIGATION_COLUMNS);
+            let last_row_bottom = 31.0
+                + (usize_to_f64_lossy(lines) - 1.0) * shortcut_navigation_step(compact)
+                + 18.0
+                + 22.0;
+            assert!(
+                last_row_bottom <= shortcut_navigation_height(compact, rows),
+                "the last navigation row must end inside its panel (compact: {compact})"
+            );
+        }
+        assert_eq!(shortcut_navigation_height(true, rows), 154.0);
+        assert_eq!(shortcut_navigation_height(false, rows), 168.0);
     }
 
     #[test]

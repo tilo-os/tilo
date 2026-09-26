@@ -213,6 +213,29 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(&'stat
     ]
 }
 
+/// The editable navigation shortcuts sit in this many columns, so all of
+/// them fit the panel above the essentials, whatever the guide's size.
+pub(super) const SHORTCUT_NAVIGATION_COLUMNS: usize = 3;
+
+pub(super) fn shortcut_navigation_step(compact: bool) -> f64 {
+    if compact { 41.0 } else { 44.0 }
+}
+
+/// The navigation panel's height for `rows` shortcuts: its heading, one
+/// step per line of columns, and the inset below the last.
+pub(super) fn shortcut_navigation_height(compact: bool, rows: usize) -> f64 {
+    let lines = rows.div_ceil(SHORTCUT_NAVIGATION_COLUMNS);
+    31.0 + usize_to_f64(lines) * shortcut_navigation_step(compact) + if compact { 0.0 } else { 5.0 }
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "a count of guide rows is tiny, far inside f64"
+)]
+fn usize_to_f64(value: usize) -> f64 {
+    value as f64
+}
+
 pub(super) fn shortcut_reference_columns(_body_width: f64) -> usize {
     3
 }
