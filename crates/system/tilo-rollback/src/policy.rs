@@ -445,7 +445,10 @@ struct PredictionTicket {
 /// Returns an error if loading the prediction key or minting its verification ticket fails
 /// outright (as opposed to simply not verifying), if the policy session fails to start, if
 /// reading live PCRs fails, or if the rollback-floor `PolicyNV` step fails.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input of the TPM policy the prediction was sealed against"
+)]
 pub fn satisfy(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -545,7 +548,10 @@ fn verify_prediction_signature(
 }
 
 /// Stage 2 of [`satisfy`]: the real policy session, spending the ticket stage 1 minted.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "stage 2 takes the same policy inputs as satisfy, plus the stage 1 ticket"
+)]
 fn drive_policy_session(
     runner: &dyn Runner,
     ws: &Workspace,
