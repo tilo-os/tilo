@@ -73,8 +73,33 @@ pub fn resolve_for(
               room/capabilities tuple it's cloned into; nothing to tighten without cloning \
               the workspace policy out for no real gain"
 )]
-pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<InstalledApp, UriOpenError> {
+pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<UriOpened, UriOpenError> {
     let resource = resource_for_uri(uri)?;
+    // Host `x-scheme-handler` entries (a mail client, a chat app) take the
+    // URI when the person chose one or no Tilo package claims the scheme.
+    let (host, portal_workspace_id) = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let workspace = tree.desktop.active_workspace();
+        let host = match launcher::handler_for_resource_with_policy(
+            &resource,
+            &state.local_user_id,
+            workspace.map(|workspace| &workspace.default_apps),
+        ) {
+            Some((launcher::ResourceHandler::Host(host), _)) => Some(host),
+            _ => None,
+        };
+        (host, workspace.map(|workspace| workspace.room.to_string()))
+    };
+    if let Some(host) = host {
+        return crate::shell::host_apps::launch_with_url(
+            &host.desktop_id,
+            uri,
+            portal_workspace_id,
+        )
+        .map(UriOpened::Host)
+        .map_err(UriOpenError::Launch);
+    }
     // The guard's only use is the borrow passed into
     // `app_for_resource_with_policy`, released the moment that call
     // returns; cloning the workspace policy out just to drop the guard a
@@ -112,7 +137,15 @@ pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<InstalledApp, Uri
         (workspace.room, workspace.capabilities.clone())
     };
     launcher::launch_uri_in_room(&app.package_id, room, capabilities, uri)
+        .map(UriOpened::Package)
         .map_err(UriOpenError::Launch)
+}
+
+/// Which kind of application received a URI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UriOpened {
+    Package(InstalledApp),
+    Host(crate::shell::host_apps::HostApp),
 }
 
 #[cfg(test)]
