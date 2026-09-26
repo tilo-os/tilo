@@ -82,10 +82,21 @@ whose content identity belongs exclusively to that model.
   signed support matrix.
 - CPU is the compatibility fallback when memory and instruction-set checks
   pass. It is labelled honestly and never presented as GPU acceleration.
+- An accelerator has three states, not two: usable, absent, and present but
+  usable only after a restart. The last covers NVML reporting a
+  driver/library version mismatch and a driver boot pack staged for the next
+  boot. That state holds the runtime decision: nothing falls back to the CPU,
+  and presets do not move tasks to a hosted provider as if there were no
+  card. Settings says “Restart to finish setting up your graphics driver”.
 
 The recommendation engine prefers a model that leaves headroom for the desktop
-and attached apps. Users may choose another compatible installed model, but an
-unsupported combination cannot be forced through the UI.
+and attached apps. A CPU model is offered only when the memory the kernel
+reports available, less 4 GiB for the desktop, holds it, the machine has at
+least four threads, and its expected speed is better than impractical. The
+expected speed (memory bandwidth over the bytes of weights read per token) is
+shown beside the download, so a slow model says it is slow. Users may choose
+another compatible installed model, but an unsupported combination cannot be
+forced through the UI.
 
 ## Privilege boundary
 

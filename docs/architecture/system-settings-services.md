@@ -21,7 +21,8 @@ The scopes are deliberately distinct:
 | Derived | Recomputed/runtime history and never treated as durable personal intent. |
 
 Examples matter more than the section name. Theme, locale, accessibility,
-shortcuts, text assistance, and Quick Settings arrangement are personal.
+shortcuts, text assistance, Quick Settings arrangement, AI provider profiles
+and model assignments are personal.
 Connector layout/scale, audio node selections, tablet mapping, calibration,
 power policy, update channel, portal-granted paths, loopback model endpoints,
 and Continuity privacy toggles are device-local. Workspace roles, default-app
