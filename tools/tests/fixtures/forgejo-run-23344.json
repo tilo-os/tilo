@@ -18,7 +18,7 @@
       "login": "tilo-packaging-controller",
       "is_admin": false
     },
-    "event_payload": "{\"inputs\": {\"architectures\": \"x86_64\", \"builder_image\": \"code.tilo.so/tilo/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a\", \"collection\": \"default\", \"coordinator_intent\": \"5d4e785f-db2f-43dc-b241-f1399380bc46\", \"coordinator_policy_sha256\": \"6d077cf68228a579b423c339184e95eeb01e91f9bc141e176ae091cfd07f56c1\", \"publish\": \"false\", \"verify_final_receipt\": \"false\"}, \"ref\": \"c23e71726aa2f192fd347e8ad56c8e26b3ab996a\"}"
+    "event_payload": "{\"inputs\": {\"architectures\": \"x86_64\", \"builder_image\": \"registry.tilo.so/tilo/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a\", \"collection\": \"default\", \"coordinator_intent\": \"5d4e785f-db2f-43dc-b241-f1399380bc46\", \"coordinator_policy_sha256\": \"174fe62addec1b78620a71da823d936a93ad1687c79a1230295a7fd4944c3481\", \"publish\": \"false\", \"verify_final_receipt\": \"false\"}, \"ref\": \"c23e71726aa2f192fd347e8ad56c8e26b3ab996a\"}"
   },
   "intent": {
     "id": "5d4e785f-db2f-43dc-b241-f1399380bc46",
@@ -26,19 +26,19 @@
     "baseline_evidence": null,
     "desired": {
       "source_sha": "c23e71726aa2f192fd347e8ad56c8e26b3ab996a",
-      "builder_image": "code.tilo.so/tilo/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
+      "builder_image": "registry.tilo.so/tilo/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
       "collection": "default",
       "architectures": [
         "x86_64"
       ],
-      "policy_sha256": "6d077cf68228a579b423c339184e95eeb01e91f9bc141e176ae091cfd07f56c1"
+      "policy_sha256": "174fe62addec1b78620a71da823d936a93ad1687c79a1230295a7fd4944c3481"
     }
   },
   "policy": {
     "architectures": [
       "x86_64"
     ],
-    "builder_image": "code.tilo.so/tilo/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
+    "builder_image": "registry.tilo.so/tilo/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
     "bundle_compatibility_approved": true,
     "collection": "default",
     "enabled": true,

@@ -1093,7 +1093,7 @@ mod tests {
               "toolchain": "rustc 1.97.1 (abc 2026-08-01)",
               "target": "x86_64-unknown-linux-gnu",
               "cargo_lock_hash": "0123abcd",
-              "base_image": "code.tilo.so/tilo/tilo:main-1a2b3c4"
+              "base_image": "registry.tilo.so/tilo/tilo:main-1a2b3c4"
             }"#,
         )
         .unwrap();

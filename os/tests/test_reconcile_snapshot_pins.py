@@ -68,7 +68,7 @@ class ReconcileTests(unittest.TestCase):
 
     @staticmethod
     def pin(source: str) -> str:
-        return f"RPMS_REF=code.tilo.so/tilo/rpms@sha256:{'1' * 64}\nRPMS_SOURCE_REVISION={source}\n"
+        return f"RPMS_REF=registry.tilo.so/tilo/rpms@sha256:{'1' * 64}\nRPMS_SOURCE_REVISION={source}\n"
 
     def commit(self, name, files):
         for path, text in files.items():

@@ -14,7 +14,7 @@ class RpmPinContractTests(unittest.TestCase):
                        if line and not line.startswith("#")]
         self.assertEqual(len(assignments), 2)
         self.assertRegex(assignments[0],
-                         r"\ARPMS_REF=code\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}\Z")
+                         r"\ARPMS_REF=registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}\Z")
         self.assertRegex(assignments[1],
                          r"\ARPMS_SOURCE_REVISION=[0-9a-f]{40}\Z")
 

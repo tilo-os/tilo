@@ -102,7 +102,7 @@ class RootfsIdentityTests(unittest.TestCase):
                                  ('architecture', 'x86_64'), ('revision', 'main'),
                                  *[('source_date_epoch', value) for value in
                                    ('', '-1', '1.5', '01', ' 1', '253402300800')],
-                                 ('target', 'code.tilo.so/tilo/tilo:testing-aarch64'),
+                                 ('target', 'registry.tilo.so/tilo/tilo:testing-aarch64'),
                                  ('signer', Path('/var/lib/../signer')),
                                  ('signer', DEV / 'development-signer.py')]:
                 args = self.arguments()

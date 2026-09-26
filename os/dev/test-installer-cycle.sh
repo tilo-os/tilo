@@ -46,7 +46,7 @@ fi
 if [ -n "$expected_target_ref" ] || [ "$install_only" -eq 1 ]; then
   [ "$install_mode" = guided-alongside ] \
     || { echo 'signed offline target proof requires --guided-alongside' >&2; exit 2; }
-  [[ "$expected_target_ref" =~ ^code\.tilo\.so/tilo/tilo@sha256:[0-9a-f]{64}$ ]] \
+  [[ "$expected_target_ref" =~ ^registry\.tilo\.so/tilo/tilo@sha256:[0-9a-f]{64}$ ]] \
     || { echo 'TILO_EXPECTED_INSTALLED_REF must pin the separately signed target' >&2; exit 2; }
 fi
 case "$graphics" in

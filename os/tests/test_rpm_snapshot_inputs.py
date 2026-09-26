@@ -67,7 +67,7 @@ class Inputs(unittest.TestCase):
         paths={line.strip()[2:].strip('"').removesuffix('/**') for line in push.splitlines() if line.strip().startswith('- ') and '/' in line}
         self.assertEqual(paths,set(gate.INPUTS))
     def pin(self,revision):
-        self.write(gate.PIN,'RPMS_REF=code.tilo.so/tilo/rpms@sha256:'+'a'*64+'\n'+(f'RPMS_SOURCE_REVISION={revision}\n' if revision else ''))
+        self.write(gate.PIN,'RPMS_REF=registry.tilo.so/tilo/rpms@sha256:'+'a'*64+'\n'+(f'RPMS_SOURCE_REVISION={revision}\n' if revision else ''))
         return self.commit()
     def test_since_pin_ignores_the_pin_and_intermediate_pushes(self):
         pinned=self.pin(self.base)
@@ -98,7 +98,7 @@ class Inputs(unittest.TestCase):
         self.assertFalse(self.newer(source,main))
     def test_promotion_refuses_an_unrecorded_pin_that_landed_later(self):
         source=self.pin(None)
-        self.write(gate.PIN,'RPMS_REF=code.tilo.so/tilo/rpms@sha256:'+'b'*64+'\n');main=self.commit()
+        self.write(gate.PIN,'RPMS_REF=registry.tilo.so/tilo/rpms@sha256:'+'b'*64+'\n');main=self.commit()
         self.assertFalse(self.newer(source,main))
     def test_pin_without_source_revision_refreshes(self):
         head=self.pin(None)

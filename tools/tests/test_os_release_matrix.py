@@ -159,7 +159,7 @@ class OsReleaseMatrixTests(unittest.TestCase):
         build = workflow.split("\n  build-and-push:\n", 1)[1].split("\n    strategy:", 1)[0]
         self.assertIn("needs.plan.outputs.skip != 'true'", build)
         self.assertIn("PLANNED_PUBLISH: ${{ needs.plan.outputs.publish }}", workflow)
-        self.assertIn("docker://code.tilo.so/tilo/tilo:latest", workflow)
+        self.assertIn("docker://registry.tilo.so/tilo/tilo:latest", workflow)
         self.assertIn('.Labels["org.opencontainers.image.revision"]', workflow)
 
     def test_every_publishing_run_holds_the_generation_series_lock(self):
@@ -269,8 +269,8 @@ class ReleaseGateTests(unittest.TestCase):
     def test_two_ref_archive_needs_an_explicit_source_reference(self):
         # Buildx emits one top-level OCI index descriptor for each image tag.
         # The selected ref must work for both inspection and copy/import.
-        first = "code.tilo.so/tilo/tilo:gen1"
-        second = "code.tilo.so/tilo/tilo:main-abcdef0"
+        first = "registry.tilo.so/tilo/tilo:gen1"
+        second = "registry.tilo.so/tilo/tilo:main-abcdef0"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             layout = root / "layout"

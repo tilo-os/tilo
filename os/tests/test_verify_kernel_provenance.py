@@ -11,10 +11,10 @@ import unittest
 SCRIPT = Path(__file__).resolve().parents[1] / "dev/verify-kernel-provenance.sh"
 ARCH = platform.machine()
 REGISTRY_ARCH = {"x86_64": "amd64", "aarch64": "arm64"}.get(ARCH)
-KERNEL = "code.tilo.so/tilo/tilo-kernel@sha256:" + "1" * 64
-BASE = "code.tilo.so/tilo/fedora-bootc@sha256:" + "2" * 64
-BUILDROOT = "code.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "3" * 64
-EARLIER_RPMS = "code.tilo.so/tilo/rpms@sha256:" + "4" * 64
+KERNEL = "registry.tilo.so/tilo/tilo-kernel@sha256:" + "1" * 64
+BASE = "registry.tilo.so/tilo/fedora-bootc@sha256:" + "2" * 64
+BUILDROOT = "registry.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "3" * 64
+EARLIER_RPMS = "registry.tilo.so/tilo/rpms@sha256:" + "4" * 64
 SOURCE = "git" + "+ssh://code.tilo.so/tilo/tilo@" + "5" * 40
 
 
@@ -84,7 +84,7 @@ class VerifyKernelProvenanceTests(unittest.TestCase):
         self.assertIn("signature verification failed", result.stderr)
 
     def test_requires_the_kernel_identity_and_one_environment(self):
-        for bound in ((), (BUILDROOT, "code.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "6" * 64)):
+        for bound in ((), (BUILDROOT, "registry.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "6" * 64)):
             with self.subTest(bound=bound):
                 result = self.run_verify(bound, bound)
                 self.assertNotEqual(result.returncode, 0)
@@ -99,7 +99,7 @@ class VerifyKernelProvenanceTests(unittest.TestCase):
         self.assertIn("expected", result.stderr)
 
     def test_takes_only_the_kernel_reference(self):
-        for arguments in ((), (KERNEL, BASE), ("code.tilo.so/tilo/tilo-kernel:latest",)):
+        for arguments in ((), (KERNEL, BASE), ("registry.tilo.so/tilo/tilo-kernel:latest",)):
             with self.subTest(arguments=arguments):
                 self.assertNotEqual(self.run_verify((BUILDROOT,), (BUILDROOT,),
                                                     arguments=arguments).returncode, 0)

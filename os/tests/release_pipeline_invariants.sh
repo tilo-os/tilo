@@ -21,8 +21,8 @@ apps="$workflows/release-apps.yml"
 os="$workflows/build-image.yml"
 imager="$workflows/release-imager.yml"
 
-if grep -Fq '[[ "$RPMS_REF" =~ ^code\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' "$os" \
-   && grep -Fq '[[ "$RPMS_REF" =~ ^code\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh"; then
+if grep -Fq '[[ "$RPMS_REF" =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' "$os" \
+   && grep -Fq '[[ "$RPMS_REF" =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh"; then
   ok 'CI and local OS builds accept the published digest-pinned RPM namespace'
 else
   bad 'an OS build rejects the RPM namespace published by snapshot-rpms'
@@ -61,7 +61,7 @@ grep -Fq 'tilo-kernel-buildcache:{1},mode=min,ignore-error=true' "$workflows/bui
   && grep -Fq "if: \${{ steps.build.outcome == 'failure' }}" "$workflows/build-kernel.yml" \
   && grep -Fq 'for attempt in 1 2 3; do' "$workflows/build-kernel.yml" \
   && grep -Fq 'docker image inspect "$LOCAL_IMAGE"' "$workflows/build-kernel.yml" \
-  && grep -Fq 'ref="code.tilo.so/tilo/tilo-kernel@${{ steps.published.outputs.digest }}"' "$workflows/build-kernel.yml" \
+  && grep -Fq 'ref="registry.tilo.so/tilo/tilo-kernel@${{ steps.published.outputs.digest }}"' "$workflows/build-kernel.yml" \
   && ! grep -Fq 'tilo-kernel@${{ steps.build.outputs.digest }}' "$workflows/build-kernel.yml" \
   && ok 'kernel publication survives cache-write failures and retries a failed push of the completed build' \
   || bad 'a registry cache or push hiccup can fail or silently skip kernel publication'
@@ -119,10 +119,10 @@ if grep -Fq 'x86_64) ref="$KERNEL_RPMS_X86_64_REF" ;;' "$os" \
    && grep -Fq './os/dev/verify-kernel-provenance.sh "$ref"' "$os" \
    && ! grep -Eq 'verify-kernel-provenance\.sh "\$ref" "|binding=signed-snapshot|--arg rpms "\$RPMS_REF"' "$os" \
    && grep -Fq 'echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"' "$os" \
-   && grep -Fq '[[ "$KERNEL_RPMS_REF" =~ ^code\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh" \
+   && grep -Fq '[[ "$KERNEL_RPMS_REF" =~ ^registry\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh" \
    && grep -Fq 'dev/verify-kernel-provenance.sh" "$KERNEL_RPMS_REF" \' "$repo/os/dev/build-image.sh" \
    && ! grep -Fq 'TILO_KERNEL_RPMS_BINDING' "$repo/os/dev/build-image.sh" \
-   && grep -Fq '[[ "$ref" =~ ^code\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$kernel_verify" \
+   && grep -Fq '[[ "$ref" =~ ^registry\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$kernel_verify" \
    && grep -Fq 'cosign verify --key "$key" "$ref"' "$kernel_verify" \
    && grep -Fq 'cosign verify-attestation --key "$key" --type slsaprovenance1 "$ref"' "$kernel_verify" \
    && grep -Fq 'https://tilo.sh/buildtypes/kernel-rpm/v1' "$kernel_verify" \
@@ -139,7 +139,7 @@ kernel_workflow="$workflows/build-kernel.yml"
 kernel_containerfile="$repo/os/kernel/Containerfile"
 if grep -Fq -- '- name: Verify the signed native kernel buildroot' "$kernel_workflow" \
    && grep -Fq '. os/kernel-buildroot-snapshot.env' "$kernel_workflow" \
-   && grep -Fq '[[ "$ref" =~ ^code\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]' "$kernel_workflow" \
+   && grep -Fq '[[ "$ref" =~ ^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]' "$kernel_workflow" \
    && grep -Fq 'cosign verify --key keys/cosign.pub "$ref"' "$kernel_workflow" \
    && test "$(grep -Fc 'KERNEL_BUILDROOT_REF=' "$kernel_workflow")" -ge 3 \
    && ! grep -Eq 'RPMS_REF|rpms-snapshot\.env|derive-rpm-package-set' "$kernel_workflow" \

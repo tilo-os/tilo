@@ -99,7 +99,8 @@ class OfflineTargetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root, metadata, _, attestation = self.fixture(directory)
             metadata["hardware_profile"] = "generic"
-            metadata["update_origin"] = "code.tilo.so/tilo/tilo:gen2"
+            metadata["target_ref"] = "registry.tilo.so/tilo/tilo@" + metadata["target_digest"]
+            metadata["update_origin"] = "registry.tilo.so/tilo/tilo:gen2"
             (root / "target.json").write_text(json.dumps(metadata))
             target.read_target(root)
             wrapper = json.loads(attestation)[0]
@@ -113,7 +114,7 @@ class OfflineTargetTests(unittest.TestCase):
             provenance = target.checked_provenance(signed, metadata)
             self.assertEqual(provenance["generation"], 2)
             self.assertIsNone(provenance["firmware_candidate"])
-            metadata["update_origin"] = "code.tilo.so/tilo/tilo:gen3"
+            metadata["update_origin"] = "registry.tilo.so/tilo/tilo:gen3"
             with self.assertRaisesRegex(ValueError, "SLSA"):
                 target.checked_provenance(signed, metadata)
 

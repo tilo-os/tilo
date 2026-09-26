@@ -53,10 +53,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: code.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
     outputs:
       applicable: ${{ steps.compare.outputs.applicable }}
     steps:
@@ -89,8 +86,9 @@ jobs:
       }}
     runs-on: runner
     timeout-minutes: 90
+    enable-openid-connect: true
     env:
-      IMAGE_REPOSITORY: code.tilo.so/tilo/tilo-registry-server
+      IMAGE_REPOSITORY: registry.tilo.so/tilo/tilo-registry-server
       SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
       # The production cluster is amd64 today. Add arm64 as a separately tested
       # native child before publishing a multi-platform index under this name.
@@ -161,11 +159,7 @@ jobs:
 
       - name: Log in for main publication
         if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: code.tilo.so
-          username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+        uses: ./.forgejo/actions/tilo-registry-login
 
       - name: Publish the exact image that passed the smoke test
         if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}

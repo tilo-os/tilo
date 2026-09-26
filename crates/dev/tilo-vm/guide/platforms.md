@@ -158,8 +158,8 @@ Last, it makes the VM's root SSH key and creates the VM
 The download needs a **forge token** with package read access:
 `FORGEJO_TOKEN`, or an fgj (`~/.config/fgj/config.yaml`) or tea login for
 code.tilo.so. That token is read only for disk downloads; image pulls
-(`swap --from ci:`/`sha:`, `vm upgrade`) use podman's registry login instead
-(`tilo-vm guide troubleshooting`).
+(`swap --from ci:`/`sha:`, `vm upgrade`) come from the public registry.tilo.so
+and need no login (`tilo-vm guide troubleshooting`).
 
 ### No disk published yet
 

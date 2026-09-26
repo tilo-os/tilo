@@ -317,13 +317,13 @@ has "$snapshot" 'dnf install -y --best --downloadonly --setopt=reposdir=/repo --
   'snapshot proves the best frozen transaction resolves offline without skipped specs'
 has "$image_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"' \
   'production CI rejects a stale frozen package manifest before building'
-has "$image_workflow" '^code\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$' \
+has "$image_workflow" '^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$' \
   'production CI accepts only the real digest-pinned RPM registry path'
 has "$relay_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"' \
   'relay CI rejects a stale frozen package manifest before building'
 has "$build_script" 'verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF"' \
   'local production builds reject a stale frozen package manifest'
-has "$build_script" '^code\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$' \
+has "$build_script" '^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$' \
   'local builds accept only the real digest-pinned RPM registry path'
 
 if grep -Rqs --exclude-dir=output --include='Containerfile*' 'DROP_RPMDB_WAL' \

@@ -7,7 +7,7 @@ given manifest digest and architecture, with a tilo/tilo source commit, and then
 prints the one digest-pinned build environment that predicate names, the
 signed native kernel buildroot:
 
-  code.tilo.so/tilo/tilo-kernel-buildroot@sha256:...
+  registry.tilo.so/tilo/tilo-kernel-buildroot@sha256:...
 
 The caller must still verify the printed reference's signature with the
 release key. The environment is deliberately not compared with the OS image's
@@ -27,7 +27,7 @@ import sys
 BUILD_TYPE = "https://tilo.sh/buildtypes/kernel-rpm/v1"
 SOURCE = re.compile(r"^git\+ssh://code\.tilo\.so/tilo/tilo@[0-9a-f]{40}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-BUILDROOT = re.compile(r"^code\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$")
+BUILDROOT = re.compile(r"^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$")
 
 
 def documents(text: str):

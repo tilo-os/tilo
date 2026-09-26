@@ -5,11 +5,8 @@
 #
 # The token is the registry password for user name `oidc`; the token service
 # verifies it against the forge's OIDC issuer and grants push below tilo/ to
-# allow-listed source repositories. Forgejo ID tokens live one hour, so fetch
-# one right before logging in and again before a push that starts later.
-#
-# Clients that need their own login invocation (sudo, --authfile) pipe it:
-#   id-token.sh | sudo -n podman login "$TILO_REGISTRY" --username oidc --password-stdin
+# allow-listed source repositories. Forgejo ID tokens live one hour, so the
+# credential helper login.sh installs fetches one per request.
 #
 # Environment:
 #   TILO_REGISTRY_AUDIENCE  ID token audience (default registry.tilo.so)

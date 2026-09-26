@@ -31,9 +31,9 @@ def validate(args):
                         + re.escape(args.architecture), args.cache):
         raise ValueError('WPE cache must be a dedicated development repository for this architecture')
     for name in ('base', 'rpms', 'kernel', 'wpe'):
-        if not re.fullmatch(r'code\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64}', getattr(args, name)):
+        if not re.fullmatch(r'(?:registry|code)\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64}', getattr(args, name)):
             raise ValueError(f'{name} must be an immutable input')
-    if not args.wpe.startswith('code.tilo.so/tilo/tilo-wpe-buildroot@'):
+    if not args.wpe.startswith('registry.tilo.so/tilo/tilo-wpe-buildroot@'):
         raise ValueError('WPE dependency input must be a pinned WPE buildroot')
 
 

@@ -15,7 +15,7 @@ FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
 FIELDS_V2 = FIELDS | {"system_firmware"}
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PROFILE_FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicetree_sha256", "target_update_ref"}
-DEFAULT_TARGET_IMGREF = "code.tilo.so/tilo/tilo:latest"
+DEFAULT_TARGET_IMGREF = "registry.tilo.so/tilo/tilo:latest"
 
 
 def validate_target_imgref(value, *, root=None):
@@ -26,10 +26,13 @@ def validate_target_imgref(value, *, root=None):
             if value != bound:
                 raise ValueError("update origin differs from immutable development origin")
             return value
+    # Board images carry private firmware and follow the forge's private
+    # repository; every other image follows the public one. Both require
+    # the release signature.
     if not isinstance(value, str) or not re.fullmatch(
-        r"code\.tilo\.so/tilo/tilo(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value
+        r"(?:registry\.tilo\.so|code\.tilo\.so)/tilo/tilo(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value
     ):
-        raise ValueError("TILO_TARGET_IMGREF must explicitly name a valid tag or sha256 digest in the signature-required code.tilo.so/tilo/tilo repository")
+        raise ValueError("TILO_TARGET_IMGREF must explicitly name a valid tag or sha256 digest in a signature-required Tilo repository (registry.tilo.so/tilo/tilo, or code.tilo.so/tilo/tilo for board images)")
     return value
 
 
@@ -48,7 +51,7 @@ def development_target(value, architecture=None):
     retained = host == "code.tilo.so" and port is None and path == "tilo/tilo-development"
     if (host == "code.tilo.so" or path == "tilo/tilo-development") and not retained:
         raise ValueError("retained development repository must use its exact HTTPS registry identity")
-    if host == "localhost" or ".." in host or any(not part or part.startswith('-') or part.endswith('-') for part in host.split('.')):
+    if host in ("localhost", "registry.tilo.so") or ".." in host or any(not part or part.startswith('-') or part.endswith('-') for part in host.split('.')):
         raise ValueError("development registry host is invalid or a production alias")
     if retained and selector.startswith(':'):
         tag_architecture = re.fullmatch(r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*-)?(x86_64|aarch64)", selector[1:])

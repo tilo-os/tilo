@@ -60,9 +60,19 @@ class OfflineTargetTest(unittest.TestCase):
         metadata_path = self.root / "target.json"
         metadata = json.loads(metadata_path.read_text())
         metadata["hardware_profile"] = "generic"
-        metadata["update_origin"] = "code.tilo.so/tilo/tilo:gen7"
+        metadata["target_ref"] = "registry.tilo.so/tilo/tilo@" + metadata["target_digest"]
+        metadata["update_origin"] = "registry.tilo.so/tilo/tilo:gen7"
         metadata_path.write_text(json.dumps(metadata))
         self.assertEqual(offline.verify(self.root)["hardware_profile"], "generic")
+
+    def test_board_target_is_never_the_public_repository(self):
+        # A board image carries private firmware and stays on the forge.
+        metadata_path = self.root / "target.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["target_ref"] = "registry.tilo.so/tilo/tilo@" + metadata["target_digest"]
+        metadata_path.write_text(json.dumps(metadata))
+        with self.assertRaises(ValueError):
+            offline.verify(self.root)
 
     def test_tampered_blob_rejected(self):
         (self.blobs / self.layer["digest"].removeprefix("sha256:")).write_bytes(b"tampered-os-payload")

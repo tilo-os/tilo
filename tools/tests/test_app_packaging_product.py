@@ -28,7 +28,7 @@ def cargo_listing(path):
 
 
 def desired(char='a'):
-    return {'source_sha': char * 40, 'builder_image': 'code.tilo.so/tilo/tilo-builder@sha256:' + 'd' * 64,
+    return {'source_sha': char * 40, 'builder_image': 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'd' * 64,
             'collection': 'default', 'architectures': ['x86_64', 'aarch64'],
             'policy_sha256': core.receipt_key(POLICY)}
 
@@ -281,7 +281,7 @@ class ProductTests(unittest.TestCase):
     def test_builder_change_forces_full_collection(self):
         intent = {'id': 'intent', 'desired': desired('b'), 'baseline': desired(), 'baseline_evidence': None}
         intent['baseline_evidence'] = proof({'desired': desired()}, {'id': 1})
-        intent['desired']['builder_image'] = 'code.tilo.so/tilo/tilo-builder@sha256:' + 'f' * 64
+        intent['desired']['builder_image'] = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'f' * 64
         self.assertEqual(product.dispatch_inputs(intent)['baseline_sha'], '')
 
     def test_same_source_new_immutable_builder_dispatches_full_collection(self):
@@ -289,7 +289,7 @@ class ProductTests(unittest.TestCase):
         self.api.runs[1]['status'] = 'success'
         self.api.verifier = proof
         core.tick(self.store, self.api)
-        updated = dict(desired(), builder_image='code.tilo.so/tilo/tilo-builder@sha256:' + 'f' * 64)
+        updated = dict(desired(), builder_image='registry.tilo.so/tilo/tilo-builder@sha256:' + 'f' * 64)
         self.store.observe(2, updated)
         core.tick(self.store, self.api)
         self.assertEqual(len(self.api.calls), 2)

@@ -37,7 +37,7 @@ it is.
 non-Tilo image). SSH still works: `vm start` returns as soon as SSH answers,
 `vm status` says "reachable over SSH, but no tilo-vmd", and `vm ssh` works.
 If it has bootc, move it to a dev image:
-`tilo-vm vm upgrade --image code.tilo.so/tilo/tilo-vm:<tag>`, or one built
+`tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:<tag>`, or one built
 here: `tilo-vm vm upgrade --from local` (`tilo-vm guide images`).
 
 **"Not running a bootc dev image".** `vm upgrade` and `vm rollback-image`
@@ -53,8 +53,8 @@ redirections into `/usr`, `/etc`, `/boot` or tilo-vm's state
 `systemctl enable|start|restart|stop` of tilo units, `systemd-sysext`
 merges, `bootc switch|usr-overlay` and `tilo-vmd` subcommands. Change
 components with `tilo-vm swap`, the image with `tilo-vm vm upgrade`.
-`--raw` is the documented escape hatch for the rare change by hand (such as
-the podman login below); it leaves a receipt.
+`--raw` is the documented escape hatch for the rare change by hand; it
+leaves a receipt.
 
 **Session is failed or inactive.** `tilo-vm logs`, then
 `tilo-vm slot restart`. A bad build usually shows in the first lines;
@@ -70,21 +70,18 @@ the ambient capability pam_systemd grants; if the check still fails, the dev
 image's unit template or the expected domain (`tilo-vmd rpc --expect-domain`)
 is out of date: `tilo-vm vm upgrade`.
 
-**Which credential does what.** There are two, and neither stands in for
-the other, although both use a forge token with package read access as the
-secret:
+**Which credential does what.** Only dev disk downloads need one:
 
 | Operation | Needs | Where |
 |---|---|---|
 | `vm create` without `--image` (disk download), doctor's published-disk check | a forge token: `FORGEJO_TOKEN`, or an fgj or tea login for code.tilo.so | this host |
-| `swap --from ci:`/`sha:` when the VM has podman, `vm upgrade` | a podman registry login | in the VM: `tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json code.tilo.so` |
-| `swap --from ci:`/`sha:` when the VM has no podman | a podman registry login | this host: `podman login code.tilo.so` |
+| `swap --from ci:`/`sha:`, `vm upgrade` | nothing: images on registry.tilo.so are public | in the VM, or this host when the VM has no podman |
 
-`tilo-vm doctor` shows which of the host's two it found.
+`tilo-vm doctor` shows whether the host has a forge token.
 
-**401 or reqPackageAccess from code.tilo.so on a pull.** A podman
-registry login is missing where the pull ran; the error names the place and
-the exact `podman login` line. `FORGEJO_TOKEN` does not help here.
+**401 on a pull.** Tilo images on registry.tilo.so need no login, so the
+registry refusing a pull means the reference is not a published Tilo image:
+check its name and tag.
 
 **`vm create` stops before downloading.** It checks the hypervisor, an
 `--image`, the published disk, the VM disk path and free space first, and

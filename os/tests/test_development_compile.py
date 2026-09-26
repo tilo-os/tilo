@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location('compile_os', ROOT / 'os/dev/compile-development-os.py')
 driver = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(driver)
-WPE = 'code.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + 'a' * 64
+WPE = 'registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + 'a' * 64
 REVISION = 'b' * 40
 CACHE_ENV = {'SCCACHE_ENDPOINT': 'https://s3.eu-central-1.amazonaws.com',
              'SCCACHE_BUCKET': 'podesta-agent-sccache-125650147312-eu-central-1',
@@ -62,8 +62,8 @@ class CompileBoundaries(unittest.TestCase):
                     driver.selected_pins('aarch64')
 
     def test_kernel_pin_selects_native_architecture_and_explicit_candidate(self):
-        x86 = 'code.tilo.so/tilo/tilo-kernel@sha256:' + '1' * 64
-        arm = 'code.tilo.so/tilo/tilo-kernel@sha256:' + '2' * 64
+        x86 = 'registry.tilo.so/tilo/tilo-kernel@sha256:' + '1' * 64
+        arm = 'registry.tilo.so/tilo/tilo-kernel@sha256:' + '2' * 64
         candidate = 'code.tilo.so/tilo/tilo-development-kernel-aarch64@sha256:' + '3' * 64
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
@@ -297,8 +297,8 @@ class CompileBoundaries(unittest.TestCase):
             build.assert_not_called()
 
     def test_arm_requires_explicit_kernel_and_never_uses_x64_default(self):
-        kernel = 'code.tilo.so/tilo/tilo-kernel@sha256:' + 'c' * 64
-        rpms = 'code.tilo.so/tilo/tilo-rpms@sha256:' + 'd' * 64
+        kernel = 'registry.tilo.so/tilo/tilo-kernel@sha256:' + 'c' * 64
+        rpms = 'registry.tilo.so/tilo/tilo-rpms@sha256:' + 'd' * 64
         defaults = {'BASE_REF': WPE, 'RPMS_REF': WPE, 'KERNEL_RPMS_REF': WPE}
         with patch.object(driver, 'pinned_inputs', return_value=defaults.copy()) as pins:
             with self.assertRaisesRegex(ValueError, 'explicit immutable kernel'):
@@ -323,14 +323,14 @@ class CompileBoundaries(unittest.TestCase):
         self.assertEqual(driver.LOADER_NAMES['aarch64'], 'systemd-bootaa64.efi')
 
     def test_arm_full_build_requires_both_explicit_compatibility_input_references(self):
-        payload = 'code.tilo.so/tilo/development-payload@sha256:' + '1' * 64
-        guest = 'code.tilo.so/tilo/development-guest@sha256:' + '2' * 64
+        payload = 'registry.tilo.so/tilo/development-payload@sha256:' + '1' * 64
+        guest = 'registry.tilo.so/tilo/development-guest@sha256:' + '2' * 64
         inputs = dict(wpe=WPE, generation='7', revision=REVISION, branch='refs/heads/codex/test',
                       architecture='aarch64', kernel_candidate=WPE,
                       fex_payload_candidate=payload, windows_guest_candidate=guest)
         driver.validate_inputs(**inputs)
         for field in ('fex_payload_candidate', 'windows_guest_candidate'):
-            for invalid in ('', 'code.tilo.so/tilo/example:latest',
+            for invalid in ('', 'registry.tilo.so/tilo/example:latest',
                             'foreign.example/tilo/example@sha256:' + '1' * 64,
                             'code.tilo.so/other/example@sha256:' + '1' * 64,
                             payload + ';false'):
@@ -590,9 +590,9 @@ class CompileBoundaries(unittest.TestCase):
         driver.validate_inputs(WPE, '7', REVISION, 'refs/heads/codex/install-prep')
 
     def test_rejects_aliases_other_repositories_and_shell_fragments(self):
-        for value in ('code.tilo.so/tilo/tilo-wpe-buildroot:latest',
+        for value in ('registry.tilo.so/tilo/tilo-wpe-buildroot:latest',
                       WPE.replace('tilo-wpe-buildroot', 'tilo'), WPE + '; true',
-                      WPE.replace('code.tilo.so', 'example.invalid')):
+                      WPE.replace('registry.tilo.so', 'example.invalid')):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 driver.validate_inputs(value, '7', REVISION, 'refs/heads/codex/test')
 

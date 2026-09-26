@@ -61,7 +61,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_reject_wrong_repository_mutable_source_and_production(self):
         for ref in (self.repository + ':test', self.reference.replace('5000', '5001'),
-                    'code.tilo.so/tilo/tilo@' + self.digest):
+                    'registry.tilo.so/tilo/tilo@' + self.digest):
             with self.subTest(ref=ref), self.assertRaises(ValueError):
                 source.inputs(ref, self.repository + ':test', 'aarch64', self.revision)
 

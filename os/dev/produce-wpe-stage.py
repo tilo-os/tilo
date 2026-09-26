@@ -35,7 +35,7 @@ def validate(args):
         if not re.fullmatch('[1-9][0-9]*', getattr(args, field)):
             raise ValueError('CI run identity required')
     for field, repository in (('wpe', 'tilo-wpe-buildroot'), ('tools_builder', 'tilo-builder')):
-        if not re.fullmatch('code\\.tilo\\.so/tilo/' + repository + '@sha256:[0-9a-f]{64}', getattr(args, field)):
+        if not re.fullmatch('registry\\.tilo\\.so/tilo/' + repository + '@sha256:[0-9a-f]{64}', getattr(args, field)):
             raise ValueError('reviewed immutable native image required')
 
 
@@ -189,7 +189,7 @@ def main():
         for variable, filename in (('base', 'base-snapshot.env'), ('rpms', 'rpms-snapshot.env'),
                                    ('kernel', 'kernel-snapshot.env')):
             key = {'base': 'BASE_REF', 'rpms': 'RPMS_REF', 'kernel': 'KERNEL_RPMS_REF'}[variable]
-            values = re.findall('^' + key + r'=(code\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64})$',
+            values = re.findall('^' + key + r'=((?:registry|code)\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64})$',
                                 (REPO / 'os' / filename).read_text(), re.MULTILINE)
             if len(values) != 1:
                 raise ValueError('immutable dependency parse inputs required')

@@ -257,7 +257,7 @@ class CheckAggregateTests(unittest.TestCase):
         security = section(self.workflow, "security", 2)
         self.assertIn("if: needs.select.outputs.security_required == 'true'", security)
         self.assertIn("needs: [select]", security)
-        self.assertIn("image: code.tilo.so/tilo/ci-fast@sha256:", security)
+        self.assertIn("image: registry.tilo.so/tilo/ci-fast@sha256:", security)
         self.assertIn("gcc kmod clang lld rpm-build python3-pillow systemd", security)
         self.assertIn("fontconfig google-noto-sans-fonts", security)
         self.assertIn("systemd-escape", security)

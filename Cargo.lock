@@ -6202,7 +6202,6 @@ dependencies = [
  "cap-std",
  "hex",
  "libc",
- "tilo-ntfs-protocol",
  "reqwest",
  "runtime-dylib",
  "serde",
@@ -6214,6 +6213,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-net",
+ "tilo-ntfs-protocol",
  "tilo-test-env",
  "vello",
  "windows-sys 0.61.2",
@@ -10752,39 +10752,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-chromium-blocker"
-version = "0.1.0"
-dependencies = [
- "adblock",
- "serde_json",
- "url",
-]
-
-[[package]]
-name = "tilo-ntfs-helper"
-version = "0.1.0"
-dependencies = [
- "hex",
- "libc",
- "tilo-ntfs-protocol",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "wire-frame",
-]
-
-[[package]]
-name = "tilo-ntfs-protocol"
-version = "0.1.0"
-dependencies = [
- "hex",
- "libc",
- "serde",
- "serde_json",
- "sha2 0.11.0",
-]
-
-[[package]]
 name = "qrcode"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14145,6 +14112,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-chromium-blocker"
+version = "0.1.0"
+dependencies = [
+ "adblock",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "tilo-cli"
 version = "0.1.0"
 dependencies = [
@@ -14324,6 +14300,30 @@ dependencies = [
  "reqwest",
  "rustls",
  "rustls-native-certs",
+]
+
+[[package]]
+name = "tilo-ntfs-helper"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tilo-ntfs-protocol",
+ "wire-frame",
+]
+
+[[package]]
+name = "tilo-ntfs-protocol"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]

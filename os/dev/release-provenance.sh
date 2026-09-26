@@ -33,7 +33,7 @@ if [ -n "$kernel_refs" ]; then
     and (map(.ref) | unique | length) == 2
     and all(.[].ref;
       type == "string"
-      and test("^code\\.tilo\\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$"))
+      and test("^registry\\.tilo\\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$"))
   ' >/dev/null || {
     printf 'release provenance: invalid TILO_KERNEL_REFS_JSON\n' >&2
     exit 1
@@ -87,8 +87,8 @@ case "$windows_input_class" in
       || { printf 'development Windows provider requires Lenovo aarch64 provenance\n' >&2; exit 1; }
     require_digest_ref FEX_PAYLOAD_REF "$fex_payload_ref"
     require_digest_ref WINDOWS_GUEST_REF "$windows_guest_ref"
-    [[ "$fex_payload_ref" =~ ^code\.tilo\.so/tilo/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ \
-       && "$windows_guest_ref" =~ ^code\.tilo\.so/tilo/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ ]] \
+    [[ "$fex_payload_ref" =~ ^(registry|code)\.tilo\.so/tilo/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ \
+       && "$windows_guest_ref" =~ ^(registry|code)\.tilo\.so/tilo/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ ]] \
       || { printf 'development Windows provider needs paired registry digests\n' >&2; exit 1; } ;;
   *) printf 'unsupported Windows provider input class in provenance\n' >&2; exit 1 ;;
 esac

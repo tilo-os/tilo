@@ -35,8 +35,9 @@ class QueueReliefTests(unittest.TestCase):
         builder = section(workflow("check"), "builder", 2)
         self.assertIn("runs-on: runner-quality", builder)
         container = section(builder, "container", 4)
-        self.assertRegex(container, r"image: code\.tilo\.so/tilo/ci-control@sha256:[0-9a-f]{64}")
-        self.assertIn("password: ${{ secrets.REGISTRY_TOKEN }}", container)
+        self.assertRegex(container, r"image: registry\.tilo\.so/tilo/ci-control@sha256:[0-9a-f]{64}")
+        # Public image: a forge credential would only fail the pull.
+        self.assertNotIn("credentials:", container)
         self.assertIn("image: ${{ steps.resolve.outputs.image }}", builder)
         self.assertIn('DOCKER_BUILDKIT: "1"', builder)
         self.assertIn("run: bash os/tests/named_public_trust_context.sh docker", builder)
@@ -44,7 +45,7 @@ class QueueReliefTests(unittest.TestCase):
     def test_final_gates_use_qualified_lightweight_image(self):
         quality = section(workflow("lint"), "quality", 2)
         expected = section(quality, "container", 4)
-        self.assertRegex(expected, r"image: code\.tilo\.so/tilo/ci-fast@sha256:[0-9a-f]{64}")
+        self.assertRegex(expected, r"image: registry\.tilo\.so/tilo/ci-fast@sha256:[0-9a-f]{64}")
         for name in ("select", "checks"):
             with self.subTest(job=name):
                 job = section(workflow("check"), name, 2)

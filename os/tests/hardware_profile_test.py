@@ -140,8 +140,8 @@ class HardwareProfileTest(unittest.TestCase):
         self.assertEqual(before, self.snapshot())
 
     def test_missing_or_untrusted_update_reference_fails_before_writes(self):
-        for value in (None, "", "registry.invalid/tilo:fixture", "code.tilo.so/tilo/tilo:",
-                      "code.tilo.so/tilo/tilo@sha256:bad", TARGET_REF + "\n"):
+        for value in (None, "", "registry.invalid/tilo:fixture", "registry.tilo.so/tilo/tilo:",
+                      "registry.tilo.so/tilo/tilo@sha256:bad", TARGET_REF + "\n"):
             with self.subTest(value=value):
                 before = self.snapshot()
                 with self.assertRaisesRegex(ValueError, "TILO_TARGET_IMGREF"):

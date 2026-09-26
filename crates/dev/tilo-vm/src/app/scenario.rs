@@ -429,18 +429,25 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
                         .is_some_and(|generation| generation > 0)
                     && selected.update_origin
                         == format!(
-                            "code.tilo.so/tilo/tilo:gen{}",
+                            "registry.tilo.so/tilo/tilo:gen{}",
                             selected.provenance.generation.unwrap_or_default()
                         )
             }
             _ => false,
+        };
+        // Board images carry private firmware and stay on the forge's private
+        // registry; every other image is public.
+        let repository = if selected.hardware_profile == "lenovo-83ed" {
+            "code.tilo.so/tilo/tilo"
+        } else {
+            "registry.tilo.so/tilo/tilo"
         };
         if proof.schema != "tilo.vm-install-image-proof.v2"
             || !lowercase_hex(booted_composefs, 128)
             || !lowercase_hex(installed_composefs, 128)
             || proof.composefs_digest != installed_composefs
             || selected.schema != "tilo.installer-offline-target.v1"
-            || selected.target_ref != format!("code.tilo.so/tilo/tilo@{}", selected.target_digest)
+            || selected.target_ref != format!("{repository}@{}", selected.target_digest)
             || selected.target_digest != proof.installed_image_digest
             || selected.architecture != "aarch64"
             || !profile_matches
@@ -1366,13 +1373,20 @@ mod tests {
                 .is_err()
         );
         payload["selected_target"]["target_digest"] = json!(target);
+        // A board target on the public repository is refused.
+        payload["selected_target"]["target_ref"] =
+            json!(format!("registry.tilo.so/tilo/tilo@{target}"));
+        assert!(
+            super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes())
+                .is_err()
+        );
         payload["selected_target"]["hardware_profile"] = json!("generic");
-        payload["selected_target"]["update_origin"] = json!("code.tilo.so/tilo/tilo:gen7");
+        payload["selected_target"]["update_origin"] = json!("registry.tilo.so/tilo/tilo:gen7");
         payload["selected_target"]["provenance"]["generation"] = json!(7);
         payload["selected_target"]["provenance"]["firmware_candidate"] = Value::Null;
         payload["selected_target"]["provenance"]["firmware_manifest_sha256"] = Value::Null;
         payload["installed_update_origin"] =
-            json!("ostree-unverified-image:docker://code.tilo.so/tilo/tilo:gen7");
+            json!("ostree-unverified-image:docker://registry.tilo.so/tilo/tilo:gen7");
         assert!(
             super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes())
                 .is_ok()

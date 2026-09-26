@@ -37,7 +37,7 @@ CONTROLLER = REPO
 RECONSTRUCTION_SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
 PRIVATE = Path('/var/lib/tilo-provisional-compile')
 EVIDENCE = Path('/evidence')
-BUILDER = 'code.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9'
+BUILDER = 'registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9'
 PIN_FILES = {'BASE_REF': 'base-snapshot.env', 'RPMS_REF': 'rpms-snapshot.env',
              'KERNEL_RPMS_REF': 'kernel-snapshot.env'}
 ARCHITECTURES = {'x86_64': 'amd64', 'aarch64': 'arm64'}
@@ -103,7 +103,7 @@ def validate_inputs(wpe, generation, revision, branch, mode='full-build',
             or not re.fullmatch(r'[0-9a-f]{64}', wpe_adoption_sha256)
             or wpe or wpe_stage_receipt):
         raise ValueError('adoption requires its independent receipt SHA256 and excludes current WPE inputs')
-    if mode in ('full-build', 'native-payload') and not adopting and not re.fullmatch(r'code\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}', wpe):
+    if mode in ('full-build', 'native-payload') and not adopting and not re.fullmatch(r'registry\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}', wpe):
         raise ValueError('an immutable reviewed WPE candidate reference is required')
     if mode in ('full-build', 'native-payload') and not re.fullmatch(r'[1-9][0-9]{0,11}', generation):
         raise ValueError('generation must be an explicit positive decimal integer')
@@ -542,14 +542,14 @@ def pinned_inputs(architecture='x86_64', kernel_candidate='', *, include_kernel=
         if variable == 'KERNEL_RPMS_REF':
             selected = f'KERNEL_RPMS_{architecture.upper()}_REF'
         values = [line.split('=', 1)[1] for line in lines if line.startswith(selected + '=')]
-        if len(values) != 1 or not re.fullmatch(r'code\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64}', values[0]):
+        if len(values) != 1 or not re.fullmatch(r'(?:registry|code)\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64}', values[0]):
             raise ValueError(f'{filename} must contain one immutable {selected}')
         result[variable] = values[0]
     return result
 
 
 def immutable_candidate(reference):
-    if not re.fullmatch(r'code\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64}', reference):
+    if not re.fullmatch(r'(?:registry|code)\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64}', reference):
         raise ValueError('candidate must be an immutable tilo registry digest')
     return reference
 

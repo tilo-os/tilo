@@ -25,7 +25,8 @@ use crate::fsutil;
 
 /// Shared compiler cache for every worktree's in-VM builds.
 pub const SCCACHE_DIR: &str = "/var/cache/tilo-vm/sccache";
-/// bootc's registry credentials; one `podman login` serves upgrades and CI layers.
+/// bootc's registry credentials, used for upgrades and CI layers alike. Tilo
+/// images are public; only a private registry needs an entry here.
 pub const AUTH_FILE: &str = "/etc/ostree/auth.json";
 
 /// Run `command`, streaming its stdout and stderr to our stderr (stdout
@@ -639,7 +640,7 @@ mod tests {
     #[test]
     fn ci_layers_carry_ci_authority() {
         let job = CiJob {
-            image: "code.tilo.so/tilo/tilo:main-abc1234".into(),
+            image: "registry.tilo.so/tilo/tilo:main-abc1234".into(),
             component: "shell".into(),
             paths: vec!["/usr/bin/shell".into()],
             provenance: Provenance::local("shell"),

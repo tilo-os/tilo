@@ -179,7 +179,7 @@ def main():
     args = parser.parse_args()
     channel.require(args.qualifier_attempt > 0, 'positive qualifier attempt required')
     channel.digest(args.source_sha, 40)
-    channel.require(re.fullmatch(r'code\.tilo\.so/tilo/tilo-builder@sha256:[0-9a-f]{64}', args.builder_image), 'immutable builder required')
+    channel.require(re.fullmatch(r'registry\.tilo\.so/tilo/tilo-builder@sha256:[0-9a-f]{64}', args.builder_image), 'immutable builder required')
     policy, _ = final.preflight(args.pkg_binary, args.runtime_binary, args.trust_policy, args.trust_policy_sha256)
     args.work.mkdir(parents=True, exist_ok=False)
     baseline = None

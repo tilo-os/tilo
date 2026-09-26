@@ -458,7 +458,7 @@ mod tests {
       "schema": "https://tilo.sh/dev/disk/v1",
       "tag": "main-1a2b3c4",
       "sourceRevision": "1a2b3c4d",
-      "image": "code.tilo.so/tilo/tilo-vm:main-1a2b3c4",
+      "image": "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4",
       "imageDigest": "sha256:aa",
       "disks": [
         {"arch": "x86_64", "format": "qcow2", "file": "tilo-vm-main-1a2b3c4-x86_64.qcow2",

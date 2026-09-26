@@ -61,8 +61,8 @@ jobs:
           [[ "$HELPER_REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$APPROVAL_SHA256" =~ ^[0-9a-f]{64}$ ]]
           [[ "$CHECKPOINT_REF" =~ ^code\.tilo\.so/tilo/tilo-development-partial-kernel-aarch64@sha256:[0-9a-f]{64}$ ]]
-          [[ "$BASE_REF" =~ ^code\.tilo\.so/tilo/fedora-bootc@sha256:[0-9a-f]{64}$ ]]
-          [[ "$RPMS_REF" =~ ^code\.tilo\.so/tilo/(rpms|tilo-development-rpms-aarch64)@sha256:[0-9a-f]{64}$ ]]
+          [[ "$BASE_REF" =~ ^registry\.tilo\.so/tilo/fedora-bootc@sha256:[0-9a-f]{64}$ ]]
+          [[ "$RPMS_REF" =~ ^(registry\.tilo\.so/tilo/rpms|code\.tilo\.so/tilo/tilo-development-rpms-aarch64)@sha256:[0-9a-f]{64}$ ]]
           [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
 
@@ -151,7 +151,7 @@ jobs:
             KERNEL_CHECKPOINT_ATTEMPT=${{ github.run_attempt }}
           cache-from: |
             type=registry,ref=code.tilo.so/tilo/tilo-development-kernel-buildcache:aarch64
-            type=registry,ref=code.tilo.so/tilo/tilo-kernel-buildcache:aarch64
+            type=registry,ref=registry.tilo.so/tilo/tilo-kernel-buildcache:aarch64
           cache-to: type=registry,ref=code.tilo.so/tilo/tilo-development-kernel-buildcache:aarch64,mode=min
           provenance: false
 

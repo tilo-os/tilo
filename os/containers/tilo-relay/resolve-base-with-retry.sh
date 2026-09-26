@@ -10,7 +10,7 @@ builder=$1
 base_ref=$2
 
 [[ -n "$builder" ]] || { echo 'BuildKit builder name is empty' >&2; exit 2; }
-[[ "$base_ref" =~ ^code\.tilo\.so/tilo/fedora-bootc@sha256:[0-9a-f]{64}$ ]] || {
+[[ "$base_ref" =~ ^registry\.tilo\.so/tilo/fedora-bootc@sha256:[0-9a-f]{64}$ ]] || {
   echo 'BASE_REF must be the digest-pinned Fedora bootc mirror' >&2
   exit 2
 }

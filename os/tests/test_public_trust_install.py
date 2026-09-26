@@ -112,7 +112,7 @@ class InstallTests(fixtures.PublicBundleTests):
         bound = "127.0.0.1:5000/tilo-development/os:test"
         self.assertEqual(installer.origin.install_update_origin(self.image_root), bound)
         self.assertEqual(installer.origin.install_update_origin(self.image_root, bound), bound)
-        for ref in ("code.tilo.so/tilo/tilo:latest", "127.0.0.1:5000/tilo-development/os:other"):
+        for ref in ("registry.tilo.so/tilo/tilo:latest", "127.0.0.1:5000/tilo-development/os:other"):
             with self.assertRaises(ValueError):
                 installer.origin.install_update_origin(self.image_root, ref)
 
@@ -190,7 +190,7 @@ class InstallTests(fixtures.PublicBundleTests):
             self.assertEqual(selected['repository'], repository)
             self.assertTrue(selected['tls_required'])
         installer.origin.development_target(repository + '@sha256:' + 'a' * 64, 'aarch64')
-        for value in ('code.tilo.so/tilo/tilo:development-aarch64',
+        for value in ('registry.tilo.so/tilo/tilo:development-aarch64',
                       'code.tilo.so/tilo/tilo-development/child:development-aarch64',
                       'code.tilo.so:443/tilo/tilo-development:development-aarch64',
                       'code.tilo.so./tilo/tilo-development:development-aarch64',
@@ -210,7 +210,7 @@ class InstallTests(fixtures.PublicBundleTests):
         policy = json.loads((self.image_root / 'etc/containers/policy.json').read_text())
         self.assertEqual(policy, installer.origin.development_policy(repository))
         self.assertIn('insecure = false', (self.image_root / 'etc/containers/registries.conf.d/99-tilo-development.conf').read_text())
-        for override in (repository + ':development-x86_64', 'code.tilo.so/tilo/tilo:latest'):
+        for override in (repository + ':development-x86_64', 'registry.tilo.so/tilo/tilo:latest'):
             with self.subTest(override=override), self.assertRaises(ValueError):
                 installer.origin.install_update_origin(self.image_root, override)
         (self.destination / 'cosign.pub').write_bytes(b'substituted')

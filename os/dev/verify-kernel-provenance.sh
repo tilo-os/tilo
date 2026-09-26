@@ -24,7 +24,7 @@ case "$(uname -m)" in
   aarch64) expected_arch=arm64 ;;
   *) die "unsupported kernel architecture: $(uname -m)" ;;
 esac
-[[ "$ref" =~ ^code\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]] \
+[[ "$ref" =~ ^registry\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]] \
   || die "no digest-pinned native Tilo kernel for $(uname -m)"
 
 cosign verify --key "$key" "$ref" >/dev/null || die "Tilo kernel signature verification failed"

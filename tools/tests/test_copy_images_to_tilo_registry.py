@@ -34,6 +34,9 @@ class CopyPlanTests(unittest.TestCase):
             'OTHER=old.example/someone-else/image:v1',
             'TEMPLATED=old.example/legacy/tilo-vm:main-${sha}',
             'CLONE=https://old.example/legacy/tilo.git',
+            f'FIRMWARE=old.example/legacy/tilo-lenovo-83ed-firmware@{DIGEST}',
+            'BOARD=old.example/legacy/tilo:lenovo-83ed-' + 'c' * 40,
+            f'DEVELOPMENT=old.example/legacy/tilo-development@{DIGEST}',
         ]) + '\n')
         (self.root / 'tests').mkdir()
         (self.root / 'tests/fixture.txt').write_text('old.example/legacy/never-published:v1\n')

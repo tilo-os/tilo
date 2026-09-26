@@ -11,7 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / '.forgejo/workflows/canonical-verifier-bundle.yml'
-BUILDER = 'code.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
+BUILDER = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
 
 
 def production_script():
@@ -30,7 +30,7 @@ class VerifierWorkflowTests(unittest.TestCase):
         self.assertIn('image: ${{ needs.builder.outputs.image }}', source)
         self.assertIn('BUILDER_IMAGE: ${{ needs.builder.outputs.image }}', source)
         self.assertIn('uses: ./.forgejo/actions/restore-cargo-downloads', source)
-        self.assertEqual({'REGISTRY_TOKEN'}, set(re.findall(r'secrets\.([A-Z_]+)', source)))
+        self.assertEqual(set(), set(re.findall(r'secrets\.([A-Z_]+)', source)))
         bundle_job = source.split('\n  bundle:\n', 1)[1]
         self.assertNotIn('REGISTRY_TOKEN:', bundle_job)
         self.assertNotIn('CARGO_TARGET_DIR', source)
