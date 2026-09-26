@@ -36,12 +36,34 @@ keyboard and a pointer plugged into that seat (uinput devices with
 ```sh
 tilo-vm input key ctrl+alt+t        # combos, pressed in order
 tilo-vm input type 'hello world'    # US layout
-tilo-vm input move 400 300          # output pixels
+tilo-vm input move 400 300          # desktop pixels (see below)
 tilo-vm input click left --at 400 300
 ```
 
 Headless slots have no seat and refuse `input`; use `tilo-vm control
 key|type|click` there. While a slot holds seat0, its input goes to seat0.
+
+## Several monitors, mixed scale
+
+```sh
+tilo-vm slot create dual --headful --outputs 2560x1600@2,1920x1080@1
+tilo-vm shot -o target/dual.png --slot dual
+tilo-vm input --slot dual click left --at 1500 400   # on the second monitor
+```
+
+Each `--outputs` entry is one vkms connector (`Virtual-1`, `Virtual-2`, ...)
+with its own CRTC, laid out left to right, top-aligned, the first one
+primary. vkms offers the standard VESA (DMT) 60 Hz modes, like a monitor
+without an EDID. The mode and scale are not injected: tilo-vmd stages them
+as a display change in the slot user's settings, the compositor applies it,
+and tilo-vmd confirms it, exactly as the Settings app does, so the
+compositor remembers the layout for that set of monitors. Outputs are fixed
+when the slot is created; running the same `slot create` again re-applies
+the layout, and a different list needs `tilo-vm slot rm` first.
+
+With `--outputs`, `input move` and `click --at` take logical desktop
+pixels: `2560x1600@2,1920x1080` is 1280 + 1920 wide, and x 1280 is the left
+edge of the second monitor.
 
 ## seat0
 
