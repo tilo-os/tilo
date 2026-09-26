@@ -1607,7 +1607,7 @@ mod tests {
     }
 
     /// Podman mounts only the verified model path at its container path; runtime selection prefers a
-    /// confirmed NVIDIA over CPU, uses ROCm only when the driver is present, and uses CPU when no
+    /// confirmed NVIDIA over CPU, uses `ROCm` only when the driver is present, and uses CPU when no
     /// supported accelerator exists.
     #[test]
     fn the_model_runtime_matches_the_verified_hardware() {

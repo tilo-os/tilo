@@ -327,11 +327,7 @@ fn file_drops_route_to_the_group_they_land_on_or_do_nothing() {
 #[test]
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the retained tree borrow is used for adjacent tab-order assertions"
-)]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the retained tree borrow is used for the complete seam topology assertion"
+    reason = "the retained tree borrow is used for adjacent tab-order assertions; the retained tree borrow is used for the complete seam topology assertion"
 )]
 fn file_drops_insert_before_a_tab_or_open_a_group_at_a_seam() {
     // Phase `drop_on_left_side_of_first_tab_inserts_before_it`.
@@ -398,11 +394,7 @@ fn file_drops_insert_before_a_tab_or_open_a_group_at_a_seam() {
 #[allow(
     clippy::significant_drop_tightening,
     reason = "st's only use is producing tree via tree(), read through to the end of the \
-function via ws/view/editor_caps; nothing to drop earlier"
-)]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "st's only use is producing tree via tree(), read through to the end of the \
+function via ws/view/editor_caps; nothing to drop earlier; st's only use is producing tree via tree(), read through to the end of the \
 function via view/editor_caps/count; nothing to drop earlier"
 )]
 fn file_drops_record_one_filesystem_grant_for_the_target_app() {
