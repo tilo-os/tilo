@@ -101,7 +101,7 @@ for m in "${manifests[@]}"; do
   # Either an explicit [[bin]] name, or the package name as the default bin.
   have="$(sed -n '/^\[\[bin\]\]/,/^$/s/^name = "\(.*\)"/\1/p' "$dir/Cargo.toml")"
   [ -n "$have" ] || have="$(sed -n 's/^name = "\(.*\)"/\1/p' "$dir/Cargo.toml" | head -1)"
-  printf '%s\n' "$have" | grep -qx "$want" || {
+  grep -qx "$want" <<<"$have" || {
     bad "$rel: manifest entrypoint is '$entry' but the crate builds [$(printf '%s' "$have" | tr '\n' ' ')]"
     no_bin=1
   }
