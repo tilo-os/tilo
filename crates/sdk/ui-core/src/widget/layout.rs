@@ -1284,12 +1284,14 @@ mod tests {
             bindings.rebuild(editor.as_ref(), &tree, root, &nodes);
         }
         assert!(editor.blocks()[0].line.is_focused());
-        assert!(
+        // The editor owns its lines' layout, so its node is the one focused
+        // node while the line it routes text to holds the caret.
+        assert_eq!(
             nodes
                 .values()
                 .filter(|&&pointer| unsafe { (*pointer).is_focused() })
-                .count()
-                > 1
+                .count(),
+            1
         );
         let focus = unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
         for _ in 0..8 {

@@ -14,6 +14,14 @@ pub enum DaemonError {
     SlotNotFound(String),
     #[error("slot '{name}' already exists as {kind}")]
     SlotKindConflict { name: String, kind: String },
+    #[error("slot '{name}' already exists with {outputs}")]
+    SlotOutputsConflict { name: String, outputs: String },
+    #[error("slot '{0}' is not headful; only headful slots have outputs")]
+    OutputsNeedHeadful(String),
+    #[error("--outputs: {0}")]
+    BadOutputs(String),
+    #[error("slot '{slot}' outputs could not be set: {detail}")]
+    DisplayLayout { slot: String, detail: String },
     #[error("'{0}' is reserved for VM-wide components")]
     ReservedName(String),
     #[error("'{0}' is not a valid slot name")]
@@ -115,7 +123,10 @@ impl DaemonError {
             | Self::SourceMissing(_)
             | Self::ImageNotFound { .. }
             | Self::MissingInImage { .. } => code::NOT_FOUND,
-            Self::SlotKindConflict { .. } | Self::SeatBusy { .. } | Self::Busy(_) => code::CONFLICT,
+            Self::SlotKindConflict { .. }
+            | Self::SlotOutputsConflict { .. }
+            | Self::SeatBusy { .. }
+            | Self::Busy(_) => code::CONFLICT,
             Self::AbiMismatch { .. } => code::ABI,
             Self::ReservedName(_)
             | Self::InvalidName(_)
@@ -124,9 +135,12 @@ impl DaemonError {
             | Self::NoSession(_)
             | Self::SessionStopped(_)
             | Self::HeadlessInput(_)
+            | Self::OutputsNeedHeadful(_)
+            | Self::BadOutputs(_)
             | Self::KernelLayer(_) => code::INVALID,
             Self::ScopeMismatch { .. } => code::SCOPE,
             Self::Apply { .. }
+            | Self::DisplayLayout { .. }
             | Self::SessionParity { .. }
             | Self::SessionFailed { .. }
             | Self::BootLoader { .. }
@@ -158,6 +172,19 @@ impl DaemonError {
             Self::SlotKindConflict { name, .. } => {
                 format!("remove it first (tilo-vm slot rm {name}) or create it with its existing kind")
             }
+            Self::SlotOutputsConflict { name, .. } => format!(
+                "outputs are fixed when a slot is created: tilo-vm slot rm {name}, then tilo-vm slot create {name} --headful --outputs <list>   (or create another slot)"
+            ),
+            Self::OutputsNeedHeadful(name) => {
+                format!("tilo-vm slot create {name} --headful --outputs 2560x1600@2,1920x1080")
+            }
+            Self::BadOutputs(_) => format!(
+                "give 1 to {} outputs as WIDTHxHEIGHT[@SCALE], comma-separated: --outputs 2560x1600@2,1920x1080",
+                tilo_vm_protocol::display::MAX_OUTPUTS
+            ),
+            Self::DisplayLayout { slot, .. } => format!(
+                "rerun tilo-vm slot create {slot} --headful --outputs <same list> to apply it again; tilo-vm logs {slot} shows what the compositor did"
+            ),
             Self::ReservedName(_) => {
                 "pick another slot name; VM-wide components go in with: tilo-vm swap --slot vm <component>"
                     .into()
@@ -261,6 +288,9 @@ impl DaemonError {
         match self {
             Self::SlotNotFound(_)
             | Self::SlotKindConflict { .. }
+            | Self::SlotOutputsConflict { .. }
+            | Self::OutputsNeedHeadful(_)
+            | Self::BadOutputs(_)
             | Self::ReservedName(_)
             | Self::InvalidName(_)
             | Self::NoSession(_)
@@ -279,9 +309,10 @@ impl DaemonError {
             | Self::ToolMissing { .. }
             | Self::ImageNotFound { .. }
             | Self::MissingInImage { .. } => Some("tilo-vm guide swapping"),
-            Self::SeatBusy { .. } | Self::ControlMissing(_) | Self::HeadlessInput(_) => {
-                Some("tilo-vm guide driving")
-            }
+            Self::SeatBusy { .. }
+            | Self::ControlMissing(_)
+            | Self::HeadlessInput(_)
+            | Self::DisplayLayout { .. } => Some("tilo-vm guide driving"),
             Self::KernelLayer(_) | Self::BootLoader { .. } | Self::Initramfs { .. } => {
                 Some("tilo-vm guide kernel")
             }
@@ -330,6 +361,16 @@ mod tests {
             DaemonError::SlotKindConflict {
                 name: "a".into(),
                 kind: "headless".into(),
+            },
+            DaemonError::SlotOutputsConflict {
+                name: "a".into(),
+                outputs: "one default output".into(),
+            },
+            DaemonError::OutputsNeedHeadful("a".into()),
+            DaemonError::BadOutputs("9 outputs asked for".into()),
+            DaemonError::DisplayLayout {
+                slot: "a".into(),
+                detail: "Virtual-1 offers no 1366x768 mode".into(),
             },
             DaemonError::ReservedName("vm".into()),
             DaemonError::InvalidName("A".into()),
@@ -444,6 +485,10 @@ mod tests {
                 | DaemonError::InvalidParams(_)
                 | DaemonError::SlotNotFound(_)
                 | DaemonError::SlotKindConflict { .. }
+                | DaemonError::SlotOutputsConflict { .. }
+                | DaemonError::OutputsNeedHeadful(_)
+                | DaemonError::BadOutputs(_)
+                | DaemonError::DisplayLayout { .. }
                 | DaemonError::ReservedName(_)
                 | DaemonError::InvalidName(_)
                 | DaemonError::LayerNotFound(_)

@@ -59,7 +59,8 @@ use super::scanout::{
 use super::session::{SeatTick, SessionAction, SessionState};
 use crate::compositor::backend::layout;
 use crate::compositor::backend::{
-    BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, TouchEvent as TiloTouchEvent,
+    BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
+    TouchEvent as TiloTouchEvent,
 };
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
@@ -278,6 +279,9 @@ pub struct DrmDispatchState {
     /// What the pointer shows, applied to every scanout (including ones a
     /// hotplug adds later).
     pub pointer_image: crate::compositor::cursor::PointerImage,
+    /// Where local motion may take the pointer while a client locks or
+    /// confines it.
+    pub pointer_constraint: crate::compositor::backend::PointerConstraintRegion,
     /// Per-user xkb keymap + state translating libinput keycodes into winit
     /// `KeyboardInput` events (`FrameBuilder::dispatch_event`'s wire); `None`
     /// when the keymap couldn't compile, running pointer-only. The persisted
@@ -855,6 +859,7 @@ impl DrmDispatchState {
             display_set: settings_store::hardware::DisplaySet::default(),
             hw_cursor: CursorPlanes::default(),
             pointer_image: crate::compositor::cursor::PointerImage::default(),
+            pointer_constraint: crate::compositor::backend::PointerConstraintRegion::Free,
             keyboard,
             present_gate: Some(Arc::new(Mutex::new(()))),
         }
@@ -1385,6 +1390,19 @@ impl DrmDispatchState {
 
     /// Relative pointer motion, in logical pixels. Returns the new scene
     /// position.
+    /// Keep a confined pointer inside its region after it moved from
+    /// `previous`, returning where it ends up (scene coordinates).
+    fn confine_pointer(&mut self, previous: (f64, f64)) -> (f64, f64) {
+        let moved = self.pointer;
+        match self.pointer_constraint.constrain(previous, moved) {
+            Some(confined) if confined != moved => {
+                self.set_pointer_scene(confined);
+                confined
+            }
+            _ => moved,
+        }
+    }
+
     fn move_pointer_by(&mut self, delta: (f64, f64)) -> (f64, f64) {
         let logical = layout::move_pointer(&self.placements(), self.logical_pointer, delta);
         self.set_pointer_logical(logical);
@@ -2155,19 +2173,34 @@ impl DrmDispatchState {
                         .map(|p| p.logical_size)
                         .collect::<Vec<_>>(),
                 );
+                if self.pointer_constraint == PointerConstraintRegion::Locked {
+                    return;
+                }
+                let previous = self.pointer;
                 let requested = (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)));
                 self.set_pointer_logical(layout::clamp_to_outputs(&placements, requested));
-                let (x, y) = self.pointer;
+                let (x, y) = self.confine_pointer(previous);
                 self.push(BackendEvent::Input(cursor_moved_event(x, y)));
             }
             // Relative motion (mouse): accumulate in logical pixels, clamp to
             // the logical outputs, then present in the scene.
             InputEvent::PointerMotion { event } => {
-                let (x, y) = self.move_pointer_by((event.delta_x(), event.delta_y()));
                 self.push(BackendEvent::RelativePointerMotion {
                     dx: event.delta_x(),
                     dy: event.delta_y(),
+                    dx_unaccel: event.delta_x_unaccel(),
+                    dy_unaccel: event.delta_y_unaccel(),
+                    time_usec: event.time(),
                 });
+                // A locked pointer stays put; a confined one slides along
+                // its region's edge. Relative motion above is reported
+                // either way — that is what a game reads.
+                if self.pointer_constraint == PointerConstraintRegion::Locked {
+                    return;
+                }
+                let previous = self.pointer;
+                self.move_pointer_by((event.delta_x(), event.delta_y()));
+                let (x, y) = self.confine_pointer(previous);
                 self.push(BackendEvent::Input(cursor_moved_event(x, y)));
             }
             InputEvent::PointerButton { event } => {
@@ -2847,6 +2880,22 @@ impl DrmRuntime {
         self.dispatch.sync_cursor_hotspot();
         self.dispatch
             .command(ScanoutCommand::SetPointerImage(image));
+    }
+
+    pub fn set_pointer_constraint(
+        &mut self,
+        constraint: crate::compositor::backend::PointerConstraintRegion,
+    ) {
+        self.dispatch.pointer_constraint = constraint;
+    }
+
+    /// Place the pointer at global `(x, y)` (clamped to the outputs) and
+    /// tell the compositor, as if it had moved there.
+    pub fn warp_pointer(&mut self, x: f64, y: f64) {
+        let dispatch = &mut self.dispatch;
+        dispatch.set_pointer_scene((x, y));
+        let (x, y) = dispatch.pointer;
+        dispatch.push(BackendEvent::Input(cursor_moved_event(x, y)));
     }
 
     pub fn cancel_touch(&mut self) {
