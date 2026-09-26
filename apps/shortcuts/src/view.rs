@@ -367,6 +367,7 @@ fn library(cx: &ViewCx<Workbench>, ui: &Ui) -> Element {
 
     let saved = saved_list(ui);
     let runs = run_history(ui);
+    let describe = describe_section(ui);
     let content = Column::new()
         .with_intrinsic_height()
         .with_gap(12.0)
@@ -375,6 +376,7 @@ fn library(cx: &ViewCx<Workbench>, ui: &Ui) -> Element {
         ))
         .push(Box::new(ActionGroup::new(new_draft).secondary(reload)))
         .push(Box::new(notice))
+        .push(describe)
         .push(Box::new(heading("shortcuts-drafts")))
         .push(Box::new(drafts))
         .push(Box::new(heading("shortcuts-saved")))
@@ -386,6 +388,116 @@ fn library(cx: &ViewCx<Workbench>, ui: &Ui) -> Element {
             .fill_parent_height()
             .with_child(Box::new(content)),
     )
+}
+
+/// Asking the agent for a draft: shown only when the person is offered the
+/// agent's transform to draft with. A drafted shortcut is only offered to
+/// open as a draft; it is saved, like any other, after the grant review.
+fn describe_section(ui: &Ui) -> Element {
+    let builder = ui.clone();
+    let description = LocalState::new(String::new());
+    Box::new(ModelView::from_state_by(
+        &ui.door,
+        |door| {
+            let offered = door
+                .catalogue
+                .ready()
+                .is_some_and(|catalog| crate::drafting::target(catalog).is_some());
+            (offered, door.drafted.clone())
+        },
+        move |door| -> Element {
+            let offered = door
+                .catalogue
+                .ready()
+                .is_some_and(|catalog| crate::drafting::target(catalog).is_some());
+            if !offered {
+                return Box::new(Spacer::fixed(0.0));
+            }
+            describe_panel(&builder, &description, door.drafted.as_ref())
+        },
+    ))
+}
+
+fn describe_panel(
+    ui: &Ui,
+    description: &LocalState<String>,
+    drafted: Option<&door::Drafting>,
+) -> Element {
+    let field = TextInput::from_state(description)
+        .with_id("describe-shortcut")
+        .with_accessible_name("shortcuts-describe")
+        .with_placeholder("shortcuts-describe-placeholder")
+        .multiline(true);
+    let source = description.clone();
+    let ask = ui
+        .door_resource
+        .actions
+        .iter()
+        .find(|spec| spec.id == door::DESCRIBE)
+        .and_then(|spec| {
+            ActionBinding::new(&ui.door_resource, spec, move |()| {
+                serde_json::Map::from_iter([(
+                    "description".to_owned(),
+                    Value::String(source.get()),
+                )])
+            })
+            .ok()
+        })
+        .map_or_else(
+            || Button::new("draft-with-agent", "shortcuts-draft-it", None).with_enabled(false),
+            |binding| {
+                Button::new("draft-with-agent", "shortcuts-draft-it", None)
+                    .with_enabled(!matches!(drafted, Some(door::Drafting::Drafting)))
+                    .on_action(binding)
+            },
+        );
+    let mut column = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_gap(8.0)
+        .push(Box::new(heading("shortcuts-describe")))
+        .push(Box::new(field))
+        .push(Box::new(ActionGroup::new(ask)));
+    match drafted {
+        None => {}
+        Some(door::Drafting::Drafting) => {
+            column = column.push(Box::new(
+                Row::new()
+                    .push(Box::new(Spinner::new()))
+                    .push(Box::new(caption("shortcuts-drafting"))),
+            ));
+        }
+        Some(door::Drafting::Failed(reason)) => {
+            column = column.push(Box::new(
+                Banner::warning(ui::i18n!("shortcuts-draft-failed")).with_message(reason.clone()),
+            ));
+        }
+        Some(door::Drafting::Ready(drafted)) => {
+            let steps = drafted.shortcut.steps.len();
+            column = column.push(Box::new(
+                Text::new(&format!(
+                    "“{}” · {steps} step{}",
+                    drafted.shortcut.name,
+                    if steps == 1 { "" } else { "s" }
+                ))
+                .with_id("drafted-summary")
+                .with_role(TextRole::Label),
+            ));
+            if !drafted.problems.is_empty() {
+                column = column.push(Box::new(
+                    Banner::warning(ui::i18n!("shortcuts-draft-problems"))
+                        .with_message(drafted.problems.join("\n")),
+                ));
+            }
+            let json = serde_json::to_value(&drafted.shortcut).unwrap_or(Value::Null);
+            let open = ui.bind(
+                Button::new("open-drafted", "shortcuts-open-drafted", None).primary(),
+                Workbench::OPEN_SHORTCUT.map(move |()| json.clone()),
+            );
+            column = column.push(Box::new(ActionGroup::new(open)));
+        }
+    }
+    Box::new(column)
 }
 
 fn saved_list(ui: &Ui) -> Element {
