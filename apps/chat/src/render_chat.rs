@@ -1816,7 +1816,7 @@ impl ChatApp {
         let feedback = self.active_feedback_channel();
         let band_area = area;
         let area = if feedback {
-            Rect::new(area.x0, area.y0 + FEEDBACK_BAND_H, area.x1, area.y1)
+            Rect::new(area.x0, area.y0 + feedback_band_h(theme), area.x1, area.y1)
         } else {
             area
         };
@@ -4426,7 +4426,7 @@ fn attachment_card_size(att: &Attachment, max_w: f64, scale: f64) -> (f64, f64) 
         Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, max_w),
         Attachment::Video { w, h, .. } => video_card_size(*w, *h, max_w),
         Attachment::File { .. } => (max_w.min(360.0), 58.0 * scale),
-        Attachment::Record(_) => (max_w.min(RECORD_CARD_W), RECORD_CARD_H * scale),
+        Attachment::Record(_) => (record_card_w(max_w), record_card_h_scaled(scale)),
     }
 }
 
@@ -4467,25 +4467,33 @@ const RAIL_W_CENTER: f64 = crate::app::RAIL_W / 2.0;
 
 // ------------------------------------------------------------- feedback
 
-/// Widest a record card grows; the card is a summary, not a player.
-const RECORD_CARD_W: f64 = 440.0;
-/// A record card at 1×: title row, summary row, and its controls.
-const RECORD_CARD_H: f64 = 100.0;
-/// Label size of the controls in a report strip, reference chip and card.
-const CONTROL_SIZE: f32 = 12.5;
-/// Height of the local sort / filter band above a feedback channel.
-const FEEDBACK_BAND_H: f64 = 48.0;
+/// A record card's width: a reading measure capped at 440 px, not spacing.
+fn record_card_w(max_w: f64) -> f64 {
+    max_w.min(440.0)
+}
+
+/// A record card's height at `scale`: its padding, the kind tile row and the
+/// control row. Layout and paint both read it, so they cannot disagree.
+fn record_card_h_scaled(scale: f64) -> f64 {
+    (12.0 + 36.0 + 12.0 + 28.0 + 12.0) * scale
+}
+
+/// The local sort / filter band above a feedback channel: one control row
+/// with its padding.
+fn feedback_band_h(theme: &Theme) -> f64 {
+    30.0 + 2.0 * f64::from(theme.tokens.spacing.s2)
+}
 
 /// A control row: its label's line box plus the button padding, never below
 /// the 28 px dense step.
 fn control_band_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
-    let (_, lh) = tr.measure("Ag", CONTROL_SIZE, None);
+    let (_, lh) = tr.measure("Ag", REACTION_SIZE, None);
     (f64::from(lh) + 2.0 * f64::from(theme.tokens.spacing.s2)).max(28.0)
 }
 
 /// Width of a shared button face holding `label` (and an icon).
 fn control_w(tr: &mut TextRenderer, label: &str, icon: bool) -> f64 {
-    let (lw, _) = tr.measure(label, CONTROL_SIZE, None);
+    let (lw, _) = tr.measure(label, REACTION_SIZE, None);
     f64::from(lw) + if icon { 44.0 } else { 26.0 }
 }
 
@@ -4526,8 +4534,8 @@ impl ChatApp {
             theme,
         } = paint;
         let h = control_band_h(tr, theme);
-        let max_w = f64::from(layout.max_width).min(RECORD_CARD_W);
-        let label = truncate_to(tr, &reference.label, CONTROL_SIZE, max_w - 44.0);
+        let max_w = record_card_w(f64::from(layout.max_width));
+        let label = truncate_to(tr, &reference.label, REACTION_SIZE, max_w - 44.0);
         let w = control_w(tr, &label, true).min(max_w);
         let rect = Rect::new(
             layout.origin.x,
@@ -4546,7 +4554,7 @@ impl ChatApp {
             theme,
             &ButtonFace::new(rect, &label)
                 .icon(ui::icons::Icon::ExternalLink)
-                .text_size(CONTROL_SIZE)
+                .text_size(REACTION_SIZE)
                 .radius(h / 2.0)
                 .accessible_name(&spoken)
                 .hovered(self.hovered(rect)),
@@ -4576,10 +4584,9 @@ impl ChatApp {
             theme,
         } = paint;
         let c = &theme.tokens.colors;
-        let scale = f64::from(theme.text_scale);
         let (w, h) = (
-            f64::from(layout.max_width).min(RECORD_CARD_W),
-            RECORD_CARD_H * scale,
+            record_card_w(f64::from(layout.max_width)),
+            record_card_h_scaled(f64::from(theme.text_scale)),
         );
         let Point { x, y } = layout.origin;
         let card = Rect::new(x, y, x + w, y + h);
@@ -4602,7 +4609,11 @@ impl ChatApp {
             tf,
             glyph,
             16.0,
-            Color::WHITE,
+            c.ink_on_any(
+                &[c.accent[5]],
+                c.text_primary,
+                ui::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+            ),
             glyph_box.center().x - f64::from(gw) / 2.0,
             glyph_box.center().y - f64::from(gh) / 2.0,
             TextWeight::Regular,
@@ -4730,7 +4741,7 @@ impl ChatApp {
                 &ButtonFace::new(rect, &label)
                     .icon(ui::icons::Icon::Play)
                     .primary()
-                    .text_size(CONTROL_SIZE)
+                    .text_size(REACTION_SIZE)
                     .hovered(self.hovered(rect)),
             );
             ChatApp::push_hit(hits, rect, Hit::ReplayRecord(m.id.clone()));
@@ -4746,7 +4757,7 @@ impl ChatApp {
                 theme,
                 &ButtonFace::new(rect, &label)
                     .ghost()
-                    .text_size(CONTROL_SIZE)
+                    .text_size(REACTION_SIZE)
                     .hovered(self.hovered(rect)),
             );
             ChatApp::push_hit(hits, rect, Hit::WithdrawRecord(m.id.clone()));
@@ -4790,7 +4801,7 @@ impl ChatApp {
         let vote = Rect::new(x, y, x + control_w(tr, &count, true).max(64.0), y + band);
         let face = ButtonFace::new(vote, &count)
             .icon(ui::icons::Icon::ThumbsUp)
-            .text_size(CONTROL_SIZE)
+            .text_size(REACTION_SIZE)
             .radius(band / 2.0)
             .accessible_name(&spoken)
             .hovered(self.hovered(vote))
@@ -4869,7 +4880,7 @@ impl ChatApp {
                     theme,
                     &ButtonFace::new(rect, &cancel)
                         .ghost()
-                        .text_size(CONTROL_SIZE)
+                        .text_size(REACTION_SIZE)
                         .hovered(self.hovered(rect)),
                 );
                 ChatApp::push_hit(hits, rect, Hit::CancelDuplicatePick);
@@ -4885,7 +4896,7 @@ impl ChatApp {
                     &ButtonFace::new(rect, &original)
                         .icon(ui::icons::Icon::Copy)
                         .primary()
-                        .text_size(CONTROL_SIZE)
+                        .text_size(REACTION_SIZE)
                         .hovered(self.hovered(rect)),
                 );
                 ChatApp::push_hit(hits, rect, Hit::DuplicateOf(m.id.clone()));
@@ -4903,7 +4914,7 @@ impl ChatApp {
                     theme,
                     &ButtonFace::new(rect, &set)
                         .ghost()
-                        .text_size(CONTROL_SIZE)
+                        .text_size(REACTION_SIZE)
                         .hovered(self.hovered(rect)),
                 );
                 ChatApp::push_hit(hits, rect, Hit::ReportStatusMenu(m.id.clone()));
@@ -4961,7 +4972,7 @@ impl ChatApp {
             theme,
         } = paint;
         let c = &theme.tokens.colors;
-        let band = Rect::new(area.x0, area.y0, area.x1, area.y0 + FEEDBACK_BAND_H);
+        let band = Rect::new(area.x0, area.y0, area.x1, area.y0 + feedback_band_h(theme));
         fill_rect(scene, tf, band, c.surfaces.base);
         hline(
             scene,
@@ -5106,7 +5117,7 @@ impl ChatApp {
             &ButtonFace::new(m_rect, &message)
                 .icon(ui::icons::Icon::Send)
                 .primary()
-                .text_size(CONTROL_SIZE)
+                .text_size(REACTION_SIZE)
                 .hovered(self.hovered(m_rect)),
         );
         ChatApp::push_hit(hits, m_rect, Hit::PersonMessage(user.to_string()));
@@ -5123,7 +5134,7 @@ impl ChatApp {
                 tr,
                 theme,
                 &ButtonFace::new(i_rect, &invite)
-                    .text_size(CONTROL_SIZE)
+                    .text_size(REACTION_SIZE)
                     .hovered(self.hovered(i_rect)),
             );
             ChatApp::push_hit(hits, i_rect, Hit::PersonInvite(user.to_string()));
