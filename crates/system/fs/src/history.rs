@@ -6,7 +6,7 @@
 //! in full on open so corrupt ancestry cannot become an eviction or restore
 //! root.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -131,12 +131,15 @@ struct HistoryLog {
     file: Option<std::fs::File>,
     len: u64,
     entries: usize,
+    /// Mutations already installed in memory whose log write is deferred
+    /// (see [`FileHistoryStore::defer_durability`]), in install order.
+    unwritten: Vec<LogEntry>,
 }
 
 /// One durable history mutation. Each is validated once when it is made and
 /// once when the log is replayed at open; appending never re-reads or
 /// re-validates the rest of the workspace's history.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum LogEntry {
     Versions {
@@ -175,6 +178,40 @@ pub struct FileHistoryStore {
     path: PathBuf,
     log_path: PathBuf,
     state: Mutex<HistoryState>,
+    /// Threads whose appends are deferred to one durable write.
+    deferring: Mutex<HashSet<std::thread::ThreadId>>,
+}
+
+/// Defers the durable log write of this thread's history appends until
+/// [`Self::finish`], which writes all of them at once with one sync. Memory
+/// is updated immediately, and any durable write made meanwhile (by any
+/// thread) writes the deferred mutations first, so the log keeps the order
+/// of memory.
+pub struct HistoryDeferral<'a> {
+    store: &'a FileHistoryStore,
+    finished: bool,
+}
+
+impl HistoryDeferral<'_> {
+    /// Write every deferred mutation durably.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the log write or its sync fails; the
+    /// mutations stay deferred and the next durable write retries them.
+    pub fn finish(mut self) -> Result<(), HistoryError> {
+        self.finished = true;
+        self.store.stop_deferring();
+        self.store.flush()
+    }
+}
+
+impl Drop for HistoryDeferral<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.store.stop_deferring();
+        }
+    }
 }
 
 /// Log entries after which the log is folded into the snapshot.
@@ -184,6 +221,8 @@ pub const LOG_COMPACT_AFTER_ENTRIES: usize = 4096;
 pub(crate) struct HistoryLease<'a> {
     store: &'a FileHistoryStore,
     state: std::sync::MutexGuard<'a, HistoryState>,
+    /// Whether writes may wait for the thread's deferred durable write.
+    defer: bool,
 }
 
 pub(crate) struct HistoryCandidate {
@@ -211,6 +250,7 @@ impl HistoryLease<'_> {
                 conflict_id,
                 resolution,
             },
+            self.defer,
         )?;
         install_conflict(&mut self.state, resolved);
         self.store.maybe_compact(&mut self.state);
@@ -226,6 +266,7 @@ impl HistoryLease<'_> {
             &LogEntry::Conflict {
                 conflict: conflict.clone(),
             },
+            self.defer,
         )?;
         install_conflict(&mut self.state, conflict);
         self.store.maybe_compact(&mut self.state);
@@ -248,6 +289,7 @@ impl HistoryLease<'_> {
             &LogEntry::Versions {
                 versions: candidate.accepted.clone(),
             },
+            self.defer,
         )?;
         let appended = install_versions(&mut self.state, candidate);
         self.store.maybe_compact(&mut self.state);
@@ -516,21 +558,105 @@ fn replay_log(
 }
 
 impl FileHistoryStore {
+    /// The writer lock for a compound admission or projection. Its writes
+    /// are always durable when they return: callers advance their own
+    /// journals on it.
     pub(crate) fn lease(&self) -> Result<HistoryLease<'_>, HistoryError> {
         Ok(HistoryLease {
             store: self,
             state: self.state.lock().map_err(|_| HistoryError::StatePoisoned)?,
+            defer: false,
         })
     }
 
-    /// Durably append `entry` to the log. On failure the log is cut back to
-    /// its last good length, so a failed append never leaves a torn line in
-    /// the middle of the log.
-    fn append_entry(&self, state: &mut HistoryState, entry: &LogEntry) -> Result<(), HistoryError> {
+    /// The writer lock for a plain append, deferred when this thread defers.
+    fn append_lease(&self) -> Result<HistoryLease<'_>, HistoryError> {
+        let defer = self.is_deferring();
+        Ok(HistoryLease {
+            store: self,
+            state: self.state.lock().map_err(|_| HistoryError::StatePoisoned)?,
+            defer,
+        })
+    }
+
+    fn is_deferring(&self) -> bool {
+        self.deferring
+            .lock()
+            .is_ok_and(|threads| threads.contains(&std::thread::current().id()))
+    }
+
+    fn stop_deferring(&self) {
+        if let Ok(mut threads) = self.deferring.lock() {
+            threads.remove(&std::thread::current().id());
+        }
+    }
+
+    /// Defer this thread's appends until the returned guard finishes.
+    pub fn defer_durability(&self) -> HistoryDeferral<'_> {
+        if let Ok(mut threads) = self.deferring.lock() {
+            threads.insert(std::thread::current().id());
+        }
+        HistoryDeferral {
+            store: self,
+            finished: false,
+        }
+    }
+
+    /// Write deferred mutations durably now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the log write or its sync fails.
+    pub fn flush(&self) -> Result<(), HistoryError> {
+        let mut state = self.state.lock().map_err(|_| HistoryError::StatePoisoned)?;
+        let result = self.write_lines(&mut state, None);
+        drop(state);
+        result
+    }
+
+    /// Durably append `entry`, or with `defer` keep it for the next durable
+    /// write.
+    fn append_entry(
+        &self,
+        state: &mut HistoryState,
+        entry: &LogEntry,
+        defer: bool,
+    ) -> Result<(), HistoryError> {
+        if defer {
+            // Consecutive version batches fold into one entry, so a
+            // deferred batch is one log line however many files it touched.
+            match (state.log.unwritten.last_mut(), entry) {
+                (Some(LogEntry::Versions { versions }), LogEntry::Versions { versions: more }) => {
+                    versions.extend(more.iter().cloned());
+                }
+                _ => state.log.unwritten.push(entry.clone()),
+            }
+            return Ok(());
+        }
+        self.write_lines(state, Some(entry))
+    }
+
+    /// Write the deferred mutations, then `entry`, in one write and one
+    /// sync. On failure the log is cut back to its last good length, so a
+    /// failed append never leaves a torn line in the middle of the log, and
+    /// the deferred mutations stay deferred.
+    fn write_lines(
+        &self,
+        state: &mut HistoryState,
+        entry: Option<&LogEntry>,
+    ) -> Result<(), HistoryError> {
         use std::io::Write as _;
         use std::os::unix::fs::OpenOptionsExt as _;
 
-        let line = encode_log_line(entry)?;
+        if state.log.unwritten.is_empty() && entry.is_none() {
+            return Ok(());
+        }
+        let mut line = Vec::new();
+        let mut count = 0_usize;
+        for pending in state.log.unwritten.iter().chain(entry) {
+            line.extend_from_slice(&encode_log_line(pending)?);
+            count = count.saturating_add(1);
+        }
         if state.log.file.is_none() {
             let file = std::fs::OpenOptions::new()
                 .create(true)
@@ -554,7 +680,8 @@ impl FileHistoryStore {
             return Err(error.into());
         }
         state.log.len = state.log.len.saturating_add(line.len() as u64);
-        state.log.entries = state.log.entries.saturating_add(1);
+        state.log.entries = state.log.entries.saturating_add(count);
+        state.log.unwritten.clear();
         Ok(())
     }
 
@@ -575,7 +702,9 @@ impl FileHistoryStore {
     /// between the two replays entries the snapshot already holds, which
     /// are exact replays.
     fn compact_locked(&self, state: &mut HistoryState) -> Result<(), HistoryError> {
+        // The snapshot holds everything in memory, deferred mutations too.
         persist(&self.path, state)?;
+        state.log.unwritten.clear();
         match state.log.file.as_mut() {
             Some(file) => {
                 file.set_len(0)?;
@@ -665,6 +794,7 @@ impl FileHistoryStore {
             path,
             log_path,
             state: Mutex::new(state),
+            deferring: Mutex::new(HashSet::new()),
         })
     }
 
@@ -700,7 +830,7 @@ impl FileHistoryStore {
         reason = "the writer lock intentionally spans candidate validation, durable replacement, and in-memory publication"
     )]
     pub fn append_batch(&self, versions: &[FileVersionV1]) -> Result<Vec<bool>, HistoryError> {
-        self.lease()?.append_batch(versions)
+        self.append_lease()?.append_batch(versions)
     }
 
     /// Persist an open or already-resolved conflict. Conflict records are
@@ -715,7 +845,7 @@ impl FileHistoryStore {
         reason = "the writer lock intentionally spans conflict validation, durable replacement, and in-memory publication"
     )]
     pub fn record_conflict(&self, conflict: FileConflictV1) -> Result<bool, HistoryError> {
-        self.lease()?.record_conflict(conflict)
+        self.append_lease()?.record_conflict(conflict)
     }
 
     /// Resolve an open conflict. The result must already be a durable
@@ -736,7 +866,8 @@ impl FileHistoryStore {
         conflict_id: Uuid,
         resolution: ConflictResolution,
     ) -> Result<bool, HistoryError> {
-        self.lease()?.resolve(record_id, conflict_id, resolution)
+        self.append_lease()?
+            .resolve(record_id, conflict_id, resolution)
     }
 
     pub fn snapshot(&self, record_id: FileRecordId) -> Option<RecordHistorySnapshot> {
@@ -1053,6 +1184,60 @@ mod tests {
             metadata_hash: ContentHash([9; 32]),
             provenance,
         }
+    }
+
+    #[test]
+    fn deferred_appends_are_one_log_line_written_when_the_batch_finishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        let record = FileRecordId::new();
+        let root = version(record, vec![], FileProvenance::Create, 1);
+        let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
+        let store = FileHistoryStore::open(&path).unwrap();
+        let log = log_path_for(&path);
+
+        let batch = store.defer_durability();
+        store.append(root).unwrap();
+        store.append(edit.clone()).unwrap();
+        // Visible at once, on disk only when the batch finishes.
+        assert_eq!(store.snapshot(record).unwrap().versions.len(), 2);
+        assert!(std::fs::read(&log).unwrap_or_default().is_empty());
+        // Another thread's append is durable when it returns: it writes the
+        // deferred ones first, so the log keeps the order of memory.
+        let third = version(record, vec![edit.id], FileProvenance::Edit, 3);
+        std::thread::scope(|scope| {
+            scope.spawn(|| store.append(third.clone()).unwrap());
+        });
+        assert_eq!(store.pending_log_entries(), 2);
+        batch.finish().unwrap();
+        drop(store);
+        assert_eq!(
+            FileHistoryStore::open(&path)
+                .unwrap()
+                .snapshot(record)
+                .unwrap()
+                .versions
+                .len(),
+            3
+        );
+
+        // A batch that never finishes (a crash) leaves nothing behind.
+        let other = FileRecordId::new();
+        let store = FileHistoryStore::open(&path).unwrap();
+        let batch = store.defer_durability();
+        store
+            .append(version(other, vec![], FileProvenance::Create, 4))
+            .unwrap();
+        std::mem::forget(batch);
+        let on_disk = std::fs::read(&log).unwrap();
+        drop(store);
+        assert_eq!(std::fs::read(&log).unwrap(), on_disk);
+        assert!(
+            FileHistoryStore::open(&path)
+                .unwrap()
+                .snapshot(other)
+                .is_none()
+        );
     }
 
     #[test]
