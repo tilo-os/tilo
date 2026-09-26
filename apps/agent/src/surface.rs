@@ -349,6 +349,7 @@ fn chat_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
                     is_agent: u.is_agent,
                 })
                 .collect(),
+            comment_messages: Vec::new(),
         },
         doc,
     )

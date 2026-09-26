@@ -358,6 +358,26 @@ impl Comments {
     }
 }
 
+/// The message a comment record holds, as its author wrote it.
+pub fn message_of(doc: &AutoCommit) -> Option<CommentMessage> {
+    read_str(doc, MESSAGE_KEY).and_then(|raw| serde_json::from_str(&raw).ok())
+}
+
+/// The id of the message a comment record holds.
+pub fn message_id_of(doc: &AutoCommit) -> Option<String> {
+    message_of(doc).map(|message| message.id)
+}
+
+/// The text of the message a comment record holds.
+pub fn message_text_of(doc: &AutoCommit) -> Option<String> {
+    message_of(doc).map(|message| message.text)
+}
+
+/// Whether a reactions record says its author reacts with `emoji`.
+pub fn reacts_with(doc: &AutoCommit, emoji: &str) -> bool {
+    read_reactions(doc).iter().any(|e| e == emoji)
+}
+
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
     match doc.get(ROOT, key) {
         Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {

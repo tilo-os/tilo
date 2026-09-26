@@ -1333,6 +1333,10 @@ pub struct ChatResourceCtx {
     /// The room, for resolving an `@mention` typed through the palette's
     /// "Post message" prompt the same way the composer does.
     pub participants: Vec<crate::mention::Participant>,
+    /// Messages people wrote in their own comment records in feedback
+    /// channels (see [`crate::comments`]), which the conversation document
+    /// does not hold, with their reactions and the status Editors set.
+    pub comment_messages: Vec<crate::model::Message>,
 }
 
 /// Keep the ordinary palette snapshot cheap even for a very large shared
@@ -1613,7 +1617,7 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
         return Some(resource);
     }
     if let Some(message_id) = id.strip_prefix("chat.attachment:") {
-        let (channel, message) = find_message(doc, message_id)?;
+        let (channel, message) = find_message(ctx, doc, message_id)?;
         let workspace = ChatDoc::list_workspaces(doc)
             .into_iter()
             .find(|workspace| workspace.id == channel.workspace)?;
@@ -1634,7 +1638,7 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
             Some((message, index)) => (message, index.parse::<usize>().ok()?),
             None => (address, 0),
         };
-        let (channel, message) = find_message(doc, message_id)?;
+        let (channel, message) = find_message(ctx, doc, message_id)?;
         let reference = message.references().nth(index)?;
         let workspace = ChatDoc::list_workspaces(doc)
             .into_iter()
@@ -1689,7 +1693,7 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
         return Some(resource);
     }
     let message_id = id.strip_prefix("chat.message:")?;
-    let message = find_message(doc, message_id)?;
+    let message = find_message(ctx, doc, message_id)?;
     let (channel, message) = message;
     let workspace = ChatDoc::list_workspaces(doc)
         .into_iter()
@@ -1711,15 +1715,36 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
 /// Resolve an immutable message row and its owning channel once. Resource
 /// resolution must read the document, never a currently rendered projection.
 fn find_message(
+    ctx: &ChatResourceCtx,
     doc: &AutoCommit,
     message_id: &str,
 ) -> Option<(crate::model::Channel, crate::model::Message)> {
-    ChatDoc::list_channels(doc).into_iter().find_map(|channel| {
+    let channels = ChatDoc::list_channels(doc);
+    let mut found = channels.iter().find_map(|channel| {
         ChatDoc::list_messages(doc, &channel.id)
             .into_iter()
             .find(|message| message.id == message_id)
-            .map(|message| (channel, message))
-    })
+            .map(|message| (channel.clone(), message))
+    });
+    if found.is_none() {
+        found = ctx
+            .comment_messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .and_then(|message| {
+                let channel = channels.iter().find(|c| c.id == message.channel)?;
+                Some((channel.clone(), message.clone()))
+            });
+    }
+    // The conversation's messages in a feedback channel carry reactions
+    // from people's own records too.
+    if let Some((channel, message)) = &mut found
+        && channel.feedback
+        && let Some(merged) = ctx.comment_messages.iter().find(|m| m.id == message.id)
+    {
+        message.reactions.clone_from(&merged.reactions);
+    }
+    found
 }
 
 fn channel_resource(channel: &crate::model::Channel) -> ChannelResource {
@@ -2780,6 +2805,7 @@ mod tests {
                     is_agent: u.is_agent,
                 })
                 .collect(),
+            comment_messages: Vec::new(),
         }
     }
 
@@ -3548,6 +3574,7 @@ mod feedback_tests {
                     is_agent: u.is_agent,
                 })
                 .collect(),
+            comment_messages: Vec::new(),
         }
     }
 

@@ -973,6 +973,34 @@ impl ChatApp {
         app.comments =
             crate::comments::Comments::new(ui::record::RecordStore::open("so.tilo.chat"));
         app.me = LocalIdentity::resolve();
+        app.new_live_view()
+    }
+
+    /// A live Chat for the participant `id`, keeping this peer's comment
+    /// records in `comments` and authorised by `permissions` — what a host
+    /// with its own identity and record store (a test over a real broker)
+    /// launches instead of [`Self::new`].
+    pub fn for_participant(
+        id: &str,
+        name: &str,
+        comments: ui::record::RecordStore,
+        permissions: ui::permissions::PermissionContext,
+    ) -> Self {
+        let mut app = Self::bare(ContentStore::memory());
+        app.is_live = true;
+        app.comments = crate::comments::Comments::new(comments);
+        app.me = LocalIdentity {
+            id: id.to_string(),
+            name: name.to_string(),
+            initials: crate::identity::initials_for(name),
+            color_idx: crate::identity::color_index_for(id.as_bytes()),
+        };
+        app.perms = ChatPermissions::from_context(permissions);
+        app.new_live_view()
+    }
+
+    fn new_live_view(self) -> Self {
+        let mut app = self;
         // Select the live transport, but defer its endpoint bind until the
         // user explicitly joins a call. Tests/`--shots` keep the deterministic
         // local bus from `bare`.
@@ -1402,6 +1430,15 @@ impl ChatApp {
             active_channel: self.active_channel.clone(),
             messages,
             participants: self.participants(),
+            comment_messages: self
+                .search_messages
+                .iter()
+                .filter(|m| {
+                    self.comments.holds(&m.id)
+                        || self.channel(&m.channel).is_some_and(|c| c.feedback)
+                })
+                .cloned()
+                .collect(),
         }
     }
 
@@ -3888,7 +3925,10 @@ impl Widget for ChatApp {
             // Keyed off `is_live` (not on whether anything persisted) so a
             // live run with no data dir still gets the honest empty starter
             // rather than the demo.
-            if !ChatDoc::is_seeded(doc) {
+            // Only a participant who may write the conversation scaffolds or
+            // announces into it: a Commenter's writes would be refused, and a
+            // refused seed would leave this peer on a workspace nobody else has.
+            if !ChatDoc::is_seeded(doc) && self.can_participate() {
                 ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
             }
             // Announce this peer into the shared roster so every other
@@ -3896,14 +3936,16 @@ impl Widget for ChatApp {
             // workspace or adopted a peer's shared document. Guarded so it
             // writes once and doesn't churn the doc (which would spam empty
             // collab deltas) on subsequent frames.
-            if ChatDoc::ensure_user(
-                doc,
-                &self.me.id,
-                &self.me.name,
-                &self.me.initials,
-                self.me.color_idx,
-                model::Presence::Online,
-            ) {}
+            if self.can_participate()
+                && ChatDoc::ensure_user(
+                    doc,
+                    &self.me.id,
+                    &self.me.name,
+                    &self.me.initials,
+                    self.me.color_idx,
+                    model::Presence::Online,
+                )
+            {}
         } else if self.shot_starter {
             // `--shots` capture of the honest first-run empty workspace.
             ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
@@ -4705,7 +4747,16 @@ impl Widget for ChatApp {
     /// unqualified route is free for the room's index — the index is where
     /// people's comment records become discoverable.
     fn record_intent(&self) -> Option<ui::record::RecordCheckout> {
-        self.is_live.then(crate::comments::conversation)
+        // Someone who may not write the conversation follows it without
+        // bringing it into the room: that is for the members who write it.
+        self.is_live.then(|| {
+            let conversation = crate::comments::conversation();
+            if self.can_participate() {
+                conversation
+            } else {
+                conversation.read_only()
+            }
+        })
     }
 
     fn has_pending_control_invocation(&self) -> bool {
