@@ -360,12 +360,14 @@ pub enum InputCommand {
         /// The text to type.
         text: String,
     },
-    /// Move the pointer to output pixel X, Y.
-    #[command(after_help = "Examples:\n  tilo-vm input move 400 300")]
+    /// Move the pointer to desktop pixel X, Y.
+    #[command(
+        after_help = "Examples:\n  tilo-vm input move 400 300\n\nOn a slot with one output, X and Y are that output's pixels. On a slot made\nwith --outputs they are logical desktop pixels, outputs left to right: with\n2560x1600@2,1920x1080 the second monitor starts at x 1280."
+    )]
     Move {
-        /// Pixels from the output's left edge.
+        /// Pixels from the desktop's left edge.
         x: u32,
-        /// Pixels from the output's top edge.
+        /// Pixels from the desktop's top edge.
         y: u32,
     },
     /// Click a button (left, right, middle), optionally at X, Y.
@@ -597,7 +599,7 @@ pub struct UpgradeArgs {
 pub enum SlotCommand {
     /// Create a slot (default: named after your branch) and start its session.
     #[command(
-        after_help = "Examples:\n  tilo-vm slot create --headless\n  tilo-vm slot create review-a --headful"
+        after_help = "Examples:\n  tilo-vm slot create --headless\n  tilo-vm slot create review-a --headful\n  tilo-vm slot create dual --headful --outputs 2560x1600@2,1920x1080@1\n\n--outputs gives a headful slot one virtual monitor per entry, left to right,\ntop-aligned, the first one primary. Each is WIDTHxHEIGHT[@SCALE]. Like a\nmonitor without an EDID, a vkms output offers the standard VESA (DMT) 60 Hz\nmodes, e.g. 1280x800, 1920x1080, 1920x1200, 2560x1600, 4096x2160; a size it\ndoes not offer fails with the list it does. SCALE is 0.5 to 4 (default 1). The mode and scale go\nthrough the display settings exactly as a confirmed change in Settings does,\nand are remembered for that set of monitors. Outputs are fixed when the slot\nis created; rerunning the same create applies the layout again.\n\ntilo-vm input move X Y then takes desktop coordinates in logical pixels:\nwith 2560x1600@2,1920x1080 the first monitor is x 0-1279, the second\nx 1280-3199."
     )]
     Create {
         /// The slot (default: your slot).
@@ -611,6 +613,15 @@ pub enum SlotCommand {
         /// Own virtual display and seat: the real DRM and input paths.
         #[arg(long)]
         headful: bool,
+        /// Headful only: virtual monitors left to right, each width x height with an optional @scale, e.g. 2560x1600@2,1920x1080.
+        #[arg(
+            long,
+            requires = "headful",
+            value_name = "LIST",
+            value_delimiter = ',',
+            num_args = 1
+        )]
+        outputs: Vec<tilo_vm_protocol::OutputSpec>,
     },
     /// List the VM's slots with owner, generation and session state.
     #[command(after_help = "Examples:\n  tilo-vm slot list\n  tilo-vm slot list --json")]
@@ -697,6 +708,40 @@ mod tests {
     use clap::CommandFactory;
 
     use super::*;
+
+    #[test]
+    fn outputs_need_a_headful_slot_and_parse_left_to_right() {
+        let cli = Cli::try_parse_from([
+            "tilo-vm",
+            "slot",
+            "create",
+            "--headful",
+            "--outputs",
+            "2560x1600@2,1920x1080",
+        ])
+        .unwrap();
+        let Some(Command::Slot(SlotCommand::Create { outputs, .. })) = cli.command else {
+            panic!("slot create did not parse");
+        };
+        assert_eq!(
+            tilo_vm_protocol::display::format_outputs(&outputs),
+            "2560x1600@2,1920x1080@1"
+        );
+        assert!(
+            Cli::try_parse_from(["tilo-vm", "slot", "create", "--outputs", "800x600"]).is_err()
+        );
+        let error = Cli::try_parse_from([
+            "tilo-vm",
+            "slot",
+            "create",
+            "--headful",
+            "--outputs",
+            "800x600@9",
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("outside 0.5 to 4"), "{error}");
+    }
 
     #[test]
     fn every_slot_command_takes_the_slot_flag() {

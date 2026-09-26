@@ -2447,6 +2447,7 @@ impl App {
                 name,
                 headless: _,
                 headful,
+                outputs,
                 ..
             } => {
                 let name = self.slot_name(name)?;
@@ -2465,20 +2466,9 @@ impl App {
                     name: name.clone(),
                     kind,
                     owner,
+                    outputs,
                 })?;
-                let user = result.slot.user.clone().unwrap_or_default();
-                let text = if result.created {
-                    format!(
-                        "slot {name} created ({}); session started as {user} on the base image",
-                        kind.as_str()
-                    )
-                } else if result.actions.is_empty() {
-                    format!("slot {name} already exists and its session is running; nothing to do")
-                } else {
-                    format!(
-                        "slot {name} already existed; its session was not running and has been started"
-                    )
-                };
+                let text = slot_created_text(&name, kind, &result);
                 self.receipt.set("slot", &name);
                 Ok(Outcome::new(text, json!(result)).next(&[
                     "tilo-vm swap <component>",
@@ -3551,6 +3541,41 @@ fn describe_input(action: &InputAction) -> String {
     }
 }
 
+/// What `slot create` did, in a sentence or two.
+fn slot_created_text(
+    name: &str,
+    kind: SlotKind,
+    result: &tilo_vm_protocol::SlotCreateResult,
+) -> String {
+    let user = result.slot.user.clone().unwrap_or_default();
+    let set_outputs = result.actions.iter().find_map(|action| match action {
+        tilo_vm_protocol::Action::SetOutputs { outputs } => Some(outputs.clone()),
+        _ => None,
+    });
+    let started = result
+        .actions
+        .iter()
+        .any(|action| !matches!(action, tilo_vm_protocol::Action::SetOutputs { .. }));
+    let text = if result.created {
+        format!(
+            "slot {name} created ({}); session started as {user} on the base image",
+            kind.as_str()
+        )
+    } else if started {
+        format!("slot {name} already existed; its session was not running and has been started")
+    } else if set_outputs.is_some() {
+        format!("slot {name} already exists and its session is running")
+    } else {
+        format!("slot {name} already exists and its session is running; nothing to do")
+    };
+    match set_outputs {
+        Some(outputs) => format!(
+            "{text}\noutputs {outputs} (left to right), set and confirmed through the display settings"
+        ),
+        None => text,
+    }
+}
+
 fn slot_line(info: &SlotInfo) -> String {
     let seat = info
         .seat
@@ -3560,8 +3585,16 @@ fn slot_line(info: &SlotInfo) -> String {
     let owner = describe_owner(&info.owner)
         .map(|o| format!(", owner {o}"))
         .unwrap_or_default();
+    let outputs = if info.outputs.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ", outputs {}",
+            tilo_vm_protocol::display::format_outputs(&info.outputs)
+        )
+    };
     format!(
-        "slot: {} ({}) generation {}, session {}{seat}{owner}",
+        "slot: {} ({}) generation {}, session {}{seat}{outputs}{owner}",
         info.name,
         info.kind.as_str(),
         info.generation,
@@ -4922,6 +4955,7 @@ mod tests {
             components: std::collections::BTreeMap::new(),
             session: "active".into(),
             seat: None,
+            outputs: Vec::new(),
             parity: None,
         }
     }

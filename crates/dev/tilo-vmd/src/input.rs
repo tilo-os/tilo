@@ -174,6 +174,9 @@ pub struct Request {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Reply {
     pub seat: String,
+    /// The absolute pointer's range, when it was given one (`--extent`).
+    #[serde(default)]
+    pub extent: Option<(u32, u32)>,
     #[serde(default)]
     pub events: u64,
     #[serde(default)]
@@ -198,12 +201,13 @@ pub fn send(socket: &Path, actions: &[InputAction]) -> std::io::Result<Reply> {
     serde_json::from_str(&reply).map_err(std::io::Error::other)
 }
 
-/// Serve input requests for `seat` on `socket` until killed.
+/// Serve input requests for `seat` on `socket` until killed. The pointer
+/// spans `extent` (the slot's logical desktop), else the seat's output.
 ///
 /// # Errors
 /// Device creation and socket failures.
-pub fn serve(seat: &str, socket: &Path) -> Result<(), DaemonError> {
-    let (width, height) = output_size(seat);
+pub fn serve(seat: &str, socket: &Path, extent: Option<(u32, u32)>) -> Result<(), DaemonError> {
+    let (width, height) = extent.unwrap_or_else(|| output_size(seat));
     let keyboard = uinput::keyboard(seat).map_err(DaemonError::io(
         "create the uinput keyboard (is /dev/uinput there?)",
     ))?;
@@ -246,12 +250,14 @@ pub fn serve(seat: &str, socket: &Path) -> Result<(), DaemonError> {
                 }
                 Reply {
                     seat: seat.to_owned(),
+                    extent,
                     events: written,
                     error,
                 }
             }
             Err(error) => Reply {
                 seat: seat.to_owned(),
+                extent,
                 events: 0,
                 error: Some(error),
             },
