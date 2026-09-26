@@ -1091,7 +1091,7 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     // label) keeps that content out of the tree as well; a secret field's
     // name is only its label.
     if let Some(name) = &access.name
-        && !(secret && !access.presents_value())
+        && (!secret || access.presents_value())
     {
         ak.set_label(name.clone());
     }
