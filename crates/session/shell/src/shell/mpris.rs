@@ -992,6 +992,373 @@ pub(crate) fn pause_named_if_uri(bus_name: &str, expected_uri: &str) -> bool {
     })
 }
 
+/// The shell's projection of every player on the session bus, for the
+/// now-playing card. Refreshed off the compositor thread; readers only copy
+/// the last snapshot.
+#[derive(Default)]
+struct NowPlayingState {
+    players: Vec<crate::shell::now_playing::PlayerSnapshot>,
+    running: bool,
+    last_started: Option<Instant>,
+    /// Decoded artwork by `mpris:artUrl`, so a track's cover is read once and
+    /// not every second. Pruned to the current players when it grows.
+    artwork: HashMap<String, Option<crate::shell::now_playing::Artwork>>,
+}
+
+static NOW_PLAYING: LazyLock<Mutex<NowPlayingState>> =
+    LazyLock::new(|| Mutex::new(NowPlayingState::default()));
+
+/// Largest cover file the card will decode, and the edge it is scaled to.
+const MAX_ARTWORK_BYTES: u64 = 8 * 1024 * 1024;
+const ARTWORK_EDGE: u32 = 192;
+const MAX_NOW_PLAYING_PLAYERS: usize = 16;
+
+/// The players last observed. Empty until the first refresh completes.
+pub fn now_playing_players() -> Vec<crate::shell::now_playing::PlayerSnapshot> {
+    NOW_PLAYING
+        .lock()
+        .map_or_else(|_| Vec::new(), |state| state.players.clone())
+}
+
+/// Start a fresh observation of every player unless one is running or the
+/// last started under a second ago. Never waits on the bus.
+pub fn refresh_now_playing() {
+    let Ok(mut state) = NOW_PLAYING.lock() else {
+        return;
+    };
+    if state.running
+        || state
+            .last_started
+            .is_some_and(|started| started.elapsed() < DISCOVERY_INTERVAL)
+    {
+        return;
+    }
+    state.running = true;
+    state.last_started = Some(Instant::now());
+    drop(state);
+    let spawned = spawn_on_session(async {
+        let _finished = NowPlayingRefreshFinished;
+        let players = discover_now_playing().await;
+        if let Ok(mut state) = NOW_PLAYING.lock() {
+            state.players = players;
+        }
+    });
+    if !spawned && let Ok(mut state) = NOW_PLAYING.lock() {
+        state.running = false;
+    }
+}
+
+struct NowPlayingRefreshFinished;
+
+impl Drop for NowPlayingRefreshFinished {
+    fn drop(&mut self) {
+        if let Ok(mut state) = NOW_PLAYING.lock() {
+            state.running = false;
+        }
+    }
+}
+
+/// Forget the refresh throttle so the next [`refresh_now_playing`] observes
+/// at once — after a command, the card should show its effect promptly.
+fn expire_now_playing() {
+    if let Ok(mut state) = NOW_PLAYING.lock() {
+        state.last_started = None;
+    }
+}
+
+/// Send `command` to exactly the player at `bus_name`, never to whichever
+/// other player happens to be active. Returns whether it was dispatched; the
+/// call itself happens on the session runtime.
+pub fn control(bus_name: &str, command: crate::shell::now_playing::PlayerCommand) -> bool {
+    use crate::shell::now_playing::{PlaybackStatus, PlayerCommand};
+    if !bus_name.starts_with(MPRIS_PREFIX) || bus_name.len() > 256 {
+        return false;
+    }
+    // Show the toggle at once; the next observation confirms or corrects it.
+    if matches!(command, PlayerCommand::PlayPause | PlayerCommand::Pause)
+        && let Ok(mut state) = NOW_PLAYING.lock()
+        && let Some(player) = state
+            .players
+            .iter_mut()
+            .find(|player| player.bus_name == bus_name)
+    {
+        let now = Instant::now();
+        player.position_us = player.position_at(now);
+        player.observed_at = now;
+        player.status = if player.status == PlaybackStatus::Playing {
+            PlaybackStatus::Paused
+        } else if command == PlayerCommand::Pause {
+            player.status
+        } else {
+            PlaybackStatus::Playing
+        };
+    }
+    let owned = bus_name.to_string();
+    spawn_on_session(async move {
+        let Some(connection) = session_bus().await else {
+            return;
+        };
+        let Some(proxy) = player_proxy(&connection, &owned, PLAYER_IFACE).await else {
+            return;
+        };
+        let result = match &command {
+            PlayerCommand::PlayPause => proxy.call_method("PlayPause", &()).await,
+            PlayerCommand::Pause => proxy.call_method("Pause", &()).await,
+            PlayerCommand::Next => proxy.call_method("Next", &()).await,
+            PlayerCommand::Previous => proxy.call_method("Previous", &()).await,
+            PlayerCommand::SetPosition {
+                track_id,
+                position_us,
+            } => {
+                let Ok(track) = zbus::zvariant::ObjectPath::try_from(track_id.as_str()) else {
+                    return;
+                };
+                proxy
+                    .call_method("SetPosition", &(track, *position_us))
+                    .await
+            }
+        };
+        if let Err(error) = result {
+            tracing::debug!(target: "tilo::mpris", %error, ?command, "player rejected the command");
+        }
+        expire_now_playing();
+    })
+}
+
+async fn discover_now_playing() -> Vec<crate::shell::now_playing::PlayerSnapshot> {
+    let Some(connection) = session_bus().await else {
+        return Vec::new();
+    };
+    let Some(dbus) = dbus_proxy(&connection).await else {
+        return Vec::new();
+    };
+    let Ok(names) = dbus.list_names().await else {
+        return Vec::new();
+    };
+    let mut observed = Vec::new();
+    for name in names {
+        if observed.len() >= MAX_NOW_PLAYING_PLAYERS {
+            break;
+        }
+        let bus_name = name.as_str();
+        if !bus_name.starts_with(MPRIS_PREFIX) {
+            continue;
+        }
+        if let Some(player) = observe_now_playing(&connection, bus_name).await {
+            observed.push(player);
+        }
+    }
+    let wanted = observed
+        .iter()
+        .filter_map(|(_, url)| url.clone())
+        .collect::<BTreeSet<_>>();
+    let mut players = Vec::with_capacity(observed.len());
+    for (mut player, art_url) in observed {
+        if let Some(url) = art_url {
+            player.artwork = artwork_for(&url).await;
+        }
+        players.push(player);
+    }
+    if let Ok(mut state) = NOW_PLAYING.lock()
+        && state.artwork.len() > MAX_NOW_PLAYING_PLAYERS
+    {
+        state.artwork.retain(|url, _| wanted.contains(url));
+    }
+    players
+}
+
+/// One player's snapshot plus the artwork URL still to resolve.
+async fn observe_now_playing(
+    connection: &zbus::Connection,
+    bus_name: &str,
+) -> Option<(crate::shell::now_playing::PlayerSnapshot, Option<String>)> {
+    let player = player_proxy(connection, bus_name, PLAYER_IFACE).await?;
+    let root = player_proxy(connection, bus_name, ROOT_IFACE).await?;
+    let status = player.get_property::<String>("PlaybackStatus").await.ok()?;
+    let metadata = player
+        .get_property::<HashMap<String, OwnedValue>>("Metadata")
+        .await
+        .unwrap_or_default();
+    let properties = NowPlayingProperties {
+        identity: root.get_property::<String>("Identity").await.ok(),
+        status,
+        position_us: player.get_property::<i64>("Position").await.unwrap_or(0),
+        can_play: player
+            .get_property::<bool>("CanPlay")
+            .await
+            .unwrap_or(false),
+        can_pause: player
+            .get_property::<bool>("CanPause")
+            .await
+            .unwrap_or(false),
+        can_seek: player
+            .get_property::<bool>("CanSeek")
+            .await
+            .unwrap_or(false),
+        can_go_next: player
+            .get_property::<bool>("CanGoNext")
+            .await
+            .unwrap_or(false),
+        can_go_previous: player
+            .get_property::<bool>("CanGoPrevious")
+            .await
+            .unwrap_or(false),
+    };
+    now_playing_from_properties(bus_name, &properties, &metadata, Instant::now())
+}
+
+/// The scalar properties of one player, read before parsing.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each MPRIS capability is an independent property the player reports"
+)]
+struct NowPlayingProperties {
+    identity: Option<String>,
+    status: String,
+    position_us: i64,
+    can_play: bool,
+    can_pause: bool,
+    can_seek: bool,
+    can_go_next: bool,
+    can_go_previous: bool,
+}
+
+fn clean_text(value: &str) -> Option<String> {
+    let value = value.trim().to_string();
+    (!value.is_empty() && !value.chars().any(char::is_control)).then_some(value)
+}
+
+/// Parse a player's properties into a snapshot, plus the local artwork file
+/// it names (`file://` only). `None` for a player with no transport state.
+fn now_playing_from_properties(
+    bus_name: &str,
+    properties: &NowPlayingProperties,
+    metadata: &HashMap<String, OwnedValue>,
+    observed_at: Instant,
+) -> Option<(crate::shell::now_playing::PlayerSnapshot, Option<String>)> {
+    let status = crate::shell::now_playing::PlaybackStatus::from_mpris(&properties.status)?;
+    let identity = properties
+        .identity
+        .clone()
+        .as_deref()
+        .and_then(clean_text)
+        .unwrap_or_else(|| {
+            bus_name
+                .trim_start_matches(MPRIS_PREFIX)
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        });
+    let artist = metadata
+        .get("xesam:artist")
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| Vec::<String>::try_from(value).ok())
+        .map(|artists| {
+            artists
+                .iter()
+                .filter_map(|artist| clean_text(artist))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|artists| !artists.is_empty());
+    let track_id = metadata
+        .get("mpris:trackid")
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| {
+            let fallback = value.try_clone().ok();
+            zbus::zvariant::OwnedObjectPath::try_from(value)
+                .map(|path| path.as_str().to_string())
+                .ok()
+                .or_else(|| fallback.and_then(|value| String::try_from(value).ok()))
+        })
+        .filter(|track| track != "/org/mpris/MediaPlayer2/TrackList/NoTrack");
+    let art_url = metadata_string(metadata, "mpris:artUrl")
+        .filter(|url| url.starts_with("file://") && url.len() <= 4096);
+    let length_us = metadata_i64(metadata, "mpris:length")
+        .or_else(|| {
+            metadata
+                .get("mpris:length")
+                .and_then(|value| value.try_clone().ok())
+                .and_then(|value| u64::try_from(value).ok())
+                .and_then(|value| i64::try_from(value).ok())
+        })
+        .filter(|length| *length > 0);
+    Some((
+        crate::shell::now_playing::PlayerSnapshot {
+            bus_name: bus_name.to_string(),
+            identity,
+            status,
+            title: metadata_string(metadata, "xesam:title").and_then(|title| clean_text(&title)),
+            artist,
+            artwork: None,
+            track_id,
+            length_us,
+            position_us: properties.position_us.max(0),
+            can_play: properties.can_play,
+            can_pause: properties.can_pause,
+            can_seek: properties.can_seek,
+            can_go_next: properties.can_go_next,
+            can_go_previous: properties.can_go_previous,
+            observed_at,
+        },
+        art_url,
+    ))
+}
+
+/// The decoded artwork for a `file://` URL, from the cache or decoded once on
+/// the I/O pool. A missing, oversized or undecodable file is remembered as
+/// having no artwork so it is not retried every second.
+async fn artwork_for(url: &str) -> Option<crate::shell::now_playing::Artwork> {
+    if let Ok(state) = NOW_PLAYING.lock()
+        && let Some(cached) = state.artwork.get(url)
+    {
+        return cached.clone();
+    }
+    let path = url
+        .strip_prefix("file://")
+        .and_then(|path| percent_decode(path.split(['?', '#']).next().unwrap_or(path)))
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    let decoded = match path {
+        Some(path) => tilo_rt::io::run(move || Ok(decode_artwork(&path)))
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    if let Ok(mut state) = NOW_PLAYING.lock() {
+        state.artwork.insert(url.to_string(), decoded.clone());
+    }
+    decoded
+}
+
+fn decode_artwork(path: &std::path::Path) -> Option<crate::shell::now_playing::Artwork> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_ARTWORK_BYTES {
+        return None;
+    }
+    let mut reader = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .ok()?
+        .thumbnail(ARTWORK_EDGE, ARTWORK_EDGE)
+        .to_rgba8();
+    Some(crate::shell::now_playing::Artwork {
+        width: image.width(),
+        height: image.height(),
+        rgba: Arc::new(image.into_raw()),
+    })
+}
+
 async fn run(cmd: Command) -> Option<Outcome> {
     let conn = session_bus().await?;
     let name = active_player(&conn).await?;
@@ -1066,6 +1433,102 @@ mod tests {
 
     fn number(value: i64) -> OwnedValue {
         OwnedValue::try_from(Value::from(value)).unwrap()
+    }
+
+    fn now_playing_properties(status: &str) -> NowPlayingProperties {
+        NowPlayingProperties {
+            identity: Some(" Music ".into()),
+            status: status.into(),
+            position_us: 12_000_000,
+            can_play: true,
+            can_pause: true,
+            can_seek: true,
+            can_go_next: false,
+            can_go_previous: true,
+        }
+    }
+
+    #[test]
+    fn now_playing_reads_metadata_and_only_local_artwork() {
+        let metadata = HashMap::from([
+            ("xesam:title".to_string(), text("Song")),
+            (
+                "xesam:artist".to_string(),
+                OwnedValue::try_from(Value::from(vec!["One".to_string(), "Two".to_string()]))
+                    .unwrap(),
+            ),
+            ("mpris:length".to_string(), number(180_000_000)),
+            (
+                "mpris:trackid".to_string(),
+                OwnedValue::try_from(Value::from(
+                    zbus::zvariant::ObjectPath::try_from("/org/tilo/track/7").unwrap(),
+                ))
+                .unwrap(),
+            ),
+            (
+                "mpris:artUrl".to_string(),
+                text("file:///home/me/Music/cover%20art.png"),
+            ),
+        ]);
+        let (player, art) = now_playing_from_properties(
+            "org.mpris.MediaPlayer2.music",
+            &now_playing_properties("Playing"),
+            &metadata,
+            Instant::now(),
+        )
+        .expect("a playing player");
+        assert_eq!(player.identity, "Music");
+        assert_eq!(player.title.as_deref(), Some("Song"));
+        assert_eq!(player.artist.as_deref(), Some("One, Two"));
+        assert_eq!(player.length_us, Some(180_000_000));
+        assert_eq!(player.track_id.as_deref(), Some("/org/tilo/track/7"));
+        assert_eq!(
+            player.status,
+            crate::shell::now_playing::PlaybackStatus::Playing
+        );
+        assert!(player.seekable());
+        assert!(!player.can_go_next);
+        assert_eq!(
+            art.as_deref(),
+            Some("file:///home/me/Music/cover%20art.png")
+        );
+
+        let remote = HashMap::from([(
+            "mpris:artUrl".to_string(),
+            text("https://tracker.example/cover.jpg"),
+        )]);
+        let (player, art) = now_playing_from_properties(
+            "org.mpris.MediaPlayer2.web",
+            &NowPlayingProperties {
+                identity: None,
+                ..now_playing_properties("Paused")
+            },
+            &remote,
+            Instant::now(),
+        )
+        .expect("a paused player");
+        assert_eq!(art, None, "the shell never fetches remote artwork");
+        assert_eq!(player.identity, "web");
+        assert!(!player.seekable(), "no length, no seek bar");
+        assert!(
+            now_playing_from_properties(
+                "org.mpris.MediaPlayer2.odd",
+                &now_playing_properties("Buffering"),
+                &HashMap::new(),
+                Instant::now(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn control_refuses_names_that_are_not_players() {
+        use crate::shell::now_playing::PlayerCommand;
+        assert!(!control("org.freedesktop.DBus", PlayerCommand::Pause));
+        assert!(!control(
+            &format!("{MPRIS_PREFIX}{}", "x".repeat(300)),
+            PlayerCommand::Pause
+        ));
     }
 
     fn observation(locator: &str) -> PlayerObservation {
