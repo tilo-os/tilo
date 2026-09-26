@@ -39,6 +39,12 @@ fn prepare(store: &WorkspaceStore, snapshot: &mut ReplaySnapshot) -> ReplaySumma
         assert!(snapshot.stats().last_step_work <= 128);
     }
 }
+fn one_entry() -> WorkLimit {
+    WorkLimit {
+        entries: 1,
+        ..WorkLimit::default()
+    }
+}
 #[test]
 fn bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch() {
     let tmp = tempfile::tempdir().unwrap();
@@ -104,24 +110,12 @@ fn collisions_malformed_twins_and_replaced_pending_never_authorize_retirement() 
     assert!(duplicate.exists());
     assert!(
         store
-            .cleanup_replay_step(
-                &mut snapshot,
-                WorkLimit {
-                    entries: 1,
-                    ..WorkLimit::default()
-                }
-            )
+            .cleanup_replay_step(&mut snapshot, one_entry())
             .is_ok()
     );
     while matches!(
         store
-            .cleanup_replay_step(
-                &mut snapshot,
-                WorkLimit {
-                    entries: 1,
-                    ..WorkLimit::default()
-                }
-            )
+            .cleanup_replay_step(&mut snapshot, one_entry())
             .unwrap(),
         Step::More
     ) {}
@@ -248,14 +242,7 @@ fn pinned_generation_survives_gc_and_restart_reclaims_only_owned_work() {
     fs::write(unknown.join("keep"), b"unknown").unwrap();
     let reopened = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
     let mut gc = reopened.start_work_reclamation().unwrap();
-    while matches!(
-        gc.step(WorkLimit {
-            entries: 1,
-            ..WorkLimit::default()
-        })
-        .unwrap(),
-        Step::More
-    ) {}
+    while matches!(gc.step(one_entry()).unwrap(), Step::More) {}
     assert!(pending.exists());
     assert!(unknown.join("keep").exists());
     assert_eq!(
@@ -338,13 +325,7 @@ fn partial_cleanup_restart_preserves_remaining_pending_and_unknown_snapshot_file
     prepare(&store, &mut snapshot);
     assert!(matches!(
         store
-            .cleanup_replay_step(
-                &mut snapshot,
-                WorkLimit {
-                    entries: 1,
-                    ..WorkLimit::default()
-                }
-            )
+            .cleanup_replay_step(&mut snapshot, one_entry())
             .unwrap(),
         Step::More
     ));
@@ -356,15 +337,7 @@ fn partial_cleanup_restart_preserves_remaining_pending_and_unknown_snapshot_file
     fs::write(unknown.join("keep"), b"unknown").unwrap();
     drop(snapshot);
     let mut restart = store.start_work_reclamation().unwrap();
-    while matches!(
-        restart
-            .step(WorkLimit {
-                entries: 1,
-                ..WorkLimit::default()
-            })
-            .unwrap(),
-        Step::More
-    ) {}
+    while matches!(restart.step(one_entry()).unwrap(), Step::More) {}
     assert!(paths[1].exists());
     assert!(paths[2].exists());
     assert!(unknown.join("keep").exists());
@@ -477,15 +450,7 @@ fn interrupted_capture_sort_and_bounded_generation_gc_preserve_unknown_entries()
             .exists()
     );
     let mut discard = build.into_discard().unwrap();
-    while matches!(
-        discard
-            .step(WorkLimit {
-                entries: 1,
-                ..WorkLimit::default()
-            })
-            .unwrap(),
-        Step::More
-    ) {}
+    while matches!(discard.step(one_entry()).unwrap(), Step::More) {}
     assert!(!root.exists());
     assert_eq!(
         fs::read_dir(store.root.join("retained/checkpoints"))
@@ -509,14 +474,7 @@ fn interrupted_capture_sort_and_bounded_generation_gc_preserve_unknown_entries()
     let mut gc = retained::GenerationGc::new(lineage).unwrap();
     let mut previous = 260;
     loop {
-        let done = matches!(
-            gc.step(WorkLimit {
-                entries: 1,
-                ..WorkLimit::default()
-            })
-            .unwrap(),
-            Step::Done(())
-        );
+        let done = matches!(gc.step(one_entry()).unwrap(), Step::Done(()));
         let left = fs::read_dir(&obsolete)
             .unwrap()
             .filter(|entry| entry.as_ref().unwrap().file_type().unwrap().is_file())
@@ -587,6 +545,44 @@ fn finish_reclamation(mut step: impl FnMut() -> Result<Step<()>, StoreError>) {
     }
     panic!("reclamation did not finish after permissions were restored");
 }
+/// Creates one recognized work entry, either directly in `root` or in its
+/// `pins` child, and returns the directory holding it and the entry path.
+#[cfg(unix)]
+fn owned_work_entry(root: &Path, child: bool) -> (PathBuf, PathBuf) {
+    let directory = if child {
+        root.join("pins")
+    } else {
+        root.to_path_buf()
+    };
+    fs::create_dir_all(&directory).unwrap();
+    let owned = directory.join(if child {
+        "0000000000000000.frame"
+    } else {
+        "replay.manifest"
+    });
+    fs::write(&owned, b"owned snapshot bytes").unwrap();
+    (directory, owned)
+}
+/// Blocks unlinking in `directory`, drives `step` into the real failure, then
+/// restores permissions and requires `step` to retire `owned`. Returns false
+/// when the process bypasses mode bits and the fixture cannot run.
+#[cfg(unix)]
+fn retries_blocked_unlink(
+    directory: &Path,
+    owned: &Path,
+    mut step: impl FnMut(WorkLimit) -> Result<Step<()>, StoreError>,
+    message: &str,
+) -> bool {
+    let Some(restore) = deny_directory_mutation(directory) else {
+        return false;
+    };
+    reach_unlink_failure(|| step(one_entry()));
+    assert!(owned.exists());
+    drop(restore);
+    finish_reclamation(|| step(one_entry()));
+    assert!(!owned.exists(), "{message}");
+    true
+}
 #[test]
 #[cfg(unix)]
 fn direct_discard_retries_exact_entry_after_transient_unlink_failure() {
@@ -595,35 +591,16 @@ fn direct_discard_retries_exact_entry_after_transient_unlink_failure() {
         let root = tmp
             .path()
             .join("store-work-v1/replay-11111111111111111111111111111111");
-        let directory = if child {
-            root.join("pins")
-        } else {
-            root.clone()
-        };
-        fs::create_dir_all(&directory).unwrap();
-        let owned = directory.join(if child {
-            "0000000000000000.frame"
-        } else {
-            "replay.manifest"
-        });
-        fs::write(&owned, b"owned snapshot bytes").unwrap();
+        let (directory, owned) = owned_work_entry(&root, child);
         let mut discard = WorkDiscard::new(root.clone()).unwrap();
-        let Some(restore) = deny_directory_mutation(&directory) else {
-            continue;
-        };
-        let limit = WorkLimit {
-            entries: 1,
-            ..WorkLimit::default()
-        };
-        reach_unlink_failure(|| discard.step(limit));
-        assert!(owned.exists());
-        drop(restore);
-        finish_reclamation(|| discard.step(limit));
-        assert!(
-            !owned.exists(),
-            "Done skipped the previously failed recognized file"
-        );
-        assert!(!root.exists());
+        if retries_blocked_unlink(
+            &directory,
+            &owned,
+            |limit| discard.step(limit),
+            "Done skipped the previously failed recognized file",
+        ) {
+            assert!(!root.exists());
+        }
     }
 }
 #[test]
@@ -638,36 +615,17 @@ fn startup_reclaimer_retries_exact_entry_after_transient_unlink_failure() {
         let root = store
             .root
             .join("store-work-v1/replay-11111111111111111111111111111111");
-        let directory = if child {
-            root.join("pins")
-        } else {
-            root.clone()
-        };
-        fs::create_dir_all(&directory).unwrap();
-        let owned = directory.join(if child {
-            "0000000000000000.frame"
-        } else {
-            "replay.manifest"
-        });
-        fs::write(&owned, b"owned snapshot bytes").unwrap();
+        let (directory, owned) = owned_work_entry(&root, child);
         let mut reclaimer = store.start_work_reclamation().unwrap();
-        let Some(restore) = deny_directory_mutation(&directory) else {
-            continue;
-        };
-        let limit = WorkLimit {
-            entries: 1,
-            ..WorkLimit::default()
-        };
-        reach_unlink_failure(|| reclaimer.step(limit));
-        assert!(owned.exists());
-        drop(restore);
-        finish_reclamation(|| reclaimer.step(limit));
-        assert!(
-            !owned.exists(),
-            "startup Done skipped the previously failed recognized file"
-        );
-        assert!(!root.exists());
-        assert!(pending.exists());
+        if retries_blocked_unlink(
+            &directory,
+            &owned,
+            |limit| reclaimer.step(limit),
+            "startup Done skipped the previously failed recognized file",
+        ) {
+            assert!(!root.exists());
+            assert!(pending.exists());
+        }
     }
 }
 #[test]
@@ -688,23 +646,15 @@ fn generation_gc_retries_exact_entry_after_transient_unlink_failure() {
     fs::write(&owned, b"old generation").unwrap();
     fs::write(obsolete.join("unknown"), b"preserve").unwrap();
     let mut gc = retained::GenerationGc::new(lineage).unwrap();
-    let Some(restore) = deny_directory_mutation(&obsolete) else {
-        return;
-    };
-    let limit = WorkLimit {
-        entries: 1,
-        ..WorkLimit::default()
-    };
-    reach_unlink_failure(|| gc.step(limit));
-    assert!(owned.exists());
-    drop(restore);
-    finish_reclamation(|| gc.step(limit));
-    assert!(
-        !owned.exists(),
-        "generation Done skipped the previously failed record"
-    );
-    assert!(obsolete.join("unknown").exists());
-    assert!(active.join("0000000000000001.delta").exists());
+    if retries_blocked_unlink(
+        &obsolete,
+        &owned,
+        |limit| gc.step(limit),
+        "generation Done skipped the previously failed record",
+    ) {
+        assert!(obsolete.join("unknown").exists());
+        assert!(active.join("0000000000000001.delta").exists());
+    }
 }
 
 #[test]
@@ -814,12 +764,7 @@ fn disposable_reclamation_finishes_when_selected_child_and_root_disappear() {
     fs::create_dir_all(root.join("pins")).unwrap();
     fs::write(root.join("pins/0000000000000001.frame"), b"old pin").unwrap();
     let mut later = WorkDiscard::new(root.clone()).unwrap();
-    later
-        .step(WorkLimit {
-            entries: 1,
-            ..WorkLimit::default()
-        })
-        .unwrap();
+    later.step(one_entry()).unwrap();
     later.child.as_mut().unwrap().1.peek().unwrap();
     let mut earlier = WorkDiscard::new(root).unwrap();
     while matches!(earlier.step(WorkLimit::default()).unwrap(), Step::More) {}
