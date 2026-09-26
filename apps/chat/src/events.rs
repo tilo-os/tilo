@@ -769,9 +769,9 @@ impl ChatApp {
             Hit::CallLeave => self.leave_voice(doc),
             Hit::ToggleLeftFlap => self.left_flap.toggle(self.left_mode),
             Hit::ToggleRightFlap => self.right_flap.toggle(self.right_mode),
-            Hit::OpenReference(msg) => {
+            Hit::OpenReference(msg, index) => {
                 self.feedback
-                    .invoke(format!("chat.reference:{msg}"), "open");
+                    .invoke(crate::actions::reference_resource_id(&msg, index), "open");
             }
             Hit::ReplayRecord(msg) => {
                 self.feedback

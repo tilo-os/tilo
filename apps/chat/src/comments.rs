@@ -83,6 +83,8 @@ pub struct CommentMessage {
     pub mentions: Vec<crate::mention::Mention>,
     #[serde(default)]
     pub reference: Option<tilo_reference::ResourceRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also: Vec<tilo_reference::ResourceRef>,
     #[serde(default)]
     pub attachment: Option<Attachment>,
 }
@@ -210,6 +212,7 @@ impl Comments {
                 parent: comment.parent,
                 mentions: comment.mentions,
                 reference: comment.reference,
+                also: comment.also,
                 attachment: comment.attachment,
                 attachment_withdrawn: withdrawn,
                 pinned: false,

@@ -457,7 +457,7 @@ pub(crate) enum Hit {
     /// Toggle the right flap (members / thread).
     ToggleRightFlap,
     /// A message's reference chip: open what it is about in its own app.
-    OpenReference(Id),
+    OpenReference(Id, usize),
     /// Replay the session recording attached to a message.
     ReplayRecord(Id),
     /// Withdraw the record you attached to a message from this room.
@@ -520,7 +520,7 @@ impl Hit {
             Self::CallParticipantsToggle => "chat.call-participants".into(),
             Self::CallExpand => "chat.call-expand".into(),
             Self::CallLeave => "chat.call-leave".into(),
-            Self::OpenReference(id) => format!("chat.reference:{id}"),
+            Self::OpenReference(id, index) => crate::actions::reference_resource_id(id, *index),
             Self::ReplayRecord(id) => format!("chat.replay:{id}"),
             Self::WithdrawRecord(id) => format!("chat.withdraw:{id}"),
             Self::Vote(id) => format!("chat.vote:{id}"),
@@ -1197,6 +1197,7 @@ impl ChatApp {
                 attachment,
                 mentions,
                 reference,
+                references,
             } if in_feedback(channel) => self.comments.post(&crate::comments::CommentMessage {
                 channel: channel.clone(),
                 id: id.clone(),
@@ -1206,6 +1207,7 @@ impl ChatApp {
                 parent: parent.clone(),
                 mentions: mentions.clone(),
                 reference: reference.clone(),
+                also: references.clone(),
                 attachment: attachment.clone(),
             }),
             ChatAction::AddReaction {
@@ -3303,8 +3305,8 @@ impl ChatApp {
                         self.call.expanded,
                     ),
                     Hit::CallLeave => ("Leave call".into(), Role::Button, false),
-                    Hit::OpenReference(msg) => {
-                        let reference = self.message(msg)?.reference.as_ref()?;
+                    Hit::OpenReference(msg, index) => {
+                        let reference = self.message(msg)?.references().nth(*index)?;
                         (
                             crate::i18n::t_args(
                                 "chat-reference-open",

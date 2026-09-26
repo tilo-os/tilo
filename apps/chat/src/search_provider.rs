@@ -370,6 +370,7 @@ mod tests {
             reactions: Vec::new(),
             mentions: Vec::new(),
             reference: None,
+            also: Vec::new(),
             attachment: None,
             attachment_withdrawn: false,
             pinned: false,

@@ -306,6 +306,10 @@ pub enum ChatAction {
         /// references still decodes.
         #[serde(default)]
         reference: Option<tilo_reference::ResourceRef>,
+        /// Further things it is about (a remark's `references`), each its
+        /// own chip.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        references: Vec<tilo_reference::ResourceRef>,
     },
     /// Replace a message's body, archiving the prior text into its edit history
     /// and flagging it edited. `ts` (the edit time) is minted at authoring.
@@ -674,6 +678,7 @@ impl ChatAction {
                 attachment,
                 mentions,
                 reference,
+                references,
             } => {
                 if !ChatDoc::accepts_message_action(
                     doc,
@@ -697,6 +702,7 @@ impl ChatAction {
                         attachment: attachment.clone(),
                         mentions: mentions.clone(),
                         reference: reference.clone(),
+                        also: references.clone(),
                         ..Default::default()
                     },
                 );
@@ -931,6 +937,7 @@ pub fn send_message_action(
         attachment,
         mentions,
         reference: None,
+        references: Vec::new(),
     }
 }
 
@@ -1229,6 +1236,8 @@ pub struct MessageResource {
     pub author: String,
     /// What the message is about, as its author selected it.
     pub reference: Option<tilo_reference::ResourceRef>,
+    /// Further things it is about.
+    pub also: Vec<tilo_reference::ResourceRef>,
     /// Present when the message is a report: top-level in a feedback channel.
     pub report: Option<ReportResource>,
     /// An attachment is a durable, content-addressed child of the message,
@@ -1271,6 +1280,7 @@ impl MessageResource {
             parent: message.parent.clone(),
             author: message.author.clone(),
             reference: message.reference.clone(),
+            also: message.also.clone(),
             report: (feedback && message.is_top_level()).then(|| ReportResource {
                 status: crate::feedback::status_of(message),
                 votes: crate::feedback::vote_count(message),
@@ -1615,16 +1625,20 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
         annotate_contracts(&mut resource);
         return Some(resource);
     }
-    if let Some(message_id) = id.strip_prefix("chat.reference:") {
+    if let Some(address) = id.strip_prefix("chat.reference:") {
+        let (message_id, index) = match address.split_once('#') {
+            Some((message, index)) => (message, index.parse::<usize>().ok()?),
+            None => (address, 0),
+        };
         let (channel, message) = find_message(doc, message_id)?;
-        let reference = message.reference.as_ref()?;
+        let reference = message.references().nth(index)?;
         let workspace = ChatDoc::list_workspaces(doc)
             .into_iter()
             .find(|workspace| workspace.id == channel.workspace)?;
         let mut resource = build_reference_resource(
             &workspace.id,
             &channel_resource(&channel),
-            &message.id,
+            &(&message.id, index),
             message.parent.as_ref(),
             reference,
         );
@@ -2148,11 +2162,11 @@ fn build_message_resource(
             attachment,
         ));
     }
-    if let Some(reference) = &m.reference {
+    for (index, reference) in m.reference.iter().chain(m.also.iter()).enumerate() {
         message = message.with_child(build_reference_resource(
             workspace_id,
             ch,
-            &m.id,
+            &(&m.id, index),
             m.parent.as_ref(),
             reference,
         ));
@@ -2343,15 +2357,26 @@ fn record_index_spec(record: &tilo_reference::RecordAttachment, share: bool) -> 
 
 /// The address a message carries, as a child the reader can open. Opening
 /// asks the workspace to open the resource in the app that published it.
+/// The resource id of a message's `index`th reference: the primary one is
+/// `chat.reference:<message>`, a further one `chat.reference:<message>#<n>`.
+pub fn reference_resource_id(message_id: &str, index: usize) -> String {
+    if index == 0 {
+        format!("chat.reference:{message_id}")
+    } else {
+        format!("chat.reference:{message_id}#{index}")
+    }
+}
+
 fn build_reference_resource(
     workspace_id: &str,
     ch: &ChannelResource,
-    message_id: &str,
+    &(message_id, index): &(&String, usize),
     parent: Option<&String>,
     reference: &tilo_reference::ResourceRef,
 ) -> Resource {
+    let message_id = message_id.as_str();
     Resource::new(
-        format!("chat.reference:{message_id}"),
+        reference_resource_id(message_id, index),
         "chat.reference",
         reference.label.clone(),
     )
@@ -2402,9 +2427,14 @@ fn remark_spec(channel: &str, me: &str, feedback: bool) -> ActionSpec {
             ParamType::Array,
             "Who the text pings: tilo-reference MentionRefs",
         ),
+        ActionParam::optional(
+            "references",
+            ParamType::Array,
+            "Further things it is about, when several were picked: ResourceRefs",
+        ),
     ];
     let build = move |args: &tilo_actions::ActionArgs| match remark_from_args(args) {
-        Ok((text, reference, attachment, mentions)) => encode(&ChatAction::SendMessage {
+        Ok((text, reference, also, attachment, mentions)) => encode(&ChatAction::SendMessage {
             channel: channel.clone(),
             id: format!("m_{}", uuid::Uuid::new_v4().simple()),
             author: me.clone(),
@@ -2414,6 +2444,7 @@ fn remark_spec(channel: &str, me: &str, feedback: bool) -> ActionSpec {
             attachment: attachment.map(|record| Attachment::Record(Box::new(record))),
             mentions,
             reference: Some(reference),
+            references: also,
         }),
         Err(reason) => EncodedAction {
             type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
@@ -2447,6 +2478,7 @@ fn remark_spec(channel: &str, me: &str, feedback: bool) -> ActionSpec {
 type RemarkParts = (
     String,
     tilo_reference::ResourceRef,
+    Vec<tilo_reference::ResourceRef>,
     Option<tilo_reference::RecordAttachment>,
     Vec<crate::mention::Mention>,
 );
@@ -2461,6 +2493,11 @@ fn remark_from_args(args: &tilo_actions::ActionArgs) -> Result<RemarkParts, Stri
         .and_then(|value| {
             serde_json::from_value(value).map_err(|_| "the reference is not a ResourceRef")
         })?;
+    let also = match json.get("references") {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(value) => serde_json::from_value::<Vec<tilo_reference::ResourceRef>>(value.clone())
+            .map_err(|_| "the references are not ResourceRefs".to_string())?,
+    };
     let attachment = match json.get("attachment") {
         None | Some(serde_json::Value::Null) => None,
         Some(value) => Some(
@@ -2481,7 +2518,7 @@ fn remark_from_args(args: &tilo_actions::ActionArgs) -> Result<RemarkParts, Stri
             })
             .collect(),
     };
-    Ok((text, reference, attachment, mentions))
+    Ok((text, reference, also, attachment, mentions))
 }
 
 /// The status keys `set-status` accepts, in menu order.
@@ -3857,6 +3894,34 @@ mod feedback_tests {
             refused.type_id,
             tilo_actions::resource::INVALID_ARGUMENTS_TYPE
         );
+    }
+
+    /// A remark about several picked things carries them all, each its own
+    /// addressable reference.
+    #[test]
+    fn a_remark_about_several_things_keeps_every_address() {
+        let mut doc = feedback_doc();
+        dispatch(&mut doc, &set_channel_feedback_action("c_fb", false));
+        let remark = Remark::new(
+            "these three buttons are misaligned",
+            ResourceRef::whole("ui.node", "ui.node:save", "Save"),
+            Destination::channel("c_fb", "feedback"),
+        )
+        .with_also(vec![
+            ResourceRef::whole("ui.node", "ui.node:cancel", "Cancel"),
+            ResourceRef::whole("ui.node", "ui.node:help", "Help"),
+        ]);
+        dispatch_encoded(
+            &mut doc,
+            remark.to_chat_action("m_many", model::ME, TS).unwrap(),
+        );
+        let m = message(&doc, "m_many");
+        let ids: Vec<_> = m.references().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["ui.node:save", "ui.node:cancel", "ui.node:help"]);
+        let third = resolved(&doc, model::ME, "chat.reference:m_many#2");
+        let open = request(action(&third, "open").unwrap());
+        assert_eq!(open.argument, InvokeArgument::Text("ui.node:help".into()));
+        assert!(resolve_resource(&ctx(&doc, model::ME), &doc, "chat.reference:m_many#3").is_none());
     }
 
     #[test]

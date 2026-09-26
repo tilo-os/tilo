@@ -342,6 +342,9 @@ pub struct Message {
     /// the file the author had selected without reading `text` and without
     /// ever needing a screen position. `None` for an ordinary message.
     pub reference: Option<tilo_reference::ResourceRef>,
+    /// Further things it is about, when several were picked at once ("these
+    /// three buttons are misaligned"). Each is its own chip.
+    pub also: Vec<tilo_reference::ResourceRef>,
     pub attachment: Option<Attachment>,
     /// The author withdrew the attached record from this room. The row keeps
     /// the card so nobody is told the record never existed, and the card says
@@ -364,6 +367,11 @@ pub struct Message {
 impl Message {
     pub fn is_top_level(&self) -> bool {
         self.parent.is_none()
+    }
+
+    /// Everything the message is about, the primary reference first.
+    pub fn references(&self) -> impl Iterator<Item = &tilo_reference::ResourceRef> {
+        self.reference.iter().chain(self.also.iter())
     }
 
     /// Whether this message refers to `user`. The question a notification, a
@@ -760,6 +768,7 @@ mod tests {
             reactions: vec![],
             mentions: vec![],
             reference: None,
+            also: Vec::new(),
             attachment: None,
             attachment_withdrawn: false,
             pinned: false,

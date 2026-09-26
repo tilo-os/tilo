@@ -115,6 +115,8 @@ pub struct NewMessage {
     /// time and carried verbatim, so it survives into the document instead
     /// of being lost at the composer.
     pub reference: Option<tilo_reference::ResourceRef>,
+    /// Further things it is about.
+    pub also: Vec<tilo_reference::ResourceRef>,
     /// An agent's record of what it is doing with the message this one
     /// replies to. Written by the agent at the moment it takes a summons, so
     /// the reply exists — and says so — before there is an outcome.
@@ -1338,6 +1340,7 @@ impl ChatDoc {
             edited,
             mentions,
             reference,
+            also,
             work,
         } = nm;
 
@@ -1361,6 +1364,11 @@ impl ChatDoc {
         Self::write_reactions(doc, &block, &reactions);
         Self::write_mentions(doc, &block, &mentions);
         Self::write_reference(doc, &block, reference.as_ref());
+        if !also.is_empty()
+            && let Ok(json) = serde_json::to_string(&also)
+        {
+            let _ = doc.put(&block, "references", json.as_str());
+        }
         if let Some(work) = work.as_ref() {
             Self::write_work(doc, &block, work);
         }
@@ -2402,6 +2410,9 @@ impl ChatDoc {
                 reactions: Self::read_reactions(doc, &m),
                 mentions: Self::read_mentions(doc, &m),
                 reference: Self::read_reference(doc, &m),
+                also: read_str(doc, &m, "references")
+                    .and_then(|raw| serde_json::from_str(&raw).ok())
+                    .unwrap_or_default(),
                 attachment: Self::read_attachment(doc, &m),
                 attachment_withdrawn: Self::read_attachment_withdrawn(doc, &m),
                 work: Self::read_work(doc, &m),

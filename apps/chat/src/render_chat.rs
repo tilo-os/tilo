@@ -2161,7 +2161,7 @@ impl ChatApp {
         } else {
             reaction_chip_h(tr, theme) + REACTION_STRIP_GAP
         };
-        let ref_h = if m.reference.is_some() {
+        let ref_h = if m.references().next().is_some() {
             control_band_h(tr, theme) + REACTION_STRIP_GAP
         } else {
             0.0
@@ -4524,9 +4524,6 @@ impl ChatApp {
         layout: AttachmentLayout,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let Some(reference) = &m.reference else {
-            return;
-        };
         let PaintContext {
             scene,
             transform: tf,
@@ -4534,32 +4531,43 @@ impl ChatApp {
             theme,
         } = paint;
         let h = control_band_h(tr, theme);
-        let max_w = record_card_w(f64::from(layout.max_width));
-        let label = truncate_to(tr, &reference.label, REACTION_SIZE, max_w - 44.0);
-        let w = control_w(tr, &label, true).min(max_w);
-        let rect = Rect::new(
-            layout.origin.x,
-            layout.origin.y,
-            layout.origin.x + w,
-            layout.origin.y + h,
-        );
-        let spoken = crate::i18n::t_args(
-            "chat-reference-open",
-            &[("label", ui::i18n::ArgValue::Text(reference.label.clone()))],
-        );
-        Button::paint(
-            scene,
-            tf,
-            tr,
-            theme,
-            &ButtonFace::new(rect, &label)
-                .icon(ui::icons::Icon::ExternalLink)
-                .text_size(REACTION_SIZE)
-                .radius(h / 2.0)
-                .accessible_name(&spoken)
-                .hovered(self.hovered(rect)),
-        );
-        ChatApp::push_hit(hits, rect, Hit::OpenReference(m.id.clone()));
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let row_w = f64::from(layout.max_width);
+        let mut x = layout.origin.x;
+        // One chip per thing the message is about, side by side while they
+        // fit; what does not fit stays reachable as a resource.
+        for (index, reference) in m.references().enumerate() {
+            let room = layout.origin.x + row_w - x;
+            let label = truncate_to(
+                tr,
+                &reference.label,
+                REACTION_SIZE,
+                record_card_w(room) - 44.0,
+            );
+            let w = control_w(tr, &label, true).min(room);
+            if index > 0 && w < 64.0 {
+                break;
+            }
+            let rect = Rect::new(x, layout.origin.y, x + w, layout.origin.y + h);
+            let spoken = crate::i18n::t_args(
+                "chat-reference-open",
+                &[("label", ui::i18n::ArgValue::Text(reference.label.clone()))],
+            );
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::new(rect, &label)
+                    .icon(ui::icons::Icon::ExternalLink)
+                    .text_size(REACTION_SIZE)
+                    .radius(h / 2.0)
+                    .accessible_name(&spoken)
+                    .hovered(self.hovered(rect)),
+            );
+            ChatApp::push_hit(hits, rect, Hit::OpenReference(m.id.clone(), index));
+            x = rect.x1 + gap;
+        }
     }
 
     /// A record attached by reference. A `session` card says what the
