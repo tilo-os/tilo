@@ -33,7 +33,6 @@ jobs:
     # toolchain, and every lane that uses them is an amd64 runner.
     runs-on: runner
     timeout-minutes: 45
-    enable-openid-connect: true
     env:
       SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
       PUBLISH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
@@ -46,7 +45,6 @@ jobs:
             os/Containerfile.ci-fast
             os/Containerfile.ci-control
             os/dev/assert-native-arch.sh
-            .forgejo/actions/tilo-registry-login
           sparse-checkout-cone-mode: false
 
       - name: Require a native build host
@@ -89,7 +87,11 @@ jobs:
 
       - name: Log in to registry.tilo.so
         if: env.PUBLISH == 'true'
-        uses: ./.forgejo/actions/tilo-registry-login
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish the tested images
         if: env.PUBLISH == 'true'

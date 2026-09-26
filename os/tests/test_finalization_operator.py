@@ -145,7 +145,7 @@ def context(job='old'):
     return dict(schema=1, job_id=job, pod_uid='pod-' + job, container_id='1' * 64,
                 image_id='sha256:' + '2' * 64, revision='a' * 40,
                 architecture='aarch64', manifest_sha256='e' * 64,
-                target='code.tilo.so/tilo/tilo-development:new-aarch64')
+                target='registry.tilo.so/tilo/tilo-development:new-aarch64')
 
 
 def metadata(ctx, nonce, data):

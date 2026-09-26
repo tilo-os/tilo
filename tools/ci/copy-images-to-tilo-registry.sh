@@ -15,13 +15,11 @@
 #   SOURCE_USERNAME/SOURCE_TOKEN
 #                 optional source credentials; otherwise the caller's
 #                 containers auth file is used.
-#   DEST_TOKEN    optional destination password (DEST_USERNAME, default
-#                 `oidc`). Without it, inside a Forgejo Actions job with
-#                 `enable-openid-connect: true`, a fresh ID token is fetched
-#                 for every push: registry.tilo.so accepts it as the password
-#                 of user `oidc` and grants push below tilo/ to allow-listed
-#                 source repositories. copy-images-to-tilo-registry.yml runs
-#                 this script that way.
+#   DEST_USERNAME/DEST_TOKEN
+#                 destination credentials, required to copy. In a workflow:
+#                 the actor and the job token (secrets.GITHUB_TOKEN), which
+#                 registry.tilo.so accepts for pushes below tilo/ from
+#                 allow-listed source repositories.
 #   ALL_TAGS=1    copy every tag of each referenced repository, not only the
 #                 tags and digests named in the tree. Includes cosign tags.
 #   RESIGN=1      after copying, cosign-sign each copied digest of a
@@ -43,7 +41,6 @@ APPLY=${APPLY:-0}
 ALL_TAGS=${ALL_TAGS:-0}
 RESIGN=${RESIGN:-0}
 : "${OWNER_MOVES:?set OWNER_MOVES to space-separated OLD:NEW owner pairs}"
-ID_TOKEN="$SCAN_ROOT/.forgejo/actions/tilo-registry-login/id-token.sh"
 
 die() { printf 'copy-images: %s\n' "$*" >&2; exit 1; }
 plan() { printf '%s\n' "$*"; }
@@ -59,8 +56,8 @@ done
 # A missing credential is the likelier operator mistake and needs no tools
 # to report, so name it first. Tools are checked in a dry run as well: a dry
 # run that passes proves the real run can start.
-if [[ $APPLY == 1 && -z ${DEST_TOKEN:-} && -z ${ACTIONS_ID_TOKEN_REQUEST_URL:-} ]]; then
-  die 'set DEST_TOKEN, or run inside a Forgejo Actions job with enable-openid-connect: true'
+if [[ $APPLY == 1 && ( -z ${DEST_TOKEN:-} || -z ${DEST_USERNAME:-} ) ]]; then
+  die 'set DEST_USERNAME and DEST_TOKEN (in a workflow: the actor and secrets.GITHUB_TOKEN)'
 fi
 required_tools=(skopeo jq)
 [[ $RESIGN != 1 ]] || required_tools+=(cosign)
@@ -94,9 +91,8 @@ references() {
     name=$rest
     case $name in *.git) continue ;; esac
     # Board images carry private firmware and stay on the forge's private
-    # registry, as does the development pipeline those board builds share.
-    # registry.tilo.so is anonymously readable: never copy them there.
-    case $name in *lenovo* | tilo-development* | tilo-compile-tools-cache) continue ;; esac
+    # registry. registry.tilo.so is anonymously readable: never copy them.
+    case $name in *lenovo*) continue ;; esac
     [[ $name == tilo && $tag == lenovo-* ]] && continue
     if [[ $ref == "$SOURCE_REGISTRY"/* ]]; then
       [[ -n ${OWNER_NEW[$owner]:-} ]] || continue
@@ -177,12 +173,8 @@ fi
 export DOCKER_CONFIG="$work/docker"
 mkdir -p "$DOCKER_CONFIG"
 dest_login() {
-  if [[ -n ${DEST_TOKEN:-} ]]; then
-    printf '%s' "$DEST_TOKEN"
-  else
-    "$ID_TOKEN"
-  fi | skopeo login --authfile "$DOCKER_CONFIG/config.json" \
-         --username "${DEST_USERNAME:-oidc}" --password-stdin "$DEST_REGISTRY" >/dev/null
+  printf '%s' "$DEST_TOKEN" | skopeo login --authfile "$DOCKER_CONFIG/config.json" \
+    --username "$DEST_USERNAME" --password-stdin "$DEST_REGISTRY" >/dev/null
 }
 inspect_src() { skopeo inspect --raw "${src_creds[@]}" "docker://$1"; }
 inspect_dst() { skopeo inspect --raw "docker://$1"; }  # pulls are anonymous

@@ -36,7 +36,6 @@ class CopyPlanTests(unittest.TestCase):
             'CLONE=https://old.example/legacy/tilo.git',
             f'FIRMWARE=old.example/legacy/tilo-lenovo-83ed-firmware@{DIGEST}',
             'BOARD=old.example/legacy/tilo:lenovo-83ed-' + 'c' * 40,
-            f'DEVELOPMENT=old.example/legacy/tilo-development@{DIGEST}',
         ]) + '\n')
         (self.root / 'tests').mkdir()
         (self.root / 'tests/fixture.txt').write_text('old.example/legacy/never-published:v1\n')
@@ -110,9 +109,9 @@ class CopyPlanTests(unittest.TestCase):
             key: value for key, value in dict(
                 os.environ, SCAN_ROOT=str(self.root), SOURCE_REGISTRY='old.example',
                 OWNER_MOVES='legacy:tilo', PATH=f'{self.stubs}{os.pathsep}{self.bare}', **extra).items()
-            if key not in ('DEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL')})
+            if key not in ('DEST_TOKEN', 'DEST_USERNAME')})
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('enable-openid-connect', result.stderr)
+        self.assertIn('DEST_TOKEN', result.stderr)
         self.assertFalse(self.calls.exists(), 'registry client ran before credentials were checked')
 
     def test_owner_moves_are_required(self):
