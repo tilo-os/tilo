@@ -282,6 +282,28 @@ pub enum Envelope {
         /// Human-readable reason (for tracing / logging).
         reason: String,
     },
+
+    /// Redeem a public room's standing invitation at a host its owner
+    /// delegated admission to, before subscribing. `invite_id` is the BLAKE3
+    /// digest of the exact signed bearer (`neighbour_wire::invite::invite_id`).
+    ///
+    /// The host admits the *authenticated* device of this connection, never
+    /// a device named in the request, publishes the signed admission into the
+    /// room and replies with [`Envelope::Admitted`]; any refusal is an
+    /// [`Envelope::NotAuthorised`]. Redeeming again is harmless.
+    Redeem {
+        /// Workspace id of the public room.
+        workspace_id: u64,
+        /// Digest of the standing invitation being redeemed.
+        invite_id: [u8; 32],
+    },
+
+    /// The host's answer to a successful [`Envelope::Redeem`]: the device is
+    /// a member and its next `Subscribe` will be accepted.
+    Admitted {
+        /// Workspace id of the public room.
+        workspace_id: u64,
+    },
 }
 
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The

@@ -22,6 +22,38 @@ pub const ROOM_TASKS_KEY: &str = "tasks_v1";
 /// Key a room document stores its effect receipts under.
 pub const ROOM_EFFECT_RECEIPTS_KEY: &str = "effect_receipts_v1";
 
+/// Key a room document stores its [`collab_types::ChannelClass`] under.
+/// Governance: only the room's authority writes it, and a member refuses
+/// any batch that would change a class it already holds.
+pub const ROOM_CHANNEL_CLASS_KEY: &str = "channel_class";
+
+/// Record `class` as the room's channel class. Written by the governing
+/// machine on every projection, so a room document always states its class
+/// rather than leaving a reader to assume one.
+pub fn project_channel_class(doc: &mut AutoCommit, class: collab_types::ChannelClass) {
+    put_str_if_changed(
+        doc,
+        &automerge::ROOT,
+        ROOM_CHANNEL_CLASS_KEY,
+        class.as_str(),
+    );
+}
+
+/// The channel class a room document records. `None` when the document
+/// states none (governance not yet received) or states a value this build
+/// does not know, which a reader treats as "not yet governed" rather than
+/// guessing.
+pub fn channel_class_of(doc: &AutoCommit) -> Option<collab_types::ChannelClass> {
+    use automerge::{ROOT, ScalarValue, Value};
+    match doc.get(&ROOT, ROOM_CHANNEL_CLASS_KEY).ok().flatten() {
+        Some((Value::Scalar(value), _)) => match value.as_ref() {
+            ScalarValue::Str(name) => collab_types::ChannelClass::parse(name),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// One tab as a room's replication document carries it. Deliberately not
 /// a [`Tab`]: no field here for anything a person's own session decided.
 #[derive(Clone, Debug)]

@@ -68,6 +68,12 @@ package-store = { path = "../../packaging/package-store" }
 # its workspace tickets rather than asking the operator to duplicate ids.
 fs = { path = "../../system/fs" }
 collab-types = { path = "../../collab/collab-types" }
+# A delegated public room's standing invitations and the admissions this
+# relay signs into it are the shell's own wire vocabulary.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+# Direct rooms with a hosted room's owner are identified the way both ends
+# derive them.
+tilo-reference = { path = "../../collab/reference" }
 # Handshake and wire messages plus the mesh, configuration, registry and
 # metrics records shared with the relay's clients; re-exported so the daemon's
 # own module paths stay unchanged.

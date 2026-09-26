@@ -21,6 +21,9 @@
 //!   stacked on the role table; wired into the validator's step 5a.
 //! - [`invite`] — attenuable capability invite tokens
 //!   ([`invite::InviteToken`]): a signed, delegable grant that can only narrow.
+//! - [`host_admission`] — a host's delegated, Commenter-capped admission of
+//!   one device into a public room, verified against the room owner's
+//!   invite-token delegation.
 //! - [`event`] — `ChannelEvent`, the append-only governance log.
 //! - [`op`] — `SignedOp`, the per-op envelope wrapping every CRDT
 //!   mutation crossing a process or network boundary.
@@ -69,6 +72,7 @@ pub mod event;
 pub mod file_invite;
 pub mod files;
 pub mod history;
+pub mod host_admission;
 pub mod identity;
 pub mod invite;
 pub mod mls_governance;
@@ -93,8 +97,8 @@ pub use caps::{
     role_base_applies, role_caps, verb_for_opclass,
 };
 pub use channel::{
-    Artifact, ArtifactId, ArtifactRef, Channel, ChannelId, ChannelRef, ChannelSettingsDelta,
-    DocumentHandle, MemberRef,
+    Artifact, ArtifactId, ArtifactRef, Channel, ChannelClass, ChannelClassError, ChannelId,
+    ChannelRef, ChannelSettingsDelta, DocumentHandle, MemberRef,
 };
 pub use comment::{
     COMMENT_RECORD_PREFIX, CommentRecord, CommentRouteError, check_document_route,
@@ -136,6 +140,10 @@ pub use files::{
 pub use files::{
     FileMutationOperationV1, FileMutationParticipantRoleV1, FileMutationParticipantV1,
     FileMutationTransactionManifestV1, FileMutationTransactionV1,
+};
+pub use host_admission::{
+    HOST_ADMISSION_DOMAIN_TAG, HOST_ADMISSION_ROLE_CEILING, HostAdmissionError, HostAdmissionSpec,
+    HostAdmissionV1,
 };
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
 pub use invite::{

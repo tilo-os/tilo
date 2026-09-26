@@ -565,6 +565,132 @@ mod tests {
         assert_eq!(named.len(), 2, "one request per room, no more: {named:?}");
     }
 
+    /// A guest joined through its invite, with the room's authority behind a
+    /// replica on a `Hub`, so both halves of every round run the production
+    /// projection and admission path.
+    fn joined_guest(
+        host_tree: WorkspaceTree,
+        host_ws: WorkspaceId,
+    ) -> (
+        Hub,
+        Arc<Mutex<WorkspaceTreeReplica>>,
+        Arc<Mutex<WorkspaceTreeReplica>>,
+        crate::shell::state::WorkspaceTreeHandle,
+        crate::shell::state::WorkspaceTreeHandle,
+    ) {
+        let owner_key = iroh::SecretKey::generate();
+        let owner_addr = iroh::EndpointAddr::new(owner_key.public())
+            .with_ip_addr("127.0.0.1:4002".parse().unwrap());
+        let token = make_invite_token(
+            &owner_key,
+            host_tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == host_ws)
+                .expect("the host's workspace"),
+            &owner_addr,
+            3600,
+        )
+        .expect("the host issues an invite");
+        let mut guest_tree = WorkspaceTree::default();
+        let guest_ws = guest_tree.append_empty_workspace("Mine");
+        accept_invite_into(&mut guest_tree, guest_ws, &token).expect("the guest accepts it");
+        let host_handle = host_tree.shared();
+        let host = Arc::new(Mutex::new(
+            WorkspaceTreeReplica::new(1, host_handle.clone())
+                .with_origin(PeerOrigin::peer(&owner_key.public())),
+        ));
+        let guest_handle = guest_tree.shared();
+        let guest = Arc::new(Mutex::new(WorkspaceTreeReplica::new(
+            2,
+            guest_handle.clone(),
+        )));
+        let mut hub = Hub::new();
+        hub.attach(Box::new(ArcReplica(host.clone())));
+        hub.attach(Box::new(ArcReplica(guest.clone())));
+        (hub, host, guest, host_handle, guest_handle)
+    }
+
+    fn class_of(tree: &crate::shell::state::WorkspaceTreeHandle) -> collab_types::ChannelClass {
+        tree.read().desktop.workspaces[0].channel_class
+    }
+
+    #[test]
+    fn a_public_rooms_class_reaches_its_members_as_governance() {
+        let mut host_tree = WorkspaceTree::default();
+        let community = host_tree.append_public_workspace("Tilo Community");
+        host_tree.adopt_ownerless_workspaces(&ROOM_A_OWNER.to_string());
+        let (mut hub, host, guest, _host_handle, guest_handle) = joined_guest(host_tree, community);
+        assert_eq!(
+            class_of(&guest_handle),
+            collab_types::ChannelClass::Encrypted
+        );
+
+        sync_round(&mut hub, &guest, &[&host]);
+
+        assert_eq!(
+            class_of(&guest_handle),
+            collab_types::ChannelClass::Public,
+            "a member learns from governance that what it posts here is public"
+        );
+    }
+
+    #[test]
+    fn not_even_the_authority_can_turn_an_encrypted_room_public() {
+        let (host_tree, a, _b) = host_with_two_rooms();
+        let (mut hub, host, guest, host_handle, guest_handle) = joined_guest(host_tree, a);
+        sync_round(&mut hub, &guest, &[&host]);
+        assert_eq!(
+            class_of(&guest_handle),
+            collab_types::ChannelClass::Encrypted
+        );
+        let room = guest_handle.read().desktop.workspaces[0].room;
+
+        // The governing machine re-labels its own room. Nothing in the
+        // shell offers this; a modified or compromised authority could.
+        host_handle
+            .write()
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == a)
+            .expect("room A")
+            .channel_class = collab_types::ChannelClass::Public;
+        host_handle
+            .write()
+            .grant_in_workspace(
+                a,
+                &ROOM_A_OWNER.to_string(),
+                CapOverride::grant(
+                    Subject::app("files"),
+                    Scope::FsPath("/srv/granted-with-the-downgrade".to_string()),
+                    Verb::Read,
+                ),
+            )
+            .expect("the owner may grant");
+        sync_round(&mut hub, &guest, &[&host]);
+
+        assert_eq!(
+            class_of(&guest_handle),
+            collab_types::ChannelClass::Encrypted,
+            "an encrypted room was downgraded to public"
+        );
+        let doc_class = guest_handle
+            .write()
+            .room_docs
+            .get(&room)
+            .and_then(tilo_desktop_model::projection::channel_class_of);
+        assert_eq!(doc_class, Some(collab_types::ChannelClass::Encrypted));
+        assert!(
+            !guest_handle.read().desktop.workspaces[0]
+                .capabilities
+                .iter()
+                .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == "/srv/granted-with-the-downgrade")),
+            "the whole batch carrying the downgrade is refused, not just its class"
+        );
+    }
+
     /// The write-authority check on the live path: a guest in room A
     /// publishes a `SyncResp` carrying its own owner/grant; what the host holds afterwards must match what it granted.
     #[test]

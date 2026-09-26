@@ -19,16 +19,20 @@ serde.workspace = true
 collab-types = { path = "../collab-types" }
 # Device certificates and revocations for identity announcements.
 tilo-user-identity = { path = "../tilo-user-identity" }
-# Host retention channels are BLAKE3 digests of the message route.
+# Host retention channels are BLAKE3 digests of the message route; an
+# invitation's id is the BLAKE3 digest of its bearer string.
 blake3.workspace = true
-
-[dev-dependencies]
-# The production codec; tests pin every variant's exact encoding.
-postcard = { workspace = true, features = ["alloc"] }
-serde_json.workspace = true
-uuid.workspace = true
-# Signs the governance fixtures the retention tests classify.
+# Invitations are signed by, and dial, an Iroh endpoint.
+iroh-base = { workspace = true, features = ["key"] }
+# Validates the key material an invitation pins; signs admissions.
 ed25519-dalek.workspace = true
+# The signed invitation payload, and the production codec the golden-byte
+# tests pin every variant's encoding with.
+postcard = { workspace = true, features = ["alloc"] }
+# The bearer encoding of an invitation.
+serde_json.workspace = true
+base64.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

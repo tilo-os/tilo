@@ -232,6 +232,32 @@ impl RelayCoeditSession {
         })
     }
 
+    /// [`Self::join`], first redeeming the public room's standing invitation
+    /// `invite_id` at this host, which the room's owner delegated admission
+    /// to. The host admits this connection's own certified device, so the
+    /// subscribe that follows on the same ordered stream is accepted. A
+    /// refused redemption surfaces as the subscribe's `NotAuthorised`, which
+    /// ends [`Self::recv`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if `client`'s outbound
+    /// channel is already closed.
+    pub fn join_redeeming(
+        client: RelayClient,
+        workspace_id: u64,
+        author: [u8; 32],
+        invite_id: [u8; 32],
+    ) -> Result<Self, CoeditError> {
+        client
+            .send(Envelope::Redeem {
+                workspace_id,
+                invite_id,
+            })
+            .map_err(|_| CoeditError::Disconnected)?;
+        Self::join(client, workspace_id, author)
+    }
+
     /// The workspace this session is bound to.
     pub fn workspace_id(&self) -> u64 {
         self.workspace_id

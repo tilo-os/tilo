@@ -4289,6 +4289,25 @@ impl ShellOverlayHost {
         self.published_active_tab = current;
     }
 
+    /// Run one community request through the installed peer-sync bridge —
+    /// how the control socket reaches the shell's community API.
+    ///
+    /// # Errors
+    ///
+    /// No peer-sync is running, or the request was refused.
+    pub fn community_request(
+        &self,
+        request: crate::shell::peer_sync_overlay::CommunityRequest,
+    ) -> Result<serde_json::Value, String> {
+        match self.peer_sync_call(PeerSyncRequest::Community(request))? {
+            PeerSyncResponse::Answer(answer) => Ok(answer),
+            PeerSyncResponse::Message(message) => Ok(serde_json::Value::String(message)),
+            PeerSyncResponse::PendingInvitations(_) => {
+                Err("unexpected response to a community request".into())
+            }
+        }
+    }
+
     /// Run one peer-sync request through the installed bridge.
     fn peer_sync_call(&self, req: PeerSyncRequest) -> Result<PeerSyncResponse, String> {
         match self.peer_sync_bridge.as_ref() {
@@ -24308,6 +24327,7 @@ mod tab_context_menu_tests {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            channel_class: collab_types::ChannelClass::default(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Home".into(),
@@ -27670,9 +27690,9 @@ mod palette_dispatch_tests {
             PeerSyncRequest::ListPendingInvitations => {
                 Ok(PeerSyncResponse::PendingInvitations(Vec::new()))
             }
-            PeerSyncRequest::ResendInvitation(_) | PeerSyncRequest::CancelInvitation(_) => {
-                Err("not pending".into())
-            }
+            PeerSyncRequest::ResendInvitation(_)
+            | PeerSyncRequest::CancelInvitation(_)
+            | PeerSyncRequest::Community(_) => Err("not pending".into()),
         }));
         chrome
             .borrow_mut()
@@ -33628,6 +33648,7 @@ mod maximize_harvest_tests {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            channel_class: collab_types::ChannelClass::default(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),
@@ -33881,6 +33902,7 @@ mod resync_strips_tests {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            channel_class: collab_types::ChannelClass::default(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),

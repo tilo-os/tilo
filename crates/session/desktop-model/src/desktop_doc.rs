@@ -9,7 +9,7 @@
 //! [`crate::topology`]; the edits here only record the outcome. The host owns
 //! the document, decides when to commit, and stamps history.
 //!
-//! Shape: `{ active: uint, workspaces: [ { id, name, room, owner?,
+//! Shape: `{ active: uint, workspaces: [ { id, name, room, owner?, channel_class,
 //! capabilities: {id → json}, permission_profiles_v1: {key → json},
 //! tasks_v1: {id → json}, effect_receipts_v1: {invocation → json},
 //! strips: [ { id, window_groups: [ { id, tabs: [ { id, title, tile_json } ] } ] } ] } ] }`.
@@ -36,6 +36,7 @@ const ACTIVE_KEY: &str = "active";
 const CAPABILITIES_KEY: &str = "capabilities";
 const PERMISSION_PROFILES_KEY: &str = "permission_profiles_v1";
 const TASKS_KEY: &str = "tasks_v1";
+const CHANNEL_CLASS_KEY: &str = "channel_class";
 const STRIPS_KEY: &str = "strips";
 const GROUPS_KEY: &str = "window_groups";
 const TABS_KEY: &str = "tabs";
@@ -226,6 +227,7 @@ pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
         if let Some(owner) = &ws.owner {
             let _ = doc.put(&entry, "owner", owner.clone());
         }
+        let _ = doc.put(&entry, CHANNEL_CLASS_KEY, ws.channel_class.as_str());
         put_blob_map(
             doc,
             &entry,
@@ -367,6 +369,11 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
         if let Some(profiles) = read_permission_profiles(doc, entry) {
             ws.permission_profiles = profiles;
         }
+        if let Some(class) = text(doc, entry, CHANNEL_CLASS_KEY)
+            .and_then(|name| collab_types::ChannelClass::parse(name.as_str()))
+        {
+            ws.channel_class = class;
+        }
         ws.tasks = read_tasks(doc, entry);
         ws.effect_receipts = read_effect_receipts(doc, entry);
         rebuilt.push(ws);
@@ -480,16 +487,17 @@ fn workspace_entry(doc: &AutoCommit, workspace_id: WorkspaceId) -> Option<ObjId>
         .map(|(_, entry)| entry)
 }
 
-/// Append a new workspace entry — id, name and room only; its strips reach
-/// the document through later edits or the next [`seed`]. The room goes in
-/// with the workspace, so a reader learns the identity in the same change
-/// that tells it the workspace exists. Creates the list for an unseeded
-/// document.
+/// Append a new workspace entry — id, name, room and channel class only;
+/// its strips reach the document through later edits or the next [`seed`].
+/// The room and its class go in with the workspace, so a reader learns the
+/// identity in the same change that tells it the workspace exists. Creates
+/// the list for an unseeded document.
 pub fn append_workspace(
     doc: &mut AutoCommit,
     workspace_id: WorkspaceId,
     name: &str,
     room: RoomId,
+    channel_class: collab_types::ChannelClass,
 ) -> bool {
     let Some(list) = obj(doc, &ROOT, WORKSPACES_KEY)
         .or_else(|| doc.put_object(&ROOT, WORKSPACES_KEY, ObjType::List).ok())
@@ -503,6 +511,7 @@ pub fn append_workspace(
     let _ = doc.put(&entry, "id", ScalarValue::Uint(workspace_id.raw()));
     let _ = doc.put(&entry, "name", name.to_string());
     let _ = doc.put(&entry, "room", room.to_string());
+    let _ = doc.put(&entry, CHANNEL_CLASS_KEY, channel_class.as_str());
     true
 }
 

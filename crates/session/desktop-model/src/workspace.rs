@@ -81,6 +81,12 @@ pub struct Workspace {
     /// an app's collaborative document.
     #[serde(default)]
     pub effect_receipts: Vec<WorkspaceEffectReceipt>,
+    /// Whether this room's channels are encrypted to its members or public.
+    /// Room governance, written only by the room's authority and fixed when
+    /// the room is created (see [`collab_types::ChannelClass`]); members read
+    /// it to tell a person plainly that what they post here is public.
+    #[serde(default)]
+    pub channel_class: collab_types::ChannelClass,
     /// Surfaces from this workspace being streamed to peers. Keys are
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
@@ -784,7 +790,17 @@ impl Workspace {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
+        }
+    }
+
+    /// A new room whose channels are public: signed like any other, never
+    /// encrypted. The class is chosen here, at creation, and nowhere else.
+    pub fn new_public(id: WorkspaceId, name: impl Into<String>) -> Self {
+        Self {
+            channel_class: collab_types::ChannelClass::Public,
+            ..Self::new(id, name)
         }
     }
 
@@ -843,6 +859,7 @@ impl Default for Workspace {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }

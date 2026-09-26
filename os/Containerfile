@@ -1856,6 +1856,9 @@ COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-i
 # edited and survives image updates. See fs.service for why the subject
 # is a principal rather than a key.
 COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
+# The Tilo community room's standing invitation and the Tilo team principal,
+# read by the shell for public and private feedback.
+COPY os/usr/share/tilo/community.toml /usr/share/tilo/community.toml
 # Git compares only the stat fields that sync between devices (mtime and
 # size, not inode or ctime), so a synced repository is clean everywhere
 # without re-hashing; see the snippet and docs/device-local-state.md.

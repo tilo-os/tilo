@@ -128,6 +128,25 @@ republish on every attach) is recognised and neither fanned out nor stored
 again. Membership files are re-read only after they change, so the
 once-a-second access audit of every subscriber costs a `stat`, not a parse.
 
+## Hosting a public room
+
+A public room, such as the Tilo community room, is owned and governed by its
+owner's shell. This relay only admits people to it. See
+`src/public_room.rs` and `docs/architecture/feedback.md`, and
+`tilo-relay-admin community --help` for the commands:
+
+- `community host --room ROOM --owner-identity-root DIR` binds the room here
+  and signs, with the owner's root, a delegation for this relay's device to
+  admit at most Commenters.
+- `community add-invite --room ROOM TOKEN` registers the room's standing
+  invitation. `revoke-invite` stops new joins through it, and `status` shows
+  what is hosted.
+- Run with `trust_policy = { kind = "allow_any" }`, so certified strangers may
+  connect. Each room stays gated by its own membership. A device joins by
+  sending `Redeem` before `Subscribe`.
+- Direct rooms between anyone and a hosted room's owner are bound on first
+  subscribe and admit exactly those two people.
+
 See `crates/hosting/tilo-relay/src/lib.rs` for the module overview
 and `crates/hosting/tilo-relay/tests/` for end-to-end examples of
 the wire protocol.

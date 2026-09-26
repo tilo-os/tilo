@@ -608,6 +608,10 @@ impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
         reason = "the transaction is cloned into the durable idempotency ledger only after the current command is admitted"
     )]
     pub fn apply(&mut self, tx: MlsAuthorityTransaction) -> Result<[u8; 32], MlsAuthorityError> {
+        // Refused before anything touches the ledger or the vault: a public
+        // room's channels keep no group key, so there is no MLS work to do
+        // for any membership change in them.
+        self.ensure_room_keeps_group_key(&tx)?;
         if let Some((completed_tx, digest)) = self.ledger.completed.get(&tx.idempotency_key) {
             if completed_tx != &tx {
                 return Err(MlsAuthorityError::Unauthorized(
@@ -989,6 +993,24 @@ impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
         Ok(())
     }
 
+    fn ensure_room_keeps_group_key(
+        &self,
+        tx: &MlsAuthorityTransaction,
+    ) -> Result<(), MlsAuthorityError> {
+        let class = self
+            .workspaces
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == tx.workspace)
+            .map(|workspace| workspace.channel_class)
+            .ok_or_else(|| MlsAuthorityError::Unauthorized("workspace is unavailable".into()))?;
+        class
+            .admits_group_key()
+            .map_err(|error| MlsAuthorityError::Unauthorized(error.to_string()))
+    }
+
     fn journal_path(&self, channel: ChannelId) -> PathBuf {
         self.root.join(format!("{}.governance", channel.0))
     }
@@ -1261,6 +1283,78 @@ mod tests {
         let journal = broker.governance.get(&channel).unwrap();
         assert!(journal.encryption_required());
         assert!(!journal.accepts_document_encryption(None, channel));
+    }
+
+    #[test]
+    fn a_public_room_admits_members_without_any_mls_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let channel = ChannelId::new();
+        let state_path = dir.path().join("vault/group.mls");
+        let (signer, signer_pk) = generate_keypair();
+        let owner = MemberKey::generate("owner").unwrap();
+        ChannelGroup::create(channel, owner)
+            .unwrap()
+            .save_sealed(&state_path, &VaultKey::new([9; 32]))
+            .unwrap();
+        let bob = MemberKey::generate("bob").unwrap();
+        let package_handle = MlsKeyPackageHandle::from_issued_bytes([2; 32]);
+        let state_handle = MlsVaultHandle::from_issued_bytes([1; 32]);
+        let provider = Arc::new(HermeticVault {
+            state_path,
+            state_handle,
+            signer,
+            packages: Mutex::new(HashMap::from([(
+                package_handle,
+                bob.fresh_key_package().unwrap(),
+            )])),
+            snapshots: HashMap::new(),
+            fail_after_journal_once: AtomicBool::new(false),
+        });
+        let mut workspace = Workspace::new_public(WorkspaceId::new(), "Community");
+        workspace.set_owner(hex::encode(signer_pk.as_bytes()));
+        let room = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let workspaces = tree.shared();
+        let broker = Arc::new(Mutex::new(BrokerChannels::default()));
+        let mut coordinator = MlsAuthorityCoordinator::open(
+            dir.path().join("authority"),
+            provider,
+            Arc::clone(&workspaces),
+            Arc::clone(&broker),
+        )
+        .unwrap();
+        let admit = |key: u8| MlsAuthorityTransaction {
+            idempotency_key: [key; 32],
+            channel: *channel.0.as_bytes(),
+            workspace: room.clone(),
+            expected_membership_revision: 1,
+            vault: state_handle,
+            action: MlsAuthorityAction::Admit {
+                recipient: [5; 32],
+                role: MlsWorkspaceRole::Editor,
+                key_package: package_handle,
+            },
+        };
+
+        let error = coordinator.apply(admit(7)).unwrap_err();
+        assert!(
+            matches!(&error, MlsAuthorityError::Unauthorized(reason) if reason.contains("no MLS group")),
+            "{error}"
+        );
+        // Nothing was journalled, registered or left pending: a second,
+        // different transaction meets the same class refusal rather than a
+        // stuck recovery.
+        assert!(broker.lock().unwrap().governance.is_empty());
+        assert!(matches!(
+            coordinator.apply(admit(8)),
+            Err(MlsAuthorityError::Unauthorized(reason)) if reason.contains("no MLS group")
+        ));
+        assert_eq!(
+            workspaces.read().desktop.workspaces[0].role_of(&hex::encode([5; 32])),
+            None,
+            "the MLS path granted nothing either"
+        );
     }
 
     #[test]

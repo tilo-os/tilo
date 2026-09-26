@@ -45,6 +45,8 @@ mod federation_workspace_shard;
 mod multi_host;
 #[path = "personal_device_process.rs"]
 mod personal_device_process;
+#[path = "public_room.rs"]
+mod public_room;
 #[path = "relay_daemon.rs"]
 mod relay_daemon;
 #[path = "relay_limits.rs"]

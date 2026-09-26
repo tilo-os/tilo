@@ -90,6 +90,12 @@ pub struct PeerContext {
     /// This relay's own device key: the address remote-action frames use to
     /// reach the app-serving plane.
     pub own_device_public_key: [u8; 32],
+    /// This relay's device signing key, which signs delegated admissions into
+    /// the public rooms it hosts ([`crate::public_room`]).
+    pub own_device_signing_key: ed25519_dalek::SigningKey,
+    /// Direct rooms with hosted public rooms' owners, bound on first
+    /// subscribe.
+    pub direct_rooms: Arc<crate::public_room::DirectRoomHosting>,
     /// Answers remote-action frames addressed to this relay. `None` unless
     /// the host supplied one and advertises `app_serving`.
     pub app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
@@ -112,6 +118,8 @@ struct SessionCtx<'a> {
     trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     disconnect: &'a mpsc::Sender<()>,
     own_device_public_key: &'a [u8; 32],
+    own_device_signing_key: &'a ed25519_dalek::SigningKey,
+    direct_rooms: &'a crate::public_room::DirectRoomHosting,
     app_serving: Option<&'a Arc<dyn crate::app_serving::AppServingPlane>>,
 }
 
@@ -146,6 +154,8 @@ where
         own_user_public_key,
         metrics,
         own_device_public_key,
+        own_device_signing_key,
+        direct_rooms,
         app_serving,
         max_subscribers_per_workspace,
     } = ctx;
@@ -171,6 +181,8 @@ where
         trust_policy: &trust_policy,
         disconnect: &disconnect_tx,
         own_device_public_key: &own_device_public_key,
+        own_device_signing_key: &own_device_signing_key,
+        direct_rooms: &direct_rooms,
         app_serving: app_serving.as_ref(),
     };
 
@@ -356,6 +368,12 @@ async fn handle_envelope(
             have_heads,
         } => handle_sync_request(peer, session, workspace_id, have_heads).await,
         Envelope::Ping => Ok(Some(Envelope::Pong)),
+        Envelope::Redeem {
+            workspace_id,
+            invite_id,
+        } => Ok(Some(
+            handle_redeem(peer, session, workspace_id, invite_id).await,
+        )),
         Envelope::RemoteAction {
             workspace_id,
             version,
@@ -380,7 +398,97 @@ async fn handle_envelope(
         | Envelope::NotAuthorised { .. }
         | Envelope::Pong
         | Envelope::SyncResponse { .. }
-        | Envelope::RemoteActionUndeliverable { .. } => Ok(None),
+        | Envelope::RemoteActionUndeliverable { .. }
+        | Envelope::Admitted { .. } => Ok(None),
+    }
+}
+
+/// Handle `Redeem`: admit this connection's authenticated device into a
+/// public room this relay was delegated admission for, when it presents a
+/// registered standing invitation, and publish the signed admission into the
+/// room. Every refusal is a `NotAuthorised` naming why; nothing is admitted.
+async fn handle_redeem(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    workspace_id: u64,
+    invite_id: [u8; 32],
+) -> Envelope {
+    let refuse = |reason: String| Envelope::NotAuthorised {
+        workspace_id,
+        reason,
+    };
+    // A federating relay speaks for other devices; only a device may redeem
+    // for itself.
+    if peer.role != crate::auth::PeerRole::Device {
+        return refuse("only a device may redeem an invitation for itself".into());
+    }
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return refuse("workspace not bound on this relay".into());
+    };
+    let wr = ws.lock_owned().await;
+    let member_user = peer.user_public_key;
+    let member_device = peer.device_public_key;
+    let relay_sk = session.own_device_signing_key.clone();
+    let relay_device = *session.own_device_public_key;
+    let outcome = tokio::task::spawn_blocking(move || {
+        let mut wr = wr;
+        let result = (|| {
+            let hosting = crate::public_room::PublicRoomHosting::load(wr.store.root())?
+                .ok_or(crate::public_room::PublicRoomError::NotHosted)?;
+            // Already admitted: its admission is retained in the room, so a
+            // reconnecting member costs no re-signing and no fan-out.
+            if wr.store.load_membership()?.contains(&member_device) {
+                return Ok(());
+            }
+            let admission = hosting.admit(
+                invite_id,
+                member_user,
+                member_device,
+                &relay_sk,
+                std::time::SystemTime::now(),
+            )?;
+            let envelope =
+                crate::public_room::admission_envelope(workspace_id, relay_device, admission)
+                    .map_err(|error| {
+                        crate::public_room::PublicRoomError::Store(StoreError::Io(
+                            std::io::Error::other(error),
+                        ))
+                    })?;
+            let crate::transport::Envelope::Delta { delta, .. } = &envelope else {
+                unreachable!("an admission is carried by a delta")
+            };
+            let raw = delta.clone();
+            // Published before the device is recorded as a member, so a
+            // crash in between leaves a device that simply redeems again.
+            wr.fanout_delta(
+                &relay_device,
+                crate::auth::PeerRole::Device,
+                &envelope,
+                &raw,
+                unix_now_ns(),
+            )
+            .map_err(crate::public_room::PublicRoomError::Store)?;
+            wr.admit_device(member_device)?;
+            Ok::<(), crate::public_room::PublicRoomError>(())
+        })();
+        result
+    })
+    .await;
+    match outcome {
+        Ok(Ok(())) => {
+            tracing::info!(
+                workspace_id,
+                user = %hex::encode(member_user),
+                device = %hex::encode(member_device),
+                "admitted a device into a hosted public room"
+            );
+            Envelope::Admitted { workspace_id }
+        }
+        Ok(Err(error)) => {
+            tracing::info!(workspace_id, %error, "refused a standing-invitation redemption");
+            refuse(error.to_string())
+        }
+        Err(_) => refuse("redemption failed".into()),
     }
 }
 
@@ -395,7 +503,24 @@ async fn handle_subscribe(
     replay_cleanup: &mut Vec<std::path::PathBuf>,
     workspace_id: u64,
 ) -> Result<Option<Envelope>, PeerError> {
-    let ws = get_or_autobind_workspace(session.workspaces, session.autobind, workspace_id).await?;
+    let mut ws =
+        get_or_autobind_workspace(session.workspaces, session.autobind, workspace_id).await?;
+    if ws.is_none()
+        && peer.role == crate::auth::PeerRole::Device
+        && let Some(members) = session
+            .direct_rooms
+            .members(workspace_id, peer.user_public_key)
+    {
+        ws = Some(
+            bind_direct_room(
+                session.workspaces,
+                session.direct_rooms,
+                workspace_id,
+                members,
+            )
+            .await?,
+        );
+    }
     let Some(ws) = ws else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
@@ -699,18 +824,39 @@ async fn handle_delta(
 }
 
 /// Handle an inbound `Presence`: fan it out to every other subscriber.
-/// Ephemeral — no author-forgery check, no persistence.
+/// Ephemeral — never persisted.
+///
+/// Presence has no author slot of its own: the author rides inside the
+/// payload ([`crate::coedit::AttributedPresence`]), and receivers attribute
+/// the message to it. So a device may only publish presence attributed to
+/// itself, exactly as with `Delta`; anything else — a forged author, or an
+/// unattributed payload a receiver cannot check — ends the session. In a
+/// public room anyone may join, so without this any member could speak as
+/// any other endpoint. A peer relay forwards its own user's devices, as it
+/// does for deltas.
 async fn handle_presence(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[u64],
     env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
-    let Envelope::Presence { workspace_id, .. } = &env else {
+    let Envelope::Presence {
+        workspace_id,
+        payload,
+    } = &env
+    else {
         return Err(PeerError::Protocol(
             "handle_presence called with a non-Presence envelope".into(),
         ));
     };
+    if peer.role == crate::auth::PeerRole::Device
+        && crate::coedit::AttributedPresence::decode(payload)
+            .is_none_or(|presence| presence.author != peer.device_public_key)
+    {
+        return Err(PeerError::Protocol(
+            "presence author does not match authenticated device".into(),
+        ));
+    }
     let workspace_id = *workspace_id;
     if !subscribed.contains(&workspace_id) {
         return Err(PeerError::Protocol(
@@ -924,6 +1070,39 @@ async fn handle_sync_request(
               devices racing to autobind the same workspace can't create two \
               independent runtimes"
 )]
+/// Bind the direct room `workspace_id` between the two `members`, admitting
+/// exactly those two people. Idempotent under the registry lock.
+async fn bind_direct_room(
+    workspaces: &WorkspaceRegistry,
+    direct_rooms: &crate::public_room::DirectRoomHosting,
+    workspace_id: u64,
+    members: [[u8; 32]; 2],
+) -> Result<SharedWorkspace, StoreError> {
+    let mut map = workspaces.lock().await;
+    if let Some(workspace) = map.get(&workspace_id) {
+        return Ok(workspace.clone());
+    }
+    if !autobind_has_capacity(map.len()) {
+        return Err(StoreError::Io(std::io::Error::other(
+            "direct room limit reached",
+        )));
+    }
+    let mut runtime = crate::workspace::WorkspaceRuntime::open(
+        &direct_rooms.state_root,
+        workspace_id,
+        false,
+        crate::workspace::Membership::default(),
+    )?;
+    runtime.admitted_users.extend(members);
+    let workspace = Arc::new(AsyncMutex::new(runtime));
+    map.insert(workspace_id, workspace.clone());
+    tracing::info!(
+        workspace_id,
+        "bound a direct room with a hosted room's owner"
+    );
+    Ok(workspace)
+}
+
 pub(crate) async fn get_or_autobind_workspace(
     workspaces: &WorkspaceRegistry,
     autobind: Option<&WorkspaceAutobind>,

@@ -26,6 +26,7 @@
 
 pub mod colorimetry;
 pub mod hdr_metadata;
+pub mod invite;
 pub mod retention;
 
 pub use retention::{Retention, retention};
@@ -353,6 +354,17 @@ pub enum NeighbourMsg {
         /// ignore it.
         delivery: u64,
     },
+    /// A workspace host's delegated admission of one device into the public
+    /// room `room`, made when that device redeemed the room's standing
+    /// invitation while its owner was away. Self-authenticating: receivers
+    /// verify it against the room owner's delegation
+    /// ([`collab_types::HostAdmissionV1::verify`]), whichever transport
+    /// delivered it. Appended to preserve every existing Postcard
+    /// discriminant.
+    RoomAdmission {
+        room: String,
+        admission: Box<collab_types::HostAdmissionV1>,
+    },
 }
 
 #[cfg(test)]
@@ -403,6 +415,24 @@ mod tests {
         all.extend(fixtures_input_permissions_and_identity());
         all.extend(fixtures_app_crdt_and_scrollback());
         all.extend(fixtures_channel_governance());
+        all.push((
+            "room admission",
+            NeighbourMsg::RoomAdmission {
+                room: ROOM.into(),
+                admission: Box::new(collab_types::HostAdmissionV1 {
+                    room: ROOM.into(),
+                    workspace: 12,
+                    member_user: collab_types::Ed25519PublicKey::from_bytes([3; 32]),
+                    member_device: collab_types::Ed25519PublicKey::from_bytes([4; 32]),
+                    role: collab_types::Role::Commenter,
+                    invite: [5; 32],
+                    admitted_at_unix_seconds: 1_700_000_000,
+                    host: collab_types::Ed25519PublicKey::from_bytes([6; 32]),
+                    delegation: Vec::new(),
+                    signature: collab_types::Signature::from_bytes([0x5A; 64]),
+                }),
+            },
+        ));
         all
     }
 
@@ -730,10 +760,11 @@ mod tests {
             NeighbourMsg::MlsGovernance { .. } => "MlsGovernance",
             NeighbourMsg::MlsAccessRequest { .. } => "MlsAccessRequest",
             NeighbourMsg::MlsGovernanceAck { .. } => "MlsGovernanceAck",
+            NeighbourMsg::RoomAdmission { .. } => "RoomAdmission",
         }
     }
 
-    const VARIANT_COUNT: usize = 25;
+    const VARIANT_COUNT: usize = 26;
 
     fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write;
@@ -915,6 +946,20 @@ mod tests {
                 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee40efefefefefefef",
                 "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
                 "efefefefefefefefefefefefefefefefefefefefefefefefef09",
+            ),
+        ),
+        (
+            "room admission",
+            concat!(
+                "192436623366396131302d303030302d343030302d383030302d303030303030",
+                "3030303030632436623366396131302d303030302d343030302d383030302d30",
+                "30303030303030303030630c0303030303030303030303030303030303030303",
+                "0303030303030303030303030404040404040404040404040404040404040404",
+                "0404040404040404040404040205050505050505050505050505050505050505",
+                "0505050505050505050505050580e2cfaa060606060606060606060606060606",
+                "06060606060606060606060606060606060600405a5a5a5a5a5a5a5a5a5a5a5a",
+                "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+                "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
             ),
         ),
     ];

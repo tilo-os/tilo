@@ -254,6 +254,11 @@ impl Relay {
         let revocations = Arc::new(std::sync::RwLock::new(identity.revocations.clone()));
 
         let live_trust_policy = Arc::new(std::sync::RwLock::new(cfg.trust_policy.clone()));
+        let bound: Vec<u64> = cfg.workspaces.iter().map(|binding| binding.id).collect();
+        let direct_rooms = Arc::new(
+            crate::public_room::DirectRoomHosting::scan(&cfg.state_root, &bound)
+                .map_err(|error| RelayError::Io(std::io::Error::other(error.to_string())))?,
+        );
         let handler = RelayProtocol {
             workspaces: workspaces.clone(),
             trust_policy: live_trust_policy.clone(),
@@ -267,6 +272,7 @@ impl Relay {
                     state_root: cfg.state_root.clone(),
                 }
             }),
+            direct_rooms,
             app_serving,
             limits: cfg.limits,
             live_connections: Arc::new(AtomicUsize::new(0)),
@@ -706,6 +712,13 @@ fn build_workspace_registry(cfg: &RelayConfig) -> Result<WorkspaceRegistry, Rela
             .filter_map(|encoded| hex::decode(encoded).ok())
             .filter_map(|bytes| bytes.try_into().ok())
             .collect();
+        // A hosted public room's owner reaches it from any of their devices
+        // — theirs is the governance the room's members replay.
+        if let Some(hosting) = crate::public_room::PublicRoomHosting::load(rt.store.root())
+            .map_err(|error| RelayError::Io(std::io::Error::other(error.to_string())))?
+        {
+            rt.admitted_users.insert(hosting.owner);
+        }
         wsmap.insert(binding.id, Arc::new(AsyncMutex::new(rt)));
     }
     Ok(Arc::new(AsyncMutex::new(wsmap)))
@@ -1159,6 +1172,7 @@ struct RelayProtocol {
     own_sk: ed25519_dalek::SigningKey,
     metrics: Arc<Metrics>,
     autobind: Option<WorkspaceAutobind>,
+    direct_rooms: Arc<crate::public_room::DirectRoomHosting>,
     app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
     limits: crate::config::RelayLimits,
     /// Relay-protocol connections currently open; bounded by
@@ -1625,6 +1639,8 @@ async fn handle_conn(
             own_user_public_key: ctx.own_user_pk,
             metrics: ctx.metrics,
             own_device_public_key: ctx.own_cert.device_public_key,
+            own_device_signing_key: ctx.own_sk.clone(),
+            direct_rooms: ctx.direct_rooms,
             app_serving: ctx.app_serving,
             max_subscribers_per_workspace: ctx.limits.max_subscribers_per_workspace,
         },

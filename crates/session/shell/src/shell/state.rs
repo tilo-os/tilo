@@ -403,6 +403,12 @@ impl std::fmt::Display for PeerOrigin {
     }
 }
 
+/// Id prefix of the membership a host-delegated admission grants in a public
+/// room. Such a grant is its own signed record (`HostAdmissionV1`), delivered
+/// and verified independently of the room's governance: the authority never
+/// projects it into governance, and a governance sync never removes it.
+pub const DELEGATED_ADMISSION_CAP_PREFIX: &str = "host-admission-";
+
 /// Who may write a room's governance — its owner and capability list —
 /// as this machine knows it. Automerge merges a map key
 /// last-writer-wins with no per-key ACL, so without this record
@@ -944,13 +950,15 @@ impl WorkspaceTree {
     }
 }
 
-/// Owner, capability blobs, and peer-name claims read from a room
-/// document's governance keys. See [`WorkspaceTree::governance_of`].
+/// Owner, capability blobs, peer-name claims, identities and channel class
+/// read from a room document's governance keys. See
+/// [`WorkspaceTree::governance_of`].
 type RoomGovernance = (
     Option<String>,
     std::collections::BTreeMap<String, Vec<u8>>,
     std::collections::BTreeMap<String, String>,
     std::collections::BTreeMap<String, Vec<u8>>,
+    Option<collab_types::ChannelClass>,
 );
 
 impl WorkspaceTree {
@@ -1523,7 +1531,15 @@ impl WorkspaceTree {
         };
         let name = ws.name.clone();
         let owner = ws.owner.clone();
-        let caps: Vec<CapOverride> = ws.capabilities.clone();
+        let channel_class = ws.channel_class;
+        // Delegated admissions are records of their own; projecting them
+        // would republish every member of a public room with each change.
+        let caps: Vec<CapOverride> = ws
+            .capabilities
+            .iter()
+            .filter(|cap| !cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX))
+            .cloned()
+            .collect();
         let tasks = ws.tasks.clone();
         let effect_receipts = ws.effect_receipts.clone();
         let peer_names: std::collections::BTreeMap<String, String> =
@@ -1643,6 +1659,7 @@ impl WorkspaceTree {
                 let _ = doc.put(&caps_id, &cap.id, ScalarValue::Bytes(blob));
             }
         }
+        projection::project_channel_class(doc, channel_class);
         Self::project_peer_names(doc, &peer_names);
         Self::project_peer_identities(doc, &peer_identities);
         let _ = qdoc::history::commit_stamped(doc);
@@ -1882,6 +1899,7 @@ impl WorkspaceTree {
                 std::collections::BTreeMap::new(),
                 std::collections::BTreeMap::new(),
                 std::collections::BTreeMap::new(),
+                None,
             );
         };
         let owner = match doc.get(&ROOT, "owner").ok().flatten() {
@@ -1930,7 +1948,13 @@ impl WorkspaceTree {
                 }
             }
         }
-        (owner, caps, peers, identities)
+        (
+            owner,
+            caps,
+            peers,
+            identities,
+            projection::channel_class_of(doc),
+        )
     }
 
     /// Current heads of `room`'s replication document — the baseline a
@@ -1996,6 +2020,22 @@ impl WorkspaceTree {
         let after = Self::governance_of(Some(candidate));
         if before == after {
             return false;
+        }
+        // A room's channel class is fixed once governance has stated it —
+        // not even its authority may re-label it. Members were told whether
+        // what they post is encrypted, and an encrypted room turned public
+        // would make that promise untrue after the fact.
+        if let Some(held) = before.4
+            && let Err(error) = held.may_become(after.4.unwrap_or(held))
+        {
+            tracing::warn!(
+                target: "shell::state",
+                room = %room,
+                from = %from,
+                %error,
+                "room sync refused: the batch would change the room's channel class",
+            );
+            return true;
         }
         match self.room_authority(room) {
             // We administer the room, so no peer is entitled to write
@@ -2192,6 +2232,7 @@ impl WorkspaceTree {
         }
 
         let (name, owner, caps) = Self::extract_governed_fields(&candidate);
+        let channel_class = projection::channel_class_of(&candidate);
         let mut tasks = projection::workspace_tasks_of(&candidate);
         let mut effect_receipts = projection::workspace_effect_receipts_of(&candidate);
         if let Some(workspace) = self.workspace_in_room(room) {
@@ -2237,10 +2278,24 @@ impl WorkspaceTree {
             ws.owner = Some(owner);
             fields_changed = true;
         }
+        if let Some(class) = channel_class
+            && ws.channel_class != class
+        {
+            ws.channel_class = class;
+            fields_changed = true;
+        }
         // Replaced rather than merged: a revoked capability is simply
         // absent from the peer's document, so carrying the local list
-        // over would let it survive.
+        // over would let it survive. Delegated admissions are the one
+        // exception: governance never carries them.
         let mut sorted = caps;
+        sorted.retain(|cap| !cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX));
+        sorted.extend(
+            ws.capabilities
+                .iter()
+                .filter(|cap| cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX))
+                .cloned(),
+        );
         sorted.sort_by(|a, b| a.id.cmp(&b.id));
         let mut current = ws.capabilities.clone();
         current.sort_by(|a, b| a.id.cmp(&b.id));
@@ -3283,6 +3338,7 @@ impl WorkspaceTree {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
         };
 
@@ -3382,6 +3438,7 @@ impl WorkspaceTree {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
         };
 
@@ -3422,6 +3479,22 @@ impl WorkspaceTree {
     }
 
     pub fn append_empty_workspace(&mut self, name: &str) -> WorkspaceId {
+        self.append_workspace_of_class(name, collab_types::ChannelClass::Encrypted)
+    }
+
+    /// [`Self::append_empty_workspace`] for a room whose channels are
+    /// public — signed and validated like any other, never encrypted, so
+    /// members may come and go without group-key work. The class is fixed
+    /// here: no later call turns an encrypted room public.
+    pub fn append_public_workspace(&mut self, name: &str) -> WorkspaceId {
+        self.append_workspace_of_class(name, collab_types::ChannelClass::Public)
+    }
+
+    fn append_workspace_of_class(
+        &mut self,
+        name: &str,
+        channel_class: collab_types::ChannelClass,
+    ) -> WorkspaceId {
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
         // A workspace the user just created is a room that now exists;
@@ -3447,6 +3520,7 @@ impl WorkspaceTree {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            channel_class,
             shared_surfaces: SharedSurfaces::default(),
         };
         self.desktop.active_strip.insert(ws_id, strip_id);
@@ -3456,7 +3530,13 @@ impl WorkspaceTree {
         // Best-effort, same as `seed_doc_from_cache`: the cache push above
         // already happened, so a doc-write failure only means this append
         // doesn't replicate.
-        tilo_desktop_model::desktop_doc::append_workspace(&mut self.doc, ws_id, name, room);
+        tilo_desktop_model::desktop_doc::append_workspace(
+            &mut self.doc,
+            ws_id,
+            name,
+            room,
+            channel_class,
+        );
         // A newly-created workspace is local session state as well as a
         // collaboration-document change. Persist it at the mutation boundary:
         // otherwise a compositor crash before the next unrelated edit silently
@@ -6550,6 +6630,7 @@ mod active_group_tests {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
         };
         let mut active_strip = HashMap::new();
@@ -7023,6 +7104,7 @@ mod active_workspace_peer_count_tests {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
         };
         let mut active_strip = HashMap::new();

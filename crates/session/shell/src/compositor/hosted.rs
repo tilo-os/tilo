@@ -414,6 +414,9 @@ fn attach_peer_sync_bridge(
         crate::shell::overlay_host::PeerSyncRequest::ResendInvitation(id) => net
             .resend_invitation(&id)
             .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+        crate::shell::overlay_host::PeerSyncRequest::Community(request) => net
+            .serve_community_request(request)
+            .map(crate::shell::overlay_host::PeerSyncResponse::Answer),
         crate::shell::overlay_host::PeerSyncRequest::CancelInvitation(id) => {
             if net.cancel_invitation(&id) {
                 Ok(crate::shell::overlay_host::PeerSyncResponse::Message(

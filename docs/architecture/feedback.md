@@ -196,6 +196,35 @@ and react. It is hosted on a Tilo-operated workspace host (`tilo-relay`).
 Everyone in the room is a Commenter; the team are Editors, so they can set a
 report's status.
 
+How the pieces fit:
+
+- **Class.** `ChannelClass` (`collab-types`) is room governance, the
+  `channel_class` key of the room document. Only the room's authority writes
+  it, and only when the room is created. No member takes a batch that would
+  change a class it already holds, so an encrypted room can never turn
+  public. Public rooms refuse encrypted ops and every kind of MLS traffic.
+  The shell reports the class to members (`tilo-control public-room status`).
+- **Standing invite.** A standing invite is the ordinary signed room invite
+  with its signed `standing` flag set. It is capped at Commenter, names no
+  recipient, and is never consumed. Redeeming it still binds the redeeming
+  device's own certificate. Revoking it stops new joins and keeps the people
+  it already admitted.
+- **Owner and host.** The team's user root owns the room and a team device
+  governs it. The host never holds that root. The owner gives the host one
+  attenuated delegation: an `InviteToken` whose subject is the host device,
+  scoped to this room and capped at Commenter.
+  - When a device redeems the invite at the host, the host signs a
+    `HostAdmissionV1` and retains it in the room.
+  - Every member checks the admission against the room owner before granting
+    it, so the room works while the team is offline. A host can admit
+    Commenters and do nothing else.
+  - Members of a public room do not exchange room state with each other. The
+    authority's checkpoint, retained by the host, is that state.
+- **Private feedback.** Private feedback uses `DirectRoom::between(reporter,
+  team)`. The shell reads the team principal from
+  `/usr/share/tilo/community.toml`, or from `TILO_COMMUNITY_CONFIG`. The host
+  binds that pair's room on first use and admits exactly those two people.
+
 Votes are reactions: Commenter already means "comment or reaction". Status
 (open, planned, fixed in generation N) is a typed chat action that only an
 Editor can take. "Fixed in generation N" is matched against the reporter's

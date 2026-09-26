@@ -1,0 +1,18 @@
+# Where this release finds the Tilo community and the Tilo team.
+#
+# Read by the shell (`crates/session/shell/src/shell/community.rs`);
+# `TILO_COMMUNITY_CONFIG` names a different file for a development community.
+# An empty value means "not configured": joining the community or opening the
+# private feedback room then reports that, rather than guessing.
+
+[community]
+# The Tilo Community room's standing invitation. Its signed host addresses
+# say where the room is served; redeeming it admits this device as a
+# Commenter. `tilo-control community join` redeems it.
+invite = ""
+
+[team]
+# The Tilo team's user root key, hex. Private feedback goes to the direct room
+# between the reporter and this person (`tilo-control community team-room`).
+user_public_key = ""
+label = "Tilo team"

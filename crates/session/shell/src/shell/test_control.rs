@@ -154,6 +154,37 @@ pub enum Command {
         #[serde(default)]
         args: serde_json::Map<String, serde_json::Value>,
     },
+    /// Join the Tilo community room from the standing invitation this OS
+    /// ships (`/usr/share/tilo/community.toml`, or `TILO_COMMUNITY_CONFIG`).
+    /// Answers the room's status: its channel class and this session's role.
+    CommunityJoin,
+    /// The community room as this session knows it, or `{"joined": false}`.
+    CommunityStatus,
+    /// Open this person's private feedback room: the direct room with the
+    /// configured Tilo team principal.
+    CommunityTeamRoom,
+    /// Open the direct room with `person` (a person id) — the team's end of a
+    /// reporter's feedback room.
+    CommunityDirectRoom {
+        person: String,
+        #[serde(default)]
+        label: Option<String>,
+    },
+    /// Create a public room — signed, never encrypted, joined through a
+    /// standing invitation — governed by this machine.
+    PublicRoomCreate { name: String },
+    /// Mint the standing invitation of public room `room`: `viewer` or
+    /// `commenter` (the default and the ceiling), optionally expiring.
+    StandingInvite {
+        room: String,
+        #[serde(default)]
+        role: Option<String>,
+        #[serde(default)]
+        expires_in_seconds: Option<u64>,
+    },
+    /// A room's channel class, whether governance stated it, and this
+    /// session's role in it.
+    RoomStatus { room: String },
     /// Read the latest broker lifecycle state for an invocation receipt id.
     ActionsStatus { invocation_id: u64 },
     /// Request cooperative cancellation for an invocation receipt id.
@@ -273,6 +304,18 @@ pub trait ControlState {
         _destructive: bool,
     ) -> Result<serde_json::Value, String> {
         Err("no live workspace on this control state".to_string())
+    }
+
+    /// Run one community request through the shell's community API.
+    ///
+    /// # Errors
+    ///
+    /// Returns the refusal; the default refuses, as no network runs here.
+    fn community(
+        &self,
+        _request: crate::shell::peer_sync_overlay::CommunityRequest,
+    ) -> Result<serde_json::Value, String> {
+        Err("no collaboration network on this control state".to_string())
     }
 
     /// Enumerate the exported action surface for `query` as JSON. Default impl refuses, same reasoning as the capability methods: "exports nothing" and "cannot answer" must not share a wire shape.
@@ -535,6 +578,13 @@ pub fn dispatch_command<S: ControlState>(
             answer_or_err(state.revoke_capability(id), "revoke_refused"),
             Vec::new(),
         ),
+        Command::CommunityJoin
+        | Command::CommunityStatus
+        | Command::CommunityTeamRoom
+        | Command::CommunityDirectRoom { .. }
+        | Command::PublicRoomCreate { .. }
+        | Command::StandingInvite { .. }
+        | Command::RoomStatus { .. } => (community(state, cmd), Vec::new()),
         Command::CheckAction {
             actor,
             app,
@@ -931,6 +981,54 @@ fn actions_invoke<S: ControlState>(
 }
 
 /// Wrap a capability-op result in the wire envelope. A refusal is a [`Response::Err`], not an `Answer` with `allowed: false` — conflating them would read a refused *grant* as a successful deny.
+fn community<S: ControlState>(state: &S, cmd: &Command) -> Response {
+    use crate::network::invite::InviteRole;
+    use crate::shell::peer_sync_overlay::CommunityRequest;
+    let request = match cmd {
+        Command::CommunityJoin => CommunityRequest::Join,
+        Command::CommunityStatus => CommunityRequest::Status,
+        Command::CommunityTeamRoom => CommunityRequest::OpenTeamRoom,
+        Command::CommunityDirectRoom { person, label } => CommunityRequest::OpenDirectRoom {
+            person: person.clone(),
+            label: label.clone().unwrap_or_else(|| "Direct".to_string()),
+        },
+        Command::PublicRoomCreate { name } => {
+            CommunityRequest::CreatePublicRoom { name: name.clone() }
+        }
+        Command::StandingInvite {
+            room,
+            role,
+            expires_in_seconds,
+        } => {
+            let role = match role.as_deref().unwrap_or("commenter") {
+                "commenter" => InviteRole::Commenter,
+                "viewer" => InviteRole::Viewer,
+                other => {
+                    return Response::Err {
+                        code: "parse_error".into(),
+                        message: format!(
+                            "a standing invitation is viewer or commenter, not {other:?}"
+                        ),
+                    };
+                }
+            };
+            CommunityRequest::IssueStandingInvite {
+                room: room.clone(),
+                role,
+                expires_in_seconds: *expires_in_seconds,
+            }
+        }
+        Command::RoomStatus { room } => CommunityRequest::RoomStatus { room: room.clone() },
+        _ => {
+            return Response::Err {
+                code: "parse_error".into(),
+                message: "not a community command".into(),
+            };
+        }
+    };
+    answer_or_err(state.community(request), "community_refused")
+}
+
 fn answer_or_err(result: Result<serde_json::Value, String>, code: &str) -> Response {
     match result {
         Ok(value) => Response::Answer(value),

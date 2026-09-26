@@ -171,6 +171,7 @@ fn round_trip_channel() {
         id: ChannelId::new(),
         space: SpaceId::new(),
         name: "#engineering".into(),
+        class: collab_types::ChannelClass::Public,
         owner: fake_pk(11),
         default_role: Role::Commenter,
         members: vec![MemberRef {

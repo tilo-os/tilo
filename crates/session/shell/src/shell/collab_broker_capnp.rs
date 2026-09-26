@@ -4432,6 +4432,10 @@ impl CapnpBrokerState {
             .ok_or_else(|| {
                 capnp::Error::failed("certified document workspace is no longer available".into())
             })?;
+        workspace
+            .channel_class
+            .admits_op(envelope)
+            .map_err(|error| capnp::Error::failed(error.to_string()))?;
         let actor = admitted
             .policy_actor(&route.cluster_id)
             .with_principal(Principal::App(route.app_id.clone()));

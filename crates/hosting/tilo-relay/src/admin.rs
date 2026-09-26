@@ -104,6 +104,10 @@ enum Cmd {
     ListMembers { workspace_id: u64 },
     /// Print daemon status (config + on-disk state summary).
     Status,
+    /// Host a public room (such as the Tilo community room) whose owner lets
+    /// this relay admit people through the room's standing invitation.
+    #[command(subcommand)]
+    Community(CommunityCmd),
     /// Publish a `RevocationEntry` for a device pubkey (hex-encoded, 32 bytes).
     ///
     /// Requires access to the user root private key, so this
@@ -114,6 +118,72 @@ enum Cmd {
         /// lost, stolen, retired, or compromised.
         #[arg(long, default_value = "compromised")]
         reason: String,
+    },
+}
+
+/// A public room is created — and its governance written — by its owner's
+/// shell; see `docs/architecture/feedback.md`. These commands make this relay
+/// the always-on host that lets people join it while the owner is away.
+///
+/// The usual order:
+///
+///   1. In the owner's shell, create the public room and copy its id.
+///   2. `community host --room ROOM --owner-identity-root DIR` here: binds the
+///      room and stores the owner's signed delegation for this relay.
+///   3. Restart tilo-relay so it serves the newly bound room, with
+///      `trust_policy = { kind = "allow_any" }` so certified strangers may
+///      connect (every room stays gated by its own membership).
+///   4. In the owner's shell, mint the room's standing invitation with this
+///      relay as its host, then `community add-invite --room ROOM TOKEN` here.
+///   5. Ship TOKEN (e.g. in `tilo-community.toml`); anyone redeems it.
+///
+/// `community revoke-invite` stops further redemptions at once; people already
+/// admitted stay members. `community status` shows what is hosted.
+#[derive(Subcommand)]
+enum CommunityCmd {
+    /// Bind a public room here and store its owner's delegation.
+    ///
+    /// Signs, with the owner's user root, a delegation letting this relay's
+    /// device admit redeeming devices into ROOM at role Commenter and nothing
+    /// more. The owner's root key never leaves DIR and is not copied here.
+    Host {
+        /// The public room's UUID, as the owner's shell shows it.
+        #[arg(long)]
+        room: String,
+        /// Identity root of the room's owner — the directory holding the
+        /// owner's user root private key (a shell's `TILO_IDENTITY_ROOT`).
+        #[arg(long)]
+        owner_identity_root: PathBuf,
+        /// End the delegation after this many days. Without it the delegation
+        /// lasts until replaced; admissions stop verifying once it ends.
+        #[arg(long)]
+        expires_in_days: Option<u64>,
+    },
+    /// Register a standing invitation of a hosted room for redemption here.
+    ///
+    /// TOKEN must be a standing invitation to ROOM minted by a device of the
+    /// room's owner; it can grant at most Commenter.
+    AddInvite {
+        /// The hosted room's UUID.
+        #[arg(long)]
+        room: String,
+        /// The standing invitation, as the owner's shell printed it.
+        token: String,
+    },
+    /// Stop redeeming a standing invitation. People it admitted stay members.
+    RevokeInvite {
+        /// The hosted room's UUID.
+        #[arg(long)]
+        room: String,
+        /// The invitation's id, as `community status` lists it (hex).
+        invite_id: String,
+    },
+    /// Show a hosted public room: its owner, delegation, invitations and
+    /// admitted device count.
+    Status {
+        /// The hosted room's UUID.
+        #[arg(long)]
+        room: String,
     },
 }
 
@@ -185,7 +255,196 @@ fn main() -> anyhow::Result<()> {
             device_pubkey_hex,
             reason,
         } => cmd_revoke_device(&cli.config, &device_pubkey_hex, &reason),
+        Cmd::Community(cmd) => cmd_community(&cli.config, cmd),
     }
+}
+
+fn hosted_room_store(
+    cfg: &RelayConfig,
+    room: &str,
+) -> anyhow::Result<(u64, tilo_relay::store::WorkspaceStore)> {
+    let workspace_id = tilo_relay::room_workspace_id(room)
+        .with_context(|| format!("invalid room UUID {room:?}"))?;
+    let store = workspace_store(cfg, workspace_id)
+        .with_context(|| format!("room {room} is not hosted here; run `community host` first"))?;
+    Ok((workspace_id, store))
+}
+
+fn load_hosting(
+    store: &tilo_relay::store::WorkspaceStore,
+    room: &str,
+) -> anyhow::Result<tilo_relay::public_room::PublicRoomHosting> {
+    tilo_relay::public_room::PublicRoomHosting::load(store.root())?
+        .with_context(|| format!("room {room} has no delegation here; run `community host` first"))
+}
+
+fn cmd_community(config: &std::path::Path, cmd: CommunityCmd) -> anyhow::Result<()> {
+    match cmd {
+        CommunityCmd::Host {
+            room,
+            owner_identity_root,
+            expires_in_days,
+        } => cmd_community_host(config, &room, &owner_identity_root, expires_in_days),
+        CommunityCmd::AddInvite { room, token } => {
+            let cfg = load(config)?;
+            let (_, store) = hosted_room_store(&cfg, &room)?;
+            let mut hosting = load_hosting(&store, &room)?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs());
+            let parsed = hosting.check_invite(&token, now)?;
+            let id = hex::encode(neighbour_wire::invite::invite_id(&token));
+            if hosting.invites.iter().any(|invite| invite.id == id) {
+                println!("standing invitation {id} is already registered");
+                return Ok(());
+            }
+            hosting
+                .invites
+                .push(tilo_relay::public_room::HostedStandingInvite {
+                    id: id.clone(),
+                    token: token.trim().to_string(),
+                    revoked: false,
+                });
+            hosting.save(store.root())?;
+            println!(
+                "registered standing invitation {id} ({}{})",
+                parsed.role.label(),
+                if parsed.expiry_unix_seconds == u64::MAX {
+                    String::new()
+                } else {
+                    format!(", expires at unix {}", parsed.expiry_unix_seconds)
+                }
+            );
+            println!("a running tilo-relay redeems it from the next redemption on");
+            Ok(())
+        }
+        CommunityCmd::RevokeInvite { room, invite_id } => {
+            let cfg = load(config)?;
+            let (_, store) = hosted_room_store(&cfg, &room)?;
+            let mut hosting = load_hosting(&store, &room)?;
+            let id = invite_id.trim().to_ascii_lowercase();
+            let Some(invite) = hosting.invites.iter_mut().find(|invite| invite.id == id) else {
+                anyhow::bail!("no standing invitation {id} is registered for room {room}");
+            };
+            invite.revoked = true;
+            hosting.save(store.root())?;
+            println!("revoked standing invitation {id}; people it admitted stay members");
+            Ok(())
+        }
+        CommunityCmd::Status { room } => {
+            let cfg = load(config)?;
+            let (workspace_id, store) = hosted_room_store(&cfg, &room)?;
+            let hosting = load_hosting(&store, &room)?;
+            println!("room {room} (workspace {workspace_id})");
+            println!("owner {}", hex::encode(hosting.owner));
+            let delegation_end = hosting
+                .delegation
+                .iter()
+                .filter_map(|token| token.not_after)
+                .min();
+            match delegation_end {
+                Some(end) => println!(
+                    "delegation ends at unix {}",
+                    end.duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |elapsed| elapsed.as_secs())
+                ),
+                None => println!("delegation does not expire"),
+            }
+            for invite in &hosting.invites {
+                println!(
+                    "invite {}\t{}",
+                    invite.id,
+                    if invite.revoked { "revoked" } else { "live" }
+                );
+            }
+            println!("admitted devices {}", store.load_membership()?.len());
+            Ok(())
+        }
+    }
+}
+
+fn cmd_community_host(
+    config: &std::path::Path,
+    room: &str,
+    owner_identity_root: &std::path::Path,
+    expires_in_days: Option<u64>,
+) -> anyhow::Result<()> {
+    let workspace_id = tilo_relay::room_workspace_id(room)
+        .with_context(|| format!("invalid room UUID {room:?}"))?;
+    let mut cfg = load(config)?;
+    let relay_paths = tilo_user_identity::IdentityPaths::under(&cfg.identity_root);
+    let relay_cert = tilo_user_identity::persist::read_device_cert(&relay_paths.device_cert)
+        .with_context(|| {
+            format!(
+                "read this relay's device certificate {}",
+                relay_paths.device_cert.display()
+            )
+        })?;
+    let owner_paths = tilo_user_identity::IdentityPaths::under(owner_identity_root);
+    if !owner_paths.user_privkey.exists() {
+        anyhow::bail!(
+            "no user root private key at {}; point --owner-identity-root at the room owner's \
+             identity (the primary device's root)",
+            owner_paths.user_privkey.display()
+        );
+    }
+    let owner = tilo_user_identity::persist::read_owned_signing_key(&owner_paths.user_privkey)?;
+    let not_after = expires_in_days.map(|days| {
+        std::time::SystemTime::now() + std::time::Duration::from_secs(days.saturating_mul(86_400))
+    });
+    let delegation = collab_types::mint_root(
+        collab_types::InviteSpec {
+            subject: collab_types::Ed25519PublicKey::from_bytes(relay_cert.device_public_key),
+            workspace: workspace_id,
+            role: collab_types::Role::Commenter,
+            caps: std::collections::BTreeSet::from([
+                collab_types::caps::Verb::Read,
+                collab_types::caps::Verb::Comment,
+            ]),
+            sub_resource: None,
+            not_after,
+        },
+        &owner,
+    )?;
+    let owner_key = owner.verifying_key().to_bytes();
+    tilo_relay::public_room::PublicRoomHosting::check_delegation(
+        room,
+        owner_key,
+        std::slice::from_ref(&delegation),
+        relay_cert.device_public_key,
+        std::time::SystemTime::now(),
+    )?;
+    let added = cfg.add_workspace(workspace_id, false);
+    cfg.save(config)?;
+    let store = workspace_store(&cfg, workspace_id)?;
+    let mut hosting = tilo_relay::public_room::PublicRoomHosting::load(store.root())?
+        .unwrap_or_else(|| tilo_relay::public_room::PublicRoomHosting {
+            room: room.to_string(),
+            owner: owner_key,
+            delegation: Vec::new(),
+            invites: Vec::new(),
+        });
+    if hosting.owner != owner_key || hosting.room != room {
+        anyhow::bail!(
+            "room {room} is already hosted here for owner {}; unbind it first",
+            hex::encode(hosting.owner)
+        );
+    }
+    hosting.delegation = vec![delegation];
+    hosting.save(store.root())?;
+    println!(
+        "hosting public room {room} as workspace {workspace_id} for owner {}",
+        hex::encode(owner_key)
+    );
+    if added {
+        println!("restart tilo-relay to serve the newly bound room");
+    }
+    if cfg.trust_policy != tilo_relay::TrustPolicy::AllowAny {
+        println!(
+            "note: trust_policy is not {{ kind = \"allow_any\" }}, so only devices it admits can connect and redeem"
+        );
+    }
+    Ok(())
 }
 
 fn remote_home_peer(

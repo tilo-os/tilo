@@ -8474,9 +8474,11 @@ dependencies = [
 name = "neighbour-wire"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake3",
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "iroh-base",
  "postcard",
  "serde",
  "serde_json",
@@ -12931,6 +12933,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-power-mgmt",
  "tilo-projector",
+ "tilo-reference",
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
@@ -14603,6 +14606,7 @@ dependencies = [
  "iroh-base",
  "launcher",
  "libc",
+ "neighbour-wire",
  "package-store",
  "postcard",
  "private-fs",
@@ -14619,6 +14623,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-automerge",
  "tilo-clock",
+ "tilo-reference",
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-rt",

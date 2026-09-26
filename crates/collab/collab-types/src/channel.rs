@@ -19,8 +19,139 @@ use uuid::Uuid;
 
 use crate::crypto::Ed25519PublicKey;
 use crate::identity::{AttestationId, Clearance};
+use crate::op::SignedOp;
 use crate::role::{ArtifactKind, Role};
 use crate::space::SpaceId;
+
+/// How a channel protects its content — part of its signed governance,
+/// fixed when the channel is created.
+///
+/// Both classes sign and validate every op the same way; they differ only in
+/// whether content is encrypted to the membership.
+///
+/// - [`Self::Encrypted`] — a team channel. Content is sealed under the MLS
+///   group's per-epoch keys, and every membership change rotates them.
+/// - [`Self::Public`] — a community channel thousands join and leave. Content
+///   is readable by anyone admitted, so rotating a group key per join would buy
+///   nothing and cost a commit per member. No MLS group exists for it, joins and
+///   leaves do no MLS work, and an encrypted envelope on it is refused rather
+///   than trusted: a public channel that quietly carried ciphertext would tell
+///   members something untrue about who can read it.
+///
+/// The class never changes after creation. In particular an encrypted channel
+/// can never become public — members were told their content is sealed, and
+/// re-labelling the channel would not un-share anything already posted under
+/// that promise. See [`Self::may_become`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelClass {
+    /// MLS-encrypted team content. The default for every channel a person
+    /// creates.
+    #[default]
+    Encrypted,
+    /// Signed but unencrypted community content.
+    Public,
+}
+
+/// Why an op or a governance change is not admissible in a channel's class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ChannelClassError {
+    /// An op on a public channel carried encryption metadata.
+    #[error("public channels carry no encrypted content")]
+    EncryptedOpInPublicChannel,
+    /// MLS group work (genesis, admission, removal, encryption) was requested
+    /// for a public channel.
+    #[error("public channels have no MLS group")]
+    GroupKeyInPublicChannel,
+    /// A governance change tried to alter the class of an existing channel.
+    #[error("a channel's class is fixed at creation: {from:?} cannot become {to:?}")]
+    ClassChange {
+        /// The class the channel was created with.
+        from: ChannelClass,
+        /// The class the change asked for.
+        to: ChannelClass,
+    },
+}
+
+impl ChannelClass {
+    /// Stable lowercase name, as written into governance documents and shown
+    /// to members.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Encrypted => "encrypted",
+            Self::Public => "public",
+        }
+    }
+
+    /// Parse [`Self::as_str`]. Anything else is not a class.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "encrypted" => Some(Self::Encrypted),
+            "public" => Some(Self::Public),
+            _ => None,
+        }
+    }
+
+    /// Whether content in this class is sealed to the membership.
+    #[must_use]
+    pub const fn is_encrypted(self) -> bool {
+        matches!(self, Self::Encrypted)
+    }
+
+    /// Whether this class keeps an MLS group — and so whether admitting or
+    /// removing a member does any group-key work.
+    #[must_use]
+    pub const fn keeps_group_key(self) -> bool {
+        self.is_encrypted()
+    }
+
+    /// Refuse MLS group work for a channel of this class.
+    ///
+    /// # Errors
+    ///
+    /// [`ChannelClassError::GroupKeyInPublicChannel`] for a public channel.
+    pub const fn admits_group_key(self) -> Result<(), ChannelClassError> {
+        if self.keeps_group_key() {
+            Ok(())
+        } else {
+            Err(ChannelClassError::GroupKeyInPublicChannel)
+        }
+    }
+
+    /// The class-specific admission rule for one signed op, applied beside
+    /// the ordinary signature, role and capability validation (never instead
+    /// of it).
+    ///
+    /// # Errors
+    ///
+    /// [`ChannelClassError::EncryptedOpInPublicChannel`] when a public
+    /// channel's op carries encryption metadata.
+    pub fn admits_op(self, op: &SignedOp) -> Result<(), ChannelClassError> {
+        if matches!(self, Self::Public) && op.encryption.is_some() {
+            return Err(ChannelClassError::EncryptedOpInPublicChannel);
+        }
+        Ok(())
+    }
+
+    /// Whether governance recorded as `self` may be replaced by `next`. Only
+    /// a restatement is allowed: the class is fixed at creation.
+    ///
+    /// # Errors
+    ///
+    /// [`ChannelClassError::ClassChange`] for any actual change.
+    pub fn may_become(self, next: Self) -> Result<(), ChannelClassError> {
+        if self == next {
+            Ok(())
+        } else {
+            Err(ChannelClassError::ClassChange {
+                from: self,
+                to: next,
+            })
+        }
+    }
+}
 
 /// Stable id for a channel. UUID v4 — same rationale as the others.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -119,6 +250,9 @@ pub struct Channel {
     /// Human-meaningful display name ("#engineering"); not unique, not used
     /// in equality.
     pub name: String,
+    /// Whether the channel's content is encrypted to its members. Fixed at
+    /// creation; see [`ChannelClass`].
+    pub class: ChannelClass,
     /// Owner identity — initially the creator, transferred via
     /// `ChannelEvent::OwnershipTransfer`. Only key that can issue
     /// `Govern`-class ops unless delegated via an `AttestationIssued` event
@@ -206,6 +340,7 @@ mod tests {
             id: ChannelId::new(),
             space: SpaceId::new(),
             name: "#engineering".into(),
+            class: ChannelClass::Encrypted,
             owner,
             default_role: Role::Editor,
             members: vec![],
@@ -217,6 +352,70 @@ mod tests {
         let bytes = canonical_bytes(&ch).unwrap();
         let back: Channel = from_canonical_bytes(&bytes).unwrap();
         assert_eq!(ch, back);
+    }
+
+    #[test]
+    fn public_channels_refuse_encrypted_ops_and_group_keys() {
+        let (sk, author) = generate_keypair();
+        let mut op = SignedOp::new_unsigned(
+            b"hello".to_vec(),
+            ArtifactId::new(),
+            author,
+            AttestationId::new(),
+            crate::role::OpClass::Comment,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        );
+        crate::crypto::sign_op(&mut op, &sk).unwrap();
+        assert_eq!(ChannelClass::Public.admits_op(&op), Ok(()));
+        assert_eq!(ChannelClass::Encrypted.admits_op(&op), Ok(()));
+
+        op.encryption = Some(crate::op::EncryptionMetadata::mls_application(
+            3,
+            ChannelId::new(),
+        ));
+        assert_eq!(
+            ChannelClass::Public.admits_op(&op),
+            Err(ChannelClassError::EncryptedOpInPublicChannel)
+        );
+        assert_eq!(ChannelClass::Encrypted.admits_op(&op), Ok(()));
+
+        assert_eq!(
+            ChannelClass::Public.admits_group_key(),
+            Err(ChannelClassError::GroupKeyInPublicChannel)
+        );
+        assert_eq!(ChannelClass::Encrypted.admits_group_key(), Ok(()));
+    }
+
+    #[test]
+    fn class_is_fixed_at_creation_in_both_directions() {
+        assert_eq!(
+            ChannelClass::Encrypted.may_become(ChannelClass::Public),
+            Err(ChannelClassError::ClassChange {
+                from: ChannelClass::Encrypted,
+                to: ChannelClass::Public,
+            }),
+            "an encrypted channel can never be downgraded to public"
+        );
+        assert!(
+            ChannelClass::Public
+                .may_become(ChannelClass::Encrypted)
+                .is_err()
+        );
+        assert_eq!(
+            ChannelClass::Public.may_become(ChannelClass::Public),
+            Ok(())
+        );
+        assert_eq!(ChannelClass::default(), ChannelClass::Encrypted);
+    }
+
+    #[test]
+    fn class_names_round_trip_and_reject_unknown_values() {
+        for class in [ChannelClass::Encrypted, ChannelClass::Public] {
+            assert_eq!(ChannelClass::parse(class.as_str()), Some(class));
+        }
+        assert_eq!(ChannelClass::parse("Public"), None);
+        assert_eq!(ChannelClass::parse(""), None);
     }
 
     #[test]

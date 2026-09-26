@@ -99,6 +99,26 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             route.extend_from_slice(ack.device.as_bytes());
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
+        // A delegated admission is membership a device that was offline must
+        // still learn, or the admitted person's posts would be refused by
+        // every member who missed it. The latest one per person is enough:
+        // it is the whole of that person's delegated membership.
+        NeighbourMsg::RoomAdmission { room, admission } => {
+            let mut route = b"room-admission\0".to_vec();
+            route.extend_from_slice(room.as_bytes());
+            route.push(0);
+            route.extend_from_slice(admission.member_user.as_bytes());
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
+        }
+        // A device's certificate is what lets a member attribute that
+        // device's retained messages at all; without it replayed on
+        // subscribe, a room's governance published while its author is now
+        // offline would be dropped as unauthenticated. One per device.
+        NeighbourMsg::IdentityHello { cert, .. } => {
+            let mut route = b"identity-hello\0".to_vec();
+            route.extend_from_slice(&cert.device_public_key);
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
+        }
         NeighbourMsg::PersonalContinuityCheckpoint {
             user_public_key, ..
         } => {
@@ -358,6 +378,58 @@ mod tests {
         ] {
             assert!(retention(&live, false).is_none());
         }
+    }
+
+    #[test]
+    fn host_retains_the_latest_admission_per_person_and_identity_per_device() {
+        let admission = |room: &str, user: u8, invite: u8| NeighbourMsg::RoomAdmission {
+            room: room.into(),
+            admission: Box::new(collab_types::HostAdmissionV1 {
+                room: room.into(),
+                workspace: 1,
+                member_user: collab_types::Ed25519PublicKey::from_bytes([user; 32]),
+                member_device: collab_types::Ed25519PublicKey::from_bytes([user; 32]),
+                role: collab_types::Role::Commenter,
+                invite: [invite; 32],
+                admitted_at_unix_seconds: 1,
+                host: collab_types::Ed25519PublicKey::from_bytes([9; 32]),
+                delegation: Vec::new(),
+                signature: collab_types::Signature::from_bytes([0; 64]),
+            }),
+        };
+        let channel = |msg: &NeighbourMsg| match retention(msg, false) {
+            Some((channel, Retention::Checkpoint)) => channel,
+            other => panic!("an admission is a retained baseline, got {other:?}"),
+        };
+        assert_eq!(
+            channel(&admission("room-a", 1, 1)),
+            channel(&admission("room-a", 1, 2)),
+            "a person's newer admission replaces the older one"
+        );
+        assert_ne!(
+            channel(&admission("room-a", 1, 1)),
+            channel(&admission("room-a", 2, 1)),
+            "every person keeps their own"
+        );
+        assert_ne!(
+            channel(&admission("room-a", 1, 1)),
+            channel(&admission("room-b", 1, 1))
+        );
+
+        let hello = |device: u8| NeighbourMsg::IdentityHello {
+            cert: Box::new(tilo_user_identity::DeviceCert {
+                user_public_key: [1; 32],
+                device_public_key: [device; 32],
+                device_label: "laptop".into(),
+                capabilities: tilo_user_identity::DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            }),
+            revocations: Vec::new(),
+        };
+        assert_eq!(channel(&hello(3)), channel(&hello(3)));
+        assert_ne!(channel(&hello(3)), channel(&hello(4)));
     }
 
     /// Channel digests are what a durable host already keys stored

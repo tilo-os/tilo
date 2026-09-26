@@ -28,6 +28,32 @@ pub enum PeerSyncRequest {
     ListPendingInvitations,
     ResendInvitation([u8; 32]),
     CancelInvitation([u8; 32]),
+    /// The community and public-room operations; answered with
+    /// [`PeerSyncResponse::Answer`].
+    Community(CommunityRequest),
+}
+
+/// Public rooms, the Tilo community room and the private feedback room.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommunityRequest {
+    /// Join the community room from the OS's standing invitation.
+    Join,
+    /// Report the community room as this session knows it.
+    Status,
+    /// Create a public room governed by this machine.
+    CreatePublicRoom { name: String },
+    /// Mint the standing invitation of a public room this machine governs.
+    IssueStandingInvite {
+        room: String,
+        role: crate::network::invite::InviteRole,
+        expires_in_seconds: Option<u64>,
+    },
+    /// Open this person's direct room with the Tilo team principal.
+    OpenTeamRoom,
+    /// Open the direct room with `person` (the team's end).
+    OpenDirectRoom { person: String, label: String },
+    /// Report one room's class and this session's role in it.
+    RoomStatus { room: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +97,8 @@ pub enum InviteRecipientPath {
 pub enum PeerSyncResponse {
     Message(String),
     PendingInvitations(Vec<PendingInvitationSummary>),
+    /// A structured answer, for requests driven through the control socket.
+    Answer(serde_json::Value),
 }
 
 impl From<String> for PeerSyncResponse {
@@ -302,6 +330,9 @@ impl PeerSyncOverlay {
             }
             (PeerSyncRequest::CancelInvitation(_), Err(error)) => {
                 self.state.status = Some(format!("Could not cancel: {error}"));
+            }
+            (PeerSyncRequest::Community(_), Err(error)) => {
+                self.state.status = Some(format!("Community: {error}"));
             }
             (_, Ok(_)) => {
                 self.state.status = Some("Unexpected collaboration response".to_string());

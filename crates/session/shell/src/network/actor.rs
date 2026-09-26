@@ -287,6 +287,14 @@ pub enum NetCmd {
     DisconnectHost {
         id: EndpointId,
     },
+    /// Redeem the standing invitation `invite_id` of the public room `ws` at
+    /// every workspace host before subscribing to it there. A host the
+    /// room's owner delegated admission to admits this device; any other
+    /// host refuses, which costs one subscribe.
+    RedeemAtHosts {
+        ws: WorkspaceId,
+        invite_id: [u8; 32],
+    },
 }
 
 /// Concrete data-plane route for one workspace-control session.
@@ -696,6 +704,9 @@ struct ActorState {
     hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
+    /// Standing invitations to redeem at hosts before subscribing, per room
+    /// topic, until a host's subscription for that room succeeds.
+    host_redemptions: HashMap<WorkspaceId, [u8; 32]>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     peers_seen: HashMap<(WorkspaceId, EndpointId), PeerMembership>,
     next_membership_epoch: u64,
@@ -1057,6 +1068,7 @@ impl ActorState {
                         ws,
                         addr.clone(),
                         expectation.clone(),
+                        self.host_redemptions.get(&ws).copied(),
                         &self.internal_tx,
                         &self.host_sessions,
                         &mut self.connecting_hosts,
@@ -1065,6 +1077,27 @@ impl ActorState {
                 }
             }
             Some(NetCmd::DisconnectHost { id }) => self.teardown_host(id, true),
+            Some(NetCmd::RedeemAtHosts { ws, invite_id }) => {
+                self.host_redemptions.insert(ws, invite_id);
+                if let Some(identity) = self.host_identity.as_ref()
+                    && self.topics.contains_key(&ws)
+                {
+                    for (addr, expectation) in self.hosts.values().cloned() {
+                        schedule_host_topic(
+                            &self.endpoint,
+                            identity,
+                            ws,
+                            addr,
+                            expectation,
+                            Some(invite_id),
+                            &self.internal_tx,
+                            &self.host_sessions,
+                            &mut self.connecting_hosts,
+                            &mut self.content_discovery_tasks,
+                        );
+                    }
+                }
+            }
             None => return false,
         }
         true
@@ -1691,6 +1724,7 @@ impl ActorState {
                     ws,
                     addr.clone(),
                     expectation,
+                    self.host_redemptions.get(&ws).copied(),
                     &self.internal_tx,
                     &self.host_sessions,
                     &mut self.connecting_hosts,
@@ -2095,7 +2129,19 @@ impl ActorState {
     /// to keep that dispatcher short.
     async fn handle_host_event(&mut self, ws: WorkspaceId, peer: EndpointId, event: HostEvent) {
         let mapped = match event {
-            HostEvent::Ready => Some(NetEvent::HostReady { ws, peer }),
+            HostEvent::Ready => {
+                // Enrolled home peers never redeem; a provider host's ready
+                // subscription means the redemption (if any) went through.
+                if self
+                    .hosts
+                    .get(&peer)
+                    .is_some_and(|(_, expectation)| expectation.is_none())
+                {
+                    self.host_redemptions.remove(&ws);
+                }
+                self.announce_identity_to_host(ws, peer);
+                Some(NetEvent::HostReady { ws, peer })
+            }
             HostEvent::Message {
                 author,
                 fingerprint,
@@ -2180,6 +2226,7 @@ impl ActorState {
                         ws,
                         addr,
                         expectation,
+                        self.host_redemptions.get(&ws).copied(),
                         &self.internal_tx,
                         &self.host_sessions,
                         &mut self.connecting_hosts,
@@ -2240,6 +2287,33 @@ impl ActorState {
         };
         if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
             tracing::warn!(ws, %error, "could not send collaboration identity announcement");
+        }
+    }
+
+    /// Retain this device's certificate at one workspace host, so members
+    /// replaying the host later can attribute this device's retained messages
+    /// even when it is offline. Once per subscription, not per heartbeat: the
+    /// host keeps the latest one per device.
+    fn announce_identity_to_host(&self, ws: WorkspaceId, host: EndpointId) {
+        let (Some(identity), Some(runtime)) = (
+            self.host_identity.as_ref(),
+            self.host_sessions.get(&(ws, host)),
+        ) else {
+            return;
+        };
+        let (cert, revocations) = identity.material_for(ws);
+        let hello = NeighbourMsg::IdentityHello {
+            cert: Box::new(cert),
+            revocations,
+        };
+        let Ok(bytes) = postcard::to_allocvec(&hello) else {
+            return;
+        };
+        let Some((channel, _)) = retention(&hello, false) else {
+            return;
+        };
+        if let Err(error) = runtime.session.publish_checkpoint(channel, bytes) {
+            tracing::warn!(ws, %error, "could not retain this device's identity at the host");
         }
     }
 
@@ -2653,6 +2727,7 @@ async fn run(
         hosts: HashMap::new(),
         host_sessions: HashMap::new(),
         connecting_hosts: HashSet::new(),
+        host_redemptions: HashMap::new(),
         content_discovery_tasks: HashMap::new(),
         peers_seen: HashMap::new(),
         next_membership_epoch: 0,
@@ -2816,6 +2891,7 @@ fn schedule_host_topic(
     ws: WorkspaceId,
     addr: EndpointAddr,
     expectation: Option<HomePeerExpectation>,
+    redemption: Option<[u8; 32]>,
     internal_tx: &mpsc::Sender<InternalEvent>,
     sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting: &mut HashSet<(WorkspaceId, EndpointId)>,
@@ -2910,11 +2986,13 @@ fn schedule_host_topic(
             .map_err(|_| "workspace host connection timed out".to_string())
             .and_then(|result| result.map_err(|error| error.to_string()))
             .and_then(|client| {
-                RelayCoeditSession::join(
-                    client,
-                    ws,
-                    identity.device_signing_key.verifying_key().to_bytes(),
-                )
+                let author = identity.device_signing_key.verifying_key().to_bytes();
+                match redemption {
+                    Some(invite_id) => {
+                        RelayCoeditSession::join_redeeming(client, ws, author, invite_id)
+                    }
+                    None => RelayCoeditSession::join(client, ws, author),
+                }
                 .map_err(|error| error.to_string())
             });
             let _ = tx
@@ -4110,6 +4188,7 @@ mod tests {
                         42,
                         relay_addr,
                         Some(expectation),
+                        None,
                         &tx,
                         &HashMap::new(),
                         &mut connecting,

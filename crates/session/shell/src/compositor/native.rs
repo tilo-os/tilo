@@ -1360,6 +1360,13 @@ impl ControlState for FrameBuilderControlState<'_> {
         self.fb.widget_registry()
     }
 
+    fn community(
+        &self,
+        request: crate::shell::peer_sync_overlay::CommunityRequest,
+    ) -> Result<serde_json::Value, String> {
+        self.fb.host().community_request(request)
+    }
+
     /// The peers the overlay would paint this frame, read from the same
     /// presence context `draw_real_peers` uses, keyed by room.
     fn peers_json(&self) -> serde_json::Value {
@@ -4237,6 +4244,9 @@ fn install_session_peer_sync(
                 PeerSyncRequest::ResendInvitation(id) => bridge_net
                     .resend_invitation(&id)
                     .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::Community(request) => bridge_net
+                    .serve_community_request(request)
+                    .map(crate::shell::overlay_host::PeerSyncResponse::Answer),
                 PeerSyncRequest::CancelInvitation(id) => {
                     if bridge_net.cancel_invitation(&id) {
                         Ok(crate::shell::overlay_host::PeerSyncResponse::Message(

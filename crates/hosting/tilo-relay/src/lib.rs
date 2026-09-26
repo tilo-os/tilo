@@ -77,6 +77,7 @@ pub mod compute_worker;
 pub mod daemon;
 pub mod metrics;
 pub mod peer;
+pub mod public_room;
 pub mod store;
 pub mod workspace;
 

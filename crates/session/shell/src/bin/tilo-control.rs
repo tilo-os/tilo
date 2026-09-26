@@ -16,6 +16,8 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use serde_json::json;
+
 use shell::shell::test_control_socket::{TEST_CONTROL_ENV, default_socket_path};
 
 /// Pick the socket: `--socket`, else `$TILO_TEST_CONTROL`, else the default
@@ -94,6 +96,10 @@ enum Command {
     },
     /// Show what the recorder holds and what waits for review.
     FeedbackStatus,
+    /// A `community …` or `public-room …` operation, already in wire form.
+    Community {
+        wire: serde_json::Value,
+    },
     Raw {
         json: String,
     },
@@ -225,6 +231,8 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
         }
         "actions" => parse_actions_command(&mut iter)?,
         "feedback" => parse_feedback_command(&mut iter)?,
+        "community" => parse_community_command(&mut iter)?,
+        "public-room" => parse_public_room_command(&mut iter)?,
         "raw" => {
             let json = iter.next().ok_or_else(|| {
                 ParseError::Usage("raw '<json>' requires the JSON payload".to_string())
@@ -239,6 +247,106 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
     };
 
     Ok(Invocation { socket, command })
+}
+
+/// Parse `community join|status|team-room|direct-room PERSON [LABEL]`.
+fn parse_community_command<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+) -> Result<Command, ParseError> {
+    let verb = iter.next().map(String::as_str).ok_or_else(|| {
+        ParseError::Usage(
+            "community requires `join`, `status`, `team-room` or `direct-room` (try --help)"
+                .to_string(),
+        )
+    })?;
+    let wire = match verb {
+        "join" => json!({ "op": "community_join" }),
+        "status" => json!({ "op": "community_status" }),
+        "team-room" => json!({ "op": "community_team_room" }),
+        "direct-room" => {
+            let person = iter.next().ok_or_else(|| {
+                ParseError::Usage("community direct-room PERSON requires a person id".to_string())
+            })?;
+            let label: Vec<String> = iter.cloned().collect();
+            let mut wire = json!({ "op": "community_direct_room", "person": person });
+            if !label.is_empty()
+                && let Some(object) = wire.as_object_mut()
+            {
+                object.insert("label".to_string(), json!(label.join(" ")));
+            }
+            wire
+        }
+        other => {
+            return Err(ParseError::Usage(format!(
+                "community: unknown verb `{other}` (join, status, team-room, direct-room)"
+            )));
+        }
+    };
+    Ok(Command::Community { wire })
+}
+
+/// Parse `public-room create NAME | invite ROOM [--role R] [--expires-in S] |
+/// status ROOM`.
+fn parse_public_room_command<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+) -> Result<Command, ParseError> {
+    let verb = iter.next().map(String::as_str).ok_or_else(|| {
+        ParseError::Usage(
+            "public-room requires `create`, `invite` or `status` (try --help)".to_string(),
+        )
+    })?;
+    let wire = match verb {
+        "create" => {
+            let name: Vec<String> = iter.cloned().collect();
+            if name.is_empty() {
+                return Err(ParseError::Usage(
+                    "public-room create NAME requires a name".to_string(),
+                ));
+            }
+            json!({ "op": "public_room_create", "name": name.join(" ") })
+        }
+        "invite" => {
+            let room = iter.next().ok_or_else(|| {
+                ParseError::Usage("public-room invite ROOM requires a room id".to_string())
+            })?;
+            let mut wire = json!({ "op": "standing_invite", "room": room });
+            while let Some(flag) = iter.next() {
+                let value = iter.next().ok_or_else(|| {
+                    ParseError::Usage(format!("public-room invite: `{flag}` needs a value"))
+                })?;
+                let (key, value) = match flag.as_str() {
+                    "--role" => ("role", json!(value)),
+                    "--expires-in" => (
+                        "expires_in_seconds",
+                        json!(value.parse::<u64>().map_err(|_| {
+                            ParseError::Usage("--expires-in takes seconds".to_string())
+                        })?),
+                    ),
+                    other => {
+                        return Err(ParseError::Usage(format!(
+                            "public-room invite: unknown flag `{other}` (--role, --expires-in)"
+                        )));
+                    }
+                };
+                if let Some(object) = wire.as_object_mut() {
+                    object.insert(key.to_string(), value);
+                }
+            }
+            wire
+        }
+        "status" => {
+            let room = iter.next().ok_or_else(|| {
+                ParseError::Usage("public-room status ROOM requires a room id".to_string())
+            })?;
+            json!({ "op": "room_status", "room": room })
+        }
+        other => {
+            return Err(ParseError::Usage(format!(
+                "public-room: unknown verb `{other}` (create, invite, status)"
+            )));
+        }
+    };
+    Ok(Command::Community { wire })
 }
 
 /// Parse the `actions list|invoke ...` subcommand. Split out of
@@ -466,7 +574,6 @@ fn parse_modifier_flags(s: &str) -> Result<(bool, bool, bool, bool), ParseError>
 /// the caller's JSON is used verbatim; every other variant serialises
 /// through `serde_json::to_string`.
 fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
-    use serde_json::json;
     let value = match cmd {
         Command::ListTargets => json!({ "op": "list_targets" }),
         Command::Click { name } => json!({ "op": "click_named", "name": name }),
@@ -530,6 +637,7 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         Command::ActionsCancel { invocation_id } => {
             json!({ "op": "actions_cancel", "invocation_id": invocation_id })
         }
+        Command::Community { wire } => wire.clone(),
         Command::Raw { json } => {
             // Validate here: a `parse_error` from the compositor can't tell
             // the caller whether their shell quoting or the payload was wrong.
@@ -691,7 +799,8 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
         Command::ActionsList { json, .. } => return print_actions_list(response, *json),
         Command::ActionsInvoke { .. }
         | Command::ActionsStatus { .. }
-        | Command::ActionsCancel { .. } => {
+        | Command::ActionsCancel { .. }
+        | Command::Community { .. } => {
             let answer = response
                 .get("answer")
                 .cloned()
@@ -758,6 +867,16 @@ fn print_usage() {
          \x20 feedback recent-buffer on|off keep (or forget) those two minutes; off by default\n\
          \x20 feedback status               rooms held, the recording, sessions awaiting review\n\
          \x20                               (the `chrome.feedback` part of state-dump)\n\
+         \x20 community join                join the Tilo community room from the OS's\n\
+         \x20                               standing invitation; prints its class and your role\n\
+         \x20 community status              the community room as this session knows it\n\
+         \x20 community team-room           open your private feedback room with the Tilo team\n\
+         \x20 community direct-room PERSON [LABEL]\n\
+         \x20                               open the direct room with PERSON (the team's end)\n\
+         \x20 public-room create NAME       create a public (signed, unencrypted) room here\n\
+         \x20 public-room invite ROOM [--role viewer|commenter] [--expires-in SECONDS]\n\
+         \x20                               mint its standing invitation (multi-use, max commenter)\n\
+         \x20 public-room status ROOM       a room's channel class and your role in it\n\
          \x20 raw '<json>'                  passthrough — escape hatch for new commands"
     );
 }
