@@ -903,6 +903,9 @@ impl CapnpBrokerState {
                 &request.argument,
             );
         }
+        if address.resource == tilo_actions::remote::PEOPLE_RESOURCE {
+            return self.request_person(caller, actor, room, &address.action, argument);
+        }
         if address.resource == tilo_actions::remote::RESOURCES_RESOURCE
             && address.action == tilo_actions::remote::RESOURCE_OPEN_ACTION
         {
@@ -992,6 +995,71 @@ impl CapnpBrokerState {
                 tree.request_room_unreference(workspace.room, id.to_string());
             }
         }
+        let job = self
+            .invocation_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(job)));
+        self.record_completion(
+            job,
+            actor.id.clone(),
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput::default(),
+            },
+        );
+        Ok(job)
+    }
+
+    /// A person's card: open the room the caller shares with them, or invite
+    /// them into one of the caller's workspaces. The host answers on its next
+    /// frame through the direct-room and invite flows, which check the
+    /// caller's authority themselves (an invite needs a workspace the caller
+    /// governs with `Invite`) and say so when there is none.
+    fn request_person(
+        &self,
+        caller: &Caller,
+        actor: &BrokerActor,
+        room: &str,
+        action: &str,
+        argument: Option<&str>,
+    ) -> Result<u64, ActionHostError> {
+        let person = argument
+            .filter(|person| person.len() == 64 && person.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| ActionHostError::InvalidRequest {
+                reason: "name the person by their participant id".into(),
+            })?
+            .to_ascii_lowercase();
+        if person == actor.id {
+            return Err(ActionHostError::InvalidRequest {
+                reason: "that is you".into(),
+            });
+        }
+        let request = match action {
+            tilo_actions::remote::PERSON_MESSAGE_ACTION => {
+                tilo_desktop_model::tree::PersonRequest::Message { person }
+            }
+            tilo_actions::remote::PERSON_INVITE_ACTION => {
+                tilo_desktop_model::tree::PersonRequest::Invite { person }
+            }
+            _ => return Err(ActionHostError::UnknownAction),
+        };
+        if actor.is_agent {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let (workspace, policy) = self
+            .workspaces_for(caller)
+            .into_iter()
+            .find(|(workspace, _)| workspace.room.to_string() == room)
+            .ok_or(ActionHostError::UnknownAction)?;
+        if workspace.decide(&policy, &ResourceRef::Workspace, Verb::Read) != CapDecision::Allow {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let Some(membership) = self.membership.as_ref() else {
+            return Err(ActionHostError::Unavailable {
+                reason: "this host has no desktop to answer on".into(),
+            });
+        };
+        membership.write().request_person(request);
         let job = self
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

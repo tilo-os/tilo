@@ -420,4 +420,142 @@ mod tests {
         );
         assert!(invocations.try_recv().is_err());
     }
+
+    /// A workspace room with the fixture's owner, and the tree the broker
+    /// answers into.
+    fn workspace_host() -> (
+        BrokerActionHost,
+        crate::shell::state::WorkspaceTreeHandle,
+        String,
+    ) {
+        let mut workspace = Workspace::new(WorkspaceId(42), "Community");
+        workspace.set_owner("a1".repeat(32));
+        let room = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let handle = tree.shared();
+        let broker =
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_membership(
+                handle.clone(),
+            );
+        (BrokerActionHost::new(broker), handle, room)
+    }
+
+    fn workspace_request(
+        room: &str,
+        resource: &str,
+        action: &str,
+        argument: InvokeArgument,
+    ) -> InvokeRequest {
+        InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: tilo_actions::remote::workspace_provider(room),
+                address: ActionAddress::new(resource, action),
+            },
+            argument,
+            context: None,
+            confirmation: None,
+            revision: None,
+        }
+    }
+
+    /// A person's card asks the workspace, and the host answers on its next
+    /// frame: nothing is done on the broker thread, nothing is dropped.
+    #[test]
+    fn a_person_request_reaches_the_host_and_names_the_person() {
+        let (host, tree, room) = workspace_host();
+        let person = "b1".repeat(32);
+        for (action, expected) in [
+            (
+                tilo_actions::remote::PERSON_MESSAGE_ACTION,
+                tilo_desktop_model::tree::PersonRequest::Message {
+                    person: person.clone(),
+                },
+            ),
+            (
+                tilo_actions::remote::PERSON_INVITE_ACTION,
+                tilo_desktop_model::tree::PersonRequest::Invite {
+                    person: person.clone(),
+                },
+            ),
+        ] {
+            let receipt = now(host.invoke(
+                &owner(),
+                workspace_request(
+                    &room,
+                    tilo_actions::remote::PEOPLE_RESOURCE,
+                    action,
+                    InvokeArgument::Text(person.clone()),
+                ),
+            ))
+            .expect("admitted");
+            assert!(matches!(receipt.status, ReceiptStatus::Completed { .. }));
+            assert_eq!(tree.write().take_person_requests(), vec![expected]);
+        }
+        for bad in ["not-a-person".to_string(), "a1".repeat(32)] {
+            assert!(
+                now(host.invoke(
+                    &owner(),
+                    workspace_request(
+                        &room,
+                        tilo_actions::remote::PEOPLE_RESOURCE,
+                        tilo_actions::remote::PERSON_MESSAGE_ACTION,
+                        InvokeArgument::Text(bad),
+                    ),
+                ))
+                .is_err(),
+                "a malformed id, or yourself, is refused"
+            );
+        }
+        assert!(tree.write().take_person_requests().is_empty());
+        assert_eq!(
+            now(host.invoke(
+                &stranger(),
+                workspace_request(
+                    &room,
+                    tilo_actions::remote::PEOPLE_RESOURCE,
+                    tilo_actions::remote::PERSON_MESSAGE_ACTION,
+                    InvokeArgument::Text(person),
+                ),
+            )),
+            Err(ActionHostError::UnknownAction),
+            "somebody outside the room asks it nothing"
+        );
+    }
+
+    /// Sharing a record into a room and taking it back are requests the host
+    /// folds into the room's index.
+    #[test]
+    fn a_room_record_reference_and_its_withdrawal_reach_the_host() {
+        let (host, tree, room) = workspace_host();
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "id".into(),
+            "uuid:0d8e6f7a-1b2c-4d3e-8f90-a1b2c3d4e5f6".into(),
+        );
+        args.insert("kind".into(), "session".into());
+        now(host.invoke(
+            &owner(),
+            workspace_request(
+                &room,
+                tilo_actions::remote::ROOM_RECORDS_RESOURCE,
+                tilo_actions::remote::ROOM_RECORD_REFERENCE_ACTION,
+                InvokeArgument::Json(args.clone()),
+            ),
+        ))
+        .expect("shared");
+        assert_eq!(tree.write().take_inbound_room_records().len(), 1);
+        now(host.invoke(
+            &owner(),
+            workspace_request(
+                &room,
+                tilo_actions::remote::ROOM_RECORDS_RESOURCE,
+                tilo_actions::remote::ROOM_RECORD_UNREFERENCE_ACTION,
+                InvokeArgument::Json(args),
+            ),
+        ))
+        .expect("withdrawn");
+        assert_eq!(tree.write().take_withdrawn_room_records().len(), 1);
+    }
 }

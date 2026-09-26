@@ -363,10 +363,11 @@ fn attach_peer_sync_bridge(
             name,
             role,
             recipient_user_public_key,
+            workspace,
         } => {
             let active = tree_for_bridge.read().desktop.active;
             net.issue_invite_bound_with_role(
-                active,
+                workspace.unwrap_or(active),
                 INVITE_EXPIRY_SECONDS,
                 &name,
                 recipient_user_public_key,

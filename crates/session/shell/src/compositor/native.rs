@@ -4272,9 +4272,10 @@ fn install_session_peer_sync(
                     name,
                     role,
                     recipient_user_public_key,
+                    workspace,
                 } => bridge_net
                     .issue_invite_bound_with_role(
-                        active,
+                        workspace.unwrap_or(active),
                         INVITE_EXPIRY_SECONDS,
                         &name,
                         recipient_user_public_key,

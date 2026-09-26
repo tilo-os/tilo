@@ -1888,6 +1888,16 @@ impl WorkspaceTree {
         self.desktop.room_records_withdrawn.push((room, id));
     }
 
+    /// Ask the host to act on a person for a member (see
+    /// [`tilo_desktop_model::tree::PersonRequest`]).
+    pub fn request_person(&mut self, request: tilo_desktop_model::tree::PersonRequest) {
+        self.desktop.person_requests.push(request);
+    }
+
+    pub fn take_person_requests(&mut self) -> Vec<tilo_desktop_model::tree::PersonRequest> {
+        std::mem::take(&mut self.desktop.person_requests)
+    }
+
     /// Drained by the host, like [`Self::take_inbound_room_records`].
     pub fn take_withdrawn_room_records(&mut self) -> Vec<(RoomId, String)> {
         std::mem::take(&mut self.desktop.room_records_withdrawn)

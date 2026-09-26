@@ -23,6 +23,8 @@ pub enum PeerSyncRequest {
         name: String,
         role: crate::network::invite::InviteRole,
         recipient_user_public_key: [u8; 32],
+        /// The workspace the invite is into; `None` is the active one.
+        workspace: Option<crate::shell::state::WorkspaceId>,
     },
     AcceptInvite(String),
     ListPendingInvitations,
@@ -126,6 +128,10 @@ pub struct PeerSyncSnapshot {
     pub invite_recipient_path: InviteRecipientPath,
     pub invite_review_open: bool,
     pub invite_context: InviteContext,
+    /// The workspaces the invite may be into, when the asker picks one (an
+    /// invite started from someone's card elsewhere), and the one picked.
+    pub invite_workspaces: Vec<(crate::shell::state::WorkspaceId, String)>,
+    pub invite_workspace: Option<crate::shell::state::WorkspaceId>,
     pub status: Option<String>,
 }
 
@@ -135,6 +141,7 @@ enum Button {
     ReviewInvite,
     BackToComposer,
     SelectRole(crate::network::invite::InviteRole),
+    SelectWorkspace(usize),
     SelectKnown(usize),
     SelectNewRecipient,
     Join,
@@ -240,8 +247,31 @@ impl PeerSyncOverlay {
         self.state.invite_recipient_key = None;
         self.state.invite_recipient_path = InviteRecipientPath::New;
         self.state.invite_review_open = false;
+        self.state.invite_workspaces = Vec::new();
+        self.state.invite_workspace = None;
         self.state.status = None;
         self.pending_offset = 0;
+    }
+
+    /// Invite `person` — somebody whose identity the shell has verified —
+    /// into one of `workspaces`, which the asker may invite into. The review
+    /// still shows every choice before anything is minted.
+    pub fn prompt_invite_person(
+        &mut self,
+        person: RememberedInvitee,
+        workspaces: Vec<(crate::shell::state::WorkspaceId, String)>,
+    ) {
+        self.prompt_invite();
+        self.state.invite_name = Some(person.name.clone());
+        self.state.invite_recipient_key = Some(person.user_public_key);
+        self.state.invite_recipient_path = InviteRecipientPath::Known;
+        self.state.status = Some(format!("Using verified identity · {}", person.verification));
+        self.merge_remembered_invitees(vec![person]);
+        self.state.invite_workspace = workspaces.first().map(|(id, _)| *id);
+        if let Some((_, name)) = workspaces.first() {
+            self.state.invite_context.workspace_name = name.clone();
+        }
+        self.state.invite_workspaces = workspaces;
     }
 
     pub fn prompt_invite_for(&mut self, name: String) {
@@ -505,6 +535,13 @@ impl PeerSyncOverlay {
                 self.state.invite_role = role;
                 EventOutcome::consumed()
             }
+            Button::SelectWorkspace(index) => {
+                if let Some((id, name)) = self.state.invite_workspaces.get(index).cloned() {
+                    self.state.invite_workspace = Some(id);
+                    self.state.invite_context.workspace_name = name;
+                }
+                EventOutcome::consumed()
+            }
             Button::SelectKnown(index) => {
                 if let Some(person) = self.remembered_invitees.get(index) {
                     self.state.invite_name = Some(person.name.clone());
@@ -582,6 +619,7 @@ impl PeerSyncOverlay {
                 name,
                 role: self.state.invite_role,
                 recipient_user_public_key,
+                workspace: self.state.invite_workspace,
             },
             true,
         )
@@ -936,6 +974,8 @@ impl PeerSyncOverlay {
                 );
                 let y =
                     self.draw_recipient_choices(scene, transform, text, theme, rect, pad, y, body);
+                let y =
+                    self.draw_workspace_choices(scene, transform, text, theme, rect, pad, y, body);
                 self.draw_role_choices(scene, transform, text, theme, rect, pad, y, body)
             }
         } else if let Some(token) = self.state.invite_token.as_deref() {
@@ -1028,6 +1068,67 @@ impl PeerSyncOverlay {
             body,
         );
         choice.y1 + 12.0
+    }
+
+    /// Which of the asker's workspaces the invite is into, when there is a
+    /// choice to make. Up to three side by side, like the roles.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "immediate-mode renderer keeps scene, theme, typography, and card geometry in one pass"
+    )]
+    fn draw_workspace_choices(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        pad: f64,
+        mut y: f64,
+        body: f32,
+    ) -> f64 {
+        if self.state.invite_workspaces.len() < 2 {
+            return y;
+        }
+        let colors = &theme.tokens.colors;
+        text.draw_text(
+            scene,
+            "WORKSPACE",
+            body,
+            colors.text_dim,
+            transform.pre_translate((rect.x0 + pad, y).into()),
+            None,
+        );
+        y += f64::from(body) + 7.0;
+        let choices: Vec<(usize, f64, crate::shell::state::WorkspaceId, String)> = self
+            .state
+            .invite_workspaces
+            .iter()
+            .take(3)
+            .zip([0.0, 1.0, 2.0])
+            .enumerate()
+            .map(|(index, ((id, name), column))| (index, column, *id, name.clone()))
+            .collect();
+        let gap = 6.0;
+        let columns = choices.last().map_or(1.0, |(_, column, _, _)| column + 1.0);
+        let width = (rect.width() - pad * 2.0 - gap * (columns - 1.0)) / columns;
+        for (index, column, id, name) in choices {
+            let x0 = rect.x0 + pad + (width + gap) * column;
+            let choice = Rect::new(x0, y, x0 + width, y + 32.0);
+            let label = text.elide_to_width(&name, body, f64_to_f32(width - 16.0));
+            self.draw_choice(
+                scene,
+                transform,
+                text,
+                theme,
+                choice,
+                &label,
+                self.state.invite_workspace == Some(id),
+                Button::SelectWorkspace(index),
+                body,
+            );
+        }
+        y + 32.0 + 12.0
     }
 
     #[allow(
@@ -1286,6 +1387,7 @@ impl PeerSyncOverlay {
                         Button::ReviewInvite => "review",
                         Button::BackToComposer => "back",
                         Button::SelectRole(_) => "role",
+                        Button::SelectWorkspace(_) => "workspace",
                         Button::SelectKnown(_) => "known",
                         Button::SelectNewRecipient => "new-recipient",
                         Button::Join => "join",
@@ -1319,11 +1421,17 @@ fn card_rect(host: Rect, state: &PeerSyncSnapshot) -> Rect {
     let h = if state.invite_review_open {
         330.0
     } else if state.invite_name.is_some() {
-        if state.pending_invitations.is_empty() {
-            430.0
+        let workspace_row = if state.invite_workspaces.len() > 1 {
+            60.0
         } else {
-            610.0
-        }
+            0.0
+        };
+        workspace_row
+            + if state.pending_invitations.is_empty() {
+                430.0
+            } else {
+                610.0
+            }
     } else if state.connect_input.is_some() {
         220.0
     } else {
@@ -1840,6 +1948,7 @@ mod tests {
                 name: "Ada".into(),
                 role: crate::network::invite::InviteRole::Editor,
                 recipient_user_public_key: [0x11; 32],
+                workspace: None,
             })
         );
         overlay.finish_request(
@@ -1848,6 +1957,46 @@ mod tests {
             submit.copy_result,
         );
         assert_eq!(overlay.state.invite_name.as_deref(), Some("Ada"));
+    }
+
+    /// An invite started from someone's card: bound to their verified key,
+    /// into the workspace and with the role the asker picked, after review.
+    #[test]
+    fn an_invite_for_a_known_person_names_the_chosen_workspace() {
+        use crate::shell::state::WorkspaceId;
+        let mut overlay = PeerSyncOverlay::default();
+        overlay.prompt_invite_person(
+            RememberedInvitee {
+                name: "Aria".into(),
+                user_public_key: [0x33; 32],
+                verification: "Verified in a room you share".into(),
+            },
+            vec![
+                (WorkspaceId(5), "Design".into()),
+                (WorkspaceId(6), "Ops".into()),
+            ],
+        );
+        assert_eq!(overlay.state.invite_workspace, Some(WorkspaceId(5)));
+        overlay.activate(Button::SelectWorkspace(1));
+        overlay.activate(Button::SelectRole(
+            crate::network::invite::InviteRole::Commenter,
+        ));
+        assert_eq!(overlay.state.invite_context.workspace_name, "Ops");
+        assert!(overlay.activate(Button::ReviewInvite).request.is_none());
+        assert_eq!(
+            overlay.activate(Button::CreateInvite).request,
+            Some(PeerSyncRequest::IssueInviteFor {
+                name: "Aria".into(),
+                role: crate::network::invite::InviteRole::Commenter,
+                recipient_user_public_key: [0x33; 32],
+                workspace: Some(WorkspaceId(6)),
+            })
+        );
+        overlay.prompt_invite();
+        assert!(
+            overlay.state.invite_workspaces.is_empty(),
+            "an ordinary invite has no choice"
+        );
     }
 
     #[test]
@@ -1886,6 +2035,7 @@ mod tests {
                 name: "Lin".into(),
                 role: crate::network::invite::InviteRole::Viewer,
                 recipient_user_public_key: [0x22; 32],
+                workspace: None,
             })
         );
     }
@@ -1924,6 +2074,7 @@ mod tests {
                 name: "Ada Lovelace".into(),
                 role: crate::network::invite::InviteRole::Editor,
                 recipient_user_public_key: [0x41; 32],
+                workspace: None,
             })
         );
     }

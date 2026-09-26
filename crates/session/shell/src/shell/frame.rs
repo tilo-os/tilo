@@ -1002,6 +1002,7 @@ impl FrameBuilder {
     pub fn pump_apps(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
         let started = std::time::Instant::now();
         self.replicate_room_records();
+        self.host.answer_person_requests();
         let records_done = std::time::Instant::now();
         self.pump_room_contents();
         let rooms_done = std::time::Instant::now();

@@ -28,6 +28,17 @@ fn state_schema_version_of_a_file_without_one() -> u32 {
     1
 }
 
+/// Something a member asked about another person, by their participant id
+/// (the hex of their user key).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PersonRequest {
+    /// Open the room only the two of them are in.
+    Message { person: String },
+    /// Invite them into one of the asker's workspaces, chosen with a role in
+    /// the ordinary invite review.
+    Invite { person: String },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DesktopTree {
     /// Which version of the on-disk shape the file describes. Read back to
@@ -73,6 +84,11 @@ pub struct DesktopTree {
     /// room's index (record id). Drained by the host.
     #[serde(skip, default)]
     pub room_records_withdrawn: Vec<(RoomId, String)>,
+    /// What a member asked about another person through an app (a person's
+    /// card in Chat): answered by the host on its next frame, where the
+    /// direct-room and invite flows live. Drained by the host.
+    #[serde(skip, default)]
+    pub person_requests: Vec<PersonRequest>,
     /// This tree's own peer salt, overriding the host's process-wide one —
     /// needed when one process holds two trees (e.g. two simulated peers).
     #[serde(skip, default)]
@@ -93,6 +109,7 @@ impl Default for DesktopTree {
             room_records_held: HashMap::new(),
             room_records_inbound: Vec::new(),
             room_records_withdrawn: Vec::new(),
+            person_requests: Vec::new(),
             peer_salt_override: None,
         }
     }

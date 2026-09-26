@@ -4331,6 +4331,138 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Answer what members asked about other people through their apps — a
+    /// person's card in Chat. Message opens the room the two share and Chat in
+    /// it; Invite opens the invite review for that person, into a workspace
+    /// the asker may invite into. Whatever cannot be done is said, never
+    /// dropped.
+    pub fn answer_person_requests(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let requests = chrome.borrow().tree_mut().take_person_requests();
+        for request in requests {
+            match request {
+                tilo_desktop_model::tree::PersonRequest::Message { person } => {
+                    self.message_person(&chrome, &person);
+                }
+                tilo_desktop_model::tree::PersonRequest::Invite { person } => {
+                    self.invite_person(&chrome, &person);
+                }
+            }
+        }
+    }
+
+    /// What the rooms this session is in call `person`, from their verified
+    /// identities.
+    fn person_name(chrome: &Chrome, person: &str) -> Option<String> {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        tree.desktop.workspaces.iter().find_map(|workspace| {
+            tree.trusted_identity_projection(workspace.room)
+                .humans
+                .into_iter()
+                .find(|human| hex::encode(human.root_public_key) == person)
+                .map(|human| human.display_name)
+        })
+    }
+
+    fn message_person(&self, chrome: &Chrome, person: &str) {
+        let label = Self::person_name(chrome, person).unwrap_or_else(|| "Direct message".into());
+        let opened = self
+            .community_request(
+                crate::shell::peer_sync_overlay::CommunityRequest::OpenDirectRoom {
+                    person: person.to_string(),
+                    label: label.clone(),
+                },
+            )
+            .and_then(|answer| {
+                let room = answer
+                    .get("room")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(crate::shell::state::RoomId::parse)
+                    .ok_or_else(|| "the direct room did not open".to_string())?;
+                let workspace = {
+                    let state = chrome.borrow();
+                    let mut tree = state.tree_mut();
+                    let workspace = tree
+                        .desktop
+                        .workspaces
+                        .iter()
+                        .find(|workspace| workspace.room == room)
+                        .cloned()
+                        .ok_or_else(|| "the direct room has no workspace here".to_string())?;
+                    tree.set_active(workspace.id);
+                    workspace
+                };
+                crate::shell::launcher::launch_in_workspace("so.tilo.chat", &workspace)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            });
+        if let Err(error) = opened {
+            chrome
+                .borrow_mut()
+                .push_notification(format!("Couldn't message {label}"), error);
+        }
+        chrome.borrow_mut().bump();
+    }
+
+    fn invite_person(&mut self, chrome: &Chrome, person: &str) {
+        let name = Self::person_name(chrome, person);
+        let key = hex::decode(person)
+            .ok()
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
+        let (Some(name), Some(key)) = (name, key) else {
+            chrome.borrow_mut().push_notification(
+                "Invite unavailable",
+                "Their identity is not verified in any room you share, so an invite could not be bound to them.",
+            );
+            return;
+        };
+        // The workspaces the asker could invite anyone into: governed here,
+        // with Invite. The public room they met in is not one of them.
+        let workspaces: Vec<(crate::shell::state::WorkspaceId, String)> = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.desktop
+                .workspaces
+                .iter()
+                .filter(|workspace| {
+                    let me = crate::shell::state::local_user_id_for_room(&workspace.room);
+                    tree.governs_room(workspace.room)
+                        && workspace.allows(
+                            &workspace.actor_for_person(&me),
+                            &crate::shell::state::ResourceRef::Workspace,
+                            crate::shell::state::Verb::Invite,
+                        )
+                        && workspace.channel_class != collab_types::ChannelClass::Public
+                })
+                .map(|workspace| (workspace.id, workspace.name.clone()))
+                .collect()
+        };
+        if workspaces.is_empty() {
+            chrome.borrow_mut().push_notification(
+                "Invite unavailable",
+                "You have no workspace you may invite people into.",
+            );
+            return;
+        }
+        let inviter = chrome.borrow().local_user_id.clone();
+        self.peer_sync_overlay.set_invite_context(InviteContext {
+            workspace_name: String::new(),
+            inviter_name: inviter,
+        });
+        self.peer_sync_overlay.prompt_invite_person(
+            RememberedInvitee {
+                name,
+                user_public_key: key,
+                verification: "Verified in a room you share".to_string(),
+            },
+            workspaces,
+        );
+        chrome.borrow_mut().bump();
+    }
+
     /// Run one peer-sync request through the installed bridge.
     fn peer_sync_call(&self, req: PeerSyncRequest) -> Result<PeerSyncResponse, String> {
         match self.peer_sync_bridge.as_ref() {
