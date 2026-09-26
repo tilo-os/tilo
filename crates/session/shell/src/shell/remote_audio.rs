@@ -12,9 +12,9 @@
 //! keepalives from both peers to tell a paused source from a dead link.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -25,7 +25,7 @@ use rand_core::Rng;
 use crate::shell::device_fabric::{
     MAX_REMOTE_AUDIO_FRAME_BYTES, MAX_REMOTE_AUDIO_SESSIONS, PersonalFabricAction,
     PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
-    REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_FRAME_BYTES, REMOTE_AUDIO_SAMPLE_RATE_HZ,
+    REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
 };
 use crate::shell::network::{PersonalFabricSendError, ShellNetwork};
 use crate::shell::personal_continuity::DeviceId;
@@ -53,7 +53,6 @@ const INTERRUPTED_NOTICE_TTL: Duration = Duration::from_secs(30);
 const AUDIO_GRAPH_REFRESH: Duration = Duration::from_secs(2);
 const CAPTURE_QUEUE: usize = 12;
 const PLAYBACK_QUEUE: usize = 12;
-const PIPE_BUFFER: usize = 16 * 1024;
 const SEND_BUDGET: usize = 8;
 const MAX_PENDING_PCM_BYTES: usize = MAX_REMOTE_AUDIO_FRAME_BYTES * SEND_BUDGET * 2;
 
@@ -1220,10 +1219,11 @@ pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepa
     }
 }
 
+/// Records the chosen local node through a native `PipeWire` capture stream
+/// pinned to that node: it fails rather than fall back to the default source,
+/// which may be the microphone.
 struct PcmCapture {
-    child: Child,
-    receiver: Receiver<Vec<u8>>,
-    reader: Option<JoinHandle<()>>,
+    stream: Box<dyn media::pw_stream::CaptureStream>,
 }
 
 impl PcmCapture {
@@ -1231,7 +1231,10 @@ impl PcmCapture {
         let target = match selection {
             LocalAudioSelection::System => media::audio::enumerate()
                 .default_sink()
-                .map(|sink| sink.serial)
+                .map(|sink| media::pw_stream::CaptureTarget {
+                    serial: sink.serial,
+                    monitor_sink: true,
+                })
                 .ok_or_else(|| "no local PipeWire output is available".to_string())?,
             LocalAudioSelection::Application { serial, .. } => {
                 let current = media::audio::enumerate()
@@ -1241,76 +1244,38 @@ impl PcmCapture {
                 if !current {
                     return Err("that application audio stream ended".into());
                 }
-                *serial
+                media::pw_stream::CaptureTarget {
+                    serial: *serial,
+                    monitor_sink: false,
+                }
             }
         };
-        let properties = match selection {
-            LocalAudioSelection::System => {
-                "{ stream.capture.sink = true node.name = tilo-remote-audio-source }"
-            }
-            LocalAudioSelection::Application { .. } => {
-                "{ node.name = tilo-remote-application-audio-source }"
-            }
+        let node_name = match selection {
+            LocalAudioSelection::System => "tilo-remote-audio-source",
+            LocalAudioSelection::Application { .. } => "tilo-remote-application-audio-source",
         };
-        let mut child = Command::new("pw-record")
-            .args(["--target", &target.to_string(), "--properties", properties])
-            .args(raw_audio_args())
-            .args(["--media-category", "Capture", "--raw", "-"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| format!("start PipeWire remote audio capture: {error}"))?;
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| format!("check PipeWire remote audio capture: {error}"))?
-        {
-            return Err(format!("PipeWire remote audio capture ended ({status})"));
-        }
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "PipeWire capture did not expose audio".to_string())?;
-        let (sender, receiver) = sync_channel(CAPTURE_QUEUE);
-        let reader = std::thread::Builder::new()
-            .name("tilo-remote-audio-capture".into())
-            .spawn(move || read_capture(stdout, &sender))
-            .map_err(|error| format!("start remote audio reader: {error}"))?;
-        Ok(Self {
-            child,
-            receiver,
-            reader: Some(reader),
-        })
+        let config = media::pw_stream::CaptureConfig {
+            node_name: node_name.into(),
+            target,
+            rate: REMOTE_AUDIO_SAMPLE_RATE_HZ,
+            channels: u16::from(REMOTE_AUDIO_CHANNELS),
+            queue_chunks: CAPTURE_QUEUE,
+        };
+        let stream = media::pw_stream::native_streams()
+            .open_capture(&config)
+            .map_err(|error| format!("start remote audio capture: {error}"))?;
+        Ok(Self { stream })
     }
 
     fn drain(&mut self) -> Result<Vec<u8>, String> {
-        if let Some(status) = self
-            .child
-            .try_wait()
-            .map_err(|error| format!("check remote audio capture: {error}"))?
-        {
-            return Err(format!("remote audio capture ended ({status})"));
-        }
-        let mut bytes = Vec::new();
-        loop {
-            match self.receiver.try_recv() {
-                Ok(chunk) => bytes.extend_from_slice(&chunk),
-                Err(TryRecvError::Empty) => return Ok(bytes),
-                Err(TryRecvError::Disconnected) => {
-                    return Err("remote audio capture disconnected".into());
-                }
-            }
-        }
-    }
-}
-
-impl Drop for PcmCapture {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
-        }
+        let chunks = self
+            .stream
+            .drain()
+            .map_err(|error| format!("remote audio capture ended: {error}"))?;
+        Ok(chunks
+            .into_iter()
+            .flat_map(|chunk| chunk.pcm_s16le)
+            .collect())
     }
 }
 
@@ -1395,48 +1360,6 @@ fn raw_audio_args() -> [&'static str; 12] {
         "--format",
         "s16",
     ]
-}
-
-/// Split off every whole stereo S16LE sample frame, leaving a torn trailing
-/// frame in `pending` for the next read to complete.
-fn take_whole_sample_frames(pending: &mut Vec<u8>) -> Vec<u8> {
-    let torn = pending
-        .len()
-        .checked_rem(REMOTE_AUDIO_SAMPLE_FRAME_BYTES)
-        .unwrap_or(0);
-    let whole = pending.len().saturating_sub(torn);
-    let tail = pending.split_off(whole);
-    std::mem::replace(pending, tail)
-}
-
-/// Forward capture in whole sample frames only. A pipe read can end mid
-/// frame, and dropping such a chunk under backpressure would shift every
-/// later sample by a byte or a channel; whole-frame chunks can be dropped
-/// without misaligning the stream.
-fn read_capture(mut stdout: impl Read, sender: &SyncSender<Vec<u8>>) {
-    let mut buffer = vec![0_u8; PIPE_BUFFER];
-    let mut pending = Vec::with_capacity(PIPE_BUFFER + REMOTE_AUDIO_SAMPLE_FRAME_BYTES);
-    loop {
-        let read = match stdout.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(read) => read,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break,
-        };
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "Read::read never reports more bytes than the buffer it was given"
-        )]
-        pending.extend_from_slice(&buffer[..read]);
-        let chunk = take_whole_sample_frames(&mut pending);
-        if chunk.is_empty() {
-            continue;
-        }
-        match sender.try_send(chunk) {
-            Ok(()) | Err(TrySendError::Full(_)) => {}
-            Err(TrySendError::Disconnected(_)) => break,
-        }
-    }
 }
 
 fn write_playback(mut stdin: impl Write, receiver: &Receiver<Vec<u8>>) {
@@ -1822,85 +1745,6 @@ mod tests {
         );
         assert!(state.outbound.contains_key(&[1; 16]));
         assert!(state.interrupted.is_empty());
-    }
-
-    #[test]
-    fn capture_reads_forward_only_whole_sample_frames() {
-        struct TornReads {
-            chunks: Vec<Vec<u8>>,
-        }
-        impl Read for TornReads {
-            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-                if self.chunks.is_empty() {
-                    return Ok(0);
-                }
-                let chunk = self.chunks.remove(0);
-                buffer[..chunk.len()].copy_from_slice(&chunk);
-                Ok(chunk.len())
-            }
-        }
-        let stream = (0..40_u8).collect::<Vec<_>>();
-        let reads = TornReads {
-            chunks: vec![
-                stream[..3].to_vec(),
-                stream[3..4].to_vec(),
-                stream[4..11].to_vec(),
-                stream[11..13].to_vec(),
-                stream[13..40].to_vec(),
-            ],
-        };
-        let (sender, receiver) = sync_channel(16);
-        read_capture(reads, &sender);
-        drop(sender);
-        let chunks = receiver.iter().collect::<Vec<_>>();
-        assert!(
-            chunks
-                .iter()
-                .all(|chunk| chunk.len() % 4 == 0 && !chunk.is_empty())
-        );
-        assert_eq!(chunks.concat(), stream);
-    }
-
-    #[test]
-    fn capture_backpressure_drops_whole_frames_and_stays_aligned() {
-        struct OddReads {
-            remaining: usize,
-            next: u8,
-        }
-        impl Read for OddReads {
-            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-                let len = self.remaining.min(7);
-                for byte in &mut buffer[..len] {
-                    *byte = self.next;
-                    self.next = self.next.wrapping_add(1);
-                }
-                self.remaining = self.remaining.saturating_sub(len);
-                Ok(len)
-            }
-        }
-        // A one-slot queue that is never drained keeps only the first chunk
-        // and drops the rest; what survives still starts on a frame boundary.
-        let (sender, receiver) = sync_channel(1);
-        read_capture(
-            OddReads {
-                remaining: 7 * 20,
-                next: 0,
-            },
-            &sender,
-        );
-        let kept = receiver.try_recv().unwrap();
-        assert_eq!(kept, vec![0, 1, 2, 3]);
-        assert!(receiver.try_recv().is_err());
-    }
-
-    #[test]
-    fn whole_sample_frames_carry_the_torn_remainder() {
-        let mut pending = vec![1, 2, 3, 4, 5, 6];
-        assert_eq!(take_whole_sample_frames(&mut pending), vec![1, 2, 3, 4]);
-        assert_eq!(pending, vec![5, 6]);
-        pending.extend_from_slice(&[7, 8]);
-        assert_eq!(take_whole_sample_frames(&mut pending), vec![5, 6, 7, 8]);
-        assert!(pending.is_empty());
     }
 
     #[test]
