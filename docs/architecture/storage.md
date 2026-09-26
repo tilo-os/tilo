@@ -649,10 +649,12 @@ bounds.
   quadratic time (the 51st reconciliation alone 7.2 s); it now reconciles
   only the pulled record and the whole repository once per pass. The
   transfer engine of §9 is now in place for the metadata plane and for
-  content (see "What the transfer engine implements" in §9); what remains
-  of the record plane's cost is the author's durable writes per published
-  file (record file with a backup generation, history log), about 20 ms
-  per change on a loop-mounted store.
+  content (see "What the transfer engine implements" in §9). The author's
+  durable writes per published file (a record file with a backup
+  generation, a synced history line, about 20 ms per change on a
+  loop-mounted store) are gone too: an epoch is now one signed changeset,
+  written in one log transaction (see "What the operation log implements"
+  in §8.3).
 - *Content is still stored twice.* The daemon chunks the snapshot file into
   its existing content store (gear CDC, v1 manifests); capture therefore runs
   with `hash_content = false` and the FastCDC manifests of §7 are unused until
@@ -856,6 +858,54 @@ rule, and two physical backings:
   from other devices. That is enough to order across devices without a global
   log.
 
+**What the operation log implements** (`crates/system/fs/src/record_log.rs`,
+`record_changeset.rs`, `record_repository.rs`):
+
+- Every accepted envelope is appended to one redb table (`records.redb` in
+  the repository directory) under a global position; records, stream
+  cursors and history are rebuilt from it in log order. Envelopes are
+  verified once, at ingest; reopening replays the log without verifying
+  signatures again. The per-record JSON files of earlier releases are
+  verified and imported into the log in one transaction on first start,
+  then moved aside (`imported-json/`).
+- The 16,384-record bound is gone. What bounds a device is the in-memory
+  index (replica state and envelopes per record); the repository refuses
+  more than 2^24 records, far past any tree one device holds.
+- A native epoch is one changeset: every operation the author signs while
+  publishing it stays in memory, visible to the local publisher but never
+  served, until the whole batch is signed once as a `SignedChangesetV1`
+  (per-device sequence, Merkle root over per-record leaves of
+  `(record, first..last sequence, digest of the envelopes)`) and written
+  with it in one redb transaction. The history lines of the batch are one
+  synced write before it; the namespace that places its records is
+  persisted after it. After a crash either the whole changeset is in the
+  log or none of it, and the epoch is captured again.
+- Peers see nothing of a changeset before it is durable: its namespace
+  deltas are broadcast afterwards, and every namespace exchange (both
+  directions, both protocols) waits on the repository's publication gate
+  while a changeset is being published or applied.
+- A peer pulls whole changesets (`PullChangesets` in the session protocol),
+  checks the signature, root and every envelope against its leaf, applies
+  all of them in one transaction, and projects the changed records into the
+  namespace in one step under the same gate, which the native projector
+  also takes. Changesets are stored with their envelopes, so peers relay
+  them. A new file is published with its content as its first version, so
+  no empty intermediate version exists at all.
+- Envelopes stay individually signed: peers without changesets pull them
+  stream by stream through `Pull` and the per-request mesh, as before.
+- Measured end to end with the sync benchmark (two release daemons,
+  loop-mounted Btrfs stores, loopback, load 2–8): 100 × 4 KiB files 4.0 s
+  → 0.79 s (of which 0.5 s is the epoch's quiescence), 1000 files
+  48.5 s → 2.5 s, 3000 files 651 s → 7.4 s, a git repository of 3 × 200
+  files 51.6 s → 3.6 s; 100,000 files, which the record bound refused
+  before, 815 s. At that size the Automerge namespace, the content store
+  and replica receipts dominate, not the log: a 75,000-record changeset
+  applies in 18 s.
+- Not yet: signed checkpoints and compaction of old operations, inclusion
+  proofs sent to peers that read only part of a workspace (the proof
+  functions exist; partial readers still receive envelopes per record),
+  batch signature verification, and the causal context.
+
 ### 8.4 CRDT record bodies
 
 - A CRDT record's body is an Automerge document stored as **content-addressed
@@ -949,9 +999,10 @@ One engine moves record operations, file content, CRDT segments and packages.
   range-based reconciliation of record stream heads, pulls of up to 1024
   streams per request with files up to 4 KiB inline, batched replica
   receipts (only for revisions not acknowledged recently), the authority
-  exchange, and announcements that make peers pull at once. Peers without
-  it are served and reached through the per-request protocols, which stay
-  registered.
+  exchange, and announcements that make peers pull at once. Envelopes that
+  belong to a signed changeset travel as that whole changeset
+  (`PullChangesets`, §8.3). Peers without it are served and reached
+  through the per-request protocols, which stay registered.
 - Content goes over one pooled iroh-blobs connection per peer as `GetMany`
   batches (512 blobs or 8 MiB, 8 in flight per peer, spread over every
   healthy peer). Each batch names the manifests of its chunks with empty
@@ -960,9 +1011,8 @@ One engine moves record operations, file content, CRDT segments and packages.
   holding the namespace lock.
 - Not yet: `HashSeq` manifests and BAO range requests into a chunk (content
   is still gear-CDC v1 manifests), priority classes, hedged multi-peer
-  splitting of one large file, push of content (announcements make peers
-  pull), and signed changesets (§8.3): the author still signs and persists
-  per record.
+  splitting of one large file, and push of content (announcements make
+  peers pull).
 
 - **Resumability.** Partial content survives restarts as a range bitmap
   (iroh-blobs partial blobs for loose content, and the per-file bitmap for

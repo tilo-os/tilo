@@ -2678,7 +2678,7 @@ async fn a_session_pulls_many_records_with_small_content_inline_and_then_settles
             &client_policy,
             &record_plane,
             &client_hydrator,
-            false,
+            crate::record_materializer::ReconcileScope::Touched,
         )
         .await
         .unwrap(),
@@ -2728,7 +2728,7 @@ async fn a_session_pulls_many_records_with_small_content_inline_and_then_settles
             &client_policy,
             &record_plane,
             &client_hydrator,
-            false,
+            crate::record_materializer::ReconcileScope::Touched,
         )
         .await
         .unwrap(),

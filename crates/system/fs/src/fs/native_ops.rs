@@ -110,9 +110,7 @@ fn to_errno(error: &std::io::Error) -> i32 {
 
 impl QuickFS {
     fn lookup_kind(&self, parent: u64, name: &[u8]) -> Option<(u64, FileType)> {
-        self.ns()
-            .lookup(parent, name)
-            .map(|attr| (attr.ino.0, attr.kind))
+        self.ns().lookup_kind(parent, name)
     }
 
     /// The directory at `components`, creating missing directories. A file
@@ -223,20 +221,43 @@ impl QuickFS {
             Some((ino, FileType::RegularFile)) => ino,
             Some((_, FileType::Directory)) => {
                 self.remove_subtree(parent, name)?;
-                let (ino, delta) = self.create_empty_file_stamped(parent, name, mtime_ms)?;
-                self.publish(delta);
-                ino
+                return self.create_local_file(parent, name, data, mtime_ms, attrs, fence);
             }
             Some(_) => return Err(libc::EINVAL),
-            None => {
-                let (ino, delta) = self.create_empty_file_stamped(parent, name, mtime_ms)?;
-                self.publish(delta);
-                ino
-            }
+            None => return self.create_local_file(parent, name, data, mtime_ms, attrs, fence),
         };
         self.set_posix(ino, attrs, false)?;
         self.commit_content_fenced(ino, data, mtime_ms, fence)
             .map_err(|e| to_errno(&e))
+    }
+
+    /// A new file is published with its content as its first version and
+    /// its attributes in the same changeset. A version written under a
+    /// lease starts empty, so that its content carries the tenancy.
+    fn create_local_file(
+        &self,
+        parent: u64,
+        name: &[u8],
+        data: &[u8],
+        mtime_ms: u64,
+        attrs: PosixAttrs,
+        fence: Option<VersionFence>,
+    ) -> Result<(), i32> {
+        if fence.is_some() {
+            let (ino, delta) = self.create_empty_file_stamped(parent, name, mtime_ms)?;
+            self.publish(delta);
+            self.set_posix(ino, attrs, false)?;
+            return self
+                .commit_content_fenced(ino, data, mtime_ms, fence)
+                .map_err(|e| to_errno(&e));
+        }
+        let hash = self
+            .write_content_blocking(data)
+            .map_err(|e| to_errno(&e))?;
+        let (ino, delta) =
+            self.create_file_stamped(parent, name, mtime_ms, hash, data.len() as u64)?;
+        self.publish(delta);
+        self.set_posix(ino, attrs, false)
     }
 
     /// Applies a locally captured removal. Removing a path that is already
@@ -329,8 +350,13 @@ impl QuickFS {
     }
 
     /// Every file and directory this mount may read, parents before
-    /// children.
+    /// children. Taken while no changeset is being applied, so it holds
+    /// each changeset entirely or not at all.
     pub fn tree_snapshot(&self) -> Vec<TreeEntry> {
+        let _gate = self
+            .record_publisher
+            .as_ref()
+            .map(|p| p.repository().publication_gate().blocking_read());
         let mut out = Vec::new();
         let mut stack: Vec<(u64, Vec<Vec<u8>>)> = vec![(ROOT_INO, Vec::new())];
         while let Some((dir, prefix)) = stack.pop() {
@@ -344,16 +370,19 @@ impl QuickFS {
                 path.push(name.to_vec());
                 let (hash, size, mtime_ms, known, record, posix, lease) = {
                     let ns = self.ns();
-                    let attr = ns.getattr(ino);
+                    let (attr, hash) = ns.attr_and_hash(ino).unzip();
                     let mtime_ms = attr
                         .as_ref()
                         .and_then(|a| a.mtime.duration_since(std::time::UNIX_EPOCH).ok())
                         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-                    let known = kind == FileType::Directory
-                        || ns.content_authority() == ContentAuthority::LegacyNamespace
-                        || ns.content_revision_for(ino).is_some();
+                    let known = if kind == FileType::Directory {
+                        self.directory_known(&ns, ino)
+                    } else {
+                        ns.content_authority() == ContentAuthority::LegacyNamespace
+                            || ns.content_revision_for(ino).is_some()
+                    };
                     (
-                        ns.hash_for(ino),
+                        hash.flatten(),
                         attr.map_or(0, |a| a.size),
                         mtime_ms,
                         known,
@@ -402,13 +431,56 @@ impl QuickFS {
         self.ns().changeset_marks()
     }
 
+    /// Whether this device holds the signed record of the directory at
+    /// `ino`. Its placement can arrive before the changeset that made it;
+    /// until the changeset is here, the directory is not shown either.
+    fn directory_known(&self, ns: &crate::namespace::Namespace, ino: u64) -> bool {
+        let Some(publisher) = &self.record_publisher else {
+            return true;
+        };
+        if ns.content_authority() == ContentAuthority::LegacyNamespace {
+            return true;
+        }
+        ns.record_id_for(ino).is_some_and(|record_id| {
+            publisher
+                .repository()
+                .contains(crate::record_repository::RecordRepositoryKey {
+                    workspace_id: publisher.workspace_id(),
+                    record_id,
+                })
+        })
+    }
+
     /// Runs `apply` (a changeset's worth of the path-level operations
-    /// above) with one content-store sync for all of it instead of one per
-    /// file, then runs the durability hook: the namespace that places the
-    /// changeset's records is persisted before the changeset counts as
-    /// done, so a crash cannot leave durable records without placements
-    /// (which a restart would read as deletions).
+    /// above) as one signed changeset, made durable at once:
+    ///
+    /// 1. the content of every file is synced once, not once per file;
+    /// 2. the history mutations are written in one log write;
+    /// 3. every record operation is signed once as a changeset and written
+    ///    with it in one log transaction: after a crash either all of the
+    ///    changeset is there or none of it;
+    /// 4. the durability hook persists the namespace that places the
+    ///    changeset's records, so a crash cannot leave durable records
+    ///    without placements (which a restart would read as deletions).
+    ///
+    /// Until then peers see none of it: its records are served only once
+    /// durable, namespace exchanges wait on the publication gate, and its
+    /// namespace deltas are broadcast after the last step.
     pub fn changeset<T>(&self, apply: impl FnOnce() -> T) -> T {
+        let publisher = self.record_publisher.as_ref();
+        let gate = publisher.map(|p| p.repository().publication_gate().blocking_write());
+        let history = self.history.as_ref().map(|(history, _)| history);
+        let deferral = history.map(|history| history.defer_durability());
+        if let Some(publisher) = publisher
+            && let Err(error) = publisher.begin_changeset()
+        {
+            eprintln!("records are published one by one: {error}");
+        }
+        *self
+            .deferred_deltas
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Vec::new());
+        self.ns().begin_incremental_batch();
         let store = std::sync::Arc::clone(&self.hydrator.store);
         store.defer_sync();
         let value = apply();
@@ -416,10 +488,79 @@ impl QuickFS {
         if let Err(error) = rt.block_on(store.end_deferred_sync()) {
             eprintln!("content stays pending: {error:#}");
         }
-        if let Some(hook) = self.durability_hook.get() {
+        let mut durable = true;
+        if let Some(deferral) = deferral
+            && let Err(error) = deferral.finish()
+        {
+            // The records wait for the history that describes them.
+            eprintln!("history stays pending: {error}");
+            durable = false;
+        }
+        if durable && let Some(publisher) = publisher {
+            match publisher.commit_changeset() {
+                Ok(Some(changeset)) if std::env::var_os("TILO_FS_NATIVE_TRACE").is_some() => {
+                    eprintln!(
+                        "  changeset {} of {} record(s) is durable",
+                        changeset.header.sequence, changeset.header.leaf_count
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("the changeset stays pending: {error}");
+                    durable = false;
+                }
+            }
+        }
+        // Taken before the namespace is persisted: a full save moves the
+        // incremental cursor past the batch.
+        let batch = self.ns().end_incremental_batch();
+        if durable && let Some(hook) = self.durability_hook.get() {
             hook();
         }
+        drop(gate);
+        let mut deltas = self
+            .deferred_deltas
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .unwrap_or_default();
+        deltas.push(batch);
+        if durable {
+            self.broadcast_deltas(deltas);
+        } else {
+            // Not durable yet: the next changeset broadcasts these with its
+            // own, once both are on disk.
+            *self
+                .deferred_deltas
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            self.held_deltas
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend(deltas);
+        }
         value
+    }
+
+    fn broadcast_deltas(&self, deltas: Vec<Vec<u8>>) {
+        let held = std::mem::take(
+            &mut *self
+                .held_deltas
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let any = !held.is_empty() || !deltas.is_empty();
+        if any && self.enforcement.is_some() {
+            self.refresh_acl_visible_record_index();
+        }
+        if let Some(sync) = &self.sync {
+            for delta in held.into_iter().chain(deltas) {
+                sync.broadcast_delta(delta);
+            }
+        }
+        if any {
+            self.wake_pinned_hydration();
+        }
     }
 
     /// Sets what runs after each changeset (persisting the namespace that
@@ -446,18 +587,21 @@ impl QuickFS {
         let components = path_components(rel).ok()?;
         let ino = self.ino_at(&components)?;
         let ns = self.ns();
-        let attr = ns.getattr(ino)?;
+        let (attr, hash) = ns.attr_and_hash(ino)?;
         let mtime_ms = attr
             .mtime
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-        let known = attr.kind == FileType::Directory
-            || ns.content_authority() == ContentAuthority::LegacyNamespace
-            || ns.content_revision_for(ino).is_some();
+        let known = if attr.kind == FileType::Directory {
+            self.directory_known(&ns, ino)
+        } else {
+            ns.content_authority() == ContentAuthority::LegacyNamespace
+                || ns.content_revision_for(ino).is_some()
+        };
         Some(TreeEntry {
             path: components,
             dir: attr.kind == FileType::Directory,
-            hash: ns.hash_for(ino),
+            hash,
             size: attr.size,
             mtime_ms,
             known,

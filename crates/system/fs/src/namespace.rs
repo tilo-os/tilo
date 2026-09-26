@@ -335,6 +335,12 @@ pub struct Namespace {
     /// Heads after the last post-sync resolution: a sync that brought
     /// nothing new needs none.
     resolved_heads: Option<Vec<automerge::ChangeHash>>,
+    /// While set (to the heads the batch began at, and the changes not yet
+    /// taken then), [`Self::save_incremental`] returns nothing, so a batch
+    /// of changes becomes one delta when it ends. Encoding a delta
+    /// regenerates its changes from the op set (a pass over the document),
+    /// so one per changed file is quadratic in a changeset.
+    incremental_batch: Option<(Vec<automerge::ChangeHash>, Vec<u8>)>,
     #[cfg(test)]
     record_index_rebuilds: u64,
     #[cfg(test)]
@@ -430,6 +436,7 @@ impl Namespace {
             tree: TreeIndex::default(),
             record_ids_complete: false,
             resolved_heads: None,
+            incremental_batch: None,
             #[cfg(test)]
             record_index_rebuilds: 0,
             #[cfg(test)]
@@ -488,6 +495,7 @@ impl Namespace {
             tree: TreeIndex::default(),
             record_ids_complete: false,
             resolved_heads: None,
+            incremental_batch: None,
             #[cfg(test)]
             record_index_rebuilds: 0,
             #[cfg(test)]
@@ -613,7 +621,33 @@ impl Namespace {
         if !self.record_ids_complete {
             self.ensure_record_ids();
         }
+        if self.incremental_batch.is_some() {
+            return Vec::new();
+        }
         self.doc.save_incremental()
+    }
+
+    /// Collect every change from now on into the one delta
+    /// [`Self::end_incremental_batch`] returns; meanwhile
+    /// [`Self::save_incremental`] returns nothing.
+    pub fn begin_incremental_batch(&mut self) {
+        if self.incremental_batch.is_none() {
+            // Changes not yet taken lead the batch's delta.
+            let pending = self.doc.save_incremental();
+            self.incremental_batch = Some((self.doc.get_heads(), pending));
+        }
+    }
+
+    /// The delta of every change since the batch began. A full save made
+    /// meanwhile (which moves the incremental cursor) loses nothing.
+    pub fn end_incremental_batch(&mut self) -> Vec<u8> {
+        let Some((heads, mut delta)) = self.incremental_batch.take() else {
+            return self.save_incremental();
+        };
+        delta.extend(self.doc.save_after(&heads));
+        // Move the incremental cursor past the batch.
+        let _ = self.doc.save_incremental();
+        delta
     }
     /// # Errors
     ///
@@ -1065,6 +1099,19 @@ impl Namespace {
         let only = matches.next()?;
         matches.next().is_none().then_some(only)
     }
+    /// The kind of the live node `ino`: what [`Self::getattr`] tells of it,
+    /// without reading the node's other fields.
+    pub fn live_kind(&self, ino: u64) -> Option<FileType> {
+        let id = self.ino_to_id.get(&ino)?;
+        if id == ROOT_ID {
+            return Some(NodeKind::Dir.to_file_type());
+        }
+        if !self.reaches_root(id) {
+            return None;
+        }
+        Some(self.kind_of(id).to_file_type())
+    }
+
     fn kind_of(&self, id: &str) -> NodeKind {
         self.node(id)
             .and_then(|o| read_str(&self.doc, &o, "kind"))
@@ -1096,21 +1143,23 @@ impl Namespace {
 
     /// Walk the parent chain: `true` if it reaches ROOT (visible), `false` if it
     /// hits TRASH, a missing node, or a cycle.
+    /// Whether `id`'s parent chain reaches the root. Walks the structural
+    /// index, which mirrors every node's document parent, instead of
+    /// reading the document once per hop.
     fn reaches_root(&self, id: &str) -> bool {
-        let mut cur = id.to_string();
-        let mut seen = HashSet::new();
+        let mut cur = id;
+        // A chain longer than the tree has nodes is a cycle.
+        let mut hops = self.tree.placement.len().saturating_add(1);
         loop {
             if cur == ROOT_ID {
                 return true;
             }
-            if cur == TRASH_ID {
+            if cur == TRASH_ID || hops == 0 {
                 return false;
             }
-            if !seen.insert(cur.clone()) {
-                return false;
-            }
-            match self.parent_of(&cur) {
-                Some(p) => cur = p,
+            hops = hops.saturating_sub(1);
+            match self.tree.placement.get(cur) {
+                Some((parent, _)) => cur = parent,
                 None => return false,
             }
         }
@@ -1957,18 +2006,21 @@ impl Namespace {
         if id == ROOT_ID {
             return Some("/".to_string());
         }
-        let mut cur = id.to_string();
+        // The structural index holds every node's parent and name.
+        let mut cur = id;
         let mut parts: Vec<String> = Vec::new();
-        let mut seen = HashSet::new();
+        let mut hops = self.tree.placement.len().saturating_add(1);
         loop {
             if cur == ROOT_ID {
                 break;
             }
-            if cur == TRASH_ID || !seen.insert(cur.clone()) {
+            if cur == TRASH_ID || hops == 0 {
                 return None;
             }
-            parts.push(escape_path_name(self.name_of(&cur)?.as_bytes()));
-            cur = self.parent_of(&cur)?;
+            hops = hops.saturating_sub(1);
+            let (parent, name) = self.tree.placement.get(cur)?;
+            parts.push(escape_path_name(name.as_bytes()));
+            cur = parent;
         }
         parts.reverse();
         Some(format!("/{}", parts.join("/")))
@@ -2132,6 +2184,34 @@ impl Namespace {
         Some(Self::attr_for(ino, entry.kind, entry.size, entry.mtime))
     }
 
+    /// [`Self::getattr`] and [`Self::hash_for`] of a live node, reading it
+    /// once.
+    pub(crate) fn attr_and_hash(&self, ino: u64) -> Option<(FileAttr, Option<Hash>)> {
+        let id = self.ino_to_id.get(&ino)?;
+        if id == ROOT_ID {
+            return Some((Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0), None));
+        }
+        if !self.reaches_root(id) {
+            return None;
+        }
+        let e = self.entry(id)?;
+        Some((Self::attr_for(ino, e.kind, e.size, e.mtime), e.hash))
+    }
+
+    /// The inode and kind of `parent_ino`'s live child `name`: what
+    /// [`Self::lookup`] finds, without reading the child's other fields.
+    pub fn lookup_kind(
+        &mut self,
+        parent_ino: u64,
+        name: impl AsRef<[u8]>,
+    ) -> Option<(u64, FileType)> {
+        let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
+        let child = self.child_named(&parent_id, name)?;
+        self.record_id_for_id(&child)?;
+        let kind = self.kind_of(&child).to_file_type();
+        Some((self.ino_for_id(&child), kind))
+    }
+
     pub fn lookup(&mut self, parent_ino: u64, name: impl AsRef<[u8]>) -> Option<FileAttr> {
         let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
         let child = self.child_named(&parent_id, name)?;
@@ -2194,6 +2274,32 @@ impl Namespace {
         size: u64,
         mtime: u64,
     ) -> Option<String> {
+        self.create_node_as(
+            parent_id,
+            name,
+            kind,
+            hash,
+            size,
+            mtime,
+            FileRecordId::new(),
+        )
+    }
+
+    /// [`Self::create_node`] bound to an existing stable `record_id`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every field a new node is written with, once"
+    )]
+    fn create_node_as(
+        &mut self,
+        parent_id: &str,
+        name: impl AsRef<[u8]>,
+        kind: NodeKind,
+        hash: Option<&Hash>,
+        size: u64,
+        mtime: u64,
+        record_id: FileRecordId,
+    ) -> Option<String> {
         let name = name.as_ref();
         let id = self.gen_id();
         let obj = self.doc.put_object(&self.nodes, &id, ObjType::Map).ok()?;
@@ -2207,7 +2313,6 @@ impl Namespace {
         let _ = self.doc.put(&obj, "size", size);
         let _ = self.doc.put(&obj, "mtime", mtime);
         let _ = self.doc.put(&obj, "author", self.author.clone());
-        let record_id = FileRecordId::new();
         let _ = self.doc.put(&obj, RECORD_ID_KEY, record_id.0.to_string());
         self.tree
             .place(&id, parent_id.to_string(), name.to_vec().into());
@@ -2262,6 +2367,66 @@ impl Namespace {
         self.tree.bind_record(&id, record_id);
         let ino = self.ino_for_id(&id);
         self.index_insert_node(&id);
+        Some(ino)
+    }
+
+    /// [`Self::create_projected_file`] whose content is the verified
+    /// `revision`: the node is written with the revision's fields once, not
+    /// created and then updated.
+    pub fn create_projected_file_at_revision(
+        &mut self,
+        parent_ino: u64,
+        name: impl AsRef<[u8]>,
+        revision: &ContentRevisionV1,
+        mtime: u64,
+    ) -> Option<u64> {
+        if self.content_authority != ContentAuthority::SignedRecords {
+            let hash = revision.content_hash.map(|hash| Hash::from(hash.0));
+            let ino = self.create_projected_file(
+                parent_ino,
+                name,
+                revision.record_id,
+                hash.as_ref(),
+                revision.byte_len,
+                mtime,
+            )?;
+            return self
+                .set_content_revision(ino, revision, mtime)
+                .then_some(ino);
+        }
+        let name = name.as_ref();
+        let encoded = revision_to_bytes(revision)?;
+        if revision.record_id.0.is_nil()
+            || name.is_empty()
+            || name == b"."
+            || name == b".."
+            || name.contains(&b'/')
+            || self.ino_for_record_id(revision.record_id).is_some()
+            || self.lookup_kind(parent_ino, name).is_some()
+        {
+            return None;
+        }
+        let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
+        let hash = revision.content_hash.map(|hash| Hash::from(hash.0));
+        let id = self.create_node_as(
+            &parent_id,
+            name,
+            NodeKind::File,
+            hash.as_ref(),
+            revision.byte_len,
+            mtime,
+            revision.record_id,
+        )?;
+        let obj = self.node(&id)?;
+        self.doc
+            .put(&obj, CONTENT_REVISION_KEY, ScalarValue::Bytes(encoded))
+            .ok()?;
+        let ino = self.ino_for_id(&id);
+        self.index_insert_node(&id);
+        if !self.install_verified_content_revision(*revision) {
+            let _ = self.remove(ino);
+            return None;
+        }
         Some(ino)
     }
 
@@ -2590,6 +2755,23 @@ impl Namespace {
             || revision.validate().is_err()
         {
             return false;
+        }
+        // When the document already carries this revision at this time (the
+        // author wrote it, and it arrived with the namespace; or it is being
+        // projected again), verifying it here is all that is left: writing
+        // the same fields again would only add document operations that
+        // every peer then has to sync. Concurrent values (two devices
+        // projected their own heads while apart) are not carried: writing
+        // the winner resolves them, as a namespace conflict copy would
+        // otherwise surface the loser.
+        if self.content_authority == ContentAuthority::SignedRecords
+            && self.raw_content_revision_for_id(&id) == Some(*revision)
+            && !self.has_concurrent_content(&id)
+            && self
+                .node(&id)
+                .is_some_and(|obj| read_u64(&self.doc, &obj, "mtime") == mtime)
+        {
+            return self.install_verified_content_revision(*revision);
         }
         if self.content_authority == ContentAuthority::SignedRecords
             && !self.install_verified_content_revision(*revision)
@@ -2936,6 +3118,18 @@ impl Namespace {
                 .collect(),
             Err(_) => Vec::new(),
         }
+    }
+
+    /// Whether the node's content hash or revision holds concurrent values.
+    fn has_concurrent_content(&self, id: &str) -> bool {
+        let Some(obj) = self.node(id) else {
+            return false;
+        };
+        [CONTENT_REVISION_KEY, "hash"].into_iter().any(|key| {
+            self.doc
+                .get_all(&obj, key)
+                .is_ok_and(|values| values.len() > 1)
+        })
     }
 
     /// Concurrent atomic revision values for a node. Cross-record or malformed
@@ -3590,6 +3784,30 @@ mod tests {
         peer.apply_remote_and_resolve(&delta).unwrap();
         assert!(peer.lookup(ROOT_INO, name).is_none());
         assert!(peer.lookup(ROOT_INO, renamed).is_some());
+    }
+
+    #[test]
+    fn a_batch_of_changes_is_one_delta_even_across_a_full_save() {
+        let mut source = Namespace::new("source").unwrap();
+        source.create_file(ROOT_INO, "before", None, 0, 1).unwrap();
+        let mut peer = Namespace::from_bytes("peer", &source.save()).unwrap();
+        // A change nobody took yet leads the batch.
+        source.create_file(ROOT_INO, "pending", None, 0, 1).unwrap();
+        source.begin_incremental_batch();
+        source.create_file(ROOT_INO, "one", None, 0, 2).unwrap();
+        assert!(
+            source.save_incremental().is_empty(),
+            "no delta inside a batch"
+        );
+        // Persisting the document meanwhile moves the incremental cursor.
+        let _ = source.save();
+        source.create_file(ROOT_INO, "two", None, 0, 3).unwrap();
+        let delta = source.end_incremental_batch();
+        peer.apply_remote_and_resolve(&delta).unwrap();
+        for name in ["pending", "one", "two"] {
+            assert!(peer.lookup(ROOT_INO, name).is_some(), "{name} arrived");
+        }
+        assert!(source.save_incremental().is_empty(), "the batch was taken");
     }
 
     #[test]
