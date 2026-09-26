@@ -1264,10 +1264,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # read the OS appearance the compositor mirrors into
 # org.gnome.desktop.interface; without the dconf backend GSettings falls back
 # to an in-memory store and every host app keeps its own defaults.
+# `xdg-utils` gives host apps `xdg-open`/`xdg-mime`, which read the
+# tilo-mimeapps.list the compositor publishes; `xdg-user-dirs` names the
+# Documents/Downloads/… folders host apps expect.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     xdg-desktop-portal \
     dconf \
     gsettings-desktop-schemas \
+    xdg-utils \
+    xdg-user-dirs \
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # ---------------------------------------------------------------------------
