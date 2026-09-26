@@ -22,3 +22,6 @@ mod two_sessions_one_document;
 
 #[path = "headless_launch.rs"]
 mod headless_launch;
+
+#[path = "framework_host.rs"]
+mod framework_host;

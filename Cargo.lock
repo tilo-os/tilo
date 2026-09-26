@@ -305,6 +305,7 @@ dependencies = [
  "tilo-content",
  "tilo-model-gateway",
  "tilo-reference",
+ "tilo-resource",
  "tilo-user-identity",
  "tracing",
  "tracing-subscriber",
@@ -10720,6 +10721,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-automerge",
  "tilo-content",
+ "tilo-resource",
  "tracing",
 ]
 
@@ -10749,6 +10751,21 @@ dependencies = [
  "image",
  "qdoc",
  "tilo-content",
+]
+
+[[package]]
+name = "qdoc-rich-text"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "qdoc",
+ "qdoc-codecs",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-content",
+ "tilo-resource",
+ "url",
 ]
 
 [[package]]
@@ -12705,6 +12722,7 @@ dependencies = [
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-resource",
  "tilo-rt",
  "tilo-seal",
  "tilo-startup-metrics",
@@ -14658,6 +14676,7 @@ dependencies = [
  "tilo-font-catalog",
  "tilo-headless-schema",
  "tilo-host",
+ "tilo-resource",
  "tilo-rt",
  "tilo-seal",
  "tilo-startup-metrics",
@@ -17817,6 +17836,7 @@ dependencies = [
  "qdoc",
  "qdoc-codecs",
  "qdoc-pdf",
+ "qdoc-rich-text",
  "regex",
  "runtime-dylib",
  "serde",

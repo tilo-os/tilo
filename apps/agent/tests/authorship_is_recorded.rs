@@ -22,7 +22,7 @@
 )]
 
 use automerge::AutoCommit;
-use word_processor::actions::{RegionKind, WordProcessorAction};
+use word_processor::actions::{RegionKind, RichTextAction};
 
 const AGENT: &str = "Claude";
 const PERSON: &str = "quinten";
@@ -63,7 +63,7 @@ fn what_the_agent_wrote_carries_its_name_in_the_document() {
 
     let note = " The bullet says 18:00.";
     editor
-        .apply(&WordProcessorAction::SpliceText {
+        .apply(&RichTextAction::SpliceText {
             region: RegionKind::Body,
             block: block.clone(),
             at: "Doors at seven.".chars().count(),
@@ -113,7 +113,7 @@ fn the_sentence_the_person_typed_is_left_alone() {
     let mut editor =
         tilo_agent::apply::Editor::from_snapshot(&bytes, AGENT).expect("seed the replica");
     editor
-        .apply(&WordProcessorAction::SpliceText {
+        .apply(&RichTextAction::SpliceText {
             region: RegionKind::Body,
             block: block.clone(),
             at: "Doors at seven.".chars().count(),
@@ -147,7 +147,7 @@ fn a_page_nobody_attributed_stays_unattributed() {
         tilo_agent::apply::Editor::from_snapshot(&bytes, AGENT).expect("seed the replica");
     // An edit that removes text authors nothing.
     editor
-        .apply(&WordProcessorAction::SpliceText {
+        .apply(&RichTextAction::SpliceText {
             region: RegionKind::Body,
             block: block.clone(),
             at: 0,
