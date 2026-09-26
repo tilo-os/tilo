@@ -457,6 +457,15 @@ jobs:
           bash scripts/ci-run.sh "cargo check (tilo-ui without native)" --
           cargo check --locked -p tilo-ui --no-default-features --lib
 
+      # `tilo-app` turns every OS affordance on by default; a headless tool
+      # opts out with `default-features = false`. Keep that opt-out compiling.
+      - name: Check the headless app framework build
+        if: contains(format('{0} ', matrix.packages), '-p tilo-app ')
+        run: >-
+          bash tools/ci/measure.sh "check headless tilo-app" --
+          bash scripts/ci-run.sh "cargo check (tilo-app without default features)" --
+          cargo check --locked -p tilo-app --no-default-features --lib
+
       - name: Save observed compiler inputs
         if: always()
         continue-on-error: true
