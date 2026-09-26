@@ -71,6 +71,7 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::idle_inhibit::{IdleInhibitHandler, IdleInhibitManagerState};
+use smithay::wayland::xdg_toplevel_icon::{XdgToplevelIconHandler, XdgToplevelIconManager};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::wayland::xdg_activation::{
@@ -83,7 +84,7 @@ use smithay::{
     delegate_pointer_gestures, delegate_relative_pointer, delegate_primary_selection,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
-    delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
+    delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell, delegate_xdg_toplevel_icon,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -551,6 +552,9 @@ pub struct State {
     pub idle_inhibit_manager: IdleInhibitManagerState,
     /// Live idle inhibitors and the registry holds their visible windows earn; see [`crate::compositor::idle_inhibit`].
     pub idle_inhibitors: crate::compositor::idle_inhibit::IdleInhibitors,
+    /// `xdg_toplevel_icon_manager_v1` — a window naming or drawing its own
+    /// icon for its tab; see [`crate::compositor::toplevel_icon`].
+    pub toplevel_icon_manager: XdgToplevelIconManager,
     /// Current display scale factor (`HiDPI`), sent to clients as the
     /// preferred `wp_fractional_scale`. Read once at session start from the
     /// shared settings store (`display.scale`), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
@@ -948,6 +952,7 @@ impl State {
         let fractional_scale_manager = FractionalScaleManagerState::new::<Self>(&display_handle);
         let viewporter = ViewporterState::new::<Self>(&display_handle);
         let idle_inhibit_manager = IdleInhibitManagerState::new::<Self>(&display_handle);
+        let toplevel_icon_manager = crate::compositor::toplevel_icon::manager(&display_handle);
         let (session_lock_state, output_management) = Self::privileged_globals(&display_handle);
         // Read the persisted display scale from the shared settings store so the compositor advertises what the Settings app wrote.
         let scale = load_display_scale();
@@ -1003,6 +1008,7 @@ impl State {
             viewporter,
             idle_inhibit_manager,
             idle_inhibitors: crate::compositor::idle_inhibit::IdleInhibitors::default(),
+            toplevel_icon_manager,
             scale,
             output_layout: Vec::new(),
             output_sizes: HashMap::new(),
@@ -3081,6 +3087,9 @@ impl CompositorHandler for State {
         });
         let session_scale = self.scale;
         self.client_cursor.surface_committed(surface, session_scale);
+        if crate::compositor::toplevel_icon::sync(surface, surface_id) {
+            tab_binding::note_tab_artwork_changed(&mut self.workspace_tree.write());
+        }
 
         // Pull the surface's buffer into [`SurfaceTracker`] iff shared on any [`WorkspaceTree`] workspace; most aren't, so `is_surface_shared` short-circuits first.
         let is_shared = {
@@ -4112,6 +4121,7 @@ impl XdgShellHandler for State {
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         crate::shell::launcher::forget_surface_launch(surface_id);
         self.release_sheets_of_destroyed(surface_id);
+        crate::compositor::toplevel_icon::forget(surface_id);
         if self.osk_surface == Some(surface_id) {
             self.osk_surface = None;
         }
@@ -4632,6 +4642,10 @@ delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);
 delegate_idle_inhibit!(State);
+delegate_xdg_toplevel_icon!(State);
+
+/// The icon is double-buffered: it is read on the surface's next commit.
+impl XdgToplevelIconHandler for State {}
 
 impl IdleInhibitHandler for State {
     fn inhibit(&mut self, surface: WlSurface) {

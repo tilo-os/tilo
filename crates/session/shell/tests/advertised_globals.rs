@@ -153,6 +153,16 @@ fn the_idle_inhibit_global_is_advertised() {
     );
 }
 
+/// Windows no desktop entry describes set their own tab icon through it.
+#[test]
+fn the_toplevel_icon_global_is_advertised() {
+    let globals = advertised_globals();
+    assert!(
+        globals.iter().any(|g| g == "xdg_toplevel_icon_manager_v1"),
+        "xdg_toplevel_icon_manager_v1 is not advertised. Advertised: {globals:?}"
+    );
+}
+
 /// Keep this check separate so its failure identifies the clipboard global.
 #[test]
 fn the_clipboard_global_is_advertised() {

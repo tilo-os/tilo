@@ -1440,6 +1440,23 @@ impl TestControlConn {
     }
 }
 
+/// Every window tab with artwork, across all workspaces, as the pill paints it.
+fn tab_icons_json(tree: &crate::shell::state::WorkspaceTree) -> serde_json::Value {
+    let rows: Vec<serde_json::Value> = tree
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .filter_map(|tab| {
+            let icon = crate::app_icons::for_tile(&tab.tile)?;
+            Some(serde_json::json!({ "tab": tab.id, "icon": icon.key() }))
+        })
+        .collect();
+    serde_json::Value::Array(rows)
+}
+
 /// `ControlState` impl walking the frame builder. Captures a fresh snapshot
 /// per `widget_registry()` call, so dispatch sees the live tree, uncached.
 struct FrameBuilderControlState<'a> {
@@ -1846,6 +1863,10 @@ impl ControlState for FrameBuilderControlState<'_> {
     /// manually rather than `derive(Serialize)` because the chrome owns
     /// `Rc<RefCell<…>>` widget handles that can't sensibly serialise; this also
     /// lets fields like `search_scope` pick a wire-friendly enum-as-string form.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one flat JSON literal with a line per dumped chrome field"
+    )]
     fn chrome_state_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         let overlays = &chrome.overlays;
@@ -1865,6 +1886,9 @@ impl ControlState for FrameBuilderControlState<'_> {
             "search_scope": format!("{:?}", chrome.search_scope),
             // Applications' status-notifier items and their menus, as the top bar shows them.
             "tray": crate::tray::Tray::global().state_json(),
+            // Each tab pill's artwork: `toplevel:` when the window set its
+            // own, `theme:` for its application's icon.
+            "tab_icons": tab_icons_json(&chrome.tree()),
             // Nested resource search is a visible place in the palette, not
             // merely provider-internal state. Expose the authenticated route
             // and label so agents and accessibility tooling can tell exactly
@@ -11002,6 +11026,54 @@ mod tests {
                 "overlays should carry boolean `{key}`; got {overlays:?}"
             );
         }
+    }
+
+    /// A window that set its own icon reports it as its tab's artwork.
+    #[test]
+    fn state_dump_reports_the_artwork_each_window_tab_paints() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let surface = 0x51c0_0001;
+        let mut tab = 0;
+        fb.with_chrome(|chrome| {
+            tab = crate::shell::tab_binding::adopt_toplevel(
+                &mut chrome.tree_mut(),
+                surface,
+                Some("org.example.UnlistedGame".into()),
+            );
+            chrome.bump();
+        });
+        let pixels = vello::peniko::ImageData {
+            data: vello::peniko::Blob::new(std::sync::Arc::new(vec![0; 16 * 16 * 4])),
+            format: vello::peniko::ImageFormat::Rgba8,
+            alpha_type: vello::peniko::ImageAlphaType::AlphaPremultiplied,
+            width: 16,
+            height: 16,
+        };
+        crate::compositor::toplevel_icon::set(
+            surface,
+            1,
+            Some(crate::compositor::toplevel_icon::ToplevelIcon::Pixels(
+                std::sync::Arc::new(vec![pixels]),
+            )),
+        );
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+            lock: None,
+        };
+        let icons = state.chrome_state_json()["tab_icons"].clone();
+        crate::compositor::toplevel_icon::forget(surface);
+        let row = icons
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["tab"] == tab))
+            .unwrap_or_else(|| panic!("the window's tab reports artwork: {icons}"));
+        assert!(
+            row["icon"]
+                .as_str()
+                .is_some_and(|key| key.starts_with(&format!("toplevel:{surface}:"))),
+            "{row}"
+        );
     }
 
     #[test]

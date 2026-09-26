@@ -231,12 +231,23 @@ pub fn open_in_group(path: &Path, chrome: &Chrome, group: GroupId) -> Result<Ope
     open_at(path, chrome, Placement::TabIn(group))
 }
 
+fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Opened, OpenError> {
+    let opened = open_resolved(path, chrome, placement)?;
+    // Host applications' file choosers list what the person opened here.
+    crate::shell::recent_files::note_opened(path);
+    Ok(opened)
+}
+
 #[allow(
     clippy::significant_drop_tightening,
     reason = "guard's only use is the borrow passed into resolve_for, released \
               immediately after; nothing to tighten without cloning workspace policy"
 )]
-fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Opened, OpenError> {
+fn open_resolved(
+    path: &Path,
+    chrome: &Chrome,
+    placement: Option<Placement>,
+) -> Result<Opened, OpenError> {
     // The guard feeds `resolve_for`'s `workspace_defaults` borrow directly
     // and the block ends the moment that call returns; cloning the policy
     // map out just to drop the guard a statement earlier would cost more
