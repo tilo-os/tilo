@@ -1048,183 +1048,184 @@ mod tests {
     }
 
     #[test]
-    fn state_and_prefix_are_separate_and_q_is_managed() {
-        let directory = TempDir::new().unwrap();
-        let store = CapsuleStore::new(directory.path()).unwrap();
-        let state = store.ensure_for_plan(&plan()).unwrap();
-        assert!(store.load(&state.id).unwrap().is_some());
-        assert!(store.prefix_path(&state.id).join("drive_c").is_dir());
-        assert_eq!(
-            fs::read_link(store.prefix_path(&state.id).join("dosdevices/c:")).unwrap(),
-            PathBuf::from("../drive_c")
-        );
-        assert_eq!(
-            fs::read_link(store.prefix_path(&state.id).join("dosdevices/q:")).unwrap(),
-            PathBuf::from(SANDBOX_FILES_ROOT)
-        );
-        assert!(!store.prefix_path(&state.id).join("state.json").exists());
-    }
-
-    #[test]
-    fn missing_c_mapping_is_repaired_without_changing_prefix_content() {
-        let directory = TempDir::new().unwrap();
-        let store = CapsuleStore::new(directory.path()).unwrap();
-        let state = store.ensure_for_plan(&plan()).unwrap();
-        let prefix = store.prefix_path(&state.id);
-        fs::write(prefix.join("drive_c/document.txt"), "retained").unwrap();
-        fs::remove_file(prefix.join("dosdevices/c:")).unwrap();
-        store.ensure_for_plan(&plan()).unwrap();
-        assert_eq!(
-            fs::read_link(prefix.join("dosdevices/c:")).unwrap(),
-            PathBuf::from("../drive_c")
-        );
-        assert_eq!(
-            fs::read_to_string(prefix.join("drive_c/document.txt")).unwrap(),
-            "retained"
-        );
-    }
-
-    #[test]
-    fn replaced_c_mapping_is_rejected_without_overwriting_it() {
-        for replacement in ["symlink", "file", "directory"] {
+    fn prefix_state_and_c_mappings_are_managed_without_following_links() {
+        // Phase `state_and_prefix_are_separate_and_q_is_managed`.
+        {
             let directory = TempDir::new().unwrap();
             let store = CapsuleStore::new(directory.path()).unwrap();
             let state = store.ensure_for_plan(&plan()).unwrap();
-            let mapping = store.prefix_path(&state.id).join("dosdevices/c:");
-            fs::remove_file(&mapping).unwrap();
-            match replacement {
-                "symlink" => symlink("/outside", &mapping).unwrap(),
-                "file" => fs::write(&mapping, "retained").unwrap(),
-                _ => fs::create_dir(&mapping).unwrap(),
+            assert!(store.load(&state.id).unwrap().is_some());
+            assert!(store.prefix_path(&state.id).join("drive_c").is_dir());
+            assert_eq!(
+                fs::read_link(store.prefix_path(&state.id).join("dosdevices/c:")).unwrap(),
+                PathBuf::from("../drive_c")
+            );
+            assert_eq!(
+                fs::read_link(store.prefix_path(&state.id).join("dosdevices/q:")).unwrap(),
+                PathBuf::from(SANDBOX_FILES_ROOT)
+            );
+            assert!(!store.prefix_path(&state.id).join("state.json").exists());
+        }
+        // Phase `missing_c_mapping_is_repaired_without_changing_prefix_content`.
+        {
+            let directory = TempDir::new().unwrap();
+            let store = CapsuleStore::new(directory.path()).unwrap();
+            let state = store.ensure_for_plan(&plan()).unwrap();
+            let prefix = store.prefix_path(&state.id);
+            fs::write(prefix.join("drive_c/document.txt"), "retained").unwrap();
+            fs::remove_file(prefix.join("dosdevices/c:")).unwrap();
+            store.ensure_for_plan(&plan()).unwrap();
+            assert_eq!(
+                fs::read_link(prefix.join("dosdevices/c:")).unwrap(),
+                PathBuf::from("../drive_c")
+            );
+            assert_eq!(
+                fs::read_to_string(prefix.join("drive_c/document.txt")).unwrap(),
+                "retained"
+            );
+        }
+        // Phase `replaced_c_mapping_is_rejected_without_overwriting_it`.
+        {
+            for replacement in ["symlink", "file", "directory"] {
+                let directory = TempDir::new().unwrap();
+                let store = CapsuleStore::new(directory.path()).unwrap();
+                let state = store.ensure_for_plan(&plan()).unwrap();
+                let mapping = store.prefix_path(&state.id).join("dosdevices/c:");
+                fs::remove_file(&mapping).unwrap();
+                match replacement {
+                    "symlink" => symlink("/outside", &mapping).unwrap(),
+                    "file" => fs::write(&mapping, "retained").unwrap(),
+                    _ => fs::create_dir(&mapping).unwrap(),
+                }
+                assert!(matches!(
+                    store.ensure_for_plan(&plan()),
+                    Err(CapsuleError::ManagedDriveCollision("C:"))
+                ));
+                match replacement {
+                    "symlink" => {
+                        assert_eq!(fs::read_link(&mapping).unwrap(), Path::new("/outside"));
+                    }
+                    "file" => assert_eq!(fs::read_to_string(&mapping).unwrap(), "retained"),
+                    _ => assert!(mapping.is_dir()),
+                }
             }
+        }
+        // Phase `symlinked_c_directory_is_rejected_without_touching_its_target`.
+        {
+            let directory = TempDir::new().unwrap();
+            let outside = TempDir::new().unwrap();
+            fs::write(outside.path().join("value"), "retained").unwrap();
+            let store = CapsuleStore::new(directory.path()).unwrap();
+            let state = store.ensure_for_plan(&plan()).unwrap();
+            let drive = store.prefix_path(&state.id).join("drive_c");
+            fs::remove_dir(&drive).unwrap();
+            symlink(outside.path(), &drive).unwrap();
+            assert!(store.ensure_for_plan(&plan()).is_err());
+            assert_eq!(
+                fs::read_to_string(outside.path().join("value")).unwrap(),
+                "retained"
+            );
+            assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
+        }
+        // Phase `executable_cannot_escape_prefix`.
+        {
+            let program = CapsuleProgram {
+                id: "bad".to_string(),
+                display_name: "Bad".to_string(),
+                prefix_relative_executable: PathBuf::from("../host.exe"),
+                query: ApplicationQuery::default(),
+                kind: ProgramKind::Application,
+                arguments: Vec::new(),
+            };
             assert!(matches!(
-                store.ensure_for_plan(&plan()),
-                Err(CapsuleError::ManagedDriveCollision("C:"))
+                program.validate(),
+                Err(CapsuleError::InvalidExecutable)
             ));
-            match replacement {
-                "symlink" => assert_eq!(fs::read_link(&mapping).unwrap(), Path::new("/outside")),
-                "file" => assert_eq!(fs::read_to_string(&mapping).unwrap(), "retained"),
-                _ => assert!(mapping.is_dir()),
-            }
         }
     }
 
     #[test]
-    fn symlinked_c_directory_is_rejected_without_touching_its_target() {
-        let directory = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-        fs::write(outside.path().join("value"), "retained").unwrap();
-        let store = CapsuleStore::new(directory.path()).unwrap();
-        let state = store.ensure_for_plan(&plan()).unwrap();
-        let drive = store.prefix_path(&state.id).join("drive_c");
-        fs::remove_dir(&drive).unwrap();
-        symlink(outside.path(), &drive).unwrap();
-        assert!(store.ensure_for_plan(&plan()).is_err());
-        assert_eq!(
-            fs::read_to_string(outside.path().join("value")).unwrap(),
-            "retained"
-        );
-        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
-    }
+    fn capsule_state_saves_migrations_and_installers_are_exact() {
+        // Phase `recipe_changes_need_explicit_migration`.
+        {
+            let directory = TempDir::new().unwrap();
+            let store = CapsuleStore::new(directory.path()).unwrap();
+            store.ensure_for_plan(&plan()).unwrap();
+            let mut changed = plan();
+            changed.runner = Runner::new("wine", "12.0").unwrap();
+            assert!(matches!(
+                store.ensure_for_plan(&changed),
+                Err(CapsuleError::RecipeChanged(_))
+            ));
+        }
+        // Phase `symlinked_capsule_directory_is_rejected_before_state_or_prefix_access`.
+        {
+            let root = TempDir::new().unwrap();
+            let outside = TempDir::new().unwrap();
+            let store = CapsuleStore::new(root.path()).unwrap();
+            fs::create_dir(root.path().join("capsules")).unwrap();
+            symlink(outside.path(), root.path().join("capsules/example")).unwrap();
 
-    #[test]
-    fn executable_cannot_escape_prefix() {
-        let program = CapsuleProgram {
-            id: "bad".to_string(),
-            display_name: "Bad".to_string(),
-            prefix_relative_executable: PathBuf::from("../host.exe"),
-            query: ApplicationQuery::default(),
-            kind: ProgramKind::Application,
-            arguments: Vec::new(),
-        };
-        assert!(matches!(
-            program.validate(),
-            Err(CapsuleError::InvalidExecutable)
-        ));
-    }
+            assert!(store.load("example").is_err());
+            assert!(store.ensure_for_plan(&plan()).is_err());
+            assert!(
+                !outside.path().join("data/prefix").exists(),
+                "managed path preparation must not follow the attacker symlink"
+            );
+        }
+        // Phase `saving_replaces_a_state_symlink_without_touching_its_target`.
+        {
+            let root = TempDir::new().unwrap();
+            let outside = root.path().join("outside.json");
+            let store = CapsuleStore::new(root.path()).unwrap();
+            let state = store.ensure_for_plan(&plan()).unwrap();
+            fs::write(&outside, "outside stays intact").unwrap();
+            let state_path = store.capsule_dir(&state.id).join("state.json");
+            fs::remove_file(&state_path).unwrap();
+            symlink(&outside, &state_path).unwrap();
 
-    #[test]
-    fn recipe_changes_need_explicit_migration() {
-        let directory = TempDir::new().unwrap();
-        let store = CapsuleStore::new(directory.path()).unwrap();
-        store.ensure_for_plan(&plan()).unwrap();
-        let mut changed = plan();
-        changed.runner = Runner::new("wine", "12.0").unwrap();
-        assert!(matches!(
-            store.ensure_for_plan(&changed),
-            Err(CapsuleError::RecipeChanged(_))
-        ));
-    }
+            store.save(&state).unwrap();
+            assert_eq!(
+                fs::read_to_string(&outside).unwrap(),
+                "outside stays intact"
+            );
+            assert!(
+                fs::symlink_metadata(&state_path)
+                    .unwrap()
+                    .file_type()
+                    .is_file()
+            );
+            assert!(store.load(&state.id).unwrap().is_some());
+        }
+        // Phase `staged_installer_must_match_the_bytes_that_were_inspected`.
+        {
+            let directory = TempDir::new().unwrap();
+            let store = CapsuleStore::new(directory.path()).unwrap();
+            let state = store.ensure_for_plan(&plan()).unwrap();
+            let mut selected = tempfile::NamedTempFile::new().unwrap();
+            let mut pe = vec![0_u8; 0x200];
+            pe[..2].copy_from_slice(b"MZ");
+            pe[0x3c..0x40].copy_from_slice(&0x80_u32.to_le_bytes());
+            pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+            pe[0x84..0x86].copy_from_slice(&0x8664_u16.to_le_bytes());
+            selected.write_all(&pe).unwrap();
+            selected.flush().unwrap();
+            let mut source = selected.reopen().unwrap();
+            let inspected = crate::inspect_installer(&mut source, "favorite.exe").unwrap();
 
-    #[test]
-    fn symlinked_capsule_directory_is_rejected_before_state_or_prefix_access() {
-        let root = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-        let store = CapsuleStore::new(root.path()).unwrap();
-        fs::create_dir(root.path().join("capsules")).unwrap();
-        symlink(outside.path(), root.path().join("capsules/example")).unwrap();
-
-        assert!(store.load("example").is_err());
-        assert!(store.ensure_for_plan(&plan()).is_err());
-        assert!(
-            !outside.path().join("data/prefix").exists(),
-            "managed path preparation must not follow the attacker symlink"
-        );
-    }
-
-    #[test]
-    fn saving_replaces_a_state_symlink_without_touching_its_target() {
-        let root = TempDir::new().unwrap();
-        let outside = root.path().join("outside.json");
-        let store = CapsuleStore::new(root.path()).unwrap();
-        let state = store.ensure_for_plan(&plan()).unwrap();
-        fs::write(&outside, "outside stays intact").unwrap();
-        let state_path = store.capsule_dir(&state.id).join("state.json");
-        fs::remove_file(&state_path).unwrap();
-        symlink(&outside, &state_path).unwrap();
-
-        store.save(&state).unwrap();
-        assert_eq!(
-            fs::read_to_string(&outside).unwrap(),
-            "outside stays intact"
-        );
-        assert!(
-            fs::symlink_metadata(&state_path)
-                .unwrap()
-                .file_type()
-                .is_file()
-        );
-        assert!(store.load(&state.id).unwrap().is_some());
-    }
-
-    #[test]
-    fn staged_installer_must_match_the_bytes_that_were_inspected() {
-        let directory = TempDir::new().unwrap();
-        let store = CapsuleStore::new(directory.path()).unwrap();
-        let state = store.ensure_for_plan(&plan()).unwrap();
-        let mut selected = tempfile::NamedTempFile::new().unwrap();
-        let mut pe = vec![0_u8; 0x200];
-        pe[..2].copy_from_slice(b"MZ");
-        pe[0x3c..0x40].copy_from_slice(&0x80_u32.to_le_bytes());
-        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
-        pe[0x84..0x86].copy_from_slice(&0x8664_u16.to_le_bytes());
-        selected.write_all(&pe).unwrap();
-        selected.flush().unwrap();
-        let mut source = selected.reopen().unwrap();
-        let inspected = crate::inspect_installer(&mut source, "favorite.exe").unwrap();
-
-        selected.as_file_mut().seek(SeekFrom::Start(0x100)).unwrap();
-        selected.as_file_mut().write_all(b"changed").unwrap();
-        selected.as_file_mut().flush().unwrap();
-        assert!(matches!(
-            store.copy_installer(
-                &state.id,
-                &mut source,
-                &inspected.sha256,
-                InstallerKind::Exe,
-                crate::MAX_INSTALLER_BYTES,
-            ),
-            Err(CapsuleError::InstallerChanged)
-        ));
+            selected.as_file_mut().seek(SeekFrom::Start(0x100)).unwrap();
+            selected.as_file_mut().write_all(b"changed").unwrap();
+            selected.as_file_mut().flush().unwrap();
+            assert!(matches!(
+                store.copy_installer(
+                    &state.id,
+                    &mut source,
+                    &inspected.sha256,
+                    InstallerKind::Exe,
+                    crate::MAX_INSTALLER_BYTES,
+                ),
+                Err(CapsuleError::InstallerChanged)
+            ));
+        }
     }
 }

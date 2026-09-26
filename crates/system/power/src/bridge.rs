@@ -141,47 +141,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn signals_round_trip_once() {
-        let b = PowerBridge::new();
-        b.push_signal(PowerSignal::Lock);
-        b.push_signal(PowerSignal::Notify(PowerNotification {
-            summary: "Battery low".into(),
-            body: "12% remaining".into(),
-            critical: false,
-        }));
-        assert_eq!(b.pending_signals(), 2);
-        let drained = b.drain_signals();
-        assert_eq!(drained.len(), 2);
-        assert_eq!(drained[0], PowerSignal::Lock);
-        // Draining empties the queue.
-        assert!(b.drain_signals().is_empty());
-    }
-
-    #[test]
-    fn commands_round_trip_once() {
-        let b = PowerBridge::new();
-        b.request_suspend();
-        assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
-        assert!(b.drain_commands().is_empty());
-    }
-
-    #[test]
-    fn clones_share_the_mailbox() {
-        let a = PowerBridge::new();
-        let b = a.clone();
-        a.request_suspend();
-        // Command pushed on `a` is visible to `b`.
-        assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
-    }
-
-    #[test]
-    fn policy_updates_cross_the_bridge_without_stringly_state() {
-        let bridge = PowerBridge::new();
-        let policy = PowerPolicy::default();
-        bridge.update_policy(policy);
-        assert_eq!(
-            bridge.drain_commands(),
-            vec![PowerCommand::UpdatePolicy(policy)]
-        );
+    fn the_bridge_delivers_signals_commands_and_policy_once_to_shared_mailboxes() {
+        // Phase `signals_round_trip_once`.
+        {
+            let b = PowerBridge::new();
+            b.push_signal(PowerSignal::Lock);
+            b.push_signal(PowerSignal::Notify(PowerNotification {
+                summary: "Battery low".into(),
+                body: "12% remaining".into(),
+                critical: false,
+            }));
+            assert_eq!(b.pending_signals(), 2);
+            let drained = b.drain_signals();
+            assert_eq!(drained.len(), 2);
+            assert_eq!(drained[0], PowerSignal::Lock);
+            // Draining empties the queue.
+            assert!(b.drain_signals().is_empty());
+        }
+        // Phase `commands_round_trip_once`.
+        {
+            let b = PowerBridge::new();
+            b.request_suspend();
+            assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
+            assert!(b.drain_commands().is_empty());
+        }
+        // Phase `clones_share_the_mailbox`.
+        {
+            let a = PowerBridge::new();
+            let b = a.clone();
+            a.request_suspend();
+            // Command pushed on `a` is visible to `b`.
+            assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
+        }
+        // Phase `policy_updates_cross_the_bridge_without_stringly_state`.
+        {
+            let bridge = PowerBridge::new();
+            let policy = PowerPolicy::default();
+            bridge.update_policy(policy);
+            assert_eq!(
+                bridge.drain_commands(),
+                vec![PowerCommand::UpdatePolicy(policy)]
+            );
+        }
     }
 }

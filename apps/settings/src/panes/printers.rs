@@ -935,42 +935,46 @@ mod tests {
         }
     }
 
+    /// Printer actions reach one typed backend and removal needs a second action.
     #[test]
-    fn actions_reach_one_typed_backend() {
-        let service = Arc::new(RecordingService::new());
-        let mut pane = PrintersPane::with_service(service.clone());
-        let mut doc = AutoCommit::new();
-        doc.put(&automerge::ROOT, "settings.printers.default.office", true)
+    fn printer_actions_use_one_backend_and_confirm_removal() {
+        // Case `actions_reach_one_typed_backend`.
+        {
+            let service = Arc::new(RecordingService::new());
+            let mut pane = PrintersPane::with_service(service.clone());
+            let mut doc = AutoCommit::new();
+            doc.put(&automerge::ROOT, "settings.printers.default.office", true)
+                .unwrap();
+            doc.put(
+                &automerge::ROOT,
+                "settings.printers.job.cancel.office_42",
+                true,
+            )
             .unwrap();
-        doc.put(
-            &automerge::ROOT,
-            "settings.printers.job.cancel.office_42",
-            true,
-        )
-        .unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            service.calls.lock().unwrap().as_slice(),
-            ["default:Office", "cancel:Office-42"]
-        );
-    }
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(
+                service.calls.lock().unwrap().as_slice(),
+                ["default:Office", "cancel:Office-42"]
+            );
+        }
 
-    #[test]
-    fn remove_requires_a_second_explicit_action() {
-        let service = Arc::new(RecordingService::new());
-        let mut pane = PrintersPane::with_service(service.clone());
-        let mut doc = AutoCommit::new();
-        doc.put(&automerge::ROOT, "settings.printers.remove.office", true)
+        // Case `remove_requires_a_second_explicit_action`.
+        {
+            let service = Arc::new(RecordingService::new());
+            let mut pane = PrintersPane::with_service(service.clone());
+            let mut doc = AutoCommit::new();
+            doc.put(&automerge::ROOT, "settings.printers.remove.office", true)
+                .unwrap();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert!(service.calls.lock().unwrap().is_empty());
+            doc.put(
+                &automerge::ROOT,
+                "settings.printers.confirm_remove.office",
+                true,
+            )
             .unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert!(service.calls.lock().unwrap().is_empty());
-        doc.put(
-            &automerge::ROOT,
-            "settings.printers.confirm_remove.office",
-            true,
-        )
-        .unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(service.calls.lock().unwrap().as_slice(), ["remove:Office"]);
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(service.calls.lock().unwrap().as_slice(), ["remove:Office"]);
+        }
     }
 }

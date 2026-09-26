@@ -269,115 +269,113 @@ mod tests {
     use super::*;
 
     #[test]
-    fn projection_freezes_while_paused_and_advances_while_playing() {
-        let paused = TransportState {
-            playing: false,
-            position_ms: 4_000,
-            rate: 1.0,
-            epoch_ms: 10_000,
-        };
-        assert_eq!(
-            paused.projected_position(99_999),
-            4_000,
-            "paused playhead is frozen"
-        );
+    fn transport_projects_drifts_and_syncs_through_the_crdt() {
+        // Phase `projection_freezes_while_paused_and_advances_while_playing`.
+        {
+            let paused = TransportState {
+                playing: false,
+                position_ms: 4_000,
+                rate: 1.0,
+                epoch_ms: 10_000,
+            };
+            assert_eq!(
+                paused.projected_position(99_999),
+                4_000,
+                "paused playhead is frozen"
+            );
 
-        let playing = TransportState {
-            playing: true,
-            position_ms: 4_000,
-            rate: 1.0,
-            epoch_ms: 10_000,
-        };
-        // 2.5s of wall-clock since epoch → +2500ms.
-        assert_eq!(playing.projected_position(12_500), 6_500);
-    }
+            let playing = TransportState {
+                playing: true,
+                position_ms: 4_000,
+                rate: 1.0,
+                epoch_ms: 10_000,
+            };
+            // 2.5s of wall-clock since epoch → +2500ms.
+            assert_eq!(playing.projected_position(12_500), 6_500);
+        }
+        // Phase `projection_honours_rate`.
+        {
+            let fast = TransportState {
+                playing: true,
+                position_ms: 0,
+                rate: 2.0,
+                epoch_ms: 0,
+            };
+            assert_eq!(
+                fast.projected_position(1_000),
+                2_000,
+                "2x rate doubles the advance"
+            );
+        }
+        // Phase `small_drift_stays_in_sync_large_drift_seeks`.
+        {
+            // 400ms gap < 500ms threshold → ride it.
+            assert_eq!(correction(10_000, 10_400), Correction::InSync);
+            // 900ms gap in either direction → hard-seek to the host target.
+            assert_eq!(correction(10_000, 10_900), Correction::Seek(10_900));
+            assert_eq!(correction(20_000, 18_800), Correction::Seek(18_800));
+        }
+        // Phase `local_transport_never_yields_a_state`.
+        {
+            let mut t = LocalTransport;
+            t.publish(&TransportState {
+                playing: true,
+                position_ms: 1,
+                rate: 1.0,
+                epoch_ms: 1,
+            });
+            assert!(t.latest().is_none());
+        }
+        // Phase `crdt_transport_round_trips_published_state`.
+        {
+            let mut host = CrdtTransport::new();
+            assert!(host.latest().is_none(), "nothing published yet");
+            let state = TransportState {
+                playing: true,
+                position_ms: 7_250,
+                rate: 1.5,
+                epoch_ms: 1_700_000,
+            };
+            host.publish(&state);
+            let got = host.latest().expect("state present after publish");
+            assert!(got.playing);
+            assert_eq!(got.position_ms, 7_250);
+            assert!((got.rate - 1.5).abs() < 1e-6);
+            assert_eq!(got.epoch_ms, 1_700_000);
+        }
+        // Phase `follower_converges_on_host_via_incremental_sync`.
+        {
+            // Host publishes; the incremental blob carries the state to a follower
+            // that never writes — exactly the collab-socket follow-the-host path.
+            let mut host = CrdtTransport::new();
+            let mut follower = CrdtTransport::new();
 
-    #[test]
-    fn projection_honours_rate() {
-        let fast = TransportState {
-            playing: true,
-            position_ms: 0,
-            rate: 2.0,
-            epoch_ms: 0,
-        };
-        assert_eq!(
-            fast.projected_position(1_000),
-            2_000,
-            "2x rate doubles the advance"
-        );
-    }
+            host.publish(&TransportState {
+                playing: true,
+                position_ms: 3_000,
+                rate: 1.0,
+                epoch_ms: 500,
+            });
+            let delta = host.save_incremental();
+            follower.merge_incremental(&delta).unwrap();
 
-    #[test]
-    fn small_drift_stays_in_sync_large_drift_seeks() {
-        // 400ms gap < 500ms threshold → ride it.
-        assert_eq!(correction(10_000, 10_400), Correction::InSync);
-        // 900ms gap in either direction → hard-seek to the host target.
-        assert_eq!(correction(10_000, 10_900), Correction::Seek(10_900));
-        assert_eq!(correction(20_000, 18_800), Correction::Seek(18_800));
-    }
+            let f = follower.latest().expect("follower adopted the host state");
+            assert_eq!(f.position_ms, 3_000);
+            assert!(f.playing);
 
-    #[test]
-    fn local_transport_never_yields_a_state() {
-        let mut t = LocalTransport;
-        t.publish(&TransportState {
-            playing: true,
-            position_ms: 1,
-            rate: 1.0,
-            epoch_ms: 1,
-        });
-        assert!(t.latest().is_none());
-    }
-
-    #[test]
-    fn crdt_transport_round_trips_published_state() {
-        let mut host = CrdtTransport::new();
-        assert!(host.latest().is_none(), "nothing published yet");
-        let state = TransportState {
-            playing: true,
-            position_ms: 7_250,
-            rate: 1.5,
-            epoch_ms: 1_700_000,
-        };
-        host.publish(&state);
-        let got = host.latest().expect("state present after publish");
-        assert!(got.playing);
-        assert_eq!(got.position_ms, 7_250);
-        assert!((got.rate - 1.5).abs() < 1e-6);
-        assert_eq!(got.epoch_ms, 1_700_000);
-    }
-
-    #[test]
-    fn follower_converges_on_host_via_incremental_sync() {
-        // Host publishes; the incremental blob carries the state to a follower
-        // that never writes — exactly the collab-socket follow-the-host path.
-        let mut host = CrdtTransport::new();
-        let mut follower = CrdtTransport::new();
-
-        host.publish(&TransportState {
-            playing: true,
-            position_ms: 3_000,
-            rate: 1.0,
-            epoch_ms: 500,
-        });
-        let delta = host.save_incremental();
-        follower.merge_incremental(&delta).unwrap();
-
-        let f = follower.latest().expect("follower adopted the host state");
-        assert_eq!(f.position_ms, 3_000);
-        assert!(f.playing);
-
-        // A later host publish (a pause + new epoch) reaches the follower too.
-        host.publish(&TransportState {
-            playing: false,
-            position_ms: 8_000,
-            rate: 1.0,
-            epoch_ms: 6_000,
-        });
-        follower
-            .merge_incremental(&host.save_incremental())
-            .unwrap();
-        let f2 = follower.latest().unwrap();
-        assert_eq!(f2.position_ms, 8_000);
-        assert!(!f2.playing);
+            // A later host publish (a pause + new epoch) reaches the follower too.
+            host.publish(&TransportState {
+                playing: false,
+                position_ms: 8_000,
+                rate: 1.0,
+                epoch_ms: 6_000,
+            });
+            follower
+                .merge_incremental(&host.save_incremental())
+                .unwrap();
+            let f2 = follower.latest().unwrap();
+            assert_eq!(f2.position_ms, 8_000);
+            assert!(!f2.playing);
+        }
     }
 }

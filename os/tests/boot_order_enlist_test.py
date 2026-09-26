@@ -32,6 +32,18 @@ def boot_option(description, esp, path):
     return struct.pack("<IH", 1, len(nodes)) + (description + "\0").encode("utf-16-le") + nodes
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class BootOrderTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -70,46 +82,48 @@ if os.environ.get('TILO_TEST_MUTATE_NEXT'):
     def order(self):
         return mod.ids("BootOrder")
 
-    def test_appends_after_windows_and_is_idempotent(self):
-        mod.enlist("0100", ESP, TILO)
-        self.assertEqual(self.order(), ["0001", "0100"])
-        mod.enlist("0100", ESP, TILO)
-        self.assertEqual(self.order(), ["0001", "0100"])
+    def test_enlist_writes_after_windows_and_verifies_readback(self):
+        with self.subTest(phase="appends_after_windows_and_is_idempotent"):
+            mod.enlist("0100", ESP, TILO)
+            self.assertEqual(self.order(), ["0001", "0100"])
+            mod.enlist("0100", ESP, TILO)
+            self.assertEqual(self.order(), ["0001", "0100"])
+        restart_fixture(self)
+        with self.subTest(phase="detects_failed_firmware_readback"):
+            with patch.dict(os.environ, TILO_TEST_MUTATE_NEXT="1"):
+                with self.assertRaisesRegex(mod.Refusal, "firmware readback differs"):
+                    mod.enlist("0100", ESP, TILO)
 
-    def test_refuses_busy_bootnext_and_wrong_identity(self):
-        self.put("BootNext", struct.pack("<H", 2))
-        with self.assertRaisesRegex(mod.Refusal, "BootNext is occupied"):
-            mod.enlist("0100", ESP, TILO)
-        self.assertEqual(self.order(), ["0001"])
-        (self.vars / f"BootNext-{mod.EFI_GLOBAL}").unlink()
-        with self.assertRaisesRegex(mod.Refusal, "does not match"):
-            mod.enlist("0100", "bbbbbbbb-cccc-dddd-eeee-ffffffffffff", TILO)
-        self.assertEqual(self.order(), ["0001"])
-
-    def test_refuses_non_windows_default_or_non_current_tilo(self):
-        self.put("Boot0001", boot_option("other", WIN_ESP, TILO))
-        with self.assertRaisesRegex(mod.Refusal, "Windows Boot Manager is not the first"):
-            mod.enlist("0100", ESP, TILO)
-        self.put("Boot0001", boot_option("Windows Boot Manager", WIN_ESP, WINDOWS))
-        self.put("BootCurrent", struct.pack("<H", 1))
-        with self.assertRaisesRegex(mod.Refusal, "not the current"):
-            mod.enlist("0100", ESP, TILO)
-        self.assertEqual(self.order(), ["0001"])
-
-    def test_refuses_ambiguous_or_modified_boot_option(self):
-        self.put("BootOrder", struct.pack("<HH", 1, 1))
-        with self.assertRaisesRegex(mod.Refusal, "duplicated"):
-            mod.enlist("0100", ESP, TILO)
-        self.put("BootOrder", struct.pack("<H", 1))
-        self.put("Boot0100", boot_option("Tilo", ESP, r"\EFI\BOOT\other.efi"))
-        with self.assertRaisesRegex(mod.Refusal, "does not match"):
-            mod.enlist("0100", ESP, TILO)
-        self.assertEqual(self.order(), ["0001"])
-
-    def test_detects_failed_firmware_readback(self):
-        with patch.dict(os.environ, TILO_TEST_MUTATE_NEXT="1"):
-            with self.assertRaisesRegex(mod.Refusal, "firmware readback differs"):
+    def test_refuses_unsafe_boot_state(self):
+        with self.subTest(phase="refuses_busy_bootnext_and_wrong_identity"):
+            self.put("BootNext", struct.pack("<H", 2))
+            with self.assertRaisesRegex(mod.Refusal, "BootNext is occupied"):
                 mod.enlist("0100", ESP, TILO)
+            self.assertEqual(self.order(), ["0001"])
+            (self.vars / f"BootNext-{mod.EFI_GLOBAL}").unlink()
+            with self.assertRaisesRegex(mod.Refusal, "does not match"):
+                mod.enlist("0100", "bbbbbbbb-cccc-dddd-eeee-ffffffffffff", TILO)
+            self.assertEqual(self.order(), ["0001"])
+        restart_fixture(self)
+        with self.subTest(phase="refuses_non_windows_default_or_non_current_tilo"):
+            self.put("Boot0001", boot_option("other", WIN_ESP, TILO))
+            with self.assertRaisesRegex(mod.Refusal, "Windows Boot Manager is not the first"):
+                mod.enlist("0100", ESP, TILO)
+            self.put("Boot0001", boot_option("Windows Boot Manager", WIN_ESP, WINDOWS))
+            self.put("BootCurrent", struct.pack("<H", 1))
+            with self.assertRaisesRegex(mod.Refusal, "not the current"):
+                mod.enlist("0100", ESP, TILO)
+            self.assertEqual(self.order(), ["0001"])
+        restart_fixture(self)
+        with self.subTest(phase="refuses_ambiguous_or_modified_boot_option"):
+            self.put("BootOrder", struct.pack("<HH", 1, 1))
+            with self.assertRaisesRegex(mod.Refusal, "duplicated"):
+                mod.enlist("0100", ESP, TILO)
+            self.put("BootOrder", struct.pack("<H", 1))
+            self.put("Boot0100", boot_option("Tilo", ESP, r"\EFI\BOOT\other.efi"))
+            with self.assertRaisesRegex(mod.Refusal, "does not match"):
+                mod.enlist("0100", ESP, TILO)
+            self.assertEqual(self.order(), ["0001"])
 
 
 if __name__ == "__main__":

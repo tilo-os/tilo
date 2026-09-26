@@ -13,6 +13,8 @@
 //! * Pure, responsive geometry ([`key_rects`]).
 //! * The [`OskWidget`] — drawing, pointer input, shift/caps, symbol layer,
 //!   backspace — plus a customizable [`OskToolbarItem`] row.
+//! * An [`emoji_panel`] behind the emoji key — group tabs, recents, search
+//!   typed with the keys, skin tones — and emoji chips for words that name one.
 //!
 //! ## Swipe-to-type + prediction (shipped here)
 //! * [`dict`] — a compact, embedded, offline English word-frequency
@@ -84,7 +86,9 @@ pub const KEYBOARD_APP_ID: &str = "so.tilo.osk";
 
 pub mod autocorrect;
 pub mod dict;
+pub mod emoji_panel;
 pub mod futo;
+mod i18n;
 pub mod imclient;
 pub mod inject;
 pub mod layout;
@@ -98,6 +102,7 @@ pub mod widget;
 
 pub use autocorrect::{Autocorrector, KeyAdjacency};
 pub use dict::{Dictionary, Entry};
+pub use emoji_panel::{EmojiPanel, PanelHit, PanelMode};
 pub use futo::FutoSwipeModel;
 pub use imclient::{
     ImEvent, ImState, ImTransition, InputMethodClient, purpose_from_wire, try_input_method,

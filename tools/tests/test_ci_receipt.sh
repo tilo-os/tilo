@@ -84,4 +84,29 @@ git -C "$work/writer-a" fetch -q origin +refs/notes/tilo-check-ci:refs/notes/til
 [[ $(git -C "$work/writer-a" notes --ref=tilo-check-ci show "$sha") == *'run=46'* ]]
 [[ $(git -C "$work/writer-a" notes --ref=tilo-check-ci show "$new_sha") == *'run=47'* ]]
 
+# A forge-side failure that is not a lost race (observed: "remote unpack
+# failed") must be retried too, and the receipt must still land.
+cat > "$work/wrapper/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == push && ${2:-} == origin && ${3:-} == refs/notes/tilo-check-ci ]]; then
+  failures=$(cat "$CI_RECEIPT_TEST_FAILURES")
+  if (( failures > 0 )); then
+    echo $(( failures - 1 )) > "$CI_RECEIPT_TEST_FAILURES"
+    echo 'error: remote unpack failed: unable to create temporary object directory' >&2
+    exit 1
+  fi
+fi
+exec "$CI_RECEIPT_TEST_REAL_GIT" "$@"
+EOF
+echo 3 > "$work/failures"
+CI_RECEIPT_TEST_FAILURES="$work/failures" \
+CI_RECEIPT_TEST_REAL_GIT="$(command -v git)" \
+PATH="$work/wrapper:$PATH" \
+  bash -c 'cd "$1" && "$2" record "$3" 48 success success success origin >/dev/null 2>&1' \
+  _ "$work/writer-a" "$tool" "$new_sha"
+[[ $(cat "$work/failures") == 0 ]]
+git -C "$work/writer-b" fetch -q origin +refs/notes/tilo-check-ci:refs/notes/tilo-check-ci
+[[ $(git -C "$work/writer-b" notes --ref=tilo-check-ci show "$new_sha") == *'run=48'* ]]
+
 echo 'CI receipt record/verify contract OK'

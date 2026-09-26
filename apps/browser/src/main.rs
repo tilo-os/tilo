@@ -812,40 +812,44 @@ mod resource_claim_tests {
     use super::{launch_target, requested_browsing_mode};
     use browser::browsing_mode::BrowsingMode;
 
+    /// Startup resource claims.
     #[test]
-    fn explicit_private_flag_wins_and_environment_one_is_bundle_fallback() {
-        assert_eq!(
-            requested_browsing_mode(true, Some(std::ffi::OsStr::new("0"))),
-            BrowsingMode::Private
-        );
-        assert_eq!(
-            requested_browsing_mode(false, Some(std::ffi::OsStr::new("1"))),
-            BrowsingMode::Private
-        );
-        for fallback in [
-            None,
-            Some(std::ffi::OsStr::new("0")),
-            Some(std::ffi::OsStr::new("true")),
-        ] {
+    fn startup_claims_private_flag_and_one_web_scheme_value() {
+        // Phase `explicit_private_flag_wins_and_environment_one_is_bundle_fallback`.
+        {
             assert_eq!(
-                requested_browsing_mode(false, fallback),
-                BrowsingMode::Normal
+                requested_browsing_mode(true, Some(std::ffi::OsStr::new("0"))),
+                BrowsingMode::Private
             );
+            assert_eq!(
+                requested_browsing_mode(false, Some(std::ffi::OsStr::new("1"))),
+                BrowsingMode::Private
+            );
+            for fallback in [
+                None,
+                Some(std::ffi::OsStr::new("0")),
+                Some(std::ffi::OsStr::new("true")),
+            ] {
+                assert_eq!(
+                    requested_browsing_mode(false, fallback),
+                    BrowsingMode::Normal
+                );
+            }
         }
-    }
 
-    #[test]
-    fn startup_accepts_only_declared_web_schemes_as_one_value() {
-        let uri = "HTTPS://example.test/a --still-data";
-        assert_eq!(launch_target(&[uri.into()]).as_deref(), Some(uri));
-        for value in [
-            "javascript:alert(1)",
-            "data:text/plain,x",
-            "mailto:a@b",
-            "file:///tmp/portal-bypass.html",
-            "/tmp/portal-bypass.html",
-        ] {
-            assert_eq!(launch_target(&[value.into()]), None);
+        // Phase `startup_accepts_only_declared_web_schemes_as_one_value`.
+        {
+            let uri = "HTTPS://example.test/a --still-data";
+            assert_eq!(launch_target(&[uri.into()]).as_deref(), Some(uri));
+            for value in [
+                "javascript:alert(1)",
+                "data:text/plain,x",
+                "mailto:a@b",
+                "file:///tmp/portal-bypass.html",
+                "/tmp/portal-bypass.html",
+            ] {
+                assert_eq!(launch_target(&[value.into()]), None);
+            }
         }
     }
 }

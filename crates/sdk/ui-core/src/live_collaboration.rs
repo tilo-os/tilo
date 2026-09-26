@@ -228,82 +228,85 @@ mod tests {
     }
 
     #[test]
-    fn manual_status_wins_and_clearing_it_resumes_inference() {
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
-        let mut experience = CollaborationExperience::new();
-        experience.upsert_person(local());
-        let me = UserId("me".into());
-        assert!(experience.set_manual_status(&me, "Reviewing totals", now));
-        assert!(!experience.accept_inferred_status(&me, "Editing sheet", "local", now));
-        assert_eq!(
-            experience.shareable_status(&me, now).unwrap().text,
-            "Reviewing totals"
-        );
-        assert!(experience.set_manual_status(&me, "", now));
-        assert!(experience.accept_inferred_status(&me, "Editing sheet", "local", now));
-    }
+    fn live_status_prefers_manual_over_inference_and_respects_privacy() {
+        // Case `manual_status_wins_and_clearing_it_resumes_inference`.
+        {
+            let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+            let mut experience = CollaborationExperience::new();
+            experience.upsert_person(local());
+            let me = UserId("me".into());
+            assert!(experience.set_manual_status(&me, "Reviewing totals", now));
+            assert!(!experience.accept_inferred_status(&me, "Editing sheet", "local", now));
+            assert_eq!(
+                experience.shareable_status(&me, now).unwrap().text,
+                "Reviewing totals"
+            );
+            assert!(experience.set_manual_status(&me, "", now));
+            assert!(experience.accept_inferred_status(&me, "Editing sheet", "local", now));
+        }
 
-    #[test]
-    fn privacy_switch_removes_inference_but_preserves_explicit_status() {
-        let now = SystemTime::UNIX_EPOCH;
-        let mut experience = CollaborationExperience::new();
-        experience.upsert_person(local());
-        let me = UserId("me".into());
-        assert!(experience.accept_inferred_status(&me, "Drafting Q2 report", "local", now));
-        experience.set_sharing(StatusSharing::Off);
-        assert!(experience.shareable_status(&me, now).is_none());
-        assert!(experience.set_manual_status(&me, "Heads-down until 3", now));
-        assert_eq!(
-            experience.shareable_status(&me, now).unwrap().text,
-            "Heads-down until 3"
-        );
-    }
+        // Case `privacy_switch_removes_inference_but_preserves_explicit_status`.
+        {
+            let now = SystemTime::UNIX_EPOCH;
+            let mut experience = CollaborationExperience::new();
+            experience.upsert_person(local());
+            let me = UserId("me".into());
+            assert!(experience.accept_inferred_status(&me, "Drafting Q2 report", "local", now));
+            experience.set_sharing(StatusSharing::Off);
+            assert!(experience.shareable_status(&me, now).is_none());
+            assert!(experience.set_manual_status(&me, "Heads-down until 3", now));
+            assert_eq!(
+                experience.shareable_status(&me, now).unwrap().text,
+                "Heads-down until 3"
+            );
+        }
 
-    #[test]
-    fn inferred_intent_expires_and_status_is_safe_for_a_single_line() {
-        let now = SystemTime::UNIX_EPOCH;
-        let mut experience = CollaborationExperience::new();
-        experience.upsert_person(local());
-        let me = UserId("me".into());
-        assert!(experience.accept_inferred_status(
-            &me,
-            "  Reconciling\n Q2   finance numbers  ",
-            "local",
-            now,
-        ));
-        assert_eq!(
-            experience.shareable_status(&me, now).unwrap().text,
-            "Reconciling Q2 finance numbers"
-        );
-        let later = now + INFERRED_STATUS_TTL + Duration::from_secs(1);
-        assert!(experience.shareable_status(&me, later).is_none());
-    }
+        // Case `inferred_intent_expires_and_status_is_safe_for_a_single_line`.
+        {
+            let now = SystemTime::UNIX_EPOCH;
+            let mut experience = CollaborationExperience::new();
+            experience.upsert_person(local());
+            let me = UserId("me".into());
+            assert!(experience.accept_inferred_status(
+                &me,
+                "  Reconciling\n Q2   finance numbers  ",
+                "local",
+                now,
+            ));
+            assert_eq!(
+                experience.shareable_status(&me, now).unwrap().text,
+                "Reconciling Q2 finance numbers"
+            );
+            let later = now + INFERRED_STATUS_TTL + Duration::from_secs(1);
+            assert!(experience.shareable_status(&me, later).is_none());
+        }
 
-    #[test]
-    fn roster_order_is_predictable_and_agents_are_visually_separable() {
-        let mut experience = CollaborationExperience::new();
-        experience.upsert_person(PersonPresence {
-            id: UserId("agent".into()),
-            name: "Research agent".into(),
-            is_self: false,
-            is_agent: true,
-            current: None,
-            status: None,
-        });
-        experience.upsert_person(PersonPresence {
-            id: UserId("ada".into()),
-            name: "Ada".into(),
-            is_self: false,
-            is_agent: false,
-            current: None,
-            status: None,
-        });
-        experience.upsert_person(local());
-        let names: Vec<_> = experience
-            .people()
-            .iter()
-            .map(|person| person.name.as_str())
-            .collect();
-        assert_eq!(names, ["Quinten", "Ada", "Research agent"]);
+        // Case `roster_order_is_predictable_and_agents_are_visually_separable`.
+        {
+            let mut experience = CollaborationExperience::new();
+            experience.upsert_person(PersonPresence {
+                id: UserId("agent".into()),
+                name: "Research agent".into(),
+                is_self: false,
+                is_agent: true,
+                current: None,
+                status: None,
+            });
+            experience.upsert_person(PersonPresence {
+                id: UserId("ada".into()),
+                name: "Ada".into(),
+                is_self: false,
+                is_agent: false,
+                current: None,
+                status: None,
+            });
+            experience.upsert_person(local());
+            let names: Vec<_> = experience
+                .people()
+                .iter()
+                .map(|person| person.name.as_str())
+                .collect();
+            assert_eq!(names, ["Quinten", "Ada", "Research agent"]);
+        }
     }
 }

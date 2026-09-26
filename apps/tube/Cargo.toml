@@ -82,12 +82,9 @@ default = ["live", "media", "grayjay-sync"]
 # YouTube data via yt-dlp with rustypipe as a fallback source.
 live = ["dep:rustypipe"]
 # Video decode, playback, and audio through the shared GStreamer media engine.
-media = [
-    "media/decode",
-    # Desktop media integration: the watch-page player publishes now-playing +
-    # accepts media keys through the toolkit's MPRIS service.
-    "ui/mpris",
-]
+# The watch-page player publishes now-playing and accepts media keys through
+# the toolkit's MPRIS service, which `ui` always provides.
+media = ["media/decode"]
 # Grayjay account/device sync over Noise (TCP 12315 + pairing), including its
 # portal-backed lifecycle.
 grayjay-sync = [

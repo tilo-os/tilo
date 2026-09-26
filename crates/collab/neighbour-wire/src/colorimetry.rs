@@ -205,7 +205,15 @@ impl Default for Colorimetry {
 mod tests {
     use super::*;
 
+    /// CICP code points match H.273, HDR is detected, and colorimetry serialises kebab-case.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn colorimetry_maps_to_h273_detects_hdr_and_serialises_kebab_case() {
+        cicp_matches_h273();
+        hdr_detection();
+        colorimetry_serialises_kebab_case();
+    }
+
     fn cicp_matches_h273() {
         // Table 2 spot checks.
         assert_eq!(ColorPrimaries::Bt709.cicp(), 1);
@@ -215,14 +223,12 @@ mod tests {
         assert_eq!(MatrixCoefficients::Bt2020NonConstant.cicp(), 9);
     }
 
-    #[test]
     fn hdr_detection() {
         assert!(!Colorimetry::sdr_bt709().is_hdr());
         assert!(Colorimetry::hdr10().is_hdr());
         assert!(Colorimetry::hdr_hlg().is_hdr());
     }
 
-    #[test]
     fn colorimetry_serialises_kebab_case() {
         let s = serde_json::to_string(&Colorimetry::hdr10()).unwrap();
         assert!(s.contains("bt2020"), "got {s}");

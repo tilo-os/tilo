@@ -221,25 +221,27 @@ mod tests {
     }
 
     #[test]
-    fn fixed_sources_build_one_valid_deterministic_catalogue() {
-        let (_temp, paths) = fixture();
-        let report = load_shipped_catalogue(&paths).unwrap();
-        assert_eq!(report.built_in_records, 1);
-        assert_eq!(report.umu_records, 1);
-        assert_eq!(report.bottles_records, 1);
-        assert_eq!(report.catalogue.records.len(), 3);
-        assert!(report.catalogue.records.iter().all(|record| record.signed));
-    }
-
-    #[test]
-    fn symlinked_metadata_is_rejected() {
-        let (temp, paths) = fixture();
-        let outside = temp.path().join("outside.yml");
-        fs::write(&outside, "Name: Bad\nExecutable: bad.exe\n").unwrap();
-        symlink(outside, paths.bottles_root.join("link.yml")).unwrap();
-        assert!(matches!(
-            load_shipped_catalogue(&paths),
-            Err(CatalogueLoadError::UnsafeBottlesEntry(_))
-        ));
+    fn fixed_catalogue_sources_build_deterministically_and_reject_symlinks() {
+        // Phase `fixed_sources_build_one_valid_deterministic_catalogue`.
+        {
+            let (_temp, paths) = fixture();
+            let report = load_shipped_catalogue(&paths).unwrap();
+            assert_eq!(report.built_in_records, 1);
+            assert_eq!(report.umu_records, 1);
+            assert_eq!(report.bottles_records, 1);
+            assert_eq!(report.catalogue.records.len(), 3);
+            assert!(report.catalogue.records.iter().all(|record| record.signed));
+        }
+        // Phase `symlinked_metadata_is_rejected`.
+        {
+            let (temp, paths) = fixture();
+            let outside = temp.path().join("outside.yml");
+            fs::write(&outside, "Name: Bad\nExecutable: bad.exe\n").unwrap();
+            symlink(outside, paths.bottles_root.join("link.yml")).unwrap();
+            assert!(matches!(
+                load_shipped_catalogue(&paths),
+                Err(CatalogueLoadError::UnsafeBottlesEntry(_))
+            ));
+        }
     }
 }

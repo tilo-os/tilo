@@ -568,169 +568,179 @@ mod tests {
     use automerge::AutoCommit;
     use fixtures::LegacyFixture;
     use ui::record::{RecordId, RecordKind, RecordSaveStatus};
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn changed_snapshot_is_rejected_at_second_read_without_publication() {
-        for metadata in [false, true] {
+    fn legacy_import_publishes_atomically_or_leaves_no_candidate_state() {
+        eprintln!("phase changed_snapshot_is_rejected_at_second_read_without_publication");
+        {
+            for metadata in [false, true] {
+                let f = LegacyFixture::rich();
+                let checkout = destination(f.key);
+                let mut expected = f.source_bytes();
+                let relative = if metadata {
+                    std::path::PathBuf::from("workspace.automerge")
+                } else {
+                    std::path::PathBuf::from(format!("pages/{}.md", f.child))
+                };
+                expected.insert(relative.clone(), b"changed while reading".to_vec());
+                let result = import_with_hook(&f.records, &f.source, f.key, |step| {
+                    if matches!(step, ImportStep::SnapshotRead) {
+                        std::fs::write(f.source.join(&relative), b"changed while reading").unwrap();
+                    }
+                    Ok(())
+                });
+                assert!(
+                    matches!(result,Err(ImportError::Source(ref s)) if s.contains("changed")),
+                    "{result:?}"
+                );
+                assert!(!f.records.is_ready(&checkout.id));
+                assert!(!f.document_path(&checkout).exists());
+                assert_eq!(f.source_bytes(), expected);
+            }
+        }
+
+        eprintln!("phase stop_before_reservation_leaves_no_canonical_document");
+        {
             let f = LegacyFixture::rich();
+            let before = f.source_bytes();
             let checkout = destination(f.key);
-            let mut expected = f.source_bytes();
-            let relative = if metadata {
-                std::path::PathBuf::from("workspace.automerge")
-            } else {
-                std::path::PathBuf::from(format!("pages/{}.md", f.child))
-            };
-            expected.insert(relative.clone(), b"changed while reading".to_vec());
             let result = import_with_hook(&f.records, &f.source, f.key, |step| {
                 if matches!(step, ImportStep::SnapshotRead) {
-                    std::fs::write(f.source.join(&relative), b"changed while reading").unwrap();
+                    return Err("stop before reservation".into());
                 }
                 Ok(())
             });
+            assert!(matches!(result,Err(ImportError::Source(ref s)) if s.contains("stop before")));
+            assert!(!f.records.is_ready(&checkout.id));
+            assert!(!f.document_path(&checkout).exists());
+            assert_eq!(f.source_bytes(), before);
             assert!(
-                matches!(result,Err(ImportError::Source(ref s)) if s.contains("changed")),
-                "{result:?}"
+                !import_legacy(&f.records, &f.source, f.key)
+                    .unwrap()
+                    .already_imported
+            );
+        }
+
+        eprintln!("phase initializer_failure_after_first_page_discards_all_candidate_state");
+        {
+            let f = LegacyFixture::rich();
+            let before = f.source_bytes();
+            let checkout = destination(f.key);
+            let mut seen = false;
+            let result = import_with_hook(&f.records, &f.source, f.key, |step| {
+                if let ImportStep::PageInitialized(0, doc) = step {
+                    assert_eq!(NotesDoc::list_pages(doc).len(), 1);
+                    seen = true;
+                    return Err("first page failure".into());
+                }
+                Ok(())
+            });
+            assert!(seen);
+            assert!(
+                matches!(result,Err(ImportError::Record(RecordOpenError::Initialization(ref s))) if s.contains("first page"))
             );
             assert!(!f.records.is_ready(&checkout.id));
             assert!(!f.document_path(&checkout).exists());
-            assert_eq!(f.source_bytes(), expected);
+            assert_eq!(f.source_bytes(), before);
+            let result = import_legacy(&f.records, &f.source, f.key).unwrap();
+            f.records
+                .read(&result.checkout.id, |d| {
+                    notebook::validate(d).unwrap();
+                    assert_eq!(NotesDoc::list_pages(d).len(), 3);
+                })
+                .unwrap();
         }
-    }
-    #[test]
-    fn stop_before_reservation_leaves_no_canonical_document() {
-        let f = LegacyFixture::rich();
-        let before = f.source_bytes();
-        let checkout = destination(f.key);
-        let result = import_with_hook(&f.records, &f.source, f.key, |step| {
-            if matches!(step, ImportStep::SnapshotRead) {
-                return Err("stop before reservation".into());
-            }
-            Ok(())
-        });
-        assert!(matches!(result,Err(ImportError::Source(ref s)) if s.contains("stop before")));
-        assert!(!f.records.is_ready(&checkout.id));
-        assert!(!f.document_path(&checkout).exists());
-        assert_eq!(f.source_bytes(), before);
-        assert!(
-            !import_legacy(&f.records, &f.source, f.key)
+
+        eprintln!(
+            "phase first_publication_failure_retains_destination_and_retries_without_new_edit"
+        );
+        {
+            let f = LegacyFixture::rich();
+            let before = f.source_bytes();
+            let checkout = destination(f.key);
+            let other = RecordCheckout::new(
+                RecordId::derived("notes-fixture-unrelated", &RecordId::for_tab(0)),
+                RecordKind::new("notes.notebook"),
+            );
+            f.records
+                .reserve_record(&other)
                 .unwrap()
-                .already_imported
-        );
-    }
-    #[test]
-    fn initializer_failure_after_first_page_discards_all_candidate_state() {
-        let f = LegacyFixture::rich();
-        let before = f.source_bytes();
-        let checkout = destination(f.key);
-        let mut seen = false;
-        let result = import_with_hook(&f.records, &f.source, f.key, |step| {
-            if let ImportStep::PageInitialized(0, doc) = step {
-                assert_eq!(NotesDoc::list_pages(doc).len(), 1);
-                seen = true;
-                return Err("first page failure".into());
-            }
-            Ok(())
-        });
-        assert!(seen);
-        assert!(
-            matches!(result,Err(ImportError::Record(RecordOpenError::Initialization(ref s))) if s.contains("first page"))
-        );
-        assert!(!f.records.is_ready(&checkout.id));
-        assert!(!f.document_path(&checkout).exists());
-        assert_eq!(f.source_bytes(), before);
-        let result = import_legacy(&f.records, &f.source, f.key).unwrap();
-        f.records
-            .read(&result.checkout.id, |d| {
-                notebook::validate(d).unwrap();
-                assert_eq!(NotesDoc::list_pages(d).len(), 3);
+                .initialize(notebook::initialize_empty)
+                .unwrap();
+            f.records.try_flush().unwrap();
+            let path = f.document_path(&checkout);
+            let error = import_with_hook(&f.records, &f.source, f.key, |step| {
+                if matches!(step, ImportStep::Reserved) {
+                    std::fs::create_dir(&path).unwrap();
+                }
+                Ok(())
+            })
+            .unwrap_err();
+            let ImportError::Durability {
+                message,
+                source_key,
+                checkout: retained,
+                records,
+            } = error
+            else {
+                panic!("expected retained durability error")
+            };
+            assert!(!message.is_empty());
+            assert_eq!(source_key, f.key);
+            assert_eq!(retained, checkout);
+            assert!(records.is_ready(&checkout.id));
+            assert_eq!(
+                records.save_status(&other.id).unwrap(),
+                RecordSaveStatus::Saved
+            );
+            assert!(
+                matches!(records.save_status(&checkout.id).unwrap(),RecordSaveStatus::Failed(ref s) if s==&message)
+            );
+            let heads = records.with(&checkout.id, AutoCommit::get_heads).unwrap();
+            assert_eq!(f.source_bytes(), before);
+            std::fs::remove_dir(&path).unwrap();
+            std::fs::rename(&f.source, f.temp.path().join("retained-source")).unwrap();
+            let outcome = import_legacy(&records, &f.source, f.key).unwrap();
+            assert!(outcome.already_imported);
+            assert_eq!(outcome.initial_selected, None);
+            assert_eq!(
+                records.save_status(&checkout.id).unwrap(),
+                RecordSaveStatus::Saved
+            );
+            assert_eq!(
+                records.with(&checkout.id, AutoCommit::get_heads).unwrap(),
+                heads
+            );
+        }
+
+        eprintln!("phase second_entrant_at_reservation_cannot_initialize_another_writer");
+        {
+            let f = LegacyFixture::rich();
+            let mut entrants = 0;
+            let mut pages = 0;
+            let result = import_with_hook(&f.records, &f.source, f.key, |step| {
+                match step {
+                    ImportStep::Reserved => {
+                        entrants += 1;
+                        assert!(matches!(
+                            import_legacy(&f.records, &f.source, f.key),
+                            Err(ImportError::Record(RecordOpenError::Busy))
+                        ));
+                    }
+                    ImportStep::PageInitialized(_, _) => pages += 1,
+                    ImportStep::SnapshotRead => {}
+                }
+                Ok(())
             })
             .unwrap();
-    }
-    #[test]
-    fn first_publication_failure_retains_destination_and_retries_without_new_edit() {
-        let f = LegacyFixture::rich();
-        let before = f.source_bytes();
-        let checkout = destination(f.key);
-        let other = RecordCheckout::new(
-            RecordId::derived("notes-fixture-unrelated", &RecordId::for_tab(0)),
-            RecordKind::new("notes.notebook"),
-        );
-        f.records
-            .reserve_record(&other)
-            .unwrap()
-            .initialize(notebook::initialize_empty)
-            .unwrap();
-        f.records.try_flush().unwrap();
-        let path = f.document_path(&checkout);
-        let error = import_with_hook(&f.records, &f.source, f.key, |step| {
-            if matches!(step, ImportStep::Reserved) {
-                std::fs::create_dir(&path).unwrap();
-            }
-            Ok(())
-        })
-        .unwrap_err();
-        let ImportError::Durability {
-            message,
-            source_key,
-            checkout: retained,
-            records,
-        } = error
-        else {
-            panic!("expected retained durability error")
-        };
-        assert!(!message.is_empty());
-        assert_eq!(source_key, f.key);
-        assert_eq!(retained, checkout);
-        assert!(records.is_ready(&checkout.id));
-        assert_eq!(
-            records.save_status(&other.id).unwrap(),
-            RecordSaveStatus::Saved
-        );
-        assert!(
-            matches!(records.save_status(&checkout.id).unwrap(),RecordSaveStatus::Failed(ref s) if s==&message)
-        );
-        let heads = records.with(&checkout.id, AutoCommit::get_heads).unwrap();
-        assert_eq!(f.source_bytes(), before);
-        std::fs::remove_dir(&path).unwrap();
-        std::fs::rename(&f.source, f.temp.path().join("retained-source")).unwrap();
-        let outcome = import_legacy(&records, &f.source, f.key).unwrap();
-        assert!(outcome.already_imported);
-        assert_eq!(outcome.initial_selected, None);
-        assert_eq!(
-            records.save_status(&checkout.id).unwrap(),
-            RecordSaveStatus::Saved
-        );
-        assert_eq!(
-            records.with(&checkout.id, AutoCommit::get_heads).unwrap(),
-            heads
-        );
-    }
-    #[test]
-    fn second_entrant_at_reservation_cannot_initialize_another_writer() {
-        let f = LegacyFixture::rich();
-        let mut entrants = 0;
-        let mut pages = 0;
-        let result = import_with_hook(&f.records, &f.source, f.key, |step| {
-            match step {
-                ImportStep::Reserved => {
-                    entrants += 1;
-                    assert!(matches!(
-                        import_legacy(&f.records, &f.source, f.key),
-                        Err(ImportError::Record(RecordOpenError::Busy))
-                    ));
-                }
-                ImportStep::PageInitialized(_, _) => pages += 1,
-                ImportStep::SnapshotRead => {}
-            }
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(entrants, 1);
-        assert_eq!(pages, 3);
-        assert!(!result.already_imported);
-        assert!(
-            import_legacy(&f.records, &f.source, f.key)
-                .unwrap()
-                .already_imported
-        );
+            assert_eq!(entrants, 1);
+            assert_eq!(pages, 3);
+            assert!(!result.already_imported);
+            assert!(
+                import_legacy(&f.records, &f.source, f.key)
+                    .unwrap()
+                    .already_imported
+            );
+        }
     }
 }

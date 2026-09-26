@@ -607,8 +607,19 @@ mod tests {
             .unwrap_or_else(|| panic!("a resource for {id}"))
     }
 
-    /// Drives the real resource hook and the real palette, not a mock tree.
+    /// The exported resource tree: the retention classes and catalog hierarchy,
+    /// bounded steppers, unavailable-repository reasons and honest effect
+    /// contracts; each case builds its own resources.
     #[test]
+    fn resource_tree_publishes_retention_catalog_and_honest_contracts() {
+        ctrl_k_publishes_the_retention_tree();
+        bounded_fields_omit_the_impossible_move();
+        unavailable_repository_reason_reaches_the_canonical_backup_action();
+        local_effects_publish_honest_retry_risk_and_restore_target_contracts();
+    }
+
+    /// Drives the real resource hook and the real palette, not a mock tree.
+    /// Case of `resource_tree_publishes_retention_catalog_and_honest_contracts`.
     fn ctrl_k_publishes_the_retention_tree() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
@@ -680,7 +691,7 @@ mod tests {
         assert!(snapshot.id.as_str().starts_with("backups.snapshot:"));
     }
 
-    #[test]
+    /// Case of `resource_tree_publishes_retention_catalog_and_honest_contracts`.
     fn bounded_fields_omit_the_impossible_move() {
         let (_app, mut doc) = seeded();
         BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Weekly, 0);
@@ -714,7 +725,7 @@ mod tests {
         assert!(m_actions.contains(&"decrement"), "{m_actions:?}");
     }
 
-    #[test]
+    /// Case of `resource_tree_publishes_retention_catalog_and_honest_contracts`.
     fn unavailable_repository_reason_reaches_the_canonical_backup_action() {
         let reason = "The saved backup location is unavailable. Choose another location.";
         let resources = provide_resources_with_unavailable_reason(
@@ -738,7 +749,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    /// Case of `resource_tree_publishes_retention_catalog_and_honest_contracts`.
     fn local_effects_publish_honest_retry_risk_and_restore_target_contracts() {
         let resources = provide_resources(&RetentionPolicy::default(), &Catalog::sample(), true);
         let workspace = resources
@@ -800,7 +811,15 @@ mod tests {
         );
     }
 
+    /// The on-screen +/- control dispatches the same action as the palette, and
+    /// an unchanged set is a no-op; each case uses a fresh seeded app.
     #[test]
+    fn retention_controls_dispatch_the_palette_action_and_skip_no_ops() {
+        redundant_action_is_a_no_op();
+        bump_button_dispatches_the_palette_action();
+    }
+
+    /// Case of `retention_controls_dispatch_the_palette_action_and_skip_no_ops`.
     fn redundant_action_is_a_no_op() {
         let (_app, mut doc) = seeded();
         doc.commit();
@@ -849,7 +868,7 @@ mod tests {
 
     /// `bump_retention` is what both the mouse hit and the keyboard arrow/`+`/`-`
     /// handlers funnel through.
-    #[test]
+    /// Case of `retention_controls_dispatch_the_palette_action_and_skip_no_ops`.
     fn bump_button_dispatches_the_palette_action() {
         let (mut app, mut doc) = seeded();
 

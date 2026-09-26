@@ -165,68 +165,71 @@ mod tests {
     use automerge::{AutoCommit, ROOT};
 
     #[test]
-    fn logout_is_exactly_addressable_and_declares_destructive_confirmation() {
-        let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
-        let mut registry = SearchRegistry::new();
-        registry.register(Rc::new(SessionActionsProvider::new(
-            SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new()),
-        )));
-        let state = chrome.borrow();
-        let catalog = ActionCatalog::build_exact(
-            &registry,
-            PROVIDER_ID,
-            LOGOUT_ID,
-            SearchScope::All,
-            None,
-            &state,
-            &AutoCommit::new(),
-            &ROOT,
-            &AllVisible,
-        );
-        let action = catalog
-            .enumerate()
-            .into_iter()
-            .next()
-            .expect("logout action");
-        let contract = action.contract.expect("logout contract");
-        assert_eq!(contract.risk, tilo_actions::RiskLevel::Destructive);
-        assert_eq!(
-            contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm
-        );
-        assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
-    }
+    fn logout_is_addressable_confirmed_and_inhibited_only_like_the_power_menu() {
+        // Phase `logout_is_exactly_addressable_and_declares_destructive_confirmation`.
+        {
+            let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+            let mut registry = SearchRegistry::new();
+            registry.register(Rc::new(SessionActionsProvider::new(
+                SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new()),
+            )));
+            let state = chrome.borrow();
+            let catalog = ActionCatalog::build_exact(
+                &registry,
+                PROVIDER_ID,
+                LOGOUT_ID,
+                SearchScope::All,
+                None,
+                &state,
+                &AutoCommit::new(),
+                &ROOT,
+                &AllVisible,
+            );
+            let action = catalog
+                .enumerate()
+                .into_iter()
+                .next()
+                .expect("logout action");
+            let contract = action.contract.expect("logout contract");
+            assert_eq!(contract.risk, tilo_actions::RiskLevel::Destructive);
+            assert_eq!(
+                contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm
+            );
+            assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
+        }
 
-    #[test]
-    fn typed_logout_policy_refuses_the_same_portal_inhibitor_as_the_power_menu() {
-        let inhibitors = tilo_power_mgmt::InhibitRegistry::new();
-        let _hold = inhibitors.acquire_for(
-            "Document has unsaved work",
-            tilo_power_mgmt::inhibit::INHIBIT_LOGOUT,
-        );
-        let policy = SessionActionPolicy::new(inhibitors);
+        // Phase `typed_logout_policy_refuses_the_same_portal_inhibitor_as_the_power_menu`.
+        {
+            let inhibitors = tilo_power_mgmt::InhibitRegistry::new();
+            let _hold = inhibitors.acquire_for(
+                "Document has unsaved work",
+                tilo_power_mgmt::inhibit::INHIBIT_LOGOUT,
+            );
+            let policy = SessionActionPolicy::new(inhibitors);
 
-        let error = policy
-            .begin(os_actions::SessionAction::Logout)
-            .expect_err("typed logout must stop before publishing its request edge");
-        assert!(error.contains("Document has unsaved work"));
-        assert!(error.contains("finish its work"));
-        assert!(
-            !os_actions::take_logout_request(),
-            "refusal must not publish the compositor logout edge"
-        );
-    }
+            let error = policy
+                .begin(os_actions::SessionAction::Logout)
+                .expect_err("typed logout must stop before publishing its request edge");
+            assert!(error.contains("Document has unsaved work"));
+            assert!(error.contains("finish its work"));
+            assert!(
+                !os_actions::take_logout_request(),
+                "refusal must not publish the compositor logout edge"
+            );
+        }
 
-    #[test]
-    fn logout_inhibitor_does_not_block_unrelated_session_actions() {
-        let inhibitors = tilo_power_mgmt::InhibitRegistry::new();
-        let _hold = inhibitors.acquire_for(
-            "Document has unsaved work",
-            tilo_power_mgmt::inhibit::INHIBIT_LOGOUT,
-        );
-        let policy = SessionActionPolicy::new(inhibitors);
+        // Phase `logout_inhibitor_does_not_block_unrelated_session_actions`.
+        {
+            let inhibitors = tilo_power_mgmt::InhibitRegistry::new();
+            let _hold = inhibitors.acquire_for(
+                "Document has unsaved work",
+                tilo_power_mgmt::inhibit::INHIBIT_LOGOUT,
+            );
+            let policy = SessionActionPolicy::new(inhibitors);
 
-        assert!(policy.admit(os_actions::SessionAction::SwitchUser).is_ok());
-        assert!(policy.admit(os_actions::SessionAction::Suspend).is_ok());
+            assert!(policy.admit(os_actions::SessionAction::SwitchUser).is_ok());
+            assert!(policy.admit(os_actions::SessionAction::Suspend).is_ok());
+        }
     }
 }

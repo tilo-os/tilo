@@ -95,7 +95,7 @@ pub fn app_root() -> Box<dyn Widget> {
             .iter()
             .find(|action| action.id == "set-draft")
             .expect("generated graph resource exports set-draft"),
-        |value| serde_json::Map::from_iter([("draft".into(), serde_json::json!(value))]),
+        |value| ui::serde_json::Map::from_iter([("draft".into(), ui::serde_json::json!(value))]),
     )
     .expect("project input produces valid draft arguments");
     let create_draft = draft.clone();
@@ -107,7 +107,10 @@ pub fn app_root() -> Box<dyn Widget> {
             .find(|action| action.id == "create")
             .expect("generated graph resource exports create"),
         move |()| {
-            serde_json::Map::from_iter([("name".into(), serde_json::json!(create_draft.get()))])
+            ui::serde_json::Map::from_iter([(
+                "name".into(),
+                ui::serde_json::json!(create_draft.get()),
+            )])
         },
     )
     .expect("generated project draft matches the exported create action");
@@ -128,15 +131,15 @@ pub fn app_root() -> Box<dyn Widget> {
             )),
     );
     ui::widget::resource_actions::immediate(root, resource, move |payload| {
-        let args: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        if let Some(value) = args.get("draft").and_then(serde_json::Value::as_str) {
+        let args: ui::serde_json::Map<String, ui::serde_json::Value> =
+            ui::serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if let Some(value) = args.get("draft").and_then(ui::serde_json::Value::as_str) {
             draft.set(value.to_owned());
             return Ok(tilo_actions::ActionOutput::default());
         }
         let name = args
             .get("name")
-            .and_then(serde_json::Value::as_str)
+            .and_then(ui::serde_json::Value::as_str)
             .ok_or("missing project name")?;
         Ok(create_project(name))
     })

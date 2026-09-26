@@ -151,88 +151,93 @@ mod tests {
         )
     }
 
+    /// Compaction payloads round-trip and reject the wrong op class; prefix hashes are deterministic,
+    /// order-sensitive and stable for an empty prefix.
     #[test]
-    fn parse_compaction_payload_round_trip() {
-        let cp = CompactionCheckpoint {
-            artifact: ArtifactId::new(),
-            up_to_seq: 42,
-            prefix_hash: [0xAB; 32],
-        };
-        let bytes = encode_compaction_payload(&cp).expect("encode");
+    fn compaction_payloads_and_prefix_hashes_are_exact() {
+        // Phase: parse_compaction_payload_round_trip.
+        {
+            let cp = CompactionCheckpoint {
+                artifact: ArtifactId::new(),
+                up_to_seq: 42,
+                prefix_hash: [0xAB; 32],
+            };
+            let bytes = encode_compaction_payload(&cp).expect("encode");
 
-        // Build a SignedOp carrying the encoded payload and the
-        // matching op_class.
-        let (_, pk) = generate_keypair();
-        let op = SignedOp::new_unsigned(
-            bytes,
-            cp.artifact,
-            pk,
-            AttestationId::new(),
-            OpClass::Compaction,
-            SystemTime::UNIX_EPOCH,
-            100,
-        );
-        let parsed = parse_compaction_payload(&op).expect("parse");
-        assert_eq!(parsed, cp);
-    }
-
-    #[test]
-    fn parse_compaction_payload_rejects_wrong_op_class() {
-        // A SignedOp with op_class=Splice carrying a checkpoint-shaped
-        // payload still must be rejected — the role table gives Editors
-        // Splice but NOT Compaction, and a typed error here lets the audit
-        // log distinguish forgery from a genuine malformed payload.
-        let cp = CompactionCheckpoint {
-            artifact: ArtifactId::new(),
-            up_to_seq: 5,
-            prefix_hash: [0; 32],
-        };
-        let bytes = encode_compaction_payload(&cp).expect("encode");
-        let (_, pk) = generate_keypair();
-        let op = SignedOp::new_unsigned(
-            bytes,
-            cp.artifact,
-            pk,
-            AttestationId::new(),
-            OpClass::Splice,
-            SystemTime::UNIX_EPOCH,
-            7,
-        );
-        match parse_compaction_payload(&op) {
-            Err(CompactionError::WrongOpClass { actual }) => {
-                assert_eq!(actual, OpClass::Splice);
-            }
-            other => panic!("expected WrongOpClass, got {other:?}"),
+            // Build a SignedOp carrying the encoded payload and the
+            // matching op_class.
+            let (_, pk) = generate_keypair();
+            let op = SignedOp::new_unsigned(
+                bytes,
+                cp.artifact,
+                pk,
+                AttestationId::new(),
+                OpClass::Compaction,
+                SystemTime::UNIX_EPOCH,
+                100,
+            );
+            let parsed = parse_compaction_payload(&op).expect("parse");
+            assert_eq!(parsed, cp);
         }
-    }
 
-    #[test]
-    fn hash_op_prefix_is_deterministic() {
-        let a = dummy_op(1);
-        let b = dummy_op(2);
-        let h1 = hash_op_prefix(&[a.clone(), b.clone()]).unwrap();
-        let h2 = hash_op_prefix(&[a, b]).unwrap();
-        assert_eq!(h1, h2);
-    }
+        // Phase: parse_compaction_payload_rejects_wrong_op_class.
+        {
+            // A SignedOp with op_class=Splice carrying a checkpoint-shaped
+            // payload still must be rejected — the role table gives Editors
+            // Splice but NOT Compaction, and a typed error here lets the audit
+            // log distinguish forgery from a genuine malformed payload.
+            let cp = CompactionCheckpoint {
+                artifact: ArtifactId::new(),
+                up_to_seq: 5,
+                prefix_hash: [0; 32],
+            };
+            let bytes = encode_compaction_payload(&cp).expect("encode");
+            let (_, pk) = generate_keypair();
+            let op = SignedOp::new_unsigned(
+                bytes,
+                cp.artifact,
+                pk,
+                AttestationId::new(),
+                OpClass::Splice,
+                SystemTime::UNIX_EPOCH,
+                7,
+            );
+            match parse_compaction_payload(&op) {
+                Err(CompactionError::WrongOpClass { actual }) => {
+                    assert_eq!(actual, OpClass::Splice);
+                }
+                other => panic!("expected WrongOpClass, got {other:?}"),
+            }
+        }
 
-    #[test]
-    fn hash_op_prefix_order_sensitive() {
-        // The hash must be sensitive to op order so a peer reordering
-        // its log can't pass verification.
-        let a = dummy_op(1);
-        let b = dummy_op(2);
-        let h_ab = hash_op_prefix(&[a.clone(), b.clone()]).unwrap();
-        let h_ba = hash_op_prefix(&[b, a]).unwrap();
-        assert_ne!(h_ab, h_ba);
-    }
+        // Phase: hash_op_prefix_is_deterministic.
+        {
+            let a = dummy_op(1);
+            let b = dummy_op(2);
+            let h1 = hash_op_prefix(&[a.clone(), b.clone()]).unwrap();
+            let h2 = hash_op_prefix(&[a, b]).unwrap();
+            assert_eq!(h1, h2);
+        }
 
-    #[test]
-    fn hash_op_prefix_empty_is_stable() {
-        // Edge case: an empty prefix (a checkpoint before any ops) — the
-        // hash must be SHA-256 of the empty string, not a panic.
-        let h = hash_op_prefix(&[]).unwrap();
-        // SHA-256("") = e3b0c4...
-        assert_eq!(h[0], 0xe3);
-        assert_eq!(h[1], 0xb0);
+        // Phase: hash_op_prefix_order_sensitive.
+        {
+            // The hash must be sensitive to op order so a peer reordering
+            // its log can't pass verification.
+            let a = dummy_op(1);
+            let b = dummy_op(2);
+            let h_ab = hash_op_prefix(&[a.clone(), b.clone()]).unwrap();
+            let h_ba = hash_op_prefix(&[b, a]).unwrap();
+            assert_ne!(h_ab, h_ba);
+        }
+
+        // Phase: hash_op_prefix_empty_is_stable.
+        {
+            // Edge case: an empty prefix (a checkpoint before any ops) — the
+            // hash must be SHA-256 of the empty string, not a panic.
+            let h = hash_op_prefix(&[]).unwrap();
+            // SHA-256("") = e3b0c4...
+            assert_eq!(h[0], 0xe3);
+            assert_eq!(h[1], 0xb0);
+        }
     }
 }

@@ -171,36 +171,38 @@ mod tests {
     }
 
     #[test]
-    fn whole_file_and_positioned_io_round_trip_off_the_runtime() {
-        let path = scratch("round-trip");
-        crate::block_on(async {
-            write(path.clone(), b"hello world".to_vec()).await.unwrap();
-            assert_eq!(read(path.clone()).await.unwrap(), b"hello world");
-            let file = Arc::new(
-                std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(&path)
-                    .unwrap(),
-            );
-            write_all_at(Arc::clone(&file), 6, b"tilo!".to_vec())
-                .await
-                .unwrap();
-            sync_all(Arc::clone(&file)).await.unwrap();
-            assert_eq!(read_at(Arc::clone(&file), 6, 64).await.unwrap(), b"tilo!");
-            let thread = run(|| Ok(std::thread::current().name().map(str::to_owned)))
-                .await
-                .unwrap();
-            assert!(thread.unwrap().starts_with("tilo-io-"));
-        })
-        .unwrap();
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn errors_come_back_to_the_caller() {
-        let missing = scratch("missing").join("absent");
-        let error = crate::block_on(read(missing)).unwrap().unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    fn file_io_round_trips_off_the_runtime_and_returns_errors() {
+        // phase: whole_file_and_positioned_io_round_trip_off_the_runtime
+        {
+            let path = scratch("round-trip");
+            crate::block_on(async {
+                write(path.clone(), b"hello world".to_vec()).await.unwrap();
+                assert_eq!(read(path.clone()).await.unwrap(), b"hello world");
+                let file = Arc::new(
+                    std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&path)
+                        .unwrap(),
+                );
+                write_all_at(Arc::clone(&file), 6, b"tilo!".to_vec())
+                    .await
+                    .unwrap();
+                sync_all(Arc::clone(&file)).await.unwrap();
+                assert_eq!(read_at(Arc::clone(&file), 6, 64).await.unwrap(), b"tilo!");
+                let thread = run(|| Ok(std::thread::current().name().map(str::to_owned)))
+                    .await
+                    .unwrap();
+                assert!(thread.unwrap().starts_with("tilo-io-"));
+            })
+            .unwrap();
+            std::fs::remove_file(path).unwrap();
+        }
+        // phase: errors_come_back_to_the_caller
+        {
+            let missing = scratch("missing").join("absent");
+            let error = crate::block_on(read(missing)).unwrap().unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        }
     }
 }

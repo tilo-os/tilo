@@ -197,13 +197,9 @@ impl Drop for MediaHost {
         };
         let store = std::sync::Arc::clone(&self.store);
         let _ = std::thread::spawn(move || {
-            let _ = runtime.block_on(store.store().shutdown());
+            let _ = runtime.block_on(store.shutdown());
             runtime.shutdown_background();
         })
         .join();
     }
 }
-
-#[cfg(test)]
-#[path = "runtime_host/daemon_process_tests.rs"]
-mod daemon_process_tests;

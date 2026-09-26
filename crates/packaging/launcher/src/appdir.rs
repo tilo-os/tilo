@@ -310,204 +310,207 @@ pub fn sandbox_env() -> Vec<(String, String)> {
 mod tests {
     use super::*;
 
-    /// The room name is the one path component an outside caller
-    /// supplies, so it is the one that has to be unable to escape.
     #[test]
-    fn a_room_name_can_never_escape_its_parent() {
-        let data = Path::new("/data");
-        for hostile in [
-            "..",
-            "../..",
-            "../../../etc",
-            "/etc/shadow",
-            "a/../../b",
-            ".",
-            "\0evil",
-            "room\nname",
-        ] {
-            let slug = room_slug(Some(hostile));
-            assert!(
-                !slug.contains('/'),
-                "{hostile:?} produced a multi-component slug {slug:?}"
-            );
-            assert!(
-                slug != "." && slug != "..",
-                "{hostile:?} produced {slug:?}, which names a directory \
-                 instead of creating one"
-            );
-            let dir = host_app_dir(data, &slug, "so.tilo.notes");
-            assert!(
-                dir.starts_with("/data/tilo-rooms/"),
-                "{hostile:?} escaped to {}",
-                dir.display()
-            );
-            // `..` inside the assembled path would let a later canonicalisation
-            // walk out even though the string looks contained.
-            assert!(
-                !dir.components().any(|c| c.as_os_str() == ".."),
-                "{hostile:?} left a parent component in {}",
-                dir.display()
-            );
+    fn app_directory_paths_are_confined_per_room_and_package() {
+        // Phase `a_room_name_can_never_escape_its_parent`.
+        // The room name is the one path component an outside caller
+        // supplies, so it is the one that has to be unable to escape.
+        {
+            let data = Path::new("/data");
+            for hostile in [
+                "..",
+                "../..",
+                "../../../etc",
+                "/etc/shadow",
+                "a/../../b",
+                ".",
+                "\0evil",
+                "room\nname",
+            ] {
+                let slug = room_slug(Some(hostile));
+                assert!(
+                    !slug.contains('/'),
+                    "{hostile:?} produced a multi-component slug {slug:?}"
+                );
+                assert!(
+                    slug != "." && slug != "..",
+                    "{hostile:?} produced {slug:?}, which names a directory \
+                     instead of creating one"
+                );
+                let dir = host_app_dir(data, &slug, "so.tilo.notes");
+                assert!(
+                    dir.starts_with("/data/tilo-rooms/"),
+                    "{hostile:?} escaped to {}",
+                    dir.display()
+                );
+                // `..` inside the assembled path would let a later canonicalisation
+                // walk out even though the string looks contained.
+                assert!(
+                    !dir.components().any(|c| c.as_os_str() == ".."),
+                    "{hostile:?} left a parent component in {}",
+                    dir.display()
+                );
+            }
+        }
+        // Phase `a_package_id_can_never_escape_its_room`.
+        // Same argument for the package id: it comes out of a manifest, which
+        // is the thing being distrusted.
+        {
+            let data = Path::new("/data");
+            for hostile in ["..", "../../etc", "/", "a/b"] {
+                let dir = host_app_dir(data, PERSONAL_ROOM, hostile);
+                assert!(
+                    dir.starts_with("/data/tilo-rooms/personal/"),
+                    "{hostile:?} escaped to {}",
+                    dir.display()
+                );
+                assert_eq!(
+                    dir.components().count(),
+                    Path::new("/data/tilo-rooms/personal/x")
+                        .components()
+                        .count(),
+                    "{hostile:?} produced more than one component: {}",
+                    dir.display()
+                );
+            }
+        }
+        // Phase `two_rooms_are_two_directories`.
+        // Two rooms are two directories. This is the whole of per-room
+        // partitioning at the filesystem layer.
+        {
+            let data = Path::new("/data");
+            let a = host_app_dir(data, &room_slug(Some("room-a")), "so.tilo.notes");
+            let b = host_app_dir(data, &room_slug(Some("room-b")), "so.tilo.notes");
+            assert_ne!(a, b);
+            assert!(!a.starts_with(&b) && !b.starts_with(&a));
+        }
+        // Phase `no_workspace_means_the_personal_room`.
+        {
+            assert_eq!(room_slug(None), PERSONAL_ROOM);
+            assert_eq!(room_slug(Some("")), PERSONAL_ROOM);
+            assert_eq!(room_slug(Some("   ")), PERSONAL_ROOM);
         }
     }
 
-    /// Same argument for the package id: it comes out of a manifest, which
-    /// is the thing being distrusted.
     #[test]
-    fn a_package_id_can_never_escape_its_room() {
-        let data = Path::new("/data");
-        for hostile in ["..", "../../etc", "/", "a/b"] {
-            let dir = host_app_dir(data, PERSONAL_ROOM, hostile);
-            assert!(
-                dir.starts_with("/data/tilo-rooms/personal/"),
-                "{hostile:?} escaped to {}",
-                dir.display()
+    fn app_directory_bind_and_xdg_tree() {
+        // Phase `every_announced_path_is_inside_the_bound_directory`.
+        // `XDG_DATA_HOME` has to land inside the bound directory or
+        // `cli::standalone_state_dir` writes somewhere unbound and the app
+        // silently loses its state.
+        {
+            for (key, value) in sandbox_env() {
+                assert!(
+                    value.starts_with(SANDBOX_APP_DIR),
+                    "{key}={value} points outside {SANDBOX_APP_DIR}"
+                );
+            }
+            let env = sandbox_env();
+            let data = env
+                .iter()
+                .find(|(k, _)| k == "XDG_DATA_HOME")
+                .map(|(_, v)| v.clone())
+                .expect("XDG_DATA_HOME is announced");
+            assert_eq!(data, "/run/tilo/app/.local/share");
+        }
+        // Phase `the_bind_is_read_write_at_the_fixed_path`.
+        {
+            let mut argv = Vec::new();
+            push_app_dir(
+                &mut argv,
+                Path::new("/data/tilo-rooms/personal/so.tilo.notes"),
             );
+            assert!(
+                argv.windows(3).any(|w| w[0] == "--bind"
+                    && w[1] == "/data/tilo-rooms/personal/so.tilo.notes"
+                    && w[2] == SANDBOX_APP_DIR),
+                "app dir must be bound read-write at the fixed path: {argv:?}"
+            );
+            assert!(
+                argv.windows(3)
+                    .any(|w| w[0] == "--setenv" && w[1] == "HOME" && w[2] == SANDBOX_APP_DIR),
+                "HOME must point inside the app dir: {argv:?}"
+            );
+        }
+        // Phase `preparing_the_directory_creates_the_xdg_tree`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
+            assert!(dir.join(".local/share").is_dir());
+            assert!(dir.join(".config").is_dir());
+            assert!(dir.join(".cache").is_dir());
+            assert_eq!(dir, tmp.path().join("tilo-rooms/room-a/so.tilo.notes"));
+        }
+    }
+
+    #[test]
+    fn legacy_state_adoption_is_single_safe_and_personal() {
+        // Phase `legacy_state_is_adopted_into_the_personal_room_only`.
+        // The migration adopts into the personal room and nowhere else.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let legacy = tmp.path().join("so.tilo.notes");
+            std::fs::create_dir_all(&legacy).unwrap();
+            std::fs::write(legacy.join("state.bin"), b"old library").unwrap();
+
+            let workspace =
+                prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
+            assert!(
+                !workspace
+                    .join(".local/share/so.tilo.notes/state.bin")
+                    .exists(),
+                "a workspace room must start empty"
+            );
+
+            let personal = prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
+            let adopted = personal.join(".local/share/so.tilo.notes/state.bin");
             assert_eq!(
-                dir.components().count(),
-                Path::new("/data/tilo-rooms/personal/x")
-                    .components()
-                    .count(),
-                "{hostile:?} produced more than one component: {}",
-                dir.display()
+                std::fs::read(&adopted).unwrap(),
+                b"old library",
+                "the personal room adopts pre-partition state"
             );
-        }
-    }
-
-    /// Two rooms are two directories. This is the whole of per-room
-    /// partitioning at the filesystem layer.
-    #[test]
-    fn two_rooms_are_two_directories() {
-        let data = Path::new("/data");
-        let a = host_app_dir(data, &room_slug(Some("room-a")), "so.tilo.notes");
-        let b = host_app_dir(data, &room_slug(Some("room-b")), "so.tilo.notes");
-        assert_ne!(a, b);
-        assert!(!a.starts_with(&b) && !b.starts_with(&a));
-    }
-
-    #[test]
-    fn no_workspace_means_the_personal_room() {
-        assert_eq!(room_slug(None), PERSONAL_ROOM);
-        assert_eq!(room_slug(Some("")), PERSONAL_ROOM);
-        assert_eq!(room_slug(Some("   ")), PERSONAL_ROOM);
-    }
-
-    /// `XDG_DATA_HOME` has to land inside the bound directory or
-    /// `cli::standalone_state_dir` writes somewhere unbound and the app
-    /// silently loses its state.
-    #[test]
-    fn every_announced_path_is_inside_the_bound_directory() {
-        for (key, value) in sandbox_env() {
             assert!(
-                value.starts_with(SANDBOX_APP_DIR),
-                "{key}={value} points outside {SANDBOX_APP_DIR}"
+                legacy.join("state.bin").exists(),
+                "the original is copied, not moved"
             );
         }
-        let env = sandbox_env();
-        let data = env
-            .iter()
-            .find(|(k, _)| k == "XDG_DATA_HOME")
-            .map(|(_, v)| v.clone())
-            .expect("XDG_DATA_HOME is announced");
-        assert_eq!(data, "/run/tilo/app/.local/share");
-    }
+        // Phase `adoption_happens_exactly_once`.
+        // A second launch must not overwrite what the user did in the room
+        // with a stale copy of the original.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let legacy = tmp.path().join("so.tilo.notes");
+            std::fs::create_dir_all(&legacy).unwrap();
+            std::fs::write(legacy.join("state.bin"), b"old").unwrap();
 
-    #[test]
-    fn the_bind_is_read_write_at_the_fixed_path() {
-        let mut argv = Vec::new();
-        push_app_dir(
-            &mut argv,
-            Path::new("/data/tilo-rooms/personal/so.tilo.notes"),
-        );
-        assert!(
-            argv.windows(3).any(|w| w[0] == "--bind"
-                && w[1] == "/data/tilo-rooms/personal/so.tilo.notes"
-                && w[2] == SANDBOX_APP_DIR),
-            "app dir must be bound read-write at the fixed path: {argv:?}"
-        );
-        assert!(
-            argv.windows(3)
-                .any(|w| w[0] == "--setenv" && w[1] == "HOME" && w[2] == SANDBOX_APP_DIR),
-            "HOME must point inside the app dir: {argv:?}"
-        );
-    }
+            let personal = prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
+            let adopted = personal.join(".local/share/so.tilo.notes/state.bin");
+            std::fs::write(&adopted, b"edited in the room").unwrap();
 
-    #[test]
-    fn preparing_the_directory_creates_the_xdg_tree() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
-        assert!(dir.join(".local/share").is_dir());
-        assert!(dir.join(".config").is_dir());
-        assert!(dir.join(".cache").is_dir());
-        assert_eq!(dir, tmp.path().join("tilo-rooms/room-a/so.tilo.notes"));
-    }
+            prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
+            assert_eq!(
+                std::fs::read(&adopted).unwrap(),
+                b"edited in the room",
+                "a re-launch must not re-copy over the user's edits"
+            );
+        }
+        // Phase `adoption_does_not_follow_symlinks_out_of_the_tree`.
+        // A symlink in the legacy tree is copied as a link. Following it
+        // would pull whatever it names into the app's directory.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let outside = tmp.path().join("outside-secret");
+            std::fs::write(&outside, b"not the app's").unwrap();
+            let legacy = tmp.path().join("so.tilo.notes");
+            std::fs::create_dir_all(&legacy).unwrap();
+            std::os::unix::fs::symlink(&outside, legacy.join("link")).unwrap();
 
-    /// The migration adopts into the personal room and nowhere else.
-    #[test]
-    fn legacy_state_is_adopted_into_the_personal_room_only() {
-        let tmp = tempfile::tempdir().unwrap();
-        let legacy = tmp.path().join("so.tilo.notes");
-        std::fs::create_dir_all(&legacy).unwrap();
-        std::fs::write(legacy.join("state.bin"), b"old library").unwrap();
-
-        let workspace = prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
-        assert!(
-            !workspace
-                .join(".local/share/so.tilo.notes/state.bin")
-                .exists(),
-            "a workspace room must start empty"
-        );
-
-        let personal = prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
-        let adopted = personal.join(".local/share/so.tilo.notes/state.bin");
-        assert_eq!(
-            std::fs::read(&adopted).unwrap(),
-            b"old library",
-            "the personal room adopts pre-partition state"
-        );
-        assert!(
-            legacy.join("state.bin").exists(),
-            "the original is copied, not moved"
-        );
-    }
-
-    /// A second launch must not overwrite what the user did in the room
-    /// with a stale copy of the original.
-    #[test]
-    fn adoption_happens_exactly_once() {
-        let tmp = tempfile::tempdir().unwrap();
-        let legacy = tmp.path().join("so.tilo.notes");
-        std::fs::create_dir_all(&legacy).unwrap();
-        std::fs::write(legacy.join("state.bin"), b"old").unwrap();
-
-        let personal = prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
-        let adopted = personal.join(".local/share/so.tilo.notes/state.bin");
-        std::fs::write(&adopted, b"edited in the room").unwrap();
-
-        prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
-        assert_eq!(
-            std::fs::read(&adopted).unwrap(),
-            b"edited in the room",
-            "a re-launch must not re-copy over the user's edits"
-        );
-    }
-
-    /// A symlink in the legacy tree is copied as a link. Following it
-    /// would pull whatever it names into the app's directory.
-    #[test]
-    fn adoption_does_not_follow_symlinks_out_of_the_tree() {
-        let tmp = tempfile::tempdir().unwrap();
-        let outside = tmp.path().join("outside-secret");
-        std::fs::write(&outside, b"not the app's").unwrap();
-        let legacy = tmp.path().join("so.tilo.notes");
-        std::fs::create_dir_all(&legacy).unwrap();
-        std::os::unix::fs::symlink(&outside, legacy.join("link")).unwrap();
-
-        let personal = prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
-        let copied = personal.join(".local/share/so.tilo.notes/link");
-        assert!(
-            copied.symlink_metadata().unwrap().file_type().is_symlink(),
-            "a symlink must be copied as a symlink, not resolved"
-        );
+            let personal = prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
+            let copied = personal.join(".local/share/so.tilo.notes/link");
+            assert!(
+                copied.symlink_metadata().unwrap().file_type().is_symlink(),
+                "a symlink must be copied as a symlink, not resolved"
+            );
+        }
     }
 }

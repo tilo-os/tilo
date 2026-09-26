@@ -464,29 +464,31 @@ mod tests {
 </office:styles>"#;
 
     #[test]
-    fn split_concatenates_back_verbatim() {
-        let atoms = split_atoms(TWO_STYLE_PART);
-        // Two depth-1 siblings → two atoms: [prologue + root-open + style A], [style B + root-close]
-        // (the first sibling rides with the leading material; each subsequent sibling opens a new atom).
-        assert_eq!(atoms.len(), 2, "two style atoms: {atoms:?}");
-        let joined: Vec<u8> = atoms.iter().flatten().copied().collect();
-        assert_eq!(
-            joined, TWO_STYLE_PART,
-            "atoms must concatenate to the source byte-for-byte"
-        );
-        let has_a = atoms.iter().any(|a| a.windows(5).any(|w| w == b"alpha"));
-        let has_b = atoms.iter().any(|a| a.windows(5).any(|w| w == b"bravo"));
-        assert!(has_a && has_b, "both style atoms present in the split");
-        let same_atom = atoms
-            .iter()
-            .any(|a| a.windows(5).any(|w| w == b"alpha") && a.windows(5).any(|w| w == b"bravo"));
-        assert!(!same_atom, "the two styles must be in SEPARATE atoms");
-    }
-
-    #[test]
-    fn non_xml_part_stays_single_atom() {
-        let png = &[0x89u8, b'P', b'N', b'G', 0, 1, 2, 3][..];
-        let atoms = split_atoms(png);
-        assert_eq!(atoms, vec![png.to_vec()], "binary part is one opaque atom");
+    fn preserved_parts_split_into_atoms_and_concatenate_back() {
+        // Phase `split_concatenates_back_verbatim`.
+        {
+            let atoms = split_atoms(TWO_STYLE_PART);
+            // Two depth-1 siblings → two atoms: [prologue + root-open + style A], [style B + root-close]
+            // (the first sibling rides with the leading material; each subsequent sibling opens a new atom).
+            assert_eq!(atoms.len(), 2, "two style atoms: {atoms:?}");
+            let joined: Vec<u8> = atoms.iter().flatten().copied().collect();
+            assert_eq!(
+                joined, TWO_STYLE_PART,
+                "atoms must concatenate to the source byte-for-byte"
+            );
+            let has_a = atoms.iter().any(|a| a.windows(5).any(|w| w == b"alpha"));
+            let has_b = atoms.iter().any(|a| a.windows(5).any(|w| w == b"bravo"));
+            assert!(has_a && has_b, "both style atoms present in the split");
+            let same_atom = atoms.iter().any(|a| {
+                a.windows(5).any(|w| w == b"alpha") && a.windows(5).any(|w| w == b"bravo")
+            });
+            assert!(!same_atom, "the two styles must be in SEPARATE atoms");
+        }
+        // Phase `non_xml_part_stays_single_atom`.
+        {
+            let png = &[0x89u8, b'P', b'N', b'G', 0, 1, 2, 3][..];
+            let atoms = split_atoms(png);
+            assert_eq!(atoms, vec![png.to_vec()], "binary part is one opaque atom");
+        }
     }
 }

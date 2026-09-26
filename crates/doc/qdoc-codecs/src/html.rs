@@ -1061,180 +1061,286 @@ mod tests {
     }
 
     #[test]
-    fn detect_recognizes_html_signature() {
-        assert_eq!(
-            HtmlCodec.detect(b"<!doctype html>\n<html>"),
-            Confidence::High
-        );
-        assert_eq!(HtmlCodec.detect(b"  <html lang=\"en\">"), Confidence::High);
-        assert_eq!(HtmlCodec.detect(b"<p>hi</p>"), Confidence::Medium);
-        assert_eq!(HtmlCodec.detect(b"plain text"), Confidence::None);
-    }
-
-    #[test]
-    fn headings_and_paragraph() {
-        let snap = import("<h1>Title</h1><h2>Sub</h2><p>Body text</p>");
-        assert_eq!(snap.blocks[0].kind, "heading");
-        assert_eq!(snap.blocks[0].text, "Title");
-        assert_eq!(
-            snap.blocks[0].attrs.get("level"),
-            Some(&qdoc::AttrVal::Int(1))
-        );
-        assert_eq!(snap.blocks[1].kind, "heading");
-        assert_eq!(
-            snap.blocks[1].attrs.get("level"),
-            Some(&qdoc::AttrVal::Int(2))
-        );
-        let p = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "paragraph")
-            .expect("paragraph");
-        assert_eq!(p.text, "Body text");
-    }
-
-    #[test]
-    fn bold_italic_underline_strike_marks() {
-        let snap = import("<p>a<strong>b</strong><em>c</em><u>d</u><s>e</s></p>");
-        let p = &snap.blocks[0];
-        assert_eq!(p.text, "abcde");
-        assert!(
-            p.marks
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn html_import_block_structure_and_tolerance() {
+        // Phase `detect_recognizes_html_signature`.
+        {
+            assert_eq!(
+                HtmlCodec.detect(b"<!doctype html>\n<html>"),
+                Confidence::High
+            );
+            assert_eq!(HtmlCodec.detect(b"  <html lang=\"en\">"), Confidence::High);
+            assert_eq!(HtmlCodec.detect(b"<p>hi</p>"), Confidence::Medium);
+            assert_eq!(HtmlCodec.detect(b"plain text"), Confidence::None);
+        }
+        // Phase `headings_and_paragraph`.
+        {
+            let snap = import("<h1>Title</h1><h2>Sub</h2><p>Body text</p>");
+            assert_eq!(snap.blocks[0].kind, "heading");
+            assert_eq!(snap.blocks[0].text, "Title");
+            assert_eq!(
+                snap.blocks[0].attrs.get("level"),
+                Some(&qdoc::AttrVal::Int(1))
+            );
+            assert_eq!(snap.blocks[1].kind, "heading");
+            assert_eq!(
+                snap.blocks[1].attrs.get("level"),
+                Some(&qdoc::AttrVal::Int(2))
+            );
+            let p = snap
+                .blocks
                 .iter()
-                .any(|m| m.name == "strong" && m.start == 1 && m.end == 2),
-            "{:?}",
-            p.marks
-        );
-        assert!(
-            p.marks
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            assert_eq!(p.text, "Body text");
+        }
+        // Phase `blockquote_becomes_quote_block`.
+        {
+            let snap = import("<blockquote><p>quoted line</p></blockquote>");
+            let q = snap
+                .blocks
                 .iter()
-                .any(|m| m.name == "em" && m.start == 2 && m.end == 3),
-            "{:?}",
-            p.marks
-        );
-        assert!(
-            p.marks
+                .find(|b| b.kind == "quote")
+                .expect("quote block");
+            assert!(q.text.contains("quoted line"), "got {:?}", q.text);
+        }
+        // Phase `table_cells_tagged_table_row_col`.
+        {
+            let snap =
+                import("<table><tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr></table>");
+            let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
+            assert_eq!(cells.len(), 4, "{snap:?}");
+            assert_eq!(
+                cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+                vec!["a", "b", "1", "2"]
+            );
+            assert_eq!(cells[0].attrs.get("row"), Some(&qdoc::AttrVal::Int(0)));
+            assert_eq!(cells[0].attrs.get("col"), Some(&qdoc::AttrVal::Int(0)));
+            assert_eq!(cells[3].attrs.get("row"), Some(&qdoc::AttrVal::Int(1)));
+            assert_eq!(cells[3].attrs.get("col"), Some(&qdoc::AttrVal::Int(1)));
+        }
+        // Phase `pre_code_is_verbatim_code_block`.
+        {
+            let snap = import("<pre><code>let x = 1;\nlet y = 2;\n</code></pre>");
+            let code = snap
+                .blocks
                 .iter()
-                .any(|m| m.name == "underline" && m.start == 3 && m.end == 4),
-            "{:?}",
-            p.marks
-        );
-        assert!(
-            p.marks
+                .find(|b| matches!(b.attrs.get("code"), Some(&qdoc::AttrVal::Bool(true))))
+                .expect("code block");
+            assert_eq!(code.text, "let x = 1;\nlet y = 2;\n");
+        }
+        // Phase `entities_are_unescaped`.
+        {
+            let snap = import("<p>a &amp; b &lt; c &gt; d &#65; &#x42; &nbsp;e</p>");
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "a & b < c > d A B \u{a0}e");
+        }
+        // Phase `head_is_skipped`.
+        {
+            let snap = import("<head><title>Doc Title</title></head><body><p>Body</p></body>");
+            let texts: Vec<_> = snap.blocks.iter().map(|b| b.text.clone()).collect();
+            assert_eq!(
+                texts,
+                vec!["Body".to_string()],
+                "title must not leak into body: {snap:?}"
+            );
+        }
+        // Phase `whitespace_is_collapsed`.
+        {
+            let snap = import("<p>a   b\n  c</p>");
+            assert_eq!(snap.blocks[0].text, "a b c");
+        }
+        // Phase `unclosed_tags_are_tolerated`.
+        {
+            // No closing `</b>`/`</p>`; the importer must still produce sane blocks.
+            let snap = import("<p>start <b>bold and more");
+            let p = snap
+                .blocks
                 .iter()
-                .any(|m| m.name == "strike" && m.start == 4 && m.end == 5),
-            "{:?}",
-            p.marks
-        );
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            assert_eq!(p.text, "start bold and more");
+            assert!(
+                p.marks.iter().any(|m| m.name == "strong"),
+                "unclosed bold still marks: {:?}",
+                p.marks
+            );
+        }
+        // Phase `export_is_unsupported`.
+        {
+            let d = Document::new();
+            let err = HtmlCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap_err();
+            assert!(matches!(err, CodecError::Unsupported(_)), "got {err:?}");
+        }
     }
 
     #[test]
-    fn b_and_i_aliases_map_to_strong_em() {
-        let snap = import("<p><b>x</b> <i>y</i></p>");
-        let p = &snap.blocks[0];
-        assert_eq!(p.text, "x y");
-        assert!(p.marks.iter().any(|m| m.name == "strong"), "{:?}", p.marks);
-        assert!(p.marks.iter().any(|m| m.name == "em"), "{:?}", p.marks);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn html_import_marks_and_styles() {
+        // Phase `bold_italic_underline_strike_marks`.
+        {
+            let snap = import("<p>a<strong>b</strong><em>c</em><u>d</u><s>e</s></p>");
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "abcde");
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "strong" && m.start == 1 && m.end == 2),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "em" && m.start == 2 && m.end == 3),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "underline" && m.start == 3 && m.end == 4),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "strike" && m.start == 4 && m.end == 5),
+                "{:?}",
+                p.marks
+            );
+        }
+        // Phase `b_and_i_aliases_map_to_strong_em`.
+        {
+            let snap = import("<p><b>x</b> <i>y</i></p>");
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "x y");
+            assert!(p.marks.iter().any(|m| m.name == "strong"), "{:?}", p.marks);
+            assert!(p.marks.iter().any(|m| m.name == "em"), "{:?}", p.marks);
+        }
+        // Phase `link_becomes_mark`.
+        {
+            let snap = import(r#"<p>See <a href="https://tilo.so/">the docs</a> now</p>"#);
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "See the docs now");
+            let link = p
+                .marks
+                .iter()
+                .find(|m| m.name == "link")
+                .expect("link mark");
+            assert_eq!(
+                link.value,
+                qdoc::document::MarkValue::Str("https://tilo.so/".into())
+            );
+            assert_eq!(p.text.get(link.start..link.end), Some("the docs"));
+        }
+        // Phase `span_style_carries_color_size_font`.
+        {
+            let snap = import(
+                r#"<p><span style="color: #ff0000; font-size: 20pt; font-family: serif">styled</span></p>"#,
+            );
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "styled");
+            assert!(
+                p.marks.iter().any(|m| m.name == "color"
+                    && m.value == qdoc::document::MarkValue::Str("#ff0000".into())),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "fontSize" && m.value == qdoc::document::MarkValue::Int(20)),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks.iter().any(|m| m.name == "fontFamily"
+                    && m.value == qdoc::document::MarkValue::Str("serif".into())),
+                "{:?}",
+                p.marks
+            );
+        }
+        // Phase `background_becomes_highlight`.
+        {
+            let snap = import(r#"<p><span style="background: #ffff00">hi</span></p>"#);
+            let p = &snap.blocks[0];
+            assert!(
+                p.marks.iter().any(|m| m.name == "highlight"
+                    && m.value == qdoc::document::MarkValue::Str("#ffff00".into())),
+                "{:?}",
+                p.marks
+            );
+        }
+        // Phase `sup_and_sub_marks`.
+        {
+            let snap = import("<p>x<sup>2</sup>y<sub>n</sub></p>");
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "x2yn");
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "super" && m.start == 1 && m.end == 2),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "sub" && m.start == 3 && m.end == 4),
+                "{:?}",
+                p.marks
+            );
+        }
     }
 
     #[test]
-    fn link_becomes_mark() {
-        let snap = import(r#"<p>See <a href="https://tilo.so/">the docs</a> now</p>"#);
-        let p = &snap.blocks[0];
-        assert_eq!(p.text, "See the docs now");
-        let link = p
-            .marks
-            .iter()
-            .find(|m| m.name == "link")
-            .expect("link mark");
-        assert_eq!(
-            link.value,
-            qdoc::document::MarkValue::Str("https://tilo.so/".into())
-        );
-        assert_eq!(p.text.get(link.start..link.end), Some("the docs"));
-    }
-
-    #[test]
-    fn unordered_and_ordered_list_items() {
-        let snap = import("<ul><li>one</li><li>two</li></ul><ol><li>first</li></ol>");
-        let items: Vec<_> = snap
-            .blocks
-            .iter()
-            .filter(|b| b.kind == "list_item")
-            .collect();
-        assert_eq!(items.len(), 3, "{snap:?}");
-        assert_eq!(items[0].text, "one");
-        assert_eq!(
-            items[0].attrs.get("ordered"),
-            Some(&qdoc::AttrVal::Bool(false))
-        );
-        assert_eq!(
-            items[2].attrs.get("ordered"),
-            Some(&qdoc::AttrVal::Bool(true))
-        );
-    }
-
-    #[test]
-    fn nested_lists_carry_level() {
-        let snap = import("<ul><li>top</li><ul><li>sub</li></ul></ul>");
-        let items: Vec<_> = snap
-            .blocks
-            .iter()
-            .filter(|b| b.kind == "list_item")
-            .collect();
-        assert_eq!(items.len(), 2);
-        let sub = items.iter().find(|b| b.text == "sub").expect("sub item");
-        assert_eq!(
-            sub.attrs.get("level"),
-            Some(&qdoc::AttrVal::Int(1)),
-            "{:?}",
-            sub.attrs
-        );
-    }
-
-    #[test]
-    fn blockquote_becomes_quote_block() {
-        let snap = import("<blockquote><p>quoted line</p></blockquote>");
-        let q = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "quote")
-            .expect("quote block");
-        assert!(q.text.contains("quoted line"), "got {:?}", q.text);
-    }
-
-    #[test]
-    fn table_cells_tagged_table_row_col() {
-        let snap =
-            import("<table><tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr></table>");
-        let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
-        assert_eq!(cells.len(), 4, "{snap:?}");
-        assert_eq!(
-            cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
-            vec!["a", "b", "1", "2"]
-        );
-        assert_eq!(cells[0].attrs.get("row"), Some(&qdoc::AttrVal::Int(0)));
-        assert_eq!(cells[0].attrs.get("col"), Some(&qdoc::AttrVal::Int(0)));
-        assert_eq!(cells[3].attrs.get("row"), Some(&qdoc::AttrVal::Int(1)));
-        assert_eq!(cells[3].attrs.get("col"), Some(&qdoc::AttrVal::Int(1)));
-    }
-
-    #[test]
-    fn pre_code_is_verbatim_code_block() {
-        let snap = import("<pre><code>let x = 1;\nlet y = 2;\n</code></pre>");
-        let code = snap
-            .blocks
-            .iter()
-            .find(|b| matches!(b.attrs.get("code"), Some(&qdoc::AttrVal::Bool(true))))
-            .expect("code block");
-        assert_eq!(code.text, "let x = 1;\nlet y = 2;\n");
-    }
-
-    #[test]
-    fn entities_are_unescaped() {
-        let snap = import("<p>a &amp; b &lt; c &gt; d &#65; &#x42; &nbsp;e</p>");
-        let p = &snap.blocks[0];
-        assert_eq!(p.text, "a & b < c > d A B \u{a0}e");
+    fn html_import_lists_carry_kind_and_level() {
+        // Phase `unordered_and_ordered_list_items`.
+        {
+            let snap = import("<ul><li>one</li><li>two</li></ul><ol><li>first</li></ol>");
+            let items: Vec<_> = snap
+                .blocks
+                .iter()
+                .filter(|b| b.kind == "list_item")
+                .collect();
+            assert_eq!(items.len(), 3, "{snap:?}");
+            assert_eq!(items[0].text, "one");
+            assert_eq!(
+                items[0].attrs.get("ordered"),
+                Some(&qdoc::AttrVal::Bool(false))
+            );
+            assert_eq!(
+                items[2].attrs.get("ordered"),
+                Some(&qdoc::AttrVal::Bool(true))
+            );
+        }
+        // Phase `nested_lists_carry_level`.
+        {
+            let snap = import("<ul><li>top</li><ul><li>sub</li></ul></ul>");
+            let items: Vec<_> = snap
+                .blocks
+                .iter()
+                .filter(|b| b.kind == "list_item")
+                .collect();
+            assert_eq!(items.len(), 2);
+            let sub = items.iter().find(|b| b.text == "sub").expect("sub item");
+            assert_eq!(
+                sub.attrs.get("level"),
+                Some(&qdoc::AttrVal::Int(1)),
+                "{:?}",
+                sub.attrs
+            );
+        }
     }
 
     #[test]
@@ -1255,168 +1361,65 @@ mod tests {
     }
 
     #[test]
-    fn head_is_skipped() {
-        let snap = import("<head><title>Doc Title</title></head><body><p>Body</p></body>");
-        let texts: Vec<_> = snap.blocks.iter().map(|b| b.text.clone()).collect();
-        assert_eq!(
-            texts,
-            vec!["Body".to_string()],
-            "title must not leak into body: {snap:?}"
-        );
-    }
-
-    #[test]
-    fn span_style_carries_color_size_font() {
-        let snap = import(
-            r#"<p><span style="color: #ff0000; font-size: 20pt; font-family: serif">styled</span></p>"#,
-        );
-        let p = &snap.blocks[0];
-        assert_eq!(p.text, "styled");
-        assert!(
-            p.marks.iter().any(|m| m.name == "color"
-                && m.value == qdoc::document::MarkValue::Str("#ff0000".into())),
-            "{:?}",
-            p.marks
-        );
-        assert!(
-            p.marks
+    fn html_import_images_decode_data_uris_and_keep_remote_src() {
+        // Phase `base64_payload_decoding_is_lenient_about_layout_only`.
+        {
+            // Padded, unpadded and wrapped payloads decode alike.
+            assert_eq!(base64_decode("Zm9vYg==").as_deref(), Some(&b"foob"[..]));
+            assert_eq!(base64_decode("Zm9vYg").as_deref(), Some(&b"foob"[..]));
+            assert_eq!(
+                base64_decode(" Zm9v\r\n YmFy\t").as_deref(),
+                Some(&b"foobar"[..])
+            );
+            assert_eq!(
+                base64_decode("+/+/").as_deref(),
+                Some(&[0xfb, 0xff, 0xbf][..])
+            );
+            assert_eq!(base64_decode("").as_deref(), Some(&[][..]));
+            assert_eq!(base64_decode(" \n").as_deref(), Some(&[][..]));
+            // Decoding stops at the first `=`; whatever follows is ignored.
+            assert_eq!(base64_decode("QQ==garbage!").as_deref(), Some(&b"A"[..]));
+            assert_eq!(base64_decode("QQ=").as_deref(), Some(&b"A"[..]));
+            // Non-zero trailing bits and a dangling final sextet are dropped.
+            assert_eq!(base64_decode("QR==").as_deref(), Some(&b"A"[..]));
+            assert_eq!(base64_decode("Zm9vY").as_deref(), Some(&b"foo"[..]));
+            assert_eq!(base64_decode("Q").as_deref(), Some(&[][..]));
+            // Anything outside the standard alphabet is rejected, even last.
+            assert_eq!(base64_decode("Zm9v-_"), None);
+            assert_eq!(base64_decode("Zm9vY!"), None);
+            assert_eq!(base64_decode("!"), None);
+            assert_eq!(base64_decode("Zm9v\u{a0}"), None);
+        }
+        // Phase `data_uri_image_becomes_blob`.
+        {
+            // A 1-byte payload "A" (base64 "QQ==").
+            let (snap, inputs) =
+                import_with_inputs(r#"<p><img src="data:image/png;base64,QQ==" alt="pic"></p>"#);
+            let img = snap
+                .blocks
                 .iter()
-                .any(|m| m.name == "fontSize" && m.value == qdoc::document::MarkValue::Int(20)),
-            "{:?}",
-            p.marks
-        );
-        assert!(
-            p.marks.iter().any(|m| m.name == "fontFamily"
-                && m.value == qdoc::document::MarkValue::Str("serif".into())),
-            "{:?}",
-            p.marks
-        );
-    }
-
-    #[test]
-    fn background_becomes_highlight() {
-        let snap = import(r#"<p><span style="background: #ffff00">hi</span></p>"#);
-        let p = &snap.blocks[0];
-        assert!(
-            p.marks.iter().any(|m| m.name == "highlight"
-                && m.value == qdoc::document::MarkValue::Str("#ffff00".into())),
-            "{:?}",
-            p.marks
-        );
-    }
-
-    #[test]
-    fn sup_and_sub_marks() {
-        let snap = import("<p>x<sup>2</sup>y<sub>n</sub></p>");
-        let p = &snap.blocks[0];
-        assert_eq!(p.text, "x2yn");
-        assert!(
-            p.marks
+                .find(|b| b.kind == "image")
+                .expect("image block");
+            assert_eq!(img.text, "pic");
+            let blob = match img.attrs.get("blob") {
+                Some(qdoc::AttrVal::Str(s)) => s.clone(),
+                other => panic!("expected blob attr, got {other:?}"),
+            };
+            assert_eq!(inputs.get(&blob), Some(b"A".as_slice()), "{inputs:?}");
+        }
+        // Phase `http_image_keeps_src`.
+        {
+            let snap = import(r#"<img src="https://example.com/p.png" alt="remote">"#);
+            let img = snap
+                .blocks
                 .iter()
-                .any(|m| m.name == "super" && m.start == 1 && m.end == 2),
-            "{:?}",
-            p.marks
-        );
-        assert!(
-            p.marks
-                .iter()
-                .any(|m| m.name == "sub" && m.start == 3 && m.end == 4),
-            "{:?}",
-            p.marks
-        );
-    }
-
-    #[test]
-    fn base64_payload_decoding_is_lenient_about_layout_only() {
-        // Padded, unpadded and wrapped payloads decode alike.
-        assert_eq!(base64_decode("Zm9vYg==").as_deref(), Some(&b"foob"[..]));
-        assert_eq!(base64_decode("Zm9vYg").as_deref(), Some(&b"foob"[..]));
-        assert_eq!(
-            base64_decode(" Zm9v\r\n YmFy\t").as_deref(),
-            Some(&b"foobar"[..])
-        );
-        assert_eq!(
-            base64_decode("+/+/").as_deref(),
-            Some(&[0xfb, 0xff, 0xbf][..])
-        );
-        assert_eq!(base64_decode("").as_deref(), Some(&[][..]));
-        assert_eq!(base64_decode(" \n").as_deref(), Some(&[][..]));
-        // Decoding stops at the first `=`; whatever follows is ignored.
-        assert_eq!(base64_decode("QQ==garbage!").as_deref(), Some(&b"A"[..]));
-        assert_eq!(base64_decode("QQ=").as_deref(), Some(&b"A"[..]));
-        // Non-zero trailing bits and a dangling final sextet are dropped.
-        assert_eq!(base64_decode("QR==").as_deref(), Some(&b"A"[..]));
-        assert_eq!(base64_decode("Zm9vY").as_deref(), Some(&b"foo"[..]));
-        assert_eq!(base64_decode("Q").as_deref(), Some(&[][..]));
-        // Anything outside the standard alphabet is rejected, even last.
-        assert_eq!(base64_decode("Zm9v-_"), None);
-        assert_eq!(base64_decode("Zm9vY!"), None);
-        assert_eq!(base64_decode("!"), None);
-        assert_eq!(base64_decode("Zm9v\u{a0}"), None);
-    }
-
-    #[test]
-    fn data_uri_image_becomes_blob() {
-        // A 1-byte payload "A" (base64 "QQ==").
-        let (snap, inputs) =
-            import_with_inputs(r#"<p><img src="data:image/png;base64,QQ==" alt="pic"></p>"#);
-        let img = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "image")
-            .expect("image block");
-        assert_eq!(img.text, "pic");
-        let blob = match img.attrs.get("blob") {
-            Some(qdoc::AttrVal::Str(s)) => s.clone(),
-            other => panic!("expected blob attr, got {other:?}"),
-        };
-        assert_eq!(inputs.get(&blob), Some(b"A".as_slice()), "{inputs:?}");
-    }
-
-    #[test]
-    fn http_image_keeps_src() {
-        let snap = import(r#"<img src="https://example.com/p.png" alt="remote">"#);
-        let img = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "image")
-            .expect("image block");
-        assert_eq!(img.text, "remote");
-        assert_eq!(
-            img.attrs.get("src"),
-            Some(&qdoc::AttrVal::Str("https://example.com/p.png".into()))
-        );
-    }
-
-    #[test]
-    fn whitespace_is_collapsed() {
-        let snap = import("<p>a   b\n  c</p>");
-        assert_eq!(snap.blocks[0].text, "a b c");
-    }
-
-    #[test]
-    fn unclosed_tags_are_tolerated() {
-        // No closing `</b>`/`</p>`; the importer must still produce sane blocks.
-        let snap = import("<p>start <b>bold and more");
-        let p = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "paragraph")
-            .expect("paragraph");
-        assert_eq!(p.text, "start bold and more");
-        assert!(
-            p.marks.iter().any(|m| m.name == "strong"),
-            "unclosed bold still marks: {:?}",
-            p.marks
-        );
-    }
-
-    #[test]
-    fn export_is_unsupported() {
-        let d = Document::new();
-        let err = HtmlCodec
-            .export(d.as_ref(), &tilo_content::NoContent)
-            .unwrap_err();
-        assert!(matches!(err, CodecError::Unsupported(_)), "got {err:?}");
+                .find(|b| b.kind == "image")
+                .expect("image block");
+            assert_eq!(img.text, "remote");
+            assert_eq!(
+                img.attrs.get("src"),
+                Some(&qdoc::AttrVal::Str("https://example.com/p.png".into()))
+            );
+        }
     }
 }
