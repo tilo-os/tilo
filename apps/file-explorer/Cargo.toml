@@ -56,9 +56,9 @@ icu_datetime = "2.3.0"
 icu_decimal = "2.3.0"
 icu_locale = "2.3.0"
 # Reads the Tilo FUSE driver's `user.tilo.sync` extended attribute so the file
-# manager can show each workspace file's sync/hydration state.
+# manager can show each workspace file's sync/hydration state, and performs
+# no-replace renames, private staging and trash management.
 host-fs = { path = "../../crates/system/host-fs" }
-libc.workspace = true
 # Used by `--shots` demo seeds to create sample images and an EPUB cover.
 image = { workspace = true, features = ["png", "jpeg"] }
 zip.workspace = true

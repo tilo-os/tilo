@@ -1,11 +1,19 @@
 //! Portable access to file metadata that only some platforms have:
-//! permission bits, symbolic links and extended attributes.
+//! permission bits, symbolic links, extended attributes, no-replace
+//! rename, private staging directories and trash management.
 //!
 //! Apps that preserve or present such metadata (a backup engine, a file
 //! manager) call these functions; each one says what it does where the
 //! platform has no equivalent, so no app needs its own target checks.
 
 pub mod attributes;
+pub mod names;
+mod private_dir;
+mod rename;
+pub mod trash;
+
+pub use private_dir::{create_private_dir, mark_private};
+pub use rename::rename_noreplace;
 
 use std::fs::Metadata;
 use std::io;
