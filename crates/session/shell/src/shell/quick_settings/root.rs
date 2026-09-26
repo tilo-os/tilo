@@ -1122,6 +1122,20 @@ impl QuickSettingsRoot {
         });
         true
     }
+    /// Whether the next [`Self::focus_next`] in this direction would wrap
+    /// around the page, so a host can hand focus to a neighbouring surface
+    /// instead.
+    pub fn focus_would_wrap(&self, state: &QuickSettingsState, backwards: bool) -> bool {
+        if self.edit_mode {
+            return false;
+        }
+        let last = self.root_stops(state).len().saturating_sub(1);
+        match (self.keyboard_focus, backwards) {
+            (None | Some(0), true) => true,
+            (Some(i), false) => i >= last,
+            _ => false,
+        }
+    }
     pub fn activate_focused(&mut self, panel: Rect, state: &mut QuickSettingsState) -> RootAction {
         self.panel = panel;
         let Some(i) = self.keyboard_focus else {
