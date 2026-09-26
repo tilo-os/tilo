@@ -116,7 +116,7 @@ os-actions = { path = "../../system/os-actions" }
 # video stack for shared surfaces, projection and recording: `realtime` is
 # the GStreamer encoder/decoder, which picks hardware first, then
 # royalty-free software, then Cisco's openh264 binary loaded by the system.
-media = { path = "../../media/core", features = ["realtime"] }
+media = { path = "../../media/core", features = ["realtime", "pipewire"] }
 # Recording muxes the encoder's access units through `appsrc`; the same pin
 # as `media`, so one copy resolves.
 gstreamer-app = { workspace = true, features = ["v1_24"] }
