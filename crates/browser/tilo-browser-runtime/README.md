@@ -36,6 +36,42 @@ mount and reports `application "..." is not available` through `onStatus`; no
 placeholder is mounted. `applications()` lists what the build contains, and a
 mount's `application` names the resolved id, title and record scope.
 
+### One record, several mounts
+
+Mounts in a page with the same profile, device, room and app edit one in-memory
+document of a record. A mount's `record` is the record it opened or created,
+available once `mountDesktop` resolves; pass it as another mount's `record` to
+show the same document. When one mount changes it, the others re-run their frame
+passes and present the change without a reload.
+
+```js
+const phone = await mountDesktop(phoneEl, {app: 'so.tilo.ebook', newDocument: true, ...shared});
+const laptop = await mountDesktop(laptopEl, {app: 'so.tilo.ebook', record: phone.record, ...shared});
+```
+
+### Scripting a mount
+
+`actions(resource?)` lists what the mounted app publishes, described as
+`tilo-control actions list` describes it, and `invokeAction(resource, action,
+args, {confirm})` runs one through the app's bound action door: the same
+availability, permission, argument binding and confirmation checks the palette,
+agents and assistive technology get. There is no coordinate or widget path.
+`resource` may name a resource the app resolves only on request, such as a book.
+
+Books (`so.tilo.ebook`) in the browser opens a new library on its bundled book,
+The Lantern-Keeper's Almanac, whose resource is its content id:
+
+```js
+const book = 'ebook.book:book:1fe2b755ca3ff5d7fba5764b70b74edb';
+// Chapter 1 paragraphs 1-2 (block 0 is the chapter heading); end_char is exclusive.
+mount.invokeAction(book, 'select-passage', {chapter: 0, start_block: 1, end_block: 2});
+mount.invokeAction(book, 'highlight-selection');
+mount.invokeAction(book, 'note-selection', {value: 'Why before the gulls wake?'});
+// Annotations are the book's child resources: kind and the note text or passage.
+mount.actions(book).filter(a => a.address.action === 'open' && a.address.resource !== book)
+  .map(a => ({kind: a.resource_kind, text: a.resource_label}));
+```
+
 ## Lifetime and persistence
 
 `mountDesktop(element, options)` resolves after the first presentation. Supply an
@@ -80,6 +116,7 @@ GPU presentation are separate flags, so a drawn widget still presents its Scene.
 ```sh
 node --test crates/browser/tilo-browser-runtime/web/host.test.mjs
 cargo test --locked -j2 -p tilo-browser-runtime --lib catalog::
+cargo test --locked -j2 -p ebook --lib component::
 cargo test --locked -j2 -p ui --test it package_primary
 cargo test --locked -j2 -p word-processor --test it canonical_component
 cargo test --locked -j2 -p chat --lib --no-default-features component_tests

@@ -26,6 +26,15 @@ pub fn definition() -> &'static ApplicationDefinition {
     &DEFINITION
 }
 
+/// The browser's definition, for exercising its bundled library natively.
+#[cfg(test)]
+pub(crate) fn bundled_library_definition() -> &'static ApplicationDefinition {
+    static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
+        std::sync::LazyLock::new(|| {
+            books_definition(|context, target, _| create(context, &target, true))
+        });
+    &DEFINITION
+}
 
 fn create(
     mut context: HostContext,
@@ -80,3 +89,7 @@ impl ui::widget::AppWidget for crate::BooksApp {
         None
     }
 }
+
+#[cfg(test)]
+#[path = "component_tests.rs"]
+mod tests;
