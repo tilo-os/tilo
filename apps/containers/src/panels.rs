@@ -3739,92 +3739,103 @@ mod row_layout_tests {
             .expect("the sample engine has a running container")
     }
 
-    /// The status pill sits beside the name only while it ends before the
-    /// lifecycle buttons start; a 240px list beside an open detail pane does
-    /// not have that room and stacks the status under the name instead.
-    #[test]
+    /// Narrow rows stack the status pill before it reaches the actions, and heading and row names share one x.
     #[expect(
         clippy::float_cmp,
         reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
     )]
-    fn narrow_list_stacks_status_when_the_pill_would_reach_the_actions() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let container = running_container();
-        assert_eq!(
-            ContainersApp::row_actions_width(&container),
-            3.0 * ICON_BTN + 2.0 * 4.0,
-            "a running container shows stop / restart / remove"
-        );
-        // 240px list (detail open): the pill column starts at 42% of the row.
-        let narrow = Rect::new(0.0, 0.0, 240.0, 64.0);
-        let cols = ContainersApp::container_columns(narrow, true);
-        let actions_x0 = narrow.x1 - PAD - ContainersApp::row_actions_width(&container);
-        assert!(
-            !ContainersApp::status_pill_fits(&mut tr, &theme, cols[1], actions_x0, &container),
-            "a Running pill at x={} cannot end before the actions at x={actions_x0}",
-            cols[1]
-        );
-        // The same row layout at a laptop-wide list fits comfortably.
-        let wide = Rect::new(0.0, 0.0, 740.0, 64.0);
-        let cols = ContainersApp::container_columns(wide, true);
-        let actions_x0 = wide.x1 - PAD - ContainersApp::row_actions_width(&container);
-        assert!(ContainersApp::status_pill_fits(
-            &mut tr, &theme, cols[1], actions_x0, &container
-        ));
-    }
-
-    /// The `NAME` heading and the row name it labels are painted on one x.
-    /// Both are read back from real draw passes (glyph-run origins), not from
-    /// the constants that produce them.
     #[test]
-    fn name_heading_and_row_name_share_one_x() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        draw::set_base(Affine::IDENTITY);
-        let list = Rect::new(200.0, 60.0, 1000.0, 660.0);
-        let cols = ContainersApp::container_columns(list, false);
+    fn list_rows_stack_status_when_narrow_and_align_names() {
+        // --- phase: narrow_list_stacks_status_when_the_pill_would_reach_the_actions ---
+        // The status pill sits beside the name only while it ends before the
+        // lifecycle buttons start; a 240px list beside an open detail pane does
+        // not have that room and stacks the status under the name instead.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let container = running_container();
+            assert_eq!(
+                ContainersApp::row_actions_width(&container),
+                3.0 * ICON_BTN + 2.0 * 4.0,
+                "a running container shows stop / restart / remove"
+            );
+            // 240px list (detail open): the pill column starts at 42% of the row.
+            let narrow = Rect::new(0.0, 0.0, 240.0, 64.0);
+            let cols = ContainersApp::container_columns(narrow, true);
+            let actions_x0 = narrow.x1 - PAD - ContainersApp::row_actions_width(&container);
+            assert!(
+                !ContainersApp::status_pill_fits(&mut tr, &theme, cols[1], actions_x0, &container),
+                "a Running pill at x={} cannot end before the actions at x={actions_x0}",
+                cols[1]
+            );
+            // The same row layout at a laptop-wide list fits comfortably.
+            let wide = Rect::new(0.0, 0.0, 740.0, 64.0);
+            let cols = ContainersApp::container_columns(wide, true);
+            let actions_x0 = wide.x1 - PAD - ContainersApp::row_actions_width(&container);
+            assert!(ContainersApp::status_pill_fits(
+                &mut tr, &theme, cols[1], actions_x0, &container
+            ));
+        }
 
-        let mut header = Scene::new();
-        ContainersApp::draw_container_list_header(&mut header, &mut tr, &theme, list, false, &cols);
-        let heading_x = header
-            .encoding()
-            .resources
-            .glyph_runs
-            .first()
-            .map(|run| f64::from(run.transform.translation[0]))
-            .expect("the list header paints its NAME heading");
+        // --- phase: name_heading_and_row_name_share_one_x ---
+        // The `NAME` heading and the row name it labels are painted on one x.
+        // Both are read back from real draw passes (glyph-run origins), not from
+        // the constants that produce them.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            draw::set_base(Affine::IDENTITY);
+            let list = Rect::new(200.0, 60.0, 1000.0, 660.0);
+            let cols = ContainersApp::container_columns(list, false);
 
-        // The row paints its name on `cols[0] + ROW_TEXT_INSET` in both the
-        // stacked and the wide layout, so the app's viewport does not matter.
-        let mut app = ContainersApp::new(false);
-        let view = ViewState::default();
-        let container = running_container();
-        let row = Rect::new(
-            list.x0,
-            list.y0 + 28.0,
-            list.x1,
-            list.y0 + 28.0 + crate::app::ROW_HEIGHT,
-        );
-        let info = ContainerRow {
-            row,
-            container: &container,
-            cols: &cols,
-            compact: false,
-        };
-        let mut scene = Scene::new();
-        app.draw_container_row(&mut scene, &mut tr, &theme, info, &view);
-        let name_x = scene
-            .encoding()
-            .resources
-            .glyph_runs
-            .first()
-            .map(|run| f64::from(run.transform.translation[0]))
-            .expect("the row paints its name first");
+            let mut header = Scene::new();
+            ContainersApp::draw_container_list_header(
+                &mut header,
+                &mut tr,
+                &theme,
+                list,
+                false,
+                &cols,
+            );
+            let heading_x = header
+                .encoding()
+                .resources
+                .glyph_runs
+                .first()
+                .map(|run| f64::from(run.transform.translation[0]))
+                .expect("the list header paints its NAME heading");
 
-        assert!(
-            (heading_x - name_x).abs() < 0.01,
-            "heading at x={heading_x} but the row name at x={name_x}"
-        );
+            // The row paints its name on `cols[0] + ROW_TEXT_INSET` in both the
+            // stacked and the wide layout, so the app's viewport does not matter.
+            let mut app = ContainersApp::new(false);
+            let view = ViewState::default();
+            let container = running_container();
+            let row = Rect::new(
+                list.x0,
+                list.y0 + 28.0,
+                list.x1,
+                list.y0 + 28.0 + crate::app::ROW_HEIGHT,
+            );
+            let info = ContainerRow {
+                row,
+                container: &container,
+                cols: &cols,
+                compact: false,
+            };
+            let mut scene = Scene::new();
+            app.draw_container_row(&mut scene, &mut tr, &theme, info, &view);
+            let name_x = scene
+                .encoding()
+                .resources
+                .glyph_runs
+                .first()
+                .map(|run| f64::from(run.transform.translation[0]))
+                .expect("the row paints its name first");
+
+            assert!(
+                (heading_x - name_x).abs() < 0.01,
+                "heading at x={heading_x} but the row name at x={name_x}"
+            );
+        }
     }
 }

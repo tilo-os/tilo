@@ -134,34 +134,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plain_names_pass_through() {
-        assert_eq!(
-            object_path("nvme0n1p2"),
-            "/org/freedesktop/UDisks2/block_devices/nvme0n1p2"
-        );
-        assert_eq!(
-            object_path("/dev/sda1"),
-            "/org/freedesktop/UDisks2/block_devices/sda1"
-        );
-    }
-
-    #[test]
-    fn other_bytes_use_gdbus_escaping() {
-        assert_eq!(
-            object_path("dm-0"),
-            "/org/freedesktop/UDisks2/block_devices/dm_2d0"
-        );
-        assert_eq!(
-            object_path("/dev/md/root_0"),
-            "/org/freedesktop/UDisks2/block_devices/md_2froot_5f0"
-        );
-    }
-
-    #[test]
-    fn path_encoding_cannot_escape_the_block_device_namespace() {
-        assert_eq!(
-            object_path("../../sda"),
-            "/org/freedesktop/UDisks2/block_devices/_2e_2e_2f_2e_2e_2fsda"
-        );
+    fn object_paths_escape_every_byte_outside_the_plain_name_set() {
+        for (case, device, want) in [
+            // Plain names pass through.
+            (
+                "plain_names_pass_through",
+                "nvme0n1p2",
+                "/org/freedesktop/UDisks2/block_devices/nvme0n1p2",
+            ),
+            (
+                "plain_names_pass_through",
+                "/dev/sda1",
+                "/org/freedesktop/UDisks2/block_devices/sda1",
+            ),
+            // Other bytes use gdbus escaping.
+            (
+                "other_bytes_use_gdbus_escaping",
+                "dm-0",
+                "/org/freedesktop/UDisks2/block_devices/dm_2d0",
+            ),
+            (
+                "other_bytes_use_gdbus_escaping",
+                "/dev/md/root_0",
+                "/org/freedesktop/UDisks2/block_devices/md_2froot_5f0",
+            ),
+            // Path encoding cannot escape the block device namespace.
+            (
+                "path_encoding_cannot_escape_the_block_device_namespace",
+                "../../sda",
+                "/org/freedesktop/UDisks2/block_devices/_2e_2e_2f_2e_2e_2fsda",
+            ),
+        ] {
+            assert_eq!(object_path(device), want, "case {case}: {device}");
+        }
     }
 }

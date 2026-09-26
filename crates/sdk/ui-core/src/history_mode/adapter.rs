@@ -102,85 +102,87 @@ mod tests {
     use automerge::transaction::Transactable;
 
     #[test]
-    fn typed_validation_accepts_only_declared_shapes_without_writes() {
-        let mut doc = AutoCommit::new();
-        let row = doc.put_object(ROOT, "rows", ObjType::Map).unwrap();
-        doc.put(&row, "text", "legacy text").unwrap();
-        doc.put(&row, "flag", true).unwrap();
-        let heads = doc.get_heads();
-        assert!(
-            validate_fields(
-                &doc,
-                &row,
-                &[("text", FieldType::Text), ("flag", FieldType::Boolean)]
-            )
-            .is_ok()
-        );
-        assert!(
-            validate_fields(
-                &doc,
-                &row,
-                &[("text", FieldType::Integer), ("flag", FieldType::Boolean)]
-            )
-            .is_err()
-        );
-        assert!(validate_fields(&doc, &row, &[("text", FieldType::Text)]).is_err());
-        assert_eq!(map_collection(&doc, "rows").unwrap(), Some(row));
-        assert!(map_collection(&doc, "missing").unwrap().is_none());
-        assert_eq!(doc.base_heads(), heads);
-        assert_eq!(doc.pending_ops(), 0);
-        doc.put_object(ROOT, "old", ObjType::List).unwrap();
-        assert!(map_collection(&doc, "old").is_err());
-    }
-
-    #[test]
-    fn closed_navigation_rejects_unknown_pages_and_nonfinite_scroll() {
-        let pages = vec![("a".into(), "First".into()), ("b".into(), "Second".into())];
-        let mut view = PreviewView {
-            page: Some("a".into()),
-            ..Default::default()
-        };
-        assert!(!navigate_pages(
-            &mut view,
-            PreviewNavigation::PreviousPage,
-            &pages
-        ));
-        assert!(!navigate_pages(
-            &mut view,
-            PreviewNavigation::Reveal("unknown".into()),
-            &pages
-        ));
-        assert!(!navigate_pages(
-            &mut view,
-            PreviewNavigation::Scroll {
-                dx: f64::NAN,
-                dy: 0.
-            },
-            &pages
-        ));
-        assert!(navigate_pages(
-            &mut view,
-            PreviewNavigation::Scroll { dx: -12., dy: -30. },
-            &pages
-        ));
-        assert_eq!(view.scroll, (12., 30.));
-        assert!(navigate_pages(
-            &mut view,
-            PreviewNavigation::NextPage,
-            &pages
-        ));
-        assert_eq!(view.page.as_deref(), Some("b"));
-        assert_eq!(view.scroll, (0., 0.));
-        assert!(!navigate_pages(
-            &mut view,
-            PreviewNavigation::NextPage,
-            &pages
-        ));
-        assert!(navigate_pages(
-            &mut view,
-            PreviewNavigation::PreviousPage,
-            &pages
-        ));
-        assert_eq!(view.page.as_deref(), Some("a"));
+    fn adapter_validation_and_navigation_accept_only_declared_input() {
+        // phase: typed_validation_accepts_only_declared_shapes_without_writes
+        {
+            let mut doc = AutoCommit::new();
+            let row = doc.put_object(ROOT, "rows", ObjType::Map).unwrap();
+            doc.put(&row, "text", "legacy text").unwrap();
+            doc.put(&row, "flag", true).unwrap();
+            let heads = doc.get_heads();
+            assert!(
+                validate_fields(
+                    &doc,
+                    &row,
+                    &[("text", FieldType::Text), ("flag", FieldType::Boolean)]
+                )
+                .is_ok()
+            );
+            assert!(
+                validate_fields(
+                    &doc,
+                    &row,
+                    &[("text", FieldType::Integer), ("flag", FieldType::Boolean)]
+                )
+                .is_err()
+            );
+            assert!(validate_fields(&doc, &row, &[("text", FieldType::Text)]).is_err());
+            assert_eq!(map_collection(&doc, "rows").unwrap(), Some(row));
+            assert!(map_collection(&doc, "missing").unwrap().is_none());
+            assert_eq!(doc.base_heads(), heads);
+            assert_eq!(doc.pending_ops(), 0);
+            doc.put_object(ROOT, "old", ObjType::List).unwrap();
+            assert!(map_collection(&doc, "old").is_err());
+        }
+        // phase: closed_navigation_rejects_unknown_pages_and_nonfinite_scroll
+        {
+            let pages = vec![("a".into(), "First".into()), ("b".into(), "Second".into())];
+            let mut view = PreviewView {
+                page: Some("a".into()),
+                ..Default::default()
+            };
+            assert!(!navigate_pages(
+                &mut view,
+                PreviewNavigation::PreviousPage,
+                &pages
+            ));
+            assert!(!navigate_pages(
+                &mut view,
+                PreviewNavigation::Reveal("unknown".into()),
+                &pages
+            ));
+            assert!(!navigate_pages(
+                &mut view,
+                PreviewNavigation::Scroll {
+                    dx: f64::NAN,
+                    dy: 0.
+                },
+                &pages
+            ));
+            assert!(navigate_pages(
+                &mut view,
+                PreviewNavigation::Scroll { dx: -12., dy: -30. },
+                &pages
+            ));
+            assert_eq!(view.scroll, (12., 30.));
+            assert!(navigate_pages(
+                &mut view,
+                PreviewNavigation::NextPage,
+                &pages
+            ));
+            assert_eq!(view.page.as_deref(), Some("b"));
+            assert_eq!(view.scroll, (0., 0.));
+            assert!(!navigate_pages(
+                &mut view,
+                PreviewNavigation::NextPage,
+                &pages
+            ));
+            assert!(navigate_pages(
+                &mut view,
+                PreviewNavigation::PreviousPage,
+                &pages
+            ));
+            assert_eq!(view.page.as_deref(), Some("a"));
+        }
     }
 }

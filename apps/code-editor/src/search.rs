@@ -440,18 +440,27 @@ mod tests {
     }
 
     #[test]
+    fn line_matches_use_character_columns_and_honour_query_options() {
+        // Each phase matches its own line; no state is shared.
+        finds_every_occurrence_in_a_line();
+        overlapping_matches_are_not_double_counted();
+        case_insensitive_by_default_and_exact_when_asked();
+        columns_are_characters_not_bytes();
+        case_folding_that_changes_length_does_not_shift_columns();
+        whole_word_rejects_substrings();
+        an_empty_needle_matches_nothing();
+    }
+
     fn finds_every_occurrence_in_a_line() {
         assert_eq!(line_matches("foo bar foo", &q("foo")), vec![(0, 3), (8, 3)]);
     }
 
-    #[test]
     fn overlapping_matches_are_not_double_counted() {
         // "aa" in "aaaa" is two matches, not three: after a hit we resume past
         // its end, which is what every editor's find does.
         assert_eq!(line_matches("aaaa", &q("aa")), vec![(0, 2), (2, 2)]);
     }
 
-    #[test]
     fn case_insensitive_by_default_and_exact_when_asked() {
         assert_eq!(line_matches("Foo foo FOO", &q("foo")).len(), 3);
         assert_eq!(
@@ -460,7 +469,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn columns_are_characters_not_bytes() {
         // Each `é` is two bytes. A byte-indexed matcher would report column 8
         // for `x`; the caret model counts characters, so it must be 4.
@@ -471,7 +479,6 @@ mod tests {
         assert_eq!(chars[4], 'x');
     }
 
-    #[test]
     fn case_folding_that_changes_length_does_not_shift_columns() {
         // Lowercasing `ß` yields `ss`, one char becoming two. Reporting a folded
         // index against the original line would put the caret in the wrong
@@ -483,7 +490,6 @@ mod tests {
         assert_eq!(chars[7], 'x', "the reported column indexes the real char");
     }
 
-    #[test]
     fn whole_word_rejects_substrings() {
         // Plain: `fs`, the `fs` inside `offset`, the one in `refs`, the one
         // starting `fs_read`, and the standalone one at the end.
@@ -495,7 +501,6 @@ mod tests {
         assert_eq!(whole[1].0, 23);
     }
 
-    #[test]
     fn an_empty_needle_matches_nothing() {
         assert!(line_matches("anything", &q("")).is_empty());
         assert!(q("").is_empty());
@@ -538,6 +543,15 @@ mod tests {
     }
 
     #[test]
+    fn tree_search_reports_source_hits_skips_non_source_and_clips_previews() {
+        // Each phase builds a fresh fixture tree (one phase adds a binary file).
+        searches_the_tree_and_reports_file_line_and_column();
+        build_output_and_vcs_directories_are_never_searched();
+        binary_files_are_skipped();
+        an_empty_query_finishes_immediately_without_walking();
+        a_long_line_is_clipped_around_the_match();
+    }
+
     fn searches_the_tree_and_reports_file_line_and_column() {
         let d = fixture();
         let (hits, done) = run(d.path(), &q("needle"));
@@ -561,7 +575,6 @@ mod tests {
         assert!(!truncated);
     }
 
-    #[test]
     fn build_output_and_vcs_directories_are_never_searched() {
         let d = fixture();
         let (hits, _) = run(d.path(), &q("needle"));
@@ -581,7 +594,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn binary_files_are_skipped() {
         let d = fixture();
         std::fs::write(d.path().join("src/blob.bin"), b"needle\x00\x01\x02").unwrap();
@@ -593,6 +605,13 @@ mod tests {
     }
 
     #[test]
+    fn search_walk_stops_on_cancel_or_closed_receiver_and_streams_in_background() {
+        // Each phase builds a fresh fixture tree and cancel flag.
+        a_cancelled_walk_stops_early();
+        a_dropped_receiver_ends_the_walk();
+        the_background_job_streams_results_and_finishes();
+    }
+
     fn a_cancelled_walk_stops_early() {
         let d = fixture();
         let cancel = AtomicBool::new(true); // cancelled before it starts
@@ -604,7 +623,6 @@ mod tests {
         assert!(!saw_any, "a cancelled walk emits nothing at all");
     }
 
-    #[test]
     fn a_dropped_receiver_ends_the_walk() {
         let d = fixture();
         let cancel = AtomicBool::new(false);
@@ -617,7 +635,6 @@ mod tests {
         assert_eq!(calls, 1, "the walk stops at the first failed send");
     }
 
-    #[test]
     fn the_background_job_streams_results_and_finishes() {
         let d = fixture();
         let mut job = start(d.path(), q("needle"));
@@ -639,7 +656,6 @@ mod tests {
         assert_eq!(hits.len(), 2);
     }
 
-    #[test]
     fn an_empty_query_finishes_immediately_without_walking() {
         let d = fixture();
         let (hits, done) = run(d.path(), &q(""));
@@ -647,7 +663,6 @@ mod tests {
         assert_eq!(done, Some((0, false)), "no file was even opened");
     }
 
-    #[test]
     fn a_long_line_is_clipped_around_the_match() {
         let filler = "x".repeat(400);
         let line = format!("{filler}needle{filler}");

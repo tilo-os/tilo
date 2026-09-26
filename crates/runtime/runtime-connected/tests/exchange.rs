@@ -29,7 +29,8 @@ fn literal_frame(body: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn begin_exposes_one_request_and_busy_does_not_replace_it() {
+fn an_exchange_exposes_one_request_and_completes_on_its_matching_response() {
+    // Begin exposes one request, and busy does not replace it.
     let mut core = ClientCore::new();
     let first = core
         .begin("fixture.echo", r#"{"value":1}"#)
@@ -46,7 +47,6 @@ fn begin_exposes_one_request_and_busy_does_not_replace_it() {
     assert_eq!(envelope.correlation(), 1);
     assert_eq!(envelope.message_type(), "fixture.echo");
     assert_eq!(envelope.payload_json(), r#"{"value":1}"#);
-
     assert_eq!(
         core.begin("fixture.other", "{}"),
         Err(BeginError::DefinitelyNotSent(BeginFailure::Busy))
@@ -55,10 +55,8 @@ fn begin_exposes_one_request_and_busy_does_not_replace_it() {
         .feed_response(&response(1, "fixture.echo", r#"{"value":1}"#))
         .expect("original exchange remains active");
     assert!(matches!(completed, FeedResponse::Complete(_)));
-}
 
-#[test]
-fn local_validation_failure_is_definitely_not_sent() {
+    // A local validation failure is definitely not sent.
     let mut core = ClientCore::new();
     assert!(matches!(
         core.begin("Bad Type", "{}"),
@@ -67,14 +65,12 @@ fn local_validation_failure_is_definitely_not_sent() {
         )))
     ));
     assert_eq!(core.next_correlation(), Some(1));
-}
 
-#[test]
-fn fragmented_matching_response_restores_ready_and_preserves_unvalidated_payload() {
+    // A fragmented matching response restores ready and preserves the
+    // unvalidated payload.
     let mut core = ClientCore::new();
     core.begin("fixture.echo", "{}").expect("request");
     let frame = response(1, "fixture.echo", r#"{"approved":true,"success":true}"#);
-
     for byte in &frame[..frame.len() - 1] {
         assert_eq!(
             core.feed_response(std::slice::from_ref(byte)),
@@ -92,13 +88,10 @@ fn fragmented_matching_response_restores_ready_and_preserves_unvalidated_payload
         reply.envelope().payload_json(),
         r#"{"approved":true,"success":true}"#
     );
-
     let next = core.begin("fixture.echo", "{}").expect("next exchange");
     assert_eq!(next.correlation(), 2);
-}
 
-#[test]
-fn empty_active_feed_is_no_progress_and_not_end_of_input() {
+    // An empty active feed is no progress and not end of input.
     let mut core = ClientCore::new();
     core.begin("fixture.echo", "{}").expect("request");
     assert_eq!(core.feed_response(&[]), Ok(FeedResponse::Pending));
@@ -106,78 +99,52 @@ fn empty_active_feed_is_no_progress_and_not_end_of_input() {
 }
 
 #[test]
-fn matching_frame_plus_any_extra_byte_is_rejected_atomically() {
-    let mut core = ClientCore::new();
-    core.begin("fixture.echo", "{}").expect("request");
-    let mut chunk = response(1, "fixture.echo", "{}");
-    chunk.push(0);
+fn a_violating_response_poisons_and_retains_the_exposed_outcome() {
+    let unknown = |correlation| TerminalOutcome::OutcomeUnknown {
+        correlation,
+        message_type: "fixture.echo".to_owned(),
+    };
+    let mut extra_byte = response(1, "fixture.echo", "{}");
+    extra_byte.push(0);
+    let mut second_frame = response(1, "fixture.echo", "{}");
+    second_frame.extend_from_slice(&response(1, "fixture.echo", "{}"));
+    let positional =
+        literal_frame(br#"["tilo.connected",1,"response","0000000000000001","fixture.echo",{}]"#);
+    // Every violation after exposure retains the unknown outcome: later calls
+    // are unusable and cancel still reports it.
+    let cases = [
+        // A matching frame plus any extra byte is rejected atomically; the
+        // protocol failure after exposure retains the unknown outcome.
+        ("matching frame plus an extra byte", extra_byte),
+        // A matching frame plus a second complete frame is unsolicited.
+        ("matching frame plus a second frame", second_frame),
+        ("positional array response", positional),
+    ];
+    for (case, chunk) in cases {
+        let mut core = ClientCore::new();
+        let request = core.begin("fixture.echo", "{}").expect("request");
+        assert_eq!(
+            core.feed_response(&chunk),
+            Err(ExchangeError::ProtocolViolation {
+                outcome: unknown(request.correlation()),
+            }),
+            "case {case}"
+        );
+        assert!(core.is_poisoned(), "case {case}");
+        assert_eq!(
+            core.feed_response(&[]),
+            Err(ExchangeError::Unusable),
+            "case {case}"
+        );
+        assert_eq!(
+            core.begin("fixture.echo", "{}"),
+            Err(BeginError::Unusable),
+            "case {case}"
+        );
+        assert_eq!(core.cancel(), unknown(request.correlation()), "case {case}");
+    }
 
-    assert_eq!(
-        core.feed_response(&chunk),
-        Err(ExchangeError::ProtocolViolation {
-            outcome: TerminalOutcome::OutcomeUnknown {
-                correlation: 1,
-                message_type: "fixture.echo".to_owned(),
-            },
-        })
-    );
-    assert!(core.is_poisoned());
-}
-
-#[test]
-fn protocol_failure_after_exposure_retains_the_unknown_outcome() {
-    let mut core = ClientCore::new();
-    let request = core.begin("fixture.echo", "{}").expect("request");
-    let mut chunk = response(1, "fixture.echo", "{}");
-    chunk.push(0);
-    assert_eq!(
-        core.feed_response(&chunk),
-        Err(ExchangeError::ProtocolViolation {
-            outcome: TerminalOutcome::OutcomeUnknown {
-                correlation: request.correlation(),
-                message_type: "fixture.echo".to_owned(),
-            },
-        })
-    );
-    assert_eq!(core.feed_response(&[]), Err(ExchangeError::Unusable));
-    assert_eq!(core.begin("fixture.echo", "{}"), Err(BeginError::Unusable));
-
-    assert_eq!(
-        core.cancel(),
-        TerminalOutcome::OutcomeUnknown {
-            correlation: request.correlation(),
-            message_type: "fixture.echo".to_owned(),
-        }
-    );
-}
-
-#[test]
-fn positional_array_response_poisons_and_retains_the_unknown_outcome() {
-    let mut core = ClientCore::new();
-    let request = core.begin("fixture.echo", "{}").expect("request");
-    let positional = br#"["tilo.connected",1,"response","0000000000000001","fixture.echo",{}]"#;
-
-    assert_eq!(
-        core.feed_response(&literal_frame(positional)),
-        Err(ExchangeError::ProtocolViolation {
-            outcome: TerminalOutcome::OutcomeUnknown {
-                correlation: request.correlation(),
-                message_type: "fixture.echo".to_owned(),
-            },
-        })
-    );
-    assert!(core.is_poisoned());
-    assert_eq!(
-        core.cancel(),
-        TerminalOutcome::OutcomeUnknown {
-            correlation: request.correlation(),
-            message_type: "fixture.echo".to_owned(),
-        }
-    );
-}
-
-#[test]
-fn unsolicited_data_while_ready_has_no_operation_outcome() {
+    // Unsolicited data while ready has no operation outcome.
     let mut core = ClientCore::new();
     assert_eq!(
         core.feed_response(&response(1, "fixture.echo", "{}")),
@@ -187,29 +154,8 @@ fn unsolicited_data_while_ready_has_no_operation_outcome() {
     );
     assert!(core.is_poisoned());
     assert_eq!(core.cancel(), TerminalOutcome::Unusable);
-}
 
-#[test]
-fn matching_frame_plus_a_second_complete_frame_is_unsolicited() {
-    let mut core = ClientCore::new();
-    core.begin("fixture.echo", "{}").expect("request");
-    let mut chunk = response(1, "fixture.echo", "{}");
-    chunk.extend_from_slice(&response(1, "fixture.echo", "{}"));
-
-    assert_eq!(
-        core.feed_response(&chunk),
-        Err(ExchangeError::ProtocolViolation {
-            outcome: TerminalOutcome::OutcomeUnknown {
-                correlation: 1,
-                message_type: "fixture.echo".to_owned(),
-            },
-        })
-    );
-    assert!(core.is_poisoned());
-}
-
-#[test]
-fn malformed_or_mismatched_response_poisons_without_yielding_a_frame() {
+    // A malformed or mismatched response poisons without yielding a frame.
     let cases = [
         response(2, "fixture.echo", "{}"),
         response(1, "fixture.other", "{}"),
@@ -221,13 +167,11 @@ fn malformed_or_mismatched_response_poisons_without_yielding_a_frame() {
     for bytes in cases {
         let mut core = ClientCore::new();
         core.begin("fixture.echo", "{}").expect("request");
-        assert!(core.feed_response(&bytes).is_err());
-        assert!(core.is_poisoned());
+        assert!(core.feed_response(&bytes).is_err(), "case {bytes:?}");
+        assert!(core.is_poisoned(), "case {bytes:?}");
     }
-}
 
-#[test]
-fn replaying_an_old_response_against_the_next_exchange_poisons() {
+    // Replaying an old response against the next exchange poisons.
     let mut core = ClientCore::new();
     core.begin("fixture.echo", "{}").expect("request one");
     let old = response(1, "fixture.echo", "{}");
@@ -236,85 +180,81 @@ fn replaying_an_old_response_against_the_next_exchange_poisons() {
         Ok(FeedResponse::Complete(_))
     ));
     core.begin("fixture.echo", "{}").expect("request two");
-
     assert_eq!(
         core.feed_response(&old),
         Err(ExchangeError::ProtocolViolation {
-            outcome: TerminalOutcome::OutcomeUnknown {
-                correlation: 2,
-                message_type: "fixture.echo".to_owned(),
-            },
+            outcome: unknown(2),
         })
     );
     assert!(core.is_poisoned());
 }
 
 #[test]
-fn terminal_events_after_byte_exposure_make_the_outcome_unknown() {
-    for terminate in [
-        ClientCore::cancel as fn(&mut ClientCore) -> TerminalOutcome,
-        ClientCore::transport_failed,
-        ClientCore::end_of_input,
-    ] {
-        let mut core = ClientCore::new();
-        let request = core.begin("fixture.echo", "{}").expect("request");
-        let outcome = terminate(&mut core);
-        assert_eq!(
-            outcome,
-            TerminalOutcome::OutcomeUnknown {
-                correlation: request.correlation(),
-                message_type: "fixture.echo".to_owned(),
-            }
-        );
-        assert!(core.is_poisoned());
+fn terminal_events_poison_and_report_only_what_was_exposed() {
+    // phase: terminal_events_after_byte_exposure_make_the_outcome_unknown
+    {
+        for terminate in [
+            ClientCore::cancel as fn(&mut ClientCore) -> TerminalOutcome,
+            ClientCore::transport_failed,
+            ClientCore::end_of_input,
+        ] {
+            let mut core = ClientCore::new();
+            let request = core.begin("fixture.echo", "{}").expect("request");
+            let outcome = terminate(&mut core);
+            assert_eq!(
+                outcome,
+                TerminalOutcome::OutcomeUnknown {
+                    correlation: request.correlation(),
+                    message_type: "fixture.echo".to_owned(),
+                }
+            );
+            assert!(core.is_poisoned());
+        }
     }
-}
-
-#[test]
-fn truncated_response_is_pending_until_terminal_notification() {
-    let full = response(1, "fixture.echo", "{}");
-    for partial_length in [1, 4, full.len() - 1] {
+    // phase: truncated_response_is_pending_until_terminal_notification
+    {
+        let full = response(1, "fixture.echo", "{}");
+        for partial_length in [1, 4, full.len() - 1] {
+            let mut core = ClientCore::new();
+            core.begin("fixture.echo", "{}").expect("request");
+            assert_eq!(
+                core.feed_response(&full[..partial_length]),
+                Ok(FeedResponse::Pending)
+            );
+            assert!(matches!(
+                core.end_of_input(),
+                TerminalOutcome::OutcomeUnknown { correlation: 1, .. }
+            ));
+        }
+    }
+    // phase: terminal_events_while_ready_poison_without_an_operation_outcome
+    {
+        for terminate in [
+            ClientCore::cancel as fn(&mut ClientCore) -> TerminalOutcome,
+            ClientCore::transport_failed,
+            ClientCore::end_of_input,
+        ] {
+            let mut core = ClientCore::new();
+            assert_eq!(terminate(&mut core), TerminalOutcome::NoOperation);
+            assert!(core.is_poisoned());
+            assert_eq!(core.begin("fixture.echo", "{}"), Err(BeginError::Unusable));
+            assert_eq!(core.feed_response(&[]), Err(ExchangeError::Unusable));
+        }
+    }
+    // phase: late_response_and_every_call_after_poison_are_unusable
+    {
         let mut core = ClientCore::new();
         core.begin("fixture.echo", "{}").expect("request");
-        assert_eq!(
-            core.feed_response(&full[..partial_length]),
-            Ok(FeedResponse::Pending)
-        );
         assert!(matches!(
-            core.end_of_input(),
-            TerminalOutcome::OutcomeUnknown { correlation: 1, .. }
+            core.cancel(),
+            TerminalOutcome::OutcomeUnknown { .. }
         ));
-    }
-}
 
-#[test]
-fn terminal_events_while_ready_poison_without_an_operation_outcome() {
-    for terminate in [
-        ClientCore::cancel as fn(&mut ClientCore) -> TerminalOutcome,
-        ClientCore::transport_failed,
-        ClientCore::end_of_input,
-    ] {
-        let mut core = ClientCore::new();
-        assert_eq!(terminate(&mut core), TerminalOutcome::NoOperation);
-        assert!(core.is_poisoned());
-        assert_eq!(core.begin("fixture.echo", "{}"), Err(BeginError::Unusable));
+        assert_eq!(
+            core.feed_response(&response(1, "fixture.echo", "{}")),
+            Err(ExchangeError::Unusable)
+        );
         assert_eq!(core.feed_response(&[]), Err(ExchangeError::Unusable));
+        assert_eq!(core.begin("fixture.echo", "{}"), Err(BeginError::Unusable));
     }
-}
-
-#[test]
-fn late_response_and_every_call_after_poison_are_unusable() {
-    let mut core = ClientCore::new();
-    core.begin("fixture.echo", "{}").expect("request");
-    assert!(matches!(
-        core.cancel(),
-        TerminalOutcome::OutcomeUnknown { .. }
-    ));
-
-    assert_eq!(
-        core.feed_response(&response(1, "fixture.echo", "{}")),
-        Err(ExchangeError::Unusable)
-    );
-    assert_eq!(core.feed_response(&[]), Err(ExchangeError::Unusable));
-    assert_eq!(core.begin("fixture.echo", "{}"), Err(BeginError::Unusable));
 }

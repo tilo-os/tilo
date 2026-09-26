@@ -6,7 +6,7 @@
 //! `#[serde(flatten)]`ed struct it is buffered first and the key arrives as
 //! a plain string. These helpers accept both spellings.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -83,6 +83,20 @@ where
     deserializer.deserialize_map(MapVisitor(PhantomData))
 }
 
+/// As [`deserialize_id_map`], into an ordered map.
+///
+/// # Errors
+///
+/// As [`deserialize_id_map`].
+pub fn deserialize_id_btree_map<'de, D, K, V>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
+where
+    D: Deserializer<'de>,
+    K: From<u64> + Eq + Hash + Ord,
+    V: Deserialize<'de>,
+{
+    deserialize_id_map::<D, K, V>(deserializer).map(|map| map.into_iter().collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,13 +115,15 @@ mod tests {
     }
 
     #[test]
-    fn string_keys_survive_flattening() {
-        let outer: Outer = serde_json::from_str(r#"{"map":{"7":9}}"#).unwrap();
-        assert_eq!(outer.inner.map[&WorkspaceId(7)], StripId(9));
-    }
-
-    #[test]
-    fn non_numeric_keys_are_refused() {
-        assert!(serde_json::from_str::<Outer>(r#"{"map":{"seven":9}}"#).is_err());
+    fn id_keyed_maps_flatten_to_numeric_string_keys_only() {
+        // Phase `string_keys_survive_flattening`.
+        {
+            let outer: Outer = serde_json::from_str(r#"{"map":{"7":9}}"#).unwrap();
+            assert_eq!(outer.inner.map[&WorkspaceId(7)], StripId(9));
+        }
+        // Phase `non_numeric_keys_are_refused`.
+        {
+            assert!(serde_json::from_str::<Outer>(r#"{"map":{"seven":9}}"#).is_err());
+        }
     }
 }

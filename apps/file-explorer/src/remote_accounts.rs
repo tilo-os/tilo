@@ -193,51 +193,55 @@ pub fn type_id(kind: RemoteAccountKind) -> AccountTypeId {
 mod tests {
     use super::*;
 
+    /// Only safe HTTPS origins are presented, identities never use raw ids, Nextcloud without files is no resource and no credentials are projected.
     #[test]
-    fn only_safe_https_origins_are_presented() {
-        assert_eq!(
-            safe_https_host("https://cloud.example/dav"),
-            Some("cloud.example".into())
-        );
-        assert_eq!(safe_https_host("http://cloud.example"), None);
-        assert_eq!(safe_https_host("https://user:pass@cloud.example"), None);
-        assert_eq!(safe_https_host("https://cloud.example/?token=secret"), None);
-    }
+    fn remote_account_projection_is_safe_and_identity_scoped() {
+        // --- phase: only_safe_https_origins_are_presented ---
+        {
+            assert_eq!(
+                safe_https_host("https://cloud.example/dav"),
+                Some("cloud.example".into())
+            );
+            assert_eq!(safe_https_host("http://cloud.example"), None);
+            assert_eq!(safe_https_host("https://user:pass@cloud.example"), None);
+            assert_eq!(safe_https_host("https://cloud.example/?token=secret"), None);
+        }
 
-    #[test]
-    fn resource_identity_never_uses_the_raw_account_id() {
-        assert_eq!(
-            resource_id(&AccountId::from("work/account")),
-            "files.remote-account:776f726b2f6163636f756e74"
-        );
-    }
+        // --- phase: resource_identity_never_uses_the_raw_account_id ---
+        {
+            assert_eq!(
+                resource_id(&AccountId::from("work/account")),
+                "files.remote-account:776f726b2f6163636f756e74"
+            );
+        }
 
-    #[test]
-    fn nextcloud_without_files_is_not_a_files_resource() {
-        let mut account = Account::new("cloud", NEXTCLOUD_TYPE);
-        account.display_name = "Personal cloud".into();
-        account.config = serde_json::json!({
-            "server_url": "https://cloud.example",
-            "username": "ada",
-            "password": "must-not-be-read",
-            "use_files": false,
-        });
-        assert!(from_account(&account, &AccountSyncStatusStore::default()).is_none());
-    }
+        // --- phase: nextcloud_without_files_is_not_a_files_resource ---
+        {
+            let mut account = Account::new("cloud", NEXTCLOUD_TYPE);
+            account.display_name = "Personal cloud".into();
+            account.config = serde_json::json!({
+                "server_url": "https://cloud.example",
+                "username": "ada",
+                "password": "must-not-be-read",
+                "use_files": false,
+            });
+            assert!(from_account(&account, &AccountSyncStatusStore::default()).is_none());
+        }
 
-    #[test]
-    fn projection_uses_no_username_or_password() {
-        let mut account = Account::new("work", WEBDAV_TYPE);
-        account.display_name = "Work files".into();
-        account.config = serde_json::json!({
-            "server_url": "https://files.example/dav/ada",
-            "username": "ada",
-            "password": "must-not-be-read",
-        });
-        let projection = from_account(&account, &AccountSyncStatusStore::default())
-            .expect("valid account projects");
-        assert_eq!(projection.host, "files.example");
-        assert_eq!(projection.label, "Work files");
-        assert_eq!(projection.health, RemoteAccountHealth::NeverChecked);
+        // --- phase: projection_uses_no_username_or_password ---
+        {
+            let mut account = Account::new("work", WEBDAV_TYPE);
+            account.display_name = "Work files".into();
+            account.config = serde_json::json!({
+                "server_url": "https://files.example/dav/ada",
+                "username": "ada",
+                "password": "must-not-be-read",
+            });
+            let projection = from_account(&account, &AccountSyncStatusStore::default())
+                .expect("valid account projects");
+            assert_eq!(projection.host, "files.example");
+            assert_eq!(projection.label, "Work files");
+            assert_eq!(projection.health, RemoteAccountHealth::NeverChecked);
+        }
     }
 }

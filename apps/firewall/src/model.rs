@@ -602,80 +602,88 @@ impl ServiceCatalog {
 mod tests {
     use super::*;
 
+    /// The config round-trips through JSON, toggles services idempotently, splits rule counts and lists every zone in order.
     #[test]
-    fn config_json_round_trips() {
-        let cfg = crate::sample::sample_config();
-        let json = cfg.to_json();
-        let back = FirewallConfig::from_json(&json).unwrap();
-        assert_eq!(cfg, back);
+    fn config_model_round_trips_toggles_and_counts() {
+        // --- phase: config_json_round_trips ---
+        {
+            let cfg = crate::sample::sample_config();
+            let json = cfg.to_json();
+            let back = FirewallConfig::from_json(&json).unwrap();
+            assert_eq!(cfg, back);
+        }
+
+        // --- phase: toggle_service_is_idempotent_pair ---
+        {
+            let mut z = Zone::new(ZoneKind::Public, Target::Default);
+            assert!(!z.has_service("ssh"));
+            assert!(z.toggle_service("ssh"));
+            assert!(z.has_service("ssh"));
+            assert!(!z.toggle_service("ssh"));
+            assert!(!z.has_service("ssh"));
+        }
+
+        // --- phase: rule_counts_split_allow_deny ---
+        {
+            let mut z = Zone::new(ZoneKind::Public, Target::Default);
+            z.rules.push(Rule::new(
+                Matcher::Service("https".into()),
+                Action::Allow,
+                "",
+            ));
+            z.rules.push(Rule::new(
+                Matcher::Port {
+                    port: "23".into(),
+                    proto: Proto::Tcp,
+                },
+                Action::Deny,
+                "",
+            ));
+            assert_eq!(z.rule_counts(), (1, 1));
+        }
+
+        // --- phase: all_zones_present_in_order ---
+        {
+            assert_eq!(ZoneKind::ALL.len(), 9);
+            assert_eq!(ZoneKind::ALL[0], ZoneKind::Drop);
+            assert_eq!(ZoneKind::ALL[8], ZoneKind::Trusted);
+        }
     }
 
+    /// Matcher labels are stable, an empty source reads as anywhere, and unsafe input is rejected.
     #[test]
-    fn toggle_service_is_idempotent_pair() {
-        let mut z = Zone::new(ZoneKind::Public, Target::Default);
-        assert!(!z.has_service("ssh"));
-        assert!(z.toggle_service("ssh"));
-        assert!(z.has_service("ssh"));
-        assert!(!z.toggle_service("ssh"));
-        assert!(!z.has_service("ssh"));
-    }
+    fn rule_matchers_label_stably_and_inputs_validate() {
+        // --- phase: matcher_labels_are_stable ---
+        {
+            assert_eq!(Matcher::Service("https".into()).label(), "https");
+            assert_eq!(
+                Matcher::Port {
+                    port: "8080".into(),
+                    proto: Proto::Tcp
+                }
+                .label(),
+                "8080/tcp"
+            );
+        }
 
-    #[test]
-    fn rule_counts_split_allow_deny() {
-        let mut z = Zone::new(ZoneKind::Public, Target::Default);
-        z.rules.push(Rule::new(
-            Matcher::Service("https".into()),
-            Action::Allow,
-            "",
-        ));
-        z.rules.push(Rule::new(
-            Matcher::Port {
-                port: "23".into(),
-                proto: Proto::Tcp,
-            },
-            Action::Deny,
-            "",
-        ));
-        assert_eq!(z.rule_counts(), (1, 1));
-    }
+        // --- phase: empty_source_reads_as_anywhere ---
+        {
+            let r = Rule::new(Matcher::Service("ssh".into()), Action::Allow, "");
+            assert_eq!(r.source_label(), "anywhere");
+            let r2 = Rule::new(Matcher::Service("ssh".into()), Action::Allow, "10.0.0.0/8");
+            assert_eq!(r2.source_label(), "10.0.0.0/8");
+        }
 
-    #[test]
-    fn matcher_labels_are_stable() {
-        assert_eq!(Matcher::Service("https".into()).label(), "https");
-        assert_eq!(
-            Matcher::Port {
-                port: "8080".into(),
-                proto: Proto::Tcp
-            }
-            .label(),
-            "8080/tcp"
-        );
-    }
-
-    #[test]
-    fn empty_source_reads_as_anywhere() {
-        let r = Rule::new(Matcher::Service("ssh".into()), Action::Allow, "");
-        assert_eq!(r.source_label(), "anywhere");
-        let r2 = Rule::new(Matcher::Service("ssh".into()), Action::Allow, "10.0.0.0/8");
-        assert_eq!(r2.source_label(), "10.0.0.0/8");
-    }
-
-    #[test]
-    fn firewall_input_validation_rejects_unsafe_values() {
-        assert!(validate_port("1").is_ok());
-        assert!(validate_port("8000-8080").is_ok());
-        assert!(validate_port("0").is_err());
-        assert!(validate_port("8080-8000").is_err());
-        assert!(validate_port("22; reboot").is_err());
-        assert!(validate_source("192.168.1.0/24").is_ok());
-        assert!(validate_source("2001:db8::1").is_err());
-        assert!(validate_source("10.0.0.1/33").is_err());
-    }
-
-    #[test]
-    fn all_zones_present_in_order() {
-        assert_eq!(ZoneKind::ALL.len(), 9);
-        assert_eq!(ZoneKind::ALL[0], ZoneKind::Drop);
-        assert_eq!(ZoneKind::ALL[8], ZoneKind::Trusted);
+        // --- phase: firewall_input_validation_rejects_unsafe_values ---
+        {
+            assert!(validate_port("1").is_ok());
+            assert!(validate_port("8000-8080").is_ok());
+            assert!(validate_port("0").is_err());
+            assert!(validate_port("8080-8000").is_err());
+            assert!(validate_port("22; reboot").is_err());
+            assert!(validate_source("192.168.1.0/24").is_ok());
+            assert!(validate_source("2001:db8::1").is_err());
+            assert!(validate_source("10.0.0.1/33").is_err());
+        }
     }
 }

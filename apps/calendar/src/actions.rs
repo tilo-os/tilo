@@ -3256,365 +3256,493 @@ mod tests {
         (app, doc)
     }
 
-    /// Ctrl+K on the calendar yields the tree: the calendar with a "New event"
-    /// action, an `calendar.event` child per event exporting open/rename/delete,
-    /// and a `calendar.task` child per task exporting open/toggle/delete.
-    /// Drives the real resource hook.
     #[test]
-    fn ctrl_k_publishes_the_calendar_tree() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one calendar root");
-        let cal = &resources[0];
-        assert_eq!(cal.kind, "calendar.calendar");
-        let cal_actions: Vec<&str> = cal.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(cal_actions.contains(&"new-event"), "{cal_actions:?}");
-        assert!(cal_actions.contains(&"new-project"), "{cal_actions:?}");
-        let calendar = find_kind(&cal.children, "calendar.collection")
-            .expect("a calendar collection resource");
-        assert!(calendar.actions.iter().any(|action| action.id == "open"));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn resource_directory_publishes_a_bounded_tree_resolves_exact_ids_and_withholds_hidden() {
+        // Case `ctrl_k_publishes_the_calendar_tree`:
+        // Ctrl+K on the calendar yields the tree: the calendar with a "New event"
+        // action, an `calendar.event` child per event exporting open/rename/delete,
+        // and a `calendar.task` child per task exporting open/toggle/delete.
+        // Drives the real resource hook.
+        {
+            let (app, doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            assert_eq!(resources.len(), 1, "one calendar root");
+            let cal = &resources[0];
+            assert_eq!(cal.kind, "calendar.calendar");
+            let cal_actions: Vec<&str> = cal.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(cal_actions.contains(&"new-event"), "{cal_actions:?}");
+            assert!(cal_actions.contains(&"new-project"), "{cal_actions:?}");
+            let calendar = find_kind(&cal.children, "calendar.collection")
+                .expect("a calendar collection resource");
+            assert!(calendar.actions.iter().any(|action| action.id == "open"));
 
-        let project = find_kind(&cal.children, "calendar.project").expect("a project resource");
-        let project_actions: Vec<&str> = project.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(project_actions.contains(&"open"), "{project_actions:?}");
-        assert!(project_actions.contains(&"edit"), "{project_actions:?}");
-        assert!(
-            project_actions.contains(&"set-color"),
-            "{project_actions:?}"
-        );
-        assert!(project_actions.contains(&"delete"), "{project_actions:?}");
+            let project = find_kind(&cal.children, "calendar.project").expect("a project resource");
+            let project_actions: Vec<&str> =
+                project.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(project_actions.contains(&"open"), "{project_actions:?}");
+            assert!(project_actions.contains(&"edit"), "{project_actions:?}");
+            assert!(
+                project_actions.contains(&"set-color"),
+                "{project_actions:?}"
+            );
+            assert!(project_actions.contains(&"delete"), "{project_actions:?}");
 
-        let event = find_kind(&cal.children, "calendar.event").expect("an event resource");
-        let ev_actions: Vec<&str> = event.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(ev_actions.contains(&"open"), "{ev_actions:?}");
-        assert!(ev_actions.contains(&"edit"), "{ev_actions:?}");
-        assert!(ev_actions.contains(&"delete"), "{ev_actions:?}");
+            let event = find_kind(&cal.children, "calendar.event").expect("an event resource");
+            let ev_actions: Vec<&str> = event.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(ev_actions.contains(&"open"), "{ev_actions:?}");
+            assert!(ev_actions.contains(&"edit"), "{ev_actions:?}");
+            assert!(ev_actions.contains(&"delete"), "{ev_actions:?}");
 
-        let task = find_kind(&cal.children, "calendar.task").expect("a task resource");
-        let tk_actions: Vec<&str> = task.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(tk_actions.contains(&"open"), "{tk_actions:?}");
-        assert!(tk_actions.contains(&"edit"), "{tk_actions:?}");
-        assert!(tk_actions.contains(&"set-due"), "{tk_actions:?}");
-        assert!(tk_actions.contains(&"set-priority"), "{tk_actions:?}");
-        assert!(tk_actions.contains(&"move-to-project"), "{tk_actions:?}");
-        assert!(tk_actions.contains(&"toggle"), "{tk_actions:?}");
-        assert!(tk_actions.contains(&"delete"), "{tk_actions:?}");
+            let task = find_kind(&cal.children, "calendar.task").expect("a task resource");
+            let tk_actions: Vec<&str> = task.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(tk_actions.contains(&"open"), "{tk_actions:?}");
+            assert!(tk_actions.contains(&"edit"), "{tk_actions:?}");
+            assert!(tk_actions.contains(&"set-due"), "{tk_actions:?}");
+            assert!(tk_actions.contains(&"set-priority"), "{tk_actions:?}");
+            assert!(tk_actions.contains(&"move-to-project"), "{tk_actions:?}");
+            assert!(tk_actions.contains(&"toggle"), "{tk_actions:?}");
+            assert!(tk_actions.contains(&"delete"), "{tk_actions:?}");
 
-        // The full flattened tree exports every action — including the task
-        // toggle/delete that sort after the events. The palette's Actions group
-        // is display-capped, so reachability is asserted on the flatten and only
-        // the leading rows on the palette itself.
-        let flat: Vec<&str> = tilo_actions::flatten(&resources)
-            .iter()
-            .map(|f| f.action.label.as_str())
-            .collect();
-        assert!(flat.contains(&"New event"), "{flat:?}");
-        assert!(flat.contains(&"Delete event"), "{flat:?}");
-        assert!(flat.contains(&"Delete task"), "{flat:?}");
-        assert!(
-            flat.iter()
-                .any(|l| *l == "Mark done" || *l == "Mark not done"),
-            "a task toggle is exported: {flat:?}"
-        );
-    }
-
-    #[test]
-    fn large_resource_sets_are_capped_but_late_ids_resolve_lazily_and_stale_ids_refuse() {
-        let (mut app, mut doc) = seeded();
-        let template = CalDoc::read_model(&doc).events[0].clone();
-        let mut late_id = template.id;
-        for offset in 0..(EAGER_RESOURCE_SNAPSHOT_LIMIT + 2) {
-            let mut event = template.clone();
-            event.id = Uuid::from_u128(10_000 + offset as u128);
-            event.title = format!("lazy resource event {offset}");
-            late_id = event.id;
-            CalendarAction::UpsertEvent(EventData::from_event(&event))
-                .apply(&mut doc)
-                .expect("valid event is accepted");
+            // The full flattened tree exports every action — including the task
+            // toggle/delete that sort after the events. The palette's Actions group
+            // is display-capped, so reachability is asserted on the flatten and only
+            // the leading rows on the palette itself.
+            let flat: Vec<&str> = tilo_actions::flatten(&resources)
+                .iter()
+                .map(|f| f.action.label.as_str())
+                .collect();
+            assert!(flat.contains(&"New event"), "{flat:?}");
+            assert!(flat.contains(&"Delete event"), "{flat:?}");
+            assert!(flat.contains(&"Delete task"), "{flat:?}");
+            assert!(
+                flat.iter()
+                    .any(|l| *l == "Mark done" || *l == "Mark not done"),
+                "a task toggle is exported: {flat:?}"
+            );
         }
-        app.sync(&mut doc, &ROOT);
+        // Case `large_resource_sets_are_capped_but_late_ids_resolve_lazily_and_stale_ids_refuse`.
+        {
+            let (mut app, mut doc) = seeded();
+            let template = CalDoc::read_model(&doc).events[0].clone();
+            let mut late_id = template.id;
+            for offset in 0..(EAGER_RESOURCE_SNAPSHOT_LIMIT + 2) {
+                let mut event = template.clone();
+                event.id = Uuid::from_u128(10_000 + offset as u128);
+                event.title = format!("lazy resource event {offset}");
+                late_id = event.id;
+                CalendarAction::UpsertEvent(EventData::from_event(&event))
+                    .apply(&mut doc)
+                    .expect("valid event is accepted");
+            }
+            app.sync(&mut doc, &ROOT);
 
-        let root = Widget::resources(&app, &doc).remove(0);
-        assert!(
-            root.children.len() <= EAGER_RESOURCE_SNAPSHOT_LIMIT,
-            "the open-resource snapshot must stay bounded"
-        );
-        let late = event_resource_id(late_id);
-        let resolved = <CalendarApp as ResourceProvider>::resource(&app, &doc, &late)
-            .expect("a current late event resolves on demand");
-        assert_eq!(resolved.id.as_str(), late);
-        assert!(resolved.actions.iter().any(|action| action.id == "open"));
+            let root = Widget::resources(&app, &doc).remove(0);
+            assert!(
+                root.children.len() <= EAGER_RESOURCE_SNAPSHOT_LIMIT,
+                "the open-resource snapshot must stay bounded"
+            );
+            let late = event_resource_id(late_id);
+            let resolved = <CalendarApp as ResourceProvider>::resource(&app, &doc, &late)
+                .expect("a current late event resolves on demand");
+            assert_eq!(resolved.id.as_str(), late);
+            assert!(resolved.actions.iter().any(|action| action.id == "open"));
 
-        CalendarAction::DeleteEvent {
-            id: late_id.to_string(),
-            remote_delete: None,
+            CalendarAction::DeleteEvent {
+                id: late_id.to_string(),
+                remote_delete: None,
+            }
+            .apply(&mut doc)
+            .expect("delete is accepted");
+            app.sync(&mut doc, &ROOT);
+            assert!(
+                <CalendarApp as ResourceProvider>::resource(&app, &doc, &late).is_none(),
+                "a deleted stable id is refused rather than redirected"
+            );
         }
-        .apply(&mut doc)
-        .expect("delete is accepted");
-        app.sync(&mut doc, &ROOT);
-        assert!(
-            <CalendarApp as ResourceProvider>::resource(&app, &doc, &late).is_none(),
-            "a deleted stable id is refused rather than redirected"
-        );
-    }
+        // Case `omitted_calendar_keeps_its_own_bounded_hierarchy_and_refuses_when_stale`.
+        {
+            let (app, doc) = seeded();
+            let mut ctx = app.calendar_resource_ctx();
+            let template = ctx.calendars[0].clone();
+            ctx.calendars = (0..(EAGER_RESOURCE_SNAPSHOT_LIMIT + 3))
+                .map(|index| crate::actions::CalendarCollectionResource {
+                    id: format!("remote/{index}"),
+                    label: format!("Remote calendar {index}"),
+                    color: template.color,
+                    visible: true,
+                })
+                .collect();
+            let mut event = ctx.events[0].clone();
+            event.data.id = Uuid::from_u128(42_4242).to_string();
+            event.data.title = "event in omitted calendar".into();
+            event.data.calendar_id = format!("remote/{}", EAGER_RESOURCE_SNAPSHOT_LIMIT + 2);
+            ctx.events = vec![event.clone()];
+            ctx.tasks.clear();
+            ctx.projects.clear();
 
-    #[test]
-    fn omitted_calendar_keeps_its_own_bounded_hierarchy_and_refuses_when_stale() {
-        let (app, doc) = seeded();
-        let mut ctx = app.calendar_resource_ctx();
-        let template = ctx.calendars[0].clone();
-        ctx.calendars = (0..(EAGER_RESOURCE_SNAPSHOT_LIMIT + 3))
-            .map(|index| crate::actions::CalendarCollectionResource {
-                id: format!("remote/{index}"),
-                label: format!("Remote calendar {index}"),
-                color: template.color,
-                visible: true,
-            })
-            .collect();
-        let mut event = ctx.events[0].clone();
-        event.data.id = Uuid::from_u128(42_4242).to_string();
-        event.data.title = "event in omitted calendar".into();
-        event.data.calendar_id = format!("remote/{}", EAGER_RESOURCE_SNAPSHOT_LIMIT + 2);
-        ctx.events = vec![event.clone()];
-        ctx.tasks.clear();
-        ctx.projects.clear();
+            let resources = provide_resources(&ctx, &doc);
+            assert!(
+                !resources[0]
+                    .children
+                    .iter()
+                    .any(|resource| resource.id.as_str()
+                        == calendar_resource_id(&event.data.calendar_id)),
+                "the late collection is omitted from the bounded eager snapshot"
+            );
+            let calendar_id = calendar_resource_id(&event.data.calendar_id);
+            let resolved = resource_from_ctx(&ctx, &doc, &calendar_id)
+                .expect("an omitted current calendar resolves directly");
+            assert_eq!(resolved.id.as_str(), calendar_id);
+            assert!(
+                resolved.children.is_empty(),
+                "exact container lookup must not expand an unbounded event history"
+            );
+            let event_id = format!("calendar.event:{}", event.data.id);
+            assert!(
+                resource_from_ctx(&ctx, &doc, &event_id).is_some(),
+                "the omitted collection's event remains independently addressable"
+            );
 
-        let resources = provide_resources(&ctx, &doc);
-        assert!(
-            !resources[0]
+            ctx.calendars
+                .retain(|calendar| calendar.id != event.data.calendar_id);
+            assert!(
+                resource_from_ctx(&ctx, &doc, &calendar_id).is_none(),
+                "a removed collection id is not redirected to a surviving calendar"
+            );
+        }
+        // Case `lazy_project_context_contains_only_its_own_bounded_tasks`.
+        {
+            let (app, doc) = seeded();
+            let ctx = app.calendar_resource_ctx();
+            let project = ctx.projects[0].clone();
+            let project_id = project.data.id;
+            let resource = resource_from_ctx(
+                &ctx,
+                &doc,
+                &project_resource_id(project_id.parse().unwrap()),
+            )
+            .expect("current project resolves lazily");
+            assert!(
+                resource.children.is_empty(),
+                "exact project lookup must not expand an unbounded task history"
+            );
+        }
+        // Case `deep_resource_actions_resolve_from_the_bounded_directory_by_exact_id`.
+        {
+            fn collect_deep<'a>(resource: &'a Resource, found: &mut Vec<&'a Resource>) {
+                if matches!(
+                    resource.kind.as_str(),
+                    "calendar.note"
+                        | "calendar.reminder"
+                        | "calendar.attendee"
+                        | "calendar.occurrence"
+                ) {
+                    found.push(resource);
+                }
+                for child in &resource.children {
+                    collect_deep(child, found);
+                }
+            }
+
+            let (app, doc) = seeded();
+            let ctx = app.calendar_resource_ctx();
+            let root = provide_resources(&ctx, &doc).remove(0);
+            let mut deep = Vec::new();
+            collect_deep(&root, &mut deep);
+            assert!(
+                !deep.is_empty(),
+                "the demo contains note/reminder/attendee/occurrence resources"
+            );
+
+            for resource in deep {
+                let Some(resolved) = resource_from_ctx(&ctx, &doc, resource.id.as_str()) else {
+                    panic!(
+                        "a deep canonical resource resolves without expanding the root tree: {}",
+                        resource.id.as_str()
+                    );
+                };
+                assert_eq!(resolved.id, resource.id);
+                for action in &resource.actions {
+                    assert!(
+                        resolved
+                            .actions
+                            .iter()
+                            .any(|candidate| candidate.id == action.id),
+                        "{} action {} stays reachable by exact resource id",
+                        resource.id.as_str(),
+                        action.id
+                    );
+                }
+            }
+        }
+        // Case `hidden_collection_withholds_event_resources_and_all_descendants`.
+        {
+            let (app, doc) = seeded();
+            let mut ctx = app.calendar_resource_ctx();
+            let event = &mut ctx.events[0];
+            let event_id = event.data.id.parse::<Id>().unwrap();
+            event.data.title = "Private planning session".into();
+            event.data.calendar_id = "work/private".into();
+            event.data.reminder = 30;
+            let attendee = AttendeeData {
+                id: Uuid::new_v4().to_string(),
+                name: "Private guest".into(),
+                email: "guest@example.test".into(),
+                status: "NEEDS-ACTION".into(),
+            };
+            let attendee_id = attendee.id.parse::<Id>().unwrap();
+            event.data.attendees = vec![attendee];
+            ctx.calendars = vec![CalendarCollectionResource {
+                id: "work/private".into(),
+                label: "Private work".into(),
+                color: None,
+                visible: false,
+            }];
+
+            let root = provide_resources(&ctx, &doc).remove(0);
+            let private_collection = root
                 .children
                 .iter()
-                .any(|resource| resource.id.as_str()
-                    == calendar_resource_id(&event.data.calendar_id)),
-            "the late collection is omitted from the bounded eager snapshot"
-        );
-        let calendar_id = calendar_resource_id(&event.data.calendar_id);
-        let resolved = resource_from_ctx(&ctx, &doc, &calendar_id)
-            .expect("an omitted current calendar resolves directly");
-        assert_eq!(resolved.id.as_str(), calendar_id);
-        assert!(
-            resolved.children.is_empty(),
-            "exact container lookup must not expand an unbounded event history"
-        );
-        let event_id = format!("calendar.event:{}", event.data.id);
-        assert!(
-            resource_from_ctx(&ctx, &doc, &event_id).is_some(),
-            "the omitted collection's event remains independently addressable"
-        );
+                .find(|resource| resource.id.as_str() == calendar_resource_id("work/private"))
+                .expect("the collection remains available to re-enable");
+            assert!(private_collection.children.is_empty());
 
-        ctx.calendars
-            .retain(|calendar| calendar.id != event.data.calendar_id);
-        assert!(
-            resource_from_ctx(&ctx, &doc, &calendar_id).is_none(),
-            "a removed collection id is not redirected to a surviving calendar"
-        );
-    }
-
-    #[test]
-    fn lazy_project_context_contains_only_its_own_bounded_tasks() {
-        let (app, doc) = seeded();
-        let ctx = app.calendar_resource_ctx();
-        let project = ctx.projects[0].clone();
-        let project_id = project.data.id;
-        let resource = resource_from_ctx(
-            &ctx,
-            &doc,
-            &project_resource_id(project_id.parse().unwrap()),
-        )
-        .expect("current project resolves lazily");
-        assert!(
-            resource.children.is_empty(),
-            "exact project lookup must not expand an unbounded task history"
-        );
-    }
-
-    #[test]
-    fn deep_resource_actions_resolve_from_the_bounded_directory_by_exact_id() {
-        fn collect_deep<'a>(resource: &'a Resource, found: &mut Vec<&'a Resource>) {
-            if matches!(
-                resource.kind.as_str(),
-                "calendar.note" | "calendar.reminder" | "calendar.attendee" | "calendar.occurrence"
-            ) {
-                found.push(resource);
-            }
-            for child in &resource.children {
-                collect_deep(child, found);
-            }
-        }
-
-        let (app, doc) = seeded();
-        let ctx = app.calendar_resource_ctx();
-        let root = provide_resources(&ctx, &doc).remove(0);
-        let mut deep = Vec::new();
-        collect_deep(&root, &mut deep);
-        assert!(
-            !deep.is_empty(),
-            "the demo contains note/reminder/attendee/occurrence resources"
-        );
-
-        for resource in deep {
-            let Some(resolved) = resource_from_ctx(&ctx, &doc, resource.id.as_str()) else {
-                panic!(
-                    "a deep canonical resource resolves without expanding the root tree: {}",
-                    resource.id.as_str()
-                );
-            };
-            assert_eq!(resolved.id, resource.id);
-            for action in &resource.actions {
+            for resource_id in [
+                event_resource_id(event_id),
+                format!("{}:notes", event_resource_id(event_id)),
+                reminder_resource_id(event_id),
+                attendee_resource_id(event_id, attendee_id),
+            ] {
                 assert!(
-                    resolved
-                        .actions
-                        .iter()
-                        .any(|candidate| candidate.id == action.id),
-                    "{} action {} stays reachable by exact resource id",
-                    resource.id.as_str(),
-                    action.id
+                    resource_from_ctx(&ctx, &doc, &resource_id).is_none(),
+                    "hidden collection leaked {resource_id}"
                 );
             }
         }
     }
 
     #[test]
-    fn hidden_collection_withholds_event_resources_and_all_descendants() {
-        let (app, doc) = seeded();
-        let mut ctx = app.calendar_resource_ctx();
-        let event = &mut ctx.events[0];
-        let event_id = event.data.id.parse::<Id>().unwrap();
-        event.data.title = "Private planning session".into();
-        event.data.calendar_id = "work/private".into();
-        event.data.reminder = 30;
-        let attendee = AttendeeData {
-            id: Uuid::new_v4().to_string(),
-            name: "Private guest".into(),
-            email: "guest@example.test".into(),
-            status: "NEEDS-ACTION".into(),
-        };
-        let attendee_id = attendee.id.parse::<Id>().unwrap();
-        event.data.attendees = vec![attendee];
-        ctx.calendars = vec![CalendarCollectionResource {
-            id: "work/private".into(),
-            label: "Private work".into(),
-            color: None,
-            visible: false,
-        }];
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn search_rows_and_project_actions_invoke_exports_preserving_relationships() {
+        // Case `search_rows_invoke_exported_event_and_task_view_actions`:
+        // Search activation stays entirely inside the resource/action door for
+        // both content types and invokes the exact exported view operation.
+        {
+            let (mut app, doc) = seeded();
 
-        let root = provide_resources(&ctx, &doc).remove(0);
-        let private_collection = root
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == calendar_resource_id("work/private"))
-            .expect("the collection remains available to re-enable");
-        assert!(private_collection.children.is_empty());
-
-        for resource_id in [
-            event_resource_id(event_id),
-            format!("{}:notes", event_resource_id(event_id)),
-            reminder_resource_id(event_id),
-            attendee_resource_id(event_id, attendee_id),
-        ] {
-            assert!(
-                resource_from_ctx(&ctx, &doc, &resource_id).is_none(),
-                "hidden collection leaked {resource_id}"
-            );
-        }
-    }
-
-    /// Search activation stays entirely inside the resource/action door for
-    /// both content types and invokes the exact exported view operation.
-    #[test]
-    fn search_rows_invoke_exported_event_and_task_view_actions() {
-        let (mut app, doc) = seeded();
-
-        let resources = Widget::resources(&app, &doc);
-        let all_hits = Widget::search_providers(&app)[0].search("");
-        assert!(
-            all_hits.iter().all(|hit| {
-                hit.action_address().is_some_and(|address| {
-                    tilo_actions::door::resolve(&resources, &address).is_some()
-                })
-            }),
-            "every event, task and subtask hit resolves in the live resource tree"
-        );
-
-        for (query, expected_label, expected_kind) in [
-            ("bright smiles", "Dentist", "calendar.event"),
-            ("renew passport", "Renew passport", "calendar.task"),
-        ] {
             let resources = Widget::resources(&app, &doc);
-            let mut palette = ui::ActionPalette::new();
-            palette.load_open_resources(&resources);
-            palette.set_providers(Widget::search_providers(&app));
-            palette.open();
-            palette.set_query(query);
-            let labels = palette.result_labels();
-            let row = labels
-                .iter()
-                .position(|label| label == expected_label)
-                .expect("the searchable content row is present");
-            palette.set_cursor(row);
+            let all_hits = Widget::search_providers(&app)[0].search("");
+            assert!(
+                all_hits.iter().all(|hit| {
+                    hit.action_address().is_some_and(|address| {
+                        tilo_actions::door::resolve(&resources, &address).is_some()
+                    })
+                }),
+                "every event, task and subtask hit resolves in the live resource tree"
+            );
 
-            palette.activate_selected();
-            let operation = palette
-                .take_operation()
-                .expect("canonical hit queued a broker operation");
-            assert_eq!(operation.kind, OperationKind::View);
-            let resource_id = operation
-                .context
-                .resource
-                .as_ref()
-                .map(|resource| resource.id.as_str())
-                .expect("operation retains its resource identity");
-            assert!(resource_id.starts_with(expected_kind), "{resource_id}");
-            assert!(
-                palette.take_navigation().is_none(),
-                "legacy callback was not used"
-            );
-            assert!(
-                Widget::invoke_resource_operation(
-                    &mut app,
-                    operation.kind,
-                    &operation.encoded.type_id,
-                    &operation.encoded.payload,
-                    &doc,
-                    &ROOT,
-                )
-                .expect("view operation succeeds")
-            );
-            let id = resource_id
-                .rsplit_once(':')
-                .and_then(|(_, id)| id.parse::<Id>().ok())
-                .expect("resource id ends in the model UUID");
-            if expected_kind == "calendar.event" {
-                assert_eq!(app.selected_event(), Some(id), "exact event was selected");
-            } else {
-                assert_eq!(app.selected_task(), Some(id), "exact task was selected");
+            for (query, expected_label, expected_kind) in [
+                ("bright smiles", "Dentist", "calendar.event"),
+                ("renew passport", "Renew passport", "calendar.task"),
+            ] {
+                let resources = Widget::resources(&app, &doc);
+                let mut palette = ui::ActionPalette::new();
+                palette.load_open_resources(&resources);
+                palette.set_providers(Widget::search_providers(&app));
+                palette.open();
+                palette.set_query(query);
+                let labels = palette.result_labels();
+                let row = labels
+                    .iter()
+                    .position(|label| label == expected_label)
+                    .expect("the searchable content row is present");
+                palette.set_cursor(row);
+
+                palette.activate_selected();
+                let operation = palette
+                    .take_operation()
+                    .expect("canonical hit queued a broker operation");
+                assert_eq!(operation.kind, OperationKind::View);
+                let resource_id = operation
+                    .context
+                    .resource
+                    .as_ref()
+                    .map(|resource| resource.id.as_str())
+                    .expect("operation retains its resource identity");
+                assert!(resource_id.starts_with(expected_kind), "{resource_id}");
+                assert!(
+                    palette.take_navigation().is_none(),
+                    "legacy callback was not used"
+                );
+                assert!(
+                    Widget::invoke_resource_operation(
+                        &mut app,
+                        operation.kind,
+                        &operation.encoded.type_id,
+                        &operation.encoded.payload,
+                        &doc,
+                        &ROOT,
+                    )
+                    .expect("view operation succeeds")
+                );
+                let id = resource_id
+                    .rsplit_once(':')
+                    .and_then(|(_, id)| id.parse::<Id>().ok())
+                    .expect("resource id ends in the model UUID");
+                if expected_kind == "calendar.event" {
+                    assert_eq!(app.selected_event(), Some(id), "exact event was selected");
+                } else {
+                    assert_eq!(app.selected_task(), Some(id), "exact task was selected");
+                }
             }
-        }
 
-        let dentist = app
-            .calendar_resource_ctx()
-            .events
-            .iter()
-            .find(|event| event.data.title == "Dentist")
-            .and_then(|event| event.data.id.parse::<Id>().ok())
-            .expect("Dentist event remains in the model");
-        let passport = app
-            .calendar_resource_ctx()
-            .tasks
-            .iter()
-            .find(|task| task.data.title == "Renew passport")
-            .and_then(|task| task.data.id.parse::<Id>().ok())
-            .expect("passport task remains in the model");
-        assert_ne!(
-            app.selected_event(),
-            Some(dentist),
-            "task activation replaced event selection"
-        );
-        assert_eq!(
-            app.selected_task(),
-            Some(passport),
-            "task activation selected the exact task"
-        );
+            let dentist = app
+                .calendar_resource_ctx()
+                .events
+                .iter()
+                .find(|event| event.data.title == "Dentist")
+                .and_then(|event| event.data.id.parse::<Id>().ok())
+                .expect("Dentist event remains in the model");
+            let passport = app
+                .calendar_resource_ctx()
+                .tasks
+                .iter()
+                .find(|task| task.data.title == "Renew passport")
+                .and_then(|task| task.data.id.parse::<Id>().ok())
+                .expect("passport task remains in the model");
+            assert_ne!(
+                app.selected_event(),
+                Some(dentist),
+                "task activation replaced event selection"
+            );
+            assert_eq!(
+                app.selected_task(),
+                Some(passport),
+                "task activation selected the exact task"
+            );
+        }
+        // Case `projects_are_searchable_and_project_actions_preserve_relationships`.
+        {
+            let (app, mut doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let linked_id = app
+                .calendar_resource_ctx()
+                .projects
+                .iter()
+                .find(|project| project.in_use)
+                .expect("demo has a linked project")
+                .data
+                .id
+                .clone();
+            let project = resources[0]
+                .children
+                .iter()
+                .find(|resource| {
+                    resource.id.as_str() == project_resource_id(linked_id.parse().unwrap())
+                })
+                .expect("seeded project resource");
+            let id = project
+                .id
+                .as_str()
+                .trim_start_matches("calendar.project:")
+                .parse::<Id>()
+                .expect("project resource id");
+            let name = CalDoc::read_model(&doc)
+                .project(id)
+                .expect("project")
+                .name
+                .clone();
+            assert!(
+                Widget::search_providers(&app)[0]
+                    .search(&name)
+                    .iter()
+                    .any(|hit| hit.action_address() == Some(open_project_address(id)))
+            );
+
+            let rename = project
+                .actions
+                .iter()
+                .find(|action| action.id == "edit")
+                .expect("rename action");
+            let encoded = rename
+                .build_args([(
+                    "name".to_string(),
+                    tilo_actions::ArgValue::Text("Critical path".to_string()),
+                )])
+                .expect("typed project rename");
+            let decoded = registry().decode(&encoded).expect("calendar action");
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+                .expect("project rename dispatches");
+            assert_eq!(
+                CalDoc::read_model(&doc).project(id).expect("project").name,
+                "Critical path"
+            );
+
+            let delete = CalendarAction::DeleteProject { id: id.to_string() }.apply(&mut doc);
+            assert!(
+                matches!(delete, Err(ActionError::Refused(_))),
+                "a linked project is not silently detached"
+            );
+            assert!(CalDoc::read_model(&doc).project(id).is_some());
+        }
+        // Case `independent_project_fields_merge_and_history_keeps_the_project_identity`.
+        {
+            let (_app, mut first) = seeded();
+            first.commit();
+            let mut second = AutoCommit::load(&first.save()).expect("clone calendar document");
+            let project = CalDoc::read_model(&first).projects[0].clone();
+
+            CalendarAction::PatchProject {
+                id: project.id.to_string(),
+                patch: ProjectPatch {
+                    name: Some("Renamed concurrently".into()),
+                    ..ProjectPatch::default()
+                },
+            }
+            .apply(&mut first)
+            .expect("rename applies");
+            CalendarAction::PatchProject {
+                id: project.id.to_string(),
+                patch: ProjectPatch {
+                    color: Some(Palette::Violet.index()),
+                    ..ProjectPatch::default()
+                },
+            }
+            .apply(&mut second)
+            .expect("colour applies");
+            first.commit();
+            second.commit();
+            first
+                .merge_incoming(&mut second)
+                .expect("concurrent changes merge");
+
+            let merged_model = CalDoc::read_model(&first);
+            let merged = merged_model
+                .project(project.id)
+                .expect("project survives merge");
+            assert_eq!(merged.name, "Renamed concurrently");
+            assert_eq!(merged.color, Palette::Violet);
+
+            let context = history_context(&CalendarAction::PatchProject {
+                id: project.id.to_string(),
+                patch: ProjectPatch {
+                    name: Some("Again".into()),
+                    ..ProjectPatch::default()
+                },
+            });
+            assert_eq!(
+                context.resource.expect("project history resource").id,
+                project_resource_id(project.id)
+            );
+        }
     }
 
     /// A demo calendar app that has adopted `doc` as its authoritative state.
@@ -3699,590 +3827,482 @@ mod tests {
     }
 
     #[test]
-    fn rename_event_refuses_a_blank_title() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let event = find_kind(&resources[0].children, "calendar.event").expect("an event");
-        let edit_spec = event.actions.iter().find(|a| a.id == "edit").unwrap();
-        assert_eq!(
-            prompted_encode(edit_spec, "   ").type_id,
-            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
-            "rename refuses a whitespace-only title"
-        );
-    }
-
-    #[test]
-    fn import_history_points_at_the_actual_calendar_root() {
-        let context = history_context(&CalendarAction::ImportIcs {
-            events: Vec::new(),
-            tasks: Vec::new(),
-        });
-        assert_eq!(
-            context.resource.expect("root resource").id,
-            "calendar.calendar"
-        );
-    }
-
-    #[test]
-    fn upserts_reject_unknown_project_relationships() {
-        let (_app, mut doc) = seeded();
-        let mut event = EventData::from_event(&CalDoc::read_model(&doc).events[0]);
-        event.id = Id::new_v4().to_string();
-        event.project = Id::new_v4().to_string();
-        let authored_id = event.id.clone();
-        CalendarAction::UpsertEvent(event).apply(&mut doc).unwrap();
-        assert!(
-            CalDoc::read_model(&doc)
-                .events
-                .iter()
-                .all(|candidate| candidate.id.to_string() != authored_id),
-            "a valid UUID is not enough: a project relationship must resolve in the document"
-        );
-    }
-
-    #[test]
-    fn hostile_patch_is_refused_atomically_before_remote_queueing() {
-        let (_app, mut doc) = seeded();
-        let event = CalDoc::read_model(&doc).events[0].clone();
-        let result = CalendarAction::PatchEvent {
-            id: event.id.to_string(),
-            patch: EventPatch {
-                end: Some(
-                    (event.start - chrono::Duration::minutes(1))
-                        .format(DT_FMT)
-                        .to_string(),
-                ),
-                enqueue_remote: Some(true),
-                ..EventPatch::default()
-            },
+    fn invalid_and_hostile_mutations_are_refused_atomically() {
+        // Case `rename_event_refuses_a_blank_title`.
+        {
+            let (app, doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let event = find_kind(&resources[0].children, "calendar.event").expect("an event");
+            let edit_spec = event.actions.iter().find(|a| a.id == "edit").unwrap();
+            assert_eq!(
+                prompted_encode(edit_spec, "   ").type_id,
+                tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
+                "rename refuses a whitespace-only title"
+            );
         }
-        .apply(&mut doc);
-        assert!(matches!(result, Err(ActionError::Refused(_))));
-        let after = CalDoc::read_model(&doc).event(event.id).unwrap().clone();
-        assert_eq!(after.start, event.start);
-        assert_eq!(after.end, event.end);
-        assert!(!CalDoc::outbox(&doc).contains(&event.id));
-    }
-
-    #[test]
-    fn hostile_task_delete_cannot_name_an_unrelated_task() {
-        let (_app, mut doc) = seeded();
-        let model = CalDoc::read_model(&doc);
-        let parent = model.tasks[0].id;
-        let unrelated = model
-            .tasks
-            .iter()
-            .find(|task| task.parent != Some(parent) && task.id != parent)
-            .expect("demo has an unrelated task")
-            .id;
-        let result = CalendarAction::DeleteTask {
-            id: parent.to_string(),
-            subtasks: vec![unrelated.to_string()],
+        // Case `upserts_reject_unknown_project_relationships`.
+        {
+            let (_app, mut doc) = seeded();
+            let mut event = EventData::from_event(&CalDoc::read_model(&doc).events[0]);
+            event.id = Id::new_v4().to_string();
+            event.project = Id::new_v4().to_string();
+            let authored_id = event.id.clone();
+            CalendarAction::UpsertEvent(event).apply(&mut doc).unwrap();
+            assert!(
+                CalDoc::read_model(&doc)
+                    .events
+                    .iter()
+                    .all(|candidate| candidate.id.to_string() != authored_id),
+                "a valid UUID is not enough: a project relationship must resolve in the document"
+            );
         }
-        .apply(&mut doc);
-        assert!(matches!(result, Err(ActionError::Refused(_))));
-        assert!(CalDoc::read_model(&doc).task(unrelated).is_some());
-    }
-
-    /// Dispatching the "New event" prompted action creates an event in the
-    /// document with the committed title.
-    #[test]
-    fn new_event_action_creates_an_event() {
-        let (app, mut doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let spec = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "new-event")
-            .unwrap();
-        let before = CalDoc::read_model(&doc).events.len();
-
-        let encoded = prompted_encode(spec, "Coffee with Dana");
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-
-        let model = CalDoc::read_model(&doc);
-        assert_eq!(model.events.len(), before + 1, "the action added an event");
-        assert!(
-            model.events.iter().any(|e| e.title == "Coffee with Dana"),
-            "the created event carries the committed title"
-        );
-    }
-
-    /// The event editor's full state is not trapped behind pointer-only
-    /// popovers: agents receive strict typed controls that produce the same
-    /// replayable field patches as direct editing.
-    #[test]
-    fn event_field_actions_are_typed_strict_and_replayable() {
-        let (app, mut doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let event = find_kind(&resources, "calendar.event").expect("seeded event resource");
-        let id = event
-            .id
-            .as_str()
-            .trim_start_matches("calendar.event:")
-            .parse::<Id>()
-            .expect("event resource id");
-
-        let location = event
-            .actions
-            .iter()
-            .find(|action| action.id == "set-location")
-            .expect("location action");
-        let encoded = location
-            .build_args([(
-                "location".to_string(),
-                tilo_actions::ArgValue::Text("Studio 3 · https://meet.example".to_string()),
-            )])
-            .expect("well-typed location request");
-        let decoded = registry().decode(&encoded).expect("calendar action");
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
-            .expect("location action dispatches");
-        assert_eq!(
-            CalDoc::read_model(&doc).event(id).expect("event").location,
-            "Studio 3 · https://meet.example"
-        );
-
-        let repeat = event
-            .actions
-            .iter()
-            .find(|action| action.id == "set-repeat")
-            .expect("repeat action");
-        assert!(
-            repeat
-                .build_args([(
-                    "repeat".to_string(),
-                    tilo_actions::ArgValue::Text("every-other-tuesday".to_string()),
-                )])
-                .is_err(),
-            "the declared choices reject an invented recurrence rather than silently defaulting"
-        );
-        let encoded = repeat
-            .build_args([(
-                "repeat".to_string(),
-                tilo_actions::ArgValue::Text("weekly".to_string()),
-            )])
-            .expect("declared recurrence is accepted");
-        let decoded = registry().decode(&encoded).expect("calendar action");
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
-            .expect("repeat action dispatches");
-        let updated = CalDoc::read_model(&doc).event(id).expect("event").clone();
-        assert_eq!(updated.recurrence, Recurrence::Weekly);
-        assert_eq!(
-            updated.location, "Studio 3 · https://meet.example",
-            "a recurrence patch did not rewrite an independently-authored location"
-        );
-
-        let project = CalDoc::read_model(&doc).projects[0].id;
-        let move_project = event
-            .actions
-            .iter()
-            .find(|action| action.id == "move-to-project")
-            .expect("typed project resource action");
-        let encoded = move_project
-            .build_args([(
-                "project".to_string(),
-                tilo_actions::ArgValue::Resource(project_resource_id(project)),
-            )])
-            .expect("canonical project resource address is accepted");
-        let decoded = registry().decode(&encoded).expect("calendar action");
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
-            .expect("current project remains authoritatively valid");
-        assert_eq!(
-            CalDoc::read_model(&doc).event(id).unwrap().project,
-            Some(project)
-        );
-
-        let move_calendar = event
-            .actions
-            .iter()
-            .find(|action| action.id == "move-to-calendar")
-            .expect("typed calendar resource action");
-        let encoded = move_calendar
-            .build_args([(
-                "calendar".to_string(),
-                tilo_actions::ArgValue::Resource(calendar_resource_id("local")),
-            )])
-            .expect("canonical local collection is accepted");
-        let decoded = registry().decode(&encoded).expect("calendar action");
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
-            .expect("local calendar move dispatches");
-        assert!(
-            CalDoc::read_model(&doc)
-                .event(id)
-                .unwrap()
-                .calendar_id
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn new_task_action_creates_a_collaborative_task() {
-        let (app, mut doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let spec = resources[0]
-            .actions
-            .iter()
-            .find(|action| action.id == "new-task")
-            .expect("new-task action");
-        let before = CalDoc::read_model(&doc).tasks.len();
-        let encoded = prompted_encode(spec, "Book dentist appointment");
-        let decoded = registry().decode(&encoded).expect("calendar action");
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
-            .expect("new task dispatches");
-        let model = CalDoc::read_model(&doc);
-        assert_eq!(model.tasks.len(), before + 1);
-        assert!(
-            model
+        // Case `hostile_patch_is_refused_atomically_before_remote_queueing`.
+        {
+            let (_app, mut doc) = seeded();
+            let event = CalDoc::read_model(&doc).events[0].clone();
+            let result = CalendarAction::PatchEvent {
+                id: event.id.to_string(),
+                patch: EventPatch {
+                    end: Some(
+                        (event.start - chrono::Duration::minutes(1))
+                            .format(DT_FMT)
+                            .to_string(),
+                    ),
+                    enqueue_remote: Some(true),
+                    ..EventPatch::default()
+                },
+            }
+            .apply(&mut doc);
+            assert!(matches!(result, Err(ActionError::Refused(_))));
+            let after = CalDoc::read_model(&doc).event(event.id).unwrap().clone();
+            assert_eq!(after.start, event.start);
+            assert_eq!(after.end, event.end);
+            assert!(!CalDoc::outbox(&doc).contains(&event.id));
+        }
+        // Case `hostile_task_delete_cannot_name_an_unrelated_task`.
+        {
+            let (_app, mut doc) = seeded();
+            let model = CalDoc::read_model(&doc);
+            let parent = model.tasks[0].id;
+            let unrelated = model
                 .tasks
                 .iter()
-                .any(|task| task.title == "Book dentist appointment" && !task.done)
-        );
-        let blank = prompted_encode(spec, "\t ");
-        assert_eq!(
-            blank.type_id,
-            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
-            "new task refuses a whitespace-only title"
-        );
+                .find(|task| task.parent != Some(parent) && task.id != parent)
+                .expect("demo has an unrelated task")
+                .id;
+            let result = CalendarAction::DeleteTask {
+                id: parent.to_string(),
+                subtasks: vec![unrelated.to_string()],
+            }
+            .apply(&mut doc);
+            assert!(matches!(result, Err(ActionError::Refused(_))));
+            assert!(CalDoc::read_model(&doc).task(unrelated).is_some());
+        }
     }
 
     #[test]
-    fn projects_are_searchable_and_project_actions_preserve_relationships() {
-        let (app, mut doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let linked_id = app
-            .calendar_resource_ctx()
-            .projects
-            .iter()
-            .find(|project| project.in_use)
-            .expect("demo has a linked project")
-            .data
-            .id
-            .clone();
-        let project = resources[0]
-            .children
-            .iter()
-            .find(|resource| {
-                resource.id.as_str() == project_resource_id(linked_id.parse().unwrap())
-            })
-            .expect("seeded project resource");
-        let id = project
-            .id
-            .as_str()
-            .trim_start_matches("calendar.project:")
-            .parse::<Id>()
-            .expect("project resource id");
-        let name = CalDoc::read_model(&doc)
-            .project(id)
-            .expect("project")
-            .name
-            .clone();
-        assert!(
-            Widget::search_providers(&app)[0]
-                .search(&name)
-                .iter()
-                .any(|hit| hit.action_address() == Some(open_project_address(id)))
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn replicated_edits_converge_and_imports_replay_deterministically() {
+        // Case `invite_recurrence_and_timezone_actions_converge_across_divergent_replicas`.
+        {
+            let (_app, mut first) = seeded();
+            let event_id = CalDoc::read_model(&first).events[0].id;
+            let attendee_id = Uuid::new_v4();
+            CalendarAction::UpsertAttendee {
+                event_id: event_id.to_string(),
+                attendee: AttendeeData {
+                    id: attendee_id.to_string(),
+                    name: "Sam".into(),
+                    email: "sam@example.com".into(),
+                    status: "NEEDS-ACTION".into(),
+                },
+            }
+            .apply(&mut first)
+            .expect("invite applies");
+            first.commit();
+            let bytes = first.save();
+            let mut second = AutoCommit::load(&bytes).expect("second replica");
 
-        let rename = project
-            .actions
-            .iter()
-            .find(|action| action.id == "edit")
-            .expect("rename action");
-        let encoded = rename
-            .build_args([(
-                "name".to_string(),
-                tilo_actions::ArgValue::Text("Critical path".to_string()),
-            )])
-            .expect("typed project rename");
-        let decoded = registry().decode(&encoded).expect("calendar action");
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
-            .expect("project rename dispatches");
-        assert_eq!(
-            CalDoc::read_model(&doc).project(id).expect("project").name,
-            "Critical path"
-        );
+            CalendarAction::PatchAttendee {
+                event_id: event_id.to_string(),
+                attendee_id: attendee_id.to_string(),
+                patch: AttendeePatch {
+                    status: Some("ACCEPTED".into()),
+                    ..AttendeePatch::default()
+                },
+            }
+            .apply(&mut first)
+            .expect("response applies");
+            CalendarAction::PatchEvent {
+                id: event_id.to_string(),
+                patch: EventPatch {
+                    timezone: Some("Europe/Berlin".into()),
+                    recurrence_interval: Some(2),
+                    recurrence_count: Some(7),
+                    ..EventPatch::default()
+                },
+            }
+            .apply(&mut second)
+            .expect("series edit applies");
+            CalendarAction::SetRecurrenceException {
+                event_id: event_id.to_string(),
+                date: "2026-06-17".into(),
+                excluded: true,
+            }
+            .apply(&mut second)
+            .expect("exception applies");
+            first.commit();
+            second.commit();
+            let mut first_peer = AutoCommit::load(&first.save()).expect("first peer");
+            let mut second_peer = AutoCommit::load(&second.save()).expect("second peer");
+            first
+                .merge_incoming(&mut second_peer)
+                .expect("merge second into first");
+            second
+                .merge_incoming(&mut first_peer)
+                .expect("merge first into second");
 
-        let delete = CalendarAction::DeleteProject { id: id.to_string() }.apply(&mut doc);
-        assert!(
-            matches!(delete, Err(ActionError::Refused(_))),
-            "a linked project is not silently detached"
-        );
-        assert!(CalDoc::read_model(&doc).project(id).is_some());
-    }
-
-    #[test]
-    fn independent_project_fields_merge_and_history_keeps_the_project_identity() {
-        let (_app, mut first) = seeded();
-        first.commit();
-        let mut second = AutoCommit::load(&first.save()).expect("clone calendar document");
-        let project = CalDoc::read_model(&first).projects[0].clone();
-
-        CalendarAction::PatchProject {
-            id: project.id.to_string(),
-            patch: ProjectPatch {
-                name: Some("Renamed concurrently".into()),
-                ..ProjectPatch::default()
-            },
-        }
-        .apply(&mut first)
-        .expect("rename applies");
-        CalendarAction::PatchProject {
-            id: project.id.to_string(),
-            patch: ProjectPatch {
-                color: Some(Palette::Violet.index()),
-                ..ProjectPatch::default()
-            },
-        }
-        .apply(&mut second)
-        .expect("colour applies");
-        first.commit();
-        second.commit();
-        first
-            .merge_incoming(&mut second)
-            .expect("concurrent changes merge");
-
-        let merged_model = CalDoc::read_model(&first);
-        let merged = merged_model
-            .project(project.id)
-            .expect("project survives merge");
-        assert_eq!(merged.name, "Renamed concurrently");
-        assert_eq!(merged.color, Palette::Violet);
-
-        let context = history_context(&CalendarAction::PatchProject {
-            id: project.id.to_string(),
-            patch: ProjectPatch {
-                name: Some("Again".into()),
-                ..ProjectPatch::default()
-            },
-        });
-        assert_eq!(
-            context.resource.expect("project history resource").id,
-            project_resource_id(project.id)
-        );
-    }
-
-    #[test]
-    fn invite_recurrence_and_timezone_actions_converge_across_divergent_replicas() {
-        let (_app, mut first) = seeded();
-        let event_id = CalDoc::read_model(&first).events[0].id;
-        let attendee_id = Uuid::new_v4();
-        CalendarAction::UpsertAttendee {
-            event_id: event_id.to_string(),
-            attendee: AttendeeData {
-                id: attendee_id.to_string(),
-                name: "Sam".into(),
-                email: "sam@example.com".into(),
-                status: "NEEDS-ACTION".into(),
-            },
-        }
-        .apply(&mut first)
-        .expect("invite applies");
-        first.commit();
-        let bytes = first.save();
-        let mut second = AutoCommit::load(&bytes).expect("second replica");
-
-        CalendarAction::PatchAttendee {
-            event_id: event_id.to_string(),
-            attendee_id: attendee_id.to_string(),
-            patch: AttendeePatch {
-                status: Some("ACCEPTED".into()),
-                ..AttendeePatch::default()
-            },
-        }
-        .apply(&mut first)
-        .expect("response applies");
-        CalendarAction::PatchEvent {
-            id: event_id.to_string(),
-            patch: EventPatch {
-                timezone: Some("Europe/Berlin".into()),
-                recurrence_interval: Some(2),
-                recurrence_count: Some(7),
-                ..EventPatch::default()
-            },
-        }
-        .apply(&mut second)
-        .expect("series edit applies");
-        CalendarAction::SetRecurrenceException {
-            event_id: event_id.to_string(),
-            date: "2026-06-17".into(),
-            excluded: true,
-        }
-        .apply(&mut second)
-        .expect("exception applies");
-        first.commit();
-        second.commit();
-        let mut first_peer = AutoCommit::load(&first.save()).expect("first peer");
-        let mut second_peer = AutoCommit::load(&second.save()).expect("second peer");
-        first
-            .merge_incoming(&mut second_peer)
-            .expect("merge second into first");
-        second
-            .merge_incoming(&mut first_peer)
-            .expect("merge first into second");
-
-        let left = CalDoc::read_model(&first).event(event_id).cloned().unwrap();
-        let right = CalDoc::read_model(&second)
-            .event(event_id)
-            .cloned()
-            .unwrap();
-        assert_eq!(left.timezone, right.timezone);
-        assert_eq!(left.recurrence_interval, 2);
-        assert_eq!(left.recurrence_count, Some(7));
-        assert_eq!(left.recurrence_exdates, right.recurrence_exdates);
-        assert_eq!(left.attendees, right.attendees);
-        assert_eq!(left.attendees[0].status, InviteStatus::Accepted);
-    }
-
-    #[test]
-    fn attendee_delete_tombstone_wins_over_stale_update() {
-        let (_app, mut first) = seeded();
-        let event_id = CalDoc::read_model(&first).events[0].id;
-        let attendee_id = Uuid::new_v4();
-        CalendarAction::UpsertAttendee {
-            event_id: event_id.to_string(),
-            attendee: AttendeeData {
-                id: attendee_id.to_string(),
-                name: "Sam".into(),
-                email: "sam@example.com".into(),
-                status: "NEEDS-ACTION".into(),
-            },
-        }
-        .apply(&mut first)
-        .unwrap();
-        first.commit();
-        let mut second = AutoCommit::load(&first.save()).unwrap();
-        CalendarAction::DeleteAttendee {
-            event_id: event_id.to_string(),
-            attendee_id: attendee_id.to_string(),
-        }
-        .apply(&mut first)
-        .unwrap();
-        CalendarAction::PatchAttendee {
-            event_id: event_id.to_string(),
-            attendee_id: attendee_id.to_string(),
-            patch: AttendeePatch {
-                status: Some("ACCEPTED".into()),
-                ..AttendeePatch::default()
-            },
-        }
-        .apply(&mut second)
-        .unwrap();
-        first.commit();
-        second.commit();
-        first.merge_incoming(&mut second).unwrap();
-        assert!(
-            CalDoc::read_model(&first)
+            let left = CalDoc::read_model(&first).event(event_id).cloned().unwrap();
+            let right = CalDoc::read_model(&second)
                 .event(event_id)
-                .unwrap()
-                .attendees
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn task_field_actions_are_sparse_and_reject_hostile_priority_values() {
-        let (app, mut doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let task = find_kind(&resources, "calendar.task").expect("seeded task resource");
-        let id = task
-            .id
-            .as_str()
-            .trim_start_matches("calendar.task:")
-            .parse::<Id>()
-            .expect("task resource id");
-        let original_title = CalDoc::read_model(&doc)
-            .task(id)
-            .expect("task")
-            .title
-            .clone();
-        let priority = task
-            .actions
-            .iter()
-            .find(|action| action.id == "set-priority")
-            .expect("priority action");
-        let encoded = priority
-            .build_args([(
-                "priority".to_string(),
-                tilo_actions::ArgValue::Text("p1".to_string()),
-            )])
-            .expect("declared priority is accepted");
-        let decoded = registry().decode(&encoded).expect("calendar action");
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
-            .expect("priority action dispatches");
-        let changed = CalDoc::read_model(&doc).task(id).expect("task").clone();
-        assert_eq!(changed.priority, Priority::High);
-        assert_eq!(changed.title, original_title, "priority patch kept title");
-
-        // A peer is allowed to send a serialized action directly, so validate
-        // again at the document boundary instead of trusting the UI choices.
-        CalendarAction::PatchTask {
-            id: id.to_string(),
-            patch: TaskPatch {
-                priority: Some(200),
-                ..TaskPatch::default()
-            },
+                .cloned()
+                .unwrap();
+            assert_eq!(left.timezone, right.timezone);
+            assert_eq!(left.recurrence_interval, 2);
+            assert_eq!(left.recurrence_count, Some(7));
+            assert_eq!(left.recurrence_exdates, right.recurrence_exdates);
+            assert_eq!(left.attendees, right.attendees);
+            assert_eq!(left.attendees[0].status, InviteStatus::Accepted);
         }
-        .apply(&mut doc)
-        .expect_err("malformed priority is refused before it can report success");
-        assert_eq!(
-            CalDoc::read_model(&doc).task(id).expect("task").priority,
-            Priority::High,
-            "out-of-range priority was not persisted"
-        );
+        // Case `attendee_delete_tombstone_wins_over_stale_update`.
+        {
+            let (_app, mut first) = seeded();
+            let event_id = CalDoc::read_model(&first).events[0].id;
+            let attendee_id = Uuid::new_v4();
+            CalendarAction::UpsertAttendee {
+                event_id: event_id.to_string(),
+                attendee: AttendeeData {
+                    id: attendee_id.to_string(),
+                    name: "Sam".into(),
+                    email: "sam@example.com".into(),
+                    status: "NEEDS-ACTION".into(),
+                },
+            }
+            .apply(&mut first)
+            .unwrap();
+            first.commit();
+            let mut second = AutoCommit::load(&first.save()).unwrap();
+            CalendarAction::DeleteAttendee {
+                event_id: event_id.to_string(),
+                attendee_id: attendee_id.to_string(),
+            }
+            .apply(&mut first)
+            .unwrap();
+            CalendarAction::PatchAttendee {
+                event_id: event_id.to_string(),
+                attendee_id: attendee_id.to_string(),
+                patch: AttendeePatch {
+                    status: Some("ACCEPTED".into()),
+                    ..AttendeePatch::default()
+                },
+            }
+            .apply(&mut second)
+            .unwrap();
+            first.commit();
+            second.commit();
+            first.merge_incoming(&mut second).unwrap();
+            assert!(
+                CalDoc::read_model(&first)
+                    .event(event_id)
+                    .unwrap()
+                    .attendees
+                    .is_empty()
+            );
+        }
+        // Case `import_history_points_at_the_actual_calendar_root`.
+        {
+            let context = history_context(&CalendarAction::ImportIcs {
+                events: Vec::new(),
+                tasks: Vec::new(),
+            });
+            assert_eq!(
+                context.resource.expect("root resource").id,
+                "calendar.calendar"
+            );
+        }
+        // Case `import_batch_replays_as_one_deterministic_action`.
+        {
+            let (_app, seeded_doc) = seeded();
+            let mut a = seeded_doc;
+            a.commit();
+            let bytes = a.save();
+            let mut b = AutoCommit::load(&bytes).expect("same base");
+            let event = EventData {
+                id: Uuid::new_v4().to_string(),
+                title: "Imported planning".into(),
+                start: "2026-09-06T09:00".into(),
+                end: "2026-09-06T10:00".into(),
+                all_day: false,
+                location: String::new(),
+                color: Palette::Indigo.index(),
+                rrule: String::new(),
+                recurrence_interval: 1,
+                recurrence_until: String::new(),
+                recurrence_count: 0,
+                recurrence_exdates: Vec::new(),
+                occurrence_overrides: Vec::new(),
+                timezone: "floating".into(),
+                organizer: String::new(),
+                attendees: Vec::new(),
+                reminder: -1,
+                project: String::new(),
+                calendar_id: String::new(),
+            };
+            let action = CalendarAction::ImportIcs {
+                events: vec![event.clone()],
+                tasks: Vec::new(),
+            };
+            let encoded = encode(&action);
+            let envelope =
+                tilo_actions::apply_local(&mut a, &action, encoded).expect("apply import");
+            tilo_actions::replay(&mut b, &envelope, &registry()).expect("replay import");
+            assert_eq!(
+                a.get_heads(),
+                b.get_heads(),
+                "one import payload converges exactly"
+            );
+            assert!(
+                CalDoc::read_model(&a)
+                    .events
+                    .iter()
+                    .any(|candidate| candidate.id.to_string() == event.id),
+                "the captured item landed"
+            );
+        }
     }
 
     #[test]
-    fn import_batch_replays_as_one_deterministic_action() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).expect("same base");
-        let event = EventData {
-            id: Uuid::new_v4().to_string(),
-            title: "Imported planning".into(),
-            start: "2026-09-06T09:00".into(),
-            end: "2026-09-06T10:00".into(),
-            all_day: false,
-            location: String::new(),
-            color: Palette::Indigo.index(),
-            rrule: String::new(),
-            recurrence_interval: 1,
-            recurrence_until: String::new(),
-            recurrence_count: 0,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: String::new(),
-            attendees: Vec::new(),
-            reminder: -1,
-            project: String::new(),
-            calendar_id: String::new(),
-        };
-        let action = CalendarAction::ImportIcs {
-            events: vec![event.clone()],
-            tasks: Vec::new(),
-        };
-        let encoded = encode(&action);
-        let envelope = tilo_actions::apply_local(&mut a, &action, encoded).expect("apply import");
-        tilo_actions::replay(&mut b, &envelope, &registry()).expect("replay import");
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "one import payload converges exactly"
-        );
-        assert!(
-            CalDoc::read_model(&a)
-                .events
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn event_and_task_actions_create_and_patch_typed_strict_fields() {
+        // Case `new_event_action_creates_an_event`:
+        // Dispatching the "New event" prompted action creates an event in the
+        // document with the committed title.
+        {
+            let (app, mut doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let spec = resources[0]
+                .actions
                 .iter()
-                .any(|candidate| candidate.id.to_string() == event.id),
-            "the captured item landed"
-        );
+                .find(|a| a.id == "new-event")
+                .unwrap();
+            let before = CalDoc::read_model(&doc).events.len();
+
+            let encoded = prompted_encode(spec, "Coffee with Dana");
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+
+            let model = CalDoc::read_model(&doc);
+            assert_eq!(model.events.len(), before + 1, "the action added an event");
+            assert!(
+                model.events.iter().any(|e| e.title == "Coffee with Dana"),
+                "the created event carries the committed title"
+            );
+        }
+        // Case `event_field_actions_are_typed_strict_and_replayable`:
+        // The event editor's full state is not trapped behind pointer-only
+        // popovers: agents receive strict typed controls that produce the same
+        // replayable field patches as direct editing.
+        {
+            let (app, mut doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let event = find_kind(&resources, "calendar.event").expect("seeded event resource");
+            let id = event
+                .id
+                .as_str()
+                .trim_start_matches("calendar.event:")
+                .parse::<Id>()
+                .expect("event resource id");
+
+            let location = event
+                .actions
+                .iter()
+                .find(|action| action.id == "set-location")
+                .expect("location action");
+            let encoded = location
+                .build_args([(
+                    "location".to_string(),
+                    tilo_actions::ArgValue::Text("Studio 3 · https://meet.example".to_string()),
+                )])
+                .expect("well-typed location request");
+            let decoded = registry().decode(&encoded).expect("calendar action");
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+                .expect("location action dispatches");
+            assert_eq!(
+                CalDoc::read_model(&doc).event(id).expect("event").location,
+                "Studio 3 · https://meet.example"
+            );
+
+            let repeat = event
+                .actions
+                .iter()
+                .find(|action| action.id == "set-repeat")
+                .expect("repeat action");
+            assert!(
+                repeat
+                    .build_args([(
+                        "repeat".to_string(),
+                        tilo_actions::ArgValue::Text("every-other-tuesday".to_string()),
+                    )])
+                    .is_err(),
+                "the declared choices reject an invented recurrence rather than silently defaulting"
+            );
+            let encoded = repeat
+                .build_args([(
+                    "repeat".to_string(),
+                    tilo_actions::ArgValue::Text("weekly".to_string()),
+                )])
+                .expect("declared recurrence is accepted");
+            let decoded = registry().decode(&encoded).expect("calendar action");
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+                .expect("repeat action dispatches");
+            let updated = CalDoc::read_model(&doc).event(id).expect("event").clone();
+            assert_eq!(updated.recurrence, Recurrence::Weekly);
+            assert_eq!(
+                updated.location, "Studio 3 · https://meet.example",
+                "a recurrence patch did not rewrite an independently-authored location"
+            );
+
+            let project = CalDoc::read_model(&doc).projects[0].id;
+            let move_project = event
+                .actions
+                .iter()
+                .find(|action| action.id == "move-to-project")
+                .expect("typed project resource action");
+            let encoded = move_project
+                .build_args([(
+                    "project".to_string(),
+                    tilo_actions::ArgValue::Resource(project_resource_id(project)),
+                )])
+                .expect("canonical project resource address is accepted");
+            let decoded = registry().decode(&encoded).expect("calendar action");
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+                .expect("current project remains authoritatively valid");
+            assert_eq!(
+                CalDoc::read_model(&doc).event(id).unwrap().project,
+                Some(project)
+            );
+
+            let move_calendar = event
+                .actions
+                .iter()
+                .find(|action| action.id == "move-to-calendar")
+                .expect("typed calendar resource action");
+            let encoded = move_calendar
+                .build_args([(
+                    "calendar".to_string(),
+                    tilo_actions::ArgValue::Resource(calendar_resource_id("local")),
+                )])
+                .expect("canonical local collection is accepted");
+            let decoded = registry().decode(&encoded).expect("calendar action");
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+                .expect("local calendar move dispatches");
+            assert!(
+                CalDoc::read_model(&doc)
+                    .event(id)
+                    .unwrap()
+                    .calendar_id
+                    .is_none()
+            );
+        }
+        // Case `new_task_action_creates_a_collaborative_task`.
+        {
+            let (app, mut doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let spec = resources[0]
+                .actions
+                .iter()
+                .find(|action| action.id == "new-task")
+                .expect("new-task action");
+            let before = CalDoc::read_model(&doc).tasks.len();
+            let encoded = prompted_encode(spec, "Book dentist appointment");
+            let decoded = registry().decode(&encoded).expect("calendar action");
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+                .expect("new task dispatches");
+            let model = CalDoc::read_model(&doc);
+            assert_eq!(model.tasks.len(), before + 1);
+            assert!(
+                model
+                    .tasks
+                    .iter()
+                    .any(|task| task.title == "Book dentist appointment" && !task.done)
+            );
+            let blank = prompted_encode(spec, "\t ");
+            assert_eq!(
+                blank.type_id,
+                tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
+                "new task refuses a whitespace-only title"
+            );
+        }
+        // Case `task_field_actions_are_sparse_and_reject_hostile_priority_values`.
+        {
+            let (app, mut doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let task = find_kind(&resources, "calendar.task").expect("seeded task resource");
+            let id = task
+                .id
+                .as_str()
+                .trim_start_matches("calendar.task:")
+                .parse::<Id>()
+                .expect("task resource id");
+            let original_title = CalDoc::read_model(&doc)
+                .task(id)
+                .expect("task")
+                .title
+                .clone();
+            let priority = task
+                .actions
+                .iter()
+                .find(|action| action.id == "set-priority")
+                .expect("priority action");
+            let encoded = priority
+                .build_args([(
+                    "priority".to_string(),
+                    tilo_actions::ArgValue::Text("p1".to_string()),
+                )])
+                .expect("declared priority is accepted");
+            let decoded = registry().decode(&encoded).expect("calendar action");
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+                .expect("priority action dispatches");
+            let changed = CalDoc::read_model(&doc).task(id).expect("task").clone();
+            assert_eq!(changed.priority, Priority::High);
+            assert_eq!(changed.title, original_title, "priority patch kept title");
+
+            // A peer is allowed to send a serialized action directly, so validate
+            // again at the document boundary instead of trusting the UI choices.
+            CalendarAction::PatchTask {
+                id: id.to_string(),
+                patch: TaskPatch {
+                    priority: Some(200),
+                    ..TaskPatch::default()
+                },
+            }
+            .apply(&mut doc)
+            .expect_err("malformed priority is refused before it can report success");
+            assert_eq!(
+                CalDoc::read_model(&doc).task(id).expect("task").priority,
+                Priority::High,
+                "out-of-range priority was not persisted"
+            );
+        }
     }
 }

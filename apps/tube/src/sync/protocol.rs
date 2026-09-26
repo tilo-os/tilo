@@ -372,76 +372,78 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opcode_values_match_grayjay_source() {
-        // Opcode.kt
-        assert_eq!(opcode::PING, 0);
-        assert_eq!(opcode::PONG, 1);
-        assert_eq!(opcode::NOTIFY, 2);
-        assert_eq!(opcode::STREAM, 3);
-        assert_eq!(opcode::DATA, 4);
-        assert_eq!(opcode::REQUEST, 5);
-        assert_eq!(opcode::RESPONSE, 6);
-        assert_eq!(opcode::RELAY, 7);
-        // GJSyncOpcodes.kt
-        assert_eq!(sync_opcode::SEND_TO_DEVICES, 101);
-        assert_eq!(sync_opcode::SYNC_STATE_EXCHANGE, 150);
-        assert_eq!(sync_opcode::SYNC_EXPORT, 201);
-        assert_eq!(sync_opcode::SYNC_SUBSCRIPTIONS, 202);
-        assert_eq!(sync_opcode::SYNC_HISTORY, 203);
-        assert_eq!(sync_opcode::SYNC_SUBSCRIPTION_GROUPS, 204);
-        assert_eq!(sync_opcode::SYNC_PLAYLISTS, 205);
-        assert_eq!(sync_opcode::SYNC_WATCH_LATER, 206);
-        // ContentEncoding.kt
-        assert_eq!(content_encoding::RAW, 0);
-        assert_eq!(content_encoding::GZIP, 1);
+    fn grayjay_wire_constants_and_framing_match_source() {
+        // Case `opcode_values_match_grayjay_source`.
+        {
+            // Opcode.kt
+            assert_eq!(opcode::PING, 0);
+            assert_eq!(opcode::PONG, 1);
+            assert_eq!(opcode::NOTIFY, 2);
+            assert_eq!(opcode::STREAM, 3);
+            assert_eq!(opcode::DATA, 4);
+            assert_eq!(opcode::REQUEST, 5);
+            assert_eq!(opcode::RESPONSE, 6);
+            assert_eq!(opcode::RELAY, 7);
+            // GJSyncOpcodes.kt
+            assert_eq!(sync_opcode::SEND_TO_DEVICES, 101);
+            assert_eq!(sync_opcode::SYNC_STATE_EXCHANGE, 150);
+            assert_eq!(sync_opcode::SYNC_EXPORT, 201);
+            assert_eq!(sync_opcode::SYNC_SUBSCRIPTIONS, 202);
+            assert_eq!(sync_opcode::SYNC_HISTORY, 203);
+            assert_eq!(sync_opcode::SYNC_SUBSCRIPTION_GROUPS, 204);
+            assert_eq!(sync_opcode::SYNC_PLAYLISTS, 205);
+            assert_eq!(sync_opcode::SYNC_WATCH_LATER, 206);
+            // ContentEncoding.kt
+            assert_eq!(content_encoding::RAW, 0);
+            assert_eq!(content_encoding::GZIP, 1);
+        }
+        // Case `framing_constants_match_source`.
+        {
+            assert_eq!(MAXIMUM_PACKET_SIZE, 65519);
+            assert_eq!(MAXIMUM_PACKET_SIZE_ENCRYPTED, 65535);
+            assert_eq!(HEADER_SIZE, 7);
+            assert_eq!(NOISE_PATTERN_MAIN, "Noise_IK_25519_ChaChaPoly_BLAKE2b");
+            assert_eq!(NOISE_PATTERN_PAIRING, "Noise_N_25519_ChaChaPoly_BLAKE2b");
+            assert_eq!(ANDROID_LISTEN_PORT, 12315);
+        }
+        // Case `frame_round_trips_and_validates_size`.
+        {
+            let payload = b"hello grayjay";
+            let bytes = encode_frame(
+                opcode::DATA,
+                sync_opcode::SYNC_SUBSCRIPTIONS,
+                content_encoding::GZIP,
+                payload,
+            );
+            // size field == payload + 3 (opcode+sub+ce), matching handleData's `size == len-4`.
+            let declared = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            assert_eq!(declared as usize, payload.len() + 3);
+            assert_eq!(declared as usize, bytes.len() - 4);
+
+            let frame = decode_frame(&bytes).unwrap();
+            assert_eq!(frame.opcode, opcode::DATA);
+            assert_eq!(frame.sub_opcode, sync_opcode::SYNC_SUBSCRIPTIONS);
+            assert_eq!(frame.content_encoding, content_encoding::GZIP);
+            assert_eq!(frame.payload, payload);
+        }
+        // Case `decode_rejects_corrupt_size`.
+        {
+            let mut bytes = encode_frame(opcode::PING, 0, content_encoding::RAW, b"");
+            bytes[0] = 0xFF; // corrupt the declared size
+            assert!(matches!(
+                decode_frame(&bytes),
+                Err(FrameError::SizeMismatch { .. })
+            ));
+            assert_eq!(decode_frame(&[0u8; 3]), Err(FrameError::TooShort));
+        }
     }
 
     #[test]
-    fn framing_constants_match_source() {
-        assert_eq!(MAXIMUM_PACKET_SIZE, 65519);
-        assert_eq!(MAXIMUM_PACKET_SIZE_ENCRYPTED, 65535);
-        assert_eq!(HEADER_SIZE, 7);
-        assert_eq!(NOISE_PATTERN_MAIN, "Noise_IK_25519_ChaChaPoly_BLAKE2b");
-        assert_eq!(NOISE_PATTERN_PAIRING, "Noise_N_25519_ChaChaPoly_BLAKE2b");
-        assert_eq!(ANDROID_LISTEN_PORT, 12315);
-    }
-
-    #[test]
-    fn frame_round_trips_and_validates_size() {
-        let payload = b"hello grayjay";
-        let bytes = encode_frame(
-            opcode::DATA,
-            sync_opcode::SYNC_SUBSCRIPTIONS,
-            content_encoding::GZIP,
-            payload,
-        );
-        // size field == payload + 3 (opcode+sub+ce), matching handleData's `size == len-4`.
-        let declared = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        assert_eq!(declared as usize, payload.len() + 3);
-        assert_eq!(declared as usize, bytes.len() - 4);
-
-        let frame = decode_frame(&bytes).unwrap();
-        assert_eq!(frame.opcode, opcode::DATA);
-        assert_eq!(frame.sub_opcode, sync_opcode::SYNC_SUBSCRIPTIONS);
-        assert_eq!(frame.content_encoding, content_encoding::GZIP);
-        assert_eq!(frame.payload, payload);
-    }
-
-    #[test]
-    fn decode_rejects_corrupt_size() {
-        let mut bytes = encode_frame(opcode::PING, 0, content_encoding::RAW, b"");
-        bytes[0] = 0xFF; // corrupt the declared size
-        assert!(matches!(
-            decode_frame(&bytes),
-            Err(FrameError::SizeMismatch { .. })
-        ));
-        assert_eq!(decode_frame(&[0u8; 3]), Err(FrameError::TooShort));
-    }
-
-    #[test]
-    fn subscriptions_package_matches_grayjay_json_shape() {
-        // A hand-written JSON in Grayjay's exact shape must decode.
-        let json = r#"{
+    fn grayjay_json_packages_match_source_shapes() {
+        // Case `subscriptions_package_matches_grayjay_json_shape`.
+        {
+            // A hand-written JSON in Grayjay's exact shape must decode.
+            let json = r#"{
             "subscriptions": [
                 {
                     "channel": {
@@ -462,32 +464,32 @@ mod tests {
             ],
             "subscriptionRemovals": {"https://youtube.com/channel/UCgone": 1699999999}
         }"#;
-        let pkg: SyncSubscriptionsPackage = serde_json::from_str(json).unwrap();
-        assert_eq!(pkg.subscriptions.len(), 1);
-        assert_eq!(
-            pkg.subscriptions[0].channel.url,
-            "https://youtube.com/channel/UC123"
-        );
-        assert_eq!(pkg.subscriptions[0].creation_time, 1_700_000_000);
-        // Extra Grayjay fields (doNotifications/playbackSeconds) are ignored.
-        assert_eq!(
-            pkg.subscription_removals
-                .get("https://youtube.com/channel/UCgone"),
-            Some(&1_699_999_999)
-        );
+            let pkg: SyncSubscriptionsPackage = serde_json::from_str(json).unwrap();
+            assert_eq!(pkg.subscriptions.len(), 1);
+            assert_eq!(
+                pkg.subscriptions[0].channel.url,
+                "https://youtube.com/channel/UC123"
+            );
+            assert_eq!(pkg.subscriptions[0].creation_time, 1_700_000_000);
+            // Extra Grayjay fields (doNotifications/playbackSeconds) are ignored.
+            assert_eq!(
+                pkg.subscription_removals
+                    .get("https://youtube.com/channel/UCgone"),
+                Some(&1_699_999_999)
+            );
 
-        // And our own serialization round-trips.
-        let reencoded = serde_json::to_string(&pkg).unwrap();
-        let pkg2: SyncSubscriptionsPackage = serde_json::from_str(&reencoded).unwrap();
-        assert_eq!(pkg, pkg2);
-    }
-
-    #[test]
-    fn device_info_blob_parses() {
-        let json = r#"{"publicKey":"abc==","addresses":["192.168.1.5"],"port":12315,"pairingCode":"ABCD1234"}"#;
-        let info: SyncDeviceInfo = serde_json::from_str(json).unwrap();
-        assert_eq!(info.public_key, "abc==");
-        assert_eq!(info.port, 12315);
-        assert_eq!(info.pairing_code.as_deref(), Some("ABCD1234"));
+            // And our own serialization round-trips.
+            let reencoded = serde_json::to_string(&pkg).unwrap();
+            let pkg2: SyncSubscriptionsPackage = serde_json::from_str(&reencoded).unwrap();
+            assert_eq!(pkg, pkg2);
+        }
+        // Case `device_info_blob_parses`.
+        {
+            let json = r#"{"publicKey":"abc==","addresses":["192.168.1.5"],"port":12315,"pairingCode":"ABCD1234"}"#;
+            let info: SyncDeviceInfo = serde_json::from_str(json).unwrap();
+            assert_eq!(info.public_key, "abc==");
+            assert_eq!(info.port, 12315);
+            assert_eq!(info.pairing_code.as_deref(), Some("ABCD1234"));
+        }
     }
 }

@@ -190,56 +190,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ring_slides_and_keeps_the_trailing_window() {
-        let mut r = RingBuffer::new(4);
-        r.push_slice(&[1, 2, 3]);
-        assert_eq!(r.len(), 3);
-        r.push_slice(&[4, 5]); // total 5 > cap 4 → drop the oldest one
-        assert_eq!(r.len(), 4);
-        assert_eq!(r.drain(4), vec![2, 3, 4, 5]);
-        assert!(r.is_empty());
-    }
-
-    #[test]
-    fn ring_push_larger_than_capacity_keeps_only_the_tail() {
-        let mut r = RingBuffer::new(3);
-        r.push_slice(&[1, 2, 3, 4, 5, 6]);
-        assert_eq!(r.len(), 3);
-        assert_eq!(r.drain(10), vec![4, 5, 6]);
-    }
-
-    #[test]
-    fn prefetcher_reads_whole_source_and_reports_full() {
-        // A 10 KiB in-memory source with a known total drives percent to 100.
-        let data = vec![7u8; 10 * 1024];
-        let total = data.len() as u64;
-        let reader: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(data));
-        let pf = Prefetcher::spawn(reader, Some(total), 4096, 1024).unwrap();
-        let progress = pf.progress();
-
-        // Wait (bounded) for the background read to finish.
-        for _ in 0..200 {
-            if progress.is_done() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+    fn ring_and_prefetcher_keep_the_trailing_window_and_report_progress() {
+        // Phase `ring_slides_and_keeps_the_trailing_window`.
+        {
+            let mut r = RingBuffer::new(4);
+            r.push_slice(&[1, 2, 3]);
+            assert_eq!(r.len(), 3);
+            r.push_slice(&[4, 5]); // total 5 > cap 4 → drop the oldest one
+            assert_eq!(r.len(), 4);
+            assert_eq!(r.drain(4), vec![2, 3, 4, 5]);
+            assert!(r.is_empty());
         }
-        assert!(progress.is_done(), "prefetch completed");
-        assert_eq!(progress.bytes_read(), total);
-        assert_eq!(progress.percent(), 100);
-    }
-
-    #[test]
-    fn percent_without_total_is_binary_on_completion() {
-        let reader: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(vec![0u8; 256]));
-        let pf = Prefetcher::spawn(reader, None, 128, 64).unwrap();
-        let progress = pf.progress();
-        for _ in 0..200 {
-            if progress.is_done() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        // Phase `ring_push_larger_than_capacity_keeps_only_the_tail`.
+        {
+            let mut r = RingBuffer::new(3);
+            r.push_slice(&[1, 2, 3, 4, 5, 6]);
+            assert_eq!(r.len(), 3);
+            assert_eq!(r.drain(10), vec![4, 5, 6]);
         }
-        assert_eq!(progress.percent(), 100, "no total → 100 once done");
+        // Phase `prefetcher_reads_whole_source_and_reports_full`.
+        {
+            // A 10 KiB in-memory source with a known total drives percent to 100.
+            let data = vec![7u8; 10 * 1024];
+            let total = data.len() as u64;
+            let reader: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(data));
+            let pf = Prefetcher::spawn(reader, Some(total), 4096, 1024).unwrap();
+            let progress = pf.progress();
+
+            // Wait (bounded) for the background read to finish.
+            for _ in 0..200 {
+                if progress.is_done() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(progress.is_done(), "prefetch completed");
+            assert_eq!(progress.bytes_read(), total);
+            assert_eq!(progress.percent(), 100);
+        }
+        // Phase `percent_without_total_is_binary_on_completion`.
+        {
+            let reader: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(vec![0u8; 256]));
+            let pf = Prefetcher::spawn(reader, None, 128, 64).unwrap();
+            let progress = pf.progress();
+            for _ in 0..200 {
+                if progress.is_done() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert_eq!(progress.percent(), 100, "no total → 100 once done");
+        }
     }
 }

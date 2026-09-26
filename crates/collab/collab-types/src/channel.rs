@@ -199,8 +199,11 @@ mod tests {
     use crate::canonical::{canonical_bytes, from_canonical_bytes};
     use crate::crypto::generate_keypair;
 
+    /// A channel round-trips canonically, artifact ids are unique, and an
+    /// empty settings delta changes nothing.
     #[test]
-    fn channel_round_trip() {
+    fn channel_types_round_trip_and_start_empty() {
+        // Case: channel round trip.
         let (_, owner) = generate_keypair();
         let ch = Channel {
             id: ChannelId::new(),
@@ -217,15 +220,11 @@ mod tests {
         let bytes = canonical_bytes(&ch).unwrap();
         let back: Channel = from_canonical_bytes(&bytes).unwrap();
         assert_eq!(ch, back);
-    }
 
-    #[test]
-    fn artifact_id_unique() {
+        // Case: artifact ids are unique.
         assert_ne!(ArtifactId::new(), ArtifactId::new());
-    }
 
-    #[test]
-    fn settings_delta_default_is_all_none() {
+        // Case: the settings delta default is all None.
         let d = ChannelSettingsDelta::default();
         assert!(d.default_role.is_none());
         assert!(d.observe_default.is_none());

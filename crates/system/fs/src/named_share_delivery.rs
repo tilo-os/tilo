@@ -973,82 +973,83 @@ mod tests {
     }
 
     #[test]
-    fn durable_inbox_is_idempotent_private_and_subject_bound() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("inbox.json");
-        let person = Ed25519PublicKey::from_bytes(
-            ed25519_dalek::SigningKey::from_bytes(&[9; 32])
-                .verifying_key()
-                .to_bytes(),
-        );
-        let entry = envelope(person, 2);
-        let inbox = NamedShareInbox::open_at(&path, person, NOW).unwrap();
-        assert!(inbox.accept_at(entry.clone(), NOW).unwrap());
-        assert!(!inbox.accept_at(entry.clone(), NOW).unwrap());
-        drop(inbox);
-        let reopened = NamedShareInbox::open_at(&path, person, NOW).unwrap();
-        assert_eq!(reopened.entries_at(NOW), vec![entry.clone()]);
-        assert!(
-            entry
-                .validate_for_at(Ed25519PublicKey::from_bytes([3; 32]), NOW)
-                .is_err()
-        );
-        assert!(reopened.entries_at(NOW + 100).is_empty());
-        #[cfg(unix)]
+    fn named_inbox_and_outbox_are_durable_idempotent_and_subject_bound() {
+        // Phase `durable_inbox_is_idempotent_private_and_subject_bound`.
         {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
-                0o600
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("inbox.json");
+            let person = Ed25519PublicKey::from_bytes(
+                ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+                    .verifying_key()
+                    .to_bytes(),
             );
+            let entry = envelope(person, 2);
+            let inbox = NamedShareInbox::open_at(&path, person, NOW).unwrap();
+            assert!(inbox.accept_at(entry.clone(), NOW).unwrap());
+            assert!(!inbox.accept_at(entry.clone(), NOW).unwrap());
+            drop(inbox);
+            let reopened = NamedShareInbox::open_at(&path, person, NOW).unwrap();
+            assert_eq!(reopened.entries_at(NOW), vec![entry.clone()]);
+            assert!(
+                entry
+                    .validate_for_at(Ed25519PublicKey::from_bytes([3; 32]), NOW)
+                    .is_err()
+            );
+            assert!(reopened.entries_at(NOW + 100).is_empty());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
         }
-    }
-
-    #[test]
-    fn bearer_invite_is_never_admitted_to_named_inbox() {
-        let person = Ed25519PublicKey::from_bytes(
-            ed25519_dalek::SigningKey::from_bytes(&[9; 32])
-                .verifying_key()
-                .to_bytes(),
-        );
-        let mut entry = envelope(person, 3);
-        entry.invite.subject = FileInviteSubject::Bearer {
-            secret_hash: [1; 32],
-        };
-        assert!(entry.validate_for_at(person, NOW).is_err());
-    }
-
-    #[test]
-    fn outbox_survives_offline_attempt_and_restart_until_acceptance() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("outbox.json");
-        let person = Ed25519PublicKey::from_bytes(
-            ed25519_dalek::SigningKey::from_bytes(&[9; 32])
-                .verifying_key()
-                .to_bytes(),
-        );
-        let device = Ed25519PublicKey::from_bytes(
-            ed25519_dalek::SigningKey::from_bytes(&[10; 32])
-                .verifying_key()
-                .to_bytes(),
-        );
-        let entry = envelope(person, 7);
-        let grant_id = entry.invite.id;
-        let outbox = NamedShareOutbox::open(&path).unwrap();
-        assert!(outbox.enqueue(entry, vec![device]).unwrap());
-        outbox.record_attempt(grant_id, None, NOW).unwrap();
-        drop(outbox);
-        let reopened = NamedShareOutbox::open(&path).unwrap();
-        assert_eq!(reopened.pending_at(NOW).len(), 1);
-        assert_eq!(reopened.get(grant_id).unwrap().attempts, 1);
-        reopened
-            .record_attempt(grant_id, Some(device), NOW + 1)
-            .unwrap();
-        assert!(reopened.pending_at(NOW + 1).is_empty());
-        drop(reopened);
-        let final_state = NamedShareOutbox::open(path).unwrap().get(grant_id).unwrap();
-        assert_eq!(final_state.delivered_to, Some(device));
-        assert_eq!(final_state.attempts, 2);
+        // Phase `bearer_invite_is_never_admitted_to_named_inbox`.
+        {
+            let person = Ed25519PublicKey::from_bytes(
+                ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            );
+            let mut entry = envelope(person, 3);
+            entry.invite.subject = FileInviteSubject::Bearer {
+                secret_hash: [1; 32],
+            };
+            assert!(entry.validate_for_at(person, NOW).is_err());
+        }
+        // Phase `outbox_survives_offline_attempt_and_restart_until_acceptance`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("outbox.json");
+            let person = Ed25519PublicKey::from_bytes(
+                ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            );
+            let device = Ed25519PublicKey::from_bytes(
+                ed25519_dalek::SigningKey::from_bytes(&[10; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            );
+            let entry = envelope(person, 7);
+            let grant_id = entry.invite.id;
+            let outbox = NamedShareOutbox::open(&path).unwrap();
+            assert!(outbox.enqueue(entry, vec![device]).unwrap());
+            outbox.record_attempt(grant_id, None, NOW).unwrap();
+            drop(outbox);
+            let reopened = NamedShareOutbox::open(&path).unwrap();
+            assert_eq!(reopened.pending_at(NOW).len(), 1);
+            assert_eq!(reopened.get(grant_id).unwrap().attempts, 1);
+            reopened
+                .record_attempt(grant_id, Some(device), NOW + 1)
+                .unwrap();
+            assert!(reopened.pending_at(NOW + 1).is_empty());
+            drop(reopened);
+            let final_state = NamedShareOutbox::open(path).unwrap().get(grant_id).unwrap();
+            assert_eq!(final_state.delivered_to, Some(device));
+            assert_eq!(final_state.attempts, 2);
+        }
     }
 
     struct Party {

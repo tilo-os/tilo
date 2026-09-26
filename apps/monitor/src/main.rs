@@ -441,52 +441,55 @@ mod launch_tests {
     }
 
     #[test]
-    fn production_launch_spec_installs_the_root_history_definition() {
-        let spec = launch_spec(inert_root).open_app_global_state(memory_state);
-        spec.validate_history_declaration().unwrap();
-        let mut app = spec.build_controlled_app_for_test().unwrap();
-        let (installed, root) = app.controlled_history_definitions_for_test();
-        assert!(std::ptr::eq(
-            installed.unwrap(),
-            std::ptr::from_ref(&monitor::framework_history::HISTORY)
-        ));
-        assert!(std::ptr::eq(
-            root.unwrap(),
-            std::ptr::from_ref(&monitor::framework_history::HISTORY)
-        ));
-        assert!(
-            app.build_a11y_tree_update(1.0)
-                .nodes
-                .iter()
-                .any(|(_, node)| node.label() == Some("History"))
-        );
-    }
+    fn launch_admits_only_the_root_history_declaration() {
+        // Phase `production_launch_spec_installs_the_root_history_definition`.
+        {
+            let spec = launch_spec(inert_root).open_app_global_state(memory_state);
+            spec.validate_history_declaration().unwrap();
+            let mut app = spec.build_controlled_app_for_test().unwrap();
+            let (installed, root) = app.controlled_history_definitions_for_test();
+            assert!(std::ptr::eq(
+                installed.unwrap(),
+                std::ptr::from_ref(&monitor::framework_history::HISTORY)
+            ));
+            assert!(std::ptr::eq(
+                root.unwrap(),
+                std::ptr::from_ref(&monitor::framework_history::HISTORY)
+            ));
+            assert!(
+                app.build_a11y_tree_update(1.0)
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("History"))
+            );
+        }
 
-    #[test]
-    fn missing_and_foreign_launch_declarations_are_not_admitted() {
-        let missing = launch_spec_base(inert_root).open_app_global_state(memory_state);
-        assert_eq!(
-            missing.validate_history_declaration(),
-            Err(ui::history_mode::HistoryRegistrationError::Missing)
-        );
-        let app = missing.build_controlled_app_for_test().unwrap();
-        let (installed, root) = app.controlled_history_definitions_for_test();
-        assert!(installed.is_none());
-        assert!(std::ptr::eq(
-            root.unwrap(),
-            std::ptr::from_ref(&monitor::framework_history::HISTORY)
-        ));
+        // Phase `missing_and_foreign_launch_declarations_are_not_admitted`.
+        {
+            let missing = launch_spec_base(inert_root).open_app_global_state(memory_state);
+            assert_eq!(
+                missing.validate_history_declaration(),
+                Err(ui::history_mode::HistoryRegistrationError::Missing)
+            );
+            let app = missing.build_controlled_app_for_test().unwrap();
+            let (installed, root) = app.controlled_history_definitions_for_test();
+            assert!(installed.is_none());
+            assert!(std::ptr::eq(
+                root.unwrap(),
+                std::ptr::from_ref(&monitor::framework_history::HISTORY)
+            ));
 
-        let foreign = launch_spec_base(inert_root)
-            .history(&FOREIGN_HISTORY)
-            .open_app_global_state(memory_state);
-        assert_eq!(
-            foreign.validate_history_declaration(),
-            Err(ui::history_mode::HistoryRegistrationError::ForeignSource)
-        );
-        assert!(matches!(
-            foreign.build_controlled_app_for_test(),
-            Err(LaunchError::Operation(message)) if message.contains("different installed application")
-        ));
+            let foreign = launch_spec_base(inert_root)
+                .history(&FOREIGN_HISTORY)
+                .open_app_global_state(memory_state);
+            assert_eq!(
+                foreign.validate_history_declaration(),
+                Err(ui::history_mode::HistoryRegistrationError::ForeignSource)
+            );
+            assert!(matches!(
+                foreign.build_controlled_app_for_test(),
+                Err(LaunchError::Operation(message)) if message.contains("different installed application")
+            ));
+        }
     }
 }

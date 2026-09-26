@@ -707,163 +707,168 @@ mod tests {
     use super::*;
 
     #[test]
-    fn boot_pack_image_must_be_digest_pinned_and_match_manifest() {
-        let digest = "a".repeat(64);
-        assert_eq!(
-            bootc_image_reference(
-                &format!("bootc://registry.example.test/drivers@sha256:{digest}"),
-                &digest
-            )
-            .unwrap(),
-            format!("registry.example.test/drivers@sha256:{digest}")
-        );
-        assert!(
-            bootc_image_reference("bootc://registry.example.test/drivers:latest", &digest).is_err()
-        );
-        assert!(
-            bootc_image_reference(
-                &format!(
-                    "bootc://registry.example.test/drivers@sha256:{}",
-                    "b".repeat(64)
-                ),
-                &digest
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn catalog_id_cannot_be_a_path_or_command_fragment() {
-        for invalid in ["../nvidia", "nvidia open", "nvidia\nopen", "", "-driver"] {
+    fn boot_packs_and_catalogues_are_digest_pinned_signed_and_matched() {
+        // Phase `boot_pack_image_must_be_digest_pinned_and_match_manifest`.
+        {
+            let digest = "a".repeat(64);
+            assert_eq!(
+                bootc_image_reference(
+                    &format!("bootc://registry.example.test/drivers@sha256:{digest}"),
+                    &digest
+                )
+                .unwrap(),
+                format!("registry.example.test/drivers@sha256:{digest}")
+            );
             assert!(
-                validate_id(invalid).is_err(),
-                "{invalid:?} must be rejected"
+                bootc_image_reference("bootc://registry.example.test/drivers:latest", &digest)
+                    .is_err()
+            );
+            assert!(
+                bootc_image_reference(
+                    &format!(
+                        "bootc://registry.example.test/drivers@sha256:{}",
+                        "b".repeat(64)
+                    ),
+                    &digest
+                )
+                .is_err()
             );
         }
-        assert!(validate_id("nvidia-open.580").is_ok());
+        // Phase `image_digest_requires_an_exact_pin`.
+        {
+            let digest = "a".repeat(64);
+            assert_eq!(
+                image_digest(&format!("registry/tilo@sha256:{digest}")),
+                Some(format!("sha256:{digest}"))
+            );
+            assert_eq!(image_digest("registry/tilo:latest"), None);
+        }
+        // Phase `shipped_pci_catalogue_has_a_valid_separate_signature`.
+        {
+            let signed: SignedPciRecommendationCatalog = serde_json::from_slice(include_bytes!(
+                "../../../../../os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json"
+            ))
+            .unwrap();
+            let key: PublicKeyDocument = serde_json::from_slice(include_bytes!(
+                "../../../../../os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json"
+            ))
+            .unwrap();
+            validate_pci_catalog(&signed).unwrap();
+            verify_pci_catalog_against(&signed, &key).unwrap();
+
+            // Renaming the key in both documents cannot authorize unsigned changes.
+            let mut renamed = signed;
+            renamed.key_id = "tilo-pci-catalog-v2".into();
+            let renamed_key = PublicKeyDocument {
+                key_id: renamed.key_id.clone(),
+                ..key
+            };
+            assert!(verify_pci_catalog_against(&renamed, &renamed_key).is_err());
+        }
+        // Phase `subsystem_rule_wins_over_generic_pci_rule`.
+        {
+            let device = PciDevice {
+                vendor_id: 0x10de,
+                device_id: 0x2684,
+                subsystem_vendor_id: Some(0x1028),
+                subsystem_device_id: Some(0x0c5f),
+            };
+            let generic = PciMatch {
+                vendor_id: 0x10de,
+                device_id: 0x2684,
+                subsystem_vendor_id: None,
+                subsystem_device_id: None,
+            };
+            let specific = PciMatch {
+                subsystem_vendor_id: device.subsystem_vendor_id,
+                subsystem_device_id: device.subsystem_device_id,
+                ..generic
+            };
+            assert!(generic.matches(&device));
+            assert!(specific.matches(&device));
+            assert!(specific.specificity() > generic.specificity());
+        }
     }
 
     #[test]
-    fn subsystem_rule_wins_over_generic_pci_rule() {
-        let device = PciDevice {
-            vendor_id: 0x10de,
-            device_id: 0x2684,
-            subsystem_vendor_id: Some(0x1028),
-            subsystem_device_id: Some(0x0c5f),
-        };
-        let generic = PciMatch {
-            vendor_id: 0x10de,
-            device_id: 0x2684,
-            subsystem_vendor_id: None,
-            subsystem_device_id: None,
-        };
-        let specific = PciMatch {
-            subsystem_vendor_id: device.subsystem_vendor_id,
-            subsystem_device_id: device.subsystem_device_id,
-            ..generic
-        };
-        assert!(generic.matches(&device));
-        assert!(specific.matches(&device));
-        assert!(specific.specificity() > generic.specificity());
-    }
-
-    #[test]
-    fn shipped_pci_catalogue_has_a_valid_separate_signature() {
-        let signed: SignedPciRecommendationCatalog = serde_json::from_slice(include_bytes!(
-            "../../../../../os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json"
-        ))
-        .unwrap();
-        let key: PublicKeyDocument = serde_json::from_slice(include_bytes!(
-            "../../../../../os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json"
-        ))
-        .unwrap();
-        validate_pci_catalog(&signed).unwrap();
-        verify_pci_catalog_against(&signed, &key).unwrap();
-
-        // Renaming the key in both documents cannot authorize unsigned changes.
-        let mut renamed = signed;
-        renamed.key_id = "tilo-pci-catalog-v2".into();
-        let renamed_key = PublicKeyDocument {
-            key_id: renamed.key_id.clone(),
-            ..key
-        };
-        assert!(verify_pci_catalog_against(&renamed, &renamed_key).is_err());
+    fn catalog_ids_and_terminal_failures_are_bounded() {
+        // Phase `catalog_id_cannot_be_a_path_or_command_fragment`.
+        {
+            for invalid in ["../nvidia", "nvidia open", "nvidia\nopen", "", "-driver"] {
+                assert!(
+                    validate_id(invalid).is_err(),
+                    "{invalid:?} must be rejected"
+                );
+            }
+            assert!(validate_id("nvidia-open.580").is_ok());
+        }
+        // Phase `terminal_failure_consumes_the_queue_and_cannot_retry_forever`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let request = directory.path().join("boot-pack-request");
+            fs::write(&request, b"unsupported-pack\n").unwrap();
+            let error =
+                consume_terminal_request(&request, Err("not compatible".into())).unwrap_err();
+            assert_eq!(error, "not compatible");
+            assert!(!request.exists());
+        }
     }
 
     #[test]
     #[cfg(unix)]
-    fn bootc_switch_executes_only_its_fixed_argv() {
-        use std::os::unix::fs::PermissionsExt;
+    fn privileged_helpers_run_fixed_argv_with_bounded_capture() {
+        // Phase `bootc_switch_executes_only_its_fixed_argv`.
+        {
+            use std::os::unix::fs::PermissionsExt;
 
-        let directory = tempfile::tempdir().unwrap();
-        let command = directory.path().join("bootc");
-        let capture = directory.path().join("argv");
-        fs::write(
-            &command,
-            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n", capture.display()),
-        )
-        .unwrap();
-        fs::set_permissions(&command, fs::Permissions::from_mode(0o755)).unwrap();
-        let image = format!("registry.example.test/boot-pack@sha256:{}", "a".repeat(64));
-        bootc_switch_with(&command, &image).unwrap();
-        assert_eq!(
-            fs::read_to_string(capture).unwrap(),
-            format!("switch\n--transport=registry\n{image}\n")
-        );
-    }
+            let directory = tempfile::tempdir().unwrap();
+            let command = directory.path().join("bootc");
+            let capture = directory.path().join("argv");
+            fs::write(
+                &command,
+                format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n", capture.display()),
+            )
+            .unwrap();
+            fs::set_permissions(&command, fs::Permissions::from_mode(0o755)).unwrap();
+            let image = format!("registry.example.test/boot-pack@sha256:{}", "a".repeat(64));
+            bootc_switch_with(&command, &image).unwrap();
+            assert_eq!(
+                fs::read_to_string(capture).unwrap(),
+                format!("switch\n--transport=registry\n{image}\n")
+            );
+        }
+        // Phase `privileged_helper_capture_rejects_overflow_and_timeout`.
+        {
+            use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    #[cfg(unix)]
-    fn privileged_helper_capture_rejects_overflow_and_timeout() {
-        use std::os::unix::fs::PermissionsExt;
+            let directory = tempfile::tempdir().unwrap();
+            let overflow = directory.path().join("overflow");
+            fs::write(&overflow, "#!/bin/sh\nhead -c 8192 /dev/zero\n").unwrap();
+            fs::set_permissions(&overflow, fs::Permissions::from_mode(0o755)).unwrap();
+            let error = bounded_stdout(
+                &overflow,
+                &[],
+                4096,
+                Duration::from_secs(1),
+                "overflow probe",
+            )
+            .unwrap_err();
+            assert!(error.contains("output exceeds"), "{error}");
 
-        let directory = tempfile::tempdir().unwrap();
-        let overflow = directory.path().join("overflow");
-        fs::write(&overflow, "#!/bin/sh\nhead -c 8192 /dev/zero\n").unwrap();
-        fs::set_permissions(&overflow, fs::Permissions::from_mode(0o755)).unwrap();
-        let error = bounded_stdout(
-            &overflow,
-            &[],
-            4096,
-            Duration::from_secs(1),
-            "overflow probe",
-        )
-        .unwrap_err();
-        assert!(error.contains("output exceeds"), "{error}");
-
-        let hangs = directory.path().join("hangs");
-        fs::write(&hangs, "#!/bin/sh\nsleep 5\n").unwrap();
-        fs::set_permissions(&hangs, fs::Permissions::from_mode(0o755)).unwrap();
-        let started = Instant::now();
-        let error = bounded_stdout(
-            &hangs,
-            &[],
-            4096,
-            Duration::from_millis(25),
-            "timeout probe",
-        )
-        .unwrap_err();
-        assert!(error.contains("timed out"), "{error}");
-        assert!(started.elapsed() < Duration::from_secs(1));
-    }
-
-    #[test]
-    fn terminal_failure_consumes_the_queue_and_cannot_retry_forever() {
-        let directory = tempfile::tempdir().unwrap();
-        let request = directory.path().join("boot-pack-request");
-        fs::write(&request, b"unsupported-pack\n").unwrap();
-        let error = consume_terminal_request(&request, Err("not compatible".into())).unwrap_err();
-        assert_eq!(error, "not compatible");
-        assert!(!request.exists());
-    }
-
-    #[test]
-    fn image_digest_requires_an_exact_pin() {
-        let digest = "a".repeat(64);
-        assert_eq!(
-            image_digest(&format!("registry/tilo@sha256:{digest}")),
-            Some(format!("sha256:{digest}"))
-        );
-        assert_eq!(image_digest("registry/tilo:latest"), None);
+            let hangs = directory.path().join("hangs");
+            fs::write(&hangs, "#!/bin/sh\nsleep 5\n").unwrap();
+            fs::set_permissions(&hangs, fs::Permissions::from_mode(0o755)).unwrap();
+            let started = Instant::now();
+            let error = bounded_stdout(
+                &hangs,
+                &[],
+                4096,
+                Duration::from_millis(25),
+                "timeout probe",
+            )
+            .unwrap_err();
+            assert!(error.contains("timed out"), "{error}");
+            assert!(started.elapsed() < Duration::from_secs(1));
+        }
     }
 }

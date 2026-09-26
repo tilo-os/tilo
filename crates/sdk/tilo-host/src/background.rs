@@ -584,145 +584,151 @@ mod tests {
     }
 
     #[test]
-    fn thread_pool_runs_jobs_on_named_threads() {
-        let pool = ThreadPool::new(2);
-        let (tx, rx) = mpsc::channel();
-        for _ in 0..4 {
-            let tx = tx.clone();
-            pool.spawn(
-                "test",
-                Box::new(move || {
-                    let name = std::thread::current().name().map(str::to_owned);
-                    tx.send(name).unwrap();
-                }),
-            )
-            .unwrap();
-        }
-        for _ in 0..4 {
-            let name = rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
-            assert!(name.starts_with("ui-background-"), "{name}");
-        }
-        assert!(lock(&pool.shared.state).threads <= 2);
-    }
-
-    #[test]
-    fn thread_pool_survives_a_panicking_job() {
-        let pool = ThreadPool::new(1);
-        pool.spawn("panics", Box::new(|| panic!("job failure")))
-            .unwrap();
-        let (tx, rx) = mpsc::channel();
-        pool.spawn("after", Box::new(move || tx.send(()).unwrap()))
-            .unwrap();
-        rx.recv_timeout(Duration::from_secs(5)).unwrap();
-    }
-
-    #[test]
-    fn thread_pool_timers_wake_in_deadline_order() {
-        let pool = ThreadPool::new(1);
-        let (tx, rx) = mpsc::channel();
-        let bound = |label: &'static str| {
-            let tx = tx.clone();
-            let mut scope = WakeScope::new();
-            scope
-                .bind(move |_| {
-                    let _ = tx.send(label);
-                })
+    fn thread_pool_runs_named_jobs_survives_panics_and_wakes_timers_in_order() {
+        // Case `thread_pool_runs_jobs_on_named_threads`.
+        {
+            let pool = ThreadPool::new(2);
+            let (tx, rx) = mpsc::channel();
+            for _ in 0..4 {
+                let tx = tx.clone();
+                pool.spawn(
+                    "test",
+                    Box::new(move || {
+                        let name = std::thread::current().name().map(str::to_owned);
+                        tx.send(name).unwrap();
+                    }),
+                )
                 .unwrap();
-            scope
-        };
-        let late = bound("late");
-        let early = bound("early");
-        let start = crate::time::now();
-        pool.wake_at(start + Duration::from_millis(60), late.handle());
-        pool.wake_at(start + Duration::from_millis(10), early.handle());
-        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "early");
-        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "late");
-    }
+            }
+            for _ in 0..4 {
+                let name = rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+                assert!(name.starts_with("ui-background-"), "{name}");
+            }
+            assert!(lock(&pool.shared.state).threads <= 2);
+        }
 
-    #[test]
-    fn thread_pool_park_returns_when_a_job_finishes() {
-        let pool = ThreadPool::new(1);
-        let (release, gate) = mpsc::channel::<()>();
-        pool.spawn("gated", Box::new(move || gate.recv().unwrap()))
-            .unwrap();
-        release.send(()).unwrap();
-        let started = crate::time::now();
-        pool.park(started + Duration::from_secs(30));
-        assert!(started.elapsed() < Duration::from_secs(10));
-    }
+        // Case `thread_pool_survives_a_panicking_job`.
+        {
+            let pool = ThreadPool::new(1);
+            pool.spawn("panics", Box::new(|| panic!("job failure")))
+                .unwrap();
+            let (tx, rx) = mpsc::channel();
+            pool.spawn("after", Box::new(move || tx.send(()).unwrap()))
+                .unwrap();
+            rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
 
-    #[test]
-    fn pumped_runs_nothing_until_pumped() {
-        let pumped = Pumped::new();
-        let ran = Arc::new(AtomicUsize::new(0));
-        let background = pumped.background();
-        let counter = Arc::clone(&ran);
-        let requeue = background.clone();
-        background
-            .spawn("outer", move || {
-                counter.fetch_add(1, Ordering::SeqCst);
-                let inner = Arc::clone(&counter);
-                requeue
-                    .spawn("inner", move || {
-                        inner.fetch_add(1, Ordering::SeqCst);
+        // Case `thread_pool_timers_wake_in_deadline_order`.
+        {
+            let pool = ThreadPool::new(1);
+            let (tx, rx) = mpsc::channel();
+            let bound = |label: &'static str| {
+                let tx = tx.clone();
+                let mut scope = WakeScope::new();
+                scope
+                    .bind(move |_| {
+                        let _ = tx.send(label);
                     })
                     .unwrap();
-            })
-            .unwrap();
-        assert_eq!(ran.load(Ordering::SeqCst), 0);
-        assert!(!pumped.is_idle());
-        assert_eq!(
-            pumped.run_pending(),
-            2,
-            "work queued by a job runs in the same pump"
-        );
-        assert!(pumped.is_idle());
-        assert_eq!(ran.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn pumped_timers_follow_the_virtual_clock() {
-        let start = crate::time::now();
-        let pumped = Pumped::starting_at(start);
-        let (scope, wakes) = counting_scope();
-        pumped.wake_at(start + Duration::from_secs(2), scope.handle());
-        pumped.advance(Duration::from_millis(1999));
-        assert_eq!(wakes.load(Ordering::SeqCst), 0);
-        assert_eq!(pumped.next_deadline(), Some(start + Duration::from_secs(2)));
-        pumped.advance(Duration::from_millis(1));
-        assert_eq!(wakes.load(Ordering::SeqCst), 1);
-        assert_eq!(pumped.now(), start + Duration::from_secs(2));
-        assert_eq!(pumped.next_deadline(), None);
-    }
-
-    #[test]
-    fn pumped_park_jumps_to_the_next_timer_without_waiting() {
-        let start = crate::time::now();
-        let pumped = Pumped::starting_at(start);
-        let (scope, wakes) = counting_scope();
-        pumped.wake_at(start + Duration::from_secs(60), scope.handle());
-        pumped.park(start + Duration::from_secs(3600));
-        assert_eq!(wakes.load(Ordering::SeqCst), 1);
-        assert_eq!(pumped.now(), start + Duration::from_secs(60));
-        pumped.park(start + Duration::from_secs(120));
-        assert_eq!(pumped.now(), start + Duration::from_secs(120));
-    }
-
-    #[test]
-    fn entered_executor_is_captured_and_restored() {
-        let pumped = Pumped::new();
-        {
-            let _guard = pumped.background().enter();
-            Background::current().spawn("scoped", || {}).unwrap();
-            {
-                let _inner = Background::new(NoBackground).enter();
-                assert_eq!(
-                    Background::current().spawn("refused", || {}),
-                    Err(Unsupported)
-                );
-            }
-            Background::current().spawn("scoped", || {}).unwrap();
+                scope
+            };
+            let late = bound("late");
+            let early = bound("early");
+            let start = crate::time::now();
+            pool.wake_at(start + Duration::from_millis(60), late.handle());
+            pool.wake_at(start + Duration::from_millis(10), early.handle());
+            assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "early");
+            assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "late");
         }
-        assert_eq!(pumped.run_pending(), 2);
+
+        // Case `thread_pool_park_returns_when_a_job_finishes`.
+        {
+            let pool = ThreadPool::new(1);
+            let (release, gate) = mpsc::channel::<()>();
+            pool.spawn("gated", Box::new(move || gate.recv().unwrap()))
+                .unwrap();
+            release.send(()).unwrap();
+            let started = crate::time::now();
+            pool.park(started + Duration::from_secs(30));
+            assert!(started.elapsed() < Duration::from_secs(10));
+        }
+    }
+
+    #[test]
+    fn pumped_executor_runs_only_when_pumped_on_a_virtual_clock() {
+        // Case `pumped_runs_nothing_until_pumped`.
+        {
+            let pumped = Pumped::new();
+            let ran = Arc::new(AtomicUsize::new(0));
+            let background = pumped.background();
+            let counter = Arc::clone(&ran);
+            let requeue = background.clone();
+            background
+                .spawn("outer", move || {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let inner = Arc::clone(&counter);
+                    requeue
+                        .spawn("inner", move || {
+                            inner.fetch_add(1, Ordering::SeqCst);
+                        })
+                        .unwrap();
+                })
+                .unwrap();
+            assert_eq!(ran.load(Ordering::SeqCst), 0);
+            assert!(!pumped.is_idle());
+            assert_eq!(
+                pumped.run_pending(),
+                2,
+                "work queued by a job runs in the same pump"
+            );
+            assert!(pumped.is_idle());
+            assert_eq!(ran.load(Ordering::SeqCst), 2);
+        }
+
+        // Case `pumped_timers_follow_the_virtual_clock`.
+        {
+            let start = crate::time::now();
+            let pumped = Pumped::starting_at(start);
+            let (scope, wakes) = counting_scope();
+            pumped.wake_at(start + Duration::from_secs(2), scope.handle());
+            pumped.advance(Duration::from_millis(1999));
+            assert_eq!(wakes.load(Ordering::SeqCst), 0);
+            assert_eq!(pumped.next_deadline(), Some(start + Duration::from_secs(2)));
+            pumped.advance(Duration::from_millis(1));
+            assert_eq!(wakes.load(Ordering::SeqCst), 1);
+            assert_eq!(pumped.now(), start + Duration::from_secs(2));
+            assert_eq!(pumped.next_deadline(), None);
+        }
+
+        // Case `pumped_park_jumps_to_the_next_timer_without_waiting`.
+        {
+            let start = crate::time::now();
+            let pumped = Pumped::starting_at(start);
+            let (scope, wakes) = counting_scope();
+            pumped.wake_at(start + Duration::from_secs(60), scope.handle());
+            pumped.park(start + Duration::from_secs(3600));
+            assert_eq!(wakes.load(Ordering::SeqCst), 1);
+            assert_eq!(pumped.now(), start + Duration::from_secs(60));
+            pumped.park(start + Duration::from_secs(120));
+            assert_eq!(pumped.now(), start + Duration::from_secs(120));
+        }
+
+        // Case `entered_executor_is_captured_and_restored`.
+        {
+            let pumped = Pumped::new();
+            {
+                let _guard = pumped.background().enter();
+                Background::current().spawn("scoped", || {}).unwrap();
+                {
+                    let _inner = Background::new(NoBackground).enter();
+                    assert_eq!(
+                        Background::current().spawn("refused", || {}),
+                        Err(Unsupported)
+                    );
+                }
+                Background::current().spawn("scoped", || {}).unwrap();
+            }
+            assert_eq!(pumped.run_pending(), 2);
+        }
     }
 }

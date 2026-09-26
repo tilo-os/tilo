@@ -968,7 +968,18 @@ mod tests {
         }
     }
 
+    /// Changes list layout: rows keep name/dir/counts/chevron on one line (and give
+    /// the text the whole row without counts), metrics follow the text scale, rows
+    /// keep a token gap on every preset, and header parts never collide. Each phase is a former test with its own fresh fixture.
     #[test]
+    fn changes_rows_and_headers_follow_measured_text_without_collisions() {
+        row_layout_keeps_name_dir_counts_and_chevron_in_one_line();
+        row_layout_without_counts_gives_the_text_the_whole_row();
+        metrics_match_the_constants_at_1x_and_grow_with_the_text_scale();
+        file_rows_keep_a_token_gap_on_every_preset();
+        section_header_title_badge_and_action_never_collide();
+    }
+
     fn row_layout_keeps_name_dir_counts_and_chevron_in_one_line() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -998,7 +1009,6 @@ mod tests {
         assert!(layout.dir_x > layout.name_x);
     }
 
-    #[test]
     fn row_layout_without_counts_gives_the_text_the_whole_row() {
         let mut tr = TextRenderer::new();
         let area = Rect::new(0.0, 0.0, 320.0, 800.0);
@@ -1022,7 +1032,6 @@ mod tests {
     /// The measured bands reproduce the 1× constants exactly — a user who has
     /// not enlarged text sees the same column — and grow with the glyphs at 2×
     /// so 25 px names no longer sit in 30 px rows with no leading.
-    #[test]
     fn metrics_match_the_constants_at_1x_and_grow_with_the_text_scale() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -1058,7 +1067,6 @@ mod tests {
     /// HIG §7 "nothing touches": neighbouring file rows, and the first row
     /// under its section header, keep an `s1` gap on every preset — the
     /// list pitch is the row plus that gap, never the bare row.
-    #[test]
     fn file_rows_keep_a_token_gap_on_every_preset() {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             let mut tr = TextRenderer::new();
@@ -1080,7 +1088,6 @@ mod tests {
     /// Title, badge and bulk action share a 320 px header band without
     /// touching at 1× and at 2×: the title elides before the badge and the
     /// badge ends before the action starts.
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"

@@ -165,7 +165,13 @@ impl Settings {
 mod tests {
     use super::*;
 
+    /// Settings: defaults when unset and a round trip through the document. Each phase is a former test with its own fresh fixture.
     #[test]
+    fn settings_default_when_unset_and_round_trip_through_doc() {
+        defaults_when_unset();
+        round_trips_through_doc();
+    }
+
     fn round_trips_through_doc() {
         let mut doc = AutoCommit::new();
         let s = Settings {
@@ -182,7 +188,6 @@ mod tests {
         assert!(!back.syntax_highlight);
     }
 
-    #[test]
     fn defaults_when_unset() {
         let mut doc = AutoCommit::new();
         let s = Settings::read(&mut doc);

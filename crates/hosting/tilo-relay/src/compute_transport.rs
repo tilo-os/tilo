@@ -579,163 +579,166 @@ mod tests {
     }
 
     #[test]
-    fn request_binding_survives_restart_and_replay_is_idempotent() {
-        let root = tempfile::tempdir().unwrap();
-        let (state, store) = admitted(root.path());
-        assert_eq!(
-            state
-                .accept_request([1; 32], 7, 200, &store, &spec())
-                .unwrap(),
-            ComputeRouteOutcome::Duplicate
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn compute_transport_binds_requests_routes_and_results() {
+        // Phase `request_binding_survives_restart_and_replay_is_idempotent`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let (state, store) = admitted(root.path());
+            assert_eq!(
+                state
+                    .accept_request([1; 32], 7, 200, &store, &spec())
+                    .unwrap(),
+                ComputeRouteOutcome::Duplicate
+            );
 
-        let mut restarted = ComputeTransportState::default();
-        restarted
-            .advertise([2; 32], 7, 200, advertisement(false))
-            .unwrap();
-        assert_eq!(
+            let mut restarted = ComputeTransportState::default();
             restarted
-                .accept_request([1; 32], 7, 200, &open_store(root.path()), &spec())
-                .unwrap(),
-            ComputeRouteOutcome::Duplicate
-        );
+                .advertise([2; 32], 7, 200, advertisement(false))
+                .unwrap();
+            assert_eq!(
+                restarted
+                    .accept_request([1; 32], 7, 200, &open_store(root.path()), &spec())
+                    .unwrap(),
+                ComputeRouteOutcome::Duplicate
+            );
 
-        let mut conflict = spec();
-        conflict.package_digest = [8; 32];
-        assert!(matches!(
-            restarted.accept_request([1; 32], 7, 200, &store, &conflict),
-            Err(ComputeTransportError::ReplayConflict)
-        ));
-    }
+            let mut conflict = spec();
+            conflict.package_digest = [8; 32];
+            assert!(matches!(
+                restarted.accept_request([1; 32], 7, 200, &store, &conflict),
+                Err(ComputeTransportError::ReplayConflict)
+            ));
+        }
+        // Phase `forged_route_and_stale_or_ineligible_worker_are_rejected`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = open_store(root.path());
+            let mut state = ComputeTransportState::default();
+            state
+                .advertise([2; 32], 7, 200, advertisement(false))
+                .unwrap();
+            assert!(matches!(
+                state.accept_request([5; 32], 7, 200, &store, &spec()),
+                Err(ComputeTransportError::RouteMismatch)
+            ));
+            assert!(matches!(
+                state.accept_request([1; 32], 7, 10_000, &store, &spec()),
+                Err(ComputeTransportError::InvalidAdvertisement)
+            ));
 
-    #[test]
-    fn forged_route_and_stale_or_ineligible_worker_are_rejected() {
-        let root = tempfile::tempdir().unwrap();
-        let store = open_store(root.path());
-        let mut state = ComputeTransportState::default();
-        state
-            .advertise([2; 32], 7, 200, advertisement(false))
-            .unwrap();
-        assert!(matches!(
-            state.accept_request([5; 32], 7, 200, &store, &spec()),
-            Err(ComputeTransportError::RouteMismatch)
-        ));
-        assert!(matches!(
-            state.accept_request([1; 32], 7, 10_000, &store, &spec()),
-            Err(ComputeTransportError::InvalidAdvertisement)
-        ));
+            let mut gpu_job = spec();
+            gpu_job.job_id = [8; 16];
+            gpu_job.limits.gpu = true;
+            assert!(matches!(
+                state.accept_request([1; 32], 7, 200, &store, &gpu_job),
+                Err(ComputeTransportError::WorkerUnavailable)
+            ));
+            state.remove_worker(&[2; 32]);
+            assert!(matches!(
+                state.accept_request([1; 32], 7, 200, &store, &spec()),
+                Err(ComputeTransportError::WorkerUnavailable)
+            ));
+        }
+        // Phase `cancellation_is_durable_idempotent_and_route_bound`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let (state, store) = admitted(root.path());
+            assert_eq!(
+                state.accept_cancel([1; 32], &store, &binding()).unwrap(),
+                ComputeRouteOutcome::Route([2; 32])
+            );
+            assert_eq!(
+                state.accept_cancel([1; 32], &store, &binding()).unwrap(),
+                ComputeRouteOutcome::Duplicate
+            );
+            assert!(
+                open_store(root.path())
+                    .load_compute_job(&[9; 16])
+                    .unwrap()
+                    .unwrap()
+                    .cancel_requested
+            );
+            assert!(matches!(
+                state.accept_cancel([3; 32], &store, &binding()),
+                Err(ComputeTransportError::RouteMismatch)
+            ));
+        }
+        // Phase `status_result_are_monotonic_bounded_and_worker_bound`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let (state, store) = admitted(root.path());
+            let status = ComputeStatusUpdate {
+                binding: binding(),
+                sequence: 1,
+                phase: ComputeJobPhase::Running,
+                log_tail: b"started".to_vec(),
+            };
+            assert_eq!(
+                state.accept_status([2; 32], &store, &status).unwrap(),
+                ComputeRouteOutcome::Route([1; 32])
+            );
+            assert_eq!(
+                state.accept_status([2; 32], &store, &status).unwrap(),
+                ComputeRouteOutcome::Duplicate
+            );
+            assert!(matches!(
+                state.accept_status([6; 32], &store, &status),
+                Err(ComputeTransportError::RouteMismatch)
+            ));
 
-        let mut gpu_job = spec();
-        gpu_job.job_id = [8; 16];
-        gpu_job.limits.gpu = true;
-        assert!(matches!(
-            state.accept_request([1; 32], 7, 200, &store, &gpu_job),
-            Err(ComputeTransportError::WorkerUnavailable)
-        ));
-        state.remove_worker(&[2; 32]);
-        assert!(matches!(
-            state.accept_request([1; 32], 7, 200, &store, &spec()),
-            Err(ComputeTransportError::WorkerUnavailable)
-        ));
-    }
+            let mut oversized = status;
+            oversized.sequence = 2;
+            oversized.log_tail = vec![0; MAX_COMPUTE_LOG_BYTES + 1];
+            assert!(matches!(
+                state.accept_status([2; 32], &store, &oversized),
+                Err(ComputeTransportError::MetadataTooLarge)
+            ));
 
-    #[test]
-    fn cancellation_is_durable_idempotent_and_route_bound() {
-        let root = tempfile::tempdir().unwrap();
-        let (state, store) = admitted(root.path());
-        assert_eq!(
-            state.accept_cancel([1; 32], &store, &binding()).unwrap(),
-            ComputeRouteOutcome::Route([2; 32])
-        );
-        assert_eq!(
-            state.accept_cancel([1; 32], &store, &binding()).unwrap(),
-            ComputeRouteOutcome::Duplicate
-        );
-        assert!(
-            open_store(root.path())
-                .load_compute_job(&[9; 16])
-                .unwrap()
-                .unwrap()
-                .cancel_requested
-        );
-        assert!(matches!(
-            state.accept_cancel([3; 32], &store, &binding()),
-            Err(ComputeTransportError::RouteMismatch)
-        ));
-    }
+            let result = ComputeResultUpdate {
+                binding: binding(),
+                sequence: 2,
+                phase: ComputeJobPhase::Completed {
+                    outputs: vec![[7; 32]],
+                },
+                log_tail: b"done".to_vec(),
+            };
+            assert_eq!(
+                state.accept_result([2; 32], &store, &result).unwrap(),
+                ComputeRouteOutcome::Route([1; 32])
+            );
+            assert_eq!(
+                state.accept_result([2; 32], &store, &result).unwrap(),
+                ComputeRouteOutcome::Duplicate
+            );
+        }
+        // Phase `partitioned_route_queues_on_dedicated_protocol_and_live_route_does_not`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = open_store(root.path());
+            let mut state = ComputeTransportState::default();
+            let envelope = ComputeEnvelope::Cancel { binding: binding() };
+            state.route([2; 32], &envelope, &store, 1).unwrap();
+            let pending = store.load_compute_pending(&[2; 32]).unwrap();
+            assert_eq!(pending.len(), 1);
+            assert!(matches!(
+                postcard::from_bytes::<ComputeEnvelope>(&pending[0].bytes).unwrap(),
+                ComputeEnvelope::Delivery { sequence: 1, message, .. } if *message == envelope
+            ));
 
-    #[test]
-    fn status_result_are_monotonic_bounded_and_worker_bound() {
-        let root = tempfile::tempdir().unwrap();
-        let (state, store) = admitted(root.path());
-        let status = ComputeStatusUpdate {
-            binding: binding(),
-            sequence: 1,
-            phase: ComputeJobPhase::Running,
-            log_tail: b"started".to_vec(),
-        };
-        assert_eq!(
-            state.accept_status([2; 32], &store, &status).unwrap(),
-            ComputeRouteOutcome::Route([1; 32])
-        );
-        assert_eq!(
-            state.accept_status([2; 32], &store, &status).unwrap(),
-            ComputeRouteOutcome::Duplicate
-        );
-        assert!(matches!(
-            state.accept_status([6; 32], &store, &status),
-            Err(ComputeTransportError::RouteMismatch)
-        ));
-
-        let mut oversized = status;
-        oversized.sequence = 2;
-        oversized.log_tail = vec![0; MAX_COMPUTE_LOG_BYTES + 1];
-        assert!(matches!(
-            state.accept_status([2; 32], &store, &oversized),
-            Err(ComputeTransportError::MetadataTooLarge)
-        ));
-
-        let result = ComputeResultUpdate {
-            binding: binding(),
-            sequence: 2,
-            phase: ComputeJobPhase::Completed {
-                outputs: vec![[7; 32]],
-            },
-            log_tail: b"done".to_vec(),
-        };
-        assert_eq!(
-            state.accept_result([2; 32], &store, &result).unwrap(),
-            ComputeRouteOutcome::Route([1; 32])
-        );
-        assert_eq!(
-            state.accept_result([2; 32], &store, &result).unwrap(),
-            ComputeRouteOutcome::Duplicate
-        );
-    }
-
-    #[test]
-    fn partitioned_route_queues_on_dedicated_protocol_and_live_route_does_not() {
-        let root = tempfile::tempdir().unwrap();
-        let store = open_store(root.path());
-        let mut state = ComputeTransportState::default();
-        let envelope = ComputeEnvelope::Cancel { binding: binding() };
-        state.route([2; 32], &envelope, &store, 1).unwrap();
-        let pending = store.load_compute_pending(&[2; 32]).unwrap();
-        assert_eq!(pending.len(), 1);
-        assert!(matches!(
-            postcard::from_bytes::<ComputeEnvelope>(&pending[0].bytes).unwrap(),
-            ComputeEnvelope::Delivery { sequence: 1, message, .. } if *message == envelope
-        ));
-
-        let (sender, mut receiver) = mpsc::channel(1);
-        let (disconnect, _disconnect_receiver) = mpsc::channel(1);
-        state.attach([2; 32], sender, disconnect);
-        let live = ComputeEnvelope::Cancel { binding: binding() };
-        state.route([2; 32], &live, &store, 2).unwrap();
-        assert!(matches!(
-            receiver.try_recv().unwrap(),
-            ComputeEnvelope::Delivery { sequence: 2, message, .. } if *message == live
-        ));
-        assert_eq!(store.load_compute_pending(&[2; 32]).unwrap().len(), 2);
+            let (sender, mut receiver) = mpsc::channel(1);
+            let (disconnect, _disconnect_receiver) = mpsc::channel(1);
+            state.attach([2; 32], sender, disconnect);
+            let live = ComputeEnvelope::Cancel { binding: binding() };
+            state.route([2; 32], &live, &store, 2).unwrap();
+            assert!(matches!(
+                receiver.try_recv().unwrap(),
+                ComputeEnvelope::Delivery { sequence: 2, message, .. } if *message == live
+            ));
+            assert_eq!(store.load_compute_pending(&[2; 32]).unwrap().len(), 2);
+        }
     }
 }

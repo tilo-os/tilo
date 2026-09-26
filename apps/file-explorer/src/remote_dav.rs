@@ -546,31 +546,25 @@ fn hex_byte(high: u8, low: u8) -> Option<u8> {
 mod tests {
     use super::*;
 
+    /// The Nextcloud root derives from canonical metadata and listings skip the root and read successful props.
     #[test]
-    fn nextcloud_root_is_derived_from_canonical_metadata() {
-        let mut account = Account::new("cloud", NEXTCLOUD_TYPE);
-        account.config = serde_json::json!({"server_url":"https://cloud.example/base", "username":"ada", "use_files":true});
-        let (root, username) = configured_root(&account).expect("valid account");
-        assert_eq!(username, "ada");
-        assert_eq!(
-            root.as_str(),
-            "https://cloud.example/base/remote.php/dav/files/ada/"
-        );
-    }
+    fn nextcloud_root_and_listing_read_canonical_metadata() {
+        // --- phase: nextcloud_root_is_derived_from_canonical_metadata ---
+        {
+            let mut account = Account::new("cloud", NEXTCLOUD_TYPE);
+            account.config = serde_json::json!({"server_url":"https://cloud.example/base", "username":"ada", "use_files":true});
+            let (root, username) = configured_root(&account).expect("valid account");
+            assert_eq!(username, "ada");
+            assert_eq!(
+                root.as_str(),
+                "https://cloud.example/base/remote.php/dav/files/ada/"
+            );
+        }
 
-    #[test]
-    fn listing_refuses_cross_origin_response_hrefs() {
-        let root = Url::parse("https://cloud.example/dav/").unwrap();
-        let xml = br#"<D:multistatus xmlns:D="DAV:"><D:response><D:href>https://attacker.example/secret</D:href><D:propstat><D:prop><D:displayname>bad</D:displayname></D:prop></D:propstat></D:response><D:response><D:href>good.txt</D:href><D:propstat><D:prop><D:displayname>good.txt</D:displayname><D:resourcetype/></D:prop></D:propstat></D:response></D:multistatus>"#;
-        let entries = parse_listing(xml, &root).expect("valid response");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].name, "good.txt");
-    }
-
-    #[test]
-    fn nextcloud_listing_skips_the_root_and_reads_successful_props() {
-        let root = Url::parse("https://cloud.example/remote.php/dav/files/ada/").unwrap();
-        let xml = br#"<?xml version="1.0"?>
+        // --- phase: nextcloud_listing_skips_the_root_and_reads_successful_props ---
+        {
+            let root = Url::parse("https://cloud.example/remote.php/dav/files/ada/").unwrap();
+            let xml = br#"<?xml version="1.0"?>
 <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
  <d:response><d:href>/remote.php/dav/files/ada/</d:href>
   <d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
@@ -581,64 +575,78 @@ mod tests {
  <d:response><d:href>/remote.php/dav/files/ada/Notes%20and%20plans.md</d:href>
   <d:propstat><d:prop><d:getcontentlength>1234</d:getcontentlength><d:getcontenttype>text/markdown</d:getcontenttype><d:resourcetype/><d:getetag>"n1"</d:getetag></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
 </d:multistatus>"#;
-        let entries = parse_listing(xml, &root).expect("valid listing");
-        assert_eq!(entries.len(), 2, "the listed root itself is not an entry");
-        assert!(entries[0].is_dir);
-        assert_eq!(entries[0].name, "Photos");
-        assert_eq!(entries[0].size, None);
-        assert!(!entries[1].is_dir);
-        assert_eq!(entries[1].name, "Notes%20and%20plans.md");
-        assert_eq!(entries[1].size, Some(1234));
-        assert_eq!(entries[1].content_type.as_deref(), Some("text/markdown"));
-        assert_eq!(entries[1].etag.as_deref(), Some("\"n1\""));
+            let entries = parse_listing(xml, &root).expect("valid listing");
+            assert_eq!(entries.len(), 2, "the listed root itself is not an entry");
+            assert!(entries[0].is_dir);
+            assert_eq!(entries[0].name, "Photos");
+            assert_eq!(entries[0].size, None);
+            assert!(!entries[1].is_dir);
+            assert_eq!(entries[1].name, "Notes%20and%20plans.md");
+            assert_eq!(entries[1].size, Some(1234));
+            assert_eq!(entries[1].content_type.as_deref(), Some("text/markdown"));
+            assert_eq!(entries[1].etag.as_deref(), Some("\"n1\""));
+        }
     }
 
+    /// Cross-origin hrefs, hostile listings, root escapes, encoded separators and control or overlong server text are refused.
     #[test]
-    fn hostile_listings_are_invalid_responses() {
-        let root = Url::parse("https://cloud.example/dav/").unwrap();
-        let doctype = br#"<?xml version="1.0"?><!DOCTYPE d [<!ENTITY a "x">]><d:multistatus xmlns:d="DAV:"/>"#;
-        assert_eq!(
-            parse_listing(doctype, &root),
-            Err(DavError::InvalidRemoteResponse)
-        );
-        let html = b"<html><body>Sign in</body></html>";
-        assert_eq!(
-            parse_listing(html, &root),
-            Err(DavError::InvalidRemoteResponse)
-        );
-        let oversized = vec![b' '; MAX_LISTING_BYTES + 1];
-        assert_eq!(
-            parse_listing(&oversized, &root),
-            Err(DavError::ResponseTooLarge)
-        );
-    }
+    fn hostile_dav_responses_are_refused() {
+        // --- phase: listing_refuses_cross_origin_response_hrefs ---
+        {
+            let root = Url::parse("https://cloud.example/dav/").unwrap();
+            let xml = br#"<D:multistatus xmlns:D="DAV:"><D:response><D:href>https://attacker.example/secret</D:href><D:propstat><D:prop><D:displayname>bad</D:displayname></D:prop></D:propstat></D:response><D:response><D:href>good.txt</D:href><D:propstat><D:prop><D:displayname>good.txt</D:displayname><D:resourcetype/></D:prop></D:propstat></D:response></D:multistatus>"#;
+            let entries = parse_listing(xml, &root).expect("valid response");
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].name, "good.txt");
+        }
 
-    #[test]
-    fn paths_cannot_escape_the_configured_root() {
-        let root = Url::parse("https://cloud.example/dav/").unwrap();
-        let connection = DavConnection {
-            account_id: "id".into(),
-            origin: origin_of(&root).unwrap(),
-            root,
-            client: client()
-                .unwrap()
-                .with_credentials(Credentials::new("u", "p")),
-        };
-        assert!(connection.url_for("../secret").is_err());
-        assert!(connection.url_for("folder/file.txt").is_ok());
-    }
+        // --- phase: hostile_listings_are_invalid_responses ---
+        {
+            let root = Url::parse("https://cloud.example/dav/").unwrap();
+            let doctype = br#"<?xml version="1.0"?><!DOCTYPE d [<!ENTITY a "x">]><d:multistatus xmlns:d="DAV:"/>"#;
+            assert_eq!(
+                parse_listing(doctype, &root),
+                Err(DavError::InvalidRemoteResponse)
+            );
+            let html = b"<html><body>Sign in</body></html>";
+            assert_eq!(
+                parse_listing(html, &root),
+                Err(DavError::InvalidRemoteResponse)
+            );
+            let oversized = vec![b' '; MAX_LISTING_BYTES + 1];
+            assert_eq!(
+                parse_listing(&oversized, &root),
+                Err(DavError::ResponseTooLarge)
+            );
+        }
 
-    #[test]
-    fn encoded_separators_and_query_hrefs_are_not_materialized() {
-        let root = Url::parse("https://cloud.example/dav/").unwrap();
-        let encoded = br#"<D:multistatus xmlns:D="DAV:"><D:response><D:href>bad%2Fname</D:href><D:propstat><D:prop><D:displayname>bad</D:displayname></D:prop></D:propstat></D:response><D:response><D:href>report.txt?token=secret</D:href><D:propstat><D:prop><D:displayname>report</D:displayname></D:prop></D:propstat></D:response></D:multistatus>"#;
-        assert!(parse_listing(encoded, &root).unwrap().is_empty());
-    }
+        // --- phase: paths_cannot_escape_the_configured_root ---
+        {
+            let root = Url::parse("https://cloud.example/dav/").unwrap();
+            let connection = DavConnection {
+                account_id: "id".into(),
+                origin: origin_of(&root).unwrap(),
+                root,
+                client: client()
+                    .unwrap()
+                    .with_credentials(Credentials::new("u", "p")),
+            };
+            assert!(connection.url_for("../secret").is_err());
+            assert!(connection.url_for("folder/file.txt").is_ok());
+        }
 
-    #[test]
-    fn server_text_bounds_reject_controls_and_overlong_values() {
-        assert_eq!(bounded_server_text("good", 4), Some("good".into()));
-        assert_eq!(bounded_server_text("bad\nname", 32), None);
-        assert_eq!(bounded_server_text("long", 3), None);
+        // --- phase: encoded_separators_and_query_hrefs_are_not_materialized ---
+        {
+            let root = Url::parse("https://cloud.example/dav/").unwrap();
+            let encoded = br#"<D:multistatus xmlns:D="DAV:"><D:response><D:href>bad%2Fname</D:href><D:propstat><D:prop><D:displayname>bad</D:displayname></D:prop></D:propstat></D:response><D:response><D:href>report.txt?token=secret</D:href><D:propstat><D:prop><D:displayname>report</D:displayname></D:prop></D:propstat></D:response></D:multistatus>"#;
+            assert!(parse_listing(encoded, &root).unwrap().is_empty());
+        }
+
+        // --- phase: server_text_bounds_reject_controls_and_overlong_values ---
+        {
+            assert_eq!(bounded_server_text("good", 4), Some("good".into()));
+            assert_eq!(bounded_server_text("bad\nname", 32), None);
+            assert_eq!(bounded_server_text("long", 3), None);
+        }
     }
 }

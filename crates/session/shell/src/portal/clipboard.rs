@@ -679,31 +679,30 @@ mod tests {
     }
 
     #[test]
-    fn mime_policy_rejects_hostile_values() {
+    fn clipboard_broker_bounds_mimes_and_payloads() {
+        // Phase `mime_policy_rejects_hostile_values`.
         assert!(valid_mime("text/plain"));
         assert!(!valid_mime("text/plain\n"));
         assert!(!valid_mime("not-a-mime"));
+        // Phase `broker_enforces_payload_cap`.
+        {
+            let broker = MemoryClipboardBroker::default();
+            assert!(
+                broker
+                    .write("text/plain", vec![0; MAX_TRANSFER_BYTES + 1])
+                    .is_err()
+            );
+        }
+        // Phase `bounded_reader_rejects_an_oversize_stream`.
+        {
+            let (reader, mut writer) = UnixStream::pair().unwrap();
+            let writer_thread = std::thread::spawn(move || {
+                writer.write_all(&vec![0; MAX_TRANSFER_BYTES + 1]).unwrap();
+            });
+            assert!(bounded_read(reader).is_err());
+            writer_thread.join().unwrap();
+        }
     }
-    #[test]
-    fn broker_enforces_payload_cap() {
-        let broker = MemoryClipboardBroker::default();
-        assert!(
-            broker
-                .write("text/plain", vec![0; MAX_TRANSFER_BYTES + 1])
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn bounded_reader_rejects_an_oversize_stream() {
-        let (reader, mut writer) = UnixStream::pair().unwrap();
-        let writer_thread = std::thread::spawn(move || {
-            writer.write_all(&vec![0; MAX_TRANSFER_BYTES + 1]).unwrap();
-        });
-        assert!(bounded_read(reader).is_err());
-        writer_thread.join().unwrap();
-    }
-
     #[test]
     fn revoking_a_provider_clears_its_selection_and_pending_state() {
         let session = "/org/freedesktop/portal/desktop/session/tilo/test".to_string();

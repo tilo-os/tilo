@@ -210,118 +210,136 @@ mod floating_lifecycle_tests {
     }
 
     #[test]
-    fn suspend_and_resume_reuses_the_exact_authenticated_surface() {
-        let mut pending = Vec::new();
-        let mut live = vec![live_surface()];
-        assert!(suspend_floating_entries(
-            &mut pending,
-            &mut live,
-            7,
-            "maps-navigation:active"
-        ));
-        assert!(live[0].suspended);
-
-        let next_window = vello::kurbo::Rect::new(692.0, 52.0, 1_028.0, 248.0);
-        let next_content = vello::kurbo::Rect::new(700.0, 60.0, 1_020.0, 240.0);
-        let token = resume_floating_entries(
-            &mut pending,
-            &mut live,
-            7,
-            "maps-navigation:active",
-            (next_window, next_content),
-            None,
-            None,
-        );
-        assert_eq!(token.as_deref(), Some("5e8f16a2a2e24bf7ad86758f2f28e316"));
-        assert_eq!(live[0].surface_id, 41);
-        assert_eq!(live[0].rect, next_window);
-        assert!(!live[0].suspended);
-        assert!(!live[0].presented, "resume waits for fresh pixels");
-    }
-
-    #[test]
-    fn return_proxy_survives_suspend_until_primary_destination_is_presented() {
-        let mut pending = Vec::new();
-        let mut live = vec![live_surface()];
-        let return_rect = live[0].rect;
-        live[0].transfer_frame = Some(FloatingTransferFrame {
-            rgba: std::sync::Arc::new(vec![0xff; 4 * 4 * 4]),
-            width: 4,
-            height: 4,
-        });
-        live[0].transfer_source = Some(FloatingTransferSource { rect: return_rect });
-
-        assert!(suspend_floating_entries(
-            &mut pending,
-            &mut live,
-            7,
-            "maps-navigation:active"
-        ));
-        assert!(live[0].suspended);
-        assert_eq!(live[0].transfer_source.unwrap().rect, return_rect);
-        assert!(live[0].transfer_frame.is_some());
-        assert!(
-            !clear_floating_source_entries(&mut pending, &mut live, 7, "maps-navigation:active"),
-            "a late detach acknowledgement cannot tear down the newer return proxy"
-        );
-        assert!(live[0].transfer_source.is_some());
-
-        assert!(complete_floating_return_entries(
-            &mut pending,
-            &mut live,
-            7,
-            "maps-navigation:active"
-        ));
-        assert!(live[0].transfer_source.is_none());
-        assert!(live[0].transfer_frame.is_none());
-        assert!(
-            !complete_floating_return_entries(&mut pending, &mut live, 7, "maps-navigation:active"),
-            "the destination acknowledgement is idempotent"
-        );
-    }
-
-    #[test]
-    fn capability_cannot_be_resumed_from_another_connection() {
-        let mut pending = Vec::new();
-        let mut live = vec![live_surface()];
-        assert!(
-            resume_floating_entries(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn floating_surfaces_resume_only_on_their_authenticated_connection() {
+        fn suspend_and_resume_reuses_the_exact_authenticated_surface() {
+            let mut pending = Vec::new();
+            let mut live = vec![live_surface()];
+            assert!(suspend_floating_entries(
                 &mut pending,
                 &mut live,
-                99,
-                "maps-navigation:active",
-                (vello::kurbo::Rect::ZERO, vello::kurbo::Rect::ZERO),
-                None,
-                None,
-            )
-            .is_none()
-        );
-        assert_eq!(live[0].connection, 7);
-        assert!(live[0].presented);
-    }
+                7,
+                "maps-navigation:active"
+            ));
+            assert!(live[0].suspended);
 
-    #[test]
-    fn permanent_dismiss_cannot_be_resumed() {
-        let mut pending = Vec::new();
-        let mut live = vec![live_surface()];
-        assert!(dismiss_floating_entries(
-            &mut pending,
-            &mut live,
-            7,
-            "maps-navigation:active"
-        ));
-        assert!(live.is_empty());
-        assert!(
-            resume_floating_entries(
+            let next_window = vello::kurbo::Rect::new(692.0, 52.0, 1_028.0, 248.0);
+            let next_content = vello::kurbo::Rect::new(700.0, 60.0, 1_020.0, 240.0);
+            let token = resume_floating_entries(
                 &mut pending,
                 &mut live,
                 7,
                 "maps-navigation:active",
-                (vello::kurbo::Rect::ZERO, vello::kurbo::Rect::ZERO),
+                (next_window, next_content),
                 None,
                 None,
-            )
-            .is_none()
-        );
+            );
+            assert_eq!(token.as_deref(), Some("5e8f16a2a2e24bf7ad86758f2f28e316"));
+            assert_eq!(live[0].surface_id, 41);
+            assert_eq!(live[0].rect, next_window);
+            assert!(!live[0].suspended);
+            assert!(!live[0].presented, "resume waits for fresh pixels");
+        }
+
+        fn return_proxy_survives_suspend_until_primary_destination_is_presented() {
+            let mut pending = Vec::new();
+            let mut live = vec![live_surface()];
+            let return_rect = live[0].rect;
+            live[0].transfer_frame = Some(FloatingTransferFrame {
+                rgba: std::sync::Arc::new(vec![0xff; 4 * 4 * 4]),
+                width: 4,
+                height: 4,
+            });
+            live[0].transfer_source = Some(FloatingTransferSource { rect: return_rect });
+
+            assert!(suspend_floating_entries(
+                &mut pending,
+                &mut live,
+                7,
+                "maps-navigation:active"
+            ));
+            assert!(live[0].suspended);
+            assert_eq!(live[0].transfer_source.unwrap().rect, return_rect);
+            assert!(live[0].transfer_frame.is_some());
+            assert!(
+                !clear_floating_source_entries(
+                    &mut pending,
+                    &mut live,
+                    7,
+                    "maps-navigation:active"
+                ),
+                "a late detach acknowledgement cannot tear down the newer return proxy"
+            );
+            assert!(live[0].transfer_source.is_some());
+
+            assert!(complete_floating_return_entries(
+                &mut pending,
+                &mut live,
+                7,
+                "maps-navigation:active"
+            ));
+            assert!(live[0].transfer_source.is_none());
+            assert!(live[0].transfer_frame.is_none());
+            assert!(
+                !complete_floating_return_entries(
+                    &mut pending,
+                    &mut live,
+                    7,
+                    "maps-navigation:active"
+                ),
+                "the destination acknowledgement is idempotent"
+            );
+        }
+
+        fn capability_cannot_be_resumed_from_another_connection() {
+            let mut pending = Vec::new();
+            let mut live = vec![live_surface()];
+            assert!(
+                resume_floating_entries(
+                    &mut pending,
+                    &mut live,
+                    99,
+                    "maps-navigation:active",
+                    (vello::kurbo::Rect::ZERO, vello::kurbo::Rect::ZERO),
+                    None,
+                    None,
+                )
+                .is_none()
+            );
+            assert_eq!(live[0].connection, 7);
+            assert!(live[0].presented);
+        }
+
+        fn permanent_dismiss_cannot_be_resumed() {
+            let mut pending = Vec::new();
+            let mut live = vec![live_surface()];
+            assert!(dismiss_floating_entries(
+                &mut pending,
+                &mut live,
+                7,
+                "maps-navigation:active"
+            ));
+            assert!(live.is_empty());
+            assert!(
+                resume_floating_entries(
+                    &mut pending,
+                    &mut live,
+                    7,
+                    "maps-navigation:active",
+                    (vello::kurbo::Rect::ZERO, vello::kurbo::Rect::ZERO),
+                    None,
+                    None,
+                )
+                .is_none()
+            );
+        }
+
+        suspend_and_resume_reuses_the_exact_authenticated_surface();
+        return_proxy_survives_suspend_until_primary_destination_is_presented();
+        capability_cannot_be_resumed_from_another_connection();
+        permanent_dismiss_cannot_be_resumed();
     }
 }

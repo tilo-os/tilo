@@ -26,27 +26,27 @@ class Stage(unittest.TestCase):
             approval[key] = m.restore.sha(source / name)
         return ref, approval
 
-    def test_exact_admitted_files_and_public_approval_staged(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp); source = root / 'public'; source.mkdir()
-            ref, approval = self.fixture(source)
-            raw = json.dumps(approval).encode()
-            m.stage(source, root / 'staged', raw, hashlib.sha256(raw).hexdigest(), ref)
-            self.assertEqual((root / 'staged/approval.json').read_bytes(), raw)
-            self.assertEqual((root / 'staged/tree.tar').stat().st_ino, (source / 'tree.tar').stat().st_ino)
-
-    def test_reject_changed_archive_unreviewed_flag_and_different_reference(self):
-        for mutation in ('archive', 'flag', 'reference', 'hash'):
-            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+    def test_checkpoint_staging(self):
+        with self.subTest(phase="exact_admitted_files_and_public_approval_staged"):
+            with tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp); source = root / 'public'; source.mkdir()
                 ref, approval = self.fixture(source)
-                if mutation == 'archive': (source / 'tree.tar').write_bytes(b'changed')
-                if mutation == 'flag': approval['writer_mapping_complete'] = False
-                if mutation == 'reference': approval['checkpoint_reference'] = ref[:-1] + 'b'
                 raw = json.dumps(approval).encode()
-                digest = '0' * 64 if mutation == 'hash' else hashlib.sha256(raw).hexdigest()
-                with self.assertRaises(ValueError): m.stage(source, root / 'staged', raw, digest, ref)
-                self.assertFalse((root / 'staged').exists())
+                m.stage(source, root / 'staged', raw, hashlib.sha256(raw).hexdigest(), ref)
+                self.assertEqual((root / 'staged/approval.json').read_bytes(), raw)
+                self.assertEqual((root / 'staged/tree.tar').stat().st_ino, (source / 'tree.tar').stat().st_ino)
+        with self.subTest(phase="reject_changed_archive_unreviewed_flag_and_different_reference"):
+            for mutation in ('archive', 'flag', 'reference', 'hash'):
+                with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp); source = root / 'public'; source.mkdir()
+                    ref, approval = self.fixture(source)
+                    if mutation == 'archive': (source / 'tree.tar').write_bytes(b'changed')
+                    if mutation == 'flag': approval['writer_mapping_complete'] = False
+                    if mutation == 'reference': approval['checkpoint_reference'] = ref[:-1] + 'b'
+                    raw = json.dumps(approval).encode()
+                    digest = '0' * 64 if mutation == 'hash' else hashlib.sha256(raw).hexdigest()
+                    with self.assertRaises(ValueError): m.stage(source, root / 'staged', raw, digest, ref)
+                    self.assertFalse((root / 'staged').exists())
 
 
 if __name__ == '__main__': unittest.main()

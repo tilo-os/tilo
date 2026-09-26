@@ -221,6 +221,31 @@ async fn launch(req: LaunchRequest) -> LaunchOutcome {
     }
 }
 
+/// Hand an open picture to the XDG Wallpaper portal; the desktop previews it
+/// and asks the user before applying.
+#[cfg(all(feature = "portal", unix))]
+pub(crate) fn set_wallpaper(
+    file: std::fs::File,
+    target: crate::portal::WallpaperTarget,
+) -> crate::portal::WallpaperChannel {
+    use crate::portal::WallpaperTarget;
+    use ashpd::desktop::wallpaper::{SetOn, WallpaperRequest};
+    let set_on = match target {
+        WallpaperTarget::Background => SetOn::Background,
+        WallpaperTarget::Lockscreen => SetOn::Lockscreen,
+        WallpaperTarget::Both => SetOn::Both,
+    };
+    deliver(async move {
+        WallpaperRequest::default()
+            .show_preview(true)
+            .set_on(set_on)
+            .build_file(&file)
+            .await
+            .and_then(|request| request.response())
+            .map_err(|error| error.to_string())
+    })
+}
+
 /// Hand `uri` to the XDG `OpenURI` portal, blocking until the desktop has
 /// launched its handler or refused the request.
 #[cfg(all(feature = "portal", unix))]
