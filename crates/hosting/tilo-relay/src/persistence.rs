@@ -1633,14 +1633,14 @@ mod tests {
 
     #[test]
     fn retained_checkpoint_payload_never_materializes_the_plain_state_document() {
-        let meta = crate::store::shell_selection_tests::producer_metadata();
+        let meta = crate::store::shell_selection::tests::producer_metadata();
         let row = meta["checkpoint2"]
             .as_array()
             .unwrap()
             .iter()
             .find(|row| row["kind"] == "Checkpoint")
             .unwrap();
-        let bytes = crate::store::shell_selection_tests::producer_frame(&meta, row, 2);
+        let bytes = crate::store::shell_selection::tests::producer_frame(&meta, row, 2);
         let crate::transport::Envelope::Delta { delta, .. } =
             crate::transport::decode(&bytes[4..]).unwrap()
         else {

@@ -30,8 +30,6 @@ pub(crate) mod retained;
 pub(crate) mod shell_proof_tests;
 pub(crate) mod shell_selection;
 #[cfg(test)]
-pub(crate) mod shell_selection_tests;
-#[cfg(test)]
 pub(crate) mod test_barrier;
 
 use std::fs;

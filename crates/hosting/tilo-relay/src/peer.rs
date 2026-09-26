@@ -5720,8 +5720,8 @@ mod private_transport_tests {
     async fn exact_history_checkpoint_prefix_production_path_runs_one_selection() {
         use crate::store::{
             bounded::{Step, WorkLimit},
+            shell_selection::tests::{producer_frame, producer_metadata},
             shell_selection::{self, Selection},
-            shell_selection_tests::{producer_frame, producer_metadata},
         };
         let meta = producer_metadata();
         let authority = qos_peer_state::retained_proof::RetentionAuthority::new(
@@ -5878,8 +5878,8 @@ mod private_transport_tests {
     async fn thirty_four_route_prefix_scenario() {
         use crate::store::{
             bounded::{Step, WorkLimit},
+            shell_selection::tests::replay_frames,
             shell_selection::{self, SelectedRead, Selection},
-            shell_selection_tests::replay_frames,
         };
         use automerge::transaction::Transactable;
 
@@ -6412,7 +6412,7 @@ mod private_transport_tests {
 
     #[tokio::test]
     async fn checkpoint_stage_allocation_error_registers_candidate_for_owner_cleanup() {
-        use crate::store::shell_selection_tests::{producer_frame, producer_metadata};
+        use crate::store::shell_selection::tests::{producer_frame, producer_metadata};
         let meta = producer_metadata();
         let authority = qos_peer_state::retained_proof::RetentionAuthority::new(
             meta["room"].as_str().unwrap(),
@@ -6501,8 +6501,8 @@ mod private_transport_tests {
     async fn reader_buffers_authenticated_checkpoint_suffix_into_one_owner_batch() {
         use crate::store::{
             bounded::{Step, WorkLimit},
+            shell_selection::tests::{producer_frame, producer_metadata},
             shell_selection::{self, Selection},
-            shell_selection_tests::{producer_frame, producer_metadata},
         };
         let meta = producer_metadata();
         let authority = qos_peer_state::retained_proof::RetentionAuthority::new(
@@ -6692,7 +6692,7 @@ mod private_transport_tests {
         use crate::store::{
             bounded::{Step, WorkLimit},
             shell_selection::Selection,
-            shell_selection_tests::{producer_frame, producer_metadata},
+            shell_selection::tests::{producer_frame, producer_metadata},
         };
         let meta = producer_metadata();
         let authority = qos_peer_state::retained_proof::RetentionAuthority::new(
@@ -7014,7 +7014,7 @@ mod private_transport_tests {
     }
 
     async fn activation_failure_fences_original_sessions_and_retry(operation: &'static str) {
-        use crate::store::shell_selection_tests::{
+        use crate::store::shell_selection::tests::{
             admit_frames, producer_fixture, producer_frame, producer_metadata, replay_frames,
         };
         let meta = producer_metadata();
@@ -7224,7 +7224,7 @@ mod private_transport_tests {
     #[tokio::test]
     async fn selected_shell_activation_publishes_complete_ordered_pair_and_suppresses_delayed_checkpoint()
      {
-        use crate::store::shell_selection_tests::{
+        use crate::store::shell_selection::tests::{
             admit_frames, producer_fixture, producer_frame, producer_metadata,
         };
         let meta = producer_metadata();

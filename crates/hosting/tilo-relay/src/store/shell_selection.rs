@@ -28,7 +28,7 @@ mod selected;
 use selected::SelectedGc;
 pub(crate) use selected::SelectedRead;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 static SELECTION_CONSTRUCTIONS: std::sync::OnceLock<

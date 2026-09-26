@@ -9,7 +9,7 @@
 )]
 use super::private_transport_tests::certified_device;
 use super::*;
-use crate::store::shell_selection_tests::{producer_frame, producer_metadata};
+use crate::store::shell_selection::tests::{producer_frame, producer_metadata};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_user_identity::{RevocationList, UserIdentity};
 
@@ -327,7 +327,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         };
         runtime.store.retain_checkpoint(&channel, &bytes).unwrap();
     }
-    let initial = crate::store::shell_selection_tests::replay_frames(&runtime.store);
+    let initial = crate::store::shell_selection::tests::replay_frames(&runtime.store);
     assert!(!initial.is_empty());
 
     let (root, user) = UserIdentity::generate("replay activation", 1);
@@ -422,7 +422,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
     crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
         .await
         .unwrap();
-    let selected_after = crate::store::shell_selection_tests::replay_frames(&store);
+    let selected_after = crate::store::shell_selection::tests::replay_frames(&store);
     let expected_activation = selected_after
         .iter()
         .filter(|frame| !initial.contains(frame))
