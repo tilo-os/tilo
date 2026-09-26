@@ -45,6 +45,9 @@ pub struct HostApp {
     pub mime_types: Vec<String>,
     /// `Terminal=true`: a console program, run inside the Tilo terminal.
     pub terminal: bool,
+    /// `Icon=`: an icon-theme name or an absolute path, resolved by
+    /// [`crate::app_icons`].
+    pub icon: Option<String>,
 }
 
 /// A palette launch held until the compositor can mint its external
@@ -133,6 +136,7 @@ impl HostApp {
             window_identities: entry.window_identities(),
             mime_types: entry.mime_types.clone(),
             terminal: entry.terminal,
+            icon: entry.icon.clone(),
         }
     }
 
@@ -566,6 +570,7 @@ mod tests {
             keywords: Vec::new(),
             mime_types: Vec::new(),
             terminal: false,
+            icon: None,
             window_identities: identities
                 .iter()
                 .map(std::string::ToString::to_string)
