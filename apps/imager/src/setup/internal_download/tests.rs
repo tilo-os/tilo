@@ -13,8 +13,10 @@ fn manifest_and_selected_context_require_exact_authenticated_bytes() {
         "selected_context_requires_exact_original_authenticated_bytes_and_asset_url",
         || {
             let bytes = manifest();
-            let release =
-                InternalRelease::transport_fixture(&bytes, "https://code.tilo.so/releases/manifest.json");
+            let release = InternalRelease::transport_fixture(
+                &bytes,
+                "https://code.tilo.so/releases/manifest.json",
+            );
             assert!(SelectedManifest::from_bytes(&release, bytes.clone()).is_ok());
             let mut changed = bytes.clone();
             changed.push(b' ');
