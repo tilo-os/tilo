@@ -86,6 +86,26 @@ With `--outputs`, `input move` and `click --at` take logical desktop
 pixels: `2560x1600@2,1920x1080` is 1280 + 1920 wide, and x 1280 is the left
 edge of the second monitor.
 
+## Third-party apps to check against
+
+Desktop features that meet software Tilo did not write (XWayland, GTK
+theming, dialogs as sheets, the tray, MIME handlers) need that software in
+the VM. It is not in any image; install a set when you need it:
+
+```sh
+tilo-vm slot apps list                        # the sets, what each app checks
+tilo-vm slot apps install --set verification  # xterm, xeyes, gtk4 demos, zenity, mupdf, nm-applet
+tilo-vm input key super                       # start one from the launcher:
+tilo-vm input type xterm
+tilo-vm input key Return                      # then type try commands into xterm
+```
+
+tilo-vmd runs the VM's own install line (`dnf install --transient` on the
+dev image), so the packages sit in a transient overlay on `/usr` until the
+next VM reboot, and restarts your slot's session so it sees them. Other
+slots see them after their next restart. The sets are data:
+`crates/dev/tilo-vm/data/app-sets.toml`.
+
 ## seat0
 
 ```sh

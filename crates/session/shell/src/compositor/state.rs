@@ -88,6 +88,7 @@ use smithay::{
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
+use crate::compositor::output_management::OutputManagementState;
 use crate::compositor::remote_seat::RemoteSeats;
 use crate::compositor::render_node::{ProbeError, RenderNode};
 use crate::compositor::selection::SelectionState;
@@ -602,6 +603,10 @@ pub struct State {
     pub session_lock_state: SessionLockManagerState,
     /// Bridge from the protocol handler to the native run loop's authoritative lock (see [`SessionLockHooks`]).
     pub session_lock: SessionLockHooks,
+    /// `zwlr_output_manager_v1` + `zwlr_output_power_manager_v1`: display
+    /// arrangement and panel power for external tools. Privileged clients
+    /// only, like session-lock, since either can black out every screen.
+    pub output_management: OutputManagementState,
     /// `zwp_pointer_gestures_v1` global state — advertises touchpad
     /// pinch/swipe/hold gestures to clients. On a bare-TTY (DRM) session
     /// Mutter isn't around to expose gestures, so the compositor does; winit
@@ -927,12 +932,7 @@ impl State {
         let fractional_scale_manager = FractionalScaleManagerState::new::<Self>(&display_handle);
         let viewporter = ViewporterState::new::<Self>(&display_handle);
         let idle_inhibit_manager = IdleInhibitManagerState::new::<Self>(&display_handle);
-        // Session locking controls the compositor's authentication boundary:
-        // only clients accepted on the session's privileged socket may even
-        // see the manager. Sandboxed and ordinary host applications receive
-        // the public socket and cannot acquire (or later release) the lock.
-        let session_lock_state =
-            SessionLockManagerState::new::<Self, _>(&display_handle, is_privileged_client);
+        let (session_lock_state, output_management) = Self::privileged_globals(&display_handle);
         // Read the persisted display scale from the shared settings store so the compositor advertises what the Settings app wrote.
         let scale = load_display_scale();
         // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
@@ -1002,6 +1002,7 @@ impl State {
             output_size: (0, 0),
             session_lock_state,
             session_lock: SessionLockHooks::default(),
+            output_management,
             pointer_gestures_state,
             cursor_shape_state,
             client_cursor: crate::compositor::client_cursor::ClientCursor::default(),
@@ -1019,6 +1020,20 @@ impl State {
         };
         state.activate_keyboard_source(initial_keyboard_index);
         state
+    }
+
+    /// Globals only clients on the privileged socket may see. Session
+    /// locking controls the compositor's authentication boundary; output
+    /// management and output power can reconfigure or black out every
+    /// screen. Sandboxed and ordinary host applications receive the public
+    /// socket and see neither.
+    fn privileged_globals(
+        display_handle: &DisplayHandle,
+    ) -> (SessionLockManagerState, OutputManagementState) {
+        (
+            SessionLockManagerState::new::<Self, _>(display_handle, is_privileged_client),
+            OutputManagementState::new(display_handle),
+        )
     }
 
     /// Advertise `zwp_linux_dmabuf_v1` when the probed render node is
@@ -2927,7 +2942,7 @@ fn is_osk_client(client: &Client) -> bool {
 /// A client cannot opt into this bit: only the dedicated privileged socket
 /// acceptor constructs this state, while the sandbox launcher exposes only
 /// the public socket.
-fn is_privileged_client(client: &Client) -> bool {
+pub(crate) fn is_privileged_client(client: &Client) -> bool {
     client
         .get_data::<ClientState>()
         .is_some_and(|data| data.privileged)

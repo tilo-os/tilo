@@ -466,6 +466,18 @@ pub trait Backend {
     /// Idempotent: redundant calls are harmless.
     fn set_dpms(&mut self, _on: bool) {}
 
+    /// Every connector this backend knows, enabled or not, as advertised to
+    /// output-management clients. The default treats each live output as a
+    /// virtual connector whose only mode is the one it runs.
+    fn output_heads(&self) -> Vec<crate::compositor::output_heads::OutputHead> {
+        crate::compositor::output_heads::heads_from_outputs(self.outputs())
+    }
+
+    /// Power one output's panel on or off for an output-power client,
+    /// independently of idle blanking ([`Self::set_dpms`]). Default no-op
+    /// for backends with no physical panel.
+    fn set_output_power(&mut self, _output: OutputId, _on: bool) {}
+
     /// Re-establish the display after the system came back from suspend.
     ///
     /// Default no-op: a hosted backend's display is the host's problem,

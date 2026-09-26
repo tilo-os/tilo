@@ -87,6 +87,11 @@ pub struct Workspace {
     /// reaches.
     #[serde(default)]
     pub shortcuts: Vec<tilo_automation::Shortcut>,
+    /// Which of the saver's devices took the latest fire time of each
+    /// scheduled shortcut, so a schedule runs once across them. Projected
+    /// beside the shortcuts, one map key per schedule.
+    #[serde(default)]
+    pub schedule_claims: Vec<tilo_automation::ScheduleClaim>,
     /// Surfaces from this workspace being streamed to peers. Keys are
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
@@ -791,6 +796,7 @@ impl Workspace {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }
@@ -851,6 +857,7 @@ impl Default for Workspace {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }

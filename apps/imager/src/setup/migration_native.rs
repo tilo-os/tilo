@@ -5,9 +5,6 @@ use super::migration::{
 use super::migration_native_journal::{NativeJournal, Receipt};
 use super::migration_source::{CopyFileSource, CopyPass, CopyTimes, SourcePass, sealed};
 use super::{migration_durability as durability, nofollow::metadata_nofollow};
-use tilo_ntfs_protocol::{
-    CHUNK_BYTES, Entry, HASH_BYTES, Identity, Issue, Manifest, NativePath, ntfs_time_to_system_time,
-};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -17,6 +14,9 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
+};
+use tilo_ntfs_protocol::{
+    CHUNK_BYTES, Entry, HASH_BYTES, Identity, Issue, Manifest, NativePath, ntfs_time_to_system_time,
 };
 
 mod transport_sealed {
@@ -47,8 +47,8 @@ impl Transport for tilo_ntfs_protocol::client::Client {
 }
 /// Durable source facts deliberately exclude observation tokens.
 pub(super) mod entry_facts {
-    use tilo_ntfs_protocol::Entry;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use tilo_ntfs_protocol::Entry;
     pub fn serialize<S: Serializer>(entry: &Entry, serializer: S) -> Result<S::Ok, S::Error> {
         if !entry.token.is_empty() {
             return Err(serde::ser::Error::custom(
