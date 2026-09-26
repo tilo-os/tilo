@@ -7230,6 +7230,9 @@ pub fn run() {
                         session_changed = true;
                     }
                 }
+                BackendEvent::TabletMode(on) => {
+                    test_control_ctx.input.set_tablet_mode(on);
+                }
                 BackendEvent::InputUsed(modality) => {
                     if test_control_ctx.input.note_used(modality) {
                         test_control_ctx.publish_input_environment(&mut frame_builder);
@@ -7409,6 +7412,7 @@ pub fn run() {
             outputs_dirty = true;
             input_methods.reload(&mut state);
         }
+        input_methods.follow_input(&mut state, &test_control_ctx.input);
         input_methods.tick();
         for (output, on) in state.output_management.take_power_requests() {
             backend.set_output_power(output, on);
