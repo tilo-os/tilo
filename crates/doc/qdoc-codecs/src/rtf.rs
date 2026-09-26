@@ -779,227 +779,226 @@ mod tests {
     }
 
     #[test]
-    fn detect_recognizes_rtf_signature() {
-        assert_eq!(RtfCodec.detect(b"{\\rtf1\\ansi"), Confidence::High);
-        assert_eq!(RtfCodec.detect(b"   {\\rtf1"), Confidence::High);
-        assert_eq!(RtfCodec.detect(b"not rtf"), Confidence::None);
-    }
-
-    #[test]
-    fn plain_paragraph_text() {
-        let snap = import("{\\rtf1\\ansi\\deff0\n{\\pard\\fs22 Hello world\\par}}");
-        let paras: Vec<_> = snap
-            .blocks
-            .iter()
-            .filter(|b| b.kind == "paragraph")
-            .collect();
-        assert_eq!(paras.len(), 1, "{snap:?}");
-        assert_eq!(paras[0].text, "Hello world");
-    }
-
-    #[test]
-    fn two_paragraphs_split_on_par() {
-        let snap = import("{\\rtf1\\ansi\n{\\pard First\\par}{\\pard Second\\par}}");
-        let texts: Vec<_> = snap
-            .blocks
-            .iter()
-            .filter(|b| b.kind == "paragraph")
-            .map(|b| b.text.clone())
-            .collect();
-        assert_eq!(texts, vec!["First".to_string(), "Second".to_string()]);
-    }
-
-    #[test]
-    fn bold_run_yields_strong_mark() {
-        let snap = import("{\\rtf1\\ansi\n{\\pard a{\\b bold}c\\par}}");
-        let p = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "paragraph")
-            .expect("paragraph");
-        assert_eq!(p.text, "aboldc");
-        let strong = p
-            .marks
-            .iter()
-            .find(|m| m.name == "strong")
-            .expect("strong mark present");
-        // The bold run is "bold" — chars 1..5.
-        assert_eq!((strong.start, strong.end), (1, 5), "{:?}", p.marks);
-    }
-
-    #[test]
-    fn bold_toggle_without_group() {
-        let snap = import("{\\rtf1\\ansi\n{\\pard x\\b on\\b0 y\\par}}");
-        let p = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "paragraph")
-            .expect("paragraph");
-        assert_eq!(p.text, "xony");
-        let strong = p
-            .marks
-            .iter()
-            .find(|m| m.name == "strong")
-            .expect("strong mark");
-        assert_eq!(
-            (strong.start, strong.end),
-            (1, 3),
-            "covers 'on': {:?}",
-            p.marks
-        );
-    }
-
-    #[test]
-    fn italic_underline_strike_marks() {
-        let snap = import("{\\rtf1\\ansi\n{\\pard {\\i it}{\\ul un}{\\strike st}\\par}}");
-        let p = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "paragraph")
-            .expect("paragraph");
-        assert_eq!(p.text, "itunst");
-        assert!(
-            p.marks
+    fn rtf_import_paragraphs_text_and_destinations() {
+        // Phase `detect_recognizes_rtf_signature`.
+        {
+            assert_eq!(RtfCodec.detect(b"{\\rtf1\\ansi"), Confidence::High);
+            assert_eq!(RtfCodec.detect(b"   {\\rtf1"), Confidence::High);
+            assert_eq!(RtfCodec.detect(b"not rtf"), Confidence::None);
+        }
+        // Phase `plain_paragraph_text`.
+        {
+            let snap = import("{\\rtf1\\ansi\\deff0\n{\\pard\\fs22 Hello world\\par}}");
+            let paras: Vec<_> = snap
+                .blocks
                 .iter()
-                .any(|m| m.name == "em" && m.start == 0 && m.end == 2),
-            "{:?}",
-            p.marks
-        );
-        assert!(
-            p.marks
+                .filter(|b| b.kind == "paragraph")
+                .collect();
+            assert_eq!(paras.len(), 1, "{snap:?}");
+            assert_eq!(paras[0].text, "Hello world");
+        }
+        // Phase `two_paragraphs_split_on_par`.
+        {
+            let snap = import("{\\rtf1\\ansi\n{\\pard First\\par}{\\pard Second\\par}}");
+            let texts: Vec<_> = snap
+                .blocks
                 .iter()
-                .any(|m| m.name == "underline" && m.start == 2 && m.end == 4),
-            "{:?}",
-            p.marks
-        );
-        assert!(
-            p.marks
+                .filter(|b| b.kind == "paragraph")
+                .map(|b| b.text.clone())
+                .collect();
+            assert_eq!(texts, vec!["First".to_string(), "Second".to_string()]);
+        }
+        // Phase `escapes_and_unicode_decode_to_text`.
+        {
+            // literal `\\ \{ \}`, a hex-byte escape (é, Latin-1), and a Unicode escape (checkmark, U+2713).
+            let snap = import("{\\rtf1\\ansi\n{\\pard a\\\\b\\{c\\} \\'e9 \\u10003?z\\par}}");
+            let p = snap
+                .blocks
                 .iter()
-                .any(|m| m.name == "strike" && m.start == 4 && m.end == 6),
-            "{:?}",
-            p.marks
-        );
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            assert_eq!(p.text, "a\\b{c} é ✓z");
+        }
+        // Phase `fonttbl_and_star_destinations_are_skipped`.
+        {
+            // The font table and a `\*\generator` destination must not leak into body.
+            let snap = import(
+                "{\\rtf1\\ansi{\\fonttbl{\\f0 Helvetica;}}{\\*\\generator Tilo;}\n{\\pard Body\\par}}",
+            );
+            let texts: Vec<_> = snap.blocks.iter().map(|b| b.text.clone()).collect();
+            assert_eq!(
+                texts,
+                vec!["Body".to_string()],
+                "only body text survives: {snap:?}"
+            );
+        }
+        // Phase `bullet_paragraph_becomes_list_item`.
+        {
+            let snap = import("{\\rtf1\\ansi\n{\\pard\\bullet\\tab Item one\\par}}");
+            let li = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "list_item")
+                .expect("list_item block");
+            assert!(li.text.contains("Item one"), "got {:?}", li.text);
+        }
+        // Phase `export_is_unsupported`.
+        {
+            let d = Document::new();
+            let err = RtfCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap_err();
+            assert!(matches!(err, CodecError::Unsupported(_)), "got {err:?}");
+        }
+        // Phase `roundtrip_docrtf_shaped_rtf_preserves_text_and_bold`.
+        // A hand-written RTF snapshot shaped like `export_rtf`'s emit side; the full
+        // round-trip lives in the word processor's tests.
+        {
+            let rtf = "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0\\fswiss Helvetica;}}{\\colortbl;}\n\
+    {\\pard\\fs22 {\\fs22 Hello }{\\b\\fs22 world}{\\fs22  today}\\par}}";
+            let snap = import(rtf);
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("a paragraph survives");
+            assert_eq!(p.text, "Hello world today", "text round-trips: {snap:?}");
+            let strong = p
+                .marks
+                .iter()
+                .find(|m| m.name == "strong")
+                .expect("bold run survives");
+            assert_eq!(
+                p.text
+                    .get(strong.start..strong.end)
+                    .expect("strong span is within text bounds"),
+                "world",
+                "bold covers the right run: {:?}",
+                p.marks
+            );
+        }
     }
 
     #[test]
-    fn color_table_maps_cf_to_color_mark() {
-        // colortbl: index 1 = red. `\cf1 red\cf0` applies it.
-        let snap = import(
-            "{\\rtf1\\ansi{\\colortbl;\\red255\\green0\\blue0;}\n{\\pard {\\cf1 red}\\par}}",
-        );
-        let p = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "paragraph")
-            .expect("paragraph");
-        assert_eq!(p.text, "red");
-        let color = p
-            .marks
-            .iter()
-            .find(|m| m.name == "color")
-            .expect("color mark");
-        assert_eq!(
-            color.value,
-            qdoc::document::MarkValue::Str("#ff0000".into()),
-            "{:?}",
-            p.marks
-        );
-        assert_eq!((color.start, color.end), (0, 3));
-    }
-
-    #[test]
-    fn fs_maps_to_fontsize_in_points() {
-        // `\fs40` = 40 half-points = 20pt.
-        let snap = import("{\\rtf1\\ansi\n{\\pard {\\fs40 big}\\par}}");
-        let p = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "paragraph")
-            .expect("paragraph");
-        let size = p
-            .marks
-            .iter()
-            .find(|m| m.name == "fontSize")
-            .expect("fontSize mark");
-        assert_eq!(
-            size.value,
-            qdoc::document::MarkValue::Int(20),
-            "{:?}",
-            p.marks
-        );
-    }
-
-    #[test]
-    fn escapes_and_unicode_decode_to_text() {
-        // literal `\\ \{ \}`, a hex-byte escape (é, Latin-1), and a Unicode escape (checkmark, U+2713).
-        let snap = import("{\\rtf1\\ansi\n{\\pard a\\\\b\\{c\\} \\'e9 \\u10003?z\\par}}");
-        let p = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "paragraph")
-            .expect("paragraph");
-        assert_eq!(p.text, "a\\b{c} é ✓z");
-    }
-
-    #[test]
-    fn fonttbl_and_star_destinations_are_skipped() {
-        // The font table and a `\*\generator` destination must not leak into body.
-        let snap = import(
-            "{\\rtf1\\ansi{\\fonttbl{\\f0 Helvetica;}}{\\*\\generator Tilo;}\n{\\pard Body\\par}}",
-        );
-        let texts: Vec<_> = snap.blocks.iter().map(|b| b.text.clone()).collect();
-        assert_eq!(
-            texts,
-            vec!["Body".to_string()],
-            "only body text survives: {snap:?}"
-        );
-    }
-
-    #[test]
-    fn bullet_paragraph_becomes_list_item() {
-        let snap = import("{\\rtf1\\ansi\n{\\pard\\bullet\\tab Item one\\par}}");
-        let li = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "list_item")
-            .expect("list_item block");
-        assert!(li.text.contains("Item one"), "got {:?}", li.text);
-    }
-
-    #[test]
-    fn export_is_unsupported() {
-        let d = Document::new();
-        let err = RtfCodec
-            .export(d.as_ref(), &tilo_content::NoContent)
-            .unwrap_err();
-        assert!(matches!(err, CodecError::Unsupported(_)), "got {err:?}");
-    }
-
-    /// A hand-written RTF snapshot shaped like `export_rtf`'s emit side; the full
-    /// round-trip lives in the word processor's tests.
-    #[test]
-    fn roundtrip_docrtf_shaped_rtf_preserves_text_and_bold() {
-        let rtf = "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0\\fswiss Helvetica;}}{\\colortbl;}\n\
-{\\pard\\fs22 {\\fs22 Hello }{\\b\\fs22 world}{\\fs22  today}\\par}}";
-        let snap = import(rtf);
-        let p = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "paragraph")
-            .expect("a paragraph survives");
-        assert_eq!(p.text, "Hello world today", "text round-trips: {snap:?}");
-        let strong = p
-            .marks
-            .iter()
-            .find(|m| m.name == "strong")
-            .expect("bold run survives");
-        assert_eq!(
-            p.text
-                .get(strong.start..strong.end)
-                .expect("strong span is within text bounds"),
-            "world",
-            "bold covers the right run: {:?}",
-            p.marks
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn rtf_import_control_words_become_marks() {
+        // Phase `bold_run_yields_strong_mark`.
+        {
+            let snap = import("{\\rtf1\\ansi\n{\\pard a{\\b bold}c\\par}}");
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            assert_eq!(p.text, "aboldc");
+            let strong = p
+                .marks
+                .iter()
+                .find(|m| m.name == "strong")
+                .expect("strong mark present");
+            // The bold run is "bold" — chars 1..5.
+            assert_eq!((strong.start, strong.end), (1, 5), "{:?}", p.marks);
+        }
+        // Phase `bold_toggle_without_group`.
+        {
+            let snap = import("{\\rtf1\\ansi\n{\\pard x\\b on\\b0 y\\par}}");
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            assert_eq!(p.text, "xony");
+            let strong = p
+                .marks
+                .iter()
+                .find(|m| m.name == "strong")
+                .expect("strong mark");
+            assert_eq!(
+                (strong.start, strong.end),
+                (1, 3),
+                "covers 'on': {:?}",
+                p.marks
+            );
+        }
+        // Phase `italic_underline_strike_marks`.
+        {
+            let snap = import("{\\rtf1\\ansi\n{\\pard {\\i it}{\\ul un}{\\strike st}\\par}}");
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            assert_eq!(p.text, "itunst");
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "em" && m.start == 0 && m.end == 2),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "underline" && m.start == 2 && m.end == 4),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "strike" && m.start == 4 && m.end == 6),
+                "{:?}",
+                p.marks
+            );
+        }
+        // Phase `color_table_maps_cf_to_color_mark`.
+        {
+            // colortbl: index 1 = red. `\cf1 red\cf0` applies it.
+            let snap = import(
+                "{\\rtf1\\ansi{\\colortbl;\\red255\\green0\\blue0;}\n{\\pard {\\cf1 red}\\par}}",
+            );
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            assert_eq!(p.text, "red");
+            let color = p
+                .marks
+                .iter()
+                .find(|m| m.name == "color")
+                .expect("color mark");
+            assert_eq!(
+                color.value,
+                qdoc::document::MarkValue::Str("#ff0000".into()),
+                "{:?}",
+                p.marks
+            );
+            assert_eq!((color.start, color.end), (0, 3));
+        }
+        // Phase `fs_maps_to_fontsize_in_points`.
+        {
+            // `\fs40` = 40 half-points = 20pt.
+            let snap = import("{\\rtf1\\ansi\n{\\pard {\\fs40 big}\\par}}");
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            let size = p
+                .marks
+                .iter()
+                .find(|m| m.name == "fontSize")
+                .expect("fontSize mark");
+            assert_eq!(
+                size.value,
+                qdoc::document::MarkValue::Int(20),
+                "{:?}",
+                p.marks
+            );
+        }
     }
 }

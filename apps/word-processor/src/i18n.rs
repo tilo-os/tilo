@@ -81,115 +81,121 @@ pub fn arg<V: Into<ArgValue>>(name: &str, value: V) -> (&str, ArgValue) {
 mod tests {
     use super::*;
 
+    /// en-US returns the source string, de returns German, a missing key falls back to the key, de falls
+    /// back to English for an untranslated key, arguments interpolate numbers, an unknown locale falls back
+    /// to the source, and counts take the singular at one.
     #[test]
-    fn en_us_returns_source_string() {
-        set_locale("en-US");
-        assert_eq!(t("toolbar-body"), "Body");
-        assert_eq!(t("template-report"), "Report");
-        assert_eq!(
-            t("recovery-banner"),
-            "Recovered unsaved changes from a previous session."
-        );
-    }
+    fn translations_resolve_per_locale_and_fall_back_without_panicking() {
+        // Phase: en_us_returns_source_string.
+        {
+            set_locale("en-US");
+            assert_eq!(t("toolbar-body"), "Body");
+            assert_eq!(t("template-report"), "Report");
+            assert_eq!(
+                t("recovery-banner"),
+                "Recovered unsaved changes from a previous session."
+            );
+        }
 
-    #[test]
-    fn de_returns_german_string() {
-        set_locale("de");
-        assert_eq!(t("toolbar-body"), "Fließtext");
-        assert_eq!(t("template-report"), "Bericht");
-        // A POSIX-style value resolves the same `de` catalog.
-        set_locale("de_DE.UTF-8");
-        assert_eq!(t("template-report"), "Bericht");
-        set_locale("en-US");
-    }
+        // Phase: de_returns_german_string.
+        {
+            set_locale("de");
+            assert_eq!(t("toolbar-body"), "Fließtext");
+            assert_eq!(t("template-report"), "Bericht");
+            // A POSIX-style value resolves the same `de` catalog.
+            set_locale("de_DE.UTF-8");
+            assert_eq!(t("template-report"), "Bericht");
+            set_locale("en-US");
+        }
 
-    #[test]
-    fn missing_key_falls_back_to_key_without_panicking() {
-        set_locale("de");
-        assert_eq!(t("this.key.does.not.exist"), "this.key.does.not.exist");
-        set_locale("en-US");
-        assert_eq!(t("this.key.does.not.exist"), "this.key.does.not.exist");
-    }
+        // Phase: missing_key_falls_back_to_key_without_panicking.
+        {
+            set_locale("de");
+            assert_eq!(t("this.key.does.not.exist"), "this.key.does.not.exist");
+            set_locale("en-US");
+            assert_eq!(t("this.key.does.not.exist"), "this.key.does.not.exist");
+        }
 
-    #[test]
-    fn de_falls_back_to_english_for_untranslated_key() {
-        // `find.match-case` is intentionally English-only in the de catalog test
-        // surface; assert it falls through to en-US rather than to the key.
-        set_locale("de");
-        let v = t("find-find");
-        // The de catalog DOES translate this; assert it is neither the key nor
-        // empty (proves resolution worked at all).
-        assert_ne!(v, "find.find");
-        assert!(!v.is_empty());
-        set_locale("en-US");
-    }
+        // Phase: de_falls_back_to_english_for_untranslated_key.
+        {
+            // `find.match-case` is intentionally English-only in the de catalog test
+            // surface; assert it falls through to en-US rather than to the key.
+            set_locale("de");
+            let v = t("find-find");
+            // The de catalog DOES translate this; assert it is neither the key nor
+            // empty (proves resolution worked at all).
+            assert_ne!(v, "find.find");
+            assert!(!v.is_empty());
+            set_locale("en-US");
+        }
 
-    #[test]
-    fn t_args_interpolates_numbers() {
-        set_locale("en-US");
-        let s = t_args("find-count", &[arg("cur", 2), arg("total", 7)]);
-        assert_eq!(s, "2 / 7");
+        // Phase: t_args_interpolates_numbers.
+        {
+            set_locale("en-US");
+            let s = t_args("find-count", &[arg("cur", 2), arg("total", 7)]);
+            assert_eq!(s, "2 / 7");
 
-        set_locale("de");
-        // German uses the same numeric pattern; the count format is identical.
-        let s = t_args("find-count", &[arg("cur", 3), arg("total", 9)]);
-        assert_eq!(s, "3 / 9");
-        set_locale("en-US");
-    }
+            set_locale("de");
+            // German uses the same numeric pattern; the count format is identical.
+            let s = t_args("find-count", &[arg("cur", 3), arg("total", 9)]);
+            assert_eq!(s, "3 / 9");
+            set_locale("en-US");
+        }
 
-    #[test]
-    fn unknown_locale_falls_back_to_source() {
-        set_locale("xx-ZZ");
-        // No catalog for xx-ZZ → English string.
-        assert_eq!(t("template-blank"), "Blank");
-        set_locale("en-US");
-    }
+        // Phase: unknown_locale_falls_back_to_source.
+        {
+            set_locale("xx-ZZ");
+            // No catalog for xx-ZZ → English string.
+            assert_eq!(t("template-blank"), "Blank");
+            set_locale("en-US");
+        }
 
-    /// One word is a word, not "1 words" — the counter is often the only text
-    /// on a fresh page, so its grammar is the whole screen's grammar. Also a
-    /// parse guard: `make_bundle` drops entries that fail to parse, so a slip
-    /// in a multi-line select expression costs the message, not the build —
-    /// asserting the rendered plural catches a dropped message (which renders
-    /// as the bare key).
-    #[test]
-    fn counts_take_the_singular_at_one() {
-        set_locale("en-US");
+        // Phase: counts_take_the_singular_at_one.
+        // One word is a word, not "1 words" — the counter is often the only text
+        // on a fresh page, so its grammar is the whole screen's grammar. Also a
+        // parse guard: `make_bundle` drops entries that fail to parse, so a slip
+        // in a multi-line select expression costs the message, not the build —
+        // asserting the rendered plural catches a dropped message (which renders
+        // as the bare key).
+        {
+            set_locale("en-US");
 
-        let one = t_args("status-count", &[arg("words", 1), arg("chars", 1)]);
-        assert_eq!(one, "1 word    1 character");
+            let one = t_args("status-count", &[arg("words", 1), arg("chars", 1)]);
+            assert_eq!(one, "1 word    1 character");
 
-        let many = t_args("status-count", &[arg("words", 2), arg("chars", 12)]);
-        assert_eq!(many, "2 words    12 characters");
+            let many = t_args("status-count", &[arg("words", 2), arg("chars", 12)]);
+            assert_eq!(many, "2 words    12 characters");
 
-        // Zero takes the plural in English, as CLDR has it.
-        let none = t_args("status-count", &[arg("words", 0), arg("chars", 0)]);
-        assert_eq!(none, "0 words    0 characters");
+            // Zero takes the plural in English, as CLDR has it.
+            let none = t_args("status-count", &[arg("words", 0), arg("chars", 0)]);
+            assert_eq!(none, "0 words    0 characters");
 
-        assert_eq!(
-            t_args("toast-toc-updated", &[arg("n", 1)]),
-            "Table of contents updated (1 entry)"
-        );
-        assert_eq!(
-            t_args("toast-toc-updated", &[arg("n", 4)]),
-            "Table of contents updated (4 entries)"
-        );
+            assert_eq!(
+                t_args("toast-toc-updated", &[arg("n", 1)]),
+                "Table of contents updated (1 entry)"
+            );
+            assert_eq!(
+                t_args("toast-toc-updated", &[arg("n", 4)]),
+                "Table of contents updated (4 entries)"
+            );
 
-        // German has the same one/other split, and `Zeichen` is invariant —
-        // the catalog must not have grown an English-shaped plural for it.
-        set_locale("de");
-        assert_eq!(
-            t_args("status-count", &[arg("words", 1), arg("chars", 1)]),
-            "1 Wort    1 Zeichen"
-        );
-        assert_eq!(
-            t_args("status-count", &[arg("words", 3), arg("chars", 9)]),
-            "3 Wörter    9 Zeichen"
-        );
-        assert_eq!(
-            t_args("toast-toc-updated", &[arg("n", 1)]),
-            "Inhaltsverzeichnis aktualisiert (1 Eintrag)"
-        );
+            // German has the same one/other split, and `Zeichen` is invariant —
+            // the catalog must not have grown an English-shaped plural for it.
+            set_locale("de");
+            assert_eq!(
+                t_args("status-count", &[arg("words", 1), arg("chars", 1)]),
+                "1 Wort    1 Zeichen"
+            );
+            assert_eq!(
+                t_args("status-count", &[arg("words", 3), arg("chars", 9)]),
+                "3 Wörter    9 Zeichen"
+            );
+            assert_eq!(
+                t_args("toast-toc-updated", &[arg("n", 1)]),
+                "Inhaltsverzeichnis aktualisiert (1 Eintrag)"
+            );
 
-        set_locale("en-US");
+            set_locale("en-US");
+        }
     }
 }

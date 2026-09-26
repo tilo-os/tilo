@@ -62,65 +62,64 @@ mod tests {
     use crate::{Workspace, WorkspaceId};
 
     #[test]
-    fn sharing_is_additive_and_idempotent() {
-        let mut shares = SharedSurfaces::default();
-        shares.share(7, 42);
-        shares.share(7, 99);
-        shares.share(7, 42);
+    fn shared_surface_registry_adds_removes_and_keeps_its_shape() {
+        // Phase `sharing_is_additive_and_idempotent`.
+        {
+            let mut shares = SharedSurfaces::default();
+            shares.share(7, 42);
+            shares.share(7, 99);
+            shares.share(7, 42);
 
-        assert_eq!(shares.0[&7], HashSet::from([42, 99]));
-        assert!(shares.contains(7));
-    }
+            assert_eq!(shares.0[&7], HashSet::from([42, 99]));
+            assert!(shares.contains(7));
+        }
+        // Phase `removing_one_peer_keeps_other_recipients`.
+        {
+            let mut shares = SharedSurfaces::default();
+            shares.share(7, 42);
+            shares.share(7, 99);
 
-    #[test]
-    fn removing_one_peer_keeps_other_recipients() {
-        let mut shares = SharedSurfaces::default();
-        shares.share(7, 42);
-        shares.share(7, 99);
+            assert!(shares.unshare_peer(7, 42));
+            assert_eq!(shares.0[&7], HashSet::from([99]));
+            assert!(!shares.unshare_peer(7, 42));
+        }
+        // Phase `removing_the_last_peer_prunes_the_surface`.
+        {
+            let mut shares = SharedSurfaces::default();
+            shares.share(7, 42);
 
-        assert!(shares.unshare_peer(7, 42));
-        assert_eq!(shares.0[&7], HashSet::from([99]));
-        assert!(!shares.unshare_peer(7, 42));
-    }
+            assert!(shares.unshare_peer(7, 42));
+            assert!(!shares.contains(7));
+            assert!(shares.is_empty());
 
-    #[test]
-    fn removing_the_last_peer_prunes_the_surface() {
-        let mut shares = SharedSurfaces::default();
-        shares.share(7, 42);
+            shares.share(8, 42);
+            shares.share(8, 99);
+            assert_eq!(shares.unshare(8), Some(HashSet::from([42, 99])));
+            assert!(!shares.contains(8));
+        }
+        // Phase `serde_shape_remains_the_plain_surface_map`.
+        {
+            let mut shares = SharedSurfaces::default();
+            shares.share(11, 100);
 
-        assert!(shares.unshare_peer(7, 42));
-        assert!(!shares.contains(7));
-        assert!(shares.is_empty());
-
-        shares.share(8, 42);
-        shares.share(8, 99);
-        assert_eq!(shares.unshare(8), Some(HashSet::from([42, 99])));
-        assert!(!shares.contains(8));
-    }
-
-    #[test]
-    fn serde_shape_remains_the_plain_surface_map() {
-        let mut shares = SharedSurfaces::default();
-        shares.share(11, 100);
-
-        let json = serde_json::to_value(&shares).expect("serialize");
-        assert_eq!(json, serde_json::json!({ "11": [100] }));
-        assert_eq!(
-            serde_json::from_value::<SharedSurfaces>(json)
-                .expect("deserialize")
-                .0[&11],
-            HashSet::from([100])
-        );
-    }
-
-    #[test]
-    fn workspace_api_preserves_the_registry_contract() {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Demo");
-        workspace.share_surface(7, 42);
-        workspace.share_surface(7, 99);
-        assert!(workspace.is_surface_shared(7));
-        assert!(workspace.unshare_surface_from_peer(7, 42));
-        assert_eq!(workspace.unshare_surface(7), Some(HashSet::from([99])));
-        assert!(!workspace.is_surface_shared(7));
+            let json = serde_json::to_value(&shares).expect("serialize");
+            assert_eq!(json, serde_json::json!({ "11": [100] }));
+            assert_eq!(
+                serde_json::from_value::<SharedSurfaces>(json)
+                    .expect("deserialize")
+                    .0[&11],
+                HashSet::from([100])
+            );
+        }
+        // Phase `workspace_api_preserves_the_registry_contract`.
+        {
+            let mut workspace = Workspace::new(WorkspaceId(1), "Demo");
+            workspace.share_surface(7, 42);
+            workspace.share_surface(7, 99);
+            assert!(workspace.is_surface_shared(7));
+            assert!(workspace.unshare_surface_from_peer(7, 42));
+            assert_eq!(workspace.unshare_surface(7), Some(HashSet::from([99])));
+            assert!(!workspace.is_surface_shared(7));
+        }
     }
 }

@@ -1879,439 +1879,449 @@ mod tests {
     }
 
     #[test]
-    fn moving_from_a_client_into_maximized_chrome_reaches_the_widget() {
-        use smithay::reexports::calloop::EventLoop;
-        use smithay::reexports::wayland_server::Display;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn pointer_focus_routing_between_clients_and_chrome() {
+        // Phase `moving_from_a_client_into_maximized_chrome_reaches_the_widget`.
+        {
+            use smithay::reexports::calloop::EventLoop;
+            use smithay::reexports::wayland_server::Display;
 
-        let mut seed = crate::shell::state::WorkspaceTree::bootstrap_demo();
-        let first = &mut seed.desktop.workspaces[0].strips[0].window_groups[0];
-        first.maximized = true;
-        let group = first.id;
-        let tree = seed.shared();
-        let mut fb = FrameBuilder::with_handle(tree.clone(), false, (1280, 800));
-        fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
-        let _ = fb.paint_settled();
+            let mut seed = crate::shell::state::WorkspaceTree::bootstrap_demo();
+            let first = &mut seed.desktop.workspaces[0].strips[0].window_groups[0];
+            first.maximized = true;
+            let group = first.id;
+            let tree = seed.shared();
+            let mut fb = FrameBuilder::with_handle(tree.clone(), false, (1280, 800));
+            fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
+            let _ = fb.paint_settled();
 
-        let event_loop: EventLoop<'static, crate::compositor::state::State> =
-            EventLoop::try_new().expect("calloop event loop");
-        let display: Display<crate::compositor::state::State> =
-            Display::new().expect("wayland display");
-        let mut state = crate::compositor::state::State::new_with_workspace_tree(
-            event_loop.handle(),
-            display.handle(),
-            tree,
-        );
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(1210.0, 70.0),
-        };
+            let event_loop: EventLoop<'static, crate::compositor::state::State> =
+                EventLoop::try_new().expect("calloop event loop");
+            let display: Display<crate::compositor::state::State> =
+                Display::new().expect("wayland display");
+            let mut state = crate::compositor::state::State::new_with_workspace_tree(
+                event_loop.handle(),
+                display.handle(),
+                tree,
+            );
+            let moved = WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(1210.0, 70.0),
+            };
 
-        assert!(
-            !route_input(&mut state, &mut fb, &moved, &Modifiers::default(),),
-            "captured motion must fall through to shell widget dispatch"
-        );
-        assert_eq!(
-            fb.host().pointer_position(),
-            Some(vello::kurbo::Point::new(1210.0, 70.0)),
-        );
-        assert!(chrome_captures_input(&fb));
-    }
+            assert!(
+                !route_input(&mut state, &mut fb, &moved, &Modifiers::default(),),
+                "captured motion must fall through to shell widget dispatch"
+            );
+            assert_eq!(
+                fb.host().pointer_position(),
+                Some(vello::kurbo::Point::new(1210.0, 70.0)),
+            );
+            assert!(chrome_captures_input(&fb));
+        }
+        // Phase `clicking_a_window_defers_focus_persistence_until_after_input_flush`.
+        {
+            let state_dir = tempfile::tempdir().expect("temporary state directory");
+            let state_path = state_dir.path().join("state.json");
+            let mut fb = FrameBuilder::new((1280, 800));
+            let (strip_id, first_group, second_group) = {
+                let chrome = fb.chrome();
+                let mut tree = chrome.tree_mut();
+                tree.persist_path = Some(state_path.clone());
+                let (strip_id, first_group) =
+                    insert_foreign_group(&mut tree, 710_001, Some("org.example.first"))
+                        .expect("first foreign group");
+                let (_, second_group) =
+                    insert_foreign_group(&mut tree, 710_002, Some("org.example.second"))
+                        .expect("second foreign group");
+                tree.desktop.set_active_group(strip_id, first_group);
+                tree.flush_to_disk();
+                drop(tree);
+                (strip_id, first_group, second_group)
+            };
 
-    #[test]
-    fn clicking_a_window_defers_focus_persistence_until_after_input_flush() {
-        let state_dir = tempfile::tempdir().expect("temporary state directory");
-        let state_path = state_dir.path().join("state.json");
-        let mut fb = FrameBuilder::new((1280, 800));
-        let (strip_id, first_group, second_group) = {
+            assert!(raise_group(&mut fb, strip_id, second_group));
+
+            let before_flush = persist::load_tree_from(&state_path).expect("reload old layout");
+            assert_eq!(
+                before_flush.desktop.active_group_for(strip_id),
+                Some(first_group),
+                "durable I/O must not run in the pointer-to-focus critical path"
+            );
+
+            // The native loop performs this only after `display.flush_clients()`.
+            fb.chrome().tree().flush_to_disk();
+
+            let restarted = persist::load_tree_from(&state_path).expect("reload focused layout");
+            assert_eq!(
+                restarted.desktop.active_group_for(strip_id),
+                Some(second_group),
+                "the window focused by a click must remain selected after restart"
+            );
+            assert_eq!(
+                restarted
+                    .desktop
+                    .active_strip
+                    .get(&restarted.desktop.active)
+                    .copied(),
+                Some(strip_id),
+                "the clicked group's strip is part of the durable focus address"
+            );
+            assert_ne!(
+                restarted.desktop.active_group_for(strip_id),
+                Some(first_group),
+                "restart must not restore the group focused before the click"
+            );
+        }
+        // Phase `focus_persistence_request_is_coalesced_and_edge_triggered`.
+        {
+            let mut input = ClientInput {
+                focus_persistence_pending: true,
+                ..ClientInput::default()
+            };
+            // A second request before the flush coalesces into the first.
+            input.focus_persistence_pending = true;
+
+            assert!(input.take_focus_persistence_pending());
+            assert!(
+                !input.take_focus_persistence_pending(),
+                "an idle tick must not rewrite and fsync the workspace tree again"
+            );
+        }
+        // Phase `touching_a_tiled_window_promotes_its_exact_group`.
+        {
+            use smithay::reexports::calloop::EventLoop;
+            use smithay::reexports::wayland_server::Display;
+
+            let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
+            let mut fb = FrameBuilder::with_handle(tree.clone(), false, (1280, 800));
+            let (strip_id, first_group, second_group, second_surface) = {
+                let chrome = fb.chrome();
+                let mut tree = chrome.tree_mut();
+                let (strip_id, first_group) =
+                    insert_foreign_group(&mut tree, 720_001, Some("org.example.first"))
+                        .expect("first foreign group");
+                let (_, second_group) =
+                    insert_foreign_group(&mut tree, 720_002, Some("org.example.second"))
+                        .expect("second foreign group");
+                tree.desktop.set_active_group(strip_id, first_group);
+                drop(tree);
+                (strip_id, first_group, second_group, 720_002)
+            };
+            let event_loop: EventLoop<'static, crate::compositor::state::State> =
+                EventLoop::try_new().expect("calloop event loop");
+            let display: Display<crate::compositor::state::State> =
+                Display::new().expect("wayland display");
+            let mut state = crate::compositor::state::State::new_with_workspace_tree(
+                event_loop.handle(),
+                display.handle(),
+                tree,
+            );
+
+            focus_touch_target(&mut state, &mut fb, second_surface);
+
             let chrome = fb.chrome();
-            let mut tree = chrome.tree_mut();
-            tree.persist_path = Some(state_path.clone());
-            let (strip_id, first_group) =
-                insert_foreign_group(&mut tree, 710_001, Some("org.example.first"))
-                    .expect("first foreign group");
-            let (_, second_group) =
-                insert_foreign_group(&mut tree, 710_002, Some("org.example.second"))
-                    .expect("second foreign group");
-            tree.desktop.set_active_group(strip_id, first_group);
-            tree.flush_to_disk();
-            drop(tree);
-            (strip_id, first_group, second_group)
-        };
-
-        assert!(raise_group(&mut fb, strip_id, second_group));
-
-        let before_flush = persist::load_tree_from(&state_path).expect("reload old layout");
-        assert_eq!(
-            before_flush.desktop.active_group_for(strip_id),
-            Some(first_group),
-            "durable I/O must not run in the pointer-to-focus critical path"
-        );
-
-        // The native loop performs this only after `display.flush_clients()`.
-        fb.chrome().tree().flush_to_disk();
-
-        let restarted = persist::load_tree_from(&state_path).expect("reload focused layout");
-        assert_eq!(
-            restarted.desktop.active_group_for(strip_id),
-            Some(second_group),
-            "the window focused by a click must remain selected after restart"
-        );
-        assert_eq!(
-            restarted
-                .desktop
-                .active_strip
-                .get(&restarted.desktop.active)
-                .copied(),
-            Some(strip_id),
-            "the clicked group's strip is part of the durable focus address"
-        );
-        assert_ne!(
-            restarted.desktop.active_group_for(strip_id),
-            Some(first_group),
-            "restart must not restore the group focused before the click"
-        );
+            assert_eq!(
+                chrome.tree().desktop.active_group_for(strip_id),
+                Some(second_group),
+                "direct touch must focus the tiled group under the finger"
+            );
+            assert_ne!(
+                chrome.tree().desktop.active_group_for(strip_id),
+                Some(first_group),
+                "touch must not leave keyboard focus attached to the previous tiled app"
+            );
+        }
     }
 
-    #[test]
-    fn focus_persistence_request_is_coalesced_and_edge_triggered() {
-        let mut input = ClientInput {
-            focus_persistence_pending: true,
-            ..ClientInput::default()
-        };
-        // A second request before the flush coalesces into the first.
-        input.focus_persistence_pending = true;
-
-        assert!(input.take_focus_persistence_pending());
-        assert!(
-            !input.take_focus_persistence_pending(),
-            "an idle tick must not rewrite and fsync the workspace tree again"
-        );
-    }
-
-    #[test]
-    fn touching_a_tiled_window_promotes_its_exact_group() {
-        use smithay::reexports::calloop::EventLoop;
-        use smithay::reexports::wayland_server::Display;
-
-        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
-        let mut fb = FrameBuilder::with_handle(tree.clone(), false, (1280, 800));
-        let (strip_id, first_group, second_group, second_surface) = {
-            let chrome = fb.chrome();
-            let mut tree = chrome.tree_mut();
-            let (strip_id, first_group) =
-                insert_foreign_group(&mut tree, 720_001, Some("org.example.first"))
-                    .expect("first foreign group");
-            let (_, second_group) =
-                insert_foreign_group(&mut tree, 720_002, Some("org.example.second"))
-                    .expect("second foreign group");
-            tree.desktop.set_active_group(strip_id, first_group);
-            drop(tree);
-            (strip_id, first_group, second_group, 720_002)
-        };
-        let event_loop: EventLoop<'static, crate::compositor::state::State> =
-            EventLoop::try_new().expect("calloop event loop");
-        let display: Display<crate::compositor::state::State> =
-            Display::new().expect("wayland display");
-        let mut state = crate::compositor::state::State::new_with_workspace_tree(
-            event_loop.handle(),
-            display.handle(),
-            tree,
-        );
-
-        focus_touch_target(&mut state, &mut fb, second_surface);
-
-        let chrome = fb.chrome();
-        assert_eq!(
-            chrome.tree().desktop.active_group_for(strip_id),
-            Some(second_group),
-            "direct touch must focus the tiled group under the finger"
-        );
-        assert_ne!(
-            chrome.tree().desktop.active_group_for(strip_id),
-            Some(first_group),
-            "touch must not leave keyboard focus attached to the previous tiled app"
-        );
-    }
-
-    #[test]
-    fn onboarding_mutes_wayland_focus_and_the_remote_input_view() {
-        const HIDDEN_SURFACE: u64 = 424_242;
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
-        fb.host_mut()
-            .enable_onboarding(std::path::PathBuf::from("/tmp/tilo-oobe-input-test"));
-        let _ = fb.paint_settled();
-
-        assert!(
-            chrome_captures_input(&fb),
-            "compositor-owned OOBE must capture every client input route"
-        );
-
-        assert_eq!(
-            gate_keyboard_focus(Some(HIDDEN_SURFACE), chrome_captures_input(&fb)),
-            None,
-            "a hidden Wayland client cannot retain keyboard focus"
-        );
-        let remote_view = crate::network::input_firewall::ShellView::new(
-            vec![(HIDDEN_SURFACE, Rect::new(0.0, 0.0, 400.0, 300.0))],
-            gate_keyboard_focus(Some(HIDDEN_SURFACE), chrome_captures_input(&fb)),
-            chrome_captures_input(&fb),
-            false,
-        );
-        assert!(
-            remote_view.chrome_captures_input(),
-            "remote peers must see OOBE as occluding trusted chrome"
-        );
-    }
-
-    /// The remote-input firewall's z-order check and local pointer routing must never disagree about what is on top — the disagreement *is* the clickjacking hole; they share [`foreign_tiles`].
     #[test]
     #[allow(
         clippy::significant_drop_tightening,
         reason = "tree is read for every probe in the loop below; the block already ends \
                   right after the loop, so there's no earlier point to drop the guard"
     )]
-    fn the_firewall_view_and_local_hit_testing_resolve_the_same_surface() {
-        use crate::network::input_firewall::ShellView;
-
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
-        fb.with_chrome(|chrome| {
-            {
-                let mut tree = chrome.tree_mut();
-                insert_foreign_group(&mut tree, 900_001, Some("org.example.one"));
-                insert_foreign_group(&mut tree, 900_002, Some("org.example.two"));
-            }
-            chrome.bump();
-        });
-        let _ = fb.paint_settled();
-
-        let tiles = {
-            let chrome = fb.chrome();
-            let tree = chrome.tree();
-            foreign_tiles(&tree, fb.host())
-        };
-        assert_eq!(
-            tiles.len(),
-            2,
-            "both mirrored clients must be laid out; got {tiles:?}"
-        );
-
-        let view = ShellView::new(
-            tiles.iter().map(|h| (h.surface_id, h.rect)).collect(),
-            None,
-            false,
-            false,
-        );
-
-        // Probe each tile's inside and just past each edge — a hit-test discrepancy shows up at a boundary first, derived from the layout's actual rects.
-        let mut probes: Vec<(f64, f64)> = Vec::new();
-        for hit in &tiles {
-            let r = hit.rect;
-            let c = r.center();
-            probes.extend([
-                (c.x, c.y),
-                (r.x0 + 0.5, r.y0 + 0.5),
-                (r.x1 - 0.5, r.y1 - 0.5),
-                (r.x0 - 0.5, c.y),
-                (r.x1 + 0.5, c.y),
-                (c.x, r.y0 - 0.5),
-                (c.x, r.y1 + 0.5),
-            ]);
-        }
-        // Coarse sweep of the whole output (mostly chrome): every one must resolve to nothing on both sides, or the firewall would clear a click on the top bar.
-        for gx in 0..80 {
-            for gy in 0..45 {
-                probes.push((f64::from(gx) * 20.0 + 10.0, f64::from(gy) * 20.0 + 10.0));
-            }
-        }
-
-        // Wherever local input would land on a client, the firewall must name that same client; wherever it lands on chrome, the firewall must name nothing.
-        let mut inside = 0;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn published_remote_input_view_matches_local_state() {
+        // Phase `onboarding_mutes_wayland_focus_and_the_remote_input_view`.
         {
-            let chrome = fb.chrome();
-            let tree = chrome.tree();
-            for p in probes {
-                let local = foreign_tile_at(&tree, fb.host(), p).map(|h| h.surface_id);
-                assert_eq!(
-                    view.topmost_at(p),
-                    local,
-                    "at {p:?} the firewall and the pointer router disagree",
-                );
-                if local.is_some() {
-                    inside += 1;
+            const HIDDEN_SURFACE: u64 = 424_242;
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            fb.host_mut()
+                .enable_onboarding(std::path::PathBuf::from("/tmp/tilo-oobe-input-test"));
+            let _ = fb.paint_settled();
+
+            assert!(
+                chrome_captures_input(&fb),
+                "compositor-owned OOBE must capture every client input route"
+            );
+
+            assert_eq!(
+                gate_keyboard_focus(Some(HIDDEN_SURFACE), chrome_captures_input(&fb)),
+                None,
+                "a hidden Wayland client cannot retain keyboard focus"
+            );
+            let remote_view = crate::network::input_firewall::ShellView::new(
+                vec![(HIDDEN_SURFACE, Rect::new(0.0, 0.0, 400.0, 300.0))],
+                gate_keyboard_focus(Some(HIDDEN_SURFACE), chrome_captures_input(&fb)),
+                chrome_captures_input(&fb),
+                false,
+            );
+            assert!(
+                remote_view.chrome_captures_input(),
+                "remote peers must see OOBE as occluding trusted chrome"
+            );
+        }
+        // Phase `the_firewall_view_and_local_hit_testing_resolve_the_same_surface`.
+        // The remote-input firewall's z-order check and local pointer routing must never disagree about what is on top — the disagreement *is* the clickjacking hole; they share [`foreign_tiles`].
+        {
+            use crate::network::input_firewall::ShellView;
+
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            fb.with_chrome(|chrome| {
+                {
+                    let mut tree = chrome.tree_mut();
+                    insert_foreign_group(&mut tree, 900_001, Some("org.example.one"));
+                    insert_foreign_group(&mut tree, 900_002, Some("org.example.two"));
+                }
+                chrome.bump();
+            });
+            let _ = fb.paint_settled();
+
+            let tiles = {
+                let chrome = fb.chrome();
+                let tree = chrome.tree();
+                foreign_tiles(&tree, fb.host())
+            };
+            assert_eq!(
+                tiles.len(),
+                2,
+                "both mirrored clients must be laid out; got {tiles:?}"
+            );
+
+            let view = ShellView::new(
+                tiles.iter().map(|h| (h.surface_id, h.rect)).collect(),
+                None,
+                false,
+                false,
+            );
+
+            // Probe each tile's inside and just past each edge — a hit-test discrepancy shows up at a boundary first, derived from the layout's actual rects.
+            let mut probes: Vec<(f64, f64)> = Vec::new();
+            for hit in &tiles {
+                let r = hit.rect;
+                let c = r.center();
+                probes.extend([
+                    (c.x, c.y),
+                    (r.x0 + 0.5, r.y0 + 0.5),
+                    (r.x1 - 0.5, r.y1 - 0.5),
+                    (r.x0 - 0.5, c.y),
+                    (r.x1 + 0.5, c.y),
+                    (c.x, r.y0 - 0.5),
+                    (c.x, r.y1 + 0.5),
+                ]);
+            }
+            // Coarse sweep of the whole output (mostly chrome): every one must resolve to nothing on both sides, or the firewall would clear a click on the top bar.
+            for gx in 0..80 {
+                for gy in 0..45 {
+                    probes.push((f64::from(gx) * 20.0 + 10.0, f64::from(gy) * 20.0 + 10.0));
                 }
             }
-        }
-        assert!(
-            inside >= tiles.len() * 3,
-            "only {inside} probes landed inside a tile across {} tiles, so \
-             agreement on a hit was never actually tested",
-            tiles.len(),
-        );
-    }
 
-    /// A tab is a place input can land only while the compositor still holds
-    /// the client's surface — one left in the tree after its toplevel went
-    /// away is a rectangle nothing is behind, and publishing it would hand a
-    /// guest a coordinate the local user can't even click on. Drives the real publisher against the real laid-out tree, then asks the firewall the question a peer's event asks.
-    #[test]
-    fn a_tab_whose_surface_the_compositor_does_not_hold_is_not_published() {
-        use crate::network::input_firewall::Denial;
-        use crate::network::streaming::{InputEvent, StreamingShare};
-
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
-        fb.with_chrome(|chrome| {
+            // Wherever local input would land on a client, the firewall must name that same client; wherever it lands on chrome, the firewall must name nothing.
+            let mut inside = 0;
             {
-                let mut tree = chrome.tree_mut();
-                insert_foreign_group(&mut tree, ORPHAN_SURFACE, Some("org.example.gone"));
+                let chrome = fb.chrome();
+                let tree = chrome.tree();
+                for p in probes {
+                    let local = foreign_tile_at(&tree, fb.host(), p).map(|h| h.surface_id);
+                    assert_eq!(
+                        view.topmost_at(p),
+                        local,
+                        "at {p:?} the firewall and the pointer router disagree",
+                    );
+                    if local.is_some() {
+                        inside += 1;
+                    }
+                }
             }
-            chrome.bump();
-        });
-        let _ = fb.paint_settled();
+            assert!(
+                inside >= tiles.len() * 3,
+                "only {inside} probes landed inside a tile across {} tiles, so \
+                 agreement on a hit was never actually tested",
+                tiles.len(),
+            );
+        }
+        // Phase `a_tab_whose_surface_the_compositor_does_not_hold_is_not_published`.
+        // A tab is a place input can land only while the compositor still holds
+        // the client's surface — one left in the tree after its toplevel went
+        // away is a rectangle nothing is behind, and publishing it would hand a
+        // guest a coordinate the local user can't even click on. Drives the real publisher against the real laid-out tree, then asks the firewall the question a peer's event asks.
+        {
+            use crate::network::input_firewall::Denial;
+            use crate::network::streaming::{InputEvent, StreamingShare};
 
-        // The tile is laid out — the tree says there is a window there.
-        assert!(
-            foreign_tiles(&fb.chrome().tree(), fb.host())
-                .iter()
-                .any(|hit| hit.surface_id == ORPHAN_SURFACE),
-            "the mirrored tab has to be laid out, or this proves nothing",
-        );
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            fb.with_chrome(|chrome| {
+                {
+                    let mut tree = chrome.tree_mut();
+                    insert_foreign_group(&mut tree, ORPHAN_SURFACE, Some("org.example.gone"));
+                }
+                chrome.bump();
+            });
+            let _ = fb.paint_settled();
 
-        // The compositor never registered a toplevel for it.
-        let mut state = state_sharing(ORPHAN_SURFACE);
-        state
-            .share_registry
-            .insert(KILL_PEER, ORPHAN_SURFACE, StreamingShare::new());
-        publish_remote_input_view(&mut state, &fb, false);
+            // The tile is laid out — the tree says there is a window there.
+            assert!(
+                foreign_tiles(&fb.chrome().tree(), fb.host())
+                    .iter()
+                    .any(|hit| hit.surface_id == ORPHAN_SURFACE),
+                "the mirrored tab has to be laid out, or this proves nothing",
+            );
 
-        let view = state.remote_input_firewall.view();
-        assert!(view.observed(), "the publisher has to publish something");
-        assert!(
-            view.rect(ORPHAN_SURFACE).is_none(),
-            "a tab with no live surface behind it was offered as an input target",
-        );
-        assert_eq!(
-            state.review_remote_input(
-                KILL_PEER,
-                ORPHAN_SURFACE,
-                InputEvent::PointerMotion { x: 5.0, y: 5.0 }
-            ),
-            Err(Denial::NotOnScreen),
-        );
+            // The compositor never registered a toplevel for it.
+            let mut state = state_sharing(ORPHAN_SURFACE);
+            state
+                .share_registry
+                .insert(KILL_PEER, ORPHAN_SURFACE, StreamingShare::new());
+            publish_remote_input_view(&mut state, &fb, false);
+
+            let view = state.remote_input_firewall.view();
+            assert!(view.observed(), "the publisher has to publish something");
+            assert!(
+                view.rect(ORPHAN_SURFACE).is_none(),
+                "a tab with no live surface behind it was offered as an input target",
+            );
+            assert_eq!(
+                state.review_remote_input(
+                    KILL_PEER,
+                    ORPHAN_SURFACE,
+                    InputEvent::PointerMotion { x: 5.0, y: 5.0 }
+                ),
+                Err(Denial::NotOnScreen),
+            );
+        }
+        // Phase `a_locked_session_is_carried_into_the_published_view`.
+        // The lock surface is drawn by the session, not the tiled tree, so tiles
+        // beneath it stay laid out and topmost as far as the tree knows — the publisher must carry the lock across, or a guest keeps driving a password-protected window.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            fb.with_chrome(|chrome| {
+                {
+                    let mut tree = chrome.tree_mut();
+                    insert_foreign_group(&mut tree, ORPHAN_SURFACE, Some("org.example.locked"));
+                }
+                chrome.bump();
+            });
+            let _ = fb.paint_settled();
+
+            let mut state = state_sharing(ORPHAN_SURFACE);
+            publish_remote_input_view(&mut state, &fb, false);
+            assert!(
+                !state.remote_input_firewall.view().session_locked(),
+                "an unlocked session must not publish itself as locked",
+            );
+
+            publish_remote_input_view(&mut state, &fb, true);
+            assert!(state.remote_input_firewall.view().session_locked());
+        }
     }
 
     const ORPHAN_SURFACE: u64 = 900_003;
 
-    /// The lock surface is drawn by the session, not the tiled tree, so tiles
-    /// beneath it stay laid out and topmost as far as the tree knows — the publisher must carry the lock across, or a guest keeps driving a password-protected window.
     #[test]
-    fn a_locked_session_is_carried_into_the_published_view() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
-        fb.with_chrome(|chrome| {
-            {
-                let mut tree = chrome.tree_mut();
-                insert_foreign_group(&mut tree, ORPHAN_SURFACE, Some("org.example.locked"));
-            }
-            chrome.bump();
-        });
-        let _ = fb.paint_settled();
+    fn chrome_pointer_position_tracks_routed_motion() {
+        // Phase `a_pointer_that_has_never_moved_has_no_position`.
+        // A session nobody has pointed at holds no pointer position, and holds
+        // one the instant a real motion is routed through. The two accessors
+        // disagree by design: `cursor()` answers the origin (hit-testing needs a
+        // point), `pointer_position` answers `None` — publishing the origin would announce a cursor for somebody who isn't there.
+        {
+            let mut state = state_sharing(9_000_101);
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mods = Modifiers::default();
 
-        let mut state = state_sharing(ORPHAN_SURFACE);
-        publish_remote_input_view(&mut state, &fb, false);
-        assert!(
-            !state.remote_input_firewall.view().session_locked(),
-            "an unlocked session must not publish itself as locked",
-        );
+            assert!(
+                state.client_input.pointer_position().is_none(),
+                "nothing has moved a pointer through this session, so it has no position to report",
+            );
+            assert_eq!(
+                state.client_input.cursor(),
+                (0.0, 0.0),
+                "while the routing accessor still answers the origin - the very confusion the other one exists to prevent",
+            );
 
-        publish_remote_input_view(&mut state, &fb, true);
-        assert!(state.remote_input_firewall.view().session_locked());
-    }
+            // The one thing that gives a session a pointer, through the function every source of motion goes through.
+            route_input(
+                &mut state,
+                &mut fb,
+                &WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: winit::dpi::PhysicalPosition::new(640.0, 610.0),
+                },
+                &mods,
+            );
 
-    /// A session nobody has pointed at holds no pointer position, and holds
-    /// one the instant a real motion is routed through. The two accessors
-    /// disagree by design: `cursor()` answers the origin (hit-testing needs a
-    /// point), `pointer_position` answers `None` — publishing the origin would announce a cursor for somebody who isn't there.
-    #[test]
-    fn a_pointer_that_has_never_moved_has_no_position() {
-        let mut state = state_sharing(9_000_101);
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mods = Modifiers::default();
+            assert_eq!(
+                state.client_input.pointer_position(),
+                Some((640.0, 610.0)),
+                "and once it has been somewhere, that is where it is",
+            );
+        }
+        // Phase `routing_a_motion_keeps_the_chrome_pointer_current`.
+        // Routing a motion tells the chrome where the pointer went, whether or
+        // not the chrome is the one that gets to read the event — the chrome
+        // hit-tests a press against the last position it was given, since
+        // `MouseInput` carries none of its own. Motion over a client window is withheld from the chrome's own dispatch, so without this its pointer idea would freeze at its last chrome-side position.
+        {
+            let mut state = state_sharing(9_000_103);
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mods = Modifiers::default();
 
-        assert!(
-            state.client_input.pointer_position().is_none(),
-            "nothing has moved a pointer through this session, so it has no position to report",
-        );
-        assert_eq!(
-            state.client_input.cursor(),
-            (0.0, 0.0),
-            "while the routing accessor still answers the origin - the very confusion the other one exists to prevent",
-        );
+            assert!(
+                fb.host().pointer_position().is_none(),
+                "nothing has moved a pointer through this session yet",
+            );
 
-        // The one thing that gives a session a pointer, through the function every source of motion goes through.
-        route_input(
-            &mut state,
-            &mut fb,
-            &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(640.0, 610.0),
-            },
-            &mods,
-        );
+            route_input(
+                &mut state,
+                &mut fb,
+                &WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: winit::dpi::PhysicalPosition::new(523.0, 339.0),
+                },
+                &mods,
+            );
+            assert_eq!(
+                fb.host().pointer_position(),
+                Some(vello::kurbo::Point::new(523.0, 339.0)),
+                "the chrome has to know where the pointer is to hit-test the press that follows it",
+            );
 
-        assert_eq!(
-            state.client_input.pointer_position(),
-            Some((640.0, 610.0)),
-            "and once it has been somewhere, that is where it is",
-        );
-    }
-
-    /// Routing a motion tells the chrome where the pointer went, whether or
-    /// not the chrome is the one that gets to read the event — the chrome
-    /// hit-tests a press against the last position it was given, since
-    /// `MouseInput` carries none of its own. Motion over a client window is withheld from the chrome's own dispatch, so without this its pointer idea would freeze at its last chrome-side position.
-    #[test]
-    fn routing_a_motion_keeps_the_chrome_pointer_current() {
-        let mut state = state_sharing(9_000_103);
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mods = Modifiers::default();
-
-        assert!(
-            fb.host().pointer_position().is_none(),
-            "nothing has moved a pointer through this session yet",
-        );
-
-        route_input(
-            &mut state,
-            &mut fb,
-            &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(523.0, 339.0),
-            },
-            &mods,
-        );
-        assert_eq!(
-            fb.host().pointer_position(),
-            Some(vello::kurbo::Point::new(523.0, 339.0)),
-            "the chrome has to know where the pointer is to hit-test the press that follows it",
-        );
-
-        // And it follows the pointer, rather than only recording the first place it was seen.
-        route_input(
-            &mut state,
-            &mut fb,
-            &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(880.0, 300.0),
-            },
-            &mods,
-        );
-        assert_eq!(
-            fb.host().pointer_position(),
-            Some(vello::kurbo::Point::new(880.0, 300.0)),
-        );
+            // And it follows the pointer, rather than only recording the first place it was seen.
+            route_input(
+                &mut state,
+                &mut fb,
+                &WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: winit::dpi::PhysicalPosition::new(880.0, 300.0),
+                },
+                &mods,
+            );
+            assert_eq!(
+                fb.host().pointer_position(),
+                Some(vello::kurbo::Point::new(880.0, 300.0)),
+            );
+        }
     }
 
     /// A `State` with a live seat, one peer holding write access to `surface`, and that surface on screen with the keyboard.
@@ -2361,366 +2371,384 @@ mod tests {
             .any(|code| u32::from(*code) == evdev.saturating_add(8))
     }
 
-    /// A remote key held on app A must be retired before the shared Wayland
-    /// seat focuses app B. The peer keeps its logical caret target on A, and
-    /// a late network release is harmless rather than landing in B.
     #[test]
-    fn focus_change_retires_remote_keys_before_the_next_legacy_app() {
-        use crate::network::input_firewall::{Denial, ShellView};
-        use crate::network::streaming::InputEvent;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn remote_and_local_holds_retire_independently() {
+        // Phase `focus_change_retires_remote_keys_before_the_next_legacy_app`.
+        // A remote key held on app A must be retired before the shared Wayland
+        // seat focuses app B. The peer keeps its logical caret target on A, and
+        // a late network release is harmless rather than landing in B.
+        {
+            use crate::network::input_firewall::{Denial, ShellView};
+            use crate::network::streaming::InputEvent;
 
-        const SHARED: u64 = 808;
-        const PRIVATE: u64 = 909;
-        const LEFT_SHIFT: u32 = 42;
+            const SHARED: u64 = 808;
+            const PRIVATE: u64 = 909;
+            const LEFT_SHIFT: u32 = 42;
 
-        let mut state = state_sharing(SHARED);
-        state.client_input.keyboard_focus = Some(SHARED);
-        let _ = state.remote_seats.seat_mut(KILL_PEER).enter(SHARED);
-        state
-            .review_remote_input(
-                KILL_PEER,
-                SHARED,
-                InputEvent::Key {
-                    keysym: LEFT_SHIFT,
-                    pressed: true,
-                    modifiers: 0,
-                },
-            )
-            .expect("focused collaborator presses Shift");
-        assert!(seat_has_evdev_key(&state, LEFT_SHIFT));
-
-        state.set_client_keyboard_focus(None);
-        assert!(!seat_has_evdev_key(&state, LEFT_SHIFT));
-        assert_eq!(
-            state
-                .remote_seats
-                .seat(KILL_PEER)
-                .and_then(|seat| seat.focused_surface),
-            Some(SHARED),
-            "temporary host focus changes preserve the remote caret target"
-        );
-
-        state.remote_input_firewall.publish_view(ShellView::new(
-            vec![(SHARED, Rect::new(0.0, 0.0, 400.0, 300.0))],
-            Some(PRIVATE),
-            false,
-            false,
-        ));
-        assert_eq!(
-            state.review_remote_input(
-                KILL_PEER,
-                SHARED,
-                InputEvent::Key {
-                    keysym: LEFT_SHIFT,
-                    pressed: false,
-                    modifiers: 0,
-                },
-            ),
-            Err(Denial::FocusMuted)
-        );
-        assert!(!seat_has_evdev_key(&state, LEFT_SHIFT));
-    }
-
-    /// Two remote pointers are multiplexed into one legacy `wl_pointer`.
-    /// Releasing one participant's left button must not end the other one's
-    /// implicit drag; only the last release reaches Smithay.
-    #[test]
-    fn overlapping_remote_button_holds_keep_one_legacy_drag_alive() {
-        use crate::network::streaming::{InputEvent, StreamingShare};
-
-        const SHARED: u64 = 808;
-        const SECOND_PEER: u64 = 78;
-        const LEFT: u32 = 272;
-
-        let mut state = state_sharing(SHARED);
-        state
-            .share_registry
-            .insert(SECOND_PEER, SHARED, StreamingShare::new());
-        for peer in [KILL_PEER, SECOND_PEER] {
-            state
-                .review_remote_input(peer, SHARED, InputEvent::PointerMotion { x: 20.0, y: 20.0 })
-                .expect("participant positions their pointer in the shared surface");
+            let mut state = state_sharing(SHARED);
+            state.client_input.keyboard_focus = Some(SHARED);
+            let _ = state.remote_seats.seat_mut(KILL_PEER).enter(SHARED);
             state
                 .review_remote_input(
-                    peer,
+                    KILL_PEER,
+                    SHARED,
+                    InputEvent::Key {
+                        keysym: LEFT_SHIFT,
+                        pressed: true,
+                        modifiers: 0,
+                    },
+                )
+                .expect("focused collaborator presses Shift");
+            assert!(seat_has_evdev_key(&state, LEFT_SHIFT));
+
+            state.set_client_keyboard_focus(None);
+            assert!(!seat_has_evdev_key(&state, LEFT_SHIFT));
+            assert_eq!(
+                state
+                    .remote_seats
+                    .seat(KILL_PEER)
+                    .and_then(|seat| seat.focused_surface),
+                Some(SHARED),
+                "temporary host focus changes preserve the remote caret target"
+            );
+
+            state.remote_input_firewall.publish_view(ShellView::new(
+                vec![(SHARED, Rect::new(0.0, 0.0, 400.0, 300.0))],
+                Some(PRIVATE),
+                false,
+                false,
+            ));
+            assert_eq!(
+                state.review_remote_input(
+                    KILL_PEER,
+                    SHARED,
+                    InputEvent::Key {
+                        keysym: LEFT_SHIFT,
+                        pressed: false,
+                        modifiers: 0,
+                    },
+                ),
+                Err(Denial::FocusMuted)
+            );
+            assert!(!seat_has_evdev_key(&state, LEFT_SHIFT));
+        }
+        // Phase `overlapping_remote_button_holds_keep_one_legacy_drag_alive`.
+        // Two remote pointers are multiplexed into one legacy `wl_pointer`.
+        // Releasing one participant's left button must not end the other one's
+        // implicit drag; only the last release reaches Smithay.
+        {
+            use crate::network::streaming::{InputEvent, StreamingShare};
+
+            const SHARED: u64 = 808;
+            const SECOND_PEER: u64 = 78;
+            const LEFT: u32 = 272;
+
+            let mut state = state_sharing(SHARED);
+            state
+                .share_registry
+                .insert(SECOND_PEER, SHARED, StreamingShare::new());
+            for peer in [KILL_PEER, SECOND_PEER] {
+                state
+                    .review_remote_input(
+                        peer,
+                        SHARED,
+                        InputEvent::PointerMotion { x: 20.0, y: 20.0 },
+                    )
+                    .expect("participant positions their pointer in the shared surface");
+                state
+                    .review_remote_input(
+                        peer,
+                        SHARED,
+                        InputEvent::PointerButton {
+                            button: LEFT,
+                            pressed: true,
+                        },
+                    )
+                    .expect("participant begins a drag");
+            }
+            assert_eq!(state.remote_seats.button_holder_count(LEFT), 2);
+
+            state
+                .review_remote_input(
+                    KILL_PEER,
+                    SHARED,
+                    InputEvent::PointerButton {
+                        button: LEFT,
+                        pressed: false,
+                    },
+                )
+                .expect("first participant releases");
+            assert_eq!(
+                state.remote_seats.button_holder_count(LEFT),
+                1,
+                "the second participant still owns the legacy drag"
+            );
+
+            state
+                .review_remote_input(
+                    SECOND_PEER,
+                    SHARED,
+                    InputEvent::PointerButton {
+                        button: LEFT,
+                        pressed: false,
+                    },
+                )
+                .expect("final participant releases");
+            assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
+        }
+        // Phase `remote_click_restores_that_participants_cursor_after_another_peer_moves`.
+        {
+            use crate::network::streaming::{InputEvent, StreamingShare};
+
+            const SHARED: u64 = 808;
+            const SECOND_PEER: u64 = 78;
+            const LEFT: u32 = 272;
+
+            let mut state = state_sharing(SHARED);
+            state
+                .share_registry
+                .insert(SECOND_PEER, SHARED, StreamingShare::new());
+            state
+                .review_remote_input(
+                    KILL_PEER,
+                    SHARED,
+                    InputEvent::PointerMotion { x: 20.0, y: 30.0 },
+                )
+                .expect("first peer positions cursor");
+            state
+                .review_remote_input(
+                    SECOND_PEER,
+                    SHARED,
+                    InputEvent::PointerMotion { x: 170.0, y: 180.0 },
+                )
+                .expect("second peer moves the shared Wayland pointer last");
+            assert_eq!(
+                state
+                    .remote_seats
+                    .seat(KILL_PEER)
+                    .and_then(|seat| seat.pointer_surface),
+                Some(SHARED),
+                "accepted motion attributes pointer-only control for later revocation"
+            );
+            assert_eq!(
+                state
+                    .seat
+                    .get_pointer()
+                    .expect("pointer")
+                    .current_location(),
+                (170.0, 180.0).into()
+            );
+
+            state
+                .review_remote_input(
+                    KILL_PEER,
                     SHARED,
                     InputEvent::PointerButton {
                         button: LEFT,
                         pressed: true,
                     },
                 )
-                .expect("participant begins a drag");
+                .expect("first peer clicks at their own retained cursor");
+            assert_eq!(
+                state
+                    .seat
+                    .get_pointer()
+                    .expect("pointer")
+                    .current_location(),
+                (20.0, 30.0).into(),
+                "the click must not land at the other participant's cursor"
+            );
         }
-        assert_eq!(state.remote_seats.button_holder_count(LEFT), 2);
+        // Phase `remote_pointer_leave_ends_drag_but_preserves_caret_focus`.
+        {
+            use crate::network::streaming::InputEvent;
 
-        state
-            .review_remote_input(
-                KILL_PEER,
-                SHARED,
-                InputEvent::PointerButton {
-                    button: LEFT,
-                    pressed: false,
-                },
-            )
-            .expect("first participant releases");
-        assert_eq!(
-            state.remote_seats.button_holder_count(LEFT),
-            1,
-            "the second participant still owns the legacy drag"
-        );
-
-        state
-            .review_remote_input(
-                SECOND_PEER,
-                SHARED,
-                InputEvent::PointerButton {
-                    button: LEFT,
-                    pressed: false,
-                },
-            )
-            .expect("final participant releases");
-        assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
-    }
-
-    #[test]
-    fn remote_click_restores_that_participants_cursor_after_another_peer_moves() {
-        use crate::network::streaming::{InputEvent, StreamingShare};
-
-        const SHARED: u64 = 808;
-        const SECOND_PEER: u64 = 78;
-        const LEFT: u32 = 272;
-
-        let mut state = state_sharing(SHARED);
-        state
-            .share_registry
-            .insert(SECOND_PEER, SHARED, StreamingShare::new());
-        state
-            .review_remote_input(
-                KILL_PEER,
-                SHARED,
+            const SHARED: u64 = 808;
+            const LEFT: u32 = 272;
+            let mut state = state_sharing(SHARED);
+            for event in [
+                InputEvent::PointerEnter { surface: SHARED },
                 InputEvent::PointerMotion { x: 20.0, y: 30.0 },
-            )
-            .expect("first peer positions cursor");
-        state
-            .review_remote_input(
-                SECOND_PEER,
-                SHARED,
-                InputEvent::PointerMotion { x: 170.0, y: 180.0 },
-            )
-            .expect("second peer moves the shared Wayland pointer last");
-        assert_eq!(
-            state
-                .remote_seats
-                .seat(KILL_PEER)
-                .and_then(|seat| seat.pointer_surface),
-            Some(SHARED),
-            "accepted motion attributes pointer-only control for later revocation"
-        );
-        assert_eq!(
-            state
-                .seat
-                .get_pointer()
-                .expect("pointer")
-                .current_location(),
-            (170.0, 180.0).into()
-        );
-
-        state
-            .review_remote_input(
-                KILL_PEER,
-                SHARED,
                 InputEvent::PointerButton {
                     button: LEFT,
                     pressed: true,
                 },
-            )
-            .expect("first peer clicks at their own retained cursor");
-        assert_eq!(
+            ] {
+                state
+                    .review_remote_input(KILL_PEER, SHARED, event)
+                    .expect("remote pointer setup");
+            }
+            assert_eq!(state.remote_seats.button_holder_count(LEFT), 1);
+
             state
-                .seat
-                .get_pointer()
-                .expect("pointer")
-                .current_location(),
-            (20.0, 30.0).into(),
-            "the click must not land at the other participant's cursor"
-        );
-    }
-
-    #[test]
-    fn remote_pointer_leave_ends_drag_but_preserves_caret_focus() {
-        use crate::network::streaming::InputEvent;
-
-        const SHARED: u64 = 808;
-        const LEFT: u32 = 272;
-        let mut state = state_sharing(SHARED);
-        for event in [
-            InputEvent::PointerEnter { surface: SHARED },
-            InputEvent::PointerMotion { x: 20.0, y: 30.0 },
-            InputEvent::PointerButton {
-                button: LEFT,
-                pressed: true,
-            },
-        ] {
-            state
-                .review_remote_input(KILL_PEER, SHARED, event)
-                .expect("remote pointer setup");
-        }
-        assert_eq!(state.remote_seats.button_holder_count(LEFT), 1);
-
-        state
-            .review_remote_input(
-                KILL_PEER,
-                SHARED,
-                InputEvent::PointerLeave { surface: SHARED },
-            )
-            .expect("remote pointer leaves");
-        assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
-        assert_eq!(
-            state
-                .remote_seats
-                .seat(KILL_PEER)
-                .and_then(|seat| seat.focused_surface),
-            Some(SHARED),
-            "pointer leave must not destroy the legacy text caret"
-        );
-    }
-
-    #[test]
-    fn pointer_leave_retires_local_hold_without_ending_remote_drag() {
-        const PEER: u64 = 77;
-        const LEFT: u32 = 272;
-
-        let mut state = seat_state();
-        assert!(state.remote_seats.local_button_transition(LEFT, true));
-        assert!(!state.remote_seats.button_transition(PEER, LEFT, true));
-        state.client_input.buttons_down = 1;
-
-        assert!(!route_cursor_left(&mut state));
-        assert_eq!(state.client_input.buttons_down, 0);
-        assert_eq!(
-            state.remote_seats.button_holder_count(LEFT),
-            1,
-            "pointer loss retires only the host's ownership"
-        );
-        assert!(state.remote_seats.button_transition(PEER, LEFT, false));
-    }
-
-    #[test]
-    fn chrome_drag_release_bypasses_an_absent_client_press() {
-        const LEFT: u32 = 272;
-
-        let mut state = seat_state();
-        assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
-        assert!(
-            admit_local_pointer_edge(&mut state, LEFT, false, true),
-            "the DnD grab must receive the release even though Chrome owned the press"
-        );
-        assert_eq!(
-            state.remote_seats.button_holder_count(LEFT),
-            0,
-            "the exceptional release must not invent shared button ownership"
-        );
-        assert!(
-            !admit_local_pointer_edge(&mut state, LEFT, false, false),
-            "ordinary duplicate releases remain suppressed"
-        );
-    }
-
-    /// A lock is a trusted input-capture boundary, not permission to stop
-    /// advancing the seat XKB state.  This is the direct regression for a
-    /// held Shift/Ctrl/Backspace whose release happens while the lock is up.
-    #[test]
-    fn captured_keyboard_edges_retire_modifiers_and_editing_keys() {
-        let mut state = seat_state();
-        for (key, evdev) in [
-            (Key::Named(NamedKey::Shift), 42),
-            (Key::Named(NamedKey::Control), 29),
-            (Key::Named(NamedKey::Backspace), 14),
-        ] {
-            consume_keyboard_while_captured(&mut state, &key_event(key.clone(), true));
-            assert!(
-                seat_has_evdev_key(&state, evdev),
-                "captured press for {key:?} must still reach the seat XKB state"
+                .review_remote_input(
+                    KILL_PEER,
+                    SHARED,
+                    InputEvent::PointerLeave { surface: SHARED },
+                )
+                .expect("remote pointer leaves");
+            assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
+            assert_eq!(
+                state
+                    .remote_seats
+                    .seat(KILL_PEER)
+                    .and_then(|seat| seat.focused_surface),
+                Some(SHARED),
+                "pointer leave must not destroy the legacy text caret"
             );
-            consume_keyboard_while_captured(&mut state, &key_event(key, false));
+        }
+        // Phase `pointer_leave_retires_local_hold_without_ending_remote_drag`.
+        {
+            const PEER: u64 = 77;
+            const LEFT: u32 = 272;
+
+            let mut state = seat_state();
+            assert!(state.remote_seats.local_button_transition(LEFT, true));
+            assert!(!state.remote_seats.button_transition(PEER, LEFT, true));
+            state.client_input.buttons_down = 1;
+
+            assert!(!route_cursor_left(&mut state));
+            assert_eq!(state.client_input.buttons_down, 0);
+            assert_eq!(
+                state.remote_seats.button_holder_count(LEFT),
+                1,
+                "pointer loss retires only the host's ownership"
+            );
+            assert!(state.remote_seats.button_transition(PEER, LEFT, false));
+        }
+        // Phase `chrome_drag_release_bypasses_an_absent_client_press`.
+        {
+            const LEFT: u32 = 272;
+
+            let mut state = seat_state();
+            assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
             assert!(
-                !seat_has_evdev_key(&state, evdev),
-                "captured release for evdev {evdev} must clear the seat state"
+                admit_local_pointer_edge(&mut state, LEFT, false, true),
+                "the DnD grab must receive the release even though Chrome owned the press"
+            );
+            assert_eq!(
+                state.remote_seats.button_holder_count(LEFT),
+                0,
+                "the exceptional release must not invent shared button ownership"
+            );
+            assert!(
+                !admit_local_pointer_edge(&mut state, LEFT, false, false),
+                "ordinary duplicate releases remain suppressed"
             );
         }
     }
 
-    /// A lock/modal can begin after a client saw the press but before its
-    /// physical release. The captured release must consume the same routing
-    /// ledger entry, otherwise a later unrelated release could be forwarded
-    /// as an unmatched key-up after focus returns.
     #[test]
-    fn captured_release_retires_a_preexisting_client_key_ledger_entry() {
-        let mut state = seat_state();
-        state.client_input.forwarded_keys.insert(14);
-        consume_keyboard_while_captured(
-            &mut state,
-            &key_event(Key::Named(NamedKey::Backspace), false),
-        );
-        assert!(
-            state.client_input.forwarded_keys.is_empty(),
-            "the captured Backspace release must retire the prior client press"
-        );
-    }
+    fn captured_keyboard_edges_retire_only_their_own_keys() {
+        // Phase `captured_keyboard_edges_retire_modifiers_and_editing_keys`.
+        // A lock is a trusted input-capture boundary, not permission to stop
+        // advancing the seat XKB state.  This is the direct regression for a
+        // held Shift/Ctrl/Backspace whose release happens while the lock is up.
+        {
+            let mut state = seat_state();
+            for (key, evdev) in [
+                (Key::Named(NamedKey::Shift), 42),
+                (Key::Named(NamedKey::Control), 29),
+                (Key::Named(NamedKey::Backspace), 14),
+            ] {
+                consume_keyboard_while_captured(&mut state, &key_event(key.clone(), true));
+                assert!(
+                    seat_has_evdev_key(&state, evdev),
+                    "captured press for {key:?} must still reach the seat XKB state"
+                );
+                consume_keyboard_while_captured(&mut state, &key_event(key, false));
+                assert!(
+                    !seat_has_evdev_key(&state, evdev),
+                    "captured release for evdev {evdev} must clear the seat state"
+                );
+            }
+        }
+        // Phase `captured_release_retires_a_preexisting_client_key_ledger_entry`.
+        // A lock/modal can begin after a client saw the press but before its
+        // physical release. The captured release must consume the same routing
+        // ledger entry, otherwise a later unrelated release could be forwarded
+        // as an unmatched key-up after focus returns.
+        {
+            let mut state = seat_state();
+            state.client_input.forwarded_keys.insert(14);
+            consume_keyboard_while_captured(
+                &mut state,
+                &key_event(Key::Named(NamedKey::Backspace), false),
+            );
+            assert!(
+                state.client_input.forwarded_keys.is_empty(),
+                "the captured Backspace release must retire the prior client press"
+            );
+        }
+        // Phase `captured_release_preserves_another_participants_held_modifier`.
+        {
+            const PEER: u64 = 77;
+            const SHIFT: u32 = 42;
+            let mut state = seat_state();
+            assert!(state.remote_seats.key_transition(PEER, SHIFT, true));
+            state.deliver_client_key(SHIFT, true, true);
+            state.client_input.forwarded_keys.insert(SHIFT);
+            // A local release with no recorded local press must not release the
+            // peer's modifier merely because capture cleared application focus.
+            consume_keyboard_while_captured(
+                &mut state,
+                &key_event(Key::Named(NamedKey::Shift), false),
+            );
+            assert!(seat_has_evdev_key(&state, SHIFT));
+            assert!(state.client_input.forwarded_keys.contains(&SHIFT));
+            assert_eq!(state.remote_seats.key_holder_count(SHIFT), 1);
 
-    #[test]
-    fn captured_release_preserves_another_participants_held_modifier() {
-        const PEER: u64 = 77;
-        const SHIFT: u32 = 42;
-        let mut state = seat_state();
-        assert!(state.remote_seats.key_transition(PEER, SHIFT, true));
-        state.deliver_client_key(SHIFT, true, true);
-        state.client_input.forwarded_keys.insert(SHIFT);
-        // A local release with no recorded local press must not release the
-        // peer's modifier merely because capture cleared application focus.
-        consume_keyboard_while_captured(&mut state, &key_event(Key::Named(NamedKey::Shift), false));
-        assert!(seat_has_evdev_key(&state, SHIFT));
-        assert!(state.client_input.forwarded_keys.contains(&SHIFT));
-        assert_eq!(state.remote_seats.key_holder_count(SHIFT), 1);
+            consume_keyboard_while_captured(
+                &mut state,
+                &key_event(Key::Named(NamedKey::Shift), true),
+            );
+            assert_eq!(state.remote_seats.key_holder_count(SHIFT), 2);
+            consume_keyboard_while_captured(
+                &mut state,
+                &key_event(Key::Named(NamedKey::Shift), false),
+            );
+            assert!(seat_has_evdev_key(&state, SHIFT));
+            assert!(state.client_input.forwarded_keys.contains(&SHIFT));
+            assert_eq!(state.remote_seats.key_holder_count(SHIFT), 1);
+        }
+        // Phase `keyboard_state_reset_clears_all_pressed_keys_without_client_focus`.
+        // VT/device loss has no reliable release edge.  Resetting the seat,
+        // rather than only stopping repeat, prevents that lost Backspace/Shift
+        // from leaking into the next focused application after resume.
+        {
+            let mut state = seat_state();
+            consume_keyboard_while_captured(
+                &mut state,
+                &key_event(Key::Named(NamedKey::Shift), true),
+            );
+            consume_keyboard_while_captured(
+                &mut state,
+                &key_event(Key::Named(NamedKey::Backspace), true),
+            );
+            assert!(seat_has_evdev_key(&state, 42));
+            assert!(seat_has_evdev_key(&state, 14));
 
-        consume_keyboard_while_captured(&mut state, &key_event(Key::Named(NamedKey::Shift), true));
-        assert_eq!(state.remote_seats.key_holder_count(SHIFT), 2);
-        consume_keyboard_while_captured(&mut state, &key_event(Key::Named(NamedKey::Shift), false));
-        assert!(seat_has_evdev_key(&state, SHIFT));
-        assert!(state.client_input.forwarded_keys.contains(&SHIFT));
-        assert_eq!(state.remote_seats.key_holder_count(SHIFT), 1);
-    }
+            state.reset_client_keyboard_state();
 
-    /// VT/device loss has no reliable release edge.  Resetting the seat,
-    /// rather than only stopping repeat, prevents that lost Backspace/Shift
-    /// from leaking into the next focused application after resume.
-    #[test]
-    fn keyboard_state_reset_clears_all_pressed_keys_without_client_focus() {
-        let mut state = seat_state();
-        consume_keyboard_while_captured(&mut state, &key_event(Key::Named(NamedKey::Shift), true));
-        consume_keyboard_while_captured(
-            &mut state,
-            &key_event(Key::Named(NamedKey::Backspace), true),
-        );
-        assert!(seat_has_evdev_key(&state, 42));
-        assert!(seat_has_evdev_key(&state, 14));
-
-        state.reset_client_keyboard_state();
-
-        assert!(
-            state
-                .seat
-                .get_keyboard()
-                .expect("seat keyboard")
-                .pressed_keys()
-                .is_empty(),
-            "an input-source reset must leave no latent modifier or repeat key"
-        );
-        assert!(
-            state.client_input.forwarded_keys.is_empty(),
-            "the compositor routing ledger must retire with Smithay's seat state"
-        );
-        assert_eq!(state.client_input.keyboard_focus(), None);
+            assert!(
+                state
+                    .seat
+                    .get_keyboard()
+                    .expect("seat keyboard")
+                    .pressed_keys()
+                    .is_empty(),
+                "an input-source reset must leave no latent modifier or repeat key"
+            );
+            assert!(
+                state.client_input.forwarded_keys.is_empty(),
+                "the compositor routing ledger must retire with Smithay's seat state"
+            );
+            assert_eq!(state.client_input.keyboard_focus(), None);
+        }
     }
 
     const KILL_PEER: u64 = 77;
@@ -2736,150 +2764,153 @@ mod tests {
         )
     }
 
-    /// The panic key, end to end from the action the chord triggers: a guest is driving the seat, the host presses it, the guest stops, and the host is told so.
     #[test]
-    fn stopping_remote_input_halts_the_guest_and_says_so_on_screen() {
-        use crate::network::input_firewall::Denial;
+    fn stopping_remote_input_is_confirmed_on_screen_whatever_else_is_shown() {
+        // Phase `stopping_remote_input_halts_the_guest_and_says_so_on_screen`.
+        // The panic key, end to end from the action the chord triggers: a guest is driving the seat, the host presses it, the guest stops, and the host is told so.
+        {
+            use crate::network::input_firewall::Denial;
 
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mut state = state_sharing(KILL_SURFACE);
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut state = state_sharing(KILL_SURFACE);
 
-        guest_motion(&mut state).expect("the guest is driving the seat to begin with");
+            guest_motion(&mut state).expect("the guest is driving the seat to begin with");
 
-        let revoked = stop_remote_input(&mut state, &mut fb);
-        assert_eq!(
-            revoked, 1,
-            "the one writable share had to lose write access"
-        );
+            let revoked = stop_remote_input(&mut state, &mut fb);
+            assert_eq!(
+                revoked, 1,
+                "the one writable share had to lose write access"
+            );
 
-        assert_eq!(
-            guest_motion(&mut state),
-            Err(Denial::KillSwitch),
-            "the guest still reached the seat after the kill switch",
-        );
+            assert_eq!(
+                guest_motion(&mut state),
+                Err(Denial::KillSwitch),
+                "the guest still reached the seat after the kill switch",
+            );
 
-        let chrome = fb.chrome();
-        let toast = chrome
-            .notifications()
-            .iter()
-            .find(|n| n.title == "Remote input stopped")
-            .expect("the host got no confirmation that anything happened");
-        assert!(
-            toast.body.contains("Remote control") && toast.body.contains("sharing was stopped"),
-            "the confirmation has to say what it stopped; body was {:?}",
-            toast.body,
-        );
-        assert!(
-            toast.dismiss_after >= std::time::Duration::from_secs(60),
-            "a stop that lasts until the host lifts it cannot be confirmed by a \
-             toast that slides away in five seconds",
-        );
-    }
-
-    /// Do-Not-Disturb is a request for quiet, not to be kept uninformed about the machine's own security state — a suppressed confirmation makes a working kill switch look broken.
-    #[test]
-    fn the_kill_switch_confirmation_is_shown_under_do_not_disturb() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mut state = state_sharing(KILL_SURFACE);
-        fb.with_chrome(|chrome| chrome.set_dnd(true));
-
-        stop_remote_input(&mut state, &mut fb);
-
-        let chrome = fb.chrome();
-        assert!(
-            chrome.dnd(),
-            "the test has to actually be under DND or it proves nothing",
-        );
-        assert!(
-            chrome
+            let chrome = fb.chrome();
+            let toast = chrome
                 .notifications()
                 .iter()
-                .any(|n| n.title == "Remote input stopped"),
-            "the confirmation was held back into history by Do-Not-Disturb",
-        );
-    }
+                .find(|n| n.title == "Remote input stopped")
+                .expect("the host got no confirmation that anything happened");
+            assert!(
+                toast.body.contains("Remote control") && toast.body.contains("sharing was stopped"),
+                "the confirmation has to say what it stopped; body was {:?}",
+                toast.body,
+            );
+            assert!(
+                toast.dismiss_after >= std::time::Duration::from_secs(60),
+                "a stop that lasts until the host lifts it cannot be confirmed by a \
+                 toast that slides away in five seconds",
+            );
+        }
+        // Phase `the_kill_switch_confirmation_is_shown_under_do_not_disturb`.
+        // Do-Not-Disturb is a request for quiet, not to be kept uninformed about the machine's own security state — a suppressed confirmation makes a working kill switch look broken.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut state = state_sharing(KILL_SURFACE);
+            fb.with_chrome(|chrome| chrome.set_dnd(true));
 
-    /// The notification stack is capped, and a guest driving a client can make that client post toasts — filling the stack must not hide that the panic key worked.
-    #[test]
-    fn a_flood_of_app_toasts_cannot_push_the_confirmation_off_the_screen() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mut state = state_sharing(KILL_SURFACE);
-        fb.with_chrome(|chrome| {
-            for i in 0..crate::shell::notification::MAX_NOTIFICATIONS * 3 {
-                chrome.push_notification(format!("App toast {i}"), "noise");
-            }
-        });
+            stop_remote_input(&mut state, &mut fb);
 
-        stop_remote_input(&mut state, &mut fb);
+            let chrome = fb.chrome();
+            assert!(
+                chrome.dnd(),
+                "the test has to actually be under DND or it proves nothing",
+            );
+            assert!(
+                chrome
+                    .notifications()
+                    .iter()
+                    .any(|n| n.title == "Remote input stopped"),
+                "the confirmation was held back into history by Do-Not-Disturb",
+            );
+        }
+        // Phase `a_flood_of_app_toasts_cannot_push_the_confirmation_off_the_screen`.
+        // The notification stack is capped, and a guest driving a client can make that client post toasts — filling the stack must not hide that the panic key worked.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut state = state_sharing(KILL_SURFACE);
+            fb.with_chrome(|chrome| {
+                for i in 0..crate::shell::notification::MAX_NOTIFICATIONS * 3 {
+                    chrome.push_notification(format!("App toast {i}"), "noise");
+                }
+            });
 
-        let chrome = fb.chrome();
-        assert!(
-            chrome
-                .notifications()
-                .iter()
-                .any(|n| n.title == "Remote input stopped"),
-            "a flood of app toasts buried the kill-switch confirmation",
-        );
-    }
+            stop_remote_input(&mut state, &mut fb);
 
-    #[test]
-    fn client_input_registry_tracks_lifecycle_without_a_surface() {
-        // The registry half that doesn't need a live `WlSurface`: pending adoption/removal bookkeeping and the focus reset on destroy.
-        let mut ci = ClientInput::default();
-        assert!(ci.is_empty());
-        ci.pending_adoptions.push(PendingAdoption {
-            surface_id: 5,
-            app_id: None,
-        });
-        ci.note_app_id(5, "org.example.app".into());
-        assert_eq!(
-            ci.pending_adoptions[0].app_id.as_deref(),
-            Some("org.example.app"),
-            "an app-id that beats the mirror folds into the pending adoption"
-        );
-        // An app-id for an already-mirrored surface queues a rename.
-        ci.note_app_id(6, "org.example.other".into());
-        assert_eq!(
-            ci.pending_renames,
-            vec![(6, "org.example.other".to_string())]
-        );
-        // Destroy clears focus + grab bookkeeping.
-        ci.keyboard_focus = Some(5);
-        ci.pointer_focus = Some(5);
-        ci.grab = Some(PointerOwner::Client(5));
-        ci.unregister_toplevel(5);
-        assert_eq!(ci.keyboard_focus, None);
-        assert_eq!(ci.pointer_focus, None);
-        assert_eq!(ci.grab, None);
-        assert!(ci.pending_adoptions.is_empty());
-        assert_eq!(ci.pending_removals, vec![5]);
+            let chrome = fb.chrome();
+            assert!(
+                chrome
+                    .notifications()
+                    .iter()
+                    .any(|n| n.title == "Remote input stopped"),
+                "a flood of app toasts buried the kill-switch confirmation",
+            );
+        }
     }
 
     #[test]
-    fn authoritative_tree_restores_input_placement_after_protocol_adoption() {
-        let mut tree = WorkspaceTree::bootstrap_default();
-        let surface = 91_337;
-        crate::shell::tab_binding::adopt_toplevel_at(
-            &mut tree,
-            surface,
-            Some("anon-91337".into()),
-            crate::shell::tab_binding::Placement::NewGroup,
-        );
-        let live = HashSet::from([surface]);
+    fn client_input_registry_survives_lifecycle_and_protocol_adoption() {
+        // Phase `client_input_registry_tracks_lifecycle_without_a_surface`.
+        {
+            // The registry half that doesn't need a live `WlSurface`: pending adoption/removal bookkeeping and the focus reset on destroy.
+            let mut ci = ClientInput::default();
+            assert!(ci.is_empty());
+            ci.pending_adoptions.push(PendingAdoption {
+                surface_id: 5,
+                app_id: None,
+            });
+            ci.note_app_id(5, "org.example.app".into());
+            assert_eq!(
+                ci.pending_adoptions[0].app_id.as_deref(),
+                Some("org.example.app"),
+                "an app-id that beats the mirror folds into the pending adoption"
+            );
+            // An app-id for an already-mirrored surface queues a rename.
+            ci.note_app_id(6, "org.example.other".into());
+            assert_eq!(
+                ci.pending_renames,
+                vec![(6, "org.example.other".to_string())]
+            );
+            // Destroy clears focus + grab bookkeeping.
+            ci.keyboard_focus = Some(5);
+            ci.pointer_focus = Some(5);
+            ci.grab = Some(PointerOwner::Client(5));
+            ci.unregister_toplevel(5);
+            assert_eq!(ci.keyboard_focus, None);
+            assert_eq!(ci.pointer_focus, None);
+            assert_eq!(ci.grab, None);
+            assert!(ci.pending_adoptions.is_empty());
+            assert_eq!(ci.pending_removals, vec![5]);
+        }
+        // Phase `authoritative_tree_restores_input_placement_after_protocol_adoption`.
+        {
+            let mut tree = WorkspaceTree::bootstrap_default();
+            let surface = 91_337;
+            crate::shell::tab_binding::adopt_toplevel_at(
+                &mut tree,
+                surface,
+                Some("anon-91337".into()),
+                crate::shell::tab_binding::Placement::NewGroup,
+            );
+            let live = HashSet::from([surface]);
 
-        let placements = placements_for_live_surfaces(&tree, &live);
-        let (strip, group) = placements
-            .get(&surface)
-            .copied()
-            .expect("adopted live surface has an input address");
-        assert_eq!(
-            tree.desktop.active_strip.get(&tree.desktop.active),
-            Some(&strip)
-        );
-        assert_eq!(tree.desktop.active_group_for(strip), Some(group));
-        assert!(
-            placements_for_live_surfaces(&tree, &HashSet::new()).is_empty(),
-            "dead protocol surfaces must not retain routable placement"
-        );
+            let placements = placements_for_live_surfaces(&tree, &live);
+            let (strip, group) = placements
+                .get(&surface)
+                .copied()
+                .expect("adopted live surface has an input address");
+            assert_eq!(
+                tree.desktop.active_strip.get(&tree.desktop.active),
+                Some(&strip)
+            );
+            assert_eq!(tree.desktop.active_group_for(strip), Some(group));
+            assert!(
+                placements_for_live_surfaces(&tree, &HashSet::new()).is_empty(),
+                "dead protocol surfaces must not retain routable placement"
+            );
+        }
     }
 }

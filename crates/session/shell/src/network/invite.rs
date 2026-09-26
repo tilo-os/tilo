@@ -742,348 +742,357 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_binds_room_key_and_dialing_address() {
-        let key = iroh::SecretKey::from_bytes(&[7; 32]);
-        let ws = workspace(99);
-        let addr = endpoint(&key, 1234);
-        let encoded = make_invite_token(&key, &ws, &addr, 3600).unwrap();
-        let token = validate_invite_token(&encoded).unwrap();
-        assert_eq!(token.workspace_id, 99);
-        assert_eq!(token.room_id, ws.room.to_string());
-        assert_eq!(token.owner_addr, addr);
-        assert_eq!(token.owner_peer_id, key.public().to_string());
-    }
-
-    #[test]
-    fn round_trip_carries_signed_always_on_hosts() {
-        let owner = iroh::SecretKey::from_bytes(&[13; 32]);
-        let host = iroh::SecretKey::from_bytes(&[14; 32]);
-        let host_addr = endpoint(&host, 4321);
-        let encoded = make_invite_token_with_hosts(
-            &owner,
-            &workspace(5),
-            &endpoint(&owner, 1234),
-            std::slice::from_ref(&host_addr),
-            3600,
-        )
-        .unwrap();
-        let token = validate_invite_token(&encoded).unwrap();
-        assert_eq!(token.host_addrs, vec![host_addr]);
-    }
-
-    #[test]
-    fn home_host_pin_is_signed_and_tamper_evident() {
-        use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
-
-        let owner = iroh::SecretKey::from_bytes(&[0x21; 32]);
-        let relay = iroh::SecretKey::from_bytes(&[0x22; 32]);
-        let other_relay = iroh::SecretKey::from_bytes(&[0x23; 32]);
-        let user = ed25519_dalek::SigningKey::from_bytes(&[0x24; 32]);
-        let host_device = iroh::SecretKey::from_bytes(&[0x25; 32]);
-        let mut owner_cert = DeviceCert {
-            user_public_key: user.verifying_key().to_bytes(),
-            device_public_key: *owner.public().as_bytes(),
-            device_label: "Owner laptop".into(),
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut owner_cert, &user).expect("owner certificate");
-        let pin = HomeHostPin {
-            addr: endpoint(&relay, 4321),
-            user_public_key: user.verifying_key().to_bytes(),
-            device_public_key: *host_device.public().as_bytes(),
-        };
-        let encoded = make_invite_token_with_recipient(
-            &owner,
-            &workspace(25),
-            &endpoint(&owner, 2525),
-            std::slice::from_ref(&pin.addr),
-            std::slice::from_ref(&pin),
-            Some(owner_cert),
-            InviteRole::Editor,
-            None,
-            None,
-            3600,
-        )
-        .expect("pinned invite");
-        let decoded = validate_invite_token(&encoded).expect("valid pinned invite");
-        assert_eq!(decoded.home_host_pins, vec![pin]);
-
-        let bytes = B64.decode(encoded).expect("base64");
-        let mut forged: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
-        forged.home_host_pins[0].addr = endpoint(&other_relay, 4343);
-        let forged = B64.encode(serde_json::to_vec(&forged).expect("json"));
-        assert!(
-            validate_invite_token(&forged)
-                .expect_err("a changed host pin must invalidate the signature")
-                .contains("signature")
-        );
-    }
-
-    #[test]
-    fn selected_role_is_signed_and_tamper_evident() {
-        let owner = iroh::SecretKey::from_bytes(&[31; 32]);
-        let encoded = make_invite_token_with_identity_and_role(
-            &owner,
-            &workspace(31),
-            &endpoint(&owner, 3131),
-            &[],
-            None,
-            InviteRole::Viewer,
-            3600,
-        )
-        .expect("viewer invite");
-        assert_eq!(
-            validate_invite_token(&encoded).expect("valid").role,
-            InviteRole::Viewer
-        );
-
-        let bytes = B64.decode(encoded).expect("base64");
-        let mut token: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
-        token.role = InviteRole::Editor;
-        let forged = B64.encode(serde_json::to_vec(&token).expect("json"));
-        assert!(
-            validate_invite_token(&forged)
-                .expect_err("role widening must invalidate the signature")
-                .contains("signature")
-        );
-    }
-
-    #[test]
-    fn invitations_minted_in_the_same_second_remain_distinct_and_valid() {
-        let owner = iroh::SecretKey::from_bytes(&[32; 32]);
-        let workspace = workspace(32);
-        let addr = endpoint(&owner, 3232);
-        let first = make_invite_token_with_identity_and_role(
-            &owner,
-            &workspace,
-            &addr,
-            &[],
-            None,
-            InviteRole::Editor,
-            3600,
-        )
-        .expect("first invite");
-        let second = make_invite_token_with_identity_and_role(
-            &owner,
-            &workspace,
-            &addr,
-            &[],
-            None,
-            InviteRole::Editor,
-            3600,
-        )
-        .expect("second invite");
-        assert_ne!(first, second, "each invitation is independently revocable");
-        assert_ne!(invite_id(&first), invite_id(&second));
-        validate_invite_token(&first).expect("first remains valid");
-        validate_invite_token(&second).expect("second remains valid");
-    }
-
-    #[test]
-    fn identity_certificate_binds_inviter_person_to_device_endpoint() {
-        use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
-
-        let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
-        let device = iroh::SecretKey::from_bytes(&[42; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: *device.public().as_bytes(),
-            device_label: "Laptop".into(),
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut cert, &root).expect("cert");
-        let ws = workspace(17);
-        let encoded = make_invite_token_with_identity(
-            &device,
-            &ws,
-            &endpoint(&device, 1717),
-            &[],
-            Some(cert.clone()),
-            3600,
-        )
-        .expect("invite");
-        let decoded = validate_invite_token(&encoded).expect("valid");
-        assert_eq!(decoded.owner_device_cert, Some(cert));
-
-        let mut tree = WorkspaceTree::default();
-        let local = WorkspaceId(99);
-        tree.desktop.workspaces.push(workspace(99));
-        accept_invite_into(&mut tree, local, &encoded).expect("accept");
-        let collab_types::caps::Principal::Person(person) =
-            collab_types::caps::Principal::person_from_key(
-                collab_types::crypto::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn invitations_round_trip_their_room_hosts_and_roster() {
+        // Phase `round_trip_binds_room_key_and_dialing_address`.
+        {
+            let key = iroh::SecretKey::from_bytes(&[7; 32]);
+            let ws = workspace(99);
+            let addr = endpoint(&key, 1234);
+            let encoded = make_invite_token(&key, &ws, &addr, 3600).unwrap();
+            let token = validate_invite_token(&encoded).unwrap();
+            assert_eq!(token.workspace_id, 99);
+            assert_eq!(token.room_id, ws.room.to_string());
+            assert_eq!(token.owner_addr, addr);
+            assert_eq!(token.owner_peer_id, key.public().to_string());
+        }
+        // Phase `round_trip_carries_signed_always_on_hosts`.
+        {
+            let owner = iroh::SecretKey::from_bytes(&[13; 32]);
+            let host = iroh::SecretKey::from_bytes(&[14; 32]);
+            let host_addr = endpoint(&host, 4321);
+            let encoded = make_invite_token_with_hosts(
+                &owner,
+                &workspace(5),
+                &endpoint(&owner, 1234),
+                std::slice::from_ref(&host_addr),
+                3600,
             )
-        else {
-            unreachable!()
-        };
-        assert!(
-            tree.desktop.workspaces[0]
-                .collaborators
-                .iter()
-                .any(|member| member.id == person)
-        );
+            .unwrap();
+            let token = validate_invite_token(&encoded).unwrap();
+            assert_eq!(token.host_addrs, vec![host_addr]);
+        }
+        // Phase `invitations_minted_in_the_same_second_remain_distinct_and_valid`.
+        {
+            let owner = iroh::SecretKey::from_bytes(&[32; 32]);
+            let workspace = workspace(32);
+            let addr = endpoint(&owner, 3232);
+            let first = make_invite_token_with_identity_and_role(
+                &owner,
+                &workspace,
+                &addr,
+                &[],
+                None,
+                InviteRole::Editor,
+                3600,
+            )
+            .expect("first invite");
+            let second = make_invite_token_with_identity_and_role(
+                &owner,
+                &workspace,
+                &addr,
+                &[],
+                None,
+                InviteRole::Editor,
+                3600,
+            )
+            .expect("second invite");
+            assert_ne!(first, second, "each invitation is independently revocable");
+            assert_ne!(invite_id(&first), invite_id(&second));
+            validate_invite_token(&first).expect("first remains valid");
+            validate_invite_token(&second).expect("second remains valid");
+        }
+        // Phase `legacy_token_without_hosts_still_validates`.
+        {
+            let key = iroh::SecretKey::from_bytes(&[15; 32]);
+            let workspace = workspace(6);
+            let addr = endpoint(&key, 2468);
+            let mut token = PeerInviteToken {
+                workspace_id: workspace.id.raw(),
+                room_id: workspace.room.to_string(),
+                owner_peer_id: key.public().to_string(),
+                owner_addr: addr,
+                host_addrs: Vec::new(),
+                home_host_pins: Vec::new(),
+                owner_device_cert: None,
+                role: InviteRole::Editor,
+                invite_nonce: [0; 16],
+                recipient_user_public_key: None,
+                invitee_name: None,
+                expiry_unix_seconds: now_unix_seconds() + 3600,
+                signature: Vec::new(),
+            };
+            let legacy = postcard::to_allocvec(&LegacyInvitePayload {
+                workspace_id: token.workspace_id,
+                room_id: &token.room_id,
+                owner_peer_id: &token.owner_peer_id,
+                owner_addr: &token.owner_addr,
+                expiry_unix_seconds: token.expiry_unix_seconds,
+            })
+            .unwrap();
+            token.signature = key.sign(&legacy).to_bytes().to_vec();
+            let encoded = B64.encode(serde_json::to_vec(&token).unwrap());
+            assert!(validate_invite_token(&encoded).is_ok());
+        }
+        // Phase `accepting_invite_adopts_room_and_roster_identity`.
+        {
+            let key = iroh::SecretKey::from_bytes(&[11; 32]);
+            let host = workspace(11);
+            let encoded = make_invite_token(&key, &host, &endpoint(&key, 3), 3600).unwrap();
+            let mut guest = WorkspaceTree::default();
+            let guest_id = WorkspaceId(4242);
+            guest
+                .desktop
+                .workspaces
+                .push(Workspace::new(guest_id, "guest"));
+            assert_eq!(
+                accept_invite_into(&mut guest, guest_id, &encoded).unwrap(),
+                host.room
+            );
+            assert_eq!(guest.room_of(guest_id), Some(host.room));
+            assert_eq!(guest.desktop.workspaces[0].collaborators.len(), 1);
+        }
     }
 
     #[test]
-    fn legacy_token_without_hosts_still_validates() {
-        let key = iroh::SecretKey::from_bytes(&[15; 32]);
-        let workspace = workspace(6);
-        let addr = endpoint(&key, 2468);
-        let mut token = PeerInviteToken {
-            workspace_id: workspace.id.raw(),
-            room_id: workspace.room.to_string(),
-            owner_peer_id: key.public().to_string(),
-            owner_addr: addr,
-            host_addrs: Vec::new(),
-            home_host_pins: Vec::new(),
-            owner_device_cert: None,
-            role: InviteRole::Editor,
-            invite_nonce: [0; 16],
-            recipient_user_public_key: None,
-            invitee_name: None,
-            expiry_unix_seconds: now_unix_seconds() + 3600,
-            signature: Vec::new(),
-        };
-        let legacy = postcard::to_allocvec(&LegacyInvitePayload {
-            workspace_id: token.workspace_id,
-            room_id: &token.room_id,
-            owner_peer_id: &token.owner_peer_id,
-            owner_addr: &token.owner_addr,
-            expiry_unix_seconds: token.expiry_unix_seconds,
-        })
-        .unwrap();
-        token.signature = key.sign(&legacy).to_bytes().to_vec();
-        let encoded = B64.encode(serde_json::to_vec(&token).unwrap());
-        assert!(validate_invite_token(&encoded).is_ok());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn every_signed_invitation_field_is_tamper_evident() {
+        // Phase `home_host_pin_is_signed_and_tamper_evident`.
+        {
+            use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
+
+            let owner = iroh::SecretKey::from_bytes(&[0x21; 32]);
+            let relay = iroh::SecretKey::from_bytes(&[0x22; 32]);
+            let other_relay = iroh::SecretKey::from_bytes(&[0x23; 32]);
+            let user = ed25519_dalek::SigningKey::from_bytes(&[0x24; 32]);
+            let host_device = iroh::SecretKey::from_bytes(&[0x25; 32]);
+            let mut owner_cert = DeviceCert {
+                user_public_key: user.verifying_key().to_bytes(),
+                device_public_key: *owner.public().as_bytes(),
+                device_label: "Owner laptop".into(),
+                capabilities: DeviceCapabilities::primary(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut owner_cert, &user).expect("owner certificate");
+            let pin = HomeHostPin {
+                addr: endpoint(&relay, 4321),
+                user_public_key: user.verifying_key().to_bytes(),
+                device_public_key: *host_device.public().as_bytes(),
+            };
+            let encoded = make_invite_token_with_recipient(
+                &owner,
+                &workspace(25),
+                &endpoint(&owner, 2525),
+                std::slice::from_ref(&pin.addr),
+                std::slice::from_ref(&pin),
+                Some(owner_cert),
+                InviteRole::Editor,
+                None,
+                None,
+                3600,
+            )
+            .expect("pinned invite");
+            let decoded = validate_invite_token(&encoded).expect("valid pinned invite");
+            assert_eq!(decoded.home_host_pins, vec![pin]);
+
+            let bytes = B64.decode(encoded).expect("base64");
+            let mut forged: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
+            forged.home_host_pins[0].addr = endpoint(&other_relay, 4343);
+            let forged = B64.encode(serde_json::to_vec(&forged).expect("json"));
+            assert!(
+                validate_invite_token(&forged)
+                    .expect_err("a changed host pin must invalidate the signature")
+                    .contains("signature")
+            );
+        }
+        // Phase `selected_role_is_signed_and_tamper_evident`.
+        {
+            let owner = iroh::SecretKey::from_bytes(&[31; 32]);
+            let encoded = make_invite_token_with_identity_and_role(
+                &owner,
+                &workspace(31),
+                &endpoint(&owner, 3131),
+                &[],
+                None,
+                InviteRole::Viewer,
+                3600,
+            )
+            .expect("viewer invite");
+            assert_eq!(
+                validate_invite_token(&encoded).expect("valid").role,
+                InviteRole::Viewer
+            );
+
+            let bytes = B64.decode(encoded).expect("base64");
+            let mut token: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
+            token.role = InviteRole::Editor;
+            let forged = B64.encode(serde_json::to_vec(&token).expect("json"));
+            assert!(
+                validate_invite_token(&forged)
+                    .expect_err("role widening must invalidate the signature")
+                    .contains("signature")
+            );
+        }
+        // Phase `recipient_binding_and_name_are_signature_covered`.
+        {
+            let owner = iroh::SecretKey::from_bytes(&[18; 32]);
+            let workspace = workspace(18);
+            let recipient = [0x44; 32];
+            let encoded = make_invite_token_with_recipient(
+                &owner,
+                &workspace,
+                &endpoint(&owner, 1818),
+                &[],
+                &[],
+                None,
+                InviteRole::Commenter,
+                Some(recipient),
+                Some("Ada"),
+                3600,
+            )
+            .expect("bound invite");
+            let decoded = validate_invite_token(&encoded).expect("valid bound invite");
+            assert_eq!(decoded.recipient_user_public_key, Some(recipient));
+            assert_eq!(decoded.invitee_name.as_deref(), Some("Ada"));
+
+            let bytes = B64.decode(encoded).expect("base64");
+            let mut forged: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
+            forged.recipient_user_public_key = Some([0x55; 32]);
+            let forged = B64.encode(serde_json::to_vec(&forged).expect("json"));
+            assert!(validate_invite_token(&forged).is_err());
+        }
+        // Phase `an_unsigned_recipient_cannot_be_grafted_onto_a_legacy_bearer`.
+        {
+            let owner = iroh::SecretKey::from_bytes(&[19; 32]);
+            let workspace = workspace(19);
+            let encoded = make_invite_token(&owner, &workspace, &endpoint(&owner, 1919), 3600)
+                .expect("legacy-shaped bearer");
+            let bytes = B64.decode(encoded).expect("base64");
+            let mut forged: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
+            forged.recipient_user_public_key = Some([0x66; 32]);
+            let forged = B64.encode(serde_json::to_vec(&forged).expect("json"));
+            assert!(validate_invite_token(&forged).is_err());
+        }
+        // Phase `tampering_any_signed_route_field_is_rejected`.
+        {
+            let key = iroh::SecretKey::from_bytes(&[8; 32]);
+            let encoded = make_invite_token(&key, &workspace(1), &endpoint(&key, 1), 3600).unwrap();
+            let bytes = B64.decode(encoded).unwrap();
+            let mut token: PeerInviteToken = serde_json::from_slice(&bytes).unwrap();
+            token.workspace_id = 2;
+            let forged = B64.encode(serde_json::to_vec(&token).unwrap());
+            assert!(
+                validate_invite_token(&forged)
+                    .unwrap_err()
+                    .contains("signature")
+            );
+        }
+        // Phase `substituted_endpoint_is_rejected`.
+        {
+            let owner = iroh::SecretKey::from_bytes(&[9; 32]);
+            let attacker = iroh::SecretKey::from_bytes(&[10; 32]);
+            let encoded =
+                make_invite_token(&owner, &workspace(1), &endpoint(&owner, 1), 3600).unwrap();
+            let bytes = B64.decode(encoded).unwrap();
+            let mut token: PeerInviteToken = serde_json::from_slice(&bytes).unwrap();
+            token.owner_addr = endpoint(&attacker, 2);
+            let forged = B64.encode(serde_json::to_vec(&token).unwrap());
+            assert!(validate_invite_token(&forged).is_err());
+        }
     }
 
     #[test]
-    fn recipient_binding_and_name_are_signature_covered() {
-        let owner = iroh::SecretKey::from_bytes(&[18; 32]);
-        let workspace = workspace(18);
-        let recipient = [0x44; 32];
-        let encoded = make_invite_token_with_recipient(
-            &owner,
-            &workspace,
-            &endpoint(&owner, 1818),
-            &[],
-            &[],
-            None,
-            InviteRole::Commenter,
-            Some(recipient),
-            Some("Ada"),
-            3600,
-        )
-        .expect("bound invite");
-        let decoded = validate_invite_token(&encoded).expect("valid bound invite");
-        assert_eq!(decoded.recipient_user_public_key, Some(recipient));
-        assert_eq!(decoded.invitee_name.as_deref(), Some("Ada"));
+    fn invitation_identity_is_bound_and_unsupported_invites_are_refused() {
+        // Phase `identity_certificate_binds_inviter_person_to_device_endpoint`.
+        {
+            use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
-        let bytes = B64.decode(encoded).expect("base64");
-        let mut forged: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
-        forged.recipient_user_public_key = Some([0x55; 32]);
-        let forged = B64.encode(serde_json::to_vec(&forged).expect("json"));
-        assert!(validate_invite_token(&forged).is_err());
-    }
+            let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+            let device = iroh::SecretKey::from_bytes(&[42; 32]);
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: *device.public().as_bytes(),
+                device_label: "Laptop".into(),
+                capabilities: DeviceCapabilities::primary(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, &root).expect("cert");
+            let ws = workspace(17);
+            let encoded = make_invite_token_with_identity(
+                &device,
+                &ws,
+                &endpoint(&device, 1717),
+                &[],
+                Some(cert.clone()),
+                3600,
+            )
+            .expect("invite");
+            let decoded = validate_invite_token(&encoded).expect("valid");
+            assert_eq!(decoded.owner_device_cert, Some(cert));
 
-    #[test]
-    fn an_unsigned_recipient_cannot_be_grafted_onto_a_legacy_bearer() {
-        let owner = iroh::SecretKey::from_bytes(&[19; 32]);
-        let workspace = workspace(19);
-        let encoded = make_invite_token(&owner, &workspace, &endpoint(&owner, 1919), 3600)
-            .expect("legacy-shaped bearer");
-        let bytes = B64.decode(encoded).expect("base64");
-        let mut forged: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
-        forged.recipient_user_public_key = Some([0x66; 32]);
-        let forged = B64.encode(serde_json::to_vec(&forged).expect("json"));
-        assert!(validate_invite_token(&forged).is_err());
-    }
-
-    #[test]
-    fn valid_libp2p_invite_gets_an_actionable_migration_error() {
-        let key = iroh::SecretKey::from_bytes(&[16; 32]);
-        let public = key.public();
-        let mut peer_bytes = vec![0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
-        peer_bytes.extend_from_slice(public.as_bytes());
-        let owner_peer_id = bs58::encode(peer_bytes).into_string();
-        let mut public_protobuf = vec![0x08, 0x01, 0x12, 0x20];
-        public_protobuf.extend_from_slice(public.as_bytes());
-        let mut token = Libp2pInviteToken {
-            workspace_id: 7,
-            room_id: workspace(7).room.to_string(),
-            owner_peer_id,
-            owner_public_key: B64.encode(public_protobuf),
-            owner_addr: "/ip4/127.0.0.1/tcp/1234".into(),
-            expiry_unix_seconds: now_unix_seconds() + 3600,
-            signature: Vec::new(),
-        };
-        token.signature = key
-            .sign(libp2p_payload(&token).as_bytes())
-            .to_bytes()
-            .to_vec();
-        let encoded = B64.encode(serde_json::to_vec(&token).unwrap());
-        let error = validate_invite_token(&encoded).unwrap_err();
-        assert!(error.contains("legacy libp2p invite"));
-        assert!(error.contains("fresh invite"));
-    }
-
-    #[test]
-    fn tampering_any_signed_route_field_is_rejected() {
-        let key = iroh::SecretKey::from_bytes(&[8; 32]);
-        let encoded = make_invite_token(&key, &workspace(1), &endpoint(&key, 1), 3600).unwrap();
-        let bytes = B64.decode(encoded).unwrap();
-        let mut token: PeerInviteToken = serde_json::from_slice(&bytes).unwrap();
-        token.workspace_id = 2;
-        let forged = B64.encode(serde_json::to_vec(&token).unwrap());
-        assert!(
-            validate_invite_token(&forged)
-                .unwrap_err()
-                .contains("signature")
-        );
-    }
-
-    #[test]
-    fn substituted_endpoint_is_rejected() {
-        let owner = iroh::SecretKey::from_bytes(&[9; 32]);
-        let attacker = iroh::SecretKey::from_bytes(&[10; 32]);
-        let encoded = make_invite_token(&owner, &workspace(1), &endpoint(&owner, 1), 3600).unwrap();
-        let bytes = B64.decode(encoded).unwrap();
-        let mut token: PeerInviteToken = serde_json::from_slice(&bytes).unwrap();
-        token.owner_addr = endpoint(&attacker, 2);
-        let forged = B64.encode(serde_json::to_vec(&token).unwrap());
-        assert!(validate_invite_token(&forged).is_err());
-    }
-
-    #[test]
-    fn accepting_invite_adopts_room_and_roster_identity() {
-        let key = iroh::SecretKey::from_bytes(&[11; 32]);
-        let host = workspace(11);
-        let encoded = make_invite_token(&key, &host, &endpoint(&key, 3), 3600).unwrap();
-        let mut guest = WorkspaceTree::default();
-        let guest_id = WorkspaceId(4242);
-        guest
-            .desktop
-            .workspaces
-            .push(Workspace::new(guest_id, "guest"));
-        assert_eq!(
-            accept_invite_into(&mut guest, guest_id, &encoded).unwrap(),
-            host.room
-        );
-        assert_eq!(guest.room_of(guest_id), Some(host.room));
-        assert_eq!(guest.desktop.workspaces[0].collaborators.len(), 1);
-    }
-
-    #[test]
-    fn nil_room_cannot_be_invited() {
-        let key = iroh::SecretKey::from_bytes(&[12; 32]);
-        let mut ws = workspace(4);
-        ws.room = RoomId::nil();
-        assert!(make_invite_token(&key, &ws, &endpoint(&key, 4), 3600).is_err());
+            let mut tree = WorkspaceTree::default();
+            let local = WorkspaceId(99);
+            tree.desktop.workspaces.push(workspace(99));
+            accept_invite_into(&mut tree, local, &encoded).expect("accept");
+            let collab_types::caps::Principal::Person(person) =
+                collab_types::caps::Principal::person_from_key(
+                    collab_types::crypto::Ed25519PublicKey::from_bytes(
+                        root.verifying_key().to_bytes(),
+                    ),
+                )
+            else {
+                unreachable!()
+            };
+            assert!(
+                tree.desktop.workspaces[0]
+                    .collaborators
+                    .iter()
+                    .any(|member| member.id == person)
+            );
+        }
+        // Phase `valid_libp2p_invite_gets_an_actionable_migration_error`.
+        {
+            let key = iroh::SecretKey::from_bytes(&[16; 32]);
+            let public = key.public();
+            let mut peer_bytes = vec![0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
+            peer_bytes.extend_from_slice(public.as_bytes());
+            let owner_peer_id = bs58::encode(peer_bytes).into_string();
+            let mut public_protobuf = vec![0x08, 0x01, 0x12, 0x20];
+            public_protobuf.extend_from_slice(public.as_bytes());
+            let mut token = Libp2pInviteToken {
+                workspace_id: 7,
+                room_id: workspace(7).room.to_string(),
+                owner_peer_id,
+                owner_public_key: B64.encode(public_protobuf),
+                owner_addr: "/ip4/127.0.0.1/tcp/1234".into(),
+                expiry_unix_seconds: now_unix_seconds() + 3600,
+                signature: Vec::new(),
+            };
+            token.signature = key
+                .sign(libp2p_payload(&token).as_bytes())
+                .to_bytes()
+                .to_vec();
+            let encoded = B64.encode(serde_json::to_vec(&token).unwrap());
+            let error = validate_invite_token(&encoded).unwrap_err();
+            assert!(error.contains("legacy libp2p invite"));
+            assert!(error.contains("fresh invite"));
+        }
+        // Phase `nil_room_cannot_be_invited`.
+        {
+            let key = iroh::SecretKey::from_bytes(&[12; 32]);
+            let mut ws = workspace(4);
+            ws.room = RoomId::nil();
+            assert!(make_invite_token(&key, &ws, &endpoint(&key, 4), 3600).is_err());
+        }
     }
 }

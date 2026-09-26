@@ -113,22 +113,20 @@ mod tests {
     use super::parse_file_arg;
 
     #[test]
-    fn shots_flag_and_value_are_not_treated_as_file() {
-        let args = vec!["--shots".to_string(), "/tmp/whatever-out.png".to_string()];
-        // The PATH after --shots must never be opened as input, even if it
-        // happens to exist on disk.
-        assert_eq!(parse_file_arg(args), None);
-    }
-
-    #[test]
-    fn equals_form_shots_is_skipped() {
-        let args = vec!["--shots=/tmp/x.png".to_string()];
-        assert_eq!(parse_file_arg(args), None);
-    }
-
-    #[test]
-    fn nonexistent_positional_is_ignored() {
-        let args = vec!["/no/such/file.bin".to_string()];
-        assert_eq!(parse_file_arg(args), None);
+    fn parse_file_arg_skips_shots_output_and_missing_paths() {
+        let cases: &[(&str, &[&str])] = &[
+            // The PATH after --shots must never be opened as input, even if it
+            // happens to exist on disk.
+            (
+                "shots flag and value",
+                &["--shots", "/tmp/whatever-out.png"],
+            ),
+            ("equals-form shots", &["--shots=/tmp/x.png"]),
+            ("nonexistent positional", &["/no/such/file.bin"]),
+        ];
+        for (name, args) in cases {
+            let args = args.iter().map(|a| (*a).to_string()).collect::<Vec<_>>();
+            assert_eq!(parse_file_arg(args), None, "case {name}");
+        }
     }
 }

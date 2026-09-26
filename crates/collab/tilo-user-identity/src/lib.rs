@@ -236,55 +236,60 @@ impl DeviceIdentity {
 mod tests {
     use super::*;
 
-    /// The signing-preimage byte constants are wire ABI. If any of
-    /// these byte sequences change, previously-issued
-    /// certificates and revocations stop verifying — that would
-    /// silently disconnect every device in the field. Freeze them.
+    /// The signing preimage is a frozen ABI, and user and device identities round-trip after
+    /// generation.
     #[test]
-    fn signing_preimage_is_frozen_abi() {
-        assert_eq!(cert::DEVCERT_PREIMAGE_TAG, b"tilo-devcert-v1\0");
-        assert_eq!(cert::DEVCERT_PREIMAGE_TAG.len(), 16);
+    fn identities_generate_round_trip_under_a_frozen_signing_preimage() {
+        // Phase: signing_preimage_is_frozen_abi.
+        // The signing-preimage byte constants are wire ABI. If any of
+        // these byte sequences change, previously-issued
+        // certificates and revocations stop verifying — that would
+        // silently disconnect every device in the field. Freeze them.
+        {
+            assert_eq!(cert::DEVCERT_PREIMAGE_TAG, b"tilo-devcert-v1\0");
+            assert_eq!(cert::DEVCERT_PREIMAGE_TAG.len(), 16);
 
-        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"tilo-revocation-v1\0");
-        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 19);
+            assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"tilo-revocation-v1\0");
+            assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 19);
 
-        assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v2\0");
-        assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 19);
+            assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v2\0");
+            assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 19);
 
-        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"tilo-dir-delta-v1\0");
-        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 18);
+            assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"tilo-dir-delta-v1\0");
+            assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 18);
 
-        assert_eq!(
-            approval::APPROVAL_REQUEST_TAG,
-            b"tilo-device-approval-request-v1\0"
-        );
-        assert_eq!(approval::APPROVAL_REQUEST_TAG.len(), 32);
-        assert_eq!(
-            approval::APPROVAL_RESPONSE_TAG,
-            b"tilo-device-approval-response-v1\0"
-        );
-        assert_eq!(approval::APPROVAL_RESPONSE_TAG.len(), 33);
-    }
+            assert_eq!(
+                approval::APPROVAL_REQUEST_TAG,
+                b"tilo-device-approval-request-v1\0"
+            );
+            assert_eq!(approval::APPROVAL_REQUEST_TAG.len(), 32);
+            assert_eq!(
+                approval::APPROVAL_RESPONSE_TAG,
+                b"tilo-device-approval-response-v1\0"
+            );
+            assert_eq!(approval::APPROVAL_RESPONSE_TAG.len(), 33);
+        }
 
-    #[test]
-    fn user_identity_generate_round_trip() {
-        let (_sk, user) = UserIdentity::generate("Alice", 1_720_000_000_000_000_000);
-        assert_eq!(user.label, "Alice");
-        assert_eq!(user.created_at_ns, 1_720_000_000_000_000_000);
-        assert_eq!(user.public_key.len(), 32);
+        // Phase: user_identity_generate_round_trip.
+        {
+            let (_sk, user) = UserIdentity::generate("Alice", 1_720_000_000_000_000_000);
+            assert_eq!(user.label, "Alice");
+            assert_eq!(user.created_at_ns, 1_720_000_000_000_000_000);
+            assert_eq!(user.public_key.len(), 32);
 
-        // Bytes round-trip through canonical postcard encoding.
-        let bytes = canonical::canonical_bytes(&user).unwrap();
-        let back: UserIdentity = canonical::from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(user, back);
-    }
+            // Bytes round-trip through canonical postcard encoding.
+            let bytes = canonical::canonical_bytes(&user).unwrap();
+            let back: UserIdentity = canonical::from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(user, back);
+        }
 
-    #[test]
-    fn device_identity_generate_round_trip() {
-        let (_sk, dev) = DeviceIdentity::generate("Framework 16", 1_720_000_000_000_000_000);
-        assert_eq!(dev.label, "Framework 16");
-        let bytes = canonical::canonical_bytes(&dev).unwrap();
-        let back: DeviceIdentity = canonical::from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(dev, back);
+        // Phase: device_identity_generate_round_trip.
+        {
+            let (_sk, dev) = DeviceIdentity::generate("Framework 16", 1_720_000_000_000_000_000);
+            assert_eq!(dev.label, "Framework 16");
+            let bytes = canonical::canonical_bytes(&dev).unwrap();
+            let back: DeviceIdentity = canonical::from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(dev, back);
+        }
     }
 }

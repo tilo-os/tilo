@@ -76,123 +76,131 @@ fn ensure() {
 mod tests {
     use super::*;
 
-    /// Every key the chrome asks for resolves to real text. A missing key
-    /// comes back as the key itself, which would ship as `slides-present` on
-    /// a button face.
+    /// Every chrome key resolves and formatted keys interpolate their arguments.
     #[test]
-    fn every_key_the_chrome_uses_resolves() {
-        for key in [
-            "slides-present",
-            "slides-close",
-            "slides-add",
-            "slides-dup",
-            "slides-del",
-            "slides-slides",
-            "slides-bring-front",
-            "slides-send-back",
-            "slides-duplicate",
-            "slides-delete",
-            "slides-custom-colour",
-            "slides-fill",
-            "slides-stroke",
-            "slides-type",
-            "slides-align",
-            "slides-arrange",
-            "slides-layout",
-            "slides-background",
-            "slides-speaker-notes",
-            "slides-deck-theme",
-            "slides-notes-placeholder",
-            "slides-toast-image-import-failed",
-            "slides-toast-opening-pptx",
-            "slides-toast-shared-limit",
-            "slides-pick-presentations-filter",
-            "slides-speaker-notes-editing",
-            "slides-fill-colour",
-            "slides-drop-to-delete",
-            "slides-tool-slide",
-            "slides-tool-new-slide",
-            "slides-tool-text",
-            "slides-tool-text-box",
-            "slides-tool-rect",
-            "slides-tool-rectangle",
-            "slides-tool-ellipse",
-            "slides-tool-line",
-            "slides-tool-image",
-            "slides-presenter-view",
-            "slides-elapsed",
-            "slides-paused",
-            "slides-current",
-            "slides-next",
-            "slides-end-of-deck",
-            "slides-no-notes",
-            "slides-presenter-keys",
-            "slides-a11y-new-slide",
-            "slides-a11y-duplicate-slide",
-            "slides-a11y-delete-slide",
-            "slides-a11y-start-presentation",
-            "slides-a11y-slide-overview",
-            "slides-a11y-custom-fill",
-            "slides-a11y-bold",
-            "slides-a11y-italic",
-            "slides-a11y-bring-front",
-            "slides-a11y-send-back",
-            "slides-a11y-duplicate-element",
-            "slides-a11y-delete-element",
-            "slides-a11y-edit-notes",
-            "slides-a11y-slides-panel",
-            "slides-a11y-properties-panel",
-            "slides-a11y-more-tools",
-            "slides-tip-toggle-slides",
-            "slides-tip-toggle-properties",
-            "slides-tip-overview",
-            "slides-tip-theme",
-            "slides-tip-more-tools",
-            "slides-toast-open-failed",
-            "slides-toast-import-failed",
-            "slides-toast-export-failed",
-            "slides-toast-chooser-failed",
-            "slides-toast-export-limit",
-            "slides-toast-opened",
-            "slides-toast-saved",
-            "slides-toast-process-failed",
-            "slides-toast-image-chooser-failed",
-            "slides-pick-image-title",
-            "slides-pick-image-accept",
-            "slides-pick-images-filter",
-            "slides-open-title",
-            "slides-open-accept",
-            "slides-save-title",
-            "slides-save-accept",
-        ] {
-            let text = tr(key);
-            assert_ne!(text, key, "{key} has no English text");
-            assert!(!text.is_empty(), "{key} resolves to nothing");
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn chrome_strings_resolve_and_interpolate() {
+        // Case `every_key_the_chrome_uses_resolves`.
+        // Every key the chrome asks for resolves to real text. A missing key
+        // comes back as the key itself, which would ship as `slides-present` on
+        // a button face.
+        {
+            for key in [
+                "slides-present",
+                "slides-close",
+                "slides-add",
+                "slides-dup",
+                "slides-del",
+                "slides-slides",
+                "slides-bring-front",
+                "slides-send-back",
+                "slides-duplicate",
+                "slides-delete",
+                "slides-custom-colour",
+                "slides-fill",
+                "slides-stroke",
+                "slides-type",
+                "slides-align",
+                "slides-arrange",
+                "slides-layout",
+                "slides-background",
+                "slides-speaker-notes",
+                "slides-deck-theme",
+                "slides-notes-placeholder",
+                "slides-toast-image-import-failed",
+                "slides-toast-opening-pptx",
+                "slides-toast-shared-limit",
+                "slides-pick-presentations-filter",
+                "slides-speaker-notes-editing",
+                "slides-fill-colour",
+                "slides-drop-to-delete",
+                "slides-tool-slide",
+                "slides-tool-new-slide",
+                "slides-tool-text",
+                "slides-tool-text-box",
+                "slides-tool-rect",
+                "slides-tool-rectangle",
+                "slides-tool-ellipse",
+                "slides-tool-line",
+                "slides-tool-image",
+                "slides-presenter-view",
+                "slides-elapsed",
+                "slides-paused",
+                "slides-current",
+                "slides-next",
+                "slides-end-of-deck",
+                "slides-no-notes",
+                "slides-presenter-keys",
+                "slides-a11y-new-slide",
+                "slides-a11y-duplicate-slide",
+                "slides-a11y-delete-slide",
+                "slides-a11y-start-presentation",
+                "slides-a11y-slide-overview",
+                "slides-a11y-custom-fill",
+                "slides-a11y-bold",
+                "slides-a11y-italic",
+                "slides-a11y-bring-front",
+                "slides-a11y-send-back",
+                "slides-a11y-duplicate-element",
+                "slides-a11y-delete-element",
+                "slides-a11y-edit-notes",
+                "slides-a11y-slides-panel",
+                "slides-a11y-properties-panel",
+                "slides-a11y-more-tools",
+                "slides-tip-toggle-slides",
+                "slides-tip-toggle-properties",
+                "slides-tip-overview",
+                "slides-tip-theme",
+                "slides-tip-more-tools",
+                "slides-toast-open-failed",
+                "slides-toast-import-failed",
+                "slides-toast-export-failed",
+                "slides-toast-chooser-failed",
+                "slides-toast-export-limit",
+                "slides-toast-opened",
+                "slides-toast-saved",
+                "slides-toast-process-failed",
+                "slides-toast-image-chooser-failed",
+                "slides-pick-image-title",
+                "slides-pick-image-accept",
+                "slides-pick-images-filter",
+                "slides-open-title",
+                "slides-open-accept",
+                "slides-save-title",
+                "slides-save-accept",
+            ] {
+                let text = tr(key);
+                assert_ne!(text, key, "{key} has no English text");
+                assert!(!text.is_empty(), "{key} resolves to nothing");
+            }
         }
-    }
 
-    /// Placeables interpolate: the overview hint carries the slide count and
-    /// the presenter position line carries its three values.
-    #[test]
-    fn formatted_keys_interpolate_their_arguments() {
-        let hint = tr_args(
-            "slides-overview-hint",
-            &[("count", ArgValue::from(5_usize))],
-        );
-        assert!(hint.starts_with("5 slides"), "{hint}");
-        let pos = tr_args(
-            "slides-position",
-            &[
-                ("state", ArgValue::from(tr("slides-elapsed"))),
-                ("current", ArgValue::from(2_usize)),
-                ("total", ArgValue::from(5_usize)),
-            ],
-        );
-        assert_eq!(pos, "ELAPSED  ·  slide 2 / 5");
-        let custom = tr_args(
-            "slides-custom-colour-hex",
-            &[("hex", ArgValue::from("#ff0000"))],
-        );
-        assert_eq!(custom, "Custom  ·  #ff0000");
+        // Case `formatted_keys_interpolate_their_arguments`.
+        // Placeables interpolate: the overview hint carries the slide count and
+        // the presenter position line carries its three values.
+        {
+            let hint = tr_args(
+                "slides-overview-hint",
+                &[("count", ArgValue::from(5_usize))],
+            );
+            assert!(hint.starts_with("5 slides"), "{hint}");
+            let pos = tr_args(
+                "slides-position",
+                &[
+                    ("state", ArgValue::from(tr("slides-elapsed"))),
+                    ("current", ArgValue::from(2_usize)),
+                    ("total", ArgValue::from(5_usize)),
+                ],
+            );
+            assert_eq!(pos, "ELAPSED  ·  slide 2 / 5");
+            let custom = tr_args(
+                "slides-custom-colour-hex",
+                &[("hex", ArgValue::from("#ff0000"))],
+            );
+            assert_eq!(custom, "Custom  ·  #ff0000");
+        }
     }
 }

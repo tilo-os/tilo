@@ -69,7 +69,7 @@ declare -A NAME=(
 [image-editor]="Image Editor" [mail]="Mail" [maps]="Maps" [monitor]="System Monitor" [music]="Music" [notes]="Notes"
 [osk]="On-Screen Keyboard" [passwords]="Passwords" [pdf-viewer]="PDF Viewer" [photos]="Photos"
 [print-centre]="Print Centre" [remote]="Remote Desktop" [scratchpad]="Scratchpad" [settings]="Settings"
-[sheets]="Sheets" [slides]="Slides" [snippets]="Snippets" [speed-test]="Speed Test" [store]="App Store"
+[sheets]="Sheets" [slides]="Slides" [shortcuts]="Shortcuts" [snippets]="Snippets" [speed-test]="Speed Test" [store]="App Store"
 [terminal]="Terminal" [themes]="Themes" [totp]="TOTP" [tube]="Tube"
 [typst-editor]="Typst Editor" [video-editor]="Video Editor" [video-player]="Video Player"
 [vpn]="VPN" [weather]="Weather" [windows]="Windows Apps" [word-processor]="Word Processor")

@@ -800,7 +800,7 @@ mod tests {
     /// pop_layer`, which costs far more `ptcl` per tile than the vector
     /// UI the floor's per-tile constant was calibrated from. This is
     /// the exact ask a real first frame of `shell`'s
-    /// `client_buffer_pixels_are_composited_into_the_tab_rect` made
+    /// `foreign_buffers_are_composited_once_into_visible_tabs_only` made
     /// (`VELLO_BUMP_LOG=1`, a 1310x768 tab in a 1600x900 viewport): a
     /// regression test, not a synthetic bound, because a synthetic one
     /// would have missed this exact shape of scene the way the

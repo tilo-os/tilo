@@ -227,125 +227,128 @@ mod tests {
     }
 
     #[test]
-    fn write_shims_creates_binary_and_sidecar_per_command() {
-        let tmp = tempfile::tempdir().unwrap();
-        let shim = dummy_shim(tmp.path());
-        let bin_dir = tmp.path().join("bin");
-        let commands = vec!["notes".to_string(), "notes-import".to_string()];
-        let written = write_shims(&ShimInstall {
-            package_id: "so.tilo.notes-cli",
-            commands: &commands,
-            shim_source: &shim,
-            bin_dir: &bin_dir,
-            launcher_override: None,
-        })
-        .expect("write_shims");
-        assert_eq!(written.len(), 4);
-        for cmd in &commands {
-            let bin_path = bin_dir.join(cmd);
-            let side_path = bin_dir.join(format!("{cmd}.tilo-shim"));
-            assert!(bin_path.exists(), "shim {cmd} should exist");
-            assert!(side_path.exists(), "sidecar {cmd}.tilo-shim should exist");
-            let sidecar_text = fs::read_to_string(&side_path).unwrap();
-            assert!(sidecar_text.contains("so.tilo.notes-cli"));
-            assert!(sidecar_text.contains(cmd));
-        }
-    }
-
-    #[test]
-    fn write_shims_honours_launcher_override() {
-        let tmp = tempfile::tempdir().unwrap();
-        let shim = dummy_shim(tmp.path());
-        let bin_dir = tmp.path().join("bin");
-        let commands = vec!["notes".to_string()];
-        let launcher = PathBuf::from("/tmp/dev/tilo-launcher");
-        write_shims(&ShimInstall {
-            package_id: "so.tilo.notes-cli",
-            commands: &commands,
-            shim_source: &shim,
-            bin_dir: &bin_dir,
-            launcher_override: Some(&launcher),
-        })
-        .unwrap();
-        let text = fs::read_to_string(bin_dir.join("notes.tilo-shim")).unwrap();
-        assert!(
-            text.contains("launcher"),
-            "sidecar must carry launcher override; got: {text}"
-        );
-        assert!(text.contains("/tmp/dev/tilo-launcher"));
-    }
-
-    #[test]
-    fn remove_shims_deletes_both_binary_and_sidecar() {
-        let tmp = tempfile::tempdir().unwrap();
-        let shim = dummy_shim(tmp.path());
-        let bin_dir = tmp.path().join("bin");
-        let commands = vec!["notes".to_string()];
-        write_shims(&ShimInstall {
-            package_id: "so.tilo.notes-cli",
-            commands: &commands,
-            shim_source: &shim,
-            bin_dir: &bin_dir,
-            launcher_override: None,
-        })
-        .unwrap();
-        assert!(bin_dir.join("notes").exists());
-        remove_shims(&bin_dir, &commands).unwrap();
-        assert!(!bin_dir.join("notes").exists());
-        assert!(!bin_dir.join("notes.tilo-shim").exists());
-    }
-
-    #[test]
-    fn write_shims_refuses_path_traversal_names() {
-        let tmp = tempfile::tempdir().unwrap();
-        let shim = dummy_shim(tmp.path());
-        let bin_dir = tmp.path().join("bin");
-        let bad_names = vec![
-            "../evil".to_string(),
-            "a/b".to_string(),
-            ".hidden".to_string(),
-            String::new(),
-        ];
-        for name in bad_names {
-            let commands = vec![name.clone()];
-            let e = write_shims(&ShimInstall {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn shims_are_written_idempotently_safely_and_removed_with_their_sidecars() {
+        // Phase `write_shims_creates_binary_and_sidecar_per_command`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let shim = dummy_shim(tmp.path());
+            let bin_dir = tmp.path().join("bin");
+            let commands = vec!["notes".to_string(), "notes-import".to_string()];
+            let written = write_shims(&ShimInstall {
                 package_id: "so.tilo.notes-cli",
                 commands: &commands,
                 shim_source: &shim,
                 bin_dir: &bin_dir,
                 launcher_override: None,
             })
-            .expect_err(&format!("write_shims should reject {name:?}"));
-            assert!(matches!(e, ShimError::BadCommandName(_)), "got {e:?}");
+            .expect("write_shims");
+            assert_eq!(written.len(), 4);
+            for cmd in &commands {
+                let bin_path = bin_dir.join(cmd);
+                let side_path = bin_dir.join(format!("{cmd}.tilo-shim"));
+                assert!(bin_path.exists(), "shim {cmd} should exist");
+                assert!(side_path.exists(), "sidecar {cmd}.tilo-shim should exist");
+                let sidecar_text = fs::read_to_string(&side_path).unwrap();
+                assert!(sidecar_text.contains("so.tilo.notes-cli"));
+                assert!(sidecar_text.contains(cmd));
+            }
         }
-    }
-
-    #[test]
-    fn write_shims_is_idempotent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let shim = dummy_shim(tmp.path());
-        let bin_dir = tmp.path().join("bin");
-        let commands = vec!["notes".to_string()];
-        write_shims(&ShimInstall {
-            package_id: "so.tilo.notes-cli",
-            commands: &commands,
-            shim_source: &shim,
-            bin_dir: &bin_dir,
-            launcher_override: None,
-        })
-        .unwrap();
-        // Second install with a different launcher override — must
-        // succeed and end with the second override baked in.
-        let l2 = PathBuf::from("/tmp/other/tilo-launcher");
-        write_shims(&ShimInstall {
-            package_id: "so.tilo.notes-cli",
-            commands: &commands,
-            shim_source: &shim,
-            bin_dir: &bin_dir,
-            launcher_override: Some(&l2),
-        })
-        .unwrap();
-        let text = fs::read_to_string(bin_dir.join("notes.tilo-shim")).unwrap();
-        assert!(text.contains("/tmp/other/tilo-launcher"));
+        // Phase `write_shims_honours_launcher_override`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let shim = dummy_shim(tmp.path());
+            let bin_dir = tmp.path().join("bin");
+            let commands = vec!["notes".to_string()];
+            let launcher = PathBuf::from("/tmp/dev/tilo-launcher");
+            write_shims(&ShimInstall {
+                package_id: "so.tilo.notes-cli",
+                commands: &commands,
+                shim_source: &shim,
+                bin_dir: &bin_dir,
+                launcher_override: Some(&launcher),
+            })
+            .unwrap();
+            let text = fs::read_to_string(bin_dir.join("notes.tilo-shim")).unwrap();
+            assert!(
+                text.contains("launcher"),
+                "sidecar must carry launcher override; got: {text}"
+            );
+            assert!(text.contains("/tmp/dev/tilo-launcher"));
+        }
+        // Phase `remove_shims_deletes_both_binary_and_sidecar`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let shim = dummy_shim(tmp.path());
+            let bin_dir = tmp.path().join("bin");
+            let commands = vec!["notes".to_string()];
+            write_shims(&ShimInstall {
+                package_id: "so.tilo.notes-cli",
+                commands: &commands,
+                shim_source: &shim,
+                bin_dir: &bin_dir,
+                launcher_override: None,
+            })
+            .unwrap();
+            assert!(bin_dir.join("notes").exists());
+            remove_shims(&bin_dir, &commands).unwrap();
+            assert!(!bin_dir.join("notes").exists());
+            assert!(!bin_dir.join("notes.tilo-shim").exists());
+        }
+        // Phase `write_shims_refuses_path_traversal_names`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let shim = dummy_shim(tmp.path());
+            let bin_dir = tmp.path().join("bin");
+            let bad_names = vec![
+                "../evil".to_string(),
+                "a/b".to_string(),
+                ".hidden".to_string(),
+                String::new(),
+            ];
+            for name in bad_names {
+                let commands = vec![name.clone()];
+                let e = write_shims(&ShimInstall {
+                    package_id: "so.tilo.notes-cli",
+                    commands: &commands,
+                    shim_source: &shim,
+                    bin_dir: &bin_dir,
+                    launcher_override: None,
+                })
+                .expect_err(&format!("write_shims should reject {name:?}"));
+                assert!(matches!(e, ShimError::BadCommandName(_)), "got {e:?}");
+            }
+        }
+        // Phase `write_shims_is_idempotent`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let shim = dummy_shim(tmp.path());
+            let bin_dir = tmp.path().join("bin");
+            let commands = vec!["notes".to_string()];
+            write_shims(&ShimInstall {
+                package_id: "so.tilo.notes-cli",
+                commands: &commands,
+                shim_source: &shim,
+                bin_dir: &bin_dir,
+                launcher_override: None,
+            })
+            .unwrap();
+            // Second install with a different launcher override — must
+            // succeed and end with the second override baked in.
+            let l2 = PathBuf::from("/tmp/other/tilo-launcher");
+            write_shims(&ShimInstall {
+                package_id: "so.tilo.notes-cli",
+                commands: &commands,
+                shim_source: &shim,
+                bin_dir: &bin_dir,
+                launcher_override: Some(&l2),
+            })
+            .unwrap();
+            let text = fs::read_to_string(bin_dir.join("notes.tilo-shim")).unwrap();
+            assert!(text.contains("/tmp/other/tilo-launcher"));
+        }
     }
 }

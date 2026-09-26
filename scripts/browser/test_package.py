@@ -43,27 +43,20 @@ class PackageTests(unittest.TestCase):
              contextlib.redirect_stdout(io.StringIO()):
             package.main()
 
-    def test_macos_bundle_carries_executable_runtime_beside_browser(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self.package_fixture(root, "Darwin")
-            executables = root / "target/browser-package/Browser.app/Contents/MacOS"
-            host = executables / "tilo-runtime-mcp"
-            self.assertTrue(host.is_file(), "packaged browser must not need PATH or Cargo for its runtime")
-            self.assertEqual(host.read_bytes(), b"tilo-runtime-mcp fixture")
-            self.assertTrue(host.stat().st_mode & 0o111)
-            self.assertEqual((executables / "browser").read_bytes(), b"browser fixture")
-
-    def test_linux_package_carries_executable_runtime_beside_browser(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self.package_fixture(root, "Linux")
-            executables = root / "target/browser-package/tilo-browser"
-            host = executables / "tilo-runtime-mcp"
-            self.assertTrue(host.is_file(), "packaged browser must not need PATH or Cargo for its runtime")
-            self.assertEqual(host.read_bytes(), b"tilo-runtime-mcp fixture")
-            self.assertTrue(host.stat().st_mode & 0o111)
-            self.assertEqual((executables / "browser").read_bytes(), b"browser fixture")
+    def test_package_carries_executable_runtime_beside_browser(self):
+        for system, executables_path in (
+            ("Darwin", "target/browser-package/Browser.app/Contents/MacOS"),
+            ("Linux", "target/browser-package/tilo-browser"),
+        ):
+            with self.subTest(system=system), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.package_fixture(root, system)
+                executables = root / executables_path
+                host = executables / "tilo-runtime-mcp"
+                self.assertTrue(host.is_file(), "packaged browser must not need PATH or Cargo for its runtime")
+                self.assertEqual(host.read_bytes(), b"tilo-runtime-mcp fixture")
+                self.assertTrue(host.stat().st_mode & 0o111)
+                self.assertEqual((executables / "browser").read_bytes(), b"browser fixture")
 
 
 if __name__ == "__main__":

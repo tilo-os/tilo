@@ -1058,84 +1058,90 @@ mod tests {
         }
     }
 
-    /// The launcher's handoff: a little-endian `u32` length, then JSON.
+    /// The launcher handoff bytes are pinned; local vision input is closed and bounded, never routes to
+    /// a LAN or hosted endpoint, requires an immutable model revision, and uses a fixed prompt with no
+    /// identity request; local face input is bounded and never requests identity.
     #[test]
-    fn launcher_handoff_bytes_are_pinned() {
-        use std::io::Write as _;
-        let (mut launcher, gateway) = std::os::unix::net::UnixStream::pair().unwrap();
-        launcher.write_all(&[39, 0, 0, 0]).unwrap();
-        launcher
-            .write_all(br#"{"protocol":1,"app_id":"so.tilo.agent"}"#)
-            .unwrap();
-        gateway.set_nonblocking(true).unwrap();
-        let runtime = tilo_rt::daemon("gateway-test").workers(1).build().unwrap();
-        let handoff = runtime.block_on(async {
-            let mut gateway = UnixStream::from_std(gateway).unwrap();
-            read_handoff(&mut gateway).await
-        });
-        assert_eq!(handoff.unwrap().app_id, AGENT_APP);
-    }
+    fn local_vision_is_pinned_bounded_local_and_never_asks_identity() {
+        // Phase: launcher_handoff_bytes_are_pinned.
+        // The launcher's handoff: a little-endian `u32` length, then JSON.
+        {
+            use std::io::Write as _;
+            let (mut launcher, gateway) = std::os::unix::net::UnixStream::pair().unwrap();
+            launcher.write_all(&[39, 0, 0, 0]).unwrap();
+            launcher
+                .write_all(br#"{"protocol":1,"app_id":"so.tilo.agent"}"#)
+                .unwrap();
+            gateway.set_nonblocking(true).unwrap();
+            let runtime = tilo_rt::daemon("gateway-test").workers(1).build().unwrap();
+            let handoff = runtime.block_on(async {
+                let mut gateway = UnixStream::from_std(gateway).unwrap();
+                read_handoff(&mut gateway).await
+            });
+            assert_eq!(handoff.unwrap().app_id, AGENT_APP);
+        }
 
-    #[test]
-    fn local_vision_input_is_closed_and_bounded() {
-        assert!(validate_vision_image(&vision_image()).is_ok());
-        let mut foreign = vision_image();
-        foreign.media_type = "image/svg+xml".into();
-        assert!(validate_vision_image(&foreign).is_err());
-        let mut corrupt = vision_image();
-        corrupt.data_base64 = "not base64".into();
-        assert!(validate_vision_image(&corrupt).is_err());
-        let mut bad_hash = vision_image();
-        bad_hash.source_content_hash = "x".repeat(64);
-        assert!(validate_vision_image(&bad_hash).is_err());
-    }
+        // Phase: local_vision_input_is_closed_and_bounded.
+        {
+            assert!(validate_vision_image(&vision_image()).is_ok());
+            let mut foreign = vision_image();
+            foreign.media_type = "image/svg+xml".into();
+            assert!(validate_vision_image(&foreign).is_err());
+            let mut corrupt = vision_image();
+            corrupt.data_base64 = "not base64".into();
+            assert!(validate_vision_image(&corrupt).is_err());
+            let mut bad_hash = vision_image();
+            bad_hash.source_content_hash = "x".repeat(64);
+            assert!(validate_vision_image(&bad_hash).is_err());
+        }
 
-    #[test]
-    fn local_vision_never_routes_to_a_lan_or_hosted_endpoint() {
-        assert!(loopback_http_endpoint("http://127.0.0.1:8123/v1"));
-        assert!(loopback_http_endpoint("http://[::1]:8123/v1"));
-        assert!(!loopback_http_endpoint("http://192.168.1.20:8123/v1"));
-        assert!(!loopback_http_endpoint("https://models.example.test/v1"));
-        assert!(!loopback_http_endpoint(
-            "http://localhost.evil.test:8123/v1"
-        ));
-    }
+        // Phase: local_vision_never_routes_to_a_lan_or_hosted_endpoint.
+        {
+            assert!(loopback_http_endpoint("http://127.0.0.1:8123/v1"));
+            assert!(loopback_http_endpoint("http://[::1]:8123/v1"));
+            assert!(!loopback_http_endpoint("http://192.168.1.20:8123/v1"));
+            assert!(!loopback_http_endpoint("https://models.example.test/v1"));
+            assert!(!loopback_http_endpoint(
+                "http://localhost.evil.test:8123/v1"
+            ));
+        }
 
-    #[test]
-    fn local_vision_requires_an_immutable_model_revision() {
-        assert!(is_pinned_revision(&"a".repeat(40)));
-        assert!(is_pinned_revision(&"b".repeat(64)));
-        assert!(!is_pinned_revision("main"));
-        assert!(!is_pinned_revision(&"A".repeat(40)));
-    }
+        // Phase: local_vision_requires_an_immutable_model_revision.
+        {
+            assert!(is_pinned_revision(&"a".repeat(40)));
+            assert!(is_pinned_revision(&"b".repeat(64)));
+            assert!(!is_pinned_revision("main"));
+            assert!(!is_pinned_revision(&"A".repeat(40)));
+        }
 
-    #[test]
-    fn local_vision_prompt_is_fixed_and_contains_no_identity_request() {
-        let body = local_vision_body("vision-model", &vision_image());
-        let encoded = body.to_string();
-        assert!(encoded.contains("device-local image indexing component"));
-        assert!(encoded.contains("Do not name people"));
-        assert!(!encoded.contains("ignore previous"));
-        assert_eq!(body["model"], "vision-model");
-    }
+        // Phase: local_vision_prompt_is_fixed_and_contains_no_identity_request.
+        {
+            let body = local_vision_body("vision-model", &vision_image());
+            let encoded = body.to_string();
+            assert!(encoded.contains("device-local image indexing component"));
+            assert!(encoded.contains("Do not name people"));
+            assert!(!encoded.contains("ignore previous"));
+            assert_eq!(body["model"], "vision-model");
+        }
 
-    #[test]
-    fn local_face_input_is_bounded_and_prompt_never_requests_identity() {
-        let face = FaceImage {
-            photo_id: "photos.photo:one".into(),
-            media_type: "image/jpeg".into(),
-            data_base64: base64::engine::general_purpose::STANDARD.encode(b"preview"),
-            source_content_hash: "a".repeat(64),
-        };
-        assert!(validate_face_images(std::slice::from_ref(&face)).is_ok());
-        let mut duplicate = face.clone();
-        duplicate.photo_id = face.photo_id.clone();
-        assert!(validate_face_images(&[face.clone(), duplicate]).is_err());
-        let body = local_face_body("face-model", &[face]);
-        let encoded = body.to_string();
-        assert!(encoded.contains("face detection and clustering"));
-        assert!(encoded.contains("Never output a person's name"));
-        assert!(!encoded.contains("identify the person"));
+        // Phase: local_face_input_is_bounded_and_prompt_never_requests_identity.
+        {
+            let face = FaceImage {
+                photo_id: "photos.photo:one".into(),
+                media_type: "image/jpeg".into(),
+                data_base64: base64::engine::general_purpose::STANDARD.encode(b"preview"),
+                source_content_hash: "a".repeat(64),
+            };
+            assert!(validate_face_images(std::slice::from_ref(&face)).is_ok());
+            let mut duplicate = face.clone();
+            duplicate.photo_id = face.photo_id.clone();
+            assert!(validate_face_images(&[face.clone(), duplicate]).is_err());
+            let body = local_face_body("face-model", &[face]);
+            let encoded = body.to_string();
+            assert!(encoded.contains("face detection and clustering"));
+            assert!(encoded.contains("Never output a person's name"));
+            assert!(!encoded.contains("identify the person"));
+        }
     }
 
     fn ask(input: &str) -> TransformAsk {
@@ -1261,48 +1267,54 @@ mod tests {
         (result, fake.into_inner())
     }
 
+    /// Transient provider failures are retried at the gateway, settled ones are not, Retry-After and
+    /// transient statuses are classified on the HTTP side, and retries never consume room needed for an
+    /// answer.
     #[test]
-    fn transient_provider_failures_are_retried_at_the_gateway() {
-        let (result, fake) = run_retries(
-            Duration::from_secs(20),
-            &[Err((529, None)), Err((503, None)), Ok("answer")],
-        );
-        assert_eq!(result.as_deref(), Ok("answer"));
-        assert_eq!(fake.calls, 3);
-        assert_eq!(
-            fake.waits,
-            [Duration::from_millis(500), Duration::from_secs(1)]
-        );
-    }
-
-    #[test]
-    fn settled_provider_failures_are_not_retried() {
-        for status in [400, 401, 403, 404, 422] {
-            let (result, fake) = run_retries(Duration::from_secs(20), &[Err((status, None))]);
-            assert!(result.unwrap_err().contains(&status.to_string()));
-            assert_eq!(fake.calls, 1, "HTTP {status}");
-            assert!(fake.waits.is_empty(), "HTTP {status}");
+    fn the_gateway_retries_only_transient_failures_within_the_answer_budget() {
+        // Phase: transient_provider_failures_are_retried_at_the_gateway.
+        {
+            let (result, fake) = run_retries(
+                Duration::from_secs(20),
+                &[Err((529, None)), Err((503, None)), Ok("answer")],
+            );
+            assert_eq!(result.as_deref(), Ok("answer"));
+            assert_eq!(fake.calls, 3);
+            assert_eq!(
+                fake.waits,
+                [Duration::from_millis(500), Duration::from_secs(1)]
+            );
         }
-    }
 
-    #[test]
-    fn retry_after_and_transient_statuses_are_classified_on_the_http_side() {
-        for status in [408, 429, 500, 502, 503, 504, 529] {
-            assert_eq!(again_after(status, None), Again::Soon(None));
+        // Phase: settled_provider_failures_are_not_retried.
+        {
+            for status in [400, 401, 403, 404, 422] {
+                let (result, fake) = run_retries(Duration::from_secs(20), &[Err((status, None))]);
+                assert!(result.unwrap_err().contains(&status.to_string()));
+                assert_eq!(fake.calls, 1, "HTTP {status}");
+                assert!(fake.waits.is_empty(), "HTTP {status}");
+            }
         }
-        assert_eq!(
-            again_after(429, Some("0.25")),
-            Again::Soon(Some(Duration::from_millis(250)))
-        );
-        assert_eq!(again_after(401, Some("1")), Again::Never);
-    }
 
-    #[test]
-    fn retries_never_consume_room_needed_for_an_answer() {
-        let (result, fake) = run_retries(Duration::from_secs(3), &[Err((529, Some("1")))]);
-        assert!(result.is_err());
-        assert_eq!(fake.calls, 1);
-        assert!(fake.waits.is_empty());
+        // Phase: retry_after_and_transient_statuses_are_classified_on_the_http_side.
+        {
+            for status in [408, 429, 500, 502, 503, 504, 529] {
+                assert_eq!(again_after(status, None), Again::Soon(None));
+            }
+            assert_eq!(
+                again_after(429, Some("0.25")),
+                Again::Soon(Some(Duration::from_millis(250)))
+            );
+            assert_eq!(again_after(401, Some("1")), Again::Never);
+        }
+
+        // Phase: retries_never_consume_room_needed_for_an_answer.
+        {
+            let (result, fake) = run_retries(Duration::from_secs(3), &[Err((529, Some("1")))]);
+            assert!(result.is_err());
+            assert_eq!(fake.calls, 1);
+            assert!(fake.waits.is_empty());
+        }
     }
 
     #[test]

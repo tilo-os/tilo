@@ -269,21 +269,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_backend_is_offline_and_searches() {
-        let b = default_backend();
-        let out = b.search("rust").expect("offline search never errors");
-        match out {
-            BackendResult::Videos(v) => assert!(!v.is_empty(), "sample has rust videos"),
-            _ => panic!("search returns Videos"),
+    fn default_offline_backend_searches_and_dispatches_trending() {
+        // Case `default_backend_is_offline_and_searches`.
+        {
+            let b = default_backend();
+            let out = b.search("rust").expect("offline search never errors");
+            match out {
+                BackendResult::Videos(v) => assert!(!v.is_empty(), "sample has rust videos"),
+                _ => panic!("search returns Videos"),
+            }
         }
-    }
-
-    #[test]
-    fn run_dispatches_trending() {
-        let b = default_backend();
-        assert!(matches!(
-            b.run(Query::Trending),
-            Ok(BackendResult::Videos(_))
-        ));
+        // Case `run_dispatches_trending`.
+        {
+            let b = default_backend();
+            assert!(matches!(
+                b.run(Query::Trending),
+                Ok(BackendResult::Videos(_))
+            ));
+        }
     }
 }

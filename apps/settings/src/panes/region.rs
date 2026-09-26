@@ -474,60 +474,64 @@ mod tests {
     use super::*;
     use crate::region::Locale;
 
+    /// Seeding, currency/date/time/unit edits and ignoring unknown values.
     #[test]
-    fn seed_writes_current_settings_into_crdt() {
-        let mut pane = RegionPane::with_settings(RegionSettings {
-            locale: Locale {
-                currency: Currency::EUR,
-                ..Default::default()
-            },
-        });
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert_eq!(read_str(&doc, &root, CURRENCY_KEY).as_deref(), Some("EUR"));
-    }
+    fn region_pane_seeds_and_applies_known_choices() {
+        // Case `seed_writes_current_settings_into_crdt`.
+        {
+            let mut pane = RegionPane::with_settings(RegionSettings {
+                locale: Locale {
+                    currency: Currency::EUR,
+                    ..Default::default()
+                },
+            });
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert_eq!(read_str(&doc, &root, CURRENCY_KEY).as_deref(), Some("EUR"));
+        }
 
-    #[test]
-    fn changing_currency_key_updates_settings() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = RegionPane::with_settings(RegionSettings::default());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        // Simulate the dropdown writing a new currency code.
-        let _ = doc.put(&root, CURRENCY_KEY, "JPY");
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.settings().locale.currency, Currency::JPY);
-    }
+        // Case `changing_currency_key_updates_settings`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = RegionPane::with_settings(RegionSettings::default());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            // Simulate the dropdown writing a new currency code.
+            let _ = doc.put(&root, CURRENCY_KEY, "JPY");
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.settings().locale.currency, Currency::JPY);
+        }
 
-    #[test]
-    fn changing_date_and_time_and_units_updates_settings() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = RegionPane::with_settings(RegionSettings::default());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, DATE_KEY, DateStyle::Eu.label());
-        let _ = doc.put(&root, TIME_KEY, TimeStyle::H12.label());
-        let _ = doc.put(&root, MEASUREMENT_KEY, Measurement::Imperial.label());
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.settings().locale.date_format, DateStyle::Eu);
-        assert_eq!(pane.settings().locale.time_format, TimeStyle::H12);
-        assert_eq!(pane.settings().locale.measurement, Measurement::Imperial);
-    }
+        // Case `changing_date_and_time_and_units_updates_settings`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = RegionPane::with_settings(RegionSettings::default());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, DATE_KEY, DateStyle::Eu.label());
+            let _ = doc.put(&root, TIME_KEY, TimeStyle::H12.label());
+            let _ = doc.put(&root, MEASUREMENT_KEY, Measurement::Imperial.label());
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.settings().locale.date_format, DateStyle::Eu);
+            assert_eq!(pane.settings().locale.time_format, TimeStyle::H12);
+            assert_eq!(pane.settings().locale.measurement, Measurement::Imperial);
+        }
 
-    #[test]
-    fn unknown_dropdown_value_is_ignored() {
-        // The pane persists through the per-user settings file.
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = RegionPane::with_settings(RegionSettings::default());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, CURRENCY_KEY, "not-a-currency");
-        pane.sync(&mut doc, &root);
-        // Stayed at the default.
-        assert_eq!(pane.settings().locale.currency, Currency::USD);
+        // Case `unknown_dropdown_value_is_ignored`.
+        {
+            // The pane persists through the per-user settings file.
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = RegionPane::with_settings(RegionSettings::default());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, CURRENCY_KEY, "not-a-currency");
+            pane.sync(&mut doc, &root);
+            // Stayed at the default.
+            assert_eq!(pane.settings().locale.currency, Currency::USD);
+        }
     }
 }

@@ -330,57 +330,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn video_packet_round_trips_without_touching_the_codec_payload() {
-        let packet = VideoPacket {
-            width: 1280,
-            height: 720,
-            presentation_time_us: 33_333,
-            keyframe: true,
-            annex_b: vec![0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f],
-        };
-        let mut wire = Vec::new();
-        packet.write_to(&mut wire).expect("encode packet");
-        assert_eq!(
-            VideoPacket::read_from(wire.as_slice()).expect("decode packet"),
-            packet
-        );
+    fn video_packets_round_trip_and_bound_untrusted_lengths() {
+        // Phase `video_packet_round_trips_without_touching_the_codec_payload`.
+        {
+            let packet = VideoPacket {
+                width: 1280,
+                height: 720,
+                presentation_time_us: 33_333,
+                keyframe: true,
+                annex_b: vec![0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f],
+            };
+            let mut wire = Vec::new();
+            packet.write_to(&mut wire).expect("encode packet");
+            assert_eq!(
+                VideoPacket::read_from(wire.as_slice()).expect("decode packet"),
+                packet
+            );
+        }
+        // Phase `video_packet_rejects_untrusted_oversized_length_before_allocating`.
+        {
+            let mut wire = Vec::new();
+            wire.extend_from_slice(&VIDEO_PACKET_MAGIC);
+            wire.extend_from_slice(&1280u32.to_be_bytes());
+            wire.extend_from_slice(&720u32.to_be_bytes());
+            wire.extend_from_slice(&0u64.to_be_bytes());
+            wire.push(0);
+            wire.extend_from_slice(&u32::MAX.to_be_bytes());
+            let error = VideoPacket::read_from(wire.as_slice()).expect_err("oversize rejected");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
     }
 
     #[test]
-    fn video_packet_rejects_untrusted_oversized_length_before_allocating() {
-        let mut wire = Vec::new();
-        wire.extend_from_slice(&VIDEO_PACKET_MAGIC);
-        wire.extend_from_slice(&1280u32.to_be_bytes());
-        wire.extend_from_slice(&720u32.to_be_bytes());
-        wire.extend_from_slice(&0u64.to_be_bytes());
-        wire.push(0);
-        wire.extend_from_slice(&u32::MAX.to_be_bytes());
-        let error = VideoPacket::read_from(wire.as_slice()).expect_err("oversize rejected");
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    }
+    fn stream_ceilings_follow_user_and_receiver_capabilities() {
+        // Phase `stream_ceiling_is_the_minimum_of_user_and_receiver_capabilities`.
+        {
+            let policy = DisplayStreamPolicy {
+                adaptive: true,
+                resolution_limit: DisplayResolutionLimit::P2160,
+                max_fps: 60,
+            };
+            let profile = policy.ceiling(Some((1920, 1080)));
+            assert_eq!((profile.max_width, profile.max_height), (1920, 1080));
 
-    #[test]
-    fn stream_ceiling_is_the_minimum_of_user_and_receiver_capabilities() {
-        let policy = DisplayStreamPolicy {
-            adaptive: true,
-            resolution_limit: DisplayResolutionLimit::P2160,
-            max_fps: 60,
-        };
-        let profile = policy.ceiling(Some((1920, 1080)));
-        assert_eq!((profile.max_width, profile.max_height), (1920, 1080));
-
-        let policy = DisplayStreamPolicy {
-            resolution_limit: DisplayResolutionLimit::P720,
-            ..policy
-        };
-        let profile = policy.ceiling(Some((3840, 2160)));
-        assert_eq!((profile.max_width, profile.max_height), (1280, 720));
-    }
-
-    #[test]
-    fn native_policy_uses_receiver_capability_without_a_wireless_preset() {
-        let profile = DisplayStreamPolicy::default().ceiling(Some((2560, 1440)));
-        assert_eq!((profile.max_width, profile.max_height), (2560, 1440));
-        assert_eq!(profile.fps, 60);
+            let policy = DisplayStreamPolicy {
+                resolution_limit: DisplayResolutionLimit::P720,
+                ..policy
+            };
+            let profile = policy.ceiling(Some((3840, 2160)));
+            assert_eq!((profile.max_width, profile.max_height), (1280, 720));
+        }
+        // Phase `native_policy_uses_receiver_capability_without_a_wireless_preset`.
+        {
+            let profile = DisplayStreamPolicy::default().ceiling(Some((2560, 1440)));
+            assert_eq!((profile.max_width, profile.max_height), (2560, 1440));
+            assert_eq!(profile.fps, 60);
+        }
     }
 }

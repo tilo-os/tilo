@@ -396,16 +396,20 @@ impl Widget for Artwork {
 mod tests {
     use super::{FallbackMark, fallback_mark};
 
+    /// Known apps get distinct marks and unknown ones a legible generic mark.
     #[test]
-    fn known_desktop_apps_have_distinct_fallback_marks() {
-        assert_eq!(fallback_mark("Terminal"), FallbackMark::Terminal);
-        assert_eq!(fallback_mark("Files"), FallbackMark::Files);
-        assert_eq!(fallback_mark("VLC"), FallbackMark::Media);
-        assert_eq!(fallback_mark("Notes"), FallbackMark::Notes);
-    }
+    fn fallback_marks_are_distinct_and_legible() {
+        // Case `known_desktop_apps_have_distinct_fallback_marks`.
+        {
+            assert_eq!(fallback_mark("Terminal"), FallbackMark::Terminal);
+            assert_eq!(fallback_mark("Files"), FallbackMark::Files);
+            assert_eq!(fallback_mark("VLC"), FallbackMark::Media);
+            assert_eq!(fallback_mark("Notes"), FallbackMark::Notes);
+        }
 
-    #[test]
-    fn unknown_catalogue_item_keeps_a_legible_generic_mark() {
-        assert_eq!(fallback_mark("Example app"), FallbackMark::Generic);
+        // Case `unknown_catalogue_item_keeps_a_legible_generic_mark`.
+        {
+            assert_eq!(fallback_mark("Example app"), FallbackMark::Generic);
+        }
     }
 }

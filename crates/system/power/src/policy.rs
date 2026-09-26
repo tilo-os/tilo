@@ -130,50 +130,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn action_labels_round_trip() {
-        for a in [PowerAction::Suspend, PowerAction::Lock, PowerAction::Ignore] {
-            assert_eq!(PowerAction::from_label(a.label()), Some(a));
+    fn power_actions_round_trip_and_lid_and_key_follow_policy() {
+        // Phase `action_labels_round_trip`.
+        {
+            for a in [PowerAction::Suspend, PowerAction::Lock, PowerAction::Ignore] {
+                assert_eq!(PowerAction::from_label(a.label()), Some(a));
+            }
+            // Case-insensitive and tolerant of synonyms for "ignore".
+            assert_eq!(
+                PowerAction::from_label("SUSPEND"),
+                Some(PowerAction::Suspend)
+            );
+            assert_eq!(
+                PowerAction::from_label("nothing"),
+                Some(PowerAction::Ignore)
+            );
+            assert_eq!(PowerAction::from_label("none"), Some(PowerAction::Ignore));
+            assert_eq!(PowerAction::from_label("garbage"), None);
         }
-        // Case-insensitive and tolerant of synonyms for "ignore".
-        assert_eq!(
-            PowerAction::from_label("SUSPEND"),
-            Some(PowerAction::Suspend)
-        );
-        assert_eq!(
-            PowerAction::from_label("nothing"),
-            Some(PowerAction::Ignore)
-        );
-        assert_eq!(PowerAction::from_label("none"), Some(PowerAction::Ignore));
-        assert_eq!(PowerAction::from_label("garbage"), None);
-    }
-
-    #[test]
-    fn lid_open_is_never_an_action() {
-        let p = PowerPolicy::default();
-        assert_eq!(p.on_lid(false), None, "opening the lid does nothing");
-    }
-
-    #[test]
-    fn lid_close_follows_policy() {
-        let mut p = PowerPolicy {
-            lid_close_action: PowerAction::Suspend,
-            ..Default::default()
-        };
-        assert_eq!(p.on_lid(true), Some(PowerAction::Suspend));
-        p.lid_close_action = PowerAction::Lock;
-        assert_eq!(p.on_lid(true), Some(PowerAction::Lock));
-        p.lid_close_action = PowerAction::Ignore;
-        assert_eq!(p.on_lid(true), None, "ignore means no action");
-    }
-
-    #[test]
-    fn power_key_follows_policy() {
-        let mut p = PowerPolicy {
-            power_key_action: PowerAction::Lock,
-            ..Default::default()
-        };
-        assert_eq!(p.on_power_key(), Some(PowerAction::Lock));
-        p.power_key_action = PowerAction::Ignore;
-        assert_eq!(p.on_power_key(), None);
+        // Phase `lid_open_is_never_an_action`.
+        {
+            let p = PowerPolicy::default();
+            assert_eq!(p.on_lid(false), None, "opening the lid does nothing");
+        }
+        // Phase `lid_close_follows_policy`.
+        {
+            let mut p = PowerPolicy {
+                lid_close_action: PowerAction::Suspend,
+                ..Default::default()
+            };
+            assert_eq!(p.on_lid(true), Some(PowerAction::Suspend));
+            p.lid_close_action = PowerAction::Lock;
+            assert_eq!(p.on_lid(true), Some(PowerAction::Lock));
+            p.lid_close_action = PowerAction::Ignore;
+            assert_eq!(p.on_lid(true), None, "ignore means no action");
+        }
+        // Phase `power_key_follows_policy`.
+        {
+            let mut p = PowerPolicy {
+                power_key_action: PowerAction::Lock,
+                ..Default::default()
+            };
+            assert_eq!(p.on_power_key(), Some(PowerAction::Lock));
+            p.power_key_action = PowerAction::Ignore;
+            assert_eq!(p.on_power_key(), None);
+        }
     }
 }

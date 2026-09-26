@@ -21,7 +21,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
-use serde::{Deserialize, Serialize};
 
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
 const DATA_APP_TEMPLATE: &str = include_str!("../templates/data.rs");
@@ -465,39 +464,7 @@ pub struct PackageOutcome {
 }
 
 /// One validated edit to a serialized UI object graph.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum UiGraphEdit {
-    Insert {
-        parent: String,
-        index: usize,
-        node: tilo_ui_graph::UiNode,
-    },
-    Remove {
-        id: String,
-    },
-    Replace {
-        id: String,
-        node: tilo_ui_graph::UiNode,
-    },
-    Move {
-        id: String,
-        parent: String,
-        index: usize,
-    },
-    /// Set one serialized node property. A dotted path addresses nested
-    /// objects such as `text.value` or `navigate.route`.
-    SetProperty {
-        id: String,
-        property: String,
-        value: serde_json::Value,
-    },
-    /// Remove one serialized node property so its schema default applies.
-    UnsetProperty {
-        id: String,
-        property: String,
-    },
-}
+pub use tilo_ui_graph::UiGraphEdit;
 
 /// High-level request for an app-owned component in a serialized UI graph.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3508,7 +3475,7 @@ fn screen_registry_source(names: &[String]) -> String {
         let function = name.replace('-', "_");
         let _ = writeln!(
             source,
-            "\n\n/// Build the `{name}` screen.\n///\n/// # Errors\n///\n/// Returns a graph parse, validation, component, or construction error.\npub fn {function}(theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {{\n    {function}_with(theme, UiBuildContext::default())\n}}\n\n/// Build `{name}` with app-owned component factories and other services.\n///\n/// # Errors\n///\n/// Returns a graph parse, validation, component, or construction error.\npub fn {function}_with(\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Box<dyn Widget>, UiGraphError> {{\n    build_with(include_str!(\"../ui/{name}.json\"), theme, context)\n}}"
+            "\n\n/// Build the `{name}` screen.\n///\n/// # Errors\n///\n/// Returns a graph parse, validation, component, or construction error.\npub fn {function}(theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {{\n    {function}_with(theme, UiBuildContext::default())\n}}\n\n/// Build `{name}` with app-owned component factories and other services.\n///\n/// # Errors\n///\n/// Returns a graph parse, validation, component, or construction error.\npub fn {function}_with(\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Box<dyn Widget>, UiGraphError> {{\n    build_with({name:?}, include_str!(\"../ui/{name}.json\"), theme, context)\n}}"
         );
     }
     source.push_str(
@@ -3533,7 +3500,7 @@ pub fn get(name: &str, theme: &Theme) -> Option<Result<Box<dyn Widget>, UiGraphE
         );
     }
     source.push_str(
-        "        _ => return None,\n    };\n    let context = context.clone().with_router(navigation.clone());\n    Some(build_with(source, theme, context))\n}\n\n/// Build a history-aware host for all registered screens.\n///\n/// # Errors\n///\n/// Returns an error when the initial route or a screen is invalid.\npub fn router(initial: &str, theme: &Theme) -> Result<Router, RouteError> {\n    router_with(initial, theme, UiBuildContext::default())\n}\n\n/// Build the screen router with app-owned component factories and services.\n///\n/// # Errors\n///\n/// Returns an error when the initial route or a screen is invalid.\npub fn router_with(\n    initial: &str,\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Router, RouteError> {\n    Router::new(initial, NAMES.iter().copied(), theme, move |route, theme, navigation| {\n        get_routed(route, theme, navigation, &context)\n            .ok_or_else(|| format!(\"screen {route:?} is not registered\"))?\n            .map_err(|error| error.to_string())\n    })\n}\n\nfn build_with(\n    source: &str,\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Box<dyn Widget>, UiGraphError> {\n    let graph = UiGraphHandle::from_json(source)?;\n    Ok(Box::new(graph.widget_with(theme, context)?))\n}\n",
+        "        _ => return None,\n    };\n    let context = context.clone().with_router(navigation.clone());\n    Some(build_with(name, source, theme, context))\n}\n\n/// Build a history-aware host for all registered screens.\n///\n/// # Errors\n///\n/// Returns an error when the initial route or a screen is invalid.\npub fn router(initial: &str, theme: &Theme) -> Result<Router, RouteError> {\n    router_with(initial, theme, UiBuildContext::default())\n}\n\n/// Build the screen router with app-owned component factories and services.\n///\n/// # Errors\n///\n/// Returns an error when the initial route or a screen is invalid.\npub fn router_with(\n    initial: &str,\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Router, RouteError> {\n    Router::new(initial, NAMES.iter().copied(), theme, move |route, theme, navigation| {\n        get_routed(route, theme, navigation, &context)\n            .ok_or_else(|| format!(\"screen {route:?} is not registered\"))?\n            .map_err(|error| error.to_string())\n    })\n}\n\nfn build_with(\n    screen: &str,\n    source: &str,\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Box<dyn Widget>, UiGraphError> {\n    let graph = UiGraphHandle::from_embedded_or_live(screen, source)?;\n    Ok(Box::new(graph.widget_with(theme, context)?))\n}\n",
     );
     source
 }
@@ -3698,12 +3665,7 @@ fn unique_ui_node_id(document: &tilo_ui_graph::UiDocument, base: &str) -> Result
 /// Returns an error when the source is not a non-empty array of supported,
 /// structurally valid edit objects.
 pub fn parse_ui_graph_edits(source: &str) -> Result<Vec<UiGraphEdit>> {
-    let edits: Vec<UiGraphEdit> =
-        serde_json::from_str(source).context("parsing UI graph edit batch")?;
-    if edits.is_empty() {
-        bail!("UI graph edit batch must contain at least one edit");
-    }
-    Ok(edits)
+    tilo_ui_graph::parse_ui_graph_edits(source).context("parsing UI graph edit batch")
 }
 
 /// Apply a non-empty edit batch and publish the graph exactly once after every
@@ -3714,83 +3676,17 @@ pub fn parse_ui_graph_edits(source: &str) -> Result<Vec<UiGraphEdit>> {
 /// Returns a load, edit, validation, or atomic-write error. The source file
 /// remains byte-for-byte unchanged when any operation fails.
 pub fn edit_ui_graph_batch(path: &Path, edits: Vec<UiGraphEdit>) -> Result<()> {
-    if edits.is_empty() {
-        bail!("UI graph edit batch must contain at least one edit");
-    }
     let mut document = load_ui_graph(path)?;
-    for (index, edit) in edits.into_iter().enumerate() {
-        apply_ui_graph_edit(&mut document, edit)
-            .with_context(|| format!("applying UI graph edit {}", index.saturating_add(1)))?;
-    }
+    document.apply_edits(edits).map_err(|error| match error {
+        tilo_ui_graph::UiGraphError::EditFailed { index, message } => {
+            anyhow::anyhow!("applying UI graph edit {index}: {message}")
+        }
+        tilo_ui_graph::UiGraphError::EmptyEditBatch => {
+            anyhow::anyhow!("UI graph edit batch must contain at least one edit")
+        }
+        other => anyhow::Error::new(other).context("applying UI graph edit batch"),
+    })?;
     write_ui_graph(path, &document)
-}
-
-fn apply_ui_graph_edit(document: &mut tilo_ui_graph::UiDocument, edit: UiGraphEdit) -> Result<()> {
-    match edit {
-        UiGraphEdit::Insert {
-            parent,
-            index,
-            node,
-        } => document.insert_child(&parent, index, node)?,
-        UiGraphEdit::Remove { id } => {
-            let _ = document.remove_node(&id)?;
-        }
-        UiGraphEdit::Replace { id, node } => document.replace_node(&id, node)?,
-        UiGraphEdit::Move { id, parent, index } => {
-            document.move_node(&id, &parent, index)?;
-        }
-        UiGraphEdit::SetProperty {
-            id,
-            property,
-            value,
-        } => {
-            set_ui_node_property(document, &id, &property, Some(value))?;
-        }
-        UiGraphEdit::UnsetProperty { id, property } => {
-            set_ui_node_property(document, &id, &property, None)?;
-        }
-    }
-    Ok(())
-}
-
-fn set_ui_node_property(
-    document: &mut tilo_ui_graph::UiDocument,
-    id: &str,
-    property: &str,
-    value: Option<serde_json::Value>,
-) -> Result<()> {
-    let node = document
-        .node(id)
-        .cloned()
-        .with_context(|| format!("UI graph has no node {id:?}"))?;
-    let segments: Vec<_> = property.split('.').collect();
-    if segments.iter().any(|segment| segment.is_empty()) {
-        bail!("property path must contain non-empty dot-separated names");
-    }
-    let mut serialized = serde_json::to_value(node).context("serializing UI node")?;
-    let Some((leaf, parents)) = segments.split_last() else {
-        bail!("property path must contain a name");
-    };
-    let mut current = &mut serialized;
-    for segment in parents {
-        current = current
-            .as_object_mut()
-            .and_then(|object| object.get_mut(*segment))
-            .with_context(|| format!("node {id:?} has no object property path {property:?}"))?;
-    }
-    let object = current
-        .as_object_mut()
-        .with_context(|| format!("node {id:?} property parent is not an object"))?;
-    if let Some(value) = value {
-        object.insert((*leaf).to_owned(), value);
-    } else if object.remove(*leaf).is_none() {
-        bail!("node {id:?} has no property {property:?}");
-    }
-    let replacement: tilo_ui_graph::UiNode = serde_json::from_value(serialized)
-        .with_context(|| format!("property {property:?} is not valid for node {id:?}"))?;
-    document
-        .replace_node(id, replacement)
-        .with_context(|| format!("validating property {property:?} on node {id:?}"))
 }
 
 /// Rewrite a valid graph in the canonical pretty-printed form.
@@ -5069,52 +4965,18 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
         match event_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
                 watcher.observe(&event);
-                if event_requires_restart(&event, &roots) {
-                    drain_until_quiet(&event_rx, &roots, request.debounce, &mut watcher);
-                    loop {
-                        report_child_exit(&mut child);
-                        eprintln!("[tilo-app] change detected; rebuilding");
-                        let building_revision = source_revision.load(Ordering::Acquire);
-                        let candidate = plan_app_task(&app_dir, AppTask::Run, &request.forwarded)
-                            .and_then(|plan| build_dev_candidate(&plan));
-
-                        let queued_restart =
-                            drain_pending_restart_events(&event_rx, &roots, |event| {
-                                watcher.observe(event);
-                            });
-                        let superseded = queued_restart
-                            || source_revision.load(Ordering::Acquire) != building_revision;
-                        if DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
-                            break 'watching;
-                        }
-                        if superseded {
-                            eprintln!(
-                                "[tilo-app] newer change arrived during the build; skipping the stale candidate"
-                            );
-                            drain_until_quiet(&event_rx, &roots, request.debounce, &mut watcher);
-                            continue;
-                        }
-                        match candidate {
-                            Ok(executable) => {
-                                eprintln!("[tilo-app] build succeeded; restarting");
-                                stop_dev_child(&mut child);
-                                child = spawn_dev_binary_reported(
-                                    &app_dir,
-                                    &executable,
-                                    &request.forwarded,
-                                );
-                            }
-                            Err(error) => {
-                                let state = if child.is_some() {
-                                    "keeping the last good app running"
-                                } else {
-                                    "waiting for another change"
-                                };
-                                eprintln!("[tilo-app] build failed; {state}\n{error:#}");
-                            }
-                        }
-                        break;
-                    }
+                if event_requires_restart(&event, &roots)
+                    && rebuild_running_dev_app(
+                        &initial,
+                        request,
+                        &mut child,
+                        &event_rx,
+                        &roots,
+                        &mut watcher,
+                        &source_revision,
+                    )
+                {
+                    break 'watching;
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -5126,6 +4988,69 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
     stop_dev_child(&mut child);
     eprintln!("[tilo-app] stopped");
     Ok(())
+}
+
+/// Rebuild until the candidate matches the newest source, or the user stops.
+/// Returns whether the watcher itself should stop.
+fn rebuild_running_dev_app(
+    plan: &CargoPlan,
+    request: &DevRequest,
+    child: &mut Option<Child>,
+    events: &mpsc::Receiver<notify::Result<Event>>,
+    roots: &[PathBuf],
+    watcher: &mut DevWatcher,
+    source_revision: &AtomicU64,
+) -> bool {
+    drain_until_quiet(events, roots, request.debounce, watcher);
+    loop {
+        report_child_exit(child);
+        eprintln!("[tilo-app] change detected; rebuilding");
+        let building_revision = source_revision.load(Ordering::Acquire);
+        // The startup plan already passed preflight. Re-running it shells out
+        // to `capnp --version` before rustc starts. A newer edit cancels this
+        // compile instead of waiting for a binary that will not be launched.
+        let candidate = build_dev_candidate_interruptible(plan, Some(events), roots, |event| {
+            watcher.observe(event);
+        });
+        let queued_restart = drain_pending_restart_events(events, roots, |event| {
+            watcher.observe(event);
+        });
+        let superseded =
+            queued_restart || source_revision.load(Ordering::Acquire) != building_revision;
+        if DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
+            return true;
+        }
+        if superseded {
+            eprintln!(
+                "[tilo-app] newer change arrived during the build; skipping the stale candidate"
+            );
+            drain_until_quiet(events, roots, request.debounce, watcher);
+            continue;
+        }
+        match candidate {
+            Ok(DevCandidate::Built(executable)) => {
+                eprintln!("[tilo-app] build succeeded; restarting");
+                stop_dev_child(child);
+                *child = spawn_dev_binary_reported(&plan.app_dir, &executable, &request.forwarded);
+            }
+            Ok(DevCandidate::Superseded) => {
+                eprintln!(
+                    "[tilo-app] newer change arrived during the build; skipping the stale candidate"
+                );
+                drain_until_quiet(events, roots, request.debounce, watcher);
+                continue;
+            }
+            Err(error) => {
+                let state = if child.is_some() {
+                    "keeping the last good app running"
+                } else {
+                    "waiting for another change"
+                };
+                eprintln!("[tilo-app] build failed; {state}\n{error:#}");
+            }
+        }
+        return false;
+    }
 }
 
 /// Drain edits queued while Cargo was compiling. Returning `true` makes the
@@ -5149,7 +5074,29 @@ fn drain_pending_restart_events(
     }
 }
 
+enum DevCandidate {
+    Built(PathBuf),
+    /// A source edit arrived while Cargo was running. That process was stopped.
+    Superseded,
+}
+
+#[cfg(test)]
 fn build_dev_candidate(plan: &CargoPlan) -> Result<PathBuf> {
+    match build_dev_candidate_interruptible(plan, None, &[], |_| {})? {
+        DevCandidate::Built(executable) => Ok(executable),
+        DevCandidate::Superseded => bail!("development build was cancelled without a watcher"),
+    }
+}
+
+/// Build the app binary. When `events` is set, a restart-worthy edit cancels
+/// Cargo so the next build compiles the newest source instead of waiting out
+/// a binary that will be discarded.
+fn build_dev_candidate_interruptible(
+    plan: &CargoPlan,
+    events: Option<&mpsc::Receiver<notify::Result<Event>>>,
+    roots: &[PathBuf],
+    mut observe: impl FnMut(&Event),
+) -> Result<DevCandidate> {
     let manifest = plan.app_dir.join("Cargo.toml");
     let expected_manifest = manifest.canonicalize().unwrap_or_else(|_| manifest.clone());
     let expected_binary = dev_binary_name(&manifest)?;
@@ -5165,6 +5112,8 @@ fn build_dev_candidate(plan: &CargoPlan) -> Result<PathBuf> {
         .stdin(Stdio::inherit())
         .stderr(Stdio::inherit())
         .stdout(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
     let mut build = command
         .spawn()
         .with_context(|| format!("starting {} build", plan.program.to_string_lossy()))?;
@@ -5172,22 +5121,144 @@ fn build_dev_candidate(plan: &CargoPlan) -> Result<PathBuf> {
         .stdout
         .take()
         .ok_or_else(|| anyhow::anyhow!("Cargo build has no artifact stream"))?;
+    let (line_tx, line_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
     let mut artifacts = HashMap::new();
-    for line in BufReader::new(stdout).lines() {
-        let line = line.context("reading Cargo development artifact stream")?;
-        collect_cargo_message(&line, &expected_manifest, &mut artifacts);
+    loop {
+        if DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
+            terminate_build_child(&mut build);
+            bail!("development stopped");
+        }
+        if events.is_some_and(|events| newer_source_during_build(events, roots, &mut observe)) {
+            terminate_build_child(&mut build);
+            return Ok(DevCandidate::Superseded);
+        }
+        while let Ok(line) = line_rx.try_recv() {
+            let line = line.context("reading Cargo development artifact stream")?;
+            collect_cargo_message(&line, &expected_manifest, &mut artifacts);
+        }
+        match build.try_wait() {
+            Ok(Some(status)) => {
+                // The reader thread can still be forwarding the last lines
+                // after the process has exited. Wait until it drops the sender.
+                while let Ok(line) = line_rx.recv() {
+                    let line = line.context("reading Cargo development artifact stream")?;
+                    collect_cargo_message(&line, &expected_manifest, &mut artifacts);
+                }
+                if !status.success() {
+                    bail!("Cargo development build failed with {status}");
+                }
+                let executable = artifacts.remove(&expected_binary).with_context(|| {
+                    format!(
+                        "Cargo build completed without reporting executable {expected_binary:?}; set package.default-run when the app has multiple binaries"
+                    )
+                })?;
+                return Ok(DevCandidate::Built(executable));
+            }
+            Ok(None) => {}
+            Err(error) => return Err(error).context("waiting for Cargo development build"),
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
-    let status = build
-        .wait()
-        .context("waiting for Cargo development build")?;
-    if !status.success() {
-        bail!("Cargo development build failed with {status}");
+}
+
+fn newer_source_during_build(
+    events: &mpsc::Receiver<notify::Result<Event>>,
+    roots: &[PathBuf],
+    observe: &mut impl FnMut(&Event),
+) -> bool {
+    let mut restart = false;
+    loop {
+        match events.try_recv() {
+            Ok(Ok(event)) => {
+                restart |= event_requires_restart(&event, roots);
+                observe(&event);
+            }
+            Ok(Err(error)) => eprintln!("[tilo-app] watch error: {error}"),
+            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
+        }
     }
-    artifacts.remove(&expected_binary).with_context(|| {
-        format!(
-            "Cargo build completed without reporting executable {expected_binary:?}; set package.default-run when the app has multiple binaries"
-        )
-    })
+    restart
+}
+
+fn terminate_build_child(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let root = child.id();
+        // Snapshot descendants before signalling. A shell with job control
+        // puts `sleep`/`rustc` in a new group, and killing only the leader's
+        // group would leave that child holding the target lock.
+        let pids = descendant_pids(root);
+        if let Ok(pid) = i32::try_from(root) {
+            // SAFETY: the build was spawned as its own process group. Negating
+            // that pid signals Cargo and the rustc children that inherited it.
+            unsafe {
+                libc::kill(pid.saturating_neg(), libc::SIGKILL);
+            }
+        }
+        for pid in pids {
+            if let Ok(pid) = i32::try_from(pid) {
+                // SAFETY: `pid` is the build process or a descendant recorded
+                // from /proc before the signal. SIGKILL is the cancel.
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// The process and every descendant, found from `/proc/<pid>/status` `PPid`.
+///
+/// `/proc/<pid>/task/<pid>/children` is empty on kernels built without
+/// `CONFIG_PROC_CHILDREN`, which is how a cancelled `sleep` survived the
+/// process-group signal in CI.
+#[cfg(unix)]
+fn descendant_pids(root: u32) -> Vec<u32> {
+    let mut by_parent: HashMap<u32, Vec<u32>> = HashMap::new();
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            let Some(parent) = parent_pid(pid) else {
+                continue;
+            };
+            by_parent.entry(parent).or_default().push(pid);
+        }
+    }
+    let mut pids = vec![root];
+    let mut cursor = 0usize;
+    while let Some(pid) = pids.get(cursor).copied() {
+        cursor = cursor.saturating_add(1);
+        if let Some(children) = by_parent.get(&pid) {
+            for child in children {
+                if !pids.contains(child) {
+                    pids.push(*child);
+                }
+            }
+        }
+    }
+    pids
+}
+
+#[cfg(unix)]
+fn parent_pid(pid: u32) -> Option<u32> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("PPid:") {
+            return rest.trim().parse().ok();
+        }
+    }
+    None
 }
 
 fn dev_binary_name(manifest: &Path) -> Result<String> {
@@ -5374,6 +5445,18 @@ fn restart_path(path: &Path, roots: &[PathBuf]) -> bool {
     {
         return false;
     }
+    // LiveUi hot-reloads `ui/*.json` when TILO_UI_GRAPH_DIR is set; restarting
+    // would wipe process-local state the graph edit is meant to preserve.
+    if relative
+        .components()
+        .next()
+        .is_some_and(|component| component.as_os_str() == "ui")
+        && relative
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+    {
+        return false;
+    }
     let Some(name) = relative.file_name().and_then(|name| name.to_str()) else {
         return true;
     };
@@ -5416,9 +5499,42 @@ fn drain_until_quiet(
     }
 }
 
+fn attach_live_graph_env(command: &mut ProcessCommand, app_dir: &Path) {
+    let ui_dir = app_dir.join("ui");
+    if ui_dir.is_dir() {
+        command.env("TILO_UI_GRAPH_DIR", ui_dir);
+    }
+}
+
+/// Directory outside the watched app tree. The running app writes its document,
+/// route, and caret here on SIGTERM; the next process reads them back.
+fn dev_session_dir(app_dir: &Path) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let identity = app_dir
+        .canonicalize()
+        .unwrap_or_else(|_| app_dir.to_path_buf());
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    identity.hash(&mut hasher);
+    std::env::temp_dir().join(format!("tilo-dev-{:016x}", hasher.finish()))
+}
+
+fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) {
+    let dir = dev_session_dir(app_dir);
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "[tilo-app] cannot keep the dev session at {}: {error}",
+            dir.display()
+        );
+        return;
+    }
+    command.env("TILO_DEV_SESSION", dir);
+}
+
 fn spawn_dev_child(plan: &CargoPlan) -> Result<Child> {
     let mut command = ProcessCommand::new(&plan.program);
     command.args(&plan.args).current_dir(&plan.app_dir);
+    attach_live_graph_env(&mut command, &plan.app_dir);
+    attach_dev_session_env(&mut command, &plan.app_dir);
     #[cfg(unix)]
     command.process_group(0);
     let child = command
@@ -5441,6 +5557,8 @@ fn spawn_dev_child_reported(plan: &CargoPlan) -> Option<Child> {
 fn spawn_dev_binary(app_dir: &Path, executable: &Path, forwarded: &[OsString]) -> Result<Child> {
     let mut command = ProcessCommand::new(executable);
     command.args(forwarded).current_dir(app_dir);
+    attach_live_graph_env(&mut command, app_dir);
+    attach_dev_session_env(&mut command, app_dir);
     #[cfg(unix)]
     command.process_group(0);
     let child = command
@@ -7269,7 +7387,7 @@ fn cargo_toml(spec: &AppSpec) -> String {
     let extras = format!("{lints}{patches}");
     let sdk_path = sdk_path_for_ui(&spec.ui_path);
     format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ package = \"tilo-app\", path = {sdk_path:?} }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{lints}",
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ package = \"tilo-app\", path = {sdk_path:?} }}\n{lints}",
         name = spec.package_name,
         crate_name = spec.crate_name,
         sdk_path = sdk_path.to_string_lossy(),

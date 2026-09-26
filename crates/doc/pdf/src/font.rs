@@ -705,18 +705,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn breaks_at_spaces_and_between_ideographs() {
-        assert_eq!(break_opportunities("ab cd  ef"), vec!["ab ", "cd  ", "ef"]);
-        assert_eq!(break_opportunities("你好a"), vec!["你", "好", "a"]);
-    }
-
-    #[test]
-    fn segments_keep_marks_with_their_base() {
-        let faces = library();
-        if faces.is_empty() {
-            return;
+    fn line_breaking_segments_keep_marks_and_break_between_words_and_ideographs() {
+        // Phase `segments_keep_marks_with_their_base`.
+        fn segments_keep_marks_with_their_base() {
+            let faces = library();
+            if faces.is_empty() {
+                return;
+            }
+            let segments = font_segments(faces, "e\u{301}x");
+            assert_eq!(segments.len(), 1, "{segments:?}");
         }
-        let segments = font_segments(faces, "e\u{301}x");
-        assert_eq!(segments.len(), 1, "{segments:?}");
+        // Phase `breaks_at_spaces_and_between_ideographs`.
+        {
+            assert_eq!(break_opportunities("ab cd  ef"), vec!["ab ", "cd  ", "ef"]);
+            assert_eq!(break_opportunities("你好a"), vec!["你", "好", "a"]);
+        }
+        // Phase `segments_keep_marks_with_their_base` (defined above).
+        segments_keep_marks_with_their_base();
     }
 }

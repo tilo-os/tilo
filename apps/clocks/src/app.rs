@@ -1515,13 +1515,15 @@ mod tests {
         ClocksApp, DueEvent, Timer, WEEKDAYS, alarm_label, custom_timer_duration_seconds,
         remaining_fraction, repeat_summary, timer_label, timezone_label, timezone_results,
     };
+    use crate::ShellSnapshot;
     use chrono::Utc;
     use std::collections::BTreeSet;
     use std::time::Duration;
     use ui::{State, headless::FrameHarness, theme::Theme};
 
     #[test]
-    fn shared_mode_switcher_keeps_full_touch_targets_on_compact_windows() {
+    fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
+        // Case: the shared mode switcher keeps full touch targets on compact windows.
         fn find_toggle(node: &ui::headless::InspectionNode) -> Option<[f64; 4]> {
             if node.widget == "ToggleGroup" {
                 return Some(node.rect);
@@ -1539,38 +1541,194 @@ mod tests {
                 find_toggle(&harness.inspection().root).expect("shared segmented navigation");
             assert!(
                 nav_height >= 44.0,
-                "tab targets became too short: {nav_height}"
+                "width {width}: tab targets became too short: {nav_height}"
             );
-            assert!(x >= 0.0 && x + nav_width <= f64::from(width));
+            assert!(
+                x >= 0.0 && x + nav_width <= f64::from(width),
+                "width {width}: switcher fits the window"
+            );
 
             for label in ["World", "Alarms", "Timers", "Stopwatch"] {
                 assert!(
                     harness.a11y_node_named(label).is_some(),
-                    "{label} must remain independently discoverable"
+                    "width {width}: {label} must remain independently discoverable"
+                );
+            }
+        }
+
+        // Case: large-text custom duration controls have disjoint geometry.
+        let harness = FrameHarness::new_with_theme(
+            State::new(),
+            Box::new(ClocksApp::scenario("timers")),
+            (880, 800),
+            Theme::dark().with_text_scale(2.0),
+        );
+        let targets = harness.targets();
+        let fields = [
+            "clocks.timer.custom.hours",
+            "clocks.timer.custom.minutes",
+            "clocks.timer.custom.seconds",
+        ]
+        .map(|id| {
+            targets
+                .get(id)
+                .copied()
+                .unwrap_or_else(|| panic!("missing {id}"))
+        });
+
+        for (index, earlier) in fields.iter().enumerate() {
+            for later in &fields[index + 1..] {
+                assert!(
+                    !(earlier.x0 < later.x1
+                        && later.x0 < earlier.x1
+                        && earlier.y0 < later.y1
+                        && later.y0 < earlier.y1),
+                    "duration controls must remain disjoint touch targets: {earlier:?} and {later:?}"
                 );
             }
         }
     }
 
-    #[cfg(windows)]
     #[test]
-    fn native_handoff_does_not_queue_a_second_live_alert() {
-        let mut app = ClocksApp::scenario("empty");
-        app.persistent = true;
-        let id = uuid::Uuid::new_v4();
-        app.remember_due(DueEvent::Timer {
-            id,
-            label: "Tea".into(),
-            native_scheduled: true,
-        });
-        assert!(app.pending_notifications.is_empty());
-        app.remember_due(DueEvent::Timer {
-            id,
-            label: "Tea".into(),
-            native_scheduled: false,
-        });
-        assert_eq!(app.pending_notifications.len(), 1);
-        assert_eq!(app.pending_notifications[0].0, super::native_timer_id(id));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn due_notices_are_announced_once_and_survive_the_inactive_tombstone() {
+        // Case: a completed timer's notice survives the inactive tombstone.
+        {
+            let now = Utc::now();
+            let mut timer = Timer::new("Tea", Duration::from_secs(1));
+            timer.start(now);
+            let mut state = crate::ClockState::default();
+            state.timers.push(timer);
+
+            let due = state.tick(now + chrono::Duration::seconds(2), chrono::Local::now());
+            assert!(
+                state
+                    .shell_activity(now + chrono::Duration::seconds(2))
+                    .is_none(),
+                "case completed-timer: no longer an active shell activity"
+            );
+            assert!(
+                matches!(due.as_slice(), [DueEvent::Timer { label, .. }] if label == "Tea"),
+                "case completed-timer: due event"
+            );
+
+            let mut app = ClocksApp::scenario("empty");
+            for event in due {
+                app.remember_due(event);
+            }
+            let notice = app.last_notification.clone().expect("due notice retained");
+            assert_eq!(notice.1, "Timer finished", "case completed-timer: title");
+            assert_eq!(notice.2, "Tea", "case completed-timer: body");
+
+            // Later inactive frames reuse this identity, allowing a polling shell
+            // to observe it without announcing the same completion twice.
+            assert_eq!(
+                app.last_notification.as_ref(),
+                Some(&notice),
+                "case completed-timer: identity reused"
+            );
+        }
+
+        // Case: the due notice survives an inactive shell snapshot on the wire.
+        {
+            let notification_id = uuid::Uuid::new_v4();
+            let snapshot = ShellSnapshot {
+                version: 1,
+                active: false,
+                activity_id: None,
+                label: String::new(),
+                remaining_secs: 0,
+                stopwatch: false,
+                paused: false,
+                overlay: false,
+                generation: 12,
+                producer_pid: 7,
+                notification_id: Some(notification_id),
+                notification_title: "Timer finished".into(),
+                notification_body: "Tea".into(),
+            };
+
+            let encoded = serde_json::to_string(&snapshot).unwrap();
+            let decoded: ShellSnapshot = serde_json::from_str(&encoded).unwrap();
+            assert!(!decoded.active, "case wire-notice: inactive");
+            assert_eq!(
+                decoded.notification_id,
+                Some(notification_id),
+                "case wire-notice: id"
+            );
+            assert_eq!(
+                decoded.notification_title, "Timer finished",
+                "case wire-notice: title"
+            );
+            assert_eq!(decoded.notification_body, "Tea", "case wire-notice: body");
+        }
+
+        // Case: the shell snapshot tombstone is backward compatible.
+        {
+            let legacy = r#"{"version":1,"label":"Tea","remaining_secs":30,"stopwatch":false,"overlay":true,"generation":4,"producer_pid":7}"#;
+            let parsed: ShellSnapshot = serde_json::from_str(legacy).unwrap();
+            assert!(parsed.active, "older live snapshots remain active");
+            assert!(
+                parsed.notification_id.is_none(),
+                "case legacy-snapshot: no notification"
+            );
+
+            let inactive = ShellSnapshot {
+                version: 1,
+                active: false,
+                activity_id: None,
+                label: String::new(),
+                remaining_secs: 0,
+                stopwatch: false,
+                paused: false,
+                overlay: false,
+                generation: 5,
+                producer_pid: 7,
+                notification_id: None,
+                notification_title: String::new(),
+                notification_body: String::new(),
+            };
+            let encoded = serde_json::to_string(&inactive).unwrap();
+            assert!(
+                encoded.contains("\"active\":false"),
+                "case legacy-snapshot: tombstone encodes active=false"
+            );
+        }
+
+        // Case (Windows only): a native handoff does not queue a second live alert.
+        #[cfg(windows)]
+        {
+            let mut app = ClocksApp::scenario("empty");
+            app.persistent = true;
+            let id = uuid::Uuid::new_v4();
+            app.remember_due(DueEvent::Timer {
+                id,
+                label: "Tea".into(),
+                native_scheduled: true,
+            });
+            assert!(
+                app.pending_notifications.is_empty(),
+                "case native-handoff: scheduled natively, nothing queued"
+            );
+            app.remember_due(DueEvent::Timer {
+                id,
+                label: "Tea".into(),
+                native_scheduled: false,
+            });
+            assert_eq!(
+                app.pending_notifications.len(),
+                1,
+                "case native-handoff: unscheduled queues one"
+            );
+            assert_eq!(
+                app.pending_notifications[0].0,
+                super::native_timer_id(id),
+                "case native-handoff: tag"
+            );
+        }
     }
 
     #[test]
@@ -1630,7 +1788,7 @@ mod tests {
         saved
             .save_at(&directory.path().join("tilo/clocks.json"))
             .unwrap();
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "app::tests::live_start_restores_saved_timers_and_shots_leave_them_alone",
@@ -1638,18 +1796,20 @@ mod tests {
             ])
             .env(CHILD, "1")
             .env("XDG_STATE_HOME", directory.path())
-            .status()
+            .output()
             .unwrap();
-        assert!(status.success());
-    }
-
-    #[test]
-    fn countdown_progress_visualizes_time_remaining() {
-        assert!((remaining_fraction(300_000, 300_000) - 1.0).abs() < f32::EPSILON);
-        assert!((remaining_fraction(150_000, 300_000) - 0.5).abs() < f32::EPSILON);
-        assert!(remaining_fraction(0, 300_000).abs() < f32::EPSILON);
-        assert!(remaining_fraction(20, 0).abs() < f32::EPSILON);
-        assert!((remaining_fraction(400_000, 300_000) - 1.0).abs() < f32::EPSILON);
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // libtest exits 0 when `--exact` selects nothing; require the child ran.
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "the child ran no test: {stdout}"
+        );
     }
 
     #[test]
@@ -1697,130 +1857,98 @@ mod tests {
     }
 
     #[test]
-    fn completed_timer_notice_survives_the_inactive_tombstone() {
-        let now = Utc::now();
-        let mut timer = Timer::new("Tea", Duration::from_secs(1));
-        timer.start(now);
-        let mut state = crate::ClockState::default();
-        state.timers.push(timer);
-
-        let due = state.tick(now + chrono::Duration::seconds(2), chrono::Local::now());
+    fn timer_alarm_and_world_clock_inputs_are_bounded_and_readable() {
+        // Case: countdown progress visualizes time remaining.
         assert!(
-            state
-                .shell_activity(now + chrono::Duration::seconds(2))
-                .is_none()
+            (remaining_fraction(300_000, 300_000) - 1.0).abs() < f32::EPSILON,
+            "case progress-full"
         );
-        assert!(matches!(due.as_slice(), [DueEvent::Timer { label, .. }] if label == "Tea"));
+        assert!(
+            (remaining_fraction(150_000, 300_000) - 0.5).abs() < f32::EPSILON,
+            "case progress-half"
+        );
+        assert!(
+            remaining_fraction(0, 300_000).abs() < f32::EPSILON,
+            "case progress-empty"
+        );
+        assert!(
+            remaining_fraction(20, 0).abs() < f32::EPSILON,
+            "case progress-zero-total"
+        );
+        assert!(
+            (remaining_fraction(400_000, 300_000) - 1.0).abs() < f32::EPSILON,
+            "case progress-overflow-clamped"
+        );
 
-        let mut app = ClocksApp::scenario("empty");
-        for event in due {
-            app.remember_due(event);
-        }
-        let notice = app.last_notification.clone().expect("due notice retained");
-        assert_eq!(notice.1, "Timer finished");
-        assert_eq!(notice.2, "Tea");
-
-        // Later inactive frames reuse this identity, allowing a polling shell
-        // to observe it without announcing the same completion twice.
-        assert_eq!(app.last_notification.as_ref(), Some(&notice));
-    }
-
-    #[test]
-    fn custom_timer_labels_are_useful_bounded_and_have_a_calm_default() {
-        assert_eq!(timer_label("  Pasta  "), "Pasta");
-        assert_eq!(timer_label("   "), "Timer");
-        assert_eq!(timer_label(&"x".repeat(120)).chars().count(), 80);
-    }
-
-    #[test]
-    fn custom_timer_duration_requires_bounded_whole_number_fields() {
-        assert_eq!(custom_timer_duration_seconds("01", "02", "03"), Some(3_723));
-        assert_eq!(custom_timer_duration_seconds("", "10", "00"), None);
-        assert_eq!(custom_timer_duration_seconds("100", "10", "00"), None);
-        assert_eq!(custom_timer_duration_seconds("00", "60", "00"), None);
-        assert_eq!(custom_timer_duration_seconds("00", "10", "-1"), None);
-    }
-
-    #[test]
-    fn custom_timer_duration_edges() {
-        assert_eq!(custom_timer_duration_seconds("0", "0", "0"), Some(0));
+        // Case: custom timer labels are useful, bounded and have a calm default.
+        assert_eq!(timer_label("  Pasta  "), "Pasta", "case timer-label-trim");
+        assert_eq!(timer_label("   "), "Timer", "case timer-label-default");
         assert_eq!(
-            custom_timer_duration_seconds("99", "59", "59"),
-            Some(99 * 3_600 + 59 * 60 + 59)
+            timer_label(&"x".repeat(120)).chars().count(),
+            80,
+            "case timer-label-bounded"
         );
-        assert_eq!(
-            custom_timer_duration_seconds("18446744073709551616", "0", "0"),
-            None
-        );
-    }
 
-    #[test]
-    fn large_text_custom_duration_controls_have_disjoint_geometry() {
-        let harness = FrameHarness::new_with_theme(
-            State::new(),
-            Box::new(ClocksApp::scenario("timers")),
-            (880, 800),
-            Theme::dark().with_text_scale(2.0),
-        );
-        let targets = harness.targets();
-        let fields = [
-            "clocks.timer.custom.hours",
-            "clocks.timer.custom.minutes",
-            "clocks.timer.custom.seconds",
-        ]
-        .map(|id| {
-            targets
-                .get(id)
-                .copied()
-                .unwrap_or_else(|| panic!("missing {id}"))
-        });
-
-        for (index, earlier) in fields.iter().enumerate() {
-            for later in &fields[index + 1..] {
-                assert!(
-                    !(earlier.x0 < later.x1
-                        && later.x0 < earlier.x1
-                        && earlier.y0 < later.y1
-                        && later.y0 < earlier.y1),
-                    "duration controls must remain disjoint touch targets: {earlier:?} and {later:?}"
-                );
-            }
+        // Case: custom timer durations require bounded whole-number fields, incl. edges.
+        for (hours, minutes, seconds, want) in [
+            ("01", "02", "03", Some(3_723)),
+            ("", "10", "00", None),
+            ("100", "10", "00", None),
+            ("00", "60", "00", None),
+            ("00", "10", "-1", None),
+            ("0", "0", "0", Some(0)),
+            ("99", "59", "59", Some(99 * 3_600 + 59 * 60 + 59)),
+            ("18446744073709551616", "0", "0", None),
+        ] {
+            assert_eq!(
+                custom_timer_duration_seconds(hours, minutes, seconds),
+                want,
+                "case duration {hours:?}:{minutes:?}:{seconds:?}"
+            );
         }
-    }
 
-    #[test]
-    fn alarm_schedule_summaries_are_specific_and_labels_are_bounded() {
-        assert_eq!(alarm_label("  School run "), "School run");
-        assert_eq!(alarm_label(" "), "Alarm");
+        // Case: alarm schedule summaries are specific and labels are bounded.
+        assert_eq!(
+            alarm_label("  School run "),
+            "School run",
+            "case alarm-label-trim"
+        );
+        assert_eq!(alarm_label(" "), "Alarm", "case alarm-label-default");
         let selected = [WEEKDAYS[0].0, WEEKDAYS[2].0, WEEKDAYS[4].0]
             .into_iter()
             .collect::<BTreeSet<_>>();
-        assert_eq!(repeat_summary(&selected), "Mon, Wed, Fri");
-        assert_eq!(repeat_summary(&BTreeSet::new()), "Once");
-    }
+        assert_eq!(
+            repeat_summary(&selected),
+            "Mon, Wed, Fri",
+            "case repeat-selected"
+        );
+        assert_eq!(repeat_summary(&BTreeSet::new()), "Once", "case repeat-none");
 
-    #[test]
-    fn world_clock_search_covers_the_timezone_catalogue_without_jargon() {
+        // Case: world clock search covers the timezone catalogue without jargon.
         assert_eq!(
             timezone_label("America/Argentina/Buenos_Aires"),
-            "Buenos Aires · America"
+            "Buenos Aires · America",
+            "case timezone-label"
         );
         assert!(
             timezone_results("reykjavik")
                 .iter()
-                .any(|zone| zone == "Atlantic/Reykjavik")
+                .any(|zone| zone == "Atlantic/Reykjavik"),
+            "case search-reykjavik"
         );
         assert!(
             timezone_results("new york")
                 .iter()
-                .any(|zone| zone == "America/New_York")
+                .any(|zone| zone == "America/New_York"),
+            "case search-new-york"
         );
-        assert!(timezone_results("").len() >= 6);
-        assert!(timezone_results("a").len() <= 8);
+        assert!(timezone_results("").len() >= 6, "case search-empty");
+        assert!(timezone_results("a").len() <= 8, "case search-bounded");
         assert!(
             timezone_results("a")
                 .iter()
-                .all(|zone| !zone.starts_with("Etc/"))
+                .all(|zone| !zone.starts_with("Etc/")),
+            "case search-no-etc"
         );
     }
 }

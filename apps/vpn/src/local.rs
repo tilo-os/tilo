@@ -69,18 +69,19 @@ mod tests {
 
     #[test]
     #[serial_test::serial(vpn_env)]
-    fn state_path_prefers_xdg_state_home() {
-        let path = with_env(Some("/state"), "/home/quinten", path).unwrap();
-        assert_eq!(path, PathBuf::from("/state/tilo/vpn-local-profiles.json"));
-    }
-
-    #[test]
-    #[serial_test::serial(vpn_env)]
-    fn state_path_uses_freedesktop_home_fallback() {
-        let expected = PathBuf::from("/home/quinten/.local/state/tilo/vpn-local-profiles.json");
-        for state_home in [None, Some(""), Some("relative/state")] {
-            let path = with_env(state_home, "/home/quinten", path).unwrap();
-            assert_eq!(path, expected, "XDG_STATE_HOME={state_home:?}");
+    fn state_path_prefers_xdg_state_home_then_home_fallback() {
+        // Case `state_path_prefers_xdg_state_home`.
+        {
+            let path = with_env(Some("/state"), "/home/quinten", path).unwrap();
+            assert_eq!(path, PathBuf::from("/state/tilo/vpn-local-profiles.json"));
+        }
+        // Case `state_path_uses_freedesktop_home_fallback`.
+        {
+            let expected = PathBuf::from("/home/quinten/.local/state/tilo/vpn-local-profiles.json");
+            for state_home in [None, Some(""), Some("relative/state")] {
+                let path = with_env(state_home, "/home/quinten", path).unwrap();
+                assert_eq!(path, expected, "XDG_STATE_HOME={state_home:?}");
+            }
         }
     }
 }

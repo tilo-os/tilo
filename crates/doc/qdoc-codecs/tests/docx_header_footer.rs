@@ -514,14 +514,147 @@ fn assert_word_roundtrip(fixture: &[u8], expected_refs: usize) {
 }
 
 #[test]
-fn word_header_and_footer_survive_docx_roundtrip() {
-    assert_word_roundtrip(&word_docx_default_only(), 2);
-}
+#[allow(
+    clippy::too_many_lines,
+    reason = "each phase keeps one former test's body verbatim"
+)]
+fn word_headers_and_footers_survive_docx_roundtrip() {
+    // Phase `word_header_and_footer_survive_docx_roundtrip`.
+    {
+        assert_word_roundtrip(&word_docx_default_only(), 2);
+    }
+    // Phase `word_default_header_survives_alongside_first_page_header`.
+    {
+        // The default header and footer, plus the carried first-page header.
+        assert_word_roundtrip(&word_docx_with_first_page_header(false), 3);
+    }
+    // Phase `unedited_header_and_footer_keep_their_parts`.
+    {
+        // Regions the model holds unedited are written back as imported, parts, relationships and
+        // everything the model does not hold included.
+        let fixture = word_docx_with_first_page_header(true);
+        let exported = export(&import(&fixture));
+        assert_consistent_package(&exported);
+        let parts = parts_of(&exported);
+        let original = parts_of(&fixture);
+        for name in [
+            "word/header1.xml",
+            "word/header2.xml",
+            "word/header3.xml",
+            "word/footer1.xml",
+        ] {
+            assert_eq!(
+                original.iter().find(|(n, _)| n == name),
+                parts.iter().find(|(n, _)| n == name),
+                "{name} kept as it was"
+            );
+        }
+        let document = text_of(&parts, "word/document.xml");
+        assert!(document.contains(r#"r:id="rId8""#) && document.contains(r#"r:id="rId9""#));
+        // The section break keeps its own header too.
+        assert!(document.contains(r#"r:id="rId12""#), "{document}");
+        let d2 = import(&exported);
+        assert_eq!(header_texts(&d2), [HEADER_TEXT]);
+        assert_footer_has_page_field(&d2);
+    }
+    // Phase `first_page_header_and_page_setup_are_carried_through`.
+    {
+        let mut d = import(&word_docx_with_first_page_header(false));
+        edit_regions(&mut d);
+        let exported = export(&d);
+        assert_consistent_package(&exported);
+        let parts = parts_of(&exported);
+        let document = text_of(&parts, "word/document.xml");
+        let sectpr = only_sectpr(&document);
+        assert!(
+            sectpr.starts_with(r#"<w:sectPr w:rsidR="00B4217A">"#),
+            "section start tag kept: {sectpr}"
+        );
+        assert!(
+            sectpr.contains(r#"<w:headerReference w:type="first" r:id="rId7"/>"#),
+            "first-page header reference kept: {sectpr}"
+        );
+        for kept in [
+            r#"<w:pgSz w:w="11906" w:h="16838"/>"#,
+            "<w:titlePg/>",
+            "<w:docGrid",
+        ] {
+            assert!(sectpr.contains(kept), "{kept} kept: {sectpr}");
+        }
+        assert!(
+            !sectpr.contains("rId8"),
+            "old default header reference replaced: {sectpr}"
+        );
+        assert!(
+            !sectpr.contains("rId9"),
+            "old default footer reference replaced: {sectpr}"
+        );
 
-#[test]
-fn word_default_header_survives_alongside_first_page_header() {
-    // The default header and footer, plus the carried first-page header.
-    assert_word_roundtrip(&word_docx_with_first_page_header(false), 3);
+        // The first-page header part keeps its name, text and relationships; qdoc's default
+        // header takes the part name the old default header freed.
+        assert!(text_of(&parts, "word/header1.xml").contains(FIRST_PAGE_HEADER_TEXT));
+        assert!(
+            parts
+                .iter()
+                .any(|(n, _)| n == "word/_rels/header1.xml.rels")
+        );
+        assert!(text_of(&parts, "word/header2.xml").contains("Quarterly Report R&amp;D"));
+        let rels = text_of(&parts, "word/_rels/document.xml.rels");
+        assert!(
+            !rels.contains(r#"Id="rId8""#),
+            "old default header rel dropped: {rels}"
+        );
+        assert!(
+            !rels.contains(r#"Id="rId9""#),
+            "old default footer rel dropped: {rels}"
+        );
+        // Unrelated parts and their relationships are carried through untouched.
+        for kept in [
+            r#"<Relationship Id="rId11" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/>"#,
+            r#"<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>"#,
+        ] {
+            assert!(rels.contains(kept), "{kept} kept: {rels}");
+        }
+    }
+    // Phase `section_break_headers_follow_the_document_header`.
+    {
+        // A section break inside the body is kept, but the model has one header and footer for
+        // the whole document: once they are edited, the break's references point at them, and the
+        // earlier section's own header part and relationship go rather than dangle.
+        let mut d = import(&word_docx_with_first_page_header(true));
+        assert_eq!(
+            header_texts(&d),
+            [HEADER_TEXT],
+            "the final section's default header is the imported one"
+        );
+        edit_regions(&mut d);
+        let exported = export(&d);
+        let referenced: BTreeSet<String> =
+            assert_consistent_package(&exported).into_iter().collect();
+        assert_eq!(referenced.len(), 3, "{referenced:?}");
+        let parts = parts_of(&exported);
+        let document = text_of(&parts, "word/document.xml");
+        assert!(
+            document.contains(
+                r#"<w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rIdQdocHdr"/>"#
+            ),
+            "section break kept, pointing at the document header: {document}"
+        );
+        for (name, bytes) in &parts {
+            assert!(
+                !String::from_utf8_lossy(bytes).contains(SECTION_ONE_HEADER_TEXT),
+                "unreferenced section header text carried in {name}"
+            );
+        }
+        let rels = text_of(&parts, "word/_rels/document.xml.rels");
+        assert!(
+            !rels.contains(r#"Id="rId12""#),
+            "section header rel dropped: {rels}"
+        );
+        let d2 = import(&exported);
+        assert_eq!(header_texts(&d2), [format!("{HEADER_TEXT}{HEADER_EDIT}")]);
+        assert_footer_has_page_field(&d2);
+    }
 }
 
 /// The single `w:sectPr` of an exported `word/document.xml`.
@@ -540,169 +673,42 @@ fn only_sectpr(document: &str) -> &str {
 }
 
 #[test]
-fn unedited_header_and_footer_keep_their_parts() {
-    // Regions the model holds unedited are written back as imported, parts, relationships and
-    // everything the model does not hold included.
-    let fixture = word_docx_with_first_page_header(true);
-    let exported = export(&import(&fixture));
-    assert_consistent_package(&exported);
-    let parts = parts_of(&exported);
-    let original = parts_of(&fixture);
-    for name in [
-        "word/header1.xml",
-        "word/header2.xml",
-        "word/header3.xml",
-        "word/footer1.xml",
-    ] {
-        assert_eq!(
-            original.iter().find(|(n, _)| n == name),
-            parts.iter().find(|(n, _)| n == name),
-            "{name} kept as it was"
-        );
+fn header_removal_and_qdoc_headers_roundtrip_consistently() {
+    // Phase `removing_a_word_header_drops_its_part`.
+    {
+        let mut d = import(&word_docx_default_only());
+        for id in d.header_blocks_in_order() {
+            d.as_mut().tombstone_block_in(qdoc::Region::Header, &id);
+        }
+        assert!(d.header().is_empty(), "header cleared");
+        let exported = export(&d);
+        let referenced = assert_consistent_package(&exported);
+        assert_eq!(referenced.len(), 1, "only the footer is referenced");
+        let d2 = import(&exported);
+        assert!(d2.header().is_empty(), "header stays removed");
+        assert_footer_has_page_field(&d2);
     }
-    let document = text_of(&parts, "word/document.xml");
-    assert!(document.contains(r#"r:id="rId8""#) && document.contains(r#"r:id="rId9""#));
-    // The section break keeps its own header too.
-    assert!(document.contains(r#"r:id="rId12""#), "{document}");
-    let d2 = import(&exported);
-    assert_eq!(header_texts(&d2), [HEADER_TEXT]);
-    assert_footer_has_page_field(&d2);
-}
+    // Phase `qdoc_header_and_footer_roundtrip_consistently`.
+    {
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "Body text");
+        let h = d.insert_header_block(None, "paragraph");
+        d.splice_header_text(&h, 0, 0, HEADER_TEXT);
+        let f = d.insert_footer_block(None, "paragraph");
+        d.splice_footer_text(&f, 0, 0, FOOTER_TEXT);
+        d.insert_footer_page_number(&f, FOOTER_TEXT.chars().count());
 
-#[test]
-fn first_page_header_and_page_setup_are_carried_through() {
-    let mut d = import(&word_docx_with_first_page_header(false));
-    edit_regions(&mut d);
-    let exported = export(&d);
-    assert_consistent_package(&exported);
-    let parts = parts_of(&exported);
-    let document = text_of(&parts, "word/document.xml");
-    let sectpr = only_sectpr(&document);
-    assert!(
-        sectpr.starts_with(r#"<w:sectPr w:rsidR="00B4217A">"#),
-        "section start tag kept: {sectpr}"
-    );
-    assert!(
-        sectpr.contains(r#"<w:headerReference w:type="first" r:id="rId7"/>"#),
-        "first-page header reference kept: {sectpr}"
-    );
-    for kept in [
-        r#"<w:pgSz w:w="11906" w:h="16838"/>"#,
-        "<w:titlePg/>",
-        "<w:docGrid",
-    ] {
-        assert!(sectpr.contains(kept), "{kept} kept: {sectpr}");
+        let exported = export(&d);
+        assert_eq!(assert_consistent_package(&exported).len(), 2);
+        let d2 = import(&exported);
+        assert_eq!(header_texts(&d2), [HEADER_TEXT]);
+        assert_footer_has_page_field(&d2);
+
+        let exported2 = export(&d2);
+        assert_eq!(assert_consistent_package(&exported2).len(), 2);
+        let d3 = import(&exported2);
+        assert_eq!(header_texts(&d3), [HEADER_TEXT]);
+        assert_footer_has_page_field(&d3);
     }
-    assert!(
-        !sectpr.contains("rId8"),
-        "old default header reference replaced: {sectpr}"
-    );
-    assert!(
-        !sectpr.contains("rId9"),
-        "old default footer reference replaced: {sectpr}"
-    );
-
-    // The first-page header part keeps its name, text and relationships; qdoc's default
-    // header takes the part name the old default header freed.
-    assert!(text_of(&parts, "word/header1.xml").contains(FIRST_PAGE_HEADER_TEXT));
-    assert!(
-        parts
-            .iter()
-            .any(|(n, _)| n == "word/_rels/header1.xml.rels")
-    );
-    assert!(text_of(&parts, "word/header2.xml").contains("Quarterly Report R&amp;D"));
-    let rels = text_of(&parts, "word/_rels/document.xml.rels");
-    assert!(
-        !rels.contains(r#"Id="rId8""#),
-        "old default header rel dropped: {rels}"
-    );
-    assert!(
-        !rels.contains(r#"Id="rId9""#),
-        "old default footer rel dropped: {rels}"
-    );
-    // Unrelated parts and their relationships are carried through untouched.
-    for kept in [
-        r#"<Relationship Id="rId11" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/>"#,
-        r#"<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>"#,
-    ] {
-        assert!(rels.contains(kept), "{kept} kept: {rels}");
-    }
-}
-
-#[test]
-fn section_break_headers_follow_the_document_header() {
-    // A section break inside the body is kept, but the model has one header and footer for
-    // the whole document: once they are edited, the break's references point at them, and the
-    // earlier section's own header part and relationship go rather than dangle.
-    let mut d = import(&word_docx_with_first_page_header(true));
-    assert_eq!(
-        header_texts(&d),
-        [HEADER_TEXT],
-        "the final section's default header is the imported one"
-    );
-    edit_regions(&mut d);
-    let exported = export(&d);
-    let referenced: BTreeSet<String> = assert_consistent_package(&exported).into_iter().collect();
-    assert_eq!(referenced.len(), 3, "{referenced:?}");
-    let parts = parts_of(&exported);
-    let document = text_of(&parts, "word/document.xml");
-    assert!(
-        document.contains(
-            r#"<w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rIdQdocHdr"/>"#
-        ),
-        "section break kept, pointing at the document header: {document}"
-    );
-    for (name, bytes) in &parts {
-        assert!(
-            !String::from_utf8_lossy(bytes).contains(SECTION_ONE_HEADER_TEXT),
-            "unreferenced section header text carried in {name}"
-        );
-    }
-    let rels = text_of(&parts, "word/_rels/document.xml.rels");
-    assert!(
-        !rels.contains(r#"Id="rId12""#),
-        "section header rel dropped: {rels}"
-    );
-    let d2 = import(&exported);
-    assert_eq!(header_texts(&d2), [format!("{HEADER_TEXT}{HEADER_EDIT}")]);
-    assert_footer_has_page_field(&d2);
-}
-
-#[test]
-fn removing_a_word_header_drops_its_part() {
-    let mut d = import(&word_docx_default_only());
-    for id in d.header_blocks_in_order() {
-        d.as_mut().tombstone_block_in(qdoc::Region::Header, &id);
-    }
-    assert!(d.header().is_empty(), "header cleared");
-    let exported = export(&d);
-    let referenced = assert_consistent_package(&exported);
-    assert_eq!(referenced.len(), 1, "only the footer is referenced");
-    let d2 = import(&exported);
-    assert!(d2.header().is_empty(), "header stays removed");
-    assert_footer_has_page_field(&d2);
-}
-
-#[test]
-fn qdoc_header_and_footer_roundtrip_consistently() {
-    let mut d = Document::new();
-    let p = d.insert_block(None, "paragraph");
-    d.splice_text(&p, 0, 0, "Body text");
-    let h = d.insert_header_block(None, "paragraph");
-    d.splice_header_text(&h, 0, 0, HEADER_TEXT);
-    let f = d.insert_footer_block(None, "paragraph");
-    d.splice_footer_text(&f, 0, 0, FOOTER_TEXT);
-    d.insert_footer_page_number(&f, FOOTER_TEXT.chars().count());
-
-    let exported = export(&d);
-    assert_eq!(assert_consistent_package(&exported).len(), 2);
-    let d2 = import(&exported);
-    assert_eq!(header_texts(&d2), [HEADER_TEXT]);
-    assert_footer_has_page_field(&d2);
-
-    let exported2 = export(&d2);
-    assert_eq!(assert_consistent_package(&exported2).len(), 2);
-    let d3 = import(&exported2);
-    assert_eq!(header_texts(&d3), [HEADER_TEXT]);
-    assert_footer_has_page_field(&d3);
 }

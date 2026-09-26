@@ -50,7 +50,6 @@ use smithay::wayland::fractional_scale::{
     self, FractionalScaleHandler, FractionalScaleManagerState,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
-use smithay::output::Output as SmithayOutput;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::pointer_constraints::PointerConstraintsState;
 use smithay::wayland::pointer_gestures::PointerGesturesState;
@@ -72,6 +71,7 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::idle_inhibit::{IdleInhibitHandler, IdleInhibitManagerState};
+use smithay::wayland::xdg_toplevel_icon::{XdgToplevelIconHandler, XdgToplevelIconManager};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::wayland::xdg_activation::{
@@ -84,10 +84,11 @@ use smithay::{
     delegate_pointer_gestures, delegate_relative_pointer, delegate_primary_selection,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
-    delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
+    delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell, delegate_xdg_toplevel_icon,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
+use crate::compositor::output_management::OutputManagementState;
 use crate::compositor::remote_seat::RemoteSeats;
 use crate::compositor::render_node::{ProbeError, RenderNode};
 use crate::compositor::selection::SelectionState;
@@ -551,6 +552,9 @@ pub struct State {
     pub idle_inhibit_manager: IdleInhibitManagerState,
     /// Live idle inhibitors and the registry holds their visible windows earn; see [`crate::compositor::idle_inhibit`].
     pub idle_inhibitors: crate::compositor::idle_inhibit::IdleInhibitors,
+    /// `xdg_toplevel_icon_manager_v1` — a window naming or drawing its own
+    /// icon for its tab; see [`crate::compositor::toplevel_icon`].
+    pub toplevel_icon_manager: XdgToplevelIconManager,
     /// Current display scale factor (`HiDPI`), sent to clients as the
     /// preferred `wp_fractional_scale`. Read once at session start from the
     /// shared settings store (`display.scale`), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
@@ -602,6 +606,10 @@ pub struct State {
     pub session_lock_state: SessionLockManagerState,
     /// Bridge from the protocol handler to the native run loop's authoritative lock (see [`SessionLockHooks`]).
     pub session_lock: SessionLockHooks,
+    /// `zwlr_output_manager_v1` + `zwlr_output_power_manager_v1`: display
+    /// arrangement and panel power for external tools. Privileged clients
+    /// only, like session-lock, since either can black out every screen.
+    pub output_management: OutputManagementState,
     /// `zwp_pointer_gestures_v1` global state — advertises touchpad
     /// pinch/swipe/hold gestures to clients. On a bare-TTY (DRM) session
     /// Mutter isn't around to expose gestures, so the compositor does; winit
@@ -630,6 +638,15 @@ pub struct State {
     /// Input-method candidate surfaces are similarly transient.  They stay
     /// outside the app tree so a candidate list can never become a tab.
     pub(crate) input_method_popups: Vec<InputMethodPopupSurface>,
+    /// Which trusted input method currently owns the seat; read by the
+    /// input-method and virtual-keyboard global filters.
+    seat_input_method: crate::compositor::input_method::SeatInputMethod,
+    /// Live connections accepted on a trusted input method's private
+    /// display, so the previous owner's can be cut when the seat moves.
+    trusted_input_method_clients: Vec<(
+        ClientId,
+        crate::compositor::input_method::TrustedInputMethod,
+    )>,
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
     /// tree and positioned by [`crate::compositor::frame::FrameBuilder`].
     pub osk_surface: Option<u64>,
@@ -913,12 +930,20 @@ impl State {
         // not. Sandboxed apps only see the public Wayland socket. Even a
         // process spoofing `so.tilo.osk` there cannot bind either privileged
         // global: authorization is immutable per-connection state set by the
-        // dedicated socket acceptor.
+        // dedicated socket acceptor, and only the kind that currently owns
+        // the seat (see `compositor::input_method`) sees them at all.
         let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
+        let seat_input_method = crate::compositor::input_method::SeatInputMethod::default();
         let input_method_manager_state =
-            InputMethodManagerState::new::<Self, _>(&display_handle, is_osk_client);
+            InputMethodManagerState::new::<Self, _>(&display_handle, {
+                let seat_input_method = seat_input_method.clone();
+                move |client| seat_input_method.admits(trusted_input_method(client))
+            });
         let virtual_keyboard_manager_state =
-            VirtualKeyboardManagerState::new::<Self, _>(&display_handle, is_osk_client);
+            VirtualKeyboardManagerState::new::<Self, _>(&display_handle, {
+                let seat_input_method = seat_input_method.clone();
+                move |client| seat_input_method.admits(trusted_input_method(client))
+            });
         // Advertise `wp_color_manager_v1`, before the state literal below since `display_handle` is moved into the struct.
         let color_manager = ColorManagerState::new::<Self>(&display_handle);
         // Advertise `wp_fractional_scale_manager_v1` + `wp_viewporter`
@@ -927,12 +952,8 @@ impl State {
         let fractional_scale_manager = FractionalScaleManagerState::new::<Self>(&display_handle);
         let viewporter = ViewporterState::new::<Self>(&display_handle);
         let idle_inhibit_manager = IdleInhibitManagerState::new::<Self>(&display_handle);
-        // Session locking controls the compositor's authentication boundary:
-        // only clients accepted on the session's privileged socket may even
-        // see the manager. Sandboxed and ordinary host applications receive
-        // the public socket and cannot acquire (or later release) the lock.
-        let session_lock_state =
-            SessionLockManagerState::new::<Self, _>(&display_handle, is_privileged_client);
+        let toplevel_icon_manager = crate::compositor::toplevel_icon::manager(&display_handle);
+        let (session_lock_state, output_management) = Self::privileged_globals(&display_handle);
         // Read the persisted display scale from the shared settings store so the compositor advertises what the Settings app wrote.
         let scale = load_display_scale();
         // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
@@ -987,6 +1008,7 @@ impl State {
             viewporter,
             idle_inhibit_manager,
             idle_inhibitors: crate::compositor::idle_inhibit::IdleInhibitors::default(),
+            toplevel_icon_manager,
             scale,
             output_layout: Vec::new(),
             output_sizes: HashMap::new(),
@@ -1002,6 +1024,7 @@ impl State {
             output_size: (0, 0),
             session_lock_state,
             session_lock: SessionLockHooks::default(),
+            output_management,
             pointer_gestures_state,
             cursor_shape_state,
             client_cursor: crate::compositor::client_cursor::ClientCursor::default(),
@@ -1012,6 +1035,8 @@ impl State {
             popups: Vec::new(),
             popup_manager: PopupManager::default(),
             input_method_popups: Vec::new(),
+            seat_input_method,
+            trusted_input_method_clients: Vec::new(),
             osk_surface: None,
             pending_floating_toplevels: Vec::new(),
             floating_toplevels: Vec::new(),
@@ -1019,6 +1044,20 @@ impl State {
         };
         state.activate_keyboard_source(initial_keyboard_index);
         state
+    }
+
+    /// Globals only clients on the privileged socket may see. Session
+    /// locking controls the compositor's authentication boundary; output
+    /// management and output power can reconfigure or black out every
+    /// screen. Sandboxed and ordinary host applications receive the public
+    /// socket and see neither.
+    fn privileged_globals(
+        display_handle: &DisplayHandle,
+    ) -> (SessionLockManagerState, OutputManagementState) {
+        (
+            SessionLockManagerState::new::<Self, _>(display_handle, is_privileged_client),
+            OutputManagementState::new(display_handle),
+        )
     }
 
     /// Advertise `zwp_linux_dmabuf_v1` when the probed render node is
@@ -2845,10 +2884,11 @@ pub struct ClientState {
     /// lifecycle. A *socket* privilege, not a flag a client can ask for: the
     /// sandbox launcher bind-mounts only the public socket into a sandbox.
     pub privileged: bool,
-    /// Connection accepted on the compositor-owned OSK socket. This is the
-    /// only credential accepted by the input-method and virtual-keyboard
-    /// global filters; an app-id string is never authority.
-    pub osk: bool,
+    /// Set when the connection was accepted on a trusted input method's
+    /// compositor-owned private display. This is the only credential the
+    /// input-method and virtual-keyboard global filters accept; an app-id
+    /// string is never authority.
+    pub input_method: Option<crate::compositor::input_method::TrustedInputMethod>,
     /// Package identity proven from `SO_PEERCRED` and the compositor's live
     /// launcher registry. `None` denotes an explicitly unconfined host client.
     pub package_id: Option<String>,
@@ -2858,6 +2898,10 @@ pub struct ClientState {
     /// Whether package/app-id equality is part of this connection's sandbox
     /// boundary. Unconfined host launches keep their desktop compatibility ids.
     pub enforce_package_id: bool,
+    /// The program behind a privileged connection, read from its peer
+    /// credentials when it connected. Display changes it makes are kept
+    /// without asking once the person trusts this executable.
+    pub executable: Option<String>,
 }
 
 /// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
@@ -2869,10 +2913,11 @@ impl Default for ClientState {
             compositor_state: CompositorClientState::default(),
             index: NEXT.fetch_add(1, Ordering::Relaxed),
             privileged: false,
-            osk: false,
+            input_method: None,
             package_id: None,
             workspace_id: None,
             enforce_package_id: false,
+            executable: None,
         }
     }
 }
@@ -2903,23 +2948,37 @@ impl ClientState {
 
     /// Per-client data for a connection accepted on the privileged socket.
     pub fn privileged_arc() -> Arc<Self> {
+        Self::privileged_tool_arc(None)
+    }
+
+    /// Per-client data for a privileged connection whose program is known.
+    pub fn privileged_tool_arc(executable: Option<String>) -> Arc<Self> {
         Arc::new(Self {
             privileged: true,
+            executable,
             ..Self::default()
         })
     }
 
-    /// Per-client state for connections accepted on the private OSK socket.
-    pub fn osk_arc() -> Arc<Self> {
+    /// Per-client state for connections accepted on a trusted input
+    /// method's private display.
+    pub fn input_method_arc(
+        kind: crate::compositor::input_method::TrustedInputMethod,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            osk: true,
+            input_method: Some(kind),
             ..Self::default()
         })
     }
 }
 
-fn is_osk_client(client: &Client) -> bool {
-    client.get_data::<ClientState>().is_some_and(|d| d.osk)
+/// The trusted-input-method credential of `client`, if it has one.
+fn trusted_input_method(
+    client: &Client,
+) -> Option<crate::compositor::input_method::TrustedInputMethod> {
+    client
+        .get_data::<ClientState>()
+        .and_then(|d| d.input_method)
 }
 
 /// Connection-provenance gate for authority-bearing Wayland protocols.
@@ -2927,7 +2986,7 @@ fn is_osk_client(client: &Client) -> bool {
 /// A client cannot opt into this bit: only the dedicated privileged socket
 /// acceptor constructs this state, while the sandbox launcher exposes only
 /// the public socket.
-fn is_privileged_client(client: &Client) -> bool {
+pub(crate) fn is_privileged_client(client: &Client) -> bool {
     client
         .get_data::<ClientState>()
         .is_some_and(|data| data.privileged)
@@ -3028,6 +3087,9 @@ impl CompositorHandler for State {
         });
         let session_scale = self.scale;
         self.client_cursor.surface_committed(surface, session_scale);
+        if crate::compositor::toplevel_icon::sync(surface, surface_id) {
+            tab_binding::note_tab_artwork_changed(&mut self.workspace_tree.write());
+        }
 
         // Pull the surface's buffer into [`SurfaceTracker`] iff shared on any [`WorkspaceTree`] workspace; most aren't, so `is_surface_shared` short-circuits first.
         let is_shared = {
@@ -3229,8 +3291,13 @@ fn trusted_osk_identity(surface: &WlSurface, app_id: Option<&str>) -> bool {
         app_id,
         surface
             .client()
-            .and_then(|client| client.get_data::<ClientState>().map(|data| data.osk))
-            .unwrap_or(false),
+            .and_then(|client| {
+                client
+                    .get_data::<ClientState>()
+                    .map(|data| data.input_method)
+            })
+            .flatten()
+            == Some(crate::compositor::input_method::TrustedInputMethod::OnScreenKeyboard),
     )
 }
 
@@ -3243,17 +3310,10 @@ fn floating_capability_token(app_id: &str) -> Option<&str> {
     (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(token)
 }
 
-/// Map the client-bound `wl_output` object back to the stable backend id.
-/// `OutputGlobals` names its Smithay outputs `Tilo-<OutputId>`; parsing only
-/// that compositor-owned prefix rejects arbitrary/foreign output objects.
+/// Map the client-bound `wl_output` object back to the stable backend id;
+/// an output that is not one of the compositor's globals maps to nothing.
 fn requested_output_id(output: Option<&WlOutput>) -> Option<crate::compositor::backend::OutputId> {
-    let output = SmithayOutput::from_resource(output?)?;
-    output
-        .name()
-        .strip_prefix("Tilo-")?
-        .parse::<u32>()
-        .ok()
-        .map(crate::compositor::backend::OutputId)
+    crate::compositor::output_globals::output_id_of(output?)
 }
 
 /// Calculate a popup's protocol geometry against the visible part of its
@@ -3290,6 +3350,28 @@ fn constrain_transient_rect(mut rect: Rect, bounds: Rect) -> Rect {
         rect = rect.with_origin((rect.x0, rect.y0 + dy));
     }
     rect
+}
+
+/// Where a candidate window goes: directly below the text field's caret
+/// rectangle (`caret` is relative to the field's surface at `parent`), left
+/// edges aligned, the way every desktop input method draws it; flipped above
+/// the caret when there is no room below on the output, then kept on it.
+fn candidate_rect(
+    parent: Rect,
+    caret: Rectangle<i32, Logical>,
+    (width, height): (u32, u32),
+    bounds: Rect,
+) -> Rect {
+    let x = parent.x0 + f64::from(caret.loc.x);
+    let caret_top = parent.y0 + f64::from(caret.loc.y);
+    let caret_bottom = caret_top + f64::from(caret.size.h.max(0));
+    let (width, height) = (f64::from(width), f64::from(height));
+    let y = if caret_bottom + height > bounds.y1 && caret_top - height >= bounds.y0 {
+        caret_top - height
+    } else {
+        caret_bottom
+    };
+    constrain_transient_rect(Rect::new(x, y, x + width, y + height), bounds)
 }
 
 /// Convert client-supplied logical popup geometry without allowing an extreme
@@ -3406,6 +3488,46 @@ impl State {
         self.popup_surfaces()
     }
 
+    /// Remember a connection accepted on a trusted input method's display.
+    pub fn register_trusted_input_method_client(
+        &mut self,
+        client: &Client,
+        kind: crate::compositor::input_method::TrustedInputMethod,
+    ) {
+        self.trusted_input_method_clients.push((client.id(), kind));
+    }
+
+    /// The trusted input method kind that owns the seat.
+    pub fn input_method_owner_kind(
+        &self,
+    ) -> Option<crate::compositor::input_method::TrustedInputMethod> {
+        self.seat_input_method.get()
+    }
+
+    /// Hand the seat's input method to `owner` (or nobody). Connections of
+    /// any other trusted kind are disconnected on the spot, releasing the
+    /// single `input-method-v2` slot before the new owner can ask for it; a
+    /// dying process cannot keep the seat.
+    pub fn set_input_method_owner(
+        &mut self,
+        owner: Option<crate::compositor::input_method::TrustedInputMethod>,
+    ) {
+        self.seat_input_method.set(owner);
+        let handle = self.display_handle.clone();
+        self.trusted_input_method_clients.retain(|(id, kind)| {
+            if handle.backend_handle().get_client_data(id.clone()).is_err() {
+                return false;
+            }
+            if Some(*kind) == owner {
+                return true;
+            }
+            handle
+                .backend_handle()
+                .kill_client(id.clone(), DisconnectReason::ConnectionClosed);
+            false
+        });
+    }
+
     /// Candidate windows provided by the privileged input method.  They use
     /// the focused text field as their parent and are clipped to its output,
     /// so a candidate strip cannot escape a multi-monitor desktop.
@@ -3417,15 +3539,8 @@ impl State {
                 let parent = popup.get_parent()?;
                 let parent_id = surface_id(&parent.surface);
                 let parent_rect = self.popup_parent_rect(parent_id, 0)?;
-                let (width, height) = crate::compositor::foreign::store()
+                let size = crate::compositor::foreign::store()
                     .frame_size(surface_id(popup.wl_surface()))?;
-                let location = popup.location();
-                let rect = Rect::new(
-                    parent_rect.x0 + f64::from(location.x),
-                    parent_rect.y0 + f64::from(location.y),
-                    parent_rect.x0 + f64::from(location.x) + f64::from(width),
-                    parent_rect.y0 + f64::from(location.y) + f64::from(height),
-                );
                 let output = self.popup_constraint_output(parent_id);
                 let bounds = Rect::new(
                     f64::from(output.loc.x),
@@ -3435,10 +3550,15 @@ impl State {
                 );
                 Some((
                     surface_id(popup.wl_surface()),
-                    constrain_transient_rect(rect, bounds),
+                    candidate_rect(parent_rect, popup.text_input_rectangle(), size, bounds),
                 ))
             })
             .collect()
+    }
+
+    /// [`Self::input_method_popup_surfaces`] for integration tests.
+    pub fn input_method_popup_surfaces_for_tests(&self) -> Vec<(SurfaceId, Rect)> {
+        self.input_method_popup_surfaces()
     }
 
     pub(crate) fn is_transient_surface(&self, id: SurfaceId) -> bool {
@@ -4001,6 +4121,7 @@ impl XdgShellHandler for State {
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         crate::shell::launcher::forget_surface_launch(surface_id);
         self.release_sheets_of_destroyed(surface_id);
+        crate::compositor::toplevel_icon::forget(surface_id);
         if self.osk_surface == Some(surface_id) {
             self.osk_surface = None;
         }
@@ -4521,6 +4642,10 @@ delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);
 delegate_idle_inhibit!(State);
+delegate_xdg_toplevel_icon!(State);
+
+/// The icon is double-buffered: it is read on the surface's next commit.
+impl XdgToplevelIconHandler for State {}
 
 impl IdleInhibitHandler for State {
     fn inhibit(&mut self, surface: WlSurface) {
@@ -4629,50 +4754,51 @@ mod popup_geometry_tests {
     }
 
     #[test]
-    fn popup_constraints_are_relative_to_the_parent_not_global_origin() {
-        let positioner = PositionerState {
-            rect_size: (80, 20).into(),
-            anchor_rect: Rectangle::new((95, 10).into(), (1, 1).into()),
-            anchor_edges: Anchor::Right,
-            gravity: Gravity::Right,
-            constraint_adjustment: ConstraintAdjustment::SlideX,
-            ..Default::default()
-        };
-        // The parent begins at x=300 on a 400px output.  The visible target
-        // is therefore -300..100 in parent coordinates, not 0..400: using
-        // global bounds here would let this menu escape off the output.
-        let geometry = constrained_popup_geometry(
-            positioner,
-            (300, 0),
-            Rectangle::new((0, 0).into(), (400, 200).into()),
-        );
-        assert_eq!(geometry.loc.x, 20);
-        assert_eq!(geometry.size.w, 80);
-        assert_eq!(geometry.loc.y, 0);
-    }
+    fn popup_constraints_are_parent_relative_and_saturating() {
+        // Phase `popup_constraints_are_relative_to_the_parent_not_global_origin`.
+        {
+            let positioner = PositionerState {
+                rect_size: (80, 20).into(),
+                anchor_rect: Rectangle::new((95, 10).into(), (1, 1).into()),
+                anchor_edges: Anchor::Right,
+                gravity: Gravity::Right,
+                constraint_adjustment: ConstraintAdjustment::SlideX,
+                ..Default::default()
+            };
+            // The parent begins at x=300 on a 400px output.  The visible target
+            // is therefore -300..100 in parent coordinates, not 0..400: using
+            // global bounds here would let this menu escape off the output.
+            let geometry = constrained_popup_geometry(
+                positioner,
+                (300, 0),
+                Rectangle::new((0, 0).into(), (400, 200).into()),
+            );
+            assert_eq!(geometry.loc.x, 20);
+            assert_eq!(geometry.size.w, 80);
+            assert_eq!(geometry.loc.y, 0);
+        }
+        // Phase `popup_constraints_preserve_requested_size_when_slide_can_fit_it`.
+        {
+            let positioner = right_anchored_positioner((40, 30), (95, 5));
+            let geometry = constrained_popup_geometry(
+                positioner,
+                (0, 0),
+                Rectangle::new((0, 0).into(), (100, 100).into()),
+            );
+            assert_eq!(geometry.loc.x, 60);
+            assert_eq!(geometry.size, (40, 30).into());
+        }
+        // Phase `popup_scene_rect_saturates_extreme_client_geometry`.
+        {
+            let parent = Rect::new(10.0, 20.0, 110.0, 120.0);
+            let geometry = Rectangle::new((i32::MAX - 4, i32::MAX - 2).into(), (64, 64).into());
 
-    #[test]
-    fn popup_constraints_preserve_requested_size_when_slide_can_fit_it() {
-        let positioner = right_anchored_positioner((40, 30), (95, 5));
-        let geometry = constrained_popup_geometry(
-            positioner,
-            (0, 0),
-            Rectangle::new((0, 0).into(), (100, 100).into()),
-        );
-        assert_eq!(geometry.loc.x, 60);
-        assert_eq!(geometry.size, (40, 30).into());
-    }
+            let rect = popup_rect_from_parent(parent, geometry);
 
-    #[test]
-    fn popup_scene_rect_saturates_extreme_client_geometry() {
-        let parent = Rect::new(10.0, 20.0, 110.0, 120.0);
-        let geometry = Rectangle::new((i32::MAX - 4, i32::MAX - 2).into(), (64, 64).into());
-
-        let rect = popup_rect_from_parent(parent, geometry);
-
-        assert_eq!(rect.x1, parent.x0 + f64::from(i32::MAX));
-        assert_eq!(rect.y1, parent.y0 + f64::from(i32::MAX));
-        assert!(rect.x1.is_finite() && rect.y1.is_finite());
+            assert_eq!(rect.x1, parent.x0 + f64::from(i32::MAX));
+            assert_eq!(rect.y1, parent.y0 + f64::from(i32::MAX));
+            assert!(rect.x1.is_finite() && rect.y1.is_finite());
+        }
     }
 
     #[test]
@@ -4824,83 +4950,118 @@ mod osk_identity_tests {
     use super::*;
 
     #[test]
-    fn only_private_socket_plus_exact_app_id_is_trusted() {
+    fn osk_and_floating_identity_trust_only_exact_credentials() {
+        // Phase `only_private_socket_plus_exact_app_id_is_trusted`.
         assert!(osk_identity_is_trusted(Some(OSK_APP_ID), true));
         assert!(!osk_identity_is_trusted(Some(OSK_APP_ID), false));
         assert!(!osk_identity_is_trusted(Some("so.tilo.lookalike"), true));
         assert!(!osk_identity_is_trusted(None, true));
-    }
-
-    #[test]
-    fn public_clients_never_receive_the_osk_global_credential() {
-        assert!(!ClientState::default().osk);
-        assert!(ClientState::osk_arc().osk);
-    }
-
-    #[test]
-    fn launcher_attribution_overrides_missing_app_id_and_rejects_spoofing() {
-        let room = crate::shell::state::RoomId::new();
-        let client = ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
-            package_id: "so.tilo.notes".into(),
-            workspace_id: Some(room.to_string()),
-            confined: true,
-        });
-        assert_eq!(
-            authenticated_toplevel_identity(Some(&client), None),
-            Ok((Some("so.tilo.notes".into()), Some(room)))
-        );
-        assert!(
-            authenticated_toplevel_identity(Some(&client), Some("so.tilo.file-explorer".into()))
+        // Phase `public_clients_never_receive_the_osk_global_credential`.
+        {
+            use crate::compositor::input_method::TrustedInputMethod;
+            assert_eq!(ClientState::default().input_method, None);
+            assert_eq!(
+                ClientState::input_method_arc(TrustedInputMethod::OnScreenKeyboard).input_method,
+                Some(TrustedInputMethod::OnScreenKeyboard)
+            );
+        }
+        // Phase `launcher_attribution_overrides_missing_app_id_and_rejects_spoofing`.
+        {
+            let room = crate::shell::state::RoomId::new();
+            let client =
+                ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
+                    package_id: "so.tilo.notes".into(),
+                    workspace_id: Some(room.to_string()),
+                    confined: true,
+                });
+            assert_eq!(
+                authenticated_toplevel_identity(Some(&client), None),
+                Ok((Some("so.tilo.notes".into()), Some(room)))
+            );
+            assert!(
+                authenticated_toplevel_identity(
+                    Some(&client),
+                    Some("so.tilo.file-explorer".into())
+                )
                 .is_err()
-        );
+            );
+        }
+        // Phase `stale_workspace_attribution_fails_closed_but_host_clients_remain_compatible`.
+        {
+            let attributed =
+                ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
+                    package_id: "so.tilo.notes".into(),
+                    workspace_id: Some("not-a-room".into()),
+                    confined: true,
+                });
+            assert!(authenticated_toplevel_identity(Some(&attributed), None).is_err());
+            assert_eq!(
+                authenticated_toplevel_identity(
+                    Some(&ClientState::default()),
+                    Some("org.example.HostApp".into())
+                ),
+                Ok((Some("org.example.HostApp".into()), None))
+            );
+            let room = crate::shell::state::RoomId::new();
+            let host =
+                ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
+                    package_id: "host.desktop-entry".into(),
+                    workspace_id: Some(room.to_string()),
+                    confined: false,
+                });
+            assert_eq!(
+                authenticated_toplevel_identity(Some(&host), Some("LegacyStartupWMClass".into())),
+                Ok((Some("LegacyStartupWMClass".into()), Some(room)))
+            );
+        }
+        // Phase `floating_overlay_identity_requires_a_full_random_capability`.
+        {
+            let token = "5e8f16a2a2e24bf7ad86758f2f28e316";
+            let app_id = format!(
+                "{}{}",
+                ui::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX,
+                token
+            );
+            assert_eq!(floating_capability_token(&app_id), Some(token));
+            assert_eq!(
+                floating_capability_token(ui::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX),
+                None
+            );
+            assert_eq!(
+                floating_capability_token("so.tilo.shell-float.predictable"),
+                None
+            );
+            assert_eq!(floating_capability_token("so.tilo.chat"), None);
+        }
     }
 
     #[test]
-    fn stale_workspace_attribution_fails_closed_but_host_clients_remain_compatible() {
-        let attributed =
-            ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
-                package_id: "so.tilo.notes".into(),
-                workspace_id: Some("not-a-room".into()),
-                confined: true,
-            });
-        assert!(authenticated_toplevel_identity(Some(&attributed), None).is_err());
+    fn candidates_sit_below_the_caret_and_flip_above_at_the_output_edge() {
+        let output = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let field = Rect::new(100.0, 200.0, 900.0, 1000.0);
+        let caret = Rectangle::new((40, 30).into(), (2, 20).into());
         assert_eq!(
-            authenticated_toplevel_identity(
-                Some(&ClientState::default()),
-                Some("org.example.HostApp".into())
-            ),
-            Ok((Some("org.example.HostApp".into()), None))
+            candidate_rect(field, caret, (300, 40), output),
+            Rect::new(140.0, 250.0, 440.0, 290.0)
         );
-        let room = crate::shell::state::RoomId::new();
-        let host = ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
-            package_id: "host.desktop-entry".into(),
-            workspace_id: Some(room.to_string()),
-            confined: false,
-        });
+        let fits_exactly = Rectangle::new((40, 820).into(), (2, 20).into());
         assert_eq!(
-            authenticated_toplevel_identity(Some(&host), Some("LegacyStartupWMClass".into())),
-            Ok((Some("LegacyStartupWMClass".into()), Some(room)))
+            candidate_rect(field, fits_exactly, (300, 40), output),
+            Rect::new(140.0, 1040.0, 440.0, 1080.0),
+            "just enough room below: still below"
         );
-    }
-
-    #[test]
-    fn floating_overlay_identity_requires_a_full_random_capability() {
-        let token = "5e8f16a2a2e24bf7ad86758f2f28e316";
-        let app_id = format!(
-            "{}{}",
-            ui::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX,
-            token
-        );
-        assert_eq!(floating_capability_token(&app_id), Some(token));
+        let near_bottom = Rectangle::new((40, 830).into(), (2, 20).into());
         assert_eq!(
-            floating_capability_token(ui::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX),
-            None
+            candidate_rect(field, near_bottom, (300, 40), output),
+            Rect::new(140.0, 990.0, 440.0, 1030.0),
+            "no room below: flipped above the caret"
         );
+        let near_right = Rectangle::new((1780, 30).into(), (2, 20).into());
         assert_eq!(
-            floating_capability_token("so.tilo.shell-float.predictable"),
-            None
+            candidate_rect(field, near_right, (300, 40), output),
+            Rect::new(1620.0, 250.0, 1920.0, 290.0),
+            "kept on the output horizontally"
         );
-        assert_eq!(floating_capability_token("so.tilo.chat"), None);
     }
 }
 
@@ -4951,82 +5112,150 @@ mod tick_hook_tests {
         }
     }
 
-    /// Before any output table arrives (hosted/headless run), the session-wide scale is the only answer there is.
     #[test]
-    fn without_an_output_table_the_scale_is_the_session_wide_one() {
-        let mut state = make_state();
-        state.scale = 1.75;
-        assert_eq!(state.scale_for_origin((0.0, 0.0)), 1.75);
-        assert_eq!(state.surface_scale(7), 1.75);
+    fn surface_scale_follows_the_output_it_sits_on() {
+        // Phase `without_an_output_table_the_scale_is_the_session_wide_one`.
+        // Before any output table arrives (hosted/headless run), the session-wide scale is the only answer there is.
+        {
+            let mut state = make_state();
+            state.scale = 1.75;
+            assert_eq!(state.scale_for_origin((0.0, 0.0)), 1.75);
+            assert_eq!(state.surface_scale(7), 1.75);
+        }
+        // Phase `packed_nonzero_client_surface_id_keeps_its_own_scale`.
+        {
+            let mut state = make_state();
+            let id = (17_u64 << 32) | 0x002a;
+            state.surface_scales.insert(id, 1.5);
+            assert_eq!(state.surface_scale(id), 1.5);
+            assert_ne!(state.surface_scale(42), 1.5);
+        }
+        // Phase `a_surface_is_told_the_scale_of_the_output_it_sits_on`.
+        // The docked-laptop case: a dense built-in panel beside a sparse external monitor — one session-wide number is wrong for one of them.
+        {
+            let mut state = make_state();
+            state.scale = 1.0;
+            state.set_output_layout(&[
+                out(0, (0, 0), (1920, 1080), 1.5),
+                out(1, (1920, 0), (2560, 1440), 1.0),
+            ]);
+            assert_eq!(state.scale_for_origin((100.0, 100.0)), 1.5);
+            assert_eq!(state.scale_for_origin((2000.0, 100.0)), 1.0);
+        }
+        // Phase `fullscreen_target_uses_requested_output_dimensions_and_rehomes_on_hotplug`.
+        {
+            let mut state = make_state();
+            state.set_output_layout(&[
+                out(10, (0, 0), (1920, 1080), 1.0),
+                out(20, (1920, 0), (3840, 2160), 1.0),
+            ]);
+            state.fullscreen_output = Some(crate::compositor::backend::OutputId(20));
+            assert_eq!(state.fullscreen_output_size(), Some((3840, 2160)));
+
+            state.set_output_layout(&[out(10, (0, 0), (1920, 1080), 1.0)]);
+            assert_eq!(
+                state.fullscreen_output,
+                Some(crate::compositor::backend::OutputId(10)),
+                "unplugging the target must rehome rather than retaining a dead output id"
+            );
+            assert_eq!(state.fullscreen_output_size(), Some((1920, 1080)));
+        }
+        // Phase `a_fullscreen_configure_is_logical_like_a_tiled_one`.
+        {
+            // A tile's configure is its pixels over its scale; a fullscreen one
+            // asking a 2x client for all 3840 pixels would make it render a
+            // buffer twice the output's size.
+            let mut state = make_state();
+            state.set_output_layout(&[out(0, (0, 0), (3840, 2160), 2.0)]);
+            state.fullscreen_output = Some(crate::compositor::backend::OutputId(0));
+            assert_eq!(state.fullscreen_output_size(), Some((1920, 1080)));
+        }
+        // Phase `moving_a_window_between_outputs_changes_its_recorded_scale`.
+        // A window dragged to the external monitor has to re-render at its density — the cache is what makes that observable to the commit hook.
+        {
+            let mut state = make_state();
+            state.set_output_layout(&[
+                out(0, (0, 0), (1920, 1080), 2.0),
+                out(1, (1920, 0), (1920, 1080), 1.0),
+            ]);
+            state.update_surface_scales(&[(42, (10.0, 10.0))]);
+            assert_eq!(state.surface_scale(42), 2.0);
+            state.update_surface_scales(&[(42, (2500.0, 10.0))]);
+            assert_eq!(state.surface_scale(42), 1.0);
+        }
+        // Phase `an_unplaced_surface_loses_its_cached_scale`.
+        // A surface no longer placed must not keep a stale scale — it would be handed back unrecomputed on re-placement.
+        {
+            let mut state = make_state();
+            state.scale = 1.25;
+            state.set_output_layout(&[out(0, (0, 0), (1920, 1080), 2.0)]);
+            state.update_surface_scales(&[(42, (10.0, 10.0))]);
+            assert_eq!(state.surface_scale(42), 2.0);
+            state.update_surface_scales(&[]);
+            assert_eq!(
+                state.surface_scale(42),
+                1.25,
+                "an unplaced surface falls back rather than keeping a stale value"
+            );
+        }
+        // Phase `a_new_output_layout_drops_the_cached_scales`.
+        // A hotplug invalidates every cached scale, since the layout the values were derived from is what moved.
+        {
+            let mut state = make_state();
+            state.scale = 1.0;
+            state.set_output_layout(&[out(0, (0, 0), (1920, 1080), 2.0)]);
+            state.update_surface_scales(&[(42, (10.0, 10.0))]);
+            assert_eq!(state.surface_scale(42), 2.0);
+            // The external monitor is unplugged; the laptop panel is now the only display, at a different scale.
+            state.set_output_layout(&[out(0, (0, 0), (1920, 1080), 1.5)]);
+            assert_eq!(
+                state.surface_scale(42),
+                1.0,
+                "a stale per-surface scale must not survive the layout it came from"
+            );
+            state.update_surface_scales(&[(42, (10.0, 10.0))]);
+            assert_eq!(state.surface_scale(42), 1.5);
+        }
     }
 
     #[test]
-    fn packed_nonzero_client_surface_id_keeps_its_own_scale() {
-        let mut state = make_state();
-        let id = (17_u64 << 32) | 0x002a;
-        state.surface_scales.insert(id, 1.5);
-        assert_eq!(state.surface_scale(id), 1.5);
-        assert_ne!(state.surface_scale(42), 1.5);
-    }
-
-    #[test]
-    fn audience_identity_is_narrow_and_does_not_match_the_presenter() {
+    fn audience_role_requires_an_exact_presenter_and_its_own_output() {
+        // Phase `audience_identity_is_narrow_and_does_not_match_the_presenter`.
         assert!(is_output_presentation_app_id("so.tilo.slides.audience"));
         assert!(!is_output_presentation_app_id("so.tilo.slides"));
         assert!(!is_output_presentation_app_id(".audience"));
-    }
-
-    #[test]
-    fn audience_role_requires_an_exact_same_client_presenter() {
-        let mut tree = WorkspaceTree::bootstrap_default();
-        tab_binding::adopt_toplevel(&mut tree, (9_u64 << 32) | 1, Some("so.tilo.slides".into()));
-        assert!(output_presentation_owner_is_live(
-            &tree,
-            (9_u64 << 32) | 2,
-            "so.tilo.slides.audience"
-        ));
-        assert!(!output_presentation_owner_is_live(
-            &tree,
-            (10_u64 << 32) | 2,
-            "so.tilo.slides.audience"
-        ));
-        assert!(!output_presentation_owner_is_live(
-            &tree,
-            (9_u64 << 32) | 2,
-            "so.tilo.evil.audience"
-        ));
-    }
-
-    #[test]
-    fn audience_surface_hides_when_its_distinct_output_is_unplugged() {
-        let mut state = make_state();
-        state.set_output_layout(&[
-            out(1, (0, 0), (1280, 720), 1.0),
-            out(2, (1280, 0), (1920, 1080), 1.0),
-        ]);
-        let presenter_groups = state
-            .workspace_tree
-            .read()
-            .desktop
-            .active_workspace()
-            .unwrap()
-            .strips[0]
-            .window_groups
-            .len();
-        state
-            .output_presentation_surfaces
-            .push(OutputPresentationSurface {
-                surface_id: 77,
-                app_id: "so.tilo.slides.audience".into(),
-                output: crate::compositor::backend::OutputId(2),
-                rect: Rect::ZERO,
-            });
-        state.set_output_layout(&[out(1, (0, 0), (1280, 720), 1.0)]);
-        let audience = &state.output_presentation_surfaces[0];
-        assert_eq!(audience.output, crate::compositor::backend::OutputId(2));
-        assert_eq!(audience.rect, Rect::ZERO);
-        assert_eq!(
-            state
+        // Phase `audience_role_requires_an_exact_same_client_presenter`.
+        {
+            let mut tree = WorkspaceTree::bootstrap_default();
+            tab_binding::adopt_toplevel(
+                &mut tree,
+                (9_u64 << 32) | 1,
+                Some("so.tilo.slides".into()),
+            );
+            assert!(output_presentation_owner_is_live(
+                &tree,
+                (9_u64 << 32) | 2,
+                "so.tilo.slides.audience"
+            ));
+            assert!(!output_presentation_owner_is_live(
+                &tree,
+                (10_u64 << 32) | 2,
+                "so.tilo.slides.audience"
+            ));
+            assert!(!output_presentation_owner_is_live(
+                &tree,
+                (9_u64 << 32) | 2,
+                "so.tilo.evil.audience"
+            ));
+        }
+        // Phase `audience_surface_hides_when_its_distinct_output_is_unplugged`.
+        {
+            let mut state = make_state();
+            state.set_output_layout(&[
+                out(1, (0, 0), (1280, 720), 1.0),
+                out(2, (1280, 0), (1920, 1080), 1.0),
+            ]);
+            let presenter_groups = state
                 .workspace_tree
                 .read()
                 .desktop
@@ -5034,200 +5263,130 @@ mod tick_hook_tests {
                 .unwrap()
                 .strips[0]
                 .window_groups
-                .len(),
-            presenter_groups,
-            "hotplug never moves the presenter into the audience layer"
-        );
-    }
-
-    #[test]
-    fn audience_teardown_releases_its_output_and_focus_only() {
-        let mut state = make_state();
-        state
-            .output_presentation_surfaces
-            .push(OutputPresentationSurface {
-                surface_id: 88,
-                app_id: "so.tilo.slides.audience".into(),
-                output: crate::compositor::backend::OutputId(2),
-                rect: Rect::new(100.0, 0.0, 200.0, 100.0),
-            });
-        state.output_presentation_focus = Some(88);
-        state
-            .pending_presentation_outputs
-            .insert(88, Some(crate::compositor::backend::OutputId(2)));
-        assert!(state.remove_output_presentation_surface(88));
-        assert!(state.output_presentation_surfaces.is_empty());
-        assert!(state.output_presentation_focus.is_none());
-        assert!(!state.pending_presentation_outputs.contains_key(&88));
-    }
-
-    #[test]
-    fn commit_capture_gate_includes_audience_surface_without_a_workspace_tab() {
-        let mut state = make_state();
-        let id = (31_u64 << 32) | 9;
-        state
-            .output_presentation_surfaces
-            .push(OutputPresentationSurface {
-                surface_id: id,
-                app_id: "so.tilo.slides.audience".into(),
-                output: crate::compositor::backend::OutputId(2),
-                rect: Rect::new(100.0, 0.0, 200.0, 100.0),
-            });
-        assert!(state.should_capture_foreign_surface(id));
-        assert!(tab_binding::group_id_for_surface(&state.workspace_tree.read(), id).is_none());
-    }
-
-    #[test]
-    fn unpaired_audience_is_rejected_by_the_actual_promotion_gate() {
-        let mut state = make_state();
-        state.set_output_layout(&[out(2, (0, 0), (1920, 1080), 1.0)]);
-        assert!(!state.promote_output_presentation_toplevel(
-            (44_u64 << 32) | 2,
-            "so.tilo.evil.audience".into()
-        ));
-        assert!(state.output_presentation_surfaces.is_empty());
-    }
-
-    #[test]
-    fn audience_hit_and_focus_are_scoped_before_workspace_rows() {
-        let mut state = make_state();
-        state
-            .output_presentation_surfaces
-            .push(OutputPresentationSurface {
-                surface_id: (8_u64 << 32) | 5,
-                app_id: "so.tilo.slides.audience".into(),
-                output: crate::compositor::backend::OutputId(2),
-                rect: Rect::new(1280.0, 0.0, 1920.0, 720.0),
-            });
-        let hit = state
-            .output_presentation_hit_unchecked((1400.0, 100.0))
-            .expect("audience output hit takes precedence");
-        assert_eq!(hit.surface_id, (8_u64 << 32) | 5);
-        state.focus_output_presentation_surface(hit.surface_id);
-        assert_eq!(state.output_presentation_focus, Some(hit.surface_id));
-        assert!(
+                .len();
             state
-                .output_presentation_hit_unchecked((100.0, 100.0))
-                .is_none()
-        );
+                .output_presentation_surfaces
+                .push(OutputPresentationSurface {
+                    surface_id: 77,
+                    app_id: "so.tilo.slides.audience".into(),
+                    output: crate::compositor::backend::OutputId(2),
+                    rect: Rect::ZERO,
+                });
+            state.set_output_layout(&[out(1, (0, 0), (1280, 720), 1.0)]);
+            let audience = &state.output_presentation_surfaces[0];
+            assert_eq!(audience.output, crate::compositor::backend::OutputId(2));
+            assert_eq!(audience.rect, Rect::ZERO);
+            assert_eq!(
+                state
+                    .workspace_tree
+                    .read()
+                    .desktop
+                    .active_workspace()
+                    .unwrap()
+                    .strips[0]
+                    .window_groups
+                    .len(),
+                presenter_groups,
+                "hotplug never moves the presenter into the audience layer"
+            );
+        }
+        // Phase `audience_teardown_releases_its_output_and_focus_only`.
+        {
+            let mut state = make_state();
+            state
+                .output_presentation_surfaces
+                .push(OutputPresentationSurface {
+                    surface_id: 88,
+                    app_id: "so.tilo.slides.audience".into(),
+                    output: crate::compositor::backend::OutputId(2),
+                    rect: Rect::new(100.0, 0.0, 200.0, 100.0),
+                });
+            state.output_presentation_focus = Some(88);
+            state
+                .pending_presentation_outputs
+                .insert(88, Some(crate::compositor::backend::OutputId(2)));
+            assert!(state.remove_output_presentation_surface(88));
+            assert!(state.output_presentation_surfaces.is_empty());
+            assert!(state.output_presentation_focus.is_none());
+            assert!(!state.pending_presentation_outputs.contains_key(&88));
+        }
     }
 
     #[test]
-    fn audience_remote_view_includes_only_live_direct_surface_tiles() {
-        let mut state = make_state();
-        let live = (3_u64 << 32) | 7;
-        state
-            .output_presentation_surfaces
-            .push(OutputPresentationSurface {
-                surface_id: live,
-                app_id: "so.tilo.slides.audience".into(),
-                output: crate::compositor::backend::OutputId(2),
-                rect: Rect::new(1280.0, 0.0, 1920.0, 720.0),
-            });
-        state
-            .output_presentation_surfaces
-            .push(OutputPresentationSurface {
-                surface_id: live + 1,
-                app_id: "so.tilo.slides.audience".into(),
-                output: crate::compositor::backend::OutputId(3),
-                rect: Rect::new(1920.0, 0.0, 2560.0, 720.0),
-            });
-        assert_eq!(
-            state.output_presentation_remote_tiles_for(|id| id == live),
-            vec![(live, Rect::new(1280.0, 0.0, 1920.0, 720.0))]
-        );
-    }
-
-    /// The docked-laptop case: a dense built-in panel beside a sparse external monitor — one session-wide number is wrong for one of them.
-    #[test]
-    fn a_surface_is_told_the_scale_of_the_output_it_sits_on() {
-        let mut state = make_state();
-        state.scale = 1.0;
-        state.set_output_layout(&[
-            out(0, (0, 0), (1920, 1080), 1.5),
-            out(1, (1920, 0), (2560, 1440), 1.0),
-        ]);
-        assert_eq!(state.scale_for_origin((100.0, 100.0)), 1.5);
-        assert_eq!(state.scale_for_origin((2000.0, 100.0)), 1.0);
-    }
-
-    #[test]
-    fn fullscreen_target_uses_requested_output_dimensions_and_rehomes_on_hotplug() {
-        let mut state = make_state();
-        state.set_output_layout(&[
-            out(10, (0, 0), (1920, 1080), 1.0),
-            out(20, (1920, 0), (3840, 2160), 1.0),
-        ]);
-        state.fullscreen_output = Some(crate::compositor::backend::OutputId(20));
-        assert_eq!(state.fullscreen_output_size(), Some((3840, 2160)));
-
-        state.set_output_layout(&[out(10, (0, 0), (1920, 1080), 1.0)]);
-        assert_eq!(
-            state.fullscreen_output,
-            Some(crate::compositor::backend::OutputId(10)),
-            "unplugging the target must rehome rather than retaining a dead output id"
-        );
-        assert_eq!(state.fullscreen_output_size(), Some((1920, 1080)));
-    }
-
-    #[test]
-    fn a_fullscreen_configure_is_logical_like_a_tiled_one() {
-        // A tile's configure is its pixels over its scale; a fullscreen one
-        // asking a 2x client for all 3840 pixels would make it render a
-        // buffer twice the output's size.
-        let mut state = make_state();
-        state.set_output_layout(&[out(0, (0, 0), (3840, 2160), 2.0)]);
-        state.fullscreen_output = Some(crate::compositor::backend::OutputId(0));
-        assert_eq!(state.fullscreen_output_size(), Some((1920, 1080)));
-    }
-
-    /// A window dragged to the external monitor has to re-render at its density — the cache is what makes that observable to the commit hook.
-    #[test]
-    fn moving_a_window_between_outputs_changes_its_recorded_scale() {
-        let mut state = make_state();
-        state.set_output_layout(&[
-            out(0, (0, 0), (1920, 1080), 2.0),
-            out(1, (1920, 0), (1920, 1080), 1.0),
-        ]);
-        state.update_surface_scales(&[(42, (10.0, 10.0))]);
-        assert_eq!(state.surface_scale(42), 2.0);
-        state.update_surface_scales(&[(42, (2500.0, 10.0))]);
-        assert_eq!(state.surface_scale(42), 1.0);
-    }
-
-    /// A surface no longer placed must not keep a stale scale — it would be handed back unrecomputed on re-placement.
-    #[test]
-    fn an_unplaced_surface_loses_its_cached_scale() {
-        let mut state = make_state();
-        state.scale = 1.25;
-        state.set_output_layout(&[out(0, (0, 0), (1920, 1080), 2.0)]);
-        state.update_surface_scales(&[(42, (10.0, 10.0))]);
-        assert_eq!(state.surface_scale(42), 2.0);
-        state.update_surface_scales(&[]);
-        assert_eq!(
-            state.surface_scale(42),
-            1.25,
-            "an unplaced surface falls back rather than keeping a stale value"
-        );
-    }
-
-    /// A hotplug invalidates every cached scale, since the layout the values were derived from is what moved.
-    #[test]
-    fn a_new_output_layout_drops_the_cached_scales() {
-        let mut state = make_state();
-        state.scale = 1.0;
-        state.set_output_layout(&[out(0, (0, 0), (1920, 1080), 2.0)]);
-        state.update_surface_scales(&[(42, (10.0, 10.0))]);
-        assert_eq!(state.surface_scale(42), 2.0);
-        // The external monitor is unplugged; the laptop panel is now the only display, at a different scale.
-        state.set_output_layout(&[out(0, (0, 0), (1920, 1080), 1.5)]);
-        assert_eq!(
-            state.surface_scale(42),
-            1.0,
-            "a stale per-surface scale must not survive the layout it came from"
-        );
-        state.update_surface_scales(&[(42, (10.0, 10.0))]);
-        assert_eq!(state.surface_scale(42), 1.5);
+    fn audience_surface_is_gated_scoped_and_published_narrowly() {
+        // Phase `commit_capture_gate_includes_audience_surface_without_a_workspace_tab`.
+        {
+            let mut state = make_state();
+            let id = (31_u64 << 32) | 9;
+            state
+                .output_presentation_surfaces
+                .push(OutputPresentationSurface {
+                    surface_id: id,
+                    app_id: "so.tilo.slides.audience".into(),
+                    output: crate::compositor::backend::OutputId(2),
+                    rect: Rect::new(100.0, 0.0, 200.0, 100.0),
+                });
+            assert!(state.should_capture_foreign_surface(id));
+            assert!(tab_binding::group_id_for_surface(&state.workspace_tree.read(), id).is_none());
+        }
+        // Phase `unpaired_audience_is_rejected_by_the_actual_promotion_gate`.
+        {
+            let mut state = make_state();
+            state.set_output_layout(&[out(2, (0, 0), (1920, 1080), 1.0)]);
+            assert!(!state.promote_output_presentation_toplevel(
+                (44_u64 << 32) | 2,
+                "so.tilo.evil.audience".into()
+            ));
+            assert!(state.output_presentation_surfaces.is_empty());
+        }
+        // Phase `audience_hit_and_focus_are_scoped_before_workspace_rows`.
+        {
+            let mut state = make_state();
+            state
+                .output_presentation_surfaces
+                .push(OutputPresentationSurface {
+                    surface_id: (8_u64 << 32) | 5,
+                    app_id: "so.tilo.slides.audience".into(),
+                    output: crate::compositor::backend::OutputId(2),
+                    rect: Rect::new(1280.0, 0.0, 1920.0, 720.0),
+                });
+            let hit = state
+                .output_presentation_hit_unchecked((1400.0, 100.0))
+                .expect("audience output hit takes precedence");
+            assert_eq!(hit.surface_id, (8_u64 << 32) | 5);
+            state.focus_output_presentation_surface(hit.surface_id);
+            assert_eq!(state.output_presentation_focus, Some(hit.surface_id));
+            assert!(
+                state
+                    .output_presentation_hit_unchecked((100.0, 100.0))
+                    .is_none()
+            );
+        }
+        // Phase `audience_remote_view_includes_only_live_direct_surface_tiles`.
+        {
+            let mut state = make_state();
+            let live = (3_u64 << 32) | 7;
+            state
+                .output_presentation_surfaces
+                .push(OutputPresentationSurface {
+                    surface_id: live,
+                    app_id: "so.tilo.slides.audience".into(),
+                    output: crate::compositor::backend::OutputId(2),
+                    rect: Rect::new(1280.0, 0.0, 1920.0, 720.0),
+                });
+            state
+                .output_presentation_surfaces
+                .push(OutputPresentationSurface {
+                    surface_id: live + 1,
+                    app_id: "so.tilo.slides.audience".into(),
+                    output: crate::compositor::backend::OutputId(3),
+                    rect: Rect::new(1920.0, 0.0, 2560.0, 720.0),
+                });
+            assert_eq!(
+                state.output_presentation_remote_tiles_for(|id| id == live),
+                vec![(live, Rect::new(1280.0, 0.0, 1920.0, 720.0))]
+            );
+        }
     }
 
     #[allow(
@@ -5248,399 +5407,405 @@ mod tick_hook_tests {
         v
     }
 
-    /// Two commits with a share session registered must produce two encoded frames — `encode_next_frame` pumps once per commit into the per-subscriber queue.
     #[test]
-    fn two_commits_produce_two_encoded_frames() {
-        const W: u32 = 64;
-        const H: u32 = 64;
-        const HOST: PeerId = 0xAAAA;
-        const VIEWER: PeerId = 0xBBBB;
-        const SURFACE: SurfaceId = 42;
+    fn tick_hook_encodes_one_frame_per_commit_until_unregistered() {
+        // Phase `two_commits_produce_two_encoded_frames`.
+        // Two commits with a share session registered must produce two encoded frames — `encode_next_frame` pumps once per commit into the per-subscriber queue.
+        {
+            const W: u32 = 64;
+            const H: u32 = 64;
+            const HOST: PeerId = 0xAAAA;
+            const VIEWER: PeerId = 0xBBBB;
+            const SURFACE: SurfaceId = 42;
 
-        let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, W, H, &cfg()).expect("session"),
-        );
-        session.add_viewer(VIEWER, false);
+            let session = Arc::new(
+                SharedFlatpakSession::start(HOST, "app", SURFACE, W, H, &cfg()).expect("session"),
+            );
+            session.add_viewer(VIEWER, false);
 
-        let mut state = make_state();
-        state.register_share_session(session.clone());
+            let mut state = make_state();
+            state.register_share_session(session.clone());
 
-        // Simulate the sequence a real commit would produce: `on_commit`
-        // deposits bytes (mocked via `deposit_for_test`), then the commit
-        // handler calls `tick_share_session_for_surface` directly — no real `WlSurface` needed.
-        state
-            .surface_tracker
-            .deposit_for_test(SURFACE, gradient(W, H), W, H);
-        let ran = state.tick_share_session_for_surface(SURFACE);
-        assert!(ran, "first commit must fire the tick");
-        // Nudge the throttle clock by re-depositing and pumping again — the
-        // throttle is time-based and two back-to-back ticks land inside the
-        // 33ms window in tests. Sleep the interval; `should_encode` reads `Instant::now()` and accepts the second tick.
-        std::thread::sleep(std::time::Duration::from_millis(40));
-        state
-            .surface_tracker
-            .deposit_for_test(SURFACE, gradient(W, H), W, H);
-        let ran2 = state.tick_share_session_for_surface(SURFACE);
-        assert!(ran2, "second commit must fire the tick");
-
-        // Both encoded frames land in the subscriber's substream queue with monotonic sequence numbers.
-        let f0 = session
-            .poll_stream_frame(VIEWER)
-            .expect("first frame on the substream");
-        let f1 = session
-            .poll_stream_frame(VIEWER)
-            .expect("second frame on the substream");
-        assert_eq!(f0.sequence, 0);
-        assert_eq!(f1.sequence, 1);
-        assert!(session.poll_stream_frame(VIEWER).is_none());
-    }
-
-    /// A commit for a surface with no registered share session is a no-op (no encoder pumped, no substream traffic).
-    #[test]
-    fn commit_without_active_session_is_noop() {
-        let mut state = make_state();
-        state
-            .surface_tracker
-            .deposit_for_test(999, vec![0; 64], 4, 4);
-        assert!(!state.tick_share_session_for_surface(999));
-    }
-
-    /// A commit with a registered session but no staged frame returns `false` — the damage-only path (cursor motion, null-attach).
-    #[test]
-    fn commit_without_staged_frame_returns_false() {
-        const HOST: PeerId = 0xAAAA;
-        const SURFACE: SurfaceId = 55;
-
-        let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
-        );
-        let mut state = make_state();
-        state.register_share_session(session);
-        // Tracker slot is empty.
-        assert!(!state.tick_share_session_for_surface(SURFACE));
-    }
-
-    /// `unregister_share_session` stops the tick hook from pumping.
-    #[test]
-    fn unregister_stops_the_tick_hook() {
-        const HOST: PeerId = 0xAAAA;
-        const VIEWER: PeerId = 0xBBBB;
-        const SURFACE: SurfaceId = 77;
-
-        let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
-        );
-        session.add_viewer(VIEWER, false);
-        let mut state = make_state();
-        state.register_share_session(session);
-        let _ = state.remote_seats.seat_mut(VIEWER).enter(SURFACE);
-        assert!(state.remote_seats.key_transition(VIEWER, 42, true));
-        state
-            .surface_tracker
-            .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
-        assert!(state.tick_share_session_for_surface(SURFACE));
-        state.unregister_share_session(SURFACE);
-        assert_eq!(
+            // Simulate the sequence a real commit would produce: `on_commit`
+            // deposits bytes (mocked via `deposit_for_test`), then the commit
+            // handler calls `tick_share_session_for_surface` directly — no real `WlSurface` needed.
             state
-                .remote_seats
-                .seat(VIEWER)
-                .and_then(|seat| seat.focused_surface),
-            None,
-            "ending the share clears the revoked viewer's caret focus"
-        );
-        assert!(
-            !state.remote_seats.key_transition(VIEWER, 42, false),
-            "ending the share already consumed the held modifier"
-        );
-        // Post-unregister the tick is a no-op even with a staged frame.
-        state
-            .surface_tracker
-            .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
-        assert!(!state.tick_share_session_for_surface(SURFACE));
-    }
-
-    #[test]
-    fn quiet_viewer_is_disclosed_for_the_entire_stream_lifecycle() {
-        const HOST: PeerId = 0xAAAA;
-        const VIEWER: PeerId = 0xBBBB;
-        const SURFACE: SurfaceId = 79;
-
-        let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
-        );
-        session.add_viewer(VIEWER, true);
-        let mut state = make_state();
-
-        state.register_share_session(session);
-        assert_eq!(
-            state.share_registry.disclosure(),
-            vec![(VIEWER, SURFACE, false)],
-            "view-only disclosure begins when the stream is registered, without waiting for input"
-        );
-
-        state.unregister_share_session(SURFACE);
-        assert!(
-            state.share_registry.disclosure().is_empty(),
-            "ending the stream removes its trusted disclosure immediately"
-        );
-    }
-
-    #[test]
-    fn replacing_a_stream_cannot_leave_its_old_viewer_disclosed() {
-        const HOST: PeerId = 0xAAAA;
-        const OLD: PeerId = 0xBBBB;
-        const NEW: PeerId = 0xCCCC;
-        const SURFACE: SurfaceId = 80;
-
-        let old = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("old"),
-        );
-        old.add_viewer(OLD, false);
-        let new = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("new"),
-        );
-        new.add_viewer(NEW, true);
-        let mut state = make_state();
-
-        state.register_share_session(old);
-        state.register_share_session(new);
-        assert_eq!(
-            state.share_registry.disclosure(),
-            vec![(NEW, SURFACE, false)]
-        );
-    }
-
-    #[test]
-    fn downgrading_live_viewer_to_view_only_retires_held_input() {
-        const HOST: PeerId = 0xAAAA;
-        const VIEWER: PeerId = 0xBBBB;
-        const SURFACE: SurfaceId = 81;
-        const SHIFT: u32 = 42;
-
-        let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
-        );
-        session.add_viewer(VIEWER, false);
-        let mut state = make_state();
-        state.register_share_session(Arc::clone(&session));
-        let _ = state.remote_seats.seat_mut(VIEWER).enter(SURFACE);
-        assert!(state.remote_seats.key_transition(VIEWER, SHIFT, true));
-
-        session.set_read_only(VIEWER, true);
-        state.sync_share_authority(&session);
-
-        assert_eq!(
-            state.share_registry.disclosure(),
-            vec![(VIEWER, SURFACE, false)]
-        );
-        assert_eq!(
+                .surface_tracker
+                .deposit_for_test(SURFACE, gradient(W, H), W, H);
+            let ran = state.tick_share_session_for_surface(SURFACE);
+            assert!(ran, "first commit must fire the tick");
+            // Nudge the throttle clock by re-depositing and pumping again — the
+            // throttle is time-based and two back-to-back ticks land inside the
+            // 33ms window in tests. Sleep the interval; `should_encode` reads `Instant::now()` and accepts the second tick.
+            std::thread::sleep(std::time::Duration::from_millis(40));
             state
-                .remote_seats
-                .seat(VIEWER)
-                .and_then(|seat| seat.focused_surface),
-            None,
-            "view-only transition revokes the remote caret/input focus"
-        );
-        assert!(
-            !state.remote_seats.key_transition(VIEWER, SHIFT, false),
-            "permission downgrade already retired the held modifier"
-        );
-    }
+                .surface_tracker
+                .deposit_for_test(SURFACE, gradient(W, H), W, H);
+            let ran2 = state.tick_share_session_for_surface(SURFACE);
+            assert!(ran2, "second commit must fire the tick");
 
-    #[test]
-    fn packet_fast_path_retires_input_when_it_observes_a_downgrade_first() {
-        const HOST: PeerId = 0xAAAA;
-        const VIEWER: PeerId = 0xBBBB;
-        const SURFACE: SurfaceId = 83;
-        const SHIFT: u32 = 42;
-
-        let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
-        );
-        session.add_viewer(VIEWER, false);
-        let mut state = make_state();
-        state.register_share_session(Arc::clone(&session));
-        let _ = state.remote_seats.seat_mut(VIEWER).enter(SURFACE);
-        assert!(state.remote_seats.key_transition(VIEWER, SHIFT, true));
-
-        session.set_read_only(VIEWER, true);
-        assert!(
-            !state.apply_network_remote_input(
-                VIEWER,
-                SURFACE,
-                InputEvent::Key {
-                    keysym: SHIFT,
-                    pressed: false,
-                    modifiers: 0,
-                },
-            ),
-            "the downgraded release packet is refused after cleanup"
-        );
-        assert_eq!(
+            // Both encoded frames land in the subscriber's substream queue with monotonic sequence numbers.
+            let f0 = session
+                .poll_stream_frame(VIEWER)
+                .expect("first frame on the substream");
+            let f1 = session
+                .poll_stream_frame(VIEWER)
+                .expect("second frame on the substream");
+            assert_eq!(f0.sequence, 0);
+            assert_eq!(f1.sequence, 1);
+            assert!(session.poll_stream_frame(VIEWER).is_none());
+        }
+        // Phase `commit_without_active_session_is_noop`.
+        // A commit for a surface with no registered share session is a no-op (no encoder pumped, no substream traffic).
+        {
+            let mut state = make_state();
             state
-                .remote_seats
-                .seat(VIEWER)
-                .and_then(|seat| seat.focused_surface),
-            None,
-            "the fast path retires the shared caret before refusing input"
-        );
-        assert!(
-            !state.remote_seats.key_transition(VIEWER, SHIFT, false),
-            "the held modifier was already released exactly once"
-        );
-    }
+                .surface_tracker
+                .deposit_for_test(999, vec![0; 64], 4, 4);
+            assert!(!state.tick_share_session_for_surface(999));
+        }
+        // Phase `commit_without_staged_frame_returns_false`.
+        // A commit with a registered session but no staged frame returns `false` — the damage-only path (cursor motion, null-attach).
+        {
+            const HOST: PeerId = 0xAAAA;
+            const SURFACE: SurfaceId = 55;
 
-    #[test]
-    fn packet_fast_path_retires_input_when_it_observes_viewer_removal_first() {
-        const HOST: PeerId = 0xAAAA;
-        const VIEWER: PeerId = 0xBBBB;
-        const SURFACE: SurfaceId = 84;
-        const LEFT: u32 = 272;
+            let session = Arc::new(
+                SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+            );
+            let mut state = make_state();
+            state.register_share_session(session);
+            // Tracker slot is empty.
+            assert!(!state.tick_share_session_for_surface(SURFACE));
+        }
+        // Phase `unregister_stops_the_tick_hook`.
+        // `unregister_share_session` stops the tick hook from pumping.
+        {
+            const HOST: PeerId = 0xAAAA;
+            const VIEWER: PeerId = 0xBBBB;
+            const SURFACE: SurfaceId = 77;
 
-        let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
-        );
-        session.add_viewer(VIEWER, false);
-        let mut state = make_state();
-        state.register_share_session(Arc::clone(&session));
-        let _ = state.remote_seats.seat_mut(VIEWER).pointer_enter(SURFACE);
-        assert!(state.remote_seats.button_transition(VIEWER, LEFT, true));
-
-        session.drop_viewer(VIEWER);
-        assert!(
-            !state.apply_network_remote_input(
-                VIEWER,
-                SURFACE,
-                InputEvent::PointerButton {
-                    button: LEFT,
-                    pressed: false,
-                },
-            ),
-            "a removed viewer's packet is refused after cleanup"
-        );
-        assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
-        assert_eq!(
+            let session = Arc::new(
+                SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+            );
+            session.add_viewer(VIEWER, false);
+            let mut state = make_state();
+            state.register_share_session(session);
+            let _ = state.remote_seats.seat_mut(VIEWER).enter(SURFACE);
+            assert!(state.remote_seats.key_transition(VIEWER, 42, true));
             state
-                .remote_seats
-                .seat(VIEWER)
-                .and_then(|seat| seat.pointer_surface),
-            None
-        );
-        assert!(state.share_registry.get(VIEWER, SURFACE).is_none());
-    }
-
-    #[test]
-    fn downgrading_pointer_only_viewer_ends_drag_without_a_caret() {
-        const HOST: PeerId = 0xAAAA;
-        const VIEWER: PeerId = 0xBBBB;
-        const SURFACE: SurfaceId = 82;
-        const LEFT: u32 = 272;
-
-        let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
-        );
-        session.add_viewer(VIEWER, false);
-        let mut state = make_state();
-        state.register_share_session(Arc::clone(&session));
-        let _ = state.remote_seats.seat_mut(VIEWER).pointer_enter(SURFACE);
-        assert!(state.remote_seats.button_transition(VIEWER, LEFT, true));
-        assert_eq!(
+                .surface_tracker
+                .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
+            assert!(state.tick_share_session_for_surface(SURFACE));
+            state.unregister_share_session(SURFACE);
+            assert_eq!(
+                state
+                    .remote_seats
+                    .seat(VIEWER)
+                    .and_then(|seat| seat.focused_surface),
+                None,
+                "ending the share clears the revoked viewer's caret focus"
+            );
+            assert!(
+                !state.remote_seats.key_transition(VIEWER, 42, false),
+                "ending the share already consumed the held modifier"
+            );
+            // Post-unregister the tick is a no-op even with a staged frame.
             state
-                .remote_seats
-                .seat(VIEWER)
-                .and_then(|seat| seat.focused_surface),
-            None
-        );
-
-        session.set_read_only(VIEWER, true);
-        state.sync_share_authority(&session);
-
-        assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
-        assert_eq!(
-            state
-                .remote_seats
-                .seat(VIEWER)
-                .and_then(|seat| seat.pointer_surface),
-            None
-        );
+                .surface_tracker
+                .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
+            assert!(!state.tick_share_session_for_surface(SURFACE));
+        }
     }
 
     #[test]
-    fn revoking_one_viewer_releases_focus_without_clearing_another_modifier_hold() {
-        const SURFACE: SurfaceId = 78;
-        const FIRST: PeerId = 0xA1;
-        const SECOND: PeerId = 0xB2;
-        const LEFT_SHIFT: u32 = 42;
+    fn stream_viewers_are_disclosed_for_their_whole_lifecycle() {
+        // Phase `quiet_viewer_is_disclosed_for_the_entire_stream_lifecycle`.
+        {
+            const HOST: PeerId = 0xAAAA;
+            const VIEWER: PeerId = 0xBBBB;
+            const SURFACE: SurfaceId = 79;
 
-        let mut state = make_state();
-        let _ = state.remote_seats.seat_mut(FIRST).enter(SURFACE);
-        let _ = state.remote_seats.seat_mut(SECOND).enter(SURFACE);
-        assert!(state.remote_seats.key_transition(FIRST, LEFT_SHIFT, true));
-        assert!(
-            !state.remote_seats.key_transition(SECOND, LEFT_SHIFT, true),
-            "the legacy app sees one shared modifier press"
-        );
+            let session = Arc::new(
+                SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+            );
+            session.add_viewer(VIEWER, true);
+            let mut state = make_state();
 
-        state.release_remote_focus_for_surface(FIRST, SURFACE);
-        assert_eq!(
-            state
-                .remote_seats
-                .seat(FIRST)
-                .and_then(|seat| seat.focused_surface),
-            None
-        );
-        assert_eq!(
-            state
-                .remote_seats
-                .seat(SECOND)
-                .and_then(|seat| seat.focused_surface),
-            Some(SURFACE)
-        );
-        assert!(
-            state.remote_seats.key_transition(SECOND, LEFT_SHIFT, false),
-            "the remaining holder owns the eventual app-facing release"
-        );
+            state.register_share_session(session);
+            assert_eq!(
+                state.share_registry.disclosure(),
+                vec![(VIEWER, SURFACE, false)],
+                "view-only disclosure begins when the stream is registered, without waiting for input"
+            );
+
+            state.unregister_share_session(SURFACE);
+            assert!(
+                state.share_registry.disclosure().is_empty(),
+                "ending the stream removes its trusted disclosure immediately"
+            );
+        }
+        // Phase `replacing_a_stream_cannot_leave_its_old_viewer_disclosed`.
+        {
+            const HOST: PeerId = 0xAAAA;
+            const OLD: PeerId = 0xBBBB;
+            const NEW: PeerId = 0xCCCC;
+            const SURFACE: SurfaceId = 80;
+
+            let old = Arc::new(
+                SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("old"),
+            );
+            old.add_viewer(OLD, false);
+            let new = Arc::new(
+                SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("new"),
+            );
+            new.add_viewer(NEW, true);
+            let mut state = make_state();
+
+            state.register_share_session(old);
+            state.register_share_session(new);
+            assert_eq!(
+                state.share_registry.disclosure(),
+                vec![(NEW, SURFACE, false)]
+            );
+        }
+        // Phase `revoking_one_viewer_releases_focus_without_clearing_another_modifier_hold`.
+        {
+            const SURFACE: SurfaceId = 78;
+            const FIRST: PeerId = 0xA1;
+            const SECOND: PeerId = 0xB2;
+            const LEFT_SHIFT: u32 = 42;
+
+            let mut state = make_state();
+            let _ = state.remote_seats.seat_mut(FIRST).enter(SURFACE);
+            let _ = state.remote_seats.seat_mut(SECOND).enter(SURFACE);
+            assert!(state.remote_seats.key_transition(FIRST, LEFT_SHIFT, true));
+            assert!(
+                !state.remote_seats.key_transition(SECOND, LEFT_SHIFT, true),
+                "the legacy app sees one shared modifier press"
+            );
+
+            state.release_remote_focus_for_surface(FIRST, SURFACE);
+            assert_eq!(
+                state
+                    .remote_seats
+                    .seat(FIRST)
+                    .and_then(|seat| seat.focused_surface),
+                None
+            );
+            assert_eq!(
+                state
+                    .remote_seats
+                    .seat(SECOND)
+                    .and_then(|seat| seat.focused_surface),
+                Some(SURFACE)
+            );
+            assert!(
+                state.remote_seats.key_transition(SECOND, LEFT_SHIFT, false),
+                "the remaining holder owns the eventual app-facing release"
+            );
+        }
     }
 
-    /// The `ext_session_lock_v1` bridge reports a lock request as a one-shot
-    /// edge. Protocol-object release deliberately has no unlock edge.
     #[test]
-    fn session_lock_hooks_report_and_clear_lock_edge_only() {
-        let mut h = SessionLockHooks::default();
-        assert!(!h.take_lock_requested());
-        assert!(!h.has_pending_locker());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn viewer_downgrade_or_removal_retires_held_input() {
+        // Phase `downgrading_live_viewer_to_view_only_retires_held_input`.
+        {
+            const HOST: PeerId = 0xAAAA;
+            const VIEWER: PeerId = 0xBBBB;
+            const SURFACE: SurfaceId = 81;
+            const SHIFT: u32 = 42;
 
-        h.lock_requested = true;
-        assert!(h.take_lock_requested());
-        assert!(
-            !h.take_lock_requested(),
-            "lock edge is consumed exactly once"
-        );
+            let session = Arc::new(
+                SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+            );
+            session.add_viewer(VIEWER, false);
+            let mut state = make_state();
+            state.register_share_session(Arc::clone(&session));
+            let _ = state.remote_seats.seat_mut(VIEWER).enter(SURFACE);
+            assert!(state.remote_seats.key_transition(VIEWER, SHIFT, true));
+
+            session.set_read_only(VIEWER, true);
+            state.sync_share_authority(&session);
+
+            assert_eq!(
+                state.share_registry.disclosure(),
+                vec![(VIEWER, SURFACE, false)]
+            );
+            assert_eq!(
+                state
+                    .remote_seats
+                    .seat(VIEWER)
+                    .and_then(|seat| seat.focused_surface),
+                None,
+                "view-only transition revokes the remote caret/input focus"
+            );
+            assert!(
+                !state.remote_seats.key_transition(VIEWER, SHIFT, false),
+                "permission downgrade already retired the held modifier"
+            );
+        }
+        // Phase `packet_fast_path_retires_input_when_it_observes_a_downgrade_first`.
+        {
+            const HOST: PeerId = 0xAAAA;
+            const VIEWER: PeerId = 0xBBBB;
+            const SURFACE: SurfaceId = 83;
+            const SHIFT: u32 = 42;
+
+            let session = Arc::new(
+                SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+            );
+            session.add_viewer(VIEWER, false);
+            let mut state = make_state();
+            state.register_share_session(Arc::clone(&session));
+            let _ = state.remote_seats.seat_mut(VIEWER).enter(SURFACE);
+            assert!(state.remote_seats.key_transition(VIEWER, SHIFT, true));
+
+            session.set_read_only(VIEWER, true);
+            assert!(
+                !state.apply_network_remote_input(
+                    VIEWER,
+                    SURFACE,
+                    InputEvent::Key {
+                        keysym: SHIFT,
+                        pressed: false,
+                        modifiers: 0,
+                    },
+                ),
+                "the downgraded release packet is refused after cleanup"
+            );
+            assert_eq!(
+                state
+                    .remote_seats
+                    .seat(VIEWER)
+                    .and_then(|seat| seat.focused_surface),
+                None,
+                "the fast path retires the shared caret before refusing input"
+            );
+            assert!(
+                !state.remote_seats.key_transition(VIEWER, SHIFT, false),
+                "the held modifier was already released exactly once"
+            );
+        }
+        // Phase `packet_fast_path_retires_input_when_it_observes_viewer_removal_first`.
+        {
+            const HOST: PeerId = 0xAAAA;
+            const VIEWER: PeerId = 0xBBBB;
+            const SURFACE: SurfaceId = 84;
+            const LEFT: u32 = 272;
+
+            let session = Arc::new(
+                SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+            );
+            session.add_viewer(VIEWER, false);
+            let mut state = make_state();
+            state.register_share_session(Arc::clone(&session));
+            let _ = state.remote_seats.seat_mut(VIEWER).pointer_enter(SURFACE);
+            assert!(state.remote_seats.button_transition(VIEWER, LEFT, true));
+
+            session.drop_viewer(VIEWER);
+            assert!(
+                !state.apply_network_remote_input(
+                    VIEWER,
+                    SURFACE,
+                    InputEvent::PointerButton {
+                        button: LEFT,
+                        pressed: false,
+                    },
+                ),
+                "a removed viewer's packet is refused after cleanup"
+            );
+            assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
+            assert_eq!(
+                state
+                    .remote_seats
+                    .seat(VIEWER)
+                    .and_then(|seat| seat.pointer_surface),
+                None
+            );
+            assert!(state.share_registry.get(VIEWER, SURFACE).is_none());
+        }
+        // Phase `downgrading_pointer_only_viewer_ends_drag_without_a_caret`.
+        {
+            const HOST: PeerId = 0xAAAA;
+            const VIEWER: PeerId = 0xBBBB;
+            const SURFACE: SurfaceId = 82;
+            const LEFT: u32 = 272;
+
+            let session = Arc::new(
+                SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+            );
+            session.add_viewer(VIEWER, false);
+            let mut state = make_state();
+            state.register_share_session(Arc::clone(&session));
+            let _ = state.remote_seats.seat_mut(VIEWER).pointer_enter(SURFACE);
+            assert!(state.remote_seats.button_transition(VIEWER, LEFT, true));
+            assert_eq!(
+                state
+                    .remote_seats
+                    .seat(VIEWER)
+                    .and_then(|seat| seat.focused_surface),
+                None
+            );
+
+            session.set_read_only(VIEWER, true);
+            state.sync_share_authority(&session);
+
+            assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
+            assert_eq!(
+                state
+                    .remote_seats
+                    .seat(VIEWER)
+                    .and_then(|seat| seat.pointer_surface),
+                None
+            );
+        }
     }
 
-    /// Releasing an ext-session-lock object cannot manufacture an unlock
-    /// request. The protocol callback itself is exercised here so a future
-    /// refactor cannot accidentally reconnect object lifetime to authentication.
     #[test]
-    fn protocol_session_lock_release_is_not_unlock_authority() {
-        let mut state = make_state();
-        state.session_lock.lock_requested = true;
+    fn session_lock_hooks_report_edges_without_granting_unlock() {
+        // Phase `session_lock_hooks_report_and_clear_lock_edge_only`.
+        // The `ext_session_lock_v1` bridge reports a lock request as a one-shot
+        // edge. Protocol-object release deliberately has no unlock edge.
+        {
+            let mut h = SessionLockHooks::default();
+            assert!(!h.take_lock_requested());
+            assert!(!h.has_pending_locker());
 
-        <State as SessionLockHandler>::unlock(&mut state);
+            h.lock_requested = true;
+            assert!(h.take_lock_requested());
+            assert!(
+                !h.take_lock_requested(),
+                "lock edge is consumed exactly once"
+            );
+        }
+        // Phase `protocol_session_lock_release_is_not_unlock_authority`.
+        // Releasing an ext-session-lock object cannot manufacture an unlock
+        // request. The protocol callback itself is exercised here so a future
+        // refactor cannot accidentally reconnect object lifetime to authentication.
+        {
+            let mut state = make_state();
+            state.session_lock.lock_requested = true;
 
-        assert!(
-            state.session_lock.take_lock_requested(),
-            "releasing the protocol object must not cancel the pending lock"
-        );
-        assert!(!state.session_lock.has_pending_locker());
-    }
+            <State as SessionLockHandler>::unlock(&mut state);
 
-    /// A freshly constructed state advertises the session-lock global and starts with no client holding a lock.
-    #[test]
-    fn fresh_state_advertises_session_lock_and_starts_unlocked() {
-        let mut state = make_state();
-        // Constructing the state ran `SessionLockManagerState::new` (global advertised) without panic; no client holds a lock yet.
-        assert!(!state.session_lock.take_lock_requested());
-        assert!(!state.session_lock.has_pending_locker());
+            assert!(
+                state.session_lock.take_lock_requested(),
+                "releasing the protocol object must not cancel the pending lock"
+            );
+            assert!(!state.session_lock.has_pending_locker());
+        }
+        // Phase `fresh_state_advertises_session_lock_and_starts_unlocked`.
+        // A freshly constructed state advertises the session-lock global and starts with no client holding a lock.
+        {
+            let mut state = make_state();
+            // Constructing the state ran `SessionLockManagerState::new` (global advertised) without panic; no client holds a lock yet.
+            assert!(!state.session_lock.take_lock_requested());
+            assert!(!state.session_lock.has_pending_locker());
+        }
     }
 }

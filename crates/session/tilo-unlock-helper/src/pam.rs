@@ -257,9 +257,10 @@ pub fn authenticate(lib: &str, service: &str, user: &str, password: &str) -> Out
 mod tests {
     use super::*;
 
-    /// A missing library is fail-closed: never `Ok`, always `Error`.
+    /// Bad inputs are fail-closed: never `Ok`.
     #[test]
-    fn missing_library_fails_closed() {
+    fn bad_library_or_password_never_authenticates() {
+        // A missing library is fail-closed: never `Ok`, always `Error`.
         let out = authenticate(
             "libdefinitely-not-a-real-pam.so.999",
             "login",
@@ -267,12 +268,9 @@ mod tests {
             "x",
         );
         assert_eq!(out, Outcome::Error);
-    }
 
-    /// A password containing an interior NUL cannot be a valid credential;
-    /// it is rejected as denied (bad credential), never accepted.
-    #[test]
-    fn interior_nul_password_is_denied_not_ok() {
+        // A password containing an interior NUL cannot be a valid credential;
+        // it is rejected as denied (bad credential), never accepted.
         // We can only reach the CString check if the library loads; if
         // libpam.so.0 is unavailable this returns Error, which is also
         // never Ok — either way the invariant "never Ok for a bad input"

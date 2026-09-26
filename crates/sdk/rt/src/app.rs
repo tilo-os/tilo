@@ -154,73 +154,75 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn app_runtime_runs_on_its_own_named_thread() {
-        let runtime = app();
-        let caller = std::thread::current().id();
-        let (tx, rx) = mpsc::channel();
-        runtime.spawn(async move {
-            let current = std::thread::current();
-            tx.send((current.id(), current.name().map(str::to_owned)))
+    fn the_app_runtime_runs_on_its_own_thread_and_drives_spawned_tasks() {
+        // phase: app_runtime_runs_on_its_own_named_thread
+        {
+            let runtime = app();
+            let caller = std::thread::current().id();
+            let (tx, rx) = mpsc::channel();
+            runtime.spawn(async move {
+                let current = std::thread::current();
+                tx.send((current.id(), current.name().map(str::to_owned)))
+                    .unwrap();
+            });
+            let (ran_on, name) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_ne!(ran_on, caller);
+            assert_eq!(ran_on, runtime.thread_id());
+            assert_eq!(name.as_deref(), Some(APP_THREAD));
+            assert!(!runtime.is_runtime_thread());
+        }
+        // phase: spawning_does_not_enter_a_runtime_on_the_caller
+        {
+            let runtime = app();
+            let _task = runtime.spawn(async {});
+            assert!(!crate::in_runtime());
+        }
+        // phase: app_runtime_drives_timers_and_io_for_spawned_tasks
+        {
+            let (tx, rx) = mpsc::channel();
+            app().spawn_then(
+                async {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    "slept"
+                },
+                move |out| tx.send(out).unwrap(),
+            );
+            assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "slept");
+        }
+    }
+
+    #[test]
+    fn blocking_is_allowed_off_the_runtime_thread_only() {
+        // phase: worker_threads_can_wait_but_the_runtime_thread_cannot
+        {
+            let runtime = app();
+            assert_eq!(runtime.block_on(async { 3 }).unwrap(), 3);
+            let nested = runtime
+                .block_on(async { app().block_on(async {}) })
                 .unwrap();
-        });
-        let (ran_on, name) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_ne!(ran_on, caller);
-        assert_eq!(ran_on, runtime.thread_id());
-        assert_eq!(name.as_deref(), Some(APP_THREAD));
-        assert!(!runtime.is_runtime_thread());
-    }
-
-    #[test]
-    fn spawning_does_not_enter_a_runtime_on_the_caller() {
-        let runtime = app();
-        let _task = runtime.spawn(async {});
-        assert!(!crate::in_runtime());
-    }
-
-    #[test]
-    fn app_runtime_drives_timers_and_io_for_spawned_tasks() {
-        let (tx, rx) = mpsc::channel();
-        app().spawn_then(
-            async {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                "slept"
-            },
-            move |out| tx.send(out).unwrap(),
-        );
-        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "slept");
-    }
-
-    #[test]
-    fn worker_threads_can_wait_but_the_runtime_thread_cannot() {
-        let runtime = app();
-        assert_eq!(runtime.block_on(async { 3 }).unwrap(), 3);
-        let nested = runtime
-            .block_on(async { app().block_on(async {}) })
-            .unwrap();
-        assert!(matches!(nested, Err(Error::InsideRuntime)));
-    }
-
-    #[test]
-    fn a_blocked_caller_can_borrow_and_still_use_the_drivers() {
-        let label = String::from("borrowed");
-        let seen = app()
-            .block_on(async {
-                tokio::time::sleep(Duration::from_millis(2)).await;
-                label.len()
-            })
-            .unwrap();
-        assert_eq!(seen, label.len());
-    }
-
-    #[test]
-    fn blocking_calls_leave_the_runtime_thread_free() {
-        let runtime = app();
-        let (release, gate) = mpsc::channel::<()>();
-        let blocked = runtime.spawn_blocking(move || gate.recv().unwrap());
-        // With the blocking call parked, the runtime thread still serves
-        // other tasks.
-        assert_eq!(runtime.block_on(async { 5 }).unwrap(), 5);
-        release.send(()).unwrap();
-        runtime.block_on(blocked).unwrap().unwrap();
+            assert!(matches!(nested, Err(Error::InsideRuntime)));
+        }
+        // phase: a_blocked_caller_can_borrow_and_still_use_the_drivers
+        {
+            let label = String::from("borrowed");
+            let seen = app()
+                .block_on(async {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                    label.len()
+                })
+                .unwrap();
+            assert_eq!(seen, label.len());
+        }
+        // phase: blocking_calls_leave_the_runtime_thread_free
+        {
+            let runtime = app();
+            let (release, gate) = mpsc::channel::<()>();
+            let blocked = runtime.spawn_blocking(move || gate.recv().unwrap());
+            // With the blocking call parked, the runtime thread still serves
+            // other tasks.
+            assert_eq!(runtime.block_on(async { 5 }).unwrap(), 5);
+            release.send(()).unwrap();
+            runtime.block_on(blocked).unwrap().unwrap();
+        }
     }
 }

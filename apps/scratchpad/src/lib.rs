@@ -12,7 +12,6 @@ use std::rc::Rc;
 
 pub use native_fixture::{NativeFixtureManifest, seed_native_fixture};
 use ui::prelude::*;
-use ui::record::RecordSaveStatus;
 
 /// The note.
 #[derive(Model, Default, Debug, Clone, PartialEq)]

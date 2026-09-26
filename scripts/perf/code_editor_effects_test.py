@@ -37,11 +37,10 @@ class CodeEditorEffectsTests(unittest.TestCase):
                 + ['tilo-native-effect '+json.dumps(row) for row in effects]
                 + ['tilo-native-frame '+json.dumps(row) for row in frames])
 
-    def test_exact_hash_caret_and_focus_transitions(self):
-        scenario,effects,manifest=self.fixture()
-        self.assertEqual(validate_code_editor_typing(scenario,self.lines(effects),manifest),2)
-
-    def test_typing_rejects_wrong_or_malformed_state(self):
+    def test_typing_accepts_only_exact_transitions_over_well_formed_evidence(self):
+        with self.subTest(case='exact hash caret and focus transitions'):
+            scenario,effects,manifest=self.fixture()
+            self.assertEqual(validate_code_editor_typing(scenario,self.lines(effects),manifest),2)
         for key,value in [('body_hash','c'*64),('body_hash','bad'),('body_bytes',True),
                           ('body_bytes',12),('hash_algorithm','blake3'),('buffer_id',''),
                           ('editor_focused',False),('editor_focused',1),('caret_line',1),
@@ -51,40 +50,38 @@ class CodeEditorEffectsTests(unittest.TestCase):
                           ('editor_rect',[200,40,800,550]),('ready',False),('app','other')]:
             scenario,effects,manifest=self.fixture()
             effects[1]['after'][key]=value
-            with self.subTest(key=key,value=value),self.assertRaises(ValueError):
+            with self.subTest(case='wrong or malformed state',key=key,value=value),self.assertRaises(ValueError):
                 validate_code_editor_typing(scenario,self.lines(effects),manifest)
-
-    def test_missing_fields_are_rejected(self):
         _,fixture,_=self.fixture()
         for key in fixture[0]['before']:
             scenario,effects,manifest=self.fixture()
             del effects[1]['after'][key]
-            with self.subTest(key=key),self.assertRaises(ValueError):
+            with self.subTest(case='missing field',key=key),self.assertRaises(ValueError):
                 validate_code_editor_typing(scenario,self.lines(effects),manifest)
-
-    def test_reordered_missing_extra_and_discontinuous_effects_rejected(self):
         scenario,effects,manifest=self.fixture()
         for bad in [effects[::-1],effects[:-1],effects+effects[:1],None,[None]*3]:
-            with self.subTest(bad=bad),self.assertRaises(ValueError):
+            with self.subTest(case='reordered/missing/extra effects',bad=bad),self.assertRaises(ValueError):
                 validate_code_editor_typing(scenario,self.lines(bad or []),manifest)
         effects[2]['before']['caret_column']=0
-        with self.assertRaises(ValueError):
+        with self.subTest(case='discontinuous effects'),self.assertRaises(ValueError):
             validate_code_editor_typing(scenario,self.lines(effects),manifest)
-
-    def test_unknown_steps_noop_and_bad_manifest_rejected(self):
         for change in [dict(kind='character',value='y'),dict(kind='key',key='delete'),
                        dict(kind='character',value='x',extra=True)]:
             scenario,effects,manifest=self.fixture();scenario['steps'][1]=change
-            with self.assertRaises(ValueError):
+            with self.subTest(case='unknown step',step=change),self.assertRaises(ValueError):
                 validate_code_editor_typing(scenario,self.lines(effects),manifest)
         for key,value in [('hash_algorithm','blake3'),('body_hash','bad'),
                           ('prefixed_x_bytes',3),('body_bytes',True),('lines',0)]:
             scenario,effects,manifest=self.fixture();manifest[key]=value
-            with self.assertRaises(ValueError):
+            with self.subTest(case='bad manifest',key=key),self.assertRaises(ValueError):
                 validate_code_editor_typing(scenario,self.lines(effects),manifest)
         scenario,effects,manifest=self.fixture();effects[1]['after']=effects[1]['before']
-        with self.assertRaises(ValueError):
+        with self.subTest(case='no-op edit'),self.assertRaises(ValueError):
             validate_code_editor_typing(scenario,self.lines(effects),manifest)
+        scenario,_,manifest=self.fixture()
+        for lines in [['tilo-native-effect {'],['tilo-native-effect null']*3]:
+            with self.subTest(case='malformed json and records fail closed',lines=lines),self.assertRaises(ValueError):
+                validate_code_editor_typing(scenario,lines,manifest)
 
     def scroll_fixture(self):
         _,effects,manifest=self.fixture();a=effects[0]['before'];b=dict(a,offset_y=9.0)
@@ -93,60 +90,54 @@ class CodeEditorEffectsTests(unittest.TestCase):
         effects=[dict(id=0,before=a,after=a),dict(id=1,before=a,after=b),dict(id=2,before=b,after=a)]
         return dict(steps=steps),copy.deepcopy(effects),manifest
 
-    def test_scroll_requires_real_correctly_directed_motion(self):
+    def test_scroll_requires_real_directed_motion_inside_editor_and_nothing_else(self):
         scenario,effects,manifest=self.scroll_fixture()
         self.assertEqual(validate_code_editor_scroll(scenario,self.lines(effects),manifest),2)
         for dy in [0,3,float('nan'),True]:
             bad=copy.deepcopy(scenario);bad['steps'][1]['dy']=dy
-            with self.assertRaises(ValueError):
+            with self.subTest(case='wheel direction',dy=dy),self.assertRaises(ValueError):
+                validate_code_editor_scroll(bad,self.lines(effects),manifest)
+        for x in [0,float('nan'),True]:
+            bad=copy.deepcopy(scenario);bad['steps'][0]['x']=x
+            with self.subTest(case='hover requires finite pointer inside editor',x=x),self.assertRaises(ValueError):
                 validate_code_editor_scroll(bad,self.lines(effects),manifest)
         effects[1]['after']=effects[1]['before']
-        with self.assertRaises(ValueError):
+        with self.subTest(case='no motion'),self.assertRaises(ValueError):
             validate_code_editor_scroll(scenario,self.lines(effects),manifest)
-
-    def test_scroll_cannot_change_caret_focus_content_identity_or_geometry(self):
         for key,value in [('caret_column',1),('editor_focused',False),('body_hash','c'*64),
                           ('buffer_id','different'),('root_rect',[0,0,801,600]),
                           ('editor_rect',[200,41,800,560]),('offset_x',1.0),
                           ('offset_y_unit','pixels')]:
             scenario,effects,manifest=self.scroll_fixture();effects[1]['after'][key]=value
-            with self.subTest(key=key),self.assertRaises(ValueError):
+            with self.subTest(case='scroll cannot change caret/focus/content/geometry',key=key),self.assertRaises(ValueError):
                 validate_code_editor_scroll(scenario,self.lines(effects),manifest)
 
-    def test_hover_requires_finite_pointer_inside_editor(self):
-        scenario,effects,manifest=self.scroll_fixture()
-        for x in [0,float('nan'),True]:
-            bad=copy.deepcopy(scenario);bad['steps'][0]['x']=x
+    def test_pointer_evidence_uses_one_valid_native_window_scale(self):
+        window2x='tilo-native-window '+json.dumps(dict(scale_factor=2.0,physical_width=1600,physical_height=1200))
+        with self.subTest(case='scroll hover is physical'):
+            scenario,effects,manifest=self.scroll_fixture()
+            scenario['steps'][0].update(x=1200,y=400)
+            lines=self.lines(effects)
+            lines[0]=window2x
+            self.assertEqual(validate_code_editor_scroll(scenario,lines,manifest),2)
+            # Physically inside the logical rectangle is insufficient: after /2,
+            # x=150 lands outside the editor's logical left edge at200.
+            scenario['steps'][0].update(x=300,y=100)
             with self.assertRaises(ValueError):
-                validate_code_editor_scroll(bad,self.lines(effects),manifest)
-
-    def test_physical_pointer_is_converted_using_native_window_scale(self):
-        scenario,effects,manifest=self.scroll_fixture()
-        scenario['steps'][0].update(x=1200,y=400)
-        lines=self.lines(effects)
-        lines[0]='tilo-native-window '+json.dumps(dict(scale_factor=2.0,physical_width=1600,physical_height=1200))
-        self.assertEqual(validate_code_editor_scroll(scenario,lines,manifest),2)
-        # Physically inside the logical rectangle is insufficient: after /2,
-        # x=150 lands outside the editor's logical left edge at200.
-        scenario['steps'][0].update(x=300,y=100)
-        with self.assertRaises(ValueError):
-            validate_code_editor_scroll(scenario,lines,manifest)
-
-    def test_typing_click_also_uses_physical_coordinates(self):
-        scenario,effects,manifest=self.fixture()
-        scenario['steps'][0]=dict(kind='click',x=1200,y=400)
-        lines=self.lines(effects)
-        lines[0]='tilo-native-window '+json.dumps(dict(scale_factor=2.0,physical_width=1600,physical_height=1200))
-        self.assertEqual(validate_code_editor_typing(scenario,lines,manifest),2)
-        scenario['steps'][0]['x']=300
-        with self.assertRaises(ValueError):
-            validate_code_editor_typing(scenario,lines,manifest)
-
-    def test_pointer_evidence_requires_one_valid_native_window_scale(self):
-        scenario,effects,manifest=self.scroll_fixture()
-        lines=self.lines(effects)
-        for bad in [lines[1:],lines[:1]+lines]:
+                validate_code_editor_scroll(scenario,lines,manifest)
+        with self.subTest(case='typing click also uses physical coordinates'):
+            scenario,effects,manifest=self.fixture()
+            scenario['steps'][0]=dict(kind='click',x=1200,y=400)
+            lines=self.lines(effects)
+            lines[0]=window2x
+            self.assertEqual(validate_code_editor_typing(scenario,lines,manifest),2)
+            scenario['steps'][0]['x']=300
             with self.assertRaises(ValueError):
+                validate_code_editor_typing(scenario,lines,manifest)
+        scenario,effects,manifest=self.scroll_fixture()
+        lines=self.lines(effects)
+        for label,bad in [('missing window',lines[1:]),('duplicate window',lines[:1]+lines)]:
+            with self.subTest(case=label),self.assertRaises(ValueError):
                 validate_code_editor_scroll(scenario,bad,manifest)
         for value in [None,True,0,-1,float('nan'),float('inf'),'2']:
             bad=list(lines)
@@ -154,7 +145,7 @@ class CodeEditorEffectsTests(unittest.TestCase):
             with self.subTest(scale=value),self.assertRaises(ValueError):
                 validate_code_editor_scroll(scenario,bad,manifest)
         bad=list(lines);bad[0]='tilo-native-window {}'
-        with self.assertRaises(ValueError):
+        with self.subTest(case='window without scale'),self.assertRaises(ValueError):
             validate_code_editor_scroll(scenario,bad,manifest)
 
     def frame_fixture(self):
@@ -163,7 +154,7 @@ class CodeEditorEffectsTests(unittest.TestCase):
                 dict(cpu_frame_id=11,input_ids=[2],state=copy.deepcopy(effects[2]['after']))]
         return scenario,effects,frames
 
-    def test_postdraw_matches_complete_last_input_state(self):
+    def test_postdraw_matches_complete_last_input_state_through_a_valid_input_map(self):
         scenario,effects,frames=self.frame_fixture()
         self.assertEqual(validate_code_editor_frame_states(scenario,self.lines(effects,frames)),2)
         for key,value in [('caret_column',0),('body_hash','c'*64),('editor_focused',False),
@@ -172,23 +163,15 @@ class CodeEditorEffectsTests(unittest.TestCase):
             bad=copy.deepcopy(frames);bad[0]['state'][key]=value
             with self.subTest(key=key),self.assertRaises(ValueError):
                 validate_code_editor_frame_states(scenario,self.lines(effects,bad))
-
-    def test_postdraw_rejects_missing_extra_reordered_or_invalid_input_maps(self):
-        scenario,effects,frames=self.frame_fixture()
-        for bad in [[],frames[:-1],frames[::-1],frames+frames[:1]]:
-            with self.assertRaises(ValueError):
+        for label,bad in [('no frames',[]),('missing frame',frames[:-1]),
+                          ('reordered frames',frames[::-1]),('extra frame',frames+frames[:1])]:
+            with self.subTest(case=label),self.assertRaises(ValueError):
                 validate_code_editor_frame_states(scenario,self.lines(effects,bad))
         for field,value in [('cpu_frame_id',True),('cpu_frame_id',-1),('input_ids',[]),
                             ('input_ids',[0,0]),('input_ids',[0,True]),('input_ids',[0,1,2,3])]:
             bad=copy.deepcopy(frames);bad[0][field]=value
-            with self.subTest(field=field),self.assertRaises(ValueError):
+            with self.subTest(field=field,value=value),self.assertRaises(ValueError):
                 validate_code_editor_frame_states(scenario,self.lines(effects,bad))
-
-    def test_malformed_json_and_records_fail_closed(self):
-        scenario,_,manifest=self.fixture()
-        for lines in [['tilo-native-effect {'],['tilo-native-effect null']*3]:
-            with self.assertRaises(ValueError):
-                validate_code_editor_typing(scenario,lines,manifest)
 
 
 if __name__=='__main__':
