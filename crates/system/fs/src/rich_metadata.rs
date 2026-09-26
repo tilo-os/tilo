@@ -118,7 +118,7 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     clippy::arithmetic_side_effects,
     clippy::cast_lossless,
     clippy::indexing_slicing,
-    reason = "rIFF chunk bounds are checked before fixed-width header reads"
+    reason = "RIFF chunk bounds are checked before fixed-width header reads"
 )]
 fn wav_properties(bytes: &[u8]) -> Option<(u64, &'static str)> {
     if bytes.len() < 12 || !bytes.starts_with(b"RIFF") || &bytes[8..12] != b"WAVE" {
