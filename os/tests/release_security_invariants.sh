@@ -72,6 +72,18 @@ grep -A1 -F -- '- name: Independently rebuild the release candidate' "$workflow"
   && ok 'every publication, and only a publication, pays for the uncached rebuild' \
   || bad 'the uncached reproducibility rebuild no longer gates exactly the publications'
 
+# A failed publication lane signals its reproduction lane, which stops its
+# builder instead of rebuilding for hours nobody waits on.
+publication_signal='registry.tilo.so/tilo/tilo-repro:${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}-publication'
+grep -A1 -F -- '- name: Stop the rebuild once the publication lane fails' "$workflow" \
+    | grep -Fq "if: matrix.role == 'reproduce'" \
+  && grep -A1 -F -- '- name: Tell the reproduction lane that this publication failed' "$workflow" \
+    | grep -Fq "if: (failure() || cancelled()) && needs.plan.outputs.publish == 'true' && matrix.role != 'reproduce'" \
+  && test "$(grep -Fc "PUBLICATION_SIGNAL: $publication_signal" "$workflow")" -eq 2 \
+  && grep -Fq 'docker buildx stop "$BUILDER_NAME"' "$workflow" \
+  && ok 'a failed publication stops its reproduction lane' \
+  || bad 'a reproduction lane outlives its failed publication lane'
+
 grep -Fq -- '--type https://tilo.sh/security/release-freshness/v1' "$workflow" \
   && grep -Fq 'release freshness attestation is absent, expired, or does not bind this release' "$workflow" \
   && grep -Fq '604800' "$freshness" \

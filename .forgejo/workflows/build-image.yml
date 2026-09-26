@@ -1410,6 +1410,33 @@ jobs:
       # Only a publication (tag, nightly or protected manual main release)
       # pays for the second uncached build; integration images for tilo-ci
       # and dev disks are never signed or published and skip it.
+      # The rebuild only matters to a publication lane that is still going.
+      # Once that lane reports its failure, stop the builder: the rebuild
+      # step fails at once instead of occupying a large runner for hours.
+      - name: Stop the rebuild once the publication lane fails
+        if: matrix.role == 'reproduce'
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+          PUBLICATION_SIGNAL: registry.tilo.so/tilo/tilo-repro:${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}-publication
+        run: |
+          set -euo pipefail
+          test -n "$BUILDER_NAME"
+          publication_failed() {
+            [[ "$(skopeo inspect "docker://$PUBLICATION_SIGNAL" 2>/dev/null \
+              | jq -r '.Labels["org.tilo.publication.outcome"] // empty' || true)" == failed ]]
+          }
+          if publication_failed; then
+            echo '::error::the publication lane of this run failed; not rebuilding'
+            exit 1
+          fi
+          export -f publication_failed
+          setsid nohup bash -c '
+            until publication_failed; do sleep 60; done
+            echo "the publication lane failed; stopping builder $BUILDER_NAME"
+            docker buildx stop "$BUILDER_NAME"
+          ' > "$RUNNER_TEMP/publication-watch.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/publication-watch.pid"
+
       - name: Independently rebuild the release candidate
         if: matrix.role == 'reproduce'
         id: repro
@@ -1462,6 +1489,10 @@ jobs:
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
         run: |
           set -euo pipefail
+          if [[ -s $RUNNER_TEMP/publication-watch.pid ]]; then
+            kill "$(cat "$RUNNER_TEMP/publication-watch.pid")" 2>/dev/null || true
+            cat "$RUNNER_TEMP/publication-watch.log" 2>/dev/null || true
+          fi
           manifest=failed
           if [[ $REPRO_OUTCOME == success ]]; then
             repro_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image-repro.tar \
@@ -2022,6 +2053,37 @@ jobs:
           name: tilo-os-child-${{ matrix.arch }}
           path: release-child/${{ matrix.arch }}.json
           if-no-files-found: error
+
+      # A failed publication lane tells its reproduction lane to stop. The
+      # signal is a label-only image written with skopeo alone, so it works
+      # even when the lane failed before its registry login or builder.
+      - name: Tell the reproduction lane that this publication failed
+        if: (failure() || cancelled()) && needs.plan.outputs.publish == 'true' && matrix.role != 'reproduce'
+        env:
+          PUBLICATION_SIGNAL: registry.tilo.so/tilo/tilo-repro:${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}-publication
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          command -v skopeo >/dev/null || { echo '::warning::no skopeo; the reproduction lane runs to its end'; exit 0; }
+          layout="$(mktemp -d)"
+          mkdir -p "$layout/blobs/sha256"
+          blob() {
+            local digest
+            digest="$(printf '%s' "$1" | sha256sum | cut -d' ' -f1)"
+            printf '%s' "$1" > "$layout/blobs/sha256/$digest"
+            printf 'sha256:%s' "$digest"
+          }
+          config='{"architecture":"amd64","os":"linux","config":{"Labels":{"org.tilo.publication.outcome":"failed"}},"rootfs":{"type":"layers","diff_ids":[]}}'
+          manifest="$(jq -cn --arg digest "$(blob "$config")" --argjson size "${#config}" \
+            '{schemaVersion:2,mediaType:"application/vnd.oci.image.manifest.v1+json",
+              config:{mediaType:"application/vnd.oci.image.config.v1+json",digest:$digest,size:$size},layers:[]}')"
+          jq -cn --arg digest "$(blob "$manifest")" --argjson size "${#manifest}" \
+            '{schemaVersion:2,manifests:[{mediaType:"application/vnd.oci.image.manifest.v1+json",digest:$digest,size:$size}]}' \
+            > "$layout/index.json"
+          printf '{"imageLayoutVersion":"1.0.0"}' > "$layout/oci-layout"
+          skopeo copy --dest-creds "$REGISTRY_USER:$REGISTRY_TOKEN" "oci:$layout" "docker://$PUBLICATION_SIGNAL"
+          echo "::notice::told the ${{ matrix.arch }} reproduction lane to stop"
 
   promote-multiarch:
     needs: [plan, build-and-push]
