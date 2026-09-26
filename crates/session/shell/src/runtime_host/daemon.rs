@@ -16,15 +16,14 @@ use std::{
         process::CommandExt,
     },
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
-const START_TIMEOUT: Duration = Duration::from_secs(15);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
 #[derive(Debug, PartialEq, Eq)]
@@ -162,22 +161,215 @@ fn probe(profile: &Path) -> io::Result<Status> {
     Ok(status)
 }
 
+/// How long a starting daemon may take. Startup is not bounded by a fixed
+/// deadline: a loaded machine can take far longer than usual to start a
+/// session that is still working. It keeps waiting while the process is
+/// alive and making progress, and gives up once progress stops for `stall`
+/// or the whole start exceeds `cap`.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct StartupLimits {
+    pub(super) stall: Duration,
+    pub(super) cap: Duration,
+    pub(super) poll: Duration,
+}
+
+pub(super) const STARTUP: StartupLimits = StartupLimits {
+    stall: Duration::from_secs(15),
+    cap: Duration::from_secs(120),
+    poll: Duration::from_millis(25),
+};
+
+/// What a starting process looks like from outside at one instant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Observation {
+    /// What the process is doing, for errors: "while <stage>".
+    pub(super) stage: &'static str,
+    /// Changes whenever the process shows any sign of progress.
+    pub(super) progress: u64,
+}
+
+/// A spawned process that has not reported ready yet.
+pub(super) trait StartingProcess {
+    type Ready;
+    /// The ready answer, once the process gives one.
+    fn ready(&mut self) -> Option<Self::Ready>;
+    /// How the process ended, if it already has.
+    /// # Errors
+    /// Returns failures to query the process.
+    fn exited(&mut self) -> io::Result<Option<String>>;
+    fn observe(&mut self) -> Observation;
+    /// End a process that will not become ready.
+    fn stop(&mut self);
+    /// Where to look next, with the process's most recent output.
+    fn diagnostics(&self) -> String;
+}
+
+/// Wait until `process` is ready, failing as soon as it exits, stalls or
+/// exceeds the absolute cap.
+/// # Errors
+/// Names the stage the process reached and includes its diagnostics.
+pub(super) fn wait_until_ready<P: StartingProcess>(
+    process: &mut P,
+    limits: StartupLimits,
+) -> io::Result<P::Ready> {
+    let started = Instant::now();
+    let mut last = process.observe();
+    let mut last_progress = started;
+    loop {
+        if let Some(ready) = process.ready() {
+            return Ok(ready);
+        }
+        let now = process.observe();
+        if now.progress != last.progress {
+            last_progress = Instant::now();
+        }
+        last = now;
+        if let Some(status) = process.exited()? {
+            return Err(io::Error::other(format!(
+                "native runtime exited while {} ({status}); {}",
+                last.stage,
+                process.diagnostics()
+            )));
+        }
+        let failure = if last_progress.elapsed() >= limits.stall {
+            format!(
+                "native runtime stalled while {}: no progress for {} s",
+                last.stage,
+                limits.stall.as_secs_f32()
+            )
+        } else if started.elapsed() >= limits.cap {
+            format!(
+                "native runtime did not become ready within {} s (still {})",
+                limits.cap.as_secs_f32(),
+                last.stage
+            )
+        } else {
+            std::thread::sleep(limits.poll);
+            continue;
+        };
+        process.stop();
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("{failure}; {}", process.diagnostics()),
+        ));
+    }
+}
+
+/// Files `Session::start` and `serve` create in order, each paired with what
+/// the daemon does once it exists.
+const MILESTONES: [(&str, &str); 6] = [
+    ("runtime.lock", "provisioning the collaboration identity"),
+    ("workspace.json", "starting the identity service"),
+    ("identity.sock", "starting the collaboration broker"),
+    ("collab.sock", "opening the content store"),
+    ("blobs.sock", "binding the native endpoint"),
+    ("native.sock", "answering the status probe"),
+];
+const OUTPUT_TAIL: u64 = 4096;
+
+fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::symlink_metadata(path).ok()?.modified().ok()
+}
+
+/// Total CPU time the process has used, in clock ticks.
+#[cfg(target_os = "linux")]
+fn cpu_ticks(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name may contain spaces; the fields after it are fixed:
+    // state is the first, user and system time the 12th and 13th.
+    let mut fields = stat.get(stat.rfind(')')?.checked_add(2)?..)?.split(' ');
+    let user = fields.nth(11)?.parse::<u64>().ok()?;
+    let system = fields.next()?.parse::<u64>().ok()?;
+    user.checked_add(system)
+}
+#[cfg(not(target_os = "linux"))]
+fn cpu_ticks(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// The daemon child of this launcher. Progress is anything it visibly does:
+/// reaching a startup milestone, writing output or using CPU time.
+struct DaemonStart<'a> {
+    profile: &'a Path,
+    log: PathBuf,
+    child: Child,
+    /// Milestone modification times before the spawn, so files left by an
+    /// earlier daemon do not count as this one's progress.
+    before: [Option<SystemTime>; MILESTONES.len()],
+}
+
+impl StartingProcess for DaemonStart<'_> {
+    type Ready = Status;
+    fn ready(&mut self) -> Option<Status> {
+        probe(self.profile).ok()
+    }
+    fn exited(&mut self) -> io::Result<Option<String>> {
+        Ok(self.child.try_wait()?.map(|status| status.to_string()))
+    }
+    fn observe(&mut self) -> Observation {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        let mut stage = "loading the runtime";
+        for ((name, next), before) in MILESTONES.iter().zip(&self.before) {
+            let now = modified(&self.profile.join(name));
+            if now.is_some() && now != *before {
+                stage = next;
+            }
+            now.hash(&mut hasher);
+        }
+        std::fs::metadata(&self.log)
+            .map(|metadata| metadata.len())
+            .ok()
+            .hash(&mut hasher);
+        cpu_ticks(self.child.id()).hash(&mut hasher);
+        Observation {
+            stage,
+            progress: hasher.finish(),
+        }
+    }
+    fn stop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+    fn diagnostics(&self) -> String {
+        let mut tail = Vec::new();
+        if let Ok(mut file) = std::fs::File::open(&self.log) {
+            use std::io::{Seek, SeekFrom};
+            let length = file.metadata().map_or(0, |metadata| metadata.len());
+            if file
+                .seek(SeekFrom::Start(length.saturating_sub(OUTPUT_TAIL)))
+                .is_ok()
+            {
+                let _ = file.take(OUTPUT_TAIL).read_to_end(&mut tail);
+            }
+        }
+        let tail = String::from_utf8_lossy(&tail);
+        let tail = tail.trim();
+        if tail.is_empty() {
+            format!("it wrote nothing to {}", self.log.display())
+        } else {
+            format!("last output from {}:\n{tail}", self.log.display())
+        }
+    }
+}
+
 fn ensure_running(profile: &Path) -> io::Result<Status> {
     validate_profile(profile)?;
     if let Ok(status) = probe(profile) {
         return Ok(status);
     }
     // A holder is another launcher starting the daemon, which gives up
-    // after START_TIMEOUT, so waiting for it is bounded by that deadline.
+    // within the startup cap, so waiting for it is bounded by that cap.
     let _start =
         advisory_lock::FileLock::exclusive(unix::private_file(&profile.join("start.lock"))?)?;
     if let Ok(status) = probe(profile) {
         return Ok(status);
     }
-    let deadline = Instant::now()
-        .checked_add(START_TIMEOUT)
-        .ok_or_else(|| io::Error::other("startup deadline overflow"))?;
-    let log = unix::private_file(&profile.join("daemon.log"))?;
+    let log_path = profile.join("daemon.log");
+    let log = unix::private_file(&log_path)?;
+    // Each start's log holds only its own daemon's output.
+    log.set_len(0)?;
+    let before = MILESTONES.map(|(name, _)| modified(&profile.join(name)));
     let mut command = Command::new(std::env::current_exe()?);
     command
         .arg("--profile")
@@ -196,30 +388,16 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
             Ok(())
         });
     }
-    let mut child = command.spawn()?;
-    loop {
-        if let Ok(status) = probe(profile) {
-            return Ok(status);
-        }
-        if let Some(status) = child.try_wait()? {
-            return Err(io::Error::other(format!(
-                "native runtime exited during startup ({status}); see {}",
-                profile.join("daemon.log").display()
-            )));
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "native runtime did not become ready; see {}",
-                    profile.join("daemon.log").display()
-                ),
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    let child = command.spawn()?;
+    wait_until_ready(
+        &mut DaemonStart {
+            profile,
+            log: log_path,
+            child,
+            before,
+        },
+        STARTUP,
+    )
 }
 
 /// Start one production Session. The executable prepares its profile environment
@@ -381,3 +559,7 @@ pub fn run_app(
     drop(connections);
     Err(error)
 }
+
+#[cfg(test)]
+#[path = "daemon_tests.rs"]
+mod tests;

@@ -1630,6 +1630,14 @@ impl FrameHarness {
 
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
         self.scene.reset();
+        // Cull against the window exactly as the live host does, so offscreen
+        // frames paint (and cost) what a window would.
+        let previous_viewport = self.presence.push_viewport(Rect::new(
+            0.0,
+            0.0,
+            f64::from(self.viewport.0),
+            f64::from(self.viewport.1),
+        ));
         if let Some(history) = &mut self.history {
             history.draw(
                 &mut self.scene,
@@ -1671,7 +1679,8 @@ impl FrameHarness {
                 document_identity: self.state.document_identity(),
                 permissions: &self.permissions,
             };
-            self.document_history
+            let drawn = self
+                .document_history
                 .draw(
                     &context,
                     &mut self.scene,
@@ -1680,8 +1689,13 @@ impl FrameHarness {
                     &self.theme,
                     &self.presence,
                 )
-                .map_err(|_| crate::widget::WidgetLayoutError::CompositionDidNotSettle)?;
+                .map_err(|_| crate::widget::WidgetLayoutError::CompositionDidNotSettle);
+            if let Err(error) = drawn {
+                self.presence.pop_viewport(previous_viewport);
+                return Err(error);
+            }
         }
+        self.presence.pop_viewport(previous_viewport);
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Draw, t_draw);
         }

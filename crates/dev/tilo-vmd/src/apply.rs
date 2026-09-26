@@ -9,11 +9,12 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use tilo_vm_protocol::{
-    Action, BootChange, BootConfirmResult, ComponentInfo, ControlResult, InputAction, Policy,
-    Scope, SlotKind,
+    Action, BootChange, BootConfirmResult, ComponentInfo, ControlResult, InputAction, OutputSpec,
+    Policy, Scope, SlotKind,
 };
 
 use crate::error::DaemonError;
+use crate::input::Geometry;
 use crate::slots::{Generation, SlotRecord};
 
 pub const LAYERS_DROPIN: &str = "50-tilo-vm-layers.conf";
@@ -52,8 +53,17 @@ pub trait Apply {
     /// Point the VM-wide sysext set at exactly `layers`.
     fn link_sysext(&mut self, layers: &[PathBuf]) -> Result<(), DaemonError>;
     fn sysext_refresh(&mut self) -> Result<(), DaemonError>;
-    /// Create a vkms card and a logind seat for it; return the seat name.
-    fn allocate_seat(&mut self, slot: &str) -> Result<String, DaemonError>;
+    /// Create a vkms card with `connectors` connected outputs and a logind
+    /// seat for it; return the seat name.
+    fn allocate_seat(&mut self, slot: &str, connectors: u32) -> Result<String, DaemonError>;
+    /// Give the running session's outputs these modes and scales through
+    /// the display settings, as `user` (`tilo-vmd display-apply`).
+    fn apply_display(
+        &mut self,
+        slot: &str,
+        user: &str,
+        outputs: &[OutputSpec],
+    ) -> Result<String, DaemonError>;
     fn release_seat(&mut self, slot: &str, seat: &str) -> Result<(), DaemonError>;
     /// The last `lines` journal entries matching any of `matches`
     /// (journalctl `FIELD=value` terms, `OR`ed).
@@ -85,12 +95,15 @@ pub trait Apply {
     }
     /// `(free, total)` bytes of the filesystem holding `path`, when known.
     fn disk_space(&mut self, path: &std::path::Path) -> Option<(u64, u64)>;
-    /// Send input through `seat`'s uinput keyboard and pointer, creating
-    /// them on first use; returns the number of kernel events written.
+    /// Send input through `seat`'s uinput devices, creating them on first
+    /// use; returns the number of kernel events written. `geometry` gives
+    /// the coordinate spaces of a slot with several outputs (`None`: every
+    /// device spans the seat's first output).
     fn input(
         &mut self,
         slot: &str,
         seat: &str,
+        geometry: Option<Geometry>,
         actions: &[InputAction],
     ) -> Result<u64, DaemonError>;
     /// Remove the slot's uinput devices (they follow its seat).
@@ -289,7 +302,7 @@ pub fn activate(
     });
     if record.kind == SlotKind::Headful {
         // Idempotent, and re-creates the card after a VM reboot emptied configfs.
-        let seat = apply.allocate_seat(&record.name)?;
+        let seat = apply.allocate_seat(&record.name, record.connectors())?;
         if record.seat.as_ref() != Some(&seat) {
             actions.push(Action::AllocateSeat { seat: seat.clone() });
         }
@@ -487,9 +500,23 @@ impl Apply for RecordingApply {
         self.call("sysext_refresh".into());
         Ok(())
     }
-    fn allocate_seat(&mut self, slot: &str) -> Result<String, DaemonError> {
-        self.call(format!("allocate_seat {slot}"));
+    fn allocate_seat(&mut self, slot: &str, connectors: u32) -> Result<String, DaemonError> {
+        if connectors == 1 {
+            self.call(format!("allocate_seat {slot}"));
+        } else {
+            self.call(format!("allocate_seat {slot} {connectors}"));
+        }
         Ok(format!("seat-{slot}"))
+    }
+    fn apply_display(
+        &mut self,
+        slot: &str,
+        _user: &str,
+        outputs: &[OutputSpec],
+    ) -> Result<String, DaemonError> {
+        let list = tilo_vm_protocol::display::format_outputs(outputs);
+        self.call(format!("apply_display {slot} {list}"));
+        Ok(format!("outputs set to {list}"))
     }
     fn release_seat(&mut self, slot: &str, seat: &str) -> Result<(), DaemonError> {
         self.call(format!("release_seat {slot} {seat}"));
@@ -523,9 +550,15 @@ impl Apply for RecordingApply {
         &mut self,
         slot: &str,
         seat: &str,
+        geometry: Option<Geometry>,
         actions: &[InputAction],
     ) -> Result<u64, DaemonError> {
-        self.call(format!("input {slot} {seat} {}", actions.len()));
+        match geometry {
+            Some(Geometry {
+                desktop: (w, h), ..
+            }) => self.call(format!("input {slot} {seat} {w}x{h} {}", actions.len())),
+            None => self.call(format!("input {slot} {seat} {}", actions.len())),
+        }
         Ok(u64::try_from(actions.len()).unwrap_or(0).saturating_mul(2))
     }
     fn stop_input(&mut self, slot: &str) -> Result<(), DaemonError> {
@@ -606,6 +639,7 @@ mod tests {
             current: 0,
             seat: None,
             seat0: None,
+            outputs: Vec::new(),
         }
     }
 
