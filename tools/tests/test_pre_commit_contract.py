@@ -21,6 +21,12 @@ class PreCommitContractTests(unittest.TestCase):
         self.assertIn("check_changed_rust_allows.py", hook)
         self.assertIn("--staged", hook)
 
+    def test_local_hook_admits_only_declared_lock_updates(self) -> None:
+        hook = HOOK.read_text(encoding="utf-8")
+
+        self.assertIn('python3 "$root/tools/ci/check_lock_update.py" --root "$root" || fail=1', hook)
+        self.assertIn("TILO_CARGO_UPDATE=", hook)
+
     def test_ci_owns_the_absolute_clippy_gate(self) -> None:
         workflow = CHECK_WORKFLOW.read_text(encoding="utf-8")
 
