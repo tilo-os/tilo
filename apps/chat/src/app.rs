@@ -973,6 +973,8 @@ impl ChatApp {
         app.comments =
             crate::comments::Comments::new(ui::record::RecordStore::open("so.tilo.chat"));
         app.me = LocalIdentity::resolve();
+        // Least privilege until the host hands over the real context.
+        app.perms = ChatPermissions::unknown();
         app.new_live_view()
     }
 
@@ -4747,9 +4749,11 @@ impl Widget for ChatApp {
     /// unqualified route is free for the room's index — the index is where
     /// people's comment records become discoverable.
     fn record_intent(&self) -> Option<ui::record::RecordCheckout> {
-        // Someone who may not write the conversation follows it without
-        // bringing it into the room: that is for the members who write it.
-        self.is_live.then(|| {
+        // Nothing is checked out before the host has said what this peer
+        // may do: a checkout brings the conversation into the room, which
+        // is only a writer's to do. Someone who may not write the
+        // conversation follows it without bringing it into the room.
+        (self.is_live && self.perms.is_known()).then(|| {
             let conversation = crate::comments::conversation();
             if self.can_participate() {
                 conversation

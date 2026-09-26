@@ -2115,6 +2115,46 @@ mod tests {
     }
 
     #[test]
+    fn a_live_chat_checks_nothing_out_and_writes_nothing_before_it_is_authorised() {
+        use ui::Widget;
+        use ui::permissions::{Actor, PermissionContext, Role};
+        let mut app = ChatApp::new_ephemeral();
+        app.is_live = true;
+        app.perms = crate::permissions::ChatPermissions::unknown();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            app.record_intent().is_none(),
+            "no checkout before the grant"
+        );
+        assert!(!ChatDoc::is_seeded(&doc), "no scaffold before the grant");
+        assert!(
+            ChatDoc::list_users(&doc).is_empty(),
+            "no roster entry either"
+        );
+
+        app.perms = crate::permissions::ChatPermissions::from_context(
+            PermissionContext::from_capabilities(
+                Actor::person(Some(Role::Commenter), "u_reporter"),
+                vec![],
+            ),
+        );
+        let commenter = app
+            .record_intent()
+            .expect("a Commenter follows the conversation");
+        assert!(commenter.read_only, "without bringing it into the room");
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(!ChatDoc::is_seeded(&doc), "a Commenter never scaffolds");
+
+        app.perms = crate::permissions::ChatPermissions::permissive();
+        assert!(
+            !app.record_intent()
+                .expect("a writer checks it out")
+                .read_only
+        );
+    }
+
+    #[test]
     fn live_sync_seeds_empty_starter_never_the_demo() {
         use ui::Widget;
         // Drive the real production `sync` for a live instance that has no
