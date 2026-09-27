@@ -10,7 +10,7 @@ services:
     restart: unless-stopped
     environment:
       TILO_DEVICE_NAME: ${TILO_DEVICE_NAME:-Home server}
-    # Enrollment uses authenticated LAN broadcast on UDP 45831. A bridged
+    # Enrollment uses authenticated LAN broadcast on UDP 23831. A bridged
     # container cannot receive/reply on the physical LAN broadcast domain, so
     # the composite home peer deliberately joins the host network.
     network_mode: host
