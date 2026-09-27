@@ -4,7 +4,7 @@
 //!
 //! - `TopBar` renders with a live clock; wheel over the center area cycles to
 //!   the CPU/RAM sparkline and the calendar (200 ms cooldown).
-//! - Cmd+K opens `GlobalSearch`; typing filters; Enter invokes; Escape closes.
+//! - Cmd+K opens the search palette; typing filters; Enter invokes; Escape closes.
 //! - Cmd+Tab toggles the `OverviewView`; clicking a card activates the workspace.
 //! - The `RightTray` gear icon opens `QuickSettings`; sliders are interactive;
 //!   WiFi/BT drill-in and back work.
@@ -69,7 +69,6 @@ pub mod floating;
 pub mod foreign;
 pub mod frame;
 pub mod fs_authority;
-pub mod global_search;
 pub mod hdr_display;
 pub mod hdr_tonemap;
 pub mod history_narrative;
@@ -174,7 +173,6 @@ use ui::widget::{
 };
 
 use crate::shell::editor_app::EditorApp;
-use crate::shell::global_search::GlobalSearch;
 use browser::BrowserWidget;
 
 use crate::shell::notes_app::NotesApp;
@@ -209,8 +207,6 @@ pub struct Shell {
     tree: RuntimeTree,
     state: ui::state::State,
 
-    /// Hidden unless `search_visible`.
-    search: GlobalSearch,
     ws_settings: WorkspaceSettings,
     #[cfg(any(test, debug_assertions))]
     toasts: ToastStack,
@@ -277,7 +273,6 @@ impl Shell {
         let mut shell = Self {
             tree,
             state: ui::state::State::new(),
-            search: GlobalSearch::new(),
             ws_settings: WorkspaceSettings::new(active_ws_id),
             #[cfg(any(test, debug_assertions))]
             toasts: ToastStack::new(),
@@ -292,7 +287,6 @@ impl Shell {
             #[cfg(any(test, debug_assertions))]
             first_file_explorer_ptr,
         };
-        shell.search.seed_default_commands();
         // Prime every app against the shared doc so `update` has CRDT
         // sub-trees to work with from the first call.
         shell.sync_all_apps();
