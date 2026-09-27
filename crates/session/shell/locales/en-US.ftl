@@ -148,6 +148,7 @@ shortcut-action-magnifier-zoom-in = magnify more
 shortcut-action-magnifier-zoom-out = magnify less
 shortcut-action-power-menu = open the power menu
 shortcut-action-next-input-source = switch to the next keyboard layout
+shortcut-action-emoji-picker = insert an emoji
 
 # Shortcut guide (F1)
 guide-title = Desktop help
@@ -194,6 +195,7 @@ guide-group-windows = WINDOWS & WORKSPACES
 guide-group-search = SEARCH & SYSTEM
 guide-group-capture = CAPTURE & DISPLAY
 guide-reopen-closed-tab = Reopen closed tab
+guide-emoji = Emoji
 guide-overview = Overview
 guide-quick-settings = Quick Settings
 guide-unassigned = Unassigned
@@ -1238,3 +1240,23 @@ a11y-shell-launchpad-activity-detail = See what changed and why
 a11y-shell-wheel = Workspace wheel
 a11y-shell-wheel-switch = Switch to { $workspace }
 a11y-shell-wheel-add = Add a workspace
+
+# The emoji picker (Super+. by default)
+emoji-picker-title = Emoji
+emoji-picker-search = Search emoji
+emoji-picker-groups = Emoji categories
+emoji-picker-recent = Recently used
+emoji-picker-results = Matching emoji
+emoji-picker-no-results = No emoji found
+emoji-picker-hint = Enter inserts · Esc closes
+emoji-picker-hint-tones = Enter inserts · Shift+Enter picks a skin tone
+emoji-picker-tones = Skin tones
+emoji-picker-tones-hint = Right-click, long-press or Shift+Enter for skin tones
+emoji-picker-a11y-description = Type to search. The arrow keys move between emoji, Tab changes the category, Enter inserts the highlighted emoji into the text field you were typing in, Shift+Enter picks a skin tone, Escape closes.
+# An emoji in a skin tone: "thumbs up, medium skin tone".
+emoji-picker-toned = { $name }, { $tone }
+emoji-picker-tone-light = light skin tone
+emoji-picker-tone-medium-light = medium-light skin tone
+emoji-picker-tone-medium = medium skin tone
+emoji-picker-tone-medium-dark = medium-dark skin tone
+emoji-picker-tone-dark = dark skin tone

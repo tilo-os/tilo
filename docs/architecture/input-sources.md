@@ -92,6 +92,19 @@ owner's kind, and moving the seat disconnects the previous owner's
 connections before its process group is terminated. Switching engines restarts
 Fcitx5 with the new configuration.
 
+Text the shell inserts on the user's behalf — a pick from the emoji picker
+(Super+.) — takes the same road, never synthesised key events
+(`compositor::text_commit`). When the OSK or Fcitx5 owns the seat, the commit
+is delivered inside that owner's session: on the text input its activation
+enabled, with the session's serial, and the owner keeps the seat. When nobody
+owns it, the arbiter lends the idle seat to the compositor for one commit: an
+in-process connection with its own credential binds the input method, waits
+for the field to activate it, commits, and destroys the input method again.
+The picker holds the keyboard while it is open, so the commit waits (two
+seconds at most) for the field to get the keyboard back and re-enable. A field
+that declares a password, PIN or hidden/sensitive content still receives the
+emoji, but it is not added to the picker's recents.
+
 Apps receive composed text through `zwp_text_input_v3` (GTK, Qt, Chromium and
 Tilo apps through winit's IME). Candidate windows are `zwp_input_popup_surface_v2`
 surfaces placed directly below the field's caret rectangle, flipped above it

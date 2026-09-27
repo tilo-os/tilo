@@ -151,6 +151,7 @@ shortcut-action-magnifier-zoom-in = Stärker vergrößern
 shortcut-action-magnifier-zoom-out = Weniger vergrößern
 shortcut-action-power-menu = Ein/Aus-Menü öffnen
 shortcut-action-next-input-source = Zum nächsten Tastaturlayout wechseln
+shortcut-action-emoji-picker = ein Emoji einfügen
 
 # Tastaturhilfe (F1)
 guide-title = Desktop-Hilfe
@@ -197,6 +198,7 @@ guide-group-windows = FENSTER & ARBEITSBEREICHE
 guide-group-search = SUCHE & SYSTEM
 guide-group-capture = AUFNAHME & ANZEIGE
 guide-reopen-closed-tab = Geschlossenen Tab wieder öffnen
+guide-emoji = Emoji
 guide-overview = Übersicht
 guide-quick-settings = Schnelleinstellungen
 guide-unassigned = Nicht belegt
@@ -1241,3 +1243,23 @@ a11y-shell-launchpad-activity-detail = Sehen, was sich geändert hat und warum
 a11y-shell-wheel = Arbeitsbereichsrad
 a11y-shell-wheel-switch = Zu { $workspace } wechseln
 a11y-shell-wheel-add = Arbeitsbereich hinzufügen
+
+# The emoji picker (Super+. by default)
+emoji-picker-title = Emoji
+emoji-picker-search = Emoji suchen
+emoji-picker-groups = Emoji-Kategorien
+emoji-picker-recent = Zuletzt verwendet
+emoji-picker-results = Passende Emoji
+emoji-picker-no-results = Keine Emoji gefunden
+emoji-picker-hint = Eingabe fügt ein · Esc schließt
+emoji-picker-hint-tones = Eingabe fügt ein · Umschalt+Eingabe wählt einen Hautton
+emoji-picker-tones = Hauttöne
+emoji-picker-tones-hint = Rechtsklick, langes Drücken oder Umschalt+Eingabe für Hauttöne
+emoji-picker-a11y-description = Tippen Sie, um zu suchen. Die Pfeiltasten wechseln zwischen den Emoji, Tab wechselt die Kategorie, Eingabe fügt das markierte Emoji in das Textfeld ein, in dem Sie geschrieben haben, Umschalt+Eingabe wählt einen Hautton, Escape schließt.
+# Ein Emoji in einem Hautton: „Daumen hoch, mittlerer Hautton“.
+emoji-picker-toned = { $name }, { $tone }
+emoji-picker-tone-light = heller Hautton
+emoji-picker-tone-medium-light = mittelheller Hautton
+emoji-picker-tone-medium = mittlerer Hautton
+emoji-picker-tone-medium-dark = mitteldunkler Hautton
+emoji-picker-tone-dark = dunkler Hautton

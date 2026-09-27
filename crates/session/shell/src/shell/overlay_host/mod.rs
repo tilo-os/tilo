@@ -298,6 +298,8 @@ enum AccessibleOverlay {
     DisplayLayouts,
     /// Keep or revert a display tool's change; above everything while up.
     DisplayConfirmation,
+    /// The emoji picker; modal while open.
+    EmojiPicker,
 }
 
 /// The result of asking whether the global Print Screen shortcut may change
@@ -867,6 +869,9 @@ pub struct ShellOverlayHost {
     /// Live window previews the switcher and the overview show, rendered
     /// by the compositor only while one of them is up.
     window_previews: crate::shell::window_previews::WindowPreviews,
+    /// The emoji picker. Its picks wait here for the compositor, which
+    /// commits them through the seat's input method.
+    emoji_picker: crate::shell::emoji_picker::EmojiPicker,
     /// Shared toolkit capture selector. The shell only hosts it and drains
     /// semantic intents; compositor readback/encoding stays below this layer.
     capture_studio: ui::widget::CaptureStudio,
@@ -1987,6 +1992,9 @@ impl ShellOverlayHost {
         if self.window_switcher.is_revealed(Instant::now()) {
             order.push(AccessibleOverlay::WindowSwitcher);
         }
+        if self.emoji_picker.is_open() {
+            order.push(AccessibleOverlay::EmojiPicker);
+        }
         // The display sheet is modal and drawn above every other overlay.
         if flags.projection {
             order.push(AccessibleOverlay::DisplayLayouts);
@@ -2427,6 +2435,7 @@ impl ShellOverlayHost {
             display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt::default(),
             window_switcher: crate::shell::window_switcher::WindowSwitcher::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
+            emoji_picker: crate::shell::emoji_picker::EmojiPicker::new(),
             followed_peer: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
@@ -3168,6 +3177,68 @@ impl ShellOverlayHost {
         self.status_bridge.as_ref()
     }
 
+    /// Open the emoji picker over the display with focus, or close it.
+    pub fn toggle_emoji_picker(&mut self) {
+        if self.emoji_picker.is_open() {
+            self.emoji_picker.close();
+        } else {
+            let viewport = self.emoji_picker_viewport();
+            self.emoji_picker
+                .open(viewport, &crate::shell::i18n::current_locale());
+        }
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+    }
+
+    pub fn emoji_picker_open(&self) -> bool {
+        self.emoji_picker.is_open()
+    }
+
+    /// The emoji picked since the last call, for the compositor to commit
+    /// into the focused field.
+    pub fn take_emoji_commits(&mut self) -> Vec<String> {
+        self.emoji_picker.take_commits()
+    }
+
+    /// The compositor committed `text` into a field; a secret field's emoji
+    /// stay out of the recents.
+    pub fn note_emoji_delivered(&mut self, text: &str, sensitive: bool) {
+        self.emoji_picker.note_delivered(text, sensitive);
+    }
+
+    /// Keep the emoji recents in the user's private state.
+    pub fn attach_emoji_recents_store(&mut self, store: crate::shell::emoji_picker::RecentsStore) {
+        self.emoji_picker.attach_store(store);
+    }
+
+    /// The picker's state, for tests and the control socket's state dump.
+    pub fn emoji_picker(&self) -> &crate::shell::emoji_picker::EmojiPicker {
+        &self.emoji_picker
+    }
+
+    /// The display with focus on a partitioned desktop, else the desktop.
+    fn emoji_picker_viewport(&self) -> Rect {
+        let focused = self
+            .is_partitioned()
+            .then(|| {
+                self.chrome
+                    .as_ref()
+                    .and_then(|chrome| chrome.borrow().tree().desktop.outputs.focused_display())
+            })
+            .flatten();
+        focused
+            .and_then(|id| self.outputs.iter().find(|output| output.id == id))
+            .map_or(self.rect, |output| {
+                Rect::new(
+                    output.x,
+                    output.y,
+                    output.x + output.width,
+                    output.y + output.height,
+                )
+            })
+    }
+
     /// Open global search, as a lone Super tap does.
     pub fn open_global_search(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
@@ -3181,6 +3252,34 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             (self.app_launcher)(chrome, package_id, display_name);
         }
+    }
+
+    /// The chrome as the shell narrator reads it: the overlay semantics
+    /// published to AT-SPI, the notification stack's live region, and the
+    /// hardware-key readout as a polite live status.
+    pub fn chrome_narration_snapshot(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, Politeness, Role};
+        let mut root = Widget::accessibility(self)
+            .unwrap_or_else(|| AccessNode::new(Role::Group).with_name("Tilo workspace"));
+        if let Some(stack) = self.notification_stack.as_ref()
+            && let Some(node) = Widget::accessibility(stack)
+        {
+            root.children.push(node);
+        }
+        let readout = self.chrome.as_ref().and_then(|chrome| {
+            chrome
+                .borrow()
+                .osd
+                .filter(|osd| osd.is_live(Instant::now()))
+                .map(|osd| osd.caption())
+        });
+        root.children.push(
+            AccessNode::new(Role::StaticText)
+                .with_name("Status readout")
+                .with_live(Politeness::Polite)
+                .with_value(readout.unwrap_or_default()),
+        );
+        root
     }
 
     /// Paint the transient hardware-key readout, if one is up.
@@ -10434,6 +10533,7 @@ impl ShellOverlayHost {
             || (f.ws_settings && self.ws_settings_rect().contains(p))
             || (f.room_activity && self.room_activity.rect().contains(p))
             || (f.projection && ProjectionOverlay::contains(self.rect, p))
+            || (self.emoji_picker.is_open() && self.emoji_picker.card_rect().contains(p))
     }
 
     /// Route the modal component before application content and apply its
@@ -10557,12 +10657,53 @@ impl ShellOverlayHost {
             return true;
         }
 
+        if self.route_emoji_picker_event(event, scale_factor, modifiers, handled) {
+            return true;
+        }
+
         if self.handle_projection_event(event, scale_factor, modifiers, state, path, focus_target) {
             *handled = true;
             return true;
         }
 
         false
+    }
+
+    /// The emoji picker owns every key and pointer event while open. Its own
+    /// shortcut closes it again.
+    fn route_emoji_picker_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) -> bool {
+        if !self.emoji_picker.is_open() {
+            return false;
+        }
+        let toggles = matches!(
+            event,
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == ElementState::Pressed
+                    && self.configured_shortcut_action(&key.logical_key, modifiers)
+                        == Some(settings_store::hardware::ShortcutAction::EmojiPicker)
+        );
+        if toggles {
+            self.emoji_picker.close();
+        } else {
+            self.emoji_picker.handle_event(
+                event,
+                scale_factor,
+                modifiers.state(),
+                self.last_cursor,
+                Instant::now(),
+            );
+        }
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+        *handled = true;
+        true
     }
 
     /// Routes an in-progress root-page slider drag before modal absorption.
@@ -11922,6 +12063,12 @@ impl ShellOverlayHost {
             // Zooming is a step, so a held zoom key keeps zooming; the toggle is an edge.
             if !(repeat && step == MagnifierStep::Toggle) {
                 self.step_magnifier(step);
+            }
+            return true;
+        }
+        if action == A::EmojiPicker {
+            if !repeat {
+                self.toggle_emoji_picker();
             }
             return true;
         }
@@ -18531,6 +18678,11 @@ impl Widget for ShellOverlayHost {
                 AccessibleOverlay::DisplayLayouts => {
                     root.children.push(self.projection_overlay.accessibility());
                 }
+                AccessibleOverlay::EmojiPicker => {
+                    if let Some(picker) = self.emoji_picker.accessibility() {
+                        root.children.push(picker);
+                    }
+                }
                 AccessibleOverlay::DisplayConfirmation => {
                     if let Some(prompt) = self
                         .display_confirm
@@ -18765,6 +18917,9 @@ impl Widget for ShellOverlayHost {
                 _ => None,
             },
             AccessibleOverlay::NowPlaying => self.now_playing_accessibility_rect(child_path),
+            AccessibleOverlay::EmojiPicker => {
+                self.emoji_picker.accessibility_rect_for_path(child_path)
+            }
             AccessibleOverlay::MemberSheet
             | AccessibleOverlay::ShortcutHelp
             | AccessibleOverlay::DisplayLayouts
@@ -18821,7 +18976,8 @@ impl Widget for ShellOverlayHost {
             | AccessibleOverlay::MemberSheet
             | AccessibleOverlay::ShortcutHelp
             | AccessibleOverlay::DisplayLayouts
-            | AccessibleOverlay::DisplayConfirmation => false,
+            | AccessibleOverlay::DisplayConfirmation
+            | AccessibleOverlay::EmojiPicker => false,
         }
     }
 
@@ -19808,6 +19964,15 @@ impl ShellOverlayHost {
         self.draw_collaborators_dropdown(scene, transform, text_renderer, theme, presence, flags);
         self.draw_room_activity_sheet(scene, transform, text_renderer, theme, presence, flags);
         self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
+        let emoji_viewport = self.emoji_picker_viewport();
+        self.emoji_picker.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            emoji_viewport,
+        );
         self.display_identify
             .draw(scene, transform, text_renderer, theme, Instant::now());
         if self.display_confirm.poll(Instant::now(), false)

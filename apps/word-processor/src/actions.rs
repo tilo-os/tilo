@@ -2327,7 +2327,7 @@ mod tests {
                 &resources,
                 &descriptor.address,
                 &arguments,
-                b"agent",
+                tilo_actions::door::InvocationProvenance::caller(b"agent"),
                 &registry(),
                 &mut LocalTransport::new(),
             )

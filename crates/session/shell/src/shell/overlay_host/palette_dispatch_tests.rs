@@ -1099,7 +1099,7 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
             "Duplicate tab:Super+D",
             "Open terminal:Super+Enter",
             "Global search:Super+K",
-            "Global search:Super+Space",
+            "Emoji:Super+.",
             "Overview:Super+Tab",
             "Lock:Super+L",
             "Quick Settings:Super+Q",

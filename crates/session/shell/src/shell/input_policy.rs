@@ -259,7 +259,7 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
             | ChordKey::ArrowRight
             | ChordKey::ArrowUp
             | ChordKey::ArrowDown
-            | ChordKey::Char('k' | 'q' | '/' | '-' | '=' | '1'..='9' | 'e' | 'v' | 'a' | 'f')
+            | ChordKey::Char('k' | 'q' | '/' | '-' | '=' | '1'..='9' | 'e' | 'v' | 'a' | 'f' | '.')
     ) && ((mods.logo && !mods.ctrl && !mods.alt)
         || (matches!(key, ChordKey::Tab) && (mods.ctrl || mods.alt)))
     {
@@ -792,6 +792,11 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     // Keep or revert a display tool's change: Enter and Escape answer it
     // whichever window had focus.
     if fb.host().display_confirmation_visible() {
+        return true;
+    }
+    // The emoji picker types into its own search field; the field it will
+    // insert into gets the keyboard back when it closes.
+    if fb.host().emoji_picker_open() {
         return true;
     }
     // The portal's file chooser, for the same reason as the peer-sync card

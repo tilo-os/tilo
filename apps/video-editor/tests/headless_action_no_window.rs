@@ -135,7 +135,7 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
             &resources,
             &address,
             None,
-            b"headless-driver",
+            door::InvocationProvenance::caller(b"headless-driver"),
             &registry,
             &mut LocalTransport::new(),
         )
@@ -162,7 +162,7 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
                     &resources,
                     &bogus,
                     None,
-                    b"headless-driver",
+                    door::InvocationProvenance::caller(b"headless-driver"),
                     &registry,
                     &mut LocalTransport::new(),
                 ),
