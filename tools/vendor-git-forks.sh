@@ -31,3 +31,7 @@ for package in lock["package"]:
         shutil.copytree(scratch / name, pathlib.Path("vendor/git") / name)
         print(f"vendor/git/{name}")
 PY
+
+# Apps outside the workspace use these copies by path or from Tilo's git
+# repository, which follow the paths inside each manifest.
+python3 tools/relink-vendored-forks.py vendor/git
