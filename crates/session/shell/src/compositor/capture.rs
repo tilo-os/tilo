@@ -1999,6 +1999,10 @@ mod tests {
         clippy::too_many_lines,
         reason = "capture integration tests keep their full scenario setup explicit"
     )]
+    #![allow(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
 
     use super::*;
     use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
@@ -2300,6 +2304,8 @@ mod tests {
             tree.desktop.set_active_group(strip_id, 70_002);
 
             let mut frame_builder = FrameBuilder::with_tree(tree, (800, 600));
+            let store = frame_builder.chrome().records().clone();
+            crate::shell::tab_documents::create_scratch_tab_record(&store, target_tab).unwrap();
             let _ = frame_builder.paint();
             let long_note = (1..=72)
                 .map(|line| {
@@ -2309,13 +2315,9 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            let store = frame_builder.chrome().records().clone();
+            // The record was created explicitly above by its owning action; the
+            // painted host already holds it open, so bind and write through it.
             let checkout = crate::shell::tab_documents::scratch_tab_record(target_tab);
-            if !store.open_record(&checkout) {
-                store
-                    .create_record(&checkout)
-                    .expect("capture fixture creates its Notes record");
-            }
             frame_builder
                 .host_mut()
                 .group_at_for_tests(strip_id, 0)

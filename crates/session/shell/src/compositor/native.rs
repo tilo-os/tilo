@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 
+use crate::shell::collab_broker_capnp::LocalSessionLifecycle;
 use crate::shell::search::action_api::{ActionArgs, ActionVisibility, ResourceRef};
 use crate::shell::search::visibility::CapabilityVisibility;
 
@@ -3265,8 +3266,20 @@ fn apply_session_transition(
     transition: SessionTransition,
     backend: &mut dyn Backend,
     pipe: Option<&present::PresentPipe>,
+    local_session: Option<&LocalSessionLifecycle>,
     dimmer: &mut ScreenDimmer<impl Backlight>,
 ) {
+    if let Some(local_session) = local_session {
+        match transition {
+            SessionTransition::Locked => local_session.set_locked(true),
+            SessionTransition::Unlocked => local_session.set_locked(false),
+            SessionTransition::Dimmed
+            | SessionTransition::Undimmed
+            | SessionTransition::Blanked
+            | SessionTransition::Woke
+            | SessionTransition::Suspend => {}
+        }
+    }
     match transition {
         SessionTransition::Dimmed => dimmer.dim(),
         SessionTransition::Undimmed => dimmer.restore(),
@@ -3285,6 +3298,32 @@ fn apply_session_transition(
         // Lock/Unlock are reflected via `SessionManager::is_locked`; Suspend is
         // gated by the inhibitor registry + issued through the power service, never here.
         SessionTransition::Locked | SessionTransition::Unlocked | SessionTransition::Suspend => {}
+    }
+}
+
+fn publish_native_session_state(
+    local_session: Option<&LocalSessionLifecycle>,
+    session: &SessionManager,
+    onboarding_active: bool,
+) {
+    if let Some(local_session) = local_session {
+        local_session.publish_native_state(session.is_locked(), onboarding_active);
+    }
+}
+
+fn install_native_session_lifecycle(
+    broker: &crate::shell::collab_broker::BrokerHandle,
+    session: &SessionManager,
+    onboarding_active: bool,
+) -> LocalSessionLifecycle {
+    let local_session = broker.local_session_lifecycle();
+    publish_native_session_state(Some(&local_session), session, onboarding_active);
+    local_session
+}
+
+fn close_native_session_authority(local_session: Option<&LocalSessionLifecycle>) {
+    if let Some(local_session) = local_session {
+        local_session.close();
     }
 }
 
@@ -4619,10 +4658,11 @@ fn install_session_peer_sync(
                         role,
                     )
                     .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::AcceptInvite(token) => bridge_net
-                    .accept_invite(active, &token)
-                    .map(|room| room.to_string())
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::AcceptInvite(token) => {
+                    bridge_net.accept_peer_invitation(active, &token)
+                }
+                PeerSyncRequest::PollEnrollment(id) => bridge_net.poll_enrollment(id),
+                PeerSyncRequest::CancelEnrollment(id) => bridge_net.cancel_enrollment(id),
                 PeerSyncRequest::ListPendingInvitations => {
                     let room = tree_handle
                         .read()
@@ -4909,6 +4949,8 @@ impl crate::portal::desktop_services::ScreenshotService for NativeScreenshotServ
 }
 
 struct PortalBackend {
+    media_grants: crate::portal::GrantStoreHandle,
+    media_prompts: crate::portal::PromptQueueHandle,
     #[allow(
         dead_code,
         reason = "Retaining the registration keeps its D-Bus connection, bus name, and object server alive once registered."
@@ -5163,7 +5205,7 @@ fn start_portal_backend(
     };
 
     let ctx = crate::portal::PortalContext {
-        grants,
+        grants: grants.clone(),
         prompts: prompts.clone(),
         caller_map: crate::portal::CallerMap::new(),
         file_picker: crate::portal::FilePickerSpawnerHandle::new(Arc::new(pickers.clone())),
@@ -5221,9 +5263,11 @@ fn start_portal_backend(
         },
     );
 
-    // The queues are drained by the overlay host; a portal whose registration
-    // fails never fills them, so attaching them now costs nothing.
-    frame_builder.host_mut().set_portal_queues(prompts, pickers);
+    // The queues are useless until drained; attaching them to the overlay host
+    // here (not at construction) keeps "portal up" and "prompts reach a screen" one fact.
+    frame_builder
+        .host_mut()
+        .set_portal_queues(prompts.clone(), pickers);
 
     if !documents.reaches_confined_apps() {
         // Say it out loud: a sandboxed app getting ENOENT after picking a file
@@ -5235,6 +5279,8 @@ fn start_portal_backend(
         );
     }
     Some(PortalBackend {
+        media_grants: grants,
+        media_prompts: prompts,
         server,
         remote_input: remote_input_rx,
         input_capture,
@@ -5737,7 +5783,15 @@ pub fn run() {
         .flatten();
     if let Some(broker) = collab_broker.as_ref() {
         attach_collab_broker_bridges(&mut frame_builder, broker);
+        if let (Some(portal), Some(service)) =
+            (portal_backend.as_ref(), broker.native_media_service())
+        {
+            service.install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
+        }
     }
+    let mut local_session_lifecycle = collab_broker
+        .as_ref()
+        .map(crate::shell::collab_broker::BrokerHandle::local_session_lifecycle);
     let mut realtime_fabric_bridge = collab_broker
         .as_ref()
         .and_then(crate::shell::collab_broker::BrokerHandle::realtime_fabric_bridge);
@@ -6060,6 +6114,12 @@ pub fn run() {
             .with_suspend(power_policy.idle_suspend)
     };
     let mut session = SessionManager::new(idle_config, Instant::now());
+    let mut previous_onboarding_active = frame_builder.host().onboarding_active();
+    publish_native_session_state(
+        local_session_lifecycle.as_ref(),
+        &session,
+        previous_onboarding_active,
+    );
     // Session-lock unlock: input + auth state machine. Verifier is the fixed
     // test password (`TILO_LOCK_TEST_PASSWORD`) or real greetd/PAM; fail-closed otherwise.
     let mut lock = LockController::new(
@@ -6477,6 +6537,7 @@ pub fn run() {
         // environment before GDM admits the next desktop.
         if os_actions::take_logout_request() {
             tracing::info!(target: "tilo::session", "logout request observed by compositor loop");
+            close_native_session_authority(local_session_lifecycle.as_ref());
             close_requested = true;
             continue;
         }
@@ -6667,6 +6728,7 @@ pub fn run() {
                             t,
                             backend.as_mut(),
                             present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
                         );
                     }
@@ -6758,6 +6820,7 @@ pub fn run() {
                                         t,
                                         backend.as_mut(),
                                         present_pipe.as_ref(),
+                                        local_session_lifecycle.as_ref(),
                                         &mut screen_dimmer,
                                     );
                                 }
@@ -6809,6 +6872,7 @@ pub fn run() {
                                 t,
                                 backend.as_mut(),
                                 present_pipe.as_ref(),
+                                local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
                             );
                         }
@@ -7013,6 +7077,7 @@ pub fn run() {
                                 t,
                                 backend.as_mut(),
                                 present_pipe.as_ref(),
+                                local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
                             );
                         }
@@ -7129,6 +7194,7 @@ pub fn run() {
                     t,
                     backend.as_mut(),
                     present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
                 );
             }
@@ -7351,6 +7417,7 @@ pub fn run() {
                     t,
                     backend.as_mut(),
                     present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
                 );
             }
@@ -7379,6 +7446,7 @@ pub fn run() {
                     t,
                     backend.as_mut(),
                     present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
                 );
             }
@@ -7397,6 +7465,7 @@ pub fn run() {
                             t,
                             backend.as_mut(),
                             present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
                         );
                     }
@@ -7411,6 +7480,7 @@ pub fn run() {
                             t,
                             backend.as_mut(),
                             present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
                         );
                     }
@@ -7434,6 +7504,7 @@ pub fn run() {
                                 t,
                                 backend.as_mut(),
                                 present_pipe.as_ref(),
+                                local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
                             );
                         }
@@ -7448,6 +7519,7 @@ pub fn run() {
                             t,
                             backend.as_mut(),
                             present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
                         );
                     }
@@ -7518,6 +7590,7 @@ pub fn run() {
                     t,
                     backend.as_mut(),
                     present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
                 );
             }
@@ -7535,6 +7608,7 @@ pub fn run() {
                         t,
                         backend.as_mut(),
                         present_pipe.as_ref(),
+                        local_session_lifecycle.as_ref(),
                         &mut screen_dimmer,
                     );
                 }
@@ -8207,9 +8281,16 @@ pub fn run() {
         crate::shell::launcher::record_presented_launches(|surface| {
             crate::compositor::foreign::store().frame_seq(surface)
         });
+        let onboarding_active = frame_builder.host().onboarding_active();
+        if onboarding_active != previous_onboarding_active {
+            if let Some(local_session) = local_session_lifecycle.as_ref() {
+                local_session.set_onboarding_active(onboarding_active);
+            }
+            previous_onboarding_active = onboarding_active;
+        }
         if desktop_continuation
             .as_mut()
-            .is_some_and(|continuation| continuation.pump(frame_builder.host().onboarding_active()))
+            .is_some_and(|continuation| continuation.pump(onboarding_active))
             && let Err(error) = crate::shell::desktop_continuation::launch_request()
                 .and_then(crate::shell::host_apps::queue_launch)
         {
@@ -8217,10 +8298,7 @@ pub fn run() {
         }
         let pump_apps_done = Instant::now();
         pump_checkpoint!("widget-pump");
-        if take_deferred_peer_sync_activation(
-            &mut deferred_peer_sync,
-            frame_builder.host().onboarding_active(),
-        ) {
+        if take_deferred_peer_sync_activation(&mut deferred_peer_sync, onboarding_active) {
             // `pump_apps` just observed the trusted onboarding completion.
             // Apps were withheld until this edge. The network starts off the
             // loop; launches wait until it and the broker over it exist, so
@@ -8255,7 +8333,18 @@ pub fn run() {
             collab_broker =
                 spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
             if let Some(broker) = collab_broker.as_ref() {
+                local_session_lifecycle = Some(install_native_session_lifecycle(
+                    broker,
+                    &session,
+                    onboarding_active,
+                ));
                 attach_collab_broker_bridges(&mut frame_builder, broker);
+                if let (Some(portal), Some(service)) =
+                    (portal_backend.as_ref(), broker.native_media_service())
+                {
+                    service
+                        .install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
+                }
                 realtime_fabric_bridge = broker.realtime_fabric_bridge();
                 if let (Some(runtime), Some(bridge)) = (
                     device_fabric_runtime.as_mut(),
@@ -8295,6 +8384,14 @@ pub fn run() {
                 )),
             }
             apps_changed = true;
+        }
+        if desktop_continuation
+            .as_mut()
+            .is_some_and(|continuation| continuation.pump(onboarding_active))
+            && let Err(error) = crate::shell::desktop_continuation::launch_request()
+                .and_then(crate::shell::host_apps::queue_launch)
+        {
+            tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to Tilo");
         }
         let pump_finalize_started = Instant::now();
         let revision = frame_builder.chrome_revision();
@@ -9408,12 +9505,20 @@ fn spawn_auto_brightness_worker() {
     clippy::float_cmp,
     reason = "deterministic control-path geometry fixtures use exactly representable values"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     //! Unit coverage for the test-control execution path. The integration test
     //! (`tests/control_socket_test.rs`) needs a Wayland display and is
     //! `#[ignore]` by default; these exercise the same `execute_planned_action`
     //! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
     use super::*;
+    use crate::shell::collab_broker_capnp::{
+        native_consent_fixture_root, run_isolated_native_consent_test,
+        wait_for_local_session_worker_teardown,
+    };
 
     #[test]
     fn redraw_edges_and_idle_parking_follow_real_wake_sources() {
@@ -9728,13 +9833,19 @@ mod tests {
                 SessionTransition::Locked,
                 SessionTransition::Unlocked,
             ] {
-                apply_session_transition(t, &mut backend, None, &mut dimmer);
+                apply_session_transition(t, &mut backend, None, None, &mut dimmer);
             }
             // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
             assert_eq!(backend.dpms_calls, vec![false, true]);
             // Without a backlight the dim falls back to the paint overlay, lifted by Undimmed.
             assert!(dimmer.overlay_alpha().is_some());
-            apply_session_transition(SessionTransition::Undimmed, &mut backend, None, &mut dimmer);
+            apply_session_transition(
+                SessionTransition::Undimmed,
+                &mut backend,
+                None,
+                None,
+                &mut dimmer,
+            );
             assert_eq!(dimmer.overlay_alpha(), None);
         }
     }
@@ -11322,7 +11433,7 @@ mod tests {
         }
         // Phase `action_enumeration_preserves_directory_resource_hierarchy`.
         {
-            use crate::shell::collab_broker_capnp::{ActionDirectoryRoot, CapnpBrokerState};
+            use crate::shell::collab_broker_capnp::ActionDirectoryRoot;
             use crate::shell::search::providers::live_app_actions::fixture_with_directory_page;
 
             let mut fb = FrameBuilder::new((800, 600));
@@ -11338,7 +11449,9 @@ mod tests {
                 .active_workspace_mut()
                 .unwrap()
                 .owner = Some(actor.clone());
-            let broker = CapnpBrokerState::test_broker_with_membership(fb.chrome().tree_handle());
+            let broker = crate::shell::broker_services::test_broker_with_membership(
+                fb.chrome().tree_handle(),
+            );
             broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
                 peer_id: 4096,
                 app_id: "dev.tilo.calculator".into(),
@@ -11652,6 +11765,176 @@ mod tests {
     }
 
     // session lock chord / unlock detection
+
+    #[test]
+    fn native_consent_bootstrap_and_onboarding_publish_actual_state() {
+        const TEST: &str = "compositor::native::tests::native_consent_bootstrap_and_onboarding_publish_actual_state";
+        run_isolated_native_consent_test(TEST, || {
+            let mut frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn native collaboration broker");
+            let session = SessionManager::new(
+                IdleConfig {
+                    blank_timeout: None,
+                    lock_timeout: None,
+                    suspend_timeout: None,
+                },
+                Instant::now(),
+            );
+            let lifecycle = install_native_session_lifecycle(
+                &broker,
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            assert_eq!(
+                lifecycle.snapshot().expect("native bootstrap").liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active
+            );
+
+            let fixture = native_consent_fixture_root();
+            frame_builder.enable_onboarding(fixture.join("onboarding"));
+            publish_native_session_state(
+                Some(&lifecycle),
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            assert_eq!(
+                lifecycle
+                    .snapshot()
+                    .expect("onboarding revocation")
+                    .liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Inactive
+            );
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
+
+    #[test]
+    fn native_consent_lock_is_synchronous_and_unlock_uses_fresh_generation() {
+        const TEST: &str = "compositor::native::tests::native_consent_lock_is_synchronous_and_unlock_uses_fresh_generation";
+        run_isolated_native_consent_test(TEST, || {
+            use crate::compositor::backend::{Backend, BackendEvent, Output};
+            use vello::Scene;
+
+            #[derive(Default)]
+            struct SpyBackend {
+                outputs: Vec<Output>,
+            }
+            impl Backend for SpyBackend {
+                fn submit_frame(&mut self, _scene: &Scene, _output: OutputId) {}
+                fn poll_events(&mut self, _cb: &mut dyn FnMut(BackendEvent)) {}
+                fn outputs(&self) -> &[Output] {
+                    &self.outputs
+                }
+            }
+
+            let frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn native collaboration broker");
+            let session = SessionManager::new(
+                IdleConfig {
+                    blank_timeout: None,
+                    lock_timeout: None,
+                    suspend_timeout: None,
+                },
+                Instant::now(),
+            );
+            let lifecycle = install_native_session_lifecycle(
+                &broker,
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            let active = lifecycle.snapshot().expect("active native session");
+            let mut backend = SpyBackend::default();
+
+            apply_session_transition(
+                SessionTransition::Locked,
+                &mut backend,
+                None,
+                Some(&lifecycle),
+                &mut ScreenDimmer::default(),
+            );
+            let locked = lifecycle.snapshot().expect("synchronous lock revoke");
+            assert_eq!(
+                locked.liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Inactive
+            );
+            assert!(locked.generation > active.generation);
+
+            apply_session_transition(
+                SessionTransition::Unlocked,
+                &mut backend,
+                None,
+                Some(&lifecycle),
+                &mut ScreenDimmer::default(),
+            );
+            let unlocked = lifecycle.snapshot().expect("fresh unlock");
+            assert_eq!(
+                unlocked.liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active
+            );
+            assert!(unlocked.generation > locked.generation);
+            assert_eq!(unlocked.epoch, active.epoch);
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
+
+    #[test]
+    fn native_consent_deferred_install_publishes_before_continuation() {
+        const TEST: &str = "compositor::native::tests::native_consent_deferred_install_publishes_before_continuation";
+        run_isolated_native_consent_test(TEST, || {
+            let mut deferred = true;
+            assert!(take_deferred_peer_sync_activation(&mut deferred, false));
+            let frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn deferred collaboration broker");
+            let session = SessionManager::new(
+                IdleConfig {
+                    blank_timeout: None,
+                    lock_timeout: None,
+                    suspend_timeout: None,
+                },
+                Instant::now(),
+            );
+            let lifecycle = install_native_session_lifecycle(
+                &broker,
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            assert_eq!(
+                lifecycle
+                    .snapshot()
+                    .expect("deferred native state")
+                    .liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active,
+                "the deferred broker must publish current native state before launch preparation"
+            );
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
+
+    #[test]
+    fn native_consent_logout_closes_before_loop_exit() {
+        const TEST: &str =
+            "compositor::native::tests::native_consent_logout_closes_before_loop_exit";
+        run_isolated_native_consent_test(TEST, || {
+            let frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn native collaboration broker");
+            let lifecycle = broker.local_session_lifecycle();
+            lifecycle.publish_native_state(false, false);
+            close_native_session_authority(Some(&lifecycle));
+            assert_eq!(
+                lifecycle.snapshot().expect("logout close").liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Closed
+            );
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
 
     /// A window that set its own icon reports it as its tab's artwork.
     #[test]
@@ -12171,6 +12454,10 @@ mod vt_chord_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod gesture_wireup_tests {
     use super::{apply_shell_gesture, backend_nested_loop_uses_edge_wake, refresh_mhz_of};
     use crate::compositor::backend::drm::gestures::GestureAction;
@@ -12689,3 +12976,9 @@ mod external_floating_security_tests {
         }
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;

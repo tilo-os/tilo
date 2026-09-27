@@ -299,6 +299,7 @@ fn a_protected_window_is_captured_as_the_placeholder_and_an_unprotected_one_as_i
     let scene = frame(&mut fb);
     let (shot, width, _) =
         CaptureExecutor::render_screenshot(&mut fb, &scene, &whole_screen()).expect("screenshot");
+    drop(fb);
     assert!(count_near(&interior_samples(&shot, width, rect), CLIENT) >= 12);
 
     store().forget(SURFACE);
@@ -321,6 +322,7 @@ fn a_protected_app_does_not_withhold_other_apps() {
     let scene = frame(&mut fb);
     let (shot, width, _) =
         CaptureExecutor::render_screenshot(&mut fb, &scene, &whole_screen()).expect("screenshot");
+    drop(fb);
     store().release_capture_protection(CONNECTION);
     assert!(
         count_near(&interior_samples(&shot, width, rect), CLIENT) >= 12,
@@ -386,5 +388,7 @@ fn the_lock_screen_is_never_captured() {
     // An App capture has no desktop to repaint while locked.
     let mut app_capture = intent(CaptureExtent::FullApp, vec![everywhere]);
     app_capture.targets = fb.capture_targets();
-    assert!(CaptureExecutor::render_screenshot(&mut fb, &lock, &app_capture).is_err());
+    let captured = CaptureExecutor::render_screenshot(&mut fb, &lock, &app_capture);
+    drop(fb);
+    assert!(captured.is_err());
 }

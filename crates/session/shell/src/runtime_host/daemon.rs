@@ -617,6 +617,10 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
 /// before entering this function; reusable serving code never mutates it.
 /// # Errors
 /// Returns profile ownership, service startup, socket or worker-spawn errors.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the broker is resolved before the endpoint is touched so a missing broker fails first"
+)]
 pub fn serve(profile: &Path) -> io::Result<()> {
     validate_profile(profile)?;
     let mut stages = StartupStages::open(profile)?;

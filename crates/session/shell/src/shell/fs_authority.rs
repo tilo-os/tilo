@@ -7,6 +7,12 @@ const DEFAULT_FS_AUTHORITY_CACHE_DIR: &str = "/var/cache/quick-fs";
 const DEFAULT_FS_AUTHORITY_PUBLISHER: &str = "/usr/bin/fs";
 const MAX_FS_AUTHORITY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
+pub fn permission_profile_document_key(name: &str) -> String {
+    blake3::hash(name.trim().to_lowercase().as_bytes())
+        .to_hex()
+        .to_string()
+}
+
 #[derive(Clone, Debug)]
 struct FsAuthorityPublication {
     acl: PathBuf,
@@ -54,7 +60,7 @@ fn fs_authority_cache_dir() -> PathBuf {
 /// The filesystem authority socket may be unavailable while its service is
 /// starting; capped-backoff retries cover that normal boot ordering and a
 /// later capability mutation always replaces the queued projection.
-pub(super) fn schedule_fs_authority_publication(acl: PathBuf) {
+pub fn schedule_fs_authority_publication(acl: PathBuf) {
     // Unit tests exercise this only with an explicit harmless publisher;
     // never let an isolated tree submit a fixture ACL to a real service.
     if cfg!(test) && std::env::var_os("TILO_FS_AUTHORITY_PUBLISHER").is_none() {
@@ -142,8 +148,7 @@ fn run_fs_authority_publication_queue() {
 
 /// Block until the publication worker has retired with nothing queued, or
 /// `timeout` passes. Returns whether it retired.
-#[cfg(test)]
-pub(super) fn wait_for_fs_authority_publication_idle(timeout: std::time::Duration) -> bool {
+pub fn wait_for_fs_authority_publication_idle(timeout: std::time::Duration) -> bool {
     let Ok(queue) = fs_authority_publication_queue().lock() else {
         return false;
     };

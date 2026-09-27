@@ -131,14 +131,26 @@ struct SessionActionResult {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "clipboard_manager_tests.rs"]
 mod clipboard_manager_tests;
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "device_fabric_ui_tests.rs"]
 mod device_fabric_ui_tests;
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "idle_io_animation_tests.rs"]
 mod idle_io_animation_tests;
 
@@ -437,10 +449,10 @@ pub struct ShellOverlayHost {
     /// What starts saved shortcuts from a chord or on schedule.
     shortcut_triggers: shortcut_triggers::ShortcutTriggerState,
     content: Box<dyn Widget>,
-    /// Exact production root layers, supplied only by `build_workspace_root`. This is a
-    /// capability, not an invalidation hint: section drawing invokes these same widgets in their
-    /// established backdrop → workspace → topbar order.
-    workspace_scene_parts: Option<crate::shell::WorkspaceSceneParts>,
+    /// Recovery reports of embedded components settled when a workspace
+    /// rebuild replaced `content`; handed on by
+    /// [`Widget::take_component_close_reports`] so a rebuild cannot lose them.
+    desktop_close_reports: Vec<ui::application::ComponentCloseReport>,
     /// Trusted first-login chrome. While present it is the entire root
     /// surface: desktop content, launch affordances, and every other overlay
     /// stay unreachable until a real identity has been provisioned and the
@@ -682,11 +694,6 @@ pub struct ShellOverlayHost {
     /// A workspace-root swap happened during `update`; the following relayout must rebuild its
     /// Taffy nodes before reading geometry from the replacement widgets.
     workspace_content_layout_dirty: bool,
-    /// Per-strip last active-group id that
-    /// [`Self::scroll_active_group_into_view`] scrolled into view, so the
-    /// focus-follow scroll is edge-triggered and doesn't fight a user who
-    /// wheels away.
-    last_scrolled_active_group: HashMap<StripId, GroupId>,
     /// The focused `(strip, group)` last recorded in the display partition,
     /// so a focus change is noted once.
     last_noted_focus: Option<(StripId, GroupId)>,
@@ -758,11 +765,6 @@ pub struct ShellOverlayHost {
     /// [`GroupRow`] widgets need the new strip contents. `u64::MAX` at
     /// construction so the first poll always rebuilds.
     last_chrome_revision: u64,
-    /// What each live tab was last built to show, keyed by tab id — the
-    /// revision counter says something moved, this says which tabs, so a
-    /// tab whose content changed without its id changing still gets
-    /// rebuilt.
-    tab_tiles: std::collections::HashMap<u64, String>,
     /// Session-local bindings from `(owner, surface)` to the peer-window tab
     /// whose runtime content was replaced by a `PeerView`. These never enter
     /// `ChromeState` or its replicated workspace document.
@@ -1766,13 +1768,6 @@ pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
 /// by `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
 pub const PALETTE_SCRIM_ALPHA: f32 = 0.45;
 
-/// A cheap value that changes exactly when a tab's content changes: the
-/// serialised tile, since that's the whole of what
-/// [`crate::shell::to_ui_tile`] reads.
-fn tile_signature(tile: &crate::shell::state::TileContent) -> String {
-    serde_json::to_string(tile).unwrap_or_default()
-}
-
 /// `(strip_id, groups)` where each group is `(group_id, tab_ids)` — the
 /// per-strip snapshot [`ShellOverlayHost::groups_per_strip`] returns for
 /// tests.
@@ -2291,7 +2286,7 @@ impl ShellOverlayHost {
             desktop_controls: inputs.desktop_controls,
             shortcut_help_drawn_rect: Rect::ZERO,
             content,
-            workspace_scene_parts: None,
+            desktop_close_reports: Vec::new(),
             onboarding: None,
             onboarding_node: None,
             onboarding_released: false,
@@ -2373,7 +2368,6 @@ impl ShellOverlayHost {
             content_built_for_ws: None,
             content_built_empty: None,
             workspace_content_layout_dirty: false,
-            last_scrolled_active_group: HashMap::new(),
             last_noted_focus: None,
             add_workspace_rect: Rect::ZERO,
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
@@ -2401,7 +2395,6 @@ impl ShellOverlayHost {
             peer_sync_overlay: PeerSyncOverlay::default(),
             notification_stack: None,
             last_chrome_revision: u64::MAX,
-            tab_tiles: std::collections::HashMap::new(),
             peer_stream_tabs: std::collections::HashMap::new(),
             personal_display: None,
             // User intent is durable, while the root filters it against the
@@ -3508,6 +3501,9 @@ impl ShellOverlayHost {
     /// frame from [`Widget::update`]. `/invite` mints a token; `/connect`
     /// opens the token prompt. Both write their outcome into chrome.
     fn pump_peer_sync(&mut self) {
+        if let Some(request) = self.peer_sync_overlay.pending_enrollment_request() {
+            self.run_peer_sync_request(&request, false);
+        }
         let actions = self.chrome.as_ref().map_or_else(Vec::new, |chrome| {
             chrome.borrow_mut().take_peer_sync_requests()
         });
@@ -3809,15 +3805,6 @@ impl ShellOverlayHost {
         self
     }
 
-    #[must_use]
-    pub(crate) fn with_workspace_scene_parts(
-        mut self,
-        parts: crate::shell::WorkspaceSceneParts,
-    ) -> Self {
-        self.workspace_scene_parts = Some(parts);
-        self
-    }
-
     /// Record which workspace the injected content was built for, so
     /// `Self::resync_workspace_content` can detect the first switch away.
     #[must_use]
@@ -3847,6 +3834,10 @@ impl ShellOverlayHost {
     /// both [`Widget::update`] and [`Widget::take_structure_dirty`] — the
     /// shots driver's relayout-only path skips `update`.
     fn resync_workspace_content(&mut self) -> bool {
+        // Both update and structure-dirty enter here before canonical
+        // reconciliation. Commit pending widget gestures first, before a
+        // rebuild drops the rows holding them.
+        self.harvest_active_tab_writeback();
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -3878,15 +3869,55 @@ impl ShellOverlayHost {
             }
             tree.clone()
         };
+        self.rebuild_workspace_content(&chrome, &snapshot)
+    }
+
+    /// Rebuilds the desktop surface for `snapshot` and replaces the row
+    /// pointer map with it. Tabs whose tile is unchanged in the same room
+    /// keep their live hosts, so a strip added or removed beside them costs
+    /// no app state; a different workspace gets fresh content.
+    fn rebuild_workspace_content(
+        &mut self,
+        chrome: &Chrome,
+        snapshot: &crate::shell::state::WorkspaceTree,
+    ) -> bool {
         let records = chrome.borrow().records().clone();
-        let (root, ptrs, scene_parts) =
-            crate::shell::build_workspace_root_with_scene_parts(&snapshot, &records, &chrome);
-        // Replace content and pointer map in one step: dropping the old
-        // root frees every old GroupRow, and the map must never outlive
-        // the rows it points into.
-        self.content = root;
-        self.workspace_scene_parts = Some(scene_parts);
-        self.group_row_ptrs = ptrs;
+        if let Some(surface) = self.desktop_surface_mut() {
+            let surface_chrome = crate::shell::workspace_surface_chrome(snapshot, chrome);
+            let state = chrome.borrow();
+            let failures = state.record_creation_errors(snapshot);
+            surface.rebuild_retaining(
+                &snapshot.desktop,
+                &records,
+                &mut crate::shell::NativeTileResolver {
+                    inputs: &state.hosted_inputs,
+                    failures: &failures,
+                },
+                surface_chrome,
+            );
+            for id in surface.strip_ids() {
+                if let Some(row) = surface.row_mut(id) {
+                    for group in &mut row.groups {
+                        crate::shell::tab_documents::apply_creation_failures(group, &failures);
+                    }
+                }
+            }
+            // The rebuild replaced every row; the old addresses are gone.
+            self.group_row_ptrs = crate::shell::surface_row_ptrs(surface);
+        } else {
+            let (root, ptrs) = crate::shell::build_workspace_root(snapshot, &records, chrome);
+            // Settle outgoing components while the old root still owns them,
+            // so their recovery reports survive the swap.
+            self.desktop_close_reports
+                .extend(self.content.close_components());
+            self.desktop_close_reports
+                .extend(self.content.take_component_close_reports());
+            // Replace content and pointer map in one step: dropping the old
+            // root frees every old GroupRow, and the map must never outlive
+            // the rows it points into.
+            self.content = root;
+            self.group_row_ptrs = ptrs;
+        }
         self.content_built_for_ws = Some(snapshot.desktop.active.raw());
         self.content_built_empty = snapshot.desktop.active_workspace().map(|workspace| {
             workspace
@@ -3895,9 +3926,13 @@ impl ShellOverlayHost {
                 .all(|strip| strip.window_groups.is_empty())
         });
         self.workspace_content_layout_dirty = true;
-        // Per-strip memos of the old workspace die with its rows.
-        self.last_scrolled_active_group.clear();
         true
+    }
+
+    /// The shared desktop surface, when the content is one. Hand-built test
+    /// content is not.
+    fn desktop_surface_mut(&mut self) -> Option<&mut tilo_desktop::composition::DesktopSurface> {
+        self.content.as_any_mut()?.downcast_mut()
     }
 
     /// Does the content tree have a row for every strip of the active
@@ -4248,6 +4283,7 @@ impl ShellOverlayHost {
             // makes this walk exclusive, matching the other row accessors.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
             for group in &mut row.groups {
+                let source_tab = group.active_tab_id();
                 let Some(host) = group.active_host_mut() else {
                     continue;
                 };
@@ -4255,14 +4291,14 @@ impl ShellOverlayHost {
                     continue;
                 };
                 if let Some(intent) = app.take_host_intent() {
-                    intents.push(intent);
+                    intents.push((source_tab, intent));
                 }
             }
         }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        for intent in intents {
+        for (source_tab, intent) in intents {
             match intent {
                 ui::widget::AppHostIntent::ShowWorkspaceActivity {
                     resource_id,
@@ -4282,20 +4318,66 @@ impl ShellOverlayHost {
                         },
                     ));
                 }
+                ui::widget::AppHostIntent::OpenDocument {
+                    path,
+                    capability,
+                    token,
+                    reply,
+                } => {
+                    let Some(reply) = reply.upgrade() else {
+                        continue;
+                    };
+                    let Ok(mut reply) = reply.try_borrow_mut() else {
+                        continue;
+                    };
+                    if !reply.is_pending(token) {
+                        continue;
+                    }
+                    Self::complete_document_open_request(
+                        &chrome,
+                        source_tab,
+                        &path,
+                        &capability,
+                        token,
+                        &mut reply,
+                    );
+                }
             }
         }
     }
 
-    /// Diffs the live `WorkspaceTree` against every `GroupRow`'s children,
-    /// splicing via `insert_group`/`remove_group_by_id` to preserve
-    /// untouched rows' host state (scroll, tab selection). Without this
-    /// poll, rows would keep painting the boot-time snapshot as the
-    /// persisted tree grows. Cheap on the no-op path — one u64 compare
-    /// against `last_chrome_revision`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "The ordered tree-to-row reconciliation shares raw row pointers and retained tile state; splitting it would obscure its alias and ordering invariants."
-    )]
+    /// Resolve the one capability-bound Files request that drain admitted.
+    /// Keeping the authorization immediately beside the actual opener avoids
+    /// any generic app intent becoming a filesystem-read capability.
+    fn complete_document_open_request(
+        chrome: &crate::shell::chrome_state::Chrome,
+        source_tab: crate::shell::state::TabId,
+        path: &std::path::Path,
+        capability: &ui::widget::DocumentOpenCapability,
+        token: u64,
+        reply: &mut ui::widget::DocumentOpenReply,
+    ) {
+        let authorized_source = {
+            let state = chrome.borrow();
+            let files_app_id = crate::shell::state::AppKind::FileExplorer.app_id();
+            state.active_tab_id() == Some(source_tab)
+                && state.active_app_id().as_deref() == Some(files_app_id.as_str())
+                && state
+                    .hosted_inputs
+                    .accepts_document_open_capability(capability)
+        };
+        if !authorized_source {
+            reply.cancel(token);
+            return;
+        }
+        reply.complete(token, crate::shell::open_document_from_files(chrome, path));
+    }
+
+    /// Reconciles the shared desktop surface with the live tree. Groups and
+    /// tabs are spliced in place, so untouched rows keep their host state
+    /// (scroll, tab selection); a changed strip set rebuilds the surface.
+    /// Cheap on the no-op path — one u64 compare against
+    /// `last_chrome_revision`.
     fn resync_strips_from_tree(&mut self) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
@@ -4306,174 +4388,32 @@ impl ShellOverlayHost {
         if current_rev == self.last_chrome_revision {
             return false;
         }
-        let mut any_change = false;
-        // Moved out for the walk below: the rows are reached through raw
-        // pointers taken from `&mut self`, so a field borrowed across them
-        // would alias. Put back before returning.
-        let mut tab_tiles = std::mem::take(&mut self.tab_tiles);
-        let st = chrome.borrow();
-        let records = st.records().clone();
-        let tree = st.tree();
-        let creation_failures = st.record_creation_errors(&tree);
-        if let Some(ws) = tree.desktop.active_workspace() {
-            for strip in &ws.strips {
-                let Some(&row_ptr) = self.group_row_ptrs.get(&strip.id) else {
-                    continue;
-                };
-                // SAFETY: same contract as the other `group_row_ptrs`
-                // accessors — pointer captured from a `Box<GroupRow>`
-                // owned by the content tree; host outlives content;
-                // `&mut self` → unaliased mutable access.
-                let row: &mut GroupRow = unsafe { &mut *row_ptr };
-                let live_ids: std::collections::HashSet<u64> =
-                    row.group_ids().into_iter().collect();
-                let tree_ids: std::collections::HashSet<u64> =
-                    strip.window_groups.iter().map(|g| g.id).collect();
-                // The row lays groups out display by display; on one
-                // display that is the strip's own order.
-                let ordered = displays::display_ordered(&tree.desktop.outputs, strip);
-                // Splice in new groups without rebuilding the vector, so
-                // existing rows keep their host state.
-                for (idx, g) in ordered.iter().enumerate() {
-                    if !live_ids.contains(&g.id) {
-                        let mut fresh = crate::shell::to_ui_window_group(g, &records);
-                        // Same spawn fade the row's own splice paths use,
-                        // so an opened window arrives the same way.
-                        crate::shell::tab_documents::apply_creation_failures(
-                            &mut fresh,
-                            &creation_failures,
-                        );
-                        fresh.start_spawn_animation();
-                        row.insert_group(fresh, idx);
-                        any_change = true;
-                    }
-                }
-                // Drop any groups the tree no longer carries.
-                for id in live_ids.difference(&tree_ids) {
-                    if row.remove_group_by_id(*id) {
-                        any_change = true;
-                    }
-                }
-                // A row can already contain every group while its order no
-                // longer matches the document (for example, an Automerge
-                // revision from another device reorders two existing
-                // windows). Splicing alone misses that case and leaves the
-                // screen disagreeing with the durable layout until restart.
-                for (idx, group) in ordered.iter().enumerate() {
-                    if row.reorder_group_by_id(group.id, idx) {
-                        any_change = true;
-                    }
-                }
-                // Reconcile tabs inside groups that already exist — the
-                // group-level splice above only fires for whole new
-                // groups, so a tab adopted into an existing one (an
-                // external toplevel) needs its own path here.
-                for g in &strip.window_groups {
-                    let Some(live) = row.groups.iter_mut().find(|lg| lg.id == g.id) else {
-                        continue;
-                    };
-                    let live_tab_ids: std::collections::HashSet<u64> =
-                        live.tabs().iter().map(|t| t.id).collect();
-                    let tree_tab_ids: std::collections::HashSet<u64> =
-                        g.tabs.iter().map(|t| t.id).collect();
-                    for (idx, tab) in g.tabs.iter().enumerate() {
-                        let signature = tile_signature(&tab.tile);
-                        if live_tab_ids.contains(&tab.id) {
-                            // A window's artwork can arrive after its tab:
-                            // the desktop entry is installed, or the app
-                            // sets its own.
-                            if live.set_tab_icon(tab.id, crate::app_icons::for_tile(&tab.tile)) {
-                                any_change = true;
-                            }
-                            // Install the foreign widget before its first
-                            // buffer: layout must publish its configure size.
-                            // TileHost retains visibility and owns the opening
-                            // card until the new content is ready to present.
-                            let resource_replaced = !creation_failures.contains_key(&tab.id)
-                                && live
-                                    .host_for_tab_mut(tab.id)
-                                    .is_some_and(|host| host.record_creation_refused());
-                            if (tab_tiles.get(&tab.id) != Some(&signature) || resource_replaced)
-                                && let Some(host) = live.host_for_tab_mut(tab.id)
-                            {
-                                host.replace_content(crate::shell::to_ui_tile_for_tab_with_inputs(
-                                    &tab.tile,
-                                    tab.id,
-                                    &chrome.borrow().hosted_inputs,
-                                ));
-                                host.bind_record(
-                                    records.clone(),
-                                    crate::shell::tab_documents::scratch_tab_record(tab.id),
-                                );
-                                tab_tiles.insert(tab.id, signature);
-                                any_change = true;
-                            }
-                            if let Some(host) = live.host_for_tab_mut(tab.id) {
-                                if let Some(reason) = creation_failures.get(&tab.id) {
-                                    host.refuse_record_binding(reason.clone());
-                                } else {
-                                    // Owner replacement invalidates an old pending binding too.
-                                    // This is always Existing-only, never a creation retry.
-                                    host.bind_record(
-                                        records.clone(),
-                                        crate::shell::tab_documents::scratch_tab_record(tab.id),
-                                    );
-                                }
-                            }
-                            continue;
-                        }
-                        let desc = ui::widget::TabDescriptor {
-                            id: tab.id,
-                            title: tab.title.clone(),
-                            app_kind: Some(crate::shell::tile_app_kind(&tab.tile)),
-                            icon: crate::app_icons::for_tile(&tab.tile),
-                        };
-                        // Gets its own document too, same as any tab
-                        // present at boot.
-                        let mut host =
-                            ui::widget::TileHost::new(crate::shell::to_ui_tile(&tab.tile));
-                        host.bind_record(
-                            records.clone(),
-                            crate::shell::tab_documents::scratch_tab_record(tab.id),
-                        );
-                        if let Some(reason) = creation_failures.get(&tab.id) {
-                            host.refuse_record_binding(reason.clone());
-                        }
-                        live.insert_detached_tab(idx.min(live.tab_count()), desc, host);
-                        tab_tiles.insert(tab.id, signature);
-                        any_change = true;
-                    }
-                    for stale in live_tab_ids.difference(&tree_tab_ids) {
-                        if live.detach_tab(*stale).is_some() {
-                            tab_tiles.remove(stale);
-                            any_change = true;
-                        }
-                    }
-                    // As with groups, a replicated tab reorder changes no
-                    // membership and therefore needs an explicit ordering
-                    // pass. `WindowGroup::reorder_tab` moves its matching
-                    // host at the same time, preserving the pill/content
-                    // identity invariant.
-                    for (idx, tab) in g.tabs.iter().enumerate() {
-                        let Some(from) = live
-                            .tabs()
-                            .iter()
-                            .position(|live_tab| live_tab.id == tab.id)
-                        else {
-                            continue;
-                        };
-                        if live.reorder_tab(from, idx) {
-                            any_change = true;
-                        }
-                    }
-                }
+        self.last_chrome_revision = current_rev;
+        let outcome = {
+            let st = chrome.borrow();
+            let records = st.records().clone();
+            let tree = st.tree();
+            let failures = st.record_creation_errors(&tree);
+            let Some(surface) = self.desktop_surface_mut() else {
+                return false;
+            };
+            surface.reconcile(
+                &tree.desktop,
+                &records,
+                &mut crate::shell::NativeTileResolver {
+                    inputs: &st.hosted_inputs,
+                    failures: &failures,
+                },
+            )
+        };
+        match outcome {
+            tilo_desktop::composition::ReconcileOutcome::Unchanged => false,
+            tilo_desktop::composition::ReconcileOutcome::Updated => true,
+            tilo_desktop::composition::ReconcileOutcome::RebuildRequired => {
+                let snapshot = chrome.borrow().tree().clone();
+                self.rebuild_workspace_content(&chrome, &snapshot)
             }
         }
-        drop(tree);
-        drop(st);
-        self.tab_tiles = tab_tiles;
-        self.last_chrome_revision = current_rev;
-        any_change
     }
 
     /// Pushes the compositor's transient fullscreen state onto every
@@ -4708,7 +4648,10 @@ impl ShellOverlayHost {
         // Only an explicit pointer/keyboard/accessibility edge reaches this
         // list. A newly rebuilt retained row can temporarily disagree with
         // the model; treating that divergence as a click steals focus back
-        // from an application which just opened.
+        // from an application which just opened. Focus is stamped only for
+        // the active workspace: a newer workspace switch takes precedence
+        // over a gesture made in the outgoing one.
+        let mut selection_changed = false;
         let mut focus_writes: Vec<(WorkspaceId, StripId, GroupId)> = Vec::new();
         // A FileReference card is inert until the person explicitly selects
         // its tab.  Capture that activation while holding the tree, then
@@ -4717,6 +4660,7 @@ impl ShellOverlayHost {
         let mut activated_file_tabs = Vec::new();
         {
             let mut tree = st.tree_mut();
+            let active_workspace = tree.desktop.active;
             for w in &writes {
                 for ws in &mut tree.desktop.workspaces {
                     for strip in &mut ws.strips {
@@ -4735,17 +4679,19 @@ impl ShellOverlayHost {
                                 continue;
                             }
                             group.active_tab = w.tab;
-                            focus_writes.push((ws.id, w.strip, w.group));
-                            activated_file_tabs.push(w.tab);
+                            selection_changed = true;
+                            if ws.id == active_workspace {
+                                focus_writes.push((ws.id, w.strip, w.group));
+                                activated_file_tabs.push(w.tab);
+                            }
                         }
                     }
                 }
             }
         }
-        if !focus_writes.is_empty() {
+        if selection_changed {
             let mut tree = st.tree_mut();
             for (ws_id, strip_id, group_id) in focus_writes {
-                tree.desktop.active = ws_id;
                 tree.desktop.active_strip.insert(ws_id, strip_id);
                 tree.desktop.active_group.insert(strip_id, group_id);
             }
@@ -5207,114 +5153,18 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Pans the focused group into view, edge-triggered on the persisted
-    /// `active_group` pointer so free wheel-scrolling isn't fought by a
-    /// per-frame snap-back.
+    /// Frames the focused group and lights its focus marker through the
+    /// shared surface, from the tree's active strip and group. Framing is
+    /// edge-triggered, so free wheel-scrolling isn't fought by a per-frame
+    /// snap-back.
     fn scroll_active_group_into_view(&mut self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let active: Vec<(StripId, GroupId)> = {
-            let st = chrome.borrow();
-            let tree = st.tree();
-            self.group_row_ptrs
-                .keys()
-                .filter_map(|&sid| tree.desktop.active_group_for(sid).map(|gid| (sid, gid)))
-                .collect()
-        };
-        for (strip_id, group_id) in active {
-            let changed = self.last_scrolled_active_group.get(&strip_id).copied() != Some(group_id);
-            if !changed {
-                continue;
-            }
-            if let Some(&ptr) = self.group_row_ptrs.get(&strip_id) {
-                // SAFETY: see field doc on `group_row_ptrs`.
-                let row: &mut GroupRow = unsafe { &mut *ptr };
-                // A group focused the same frame it appeared has no rect yet
-                // (no layout pass); leave the memo and retry once it does.
-                if !row.group_is_laid_out(group_id) {
-                    continue;
-                }
-                // Eased, not teleported — matches Niri's focus-column slide.
-                row.scroll_group_into_view_animated(group_id, Instant::now());
-                // Record the edge only after the row could actually inspect
-                // the group's laid-out rectangle.  A freshly adopted app is
-                // spliced before its first layout pass; memoising it earlier
-                // suppresses the next-frame retry and can leave the active
-                // window entirely off-screen in a long restored strip.
-                self.last_scrolled_active_group.insert(strip_id, group_id);
-            }
-        }
-    }
-
-    /// Lights exactly one on-screen window group as keyboard-focused, since
-    /// non-overlapping windows have no z-order to infer it from. Runs every
-    /// frame as a pure function of the tree (not edge-triggered) so focus
-    /// can't stay latched on a group a resync moved or removed.
-    fn mark_focused_group(&self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
-        // Closing groups aren't focus candidates — lighting one mid-fade
-        // would tell the user their keystrokes go somewhere gone.
-        let closing: std::collections::HashSet<GroupId> = self
-            .group_row_ptrs
-            .values()
-            .flat_map(|&ptr| {
-                // SAFETY: see field doc on `group_row_ptrs`.
-                let row: &GroupRow = unsafe { &*ptr };
-                row.groups
-                    .iter()
-                    .filter(|g| g.is_closing())
-                    .map(|g| g.id)
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        // Mirrors `publish_strip_viewport`'s resolution, including the
-        // fallback to the first strip/leftmost group for an unseeded pointer.
-        let focused: Option<(StripId, GroupId)> = {
-            let st = chrome.borrow();
-            let tree = st.tree();
-            tree.desktop
-                .active_workspace()
-                .and_then(|ws| {
-                    tree.desktop
-                        .active_strip
-                        .get(&ws.id)
-                        .copied()
-                        .filter(|id| ws.strips.iter().any(|s| s.id == *id))
-                        .or_else(|| ws.strips.first().map(|s| s.id))
-                })
-                .and_then(|sid| {
-                    tree.desktop
-                        .resolve_active_group(sid, |gid| closing.contains(&gid))
-                        .map(|gid| (sid, gid))
-                })
-        };
-        // A lone window needs no marker; it's a workspace-wide count so
-        // three strips holding one window each still disambiguate.
-        let disambiguating = self
-            .group_row_ptrs
-            .values()
-            .map(|&ptr| {
-                // SAFETY: see field doc on `group_row_ptrs`.
-                let row: &GroupRow = unsafe { &*ptr };
-                row.groups.len()
-            })
-            .sum::<usize>()
-            > 1;
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
-            for g in &mut row.groups {
-                g.set_focused(disambiguating && focused == Some((strip_id, g.id)));
-            }
+        let st = chrome.borrow();
+        let tree = st.tree();
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.sync_navigation(&tree.desktop);
         }
     }
 
@@ -6492,7 +6342,9 @@ impl ShellOverlayHost {
                 break;
             }
         }
-        self.last_scrolled_active_group.remove(&strip_id);
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.reveal_on_next_layout(strip_id);
+        }
         chrome.borrow_mut().bump();
         true
     }
@@ -6554,7 +6406,9 @@ impl ShellOverlayHost {
                 )
             };
         if changed {
-            self.last_scrolled_active_group.remove(&strip_id);
+            if let Some(surface) = self.desktop_surface_mut() {
+                surface.reveal_on_next_layout(strip_id);
+            }
             chrome.borrow_mut().bump();
         }
         changed
@@ -7717,7 +7571,9 @@ impl ShellOverlayHost {
         // target was visible to be clicked, and panning would drag it
         // out from under the cursor. Keyboard/wheel keep the pan, since
         // they can target off-screen windows.
-        self.last_scrolled_active_group.insert(strip_id, group_id);
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.keep_clicked_group_in_place(strip_id, group_id);
+        }
     }
 
     /// Where the filter band sits among the palette's semantic children:
@@ -9687,9 +9543,9 @@ impl ShellOverlayHost {
             let records = st.records().clone();
             let mut tree = st.tree_mut();
             let local = self.room_records.borrow();
-            self.room_activity.refresh(&mut tree);
+            self.room_activity.refresh(&mut *tree);
             self.room_activity
-                .refresh_records_with_local(&mut tree, &records, &*local);
+                .refresh_records_with_local(&mut *tree, &records, &*local);
         }
         self.refresh_history_narrative();
     }
@@ -9752,9 +9608,9 @@ impl ShellOverlayHost {
             let local = self.room_records.borrow();
             self.room_activity
                 .observe_workspace(tree.desktop.active.raw());
-            self.room_activity.refresh(&mut tree);
+            self.room_activity.refresh(&mut *tree);
             self.room_activity
-                .refresh_records_with_local(&mut tree, &records, &*local);
+                .refresh_records_with_local(&mut *tree, &records, &*local);
             tree.desktop.active.raw()
         };
         self.refresh_history_narrative();
@@ -9807,12 +9663,15 @@ impl ShellOverlayHost {
         };
         let local_ids = {
             let state = chrome.borrow();
-            let tree = state.tree();
+            let active_room = state
+                .tree()
+                .desktop
+                .active_workspace()
+                .map(|workspace| workspace.room);
             let mut ids = vec![state.local_user_id.clone()];
-            if let Some(workspace) = tree.desktop.active_workspace() {
-                ids.push(state.local_user_for_room(&workspace.room));
+            if let Some(room) = active_room {
+                ids.push(state.local_user_for_room(&room));
             }
-            drop(tree);
             ids.retain(|id| !id.is_empty());
             ids
         };
@@ -10811,7 +10670,7 @@ impl ShellOverlayHost {
                     scale_factor,
                     &modifiers,
                     cursor,
-                    &mut tree,
+                    &mut *tree,
                     Some(&records),
                 )
             };
@@ -16561,6 +16420,14 @@ fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &
 }
 
 impl Widget for ShellOverlayHost {
+    fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.desktop_close_reports);
+        for child in self.children_mut() {
+            reports.extend(child.take_component_close_reports());
+        }
+        reports
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -16722,14 +16589,23 @@ impl Widget for ShellOverlayHost {
         // Both edge-triggered on `active_group`, so they run after the
         // writeback above reflects this frame's focus change.
         self.scroll_active_group_into_view();
-        self.mark_focused_group();
         let capture_targets = self.capture_targets();
         self.capture_studio.set_candidates(capture_targets);
         self.dispatch_cross_strip_detaches();
         // Offer every open tab's document to its own writer, debounced and
         // off-thread — without this the store never writes to disk.
         if let Some(chrome) = self.chrome.as_ref() {
-            let records = chrome.borrow().records().clone();
+            let state = chrome.borrow();
+            // Release native document launch data once its tab is gone —
+            // covers removals through workspace/peer reconciliation as well
+            // as the explicit close action.
+            let mut tree = state.tree_mut();
+            if state.hosted_inputs.prune_documents(&mut tree) {
+                tree.flush_to_disk();
+            }
+            drop(tree);
+            let records = state.records().clone();
+            drop(state);
             records.tick();
         }
         // Before the prompt pump, so a request arriving this frame is on
@@ -16828,12 +16704,10 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().set_fullscreen_presentation(fullscreen);
         }
-        if let Some(parts) = self.workspace_scene_parts {
-            // SAFETY: `WorkspaceSceneParts::work_area` points into the
-            // workspace root owned by `self.content` and is replaced with
-            // that root whenever the workspace is rebuilt. Layout runs
-            // sequentially under `&mut self`, so no other borrow aliases it.
-            let work_area = unsafe { &mut *parts.work_area };
+        if let Some(work_area) = self
+            .desktop_surface_mut()
+            .and_then(tilo_desktop::composition::DesktopSurface::work_area_mut)
+        {
             if fullscreen {
                 work_area.set_vertical_padding(0.0);
                 work_area.set_extra_top_padding(0.0);
@@ -19646,20 +19520,9 @@ impl ShellOverlayHost {
         // Match the compositor's retained section order in the dense oracle:
         // app content cannot cover OS-owned anchored chrome that extends
         // below the reserved top-bar band.
-        if let Some(parts) = self.workspace_scene_parts {
-            // SAFETY: these pointers refer to distinct boxed children owned
-            // by `content`; this is the same sequential traversal used by
-            // `draw_workspace_sections`, only composed in final layer order.
-            unsafe {
-                (&mut *parts.backdrop).draw(scene, transform, text_renderer, theme, presence);
-                (&mut *parts.workspace).draw(scene, transform, text_renderer, theme, presence);
-                (&mut *parts.topbar).draw(scene, transform, text_renderer, theme, presence);
-                (&mut *parts.display_bars).draw(scene, transform, text_renderer, theme, presence);
-            }
-        } else {
-            self.content
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
+        // The shared surface draws backdrop, workspace, then top bar.
+        self.content
+            .draw(scene, transform, text_renderer, theme, presence);
         self.draw_desktop_extras(scene, transform, text_renderer, theme, presence);
     }
 
@@ -19756,33 +19619,30 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Option<Rect> {
-        let Some(parts) = self.workspace_scene_parts else {
+        let Some(surface) = self.desktop_surface_mut() else {
             self.content
                 .draw(backdrop_scene, transform, text_renderer, theme, presence);
             return None;
         };
-        // SAFETY: `WorkspaceSceneParts` points into boxes owned by `content` and is replaced
-        // with that root on rebuild. Each part is drawn once in Container → Stack → Column order.
-        unsafe {
-            (&mut *parts.backdrop).draw(backdrop_scene, transform, text_renderer, theme, presence);
-            let topbar = &mut *parts.topbar;
-            let rect = topbar.get_rect();
-            topbar.draw(topbar_scene, transform, text_renderer, theme, presence);
-            let display_bars = &mut *parts.display_bars;
-            display_bars.draw(topbar_scene, transform, text_renderer, theme, presence);
-            (&mut *parts.workspace).draw(
-                workspace_scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
-            let bounds = display_bars
-                .bar_rects()
-                .into_iter()
-                .fold(rect, |all, (_, bar)| all.union(bar));
-            Some(Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1 + 28.0))
-        }
+        let bounds = surface.draw_sections(
+            backdrop_scene,
+            topbar_scene,
+            workspace_scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        )?;
+        // The compact bars of the other displays share the top bar's scene.
+        let bars = surface
+            .display_chrome()
+            .and_then(Widget::as_any)
+            .and_then(|layer| layer.downcast_ref::<crate::shell::display_bars::DisplayBars>())
+            .map(crate::shell::display_bars::DisplayBars::bar_rects)
+            .unwrap_or_default();
+        Some(bars.into_iter().fold(bounds, |all, (_, bar)| {
+            all.union(Rect::new(bar.x0, bar.y0, bar.x1, bar.y1 + 28.0))
+        }))
     }
 
     /// The two legacy full-panel modals: the room overview panel and the
@@ -20150,6 +20010,25 @@ impl ShellOverlayHost {
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
         self.drain_app_host_intents();
+        let view_request = self
+            .chrome
+            .as_ref()
+            .and_then(|chrome| chrome.borrow_mut().take_workspace_view_request());
+        if let Some((previous, request)) = view_request {
+            // Finish against the outgoing admission before awareness refreshes
+            // for the destination. A first open must not acknowledge its feed.
+            if self.room_activity_was_open {
+                self.room_activity.finish_view(previous.raw());
+            }
+            if let tilo_desktop::activity::WorkspaceViewRequest::OpenActivity { view, .. } = request
+            {
+                use crate::shell::room_activity::ActivityView;
+                self.room_activity.set_view(ActivityView::CatchUp);
+                self.room_activity.set_view(view);
+                self.room_activity.invalidate();
+            }
+            self.room_activity_was_open = false;
+        }
         // Older control/shot clients still express this as an overlay edge;
         // consume it by opening the typed tiled window once.
         if flags.room_activity
@@ -25944,6 +25823,10 @@ fn quick_settings_settled_bounds(rect: Rect, theme: &Theme, transform: Affine) -
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "tab_context_menu_tests.rs"]
 mod tab_context_menu_tests;
 
@@ -25956,6 +25839,10 @@ mod empty_workspace_tests;
     clippy::float_cmp,
     reason = "exact overview layout geometry is the behavior under test"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "overview_panel_tests.rs"]
 mod overview_panel_tests;
 
@@ -25963,6 +25850,10 @@ mod overview_panel_tests;
 #[allow(
     clippy::float_cmp,
     reason = "exact transition endpoints are the behavior under test"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 #[path = "overview_transition_tests.rs"]
 mod overview_transition_tests;
@@ -25972,6 +25863,10 @@ mod overview_transition_tests;
 mod wifi_password_tests;
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "palette_dispatch_tests.rs"]
 mod palette_dispatch_tests;
 
@@ -25984,6 +25879,10 @@ mod two_workspace_host_tests;
     clippy::float_cmp,
     reason = "exact modal curve endpoints are the behavior under test"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "modal_curve_tests.rs"]
 mod modal_curve_tests;
 
@@ -25992,6 +25891,10 @@ mod modal_curve_tests;
     clippy::float_cmp,
     reason = "exact overlay hit-test geometry is the behavior under test"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "overlay_event_absorb_tests.rs"]
 mod overlay_event_absorb_tests;
 
@@ -25999,6 +25902,10 @@ mod overlay_event_absorb_tests;
 #[allow(
     clippy::float_cmp,
     reason = "deterministic host geometry fixtures use exactly representable values"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 #[path = "overlay_host_tests.rs"]
 mod tests;
@@ -26019,6 +25926,10 @@ mod peer_cursor_tests;
 /// says which is which. Dormant membership stays in workspace settings:
 /// immediate presence never invents an idle session.
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "roster_rows_tests.rs"]
 mod roster_rows;
 
