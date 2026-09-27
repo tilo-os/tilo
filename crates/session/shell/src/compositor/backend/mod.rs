@@ -95,6 +95,17 @@ pub struct OutputIdentity {
 }
 
 impl OutputIdentity {
+    /// The device's own panel rather than a plugged-in display.
+    pub fn is_builtin(&self) -> bool {
+        ui::fullscreen::connector_is_builtin(&self.connector)
+    }
+
+    /// Physical size, `None` when the display reported none.
+    pub fn known_physical_mm(&self) -> Option<(u32, u32)> {
+        let (width, height) = self.physical_mm;
+        (width > 0 && height > 0).then_some(self.physical_mm)
+    }
+
     /// Identity from a connector and its EDID. EDID size wins over the
     /// connector-reported one, which some adapters leave at zero.
     pub fn from_monitor(
