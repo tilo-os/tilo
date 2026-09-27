@@ -21,7 +21,7 @@ use crate::history_source::AuthorDirectory;
 use crate::i18n::I18nManager;
 use crate::presence::PresenceCtx;
 use crate::standalone_history::{
-    HistoryError, HistoryReadContext, HistoryTarget, StandaloneHistory,
+    HistoryError, HistoryReadContext, HistoryTarget, RestoreReview, StandaloneHistory,
 };
 use crate::standalone_history_pane::{HistoryPaneIntent, StandaloneHistoryPane};
 use crate::text_render::TextRenderer;
@@ -71,6 +71,16 @@ pub(crate) enum HistoryCommand {
     Close {
         session: uuid::Uuid,
     },
+    ReviewRestore {
+        session: uuid::Uuid,
+        entry: String,
+    },
+    Restore {
+        session: uuid::Uuid,
+    },
+    CancelRestore {
+        session: uuid::Uuid,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -111,6 +121,20 @@ pub(crate) struct StandaloneHistoryHost {
     restore_focus: Option<CompositionFocus>,
     content_rect: Rect,
     revision: u64,
+    review: Option<RestoreReview>,
+    confirmed_restore: Option<RestoreReview>,
+    structure_dirty: bool,
+}
+
+/// The pane message for a refused or completed restore.
+fn restore_message(result: &Result<bool, HistoryError>) -> &'static str {
+    match result {
+        Ok(_) => "standalone-history-restore-done",
+        Err(HistoryError::StaleReview | HistoryError::Stale) => "standalone-history-restore-stale",
+        Err(HistoryError::PendingEdits) => "standalone-history-restore-pending",
+        Err(HistoryError::Denied) => "standalone-history-restore-denied",
+        Err(_) => "standalone-history-restore-unavailable",
+    }
 }
 
 impl StandaloneHistoryHost {
@@ -134,7 +158,43 @@ impl StandaloneHistoryHost {
             restore_focus: None,
             content_rect: Rect::ZERO,
             revision: 0,
+            review: None,
+            confirmed_restore: None,
+            structure_dirty: false,
         }
+    }
+
+    /// A restore the person confirmed against the still-current frontier.
+    /// The host applies it to its live state, then reports the outcome.
+    pub(crate) fn take_confirmed_restore(&mut self) -> Option<RestoreReview> {
+        self.confirmed_restore.take()
+    }
+
+    pub(crate) fn report_restore(&mut self, result: &Result<bool, HistoryError>) {
+        self.pane
+            .set_comparison_summary(Some(restore_message(result)));
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Whether the presented pane changed shape (a review opened or closed)
+    /// since the last call, so the caller must rebuild rather than relayout.
+    pub(crate) fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.structure_dirty)
+    }
+
+    fn close_review(&mut self) {
+        if self.review.take().is_some() || self.pane.review_is_open() {
+            self.pane.close_review();
+            self.structure_dirty = true;
+        }
+    }
+
+    fn sync_restore_control(&mut self, context: &HistoryReadContext<'_>) {
+        let enabled = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.selection().len() == 1 && session.can_restore(context));
+        self.pane.set_restore_enabled(enabled);
     }
 
     /// Call while focus still belongs to app content, before dispatching a
@@ -217,6 +277,7 @@ impl StandaloneHistoryHost {
                     self.pane.set_comparison_summary(None);
                     self.revision = self.revision.wrapping_add(1);
                 }
+                self.sync_restore_control(context);
                 Ok(changed)
             }
             Err(error) => {
@@ -312,8 +373,43 @@ impl StandaloneHistoryHost {
                     .compare_selection(context)?;
                 self.update_summary();
             }
+            HistoryCommand::ReviewRestore { session, entry } if session == expected => {
+                let id = decode_entry(&entry)?;
+                let model = self
+                    .session
+                    .as_mut()
+                    .ok_or(HistoryHostError::StaleSession)?;
+                match model.review_restore(context, id) {
+                    Ok(review) => {
+                        self.pane.open_review(&review.label);
+                        self.review = Some(review);
+                        self.structure_dirty = true;
+                    }
+                    Err(error) => {
+                        self.report_restore(&Err(error.clone()));
+                        return Err(error.into());
+                    }
+                }
+            }
+            HistoryCommand::Restore { session } if session == expected => {
+                let review = self.review.take().ok_or(HistoryHostError::StaleSession)?;
+                self.close_review();
+                let model = self
+                    .session
+                    .as_ref()
+                    .ok_or(HistoryHostError::StaleSession)?;
+                if let Err(error) = model.validate_restore(context, &review) {
+                    self.report_restore(&Err(error.clone()));
+                    return Err(error.into());
+                }
+                self.confirmed_restore = Some(review);
+            }
+            HistoryCommand::CancelRestore { session } if session == expected => {
+                self.close_review();
+            }
             _ => return Err(HistoryHostError::StaleSession),
         }
+        self.sync_restore_control(context);
         self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
@@ -339,6 +435,8 @@ impl StandaloneHistoryHost {
     }
 
     fn close(&mut self) {
+        self.close_review();
+        self.confirmed_restore = None;
         self.session = None;
         self.session_id = None;
         self.pane.clear();
@@ -370,6 +468,18 @@ impl StandaloneHistoryHost {
                     session,
                     entries: entries.into_iter().map(encode_entry).collect(),
                 },
+                HistoryPaneIntent::ReviewRestore => {
+                    let Some([entry]) = self.session.as_ref().map(StandaloneHistory::selection)
+                    else {
+                        continue;
+                    };
+                    HistoryCommand::ReviewRestore {
+                        session,
+                        entry: encode_entry(*entry),
+                    }
+                }
+                HistoryPaneIntent::ConfirmRestore => HistoryCommand::Restore { session },
+                HistoryPaneIntent::CancelRestore => HistoryCommand::CancelRestore { session },
             };
             self.execute(command, context)?;
             changed = true;
