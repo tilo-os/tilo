@@ -5,7 +5,9 @@
 //! side module linked against the web core (`dylink`), which hands its
 //! `definition()` to [`install`].
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
-use ui::application::{ApplicationCatalog, ApplicationDefinition};
+#[cfg(any(target_arch = "wasm32", test))]
+use ui::application::ApplicationCatalog;
+use ui::application::ApplicationDefinition;
 use ui::launch::LaunchError;
 
 /// Where a launch finds its document when the host names no record.
