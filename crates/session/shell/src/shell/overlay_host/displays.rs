@@ -7,7 +7,9 @@
 //! display a compact bar along its own top edge. New windows open on the
 //! display with focus; focus moves between displays with the pointer and
 //! with Super+Left/Right past a display's last window, and a group moves to
-//! the neighbouring display with the configured chord.
+//! the neighbouring display with the configured chord or by being dragged
+//! onto another display. Every display stacks all of the workspace's strips
+//! in its own height (see [`strip_bands`]).
 //!
 //! The partition is this device's layout, kept in the local desktop tree and
 //! never replicated. The window groups' order stays the strip's; the rows
@@ -15,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use ui::widget::{GroupRow, StripLane};
+use ui::widget::{GroupRow, StripLane, Widget as _};
 use vello::kurbo::{Point, Rect};
 
 use super::{
@@ -33,12 +35,18 @@ fn own_top_band() -> f64 {
 }
 
 /// The displays as the partition knows them, primary (`OutputId(0)`) first.
+/// An output whose monitor the backend can't name is known by its id.
 fn displays_of(outputs: &[OutputGeometry]) -> Vec<Display> {
     let mut displays: Vec<Display> = outputs
         .iter()
         .filter(|o| o.width > 0.0 && o.height > 0.0)
         .map(|o| Display {
             id: o.id,
+            monitor: if o.monitor.is_empty() {
+                format!("output:{}", o.id)
+            } else {
+                o.monitor.clone()
+            },
             x: o.x,
             y: o.y,
             width: o.width,
@@ -48,6 +56,75 @@ fn displays_of(outputs: &[OutputGeometry]) -> Vec<Display> {
     displays.sort_by_key(|d| d.id);
     displays.dedup_by_key(|d| d.id);
     displays
+}
+
+/// One strip's place in every display's height: the fractions of the
+/// workspace column from its top to the strip's row's top and bottom, and
+/// the column's own top and bottom.
+type StripBand = ((f64, f64), (f64, f64));
+
+/// Where each strip sits in every display's height, for rows in the order
+/// the workspace column stacks them.
+///
+/// Every display stacks all of the workspace's strips in its own height, the
+/// way a single display does, rather than showing only the part of the
+/// column that happens to pass over it: with strips stacked down a column
+/// taller than one display, a strip would otherwise land wholly on one
+/// display of a vertical stack and its windows on the other would have
+/// nowhere to be drawn. Before the rows have been laid out once, the strips
+/// share the column below `top` equally.
+fn strip_bands(rows: &[Rect], top: f64) -> Vec<StripBand> {
+    let laid_out: Vec<&Rect> = rows.iter().filter(|r| r.height() > 0.0).collect();
+    let column = (
+        laid_out.iter().map(|r| r.y0).fold(f64::INFINITY, f64::min),
+        laid_out
+            .iter()
+            .map(|r| r.y1)
+            .fold(f64::NEG_INFINITY, f64::max),
+    );
+    let height = column.1 - column.0;
+    if laid_out.is_empty() || height <= 0.0 {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a workspace has a handful of strips"
+        )]
+        let n = rows.len().max(1) as f64;
+        return (0..rows.len())
+            .map(|k| {
+                #[allow(clippy::cast_precision_loss, reason = "as above")]
+                let k = k as f64;
+                ((k / n, (k + 1.0) / n), (top, f64::INFINITY))
+            })
+            .collect();
+    }
+    rows.iter()
+        .map(|r| {
+            let share = |y: f64| ((y - column.0) / height).clamp(0.0, 1.0);
+            ((share(r.y0), share(r.y1)), column)
+        })
+        .collect()
+}
+
+/// `lanes` cut to one strip's band (see [`strip_bands`]): each display's
+/// work area, clipped to the column, shared the way the column is.
+fn in_band(lanes: &[StripLane], (share, column): StripBand) -> Vec<StripLane> {
+    lanes
+        .iter()
+        .map(|lane| {
+            let top = lane.area.y0.max(column.0);
+            let bottom = lane.area.y1.min(column.1).max(top);
+            let height = bottom - top;
+            StripLane {
+                area: Rect::new(
+                    lane.area.x0,
+                    top + share.0 * height,
+                    lane.area.x1,
+                    top + share.1 * height,
+                ),
+                ..*lane
+            }
+        })
+        .collect()
 }
 
 /// A strip's groups in the order its row lays them out: display by display
@@ -71,9 +148,10 @@ pub(crate) fn display_ordered<'a>(
     groups
 }
 
-/// A dragged group's neighbours on its own display, before and after, so
-/// a partitioned row's reorder can be written back into the strip's order.
-pub(super) type ReorderNeighbours = Option<(Option<u64>, Option<u64>)>;
+/// The display a dragged group was dropped on and its neighbours there,
+/// before and after, so a partitioned row's reorder can be written back
+/// into the partition and the strip's order.
+pub(super) type ReorderNeighbours = Option<(Option<u32>, Option<u64>, Option<u64>)>;
 
 /// Where Super+Left/Right takes focus on a partitioned strip.
 enum Step {
@@ -97,7 +175,7 @@ impl ShellOverlayHost {
 
     /// The display the wheel disc and the full top bar live on.
     pub(super) fn primary_output(&self) -> Option<OutputGeometry> {
-        self.outputs.iter().min_by_key(|o| o.id).copied()
+        self.outputs.iter().min_by_key(|o| o.id).cloned()
     }
 
     /// Wheel-disc slot plus its gap, sized for the display it sits on.
@@ -185,7 +263,7 @@ impl ShellOverlayHost {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
             for (group, display) in from_rows {
-                tree.desktop.outputs.home.insert(group, display);
+                tree.desktop.outputs.place_new(group, display);
             }
             let desktop = &mut tree.desktop;
             desktop.outputs.place_unhomed(&desktop.workspaces);
@@ -194,8 +272,9 @@ impl ShellOverlayHost {
         chrome.borrow_mut().bump();
     }
 
-    /// One lane per display, in reading order, for every row.
-    fn strip_lanes(&self) -> Vec<StripLane> {
+    /// One lane per display, in reading order, over the display's whole
+    /// work area: what [`in_band`] shares among the strips.
+    fn display_lanes(&self) -> Vec<StripLane> {
         let Some(chrome) = self.chrome.as_ref() else {
             return Vec::new();
         };
@@ -239,31 +318,54 @@ impl ShellOverlayHost {
     /// one on the primary display, a compact one on each other display.
     /// Cheap when nothing changed, so it runs every layout pass.
     pub(super) fn push_display_layout(&self) {
-        let lanes = self.strip_lanes();
-        let (assignment, focused): (HashMap<u64, u32>, Option<u32>) = match self.chrome.as_ref() {
-            Some(chrome) if !lanes.is_empty() => {
-                let state = chrome.borrow();
-                let tree = state.tree();
-                let partition = &tree.desktop.outputs;
-                let assignment = tree
-                    .desktop
-                    .active_workspace()
-                    .map(|ws| {
-                        ws.strips
-                            .iter()
-                            .flat_map(|s| &s.window_groups)
-                            .filter_map(|g| partition.display_of(g.id).map(|d| (g.id, d)))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let focused = partition.focused_display();
-                drop(tree);
-                drop(state);
-                (assignment, focused)
-            }
-            _ => (HashMap::new(), None),
-        };
-        for &ptr in self.group_row_ptrs.values() {
+        let lanes = self.display_lanes();
+        let (assignment, focused, strips): (HashMap<u64, u32>, Option<u32>, Vec<StripId>) =
+            match self.chrome.as_ref() {
+                Some(chrome) if !lanes.is_empty() => {
+                    let state = chrome.borrow();
+                    let tree = state.tree();
+                    let partition = &tree.desktop.outputs;
+                    let ws = tree.desktop.active_workspace();
+                    let assignment = ws
+                        .map(|ws| {
+                            ws.strips
+                                .iter()
+                                .flat_map(|s| &s.window_groups)
+                                .filter_map(|g| partition.display_of(g.id).map(|d| (g.id, d)))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let strips = ws
+                        .map(|ws| ws.strips.iter().map(|s| s.id).collect())
+                        .unwrap_or_default();
+                    let focused = partition.focused_display();
+                    drop(tree);
+                    drop(state);
+                    (assignment, focused, strips)
+                }
+                _ => (HashMap::new(), None, Vec::new()),
+            };
+        // Rows in the order the workspace column stacks them, with where
+        // they were last laid out.
+        let rows: Vec<(StripId, Rect)> = strips
+            .iter()
+            .filter_map(|id| {
+                let &ptr = self.group_row_ptrs.get(id)?;
+                // SAFETY: see field doc on `group_row_ptrs`.
+                Some((*id, unsafe { (&*ptr).get_rect() }))
+            })
+            .collect();
+        let rects: Vec<Rect> = rows.iter().map(|(_, rect)| *rect).collect();
+        let bands = strip_bands(&rects, self.rect.y0 + own_top_band());
+        for (&strip_id, &ptr) in &self.group_row_ptrs {
+            // A row of a strip outside the active workspace keeps one
+            // continuous row until the next rebuild tears it down.
+            let lanes = rows
+                .iter()
+                .position(|(id, _)| *id == strip_id)
+                .and_then(|k| bands.get(k))
+                .map(|band| in_band(&lanes, *band))
+                .unwrap_or_default();
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
             row.set_lanes(&lanes, &assignment);
@@ -273,7 +375,7 @@ impl ShellOverlayHost {
         }
         let primary = self.primary_output().filter(|_| !lanes.is_empty());
         let others: Vec<(u32, Rect)> = if primary.is_some() {
-            let primary_id = primary.map(|p| p.id);
+            let primary_id = primary.as_ref().map(|p| p.id);
             self.outputs
                 .iter()
                 .filter(|o| Some(o.id) != primary_id)
@@ -374,7 +476,7 @@ impl ShellOverlayHost {
         let target = {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
-            tree.desktop.outputs.focused = Some(display);
+            tree.desktop.outputs.set_focused(display);
             let Some(strip_id) = tree.desktop.active_strip.get(&tree.desktop.active).copied()
             else {
                 return true;
