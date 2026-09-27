@@ -58,7 +58,7 @@ pub mod display_confirm;
 pub mod display_identify;
 pub mod doc_open;
 pub mod editor_app;
-pub mod emoji_picker;
+pub mod emoji_recents;
 pub mod fabric_clock;
 mod file_picker_overlay;
 pub mod fixed_chords;
@@ -146,14 +146,12 @@ pub mod test_control;
 #[cfg(unix)]
 pub mod test_control_socket;
 pub mod test_support;
-pub mod text_entry;
 pub mod tile;
 pub mod tool_intents;
 pub mod topbar_chrome;
 pub mod uri_open;
 pub mod window_actions;
 pub mod window_previews;
-pub mod window_switcher;
 #[cfg(target_os = "linux")]
 pub mod windows_compat;
 pub mod workspace_drop;

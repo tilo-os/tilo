@@ -13,23 +13,19 @@
 //! opens the skin-tone row of an emoji that takes one, Escape closes.
 //!
 //! The picker never writes into an application itself. A pick is queued for
-//! the compositor ([`EmojiPicker::take_commits`]), which commits it into the
-//! focused field through the seat's input method
-//! ([`crate::compositor::text_commit`]) once the field has the keyboard back.
-//! The compositor reports what arrived, and only then does the emoji join the
-//! recents — unless the field was a password or another secret, whose
-//! content is never remembered.
+//! the host ([`EmojiPicker::take_commits`]), which commits it into the
+//! focused field once the field has the keyboard back. The host reports what
+//! arrived, and only then does the emoji join the recents — unless the field
+//! was a password or another secret, whose content is never remembered.
 //!
-//! Recents are private to the user: a small file in the user's state
-//! directory ([`RecentsStore`]), the same [`emoji::Recents`] model the
+//! Recents are private to the user and kept wherever the host's
+//! [`RecentsStore`] puts them, the same [`emoji::Recents`] model the
 //! on-screen keyboard keeps in its own app state.
 //!
 //! The catalogue, search, skin tones and names come from the shared
 //! [`emoji`] crate in the desktop's language.
 
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use emoji::{Catalogue, Recents, SkinTone};
 use ui::a11y::{AccessNode, AccessState, Politeness, Role};
@@ -44,8 +40,8 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use crate::shell::i18n::{t, t_args};
-use crate::shell::text_entry::{self, Edit};
+use crate::i18n::{t, t_args};
+use crate::text_entry::{self, Edit};
 
 /// Matches listed for a query at most.
 const SEARCH_RESULTS: usize = 96;
@@ -56,48 +52,19 @@ const GRID_ROWS: usize = 6;
 /// Emoji glyph size relative to its cell.
 const GLYPH_SCALE: f64 = 0.6;
 
-/// Private, per-user file holding the recents between sessions.
-#[derive(Clone, Debug)]
-pub struct RecentsStore {
-    path: PathBuf,
-}
+/// Where the picker keeps this user's recents between sessions. The host
+/// decides the medium (a private file natively); the picker only reads
+/// once and writes after each delivered pick.
+pub trait RecentsStore {
+    /// The stored recents; nothing stored reads as none.
+    fn load(&self) -> Recents;
 
-impl RecentsStore {
-    pub fn at(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
-    }
-
-    /// `$XDG_STATE_HOME/tilo/emoji-recents.json`, or `None` without a user
-    /// state directory.
-    pub fn for_user() -> Option<Self> {
-        xdg_paths::state_dir().map(|root| Self::at(root.join("tilo/emoji-recents.json")))
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// The stored recents; a missing or malformed file reads as none.
-    pub fn load(&self) -> Recents {
-        std::fs::read(&self.path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
-    }
-
-    /// Replace the file: directory `0700`, file `0600`, written atomically.
+    /// Replace what is stored.
     ///
     /// # Errors
     ///
-    /// Returns the I/O error when the directory or file cannot be written.
-    pub fn save(&self, recents: &Recents) -> std::io::Result<()> {
-        let bytes = serde_json::to_vec(recents).map_err(std::io::Error::other)?;
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-        }
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)
-    }
+    /// Returns a description of why the recents could not be kept.
+    fn save(&self, recents: &Recents) -> Result<(), String>;
 }
 
 /// What a point on the card is.
@@ -160,7 +127,7 @@ pub struct EmojiPicker {
     open: bool,
     catalogue: &'static Catalogue,
     recents: Recents,
-    store: Option<RecentsStore>,
+    store: Option<Box<dyn RecentsStore>>,
     recents_loaded: bool,
     query: String,
     caret: Selection,
@@ -218,7 +185,7 @@ impl EmojiPicker {
     }
 
     /// Keep the recents in `store` from now on, reading what it holds.
-    pub fn attach_store(&mut self, store: RecentsStore) {
+    pub fn attach_store(&mut self, store: Box<dyn RecentsStore>) {
         self.store = Some(store);
         self.recents_loaded = false;
     }
@@ -288,7 +255,7 @@ impl EmojiPicker {
         if let Some(store) = &self.store
             && let Err(error) = store.save(&self.recents)
         {
-            tracing::warn!(%error, path = %store.path().display(), "emoji recents could not be saved");
+            tracing::warn!(%error, "emoji recents could not be saved");
         }
         if self.open {
             self.rebuild();
@@ -1656,24 +1623,30 @@ mod tests {
         );
     }
 
+    #[derive(Clone, Default)]
+    struct MemoryStore(std::rc::Rc<std::cell::RefCell<Option<Recents>>>);
+
+    impl RecentsStore for MemoryStore {
+        fn load(&self) -> Recents {
+            self.0.borrow().clone().unwrap_or_default()
+        }
+        fn save(&self, recents: &Recents) -> Result<(), String> {
+            *self.0.borrow_mut() = Some(recents.clone());
+            Ok(())
+        }
+    }
+
     #[test]
-    fn recents_persist_privately() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().expect("temp dir");
-        let store = RecentsStore::at(dir.path().join("state/tilo/emoji-recents.json"));
+    fn recents_persist_through_the_store_and_skip_secrets() {
+        let store = MemoryStore::default();
         let mut picker = EmojiPicker::new();
-        picker.attach_store(store.clone());
+        picker.attach_store(Box::new(store.clone()));
         picker.note_delivered("👍", false);
         picker.note_delivered("🎉", false);
         picker.note_delivered("🔒", true);
-        let mode = std::fs::metadata(store.path())
-            .expect("saved")
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600);
 
         let mut restarted = EmojiPicker::new();
-        restarted.attach_store(store);
+        restarted.attach_store(Box::new(store));
         restarted.open(VIEWPORT, "en-US");
         assert_eq!(restarted.recents(), ["🎉".to_string(), "👍".to_string()]);
     }

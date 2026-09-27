@@ -119,7 +119,7 @@ pub struct OverviewTab {
     pub title: String,
     pub is_active: bool,
     /// The application the tab shows, drawn by its mark.
-    pub app: crate::shell::window_switcher::WindowApp,
+    pub app: tilo_desktop::window_switcher::WindowApp,
     /// Present collaborators whose published focus points at this tab.
     /// The local person is deliberately absent: an untouched solo workspace
     /// should look like a desktop, not a collaboration dashboard.
@@ -194,8 +194,8 @@ impl RoomCard {
 
     /// The applications open in the room, each once, in tree order: what a
     /// glance at its row should recognise it by.
-    pub fn apps(&self) -> Vec<&crate::shell::window_switcher::WindowApp> {
-        let mut apps: Vec<&crate::shell::window_switcher::WindowApp> = Vec::new();
+    pub fn apps(&self) -> Vec<&tilo_desktop::window_switcher::WindowApp> {
+        let mut apps: Vec<&tilo_desktop::window_switcher::WindowApp> = Vec::new();
         for tab in self
             .strips
             .iter()
@@ -352,7 +352,10 @@ fn overview_strips(ws: &Workspace, tree: &WorkspaceTree, local: &str) -> Vec<Ove
                                     tab.title.clone()
                                 },
                                 is_active: tab.id == group.active_tab,
-                                app: crate::shell::window_switcher::WindowApp::of(&tab.tile),
+                                app: tilo_desktop::window_switcher::WindowApp::of(
+                                    &tab.tile,
+                                    &crate::shell::window_previews::ShellWindows,
+                                ),
                                 people: people
                                     .iter()
                                     .filter(|person| {

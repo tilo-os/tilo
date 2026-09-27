@@ -829,3 +829,32 @@ people-panel-invite = Invite
 people-panel-join = Join
 launchpad-subtitle = Choose how to begin. Workspace content syncs; your layout and controls stay local.
 workspace-settings-sheet-keyboard-hint = ↑ ↓ to choose · Enter to confirm · Esc to cancel
+
+# The emoji picker (Super+. by default)
+emoji-picker-title = Emoji
+emoji-picker-search = Search emoji
+emoji-picker-groups = Emoji categories
+emoji-picker-recent = Recently used
+emoji-picker-results = Matching emoji
+emoji-picker-no-results = No emoji found
+emoji-picker-hint = Enter inserts · Esc closes
+emoji-picker-hint-tones = Enter inserts · Shift+Enter picks a skin tone
+emoji-picker-tones = Skin tones
+emoji-picker-tones-hint = Right-click, long-press or Shift+Enter for skin tones
+emoji-picker-a11y-description = Type to search. The arrow keys move between emoji, Tab changes the category, Enter inserts the highlighted emoji into the text field you were typing in, Shift+Enter picks a skin tone, Escape closes.
+
+# An emoji in a skin tone: "thumbs up, medium skin tone".
+emoji-picker-toned = { $name }, { $tone }
+emoji-picker-tone-light = light skin tone
+emoji-picker-tone-medium-light = medium-light skin tone
+emoji-picker-tone-medium = medium skin tone
+emoji-picker-tone-medium-dark = medium-dark skin tone
+emoji-picker-tone-dark = dark skin tone
+
+# The Alt+Tab window switcher.
+window-switcher-title = Switch windows
+window-switcher-description = Windows in this workspace, most recently used first. Hold Alt and press Tab or the arrow keys to move, release Alt to switch, or press Escape to stay.
+window-switcher-app-title = Switch windows of this app
+window-switcher-app-description = This app's windows in this workspace, most recently used first. Hold Alt and press ` to move, release Alt to switch, or press Escape to stay.
+window-switcher-untitled = Untitled window
+window-switcher-caption-paged = { $title } ({ $position } of { $count })

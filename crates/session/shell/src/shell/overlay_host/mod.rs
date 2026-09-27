@@ -825,13 +825,13 @@ pub struct ShellOverlayHost {
     display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt,
     /// Alt+Tab: which windows were used most recently, and the switcher
     /// while Alt is held.
-    window_switcher: crate::shell::window_switcher::WindowSwitcher,
+    window_switcher: tilo_desktop::window_switcher::WindowSwitcher,
     /// Live window previews the switcher and the overview show, rendered
     /// by the compositor only while one of them is up.
     window_previews: crate::shell::window_previews::WindowPreviews,
     /// The emoji picker. Its picks wait here for the compositor, which
     /// commits them through the seat's input method.
-    emoji_picker: crate::shell::emoji_picker::EmojiPicker,
+    emoji_picker: tilo_desktop::emoji_picker::EmojiPicker,
     /// The focused text field's caret in desktop coordinates, as the
     /// compositor last reported it; the emoji picker opens against it.
     text_caret: Option<Rect>,
@@ -2122,9 +2122,9 @@ impl ShellOverlayHost {
             projection_overlay: inputs.projection_overlay,
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
             display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt::default(),
-            window_switcher: crate::shell::window_switcher::WindowSwitcher::default(),
+            window_switcher: tilo_desktop::window_switcher::WindowSwitcher::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
-            emoji_picker: crate::shell::emoji_picker::EmojiPicker::new(),
+            emoji_picker: tilo_desktop::emoji_picker::EmojiPicker::new(),
             text_caret: None,
             pairing: crate::bluetooth_prompt::PairingOverlay::default(),
             followed_peer: None,
@@ -2911,12 +2911,15 @@ impl ShellOverlayHost {
     }
 
     /// Keep the emoji recents in the user's private state.
-    pub fn attach_emoji_recents_store(&mut self, store: crate::shell::emoji_picker::RecentsStore) {
-        self.emoji_picker.attach_store(store);
+    pub fn attach_emoji_recents_store(
+        &mut self,
+        store: crate::shell::emoji_recents::FileRecentsStore,
+    ) {
+        self.emoji_picker.attach_store(Box::new(store));
     }
 
     /// The picker's state, for tests and the control socket's state dump.
-    pub fn emoji_picker(&self) -> &crate::shell::emoji_picker::EmojiPicker {
+    pub fn emoji_picker(&self) -> &tilo_desktop::emoji_picker::EmojiPicker {
         &self.emoji_picker
     }
 
@@ -5836,11 +5839,11 @@ impl ShellOverlayHost {
     }
 
     /// The Alt+Tab switcher, for input routing, state readers and tests.
-    pub fn window_switcher(&self) -> &crate::shell::window_switcher::WindowSwitcher {
+    pub fn window_switcher(&self) -> &tilo_desktop::window_switcher::WindowSwitcher {
         &self.window_switcher
     }
 
-    pub fn window_switcher_mut(&mut self) -> &mut crate::shell::window_switcher::WindowSwitcher {
+    pub fn window_switcher_mut(&mut self) -> &mut tilo_desktop::window_switcher::WindowSwitcher {
         &mut self.window_switcher
     }
 
@@ -5854,7 +5857,7 @@ impl ShellOverlayHost {
     /// the open switcher's (from the first Alt+Tab, so they are ready when
     /// it appears), else the current room's while the overview is up.
     /// Nothing while the session is locked.
-    fn window_preview_targets(&self) -> Vec<crate::shell::window_previews::PreviewRequest> {
+    fn window_preview_targets(&self) -> Vec<tilo_desktop::window_switcher::PreviewRequest> {
         let Some(chrome) = self.chrome.as_ref() else {
             return Vec::new();
         };
@@ -5873,7 +5876,7 @@ impl ShellOverlayHost {
                 .overview_windows(&tree)
                 .into_iter()
                 .filter(|window| window.preview.renderable())
-                .map(|window| crate::shell::window_previews::PreviewRequest {
+                .map(|window| tilo_desktop::window_switcher::PreviewRequest {
                     tab: window.address.tab,
                     source: window.preview,
                 })
@@ -5888,7 +5891,7 @@ impl ShellOverlayHost {
     pub fn window_preview_requests(
         &mut self,
         now: Instant,
-    ) -> Vec<crate::shell::window_previews::PreviewRequest> {
+    ) -> Vec<tilo_desktop::window_switcher::PreviewRequest> {
         let wanted = self.window_preview_targets();
         if wanted.is_empty() {
             self.window_previews.clear();
@@ -5944,8 +5947,10 @@ impl ShellOverlayHost {
     fn overview_windows(
         &self,
         tree: &crate::shell::state::WorkspaceTree,
-    ) -> Vec<crate::shell::window_switcher::SwitcherWindow> {
-        let mut windows = self.window_switcher.ordered_windows(tree);
+    ) -> Vec<tilo_desktop::window_switcher::SwitcherWindow> {
+        let mut windows = self
+            .window_switcher
+            .ordered_windows(&tree.desktop, &crate::shell::window_previews::ShellWindows);
         windows.truncate(OVERVIEW_WINDOWS_MAX);
         windows
     }
@@ -5955,14 +5960,14 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref()
             && let Ok(state) = chrome.try_borrow()
         {
-            self.window_switcher.observe(&state.tree());
+            self.window_switcher.observe(&state.tree().desktop);
         }
     }
 
     /// Alt+Tab or Alt+Grave: open the switcher on its first step.
     fn begin_window_switcher(
         &mut self,
-        scope: crate::shell::window_switcher::SwitcherScope,
+        scope: tilo_desktop::window_switcher::SwitcherScope,
         backwards: bool,
     ) -> bool {
         let Some(chrome) = self.chrome.clone() else {
@@ -5972,8 +5977,13 @@ impl ShellOverlayHost {
         let began = {
             let state = chrome.borrow();
             let tree = state.tree();
-            self.window_switcher
-                .begin(&tree, scope, backwards, Instant::now())
+            self.window_switcher.begin(
+                &tree.desktop,
+                &crate::shell::window_previews::ShellWindows,
+                scope,
+                backwards,
+                Instant::now(),
+            )
         };
         if began {
             chrome.borrow_mut().bump();
@@ -5997,7 +6007,7 @@ impl ShellOverlayHost {
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) -> bool {
-        use crate::shell::window_switcher::SwitcherOutcome;
+        use tilo_desktop::window_switcher::SwitcherOutcome;
         if !self.window_switcher.is_active() {
             return false;
         }
@@ -6042,9 +6052,9 @@ impl ShellOverlayHost {
 
     fn apply_window_switcher_outcome(
         &mut self,
-        outcome: crate::shell::window_switcher::SwitcherOutcome,
+        outcome: tilo_desktop::window_switcher::SwitcherOutcome,
     ) -> bool {
-        use crate::shell::window_switcher::SwitcherOutcome;
+        use tilo_desktop::window_switcher::SwitcherOutcome;
         match outcome {
             SwitcherOutcome::Ignored => false,
             SwitcherOutcome::Consumed | SwitcherOutcome::Cancelled => {
@@ -6064,7 +6074,7 @@ impl ShellOverlayHost {
     /// workspace it lives. A window closed while Alt was held is skipped.
     fn focus_switcher_window(
         &mut self,
-        address: crate::shell::window_switcher::WindowAddress,
+        address: tilo_desktop::window_switcher::WindowAddress,
     ) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
@@ -9622,7 +9632,7 @@ impl ShellOverlayHost {
 
     /// The windows the preview row shows, in order; empty while the
     /// overview shows no row.
-    fn overview_row_windows(&self) -> Vec<crate::shell::window_switcher::SwitcherWindow> {
+    fn overview_row_windows(&self) -> Vec<tilo_desktop::window_switcher::SwitcherWindow> {
         if self.overview_here_index().is_none() || !self.overview_shows_windows() {
             return Vec::new();
         }
@@ -10897,22 +10907,22 @@ impl ShellOverlayHost {
                 // insertion is edge-triggered: holding a printable key must
                 // not race through an unbounded status string. Navigation and
                 // deletion intentionally keep their conventional repeat.
-                crate::shell::text_entry::Edit::ConsumedQuiet
+                tilo_desktop::text_entry::Edit::ConsumedQuiet
             } else {
-                crate::shell::text_entry::apply(
+                tilo_desktop::text_entry::apply(
                     logical_key,
-                    crate::shell::text_entry::Mods::from_state(mstate),
+                    tilo_desktop::text_entry::Mods::from_state(mstate),
                     &mut self.status_draft,
                     &mut self.status_selection,
                 )
             };
             match edit {
-                crate::shell::text_entry::Edit::Cancel => {
+                tilo_desktop::text_entry::Edit::Cancel => {
                     self.status_editing = false;
                     self.status_draft.clear();
                     self.status_selection = ui::text_selection::Selection::default();
                 }
-                crate::shell::text_entry::Edit::Submit => {
+                tilo_desktop::text_entry::Edit::Submit => {
                     let text = self
                         .status_draft
                         .split_whitespace()
@@ -10928,7 +10938,7 @@ impl ShellOverlayHost {
                         );
                     }
                 }
-                crate::shell::text_entry::Edit::Changed => {
+                tilo_desktop::text_entry::Edit::Changed => {
                     let char_count = self.status_draft.chars().count();
                     if char_count > ui::MAX_STATUS_CHARS {
                         let mut byte_cap = self.status_draft.len();
@@ -10943,8 +10953,8 @@ impl ShellOverlayHost {
                         self.status_selection.cursor = self.status_selection.cursor.min(byte_cap);
                     }
                 }
-                crate::shell::text_entry::Edit::Ignored
-                | crate::shell::text_entry::Edit::ConsumedQuiet => {}
+                tilo_desktop::text_entry::Edit::Ignored
+                | tilo_desktop::text_entry::Edit::ConsumedQuiet => {}
             }
             *handled = true;
             return true;
@@ -11143,7 +11153,7 @@ impl ShellOverlayHost {
         if mstate.alt_key() && matches!(logical_key, Key::Named(NamedKey::Tab)) {
             if !repeat {
                 let _ = self.begin_window_switcher(
-                    crate::shell::window_switcher::SwitcherScope::Workspace,
+                    tilo_desktop::window_switcher::SwitcherScope::Workspace,
                     shift_down,
                 );
             }
@@ -11158,7 +11168,7 @@ impl ShellOverlayHost {
         {
             if !repeat {
                 let _ = self.begin_window_switcher(
-                    crate::shell::window_switcher::SwitcherScope::FocusedApp,
+                    tilo_desktop::window_switcher::SwitcherScope::FocusedApp,
                     shift_down,
                 );
             }
@@ -21080,7 +21090,7 @@ impl ShellOverlayHost {
         transform: Affine,
         theme: &Theme,
         (right, center_y): (f64, f64),
-        apps: &[&crate::shell::window_switcher::WindowApp],
+        apps: &[&tilo_desktop::window_switcher::WindowApp],
     ) -> f64 {
         /// More than this reads as a pile rather than a list of apps.
         const MOST: usize = 5;
@@ -21277,11 +21287,11 @@ impl ShellOverlayHost {
                     &bounds,
                 );
             }
-            let _ = crate::shell::window_switcher::draw_preview_well(
+            let _ = tilo_desktop::window_switcher::draw_preview_well(
                 scene,
                 transform,
                 theme,
-                crate::shell::window_switcher::PreviewWell {
+                tilo_desktop::window_switcher::PreviewWell {
                     rect: well,
                     radius: m.window_radius,
                     icon: mark,
@@ -21350,11 +21360,11 @@ impl ShellOverlayHost {
             m.window_radius,
             &theme.tokens.elevation.e3,
         );
-        let _ = crate::shell::window_switcher::draw_preview_well(
+        let _ = tilo_desktop::window_switcher::draw_preview_well(
             scene,
             transform,
             theme,
-            crate::shell::window_switcher::PreviewWell {
+            tilo_desktop::window_switcher::PreviewWell {
                 rect: well,
                 radius: m.window_radius,
                 icon: f64::from(theme.tokens.metrics.icon_lg),
@@ -24227,7 +24237,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let mods = crate::shell::text_entry::Mods::from_state(modifiers.state());
+        let mods = tilo_desktop::text_entry::Mods::from_state(modifiers.state());
         let outcome = {
             let mut st = chrome.borrow_mut();
             let Some(prompt) = st.quick_settings.wifi_password.as_mut() else {
@@ -24235,26 +24245,26 @@ impl ShellOverlayHost {
             };
             let mut sel = prompt.selection;
             let out =
-                crate::shell::text_entry::apply(logical_key, mods, &mut prompt.password, &mut sel);
+                tilo_desktop::text_entry::apply(logical_key, mods, &mut prompt.password, &mut sel);
             prompt.selection = sel;
             // Typing clears a rejection message — it was about the old value.
-            if matches!(out, crate::shell::text_entry::Edit::Changed) {
+            if matches!(out, tilo_desktop::text_entry::Edit::Changed) {
                 prompt.error = None;
             }
             out
         };
         match outcome {
-            crate::shell::text_entry::Edit::Ignored => false,
-            crate::shell::text_entry::Edit::ConsumedQuiet => true,
-            crate::shell::text_entry::Edit::Changed => {
+            tilo_desktop::text_entry::Edit::Ignored => false,
+            tilo_desktop::text_entry::Edit::ConsumedQuiet => true,
+            tilo_desktop::text_entry::Edit::Changed => {
                 chrome.borrow_mut().bump();
                 true
             }
-            crate::shell::text_entry::Edit::Submit => {
+            tilo_desktop::text_entry::Edit::Submit => {
                 self.submit_wifi_password();
                 true
             }
-            crate::shell::text_entry::Edit::Cancel => {
+            tilo_desktop::text_entry::Edit::Cancel => {
                 self.cancel_wifi_password();
                 true
             }
@@ -24371,7 +24381,7 @@ impl ShellOverlayHost {
         );
 
         let text_size = tokens.typography.scale.sm;
-        let masked = crate::shell::text_entry::masked(&prompt.password);
+        let masked = tilo_desktop::text_entry::masked(&prompt.password);
         let text_x = field.x0 + 12.0;
         let (mask_w, mask_h) =
             text_renderer.measure_weighted(&masked, text_size, None, TextWeight::Medium);

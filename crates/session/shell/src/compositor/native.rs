@@ -5837,7 +5837,7 @@ pub fn run() {
             st.attach_notification_history_store(store);
         }
     });
-    if let Some(store) = crate::shell::emoji_picker::RecentsStore::for_user() {
+    if let Some(store) = crate::shell::emoji_recents::FileRecentsStore::for_user() {
         frame_builder.host_mut().attach_emoji_recents_store(store);
     }
     let inhibit_registry = tilo_power_mgmt::InhibitRegistry::new();
