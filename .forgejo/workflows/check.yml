@@ -56,6 +56,13 @@ env:
     (package(tilo-ui) and test(typography_visual_regression::)) or
     (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or
     (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))
+  # Suites that drive real FUSE daemons or an emulated TPM with LUKS2 images
+  # and take tens of seconds each. Pull-request shards skip them; pushes to
+  # main still run them here, and nightly.yml runs them with the whole
+  # workspace, so a regression is caught at the merge that caused it.
+  PUSH_ONLY_FILTER: >-
+    (package(fs) and binary(collab_release_matrix)) or
+    (package(tilo-rollback) and binary(mechanism))
   # The compiler cache belongs to this repository: its key is a repository
   # secret, not runner environment, because the runners serve every repository.
   SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
@@ -386,7 +393,7 @@ jobs:
           bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
           bash tools/test-env.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
-          -E "not ($GOLDEN_FILTER)"
+          -E "not ($GOLDEN_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}"
 
       # A package reached only through outside inputs its manifest entry
       # scopes (tools/ci/suites.toml) runs just the tests that read them, with
