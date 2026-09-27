@@ -291,6 +291,35 @@ impl MigrationWorker {
         }
     }
 
+    /// Block until the engine's terminal channel event arrives. Progress lives
+    /// in a separate slot and never wakes this wait, so a slow runner cannot
+    /// fail a correct result the way a spin-plus-deadline loop can.
+    #[cfg(test)]
+    pub(super) fn wait_terminal(&mut self) -> WorkerEvent {
+        use std::sync::mpsc::RecvTimeoutError;
+        assert!(
+            !self.terminal_observed,
+            "worker terminal event already observed"
+        );
+        match self.events.recv_timeout(crate::HANG_BOUND) {
+            Ok(event) => {
+                assert!(
+                    matches!(event, WorkerEvent::Finished(_) | WorkerEvent::Stored(_)),
+                    "migration channel carries only terminal events; got {event:?}"
+                );
+                self.terminal_observed = true;
+                self.phase.store(FINISHED, Ordering::Release);
+                event
+            }
+            Err(RecvTimeoutError::Timeout) => panic!("worker did not finish"),
+            Err(RecvTimeoutError::Disconnected) => {
+                self.terminal_observed = true;
+                self.phase.store(FINISHED, Ordering::Release);
+                WorkerEvent::Finished(WorkerOutcome::Interrupted)
+            }
+        }
+    }
+
     #[cfg(test)]
     fn from_channel_for_test(events: Receiver<WorkerEvent>) -> Self {
         Self {
@@ -342,13 +371,9 @@ mod tests {
     }
 
     fn finish(worker: &mut MigrationWorker) -> WorkerOutcome {
-        let deadline = Instant::now() + crate::HANG_BOUND;
-        loop {
-            if let Some(WorkerEvent::Finished(outcome)) = worker.try_next() {
-                return outcome;
-            }
-            assert!(Instant::now() < deadline, "worker did not finish");
-            std::thread::yield_now();
+        match worker.wait_terminal() {
+            WorkerEvent::Finished(outcome) => outcome,
+            event => panic!("expected finished terminal: {event:?}"),
         }
     }
 
