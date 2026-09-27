@@ -10033,6 +10033,7 @@ mod tests {
                 native_loop_park(
                     now,
                     false,
+                    false,
                     cadence_needed,
                     stale,
                     [widget_deadline_for_presenter(false, Some(stale))],
@@ -10096,6 +10097,7 @@ mod tests {
                 native_loop_park(
                     now + Duration::from_millis(1),
                     true,
+                    false,
                     false,
                     frame,
                     [Some(now)]
