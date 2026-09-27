@@ -271,6 +271,38 @@ pub enum ShortcutStepDecision {
 
 type ShortcutStepReply = Box<dyn FnOnce(ShortcutStepDecision) + Send>;
 
+/// The person's answer to carrying a window into another workspace
+/// ([`crate::shell::window_transfer`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowTransferDecision {
+    /// The document leaves its workspace for the destination.
+    Move,
+    /// The destination gets its own copy; the original stays.
+    Copy,
+    /// Nothing can travel: open a new, empty window in the destination.
+    OpenFresh,
+    Cancelled,
+}
+
+/// One answer the transfer sheet offers, with its sentence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowTransferChoice {
+    pub decision: WindowTransferDecision,
+    pub label: String,
+}
+
+/// The sheet shown before anything crosses a workspace boundary: what
+/// moves, what stays and who loses access, then the answers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowTransferRequest {
+    pub handle: String,
+    pub app_id: String,
+    pub title: String,
+    pub detail: String,
+    pub choices: Vec<WindowTransferChoice>,
+    pub confirm_label: String,
+}
+
 enum PendingDialog {
     ShortcutStep {
         request: ShortcutStepRequest,
@@ -308,6 +340,10 @@ enum PendingDialog {
     ActionGrant {
         request: AppActionConsentRequest,
         reply: oneshot::Sender<AppActionConsent>,
+    },
+    WindowTransfer {
+        request: WindowTransferRequest,
+        reply: oneshot::Sender<WindowTransferDecision>,
     },
 }
 
@@ -591,6 +627,59 @@ impl PortalDialogQueue {
         Ok(receiver)
     }
 
+    /// Queue the sheet asking whether, and how, a window crosses into
+    /// another workspace. Dismissing it answers
+    /// [`WindowTransferDecision::Cancelled`].
+    pub fn enqueue_window_transfer(
+        &self,
+        request: WindowTransferRequest,
+    ) -> Result<oneshot::Receiver<WindowTransferDecision>, String> {
+        if request.choices.is_empty() {
+            return Err("a transfer sheet needs an answer to offer".into());
+        }
+        let (reply, receiver) = oneshot::channel();
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
+        if inner.pending.contains_key(&request.handle) {
+            return Err("duplicate live portal request".into());
+        }
+        inner.order.push_back(request.handle.clone());
+        inner.pending.insert(
+            request.handle.clone(),
+            PendingDialog::WindowTransfer { request, reply },
+        );
+        Ok(receiver)
+    }
+
+    fn finish_window_transfer(&self, handle: &str, choice: Option<usize>) -> bool {
+        let pending = self
+            .inner
+            .lock()
+            .ok()
+            .and_then(|mut inner| inner.pending.remove(handle));
+        match pending {
+            Some(PendingDialog::WindowTransfer { request, reply }) => {
+                let decision = choice.map_or(WindowTransferDecision::Cancelled, |index| {
+                    request
+                        .choices
+                        .get(index)
+                        .map_or(WindowTransferDecision::Cancelled, |choice| choice.decision)
+                });
+                let _ = reply.send(decision);
+                true
+            }
+            Some(other) => {
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.pending.insert(handle.into(), other);
+                }
+                false
+            }
+            None => false,
+        }
+    }
+
     fn finish_action_grant(&self, handle: &str, answer: AppActionConsent) -> bool {
         let pending = self
             .inner
@@ -766,6 +855,18 @@ impl PortalDialogQueue {
                     .map(|answer| crate::shell::app_action_consent::consent_label(*answer))
                     .collect(),
             }),
+            PendingDialog::WindowTransfer { request, .. } => Some(DialogView::WindowTransfer {
+                handle: request.handle.clone(),
+                app_name: friendly_app_name(&request.app_id),
+                title: request.title.clone(),
+                detail: request.detail.clone(),
+                choices: request
+                    .choices
+                    .iter()
+                    .map(|choice| choice.label.clone())
+                    .collect(),
+                confirm_label: request.confirm_label.clone(),
+            }),
             PendingDialog::UsbDevices {
                 request, selected, ..
             } => Some(DialogView::UsbDevices {
@@ -844,6 +945,10 @@ impl PortalDialogQueue {
             Some(PendingDialog::ShortcutBindings { .. }) => true,
             Some(PendingDialog::ActionGrant { reply, .. }) => {
                 let _ = reply.send(AppActionConsent::Deny);
+                true
+            }
+            Some(PendingDialog::WindowTransfer { reply, .. }) => {
+                let _ = reply.send(WindowTransferDecision::Cancelled);
                 true
             }
             Some(PendingDialog::Authentication { reply, .. }) => {
@@ -1154,6 +1259,16 @@ pub enum DialogView {
         detail: String,
         choices: Vec<String>,
     },
+    /// Whether, and how, a window crosses into another workspace. The
+    /// answers are the choices; Cancel leaves everything as it was.
+    WindowTransfer {
+        handle: String,
+        app_name: String,
+        title: String,
+        detail: String,
+        choices: Vec<String>,
+        confirm_label: String,
+    },
     /// Administrator authentication for polkit. Drawn only by the
     /// compositor, so no application can imitate it or read the secret.
     Authentication {
@@ -1193,13 +1308,14 @@ impl DialogView {
             | Self::LauncherReview { handle, .. }
             | Self::UsbDevices { handle, .. }
             | Self::ActionGrant { handle, .. }
+            | Self::WindowTransfer { handle, .. }
             | Self::Authentication { handle, .. }
             | Self::NetworkSecrets { handle, .. } => handle,
         }
     }
     pub fn title(&self) -> String {
         match self {
-            Self::ShortcutStep { title, .. } => title.clone(),
+            Self::ShortcutStep { title, .. } | Self::WindowTransfer { title, .. } => title.clone(),
             Self::AppChoice { .. } => t("portal-choose-app-title"),
             Self::Review { title, .. } => title.clone(),
             Self::ShortcutBindings { .. } => t("portal-shortcuts-title"),
@@ -1219,7 +1335,8 @@ impl DialogView {
             | Self::Review { app_name, .. }
             | Self::ShortcutBindings { app_name, .. }
             | Self::LauncherReview { app_name, .. }
-            | Self::UsbDevices { app_name, .. } => app_name.clone(),
+            | Self::UsbDevices { app_name, .. }
+            | Self::WindowTransfer { app_name, .. } => app_name.clone(),
             Self::ActionGrant { action, .. } => action.clone(),
             Self::Authentication { .. } => t("portal-auth-heading"),
             Self::NetworkSecrets { .. } => t("portal-network-heading"),
@@ -1229,7 +1346,8 @@ impl DialogView {
         match self {
             Self::ShortcutStep { detail, .. }
             | Self::AppChoice { detail, .. }
-            | Self::Review { detail, .. } => detail.clone(),
+            | Self::Review { detail, .. }
+            | Self::WindowTransfer { detail, .. } => detail.clone(),
             Self::ShortcutBindings { .. } => t("portal-shortcuts-detail"),
             Self::LauncherReview { detail, .. } => detail.clone(),
             Self::UsbDevices { detail, .. } => detail.clone(),
@@ -1242,6 +1360,7 @@ impl DialogView {
         match self {
             Self::AppChoice { choices, .. }
             | Self::ActionGrant { choices, .. }
+            | Self::WindowTransfer { choices, .. }
             | Self::ShortcutStep { choices, .. } => choices,
             Self::Authentication { identities, .. } => identities,
             Self::Review { .. }
@@ -1260,6 +1379,7 @@ impl DialogView {
             | Self::LauncherReview { .. }
             | Self::UsbDevices { .. }
             | Self::ActionGrant { .. }
+            | Self::WindowTransfer { .. }
             | Self::Authentication { .. }
             | Self::NetworkSecrets { .. } => &[],
         }
@@ -1281,6 +1401,7 @@ impl DialogView {
             Self::Authentication { .. } => "authentication",
             Self::NetworkSecrets { .. } => "network_secrets",
             Self::ActionGrant { .. } => "action_grant",
+            Self::WindowTransfer { .. } => "window_transfer",
             Self::ShortcutStep { .. } => "shortcut_step",
         }
     }
@@ -1289,6 +1410,7 @@ impl DialogView {
             Self::ShortcutBindings { rows, .. } => rows.len(),
             Self::AppChoice { choices, .. }
             | Self::ActionGrant { choices, .. }
+            | Self::WindowTransfer { choices, .. }
             | Self::ShortcutStep { choices, .. } => choices.len(),
             Self::UsbDevices { devices, .. } => devices.len(),
             Self::Authentication { identities, .. } => identities.len(),
@@ -1298,7 +1420,8 @@ impl DialogView {
     pub fn confirm_label(&self) -> String {
         match self {
             Self::AppChoice { .. } => t("portal-open"),
-            Self::ShortcutStep { confirm_label, .. } => confirm_label.clone(),
+            Self::ShortcutStep { confirm_label, .. }
+            | Self::WindowTransfer { confirm_label, .. } => confirm_label.clone(),
             Self::Review { confirm_label, .. } => confirm_label.clone(),
             Self::ShortcutBindings { .. } => t("portal-save-shortcuts"),
             Self::LauncherReview { confirm_label, .. } => confirm_label.clone(),
@@ -1558,6 +1681,9 @@ impl PortalDialogController {
             DialogView::ActionGrant { .. } => AppActionConsent::ALLOWING
                 .get(self.selected)
                 .is_some_and(|answer| self.queue.finish_action_grant(view.handle(), *answer)),
+            DialogView::WindowTransfer { .. } => self
+                .queue
+                .finish_window_transfer(view.handle(), Some(self.selected)),
             DialogView::Authentication {
                 identities,
                 identity,
@@ -1634,6 +1760,9 @@ impl PortalDialogController {
             DialogView::ActionGrant { .. } => self
                 .queue
                 .finish_action_grant(view.handle(), AppActionConsent::Deny),
+            DialogView::WindowTransfer { .. } => {
+                self.queue.finish_window_transfer(view.handle(), None)
+            }
             DialogView::Authentication { .. } => {
                 self.forget_secret();
                 self.queue
