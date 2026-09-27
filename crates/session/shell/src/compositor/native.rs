@@ -5800,11 +5800,19 @@ pub fn run() {
     // isolation, not a first-login fixture; letting OOBE capture input would
     // make every real-client input test time out before its first keypress.
     // Release builds ignore TILO_TEST_CONTROL entirely via DEV_ENV_OVERRIDES.
+    // A hosted machine an agent drives has no person at first login either;
+    // its identity is provisioned without the ceremony.
     let test_control_session = test_control_path(
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os(TEST_CONTROL_ENV),
     )
-    .is_some();
+    .is_some()
+        || agent_control_path(
+            cfg!(feature = "agent-control"),
+            backend_kind == BackendKind::Headless,
+            std::env::var_os(AGENT_CONTROL_ENV),
+        )
+        .is_some();
     let progress_pending = identity_store
         .path()
         .parent()
