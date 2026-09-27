@@ -466,9 +466,8 @@ async fn managed_sender_transport_real_rpc_ready_reply_after_deadline_is_refused
                 pending.as_mut().poll(&mut Context::from_waker(&waker)),
                 Poll::Pending
             ));
-            tokio::time::timeout(Duration::from_millis(500), wake.0.notified())
-                .await
-                .expect("actual response wakes the caller before its timer");
+            tilo_test_env::within("the actual response to wake the caller", wake.0.notified())
+                .await;
             assert!(
                 Instant::now() < deadline,
                 "wake must not be the elapsed timeout"
