@@ -57,9 +57,10 @@ def workflow_path_blocks(text: str) -> list[set[str]]:
     return blocks
 
 
-def dependency_directories(
+def _resolve_graph_directories(
     metadata: dict[str, Any], root: Path, package: str
 ) -> set[str]:
+    """Fixture-friendly closure over Cargo's unified resolve graph."""
     packages = {item["id"]: item for item in metadata["packages"]}
     nodes = {item["id"]: item for item in metadata["resolve"]["nodes"]}
     local_ids = {
@@ -92,6 +93,57 @@ def dependency_directories(
         .as_posix()
         for package_id in seen
     }
+
+
+def _cargo_tree_directories(
+    metadata: dict[str, Any], root: Path, package: str
+) -> set[str]:
+    """Directories linked by a normal build of ``package`` (no dev/build edges).
+
+    Workspace feature unification makes ``cargo metadata``'s resolve graph pull
+    optional and test-only crates into packages that a release binary does not
+    link. ``cargo tree --edges normal`` matches ``cargo build -p`` / image
+    Containerfiles, so path filters rebuild when the image's inputs change and
+    stay quiet for pure test-harness edges.
+    """
+    output = subprocess.check_output(
+        [
+            "cargo",
+            "tree",
+            "-p",
+            package,
+            "--edges",
+            "normal",
+            "--prefix",
+            "none",
+            "--locked",
+        ],
+        cwd=root,
+        text=True,
+        stderr=subprocess.DEVNULL,
+    )
+    names = {line.split()[0] for line in output.splitlines() if line.strip()}
+    return {
+        Path(item["manifest_path"]).parent.relative_to(root).as_posix()
+        for item in metadata["packages"]
+        if item["name"] in names
+        and Path(item["manifest_path"]).is_relative_to(root)
+    }
+
+
+def dependency_directories(
+    metadata: dict[str, Any], root: Path, package: str
+) -> set[str]:
+    roots = [item["id"] for item in metadata["packages"] if item["name"] == package]
+    if len(roots) != 1:
+        raise ValueError(
+            f"expected one workspace package named {package}, found {len(roots)}"
+        )
+    # Real workspace package ids are ``path+file://...``. Compact fixture ids
+    # keep the resolve-graph walk so unit tests do not need a Cargo tree.
+    if not str(roots[0]).startswith("path+file://"):
+        return _resolve_graph_directories(metadata, root, package)
+    return _cargo_tree_directories(metadata, root, package)
 
 
 def pattern_covers(directory: str, pattern: str) -> bool:
