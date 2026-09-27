@@ -22,7 +22,8 @@ use crate::history_source::AuthorDirectory;
 use crate::i18n::I18nManager;
 use crate::presence::PresenceCtx;
 use crate::standalone_history::{
-    HistoryError, HistoryReadContext, HistoryTarget, RestoreReview, StandaloneHistory,
+    ConfirmedHistoryRestore, HistoryError, HistoryReadContext, HistoryTarget, RestoreReview,
+    StandaloneHistory,
 };
 use crate::standalone_history_pane::{HistoryPaneIntent, StandaloneHistoryPane};
 use crate::text_render::TextRenderer;
@@ -126,7 +127,7 @@ pub(crate) struct StandaloneHistoryHost {
     content_rect: Rect,
     revision: u64,
     review: Option<RestoreReview>,
-    confirmed_restore: Option<RestoreReview>,
+    confirmed_restore: Option<ConfirmedHistoryRestore>,
     structure_dirty: bool,
     canvas: crate::history_mode::canvas::PreviewCanvas,
     /// Heads of the version whose preview the host still has to build.
@@ -233,7 +234,7 @@ impl StandaloneHistoryHost {
 
     /// A restore the person confirmed against the still-current frontier.
     /// The host applies it to its live state, then reports the outcome.
-    pub(crate) fn take_confirmed_restore(&mut self) -> Option<RestoreReview> {
+    pub(crate) fn take_confirmed_restore(&mut self) -> Option<ConfirmedHistoryRestore> {
         self.confirmed_restore.take()
     }
 
@@ -480,7 +481,10 @@ impl StandaloneHistoryHost {
                     self.report_restore(&Err(error.clone()));
                     return Err(error.into());
                 }
-                self.confirmed_restore = Some(review);
+                self.confirmed_restore = Some(ConfirmedHistoryRestore {
+                    review,
+                    target: model.target().clone(),
+                });
             }
             HistoryCommand::CancelRestore { session } if session == expected => {
                 self.close_review();
