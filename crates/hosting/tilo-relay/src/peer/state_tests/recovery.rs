@@ -327,9 +327,8 @@ async fn hydration_replacement(count: usize) {
         let (release, reached) =
             crate::store::test_barrier::install(case.fixture.store.root(), operation);
         case.complete().await;
-        tokio::time::timeout(std::time::Duration::from_secs(15), reached)
+        tilo_test_env::within("the persistence hook to be reached", reached)
             .await
-            .unwrap()
             .unwrap();
         let first = if before_result {
             assert!(case.fixture.recipient_rx.try_recv().is_err());
@@ -400,9 +399,8 @@ async fn partial_recovery_failure(invalidate_source: bool, count: usize) {
     let (release, reached) =
         crate::store::test_barrier::install(case.fixture.store.root(), "shell-recovery-read");
     case.complete().await;
-    tokio::time::timeout(std::time::Duration::from_secs(15), reached)
+    tilo_test_env::within("the persistence hook to be reached", reached)
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(case.drain().await, vec![case.initial[0].clone()]);
     let fault = (!invalidate_source).then(|| {
@@ -452,9 +450,8 @@ async fn recovery_gc(count: usize) {
     let (release, reached) =
         crate::store::test_barrier::install(case.fixture.store.root(), "shell-recovery-read");
     case.complete().await;
-    tokio::time::timeout(std::time::Duration::from_secs(15), reached)
+    tilo_test_env::within("the persistence hook to be reached", reached)
         .await
-        .unwrap()
         .unwrap();
     let selected = case
         .fixture
@@ -541,9 +538,8 @@ async fn active_recovery(count: usize) {
         let rx = Box::pin(replaying.replay_to_with_deliveries(&mut wire)).await;
         (rx, wire)
     });
-    tokio::time::timeout(std::time::Duration::from_secs(15), prepare_reached)
+    tilo_test_env::within("the prepare hook to be reached", prepare_reached)
         .await
-        .unwrap()
         .unwrap();
     let live = fixture.workspace.lock().await.state_sessions[&fixture.recipient.device_public_key]
         .live
@@ -588,9 +584,8 @@ async fn active_recovery(count: usize) {
         "ACTIVE recovery omitted full fallback pending frames"
     );
     drop(prepare_release);
-    tokio::time::timeout(std::time::Duration::from_secs(15), ready_reached)
+    tilo_test_env::within("the ready hook to be reached", ready_reached)
         .await
-        .unwrap()
         .unwrap();
     let after = Envelope::Delta {
         workspace_id: fixture.store.workspace_id(),
@@ -870,9 +865,8 @@ async fn recovery_supplemental_worker_acquisition_error_preserves_replacement_le
     let (release, reached) =
         crate::store::test_barrier::install(case.fixture.store.root(), "shell-after-current");
     case.complete().await;
-    tokio::time::timeout(std::time::Duration::from_secs(15), reached)
+    tilo_test_env::within("the persistence hook to be reached", reached)
         .await
-        .unwrap()
         .unwrap();
     let replacement = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let (tx, mut rx) = mpsc::channel(32);
@@ -901,13 +895,9 @@ async fn recovery_supplemental_worker_acquisition_error_preserves_replacement_le
         .await
         .unwrap();
     assert!(
-        tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            crate::persistence::receipt(done)
-        )
-        .await
-        .unwrap()
-        .is_err()
+        tilo_test_env::within("the persistence receipt", crate::persistence::receipt(done))
+            .await
+            .is_err()
     );
     assert!(rx.try_recv().is_err());
     assert!(

@@ -477,7 +477,7 @@ mod tests {
             std::fs::write(&path, &contents).unwrap();
             let (socket, inherited) = std::os::unix::net::UnixStream::pair().unwrap();
             socket
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let non_socket = std::fs::File::open(&path).unwrap();
             let fd = if mode == "non-socket" {
