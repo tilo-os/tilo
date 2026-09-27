@@ -781,6 +781,11 @@ reason = "needs the disposable root native container with Cosign and Podman"
 workflow = "development-source.yml"
 
 [[unrequired]]
+suite = "os/tests/development_rebind_native.py"
+reason = "needs the disposable root native container with Cosign, Podman and packaged-kernel dracut"
+workflow = "development-source.yml"
+
+[[unrequired]]
 suite = "os/tests/development_rootfs.py"
 reason = "needs the disposable root native container with Podman"
 workflow = "development-source.yml"
