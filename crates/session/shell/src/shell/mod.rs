@@ -151,7 +151,6 @@ pub mod test_support;
 pub mod text_entry;
 pub mod tile;
 pub mod tool_intents;
-pub mod topbar;
 pub mod topbar_chrome;
 pub mod uri_open;
 pub mod window_actions;
@@ -183,7 +182,6 @@ use crate::shell::tile::{
     WindowGroup as RuntimeGroup, Workspace as RuntimeWorkspace, WorkspaceTree as RuntimeTree,
 };
 
-use crate::shell::topbar::TopBar;
 use crate::shell::workspace_settings::WorkspaceSettings;
 pub use collaboration_launchpad::{
     EMPTY_WORKSPACE_ACTIVITY, EMPTY_WORKSPACE_CHAT, EMPTY_WORKSPACE_INVITE, EMPTY_WORKSPACE_MEET,
@@ -210,7 +208,6 @@ pub struct Shell {
     tree: RuntimeTree,
     state: ui::state::State,
 
-    topbar: TopBar,
     /// Hidden unless `search_visible`.
     search: GlobalSearch,
     ws_settings: WorkspaceSettings,
@@ -279,7 +276,6 @@ impl Shell {
         let mut shell = Self {
             tree,
             state: ui::state::State::new(),
-            topbar: TopBar::new(),
             search: GlobalSearch::new(),
             ws_settings: WorkspaceSettings::new(active_ws_id),
             #[cfg(any(test, debug_assertions))]
@@ -394,10 +390,6 @@ impl Shell {
     // Trivial visibility getters so tests can assert every chrome piece
     // was constructed without exposing the fields themselves.
 
-    pub fn topbar(&self) -> &TopBar {
-        &self.topbar
-    }
-
     pub fn overview_visible(&self) -> bool {
         self.overview_visible
     }
@@ -451,15 +443,6 @@ impl Shell {
 
     pub fn close_ws_settings(&mut self) {
         self.ws_settings_visible = false;
-    }
-
-    /// Single funnel for topbar output. Tray-gear is a toggle; the
-    /// workspace-name click is a plain open (the modal has its own close).
-    pub fn handle_topbar_output(&mut self, out: topbar::TopBarOutput) {
-        match out {
-            topbar::TopBarOutput::OpenWorkspaceSettings => self.open_ws_settings(),
-            topbar::TopBarOutput::OpenQuickSettings => self.toggle_quick_settings(),
-        }
     }
 
     /// Canonical entry point for shell-level global hotkeys — both the
@@ -632,11 +615,10 @@ impl Shell {
         workspace.strips.len().saturating_sub(1)
     }
 
-    /// Same route as a real tray-gear click: `TopBarOutput::OpenQuickSettings`.
+    /// Same route as a real tray-gear click: a toggle of quick settings.
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_tray_gear_click(&mut self) {
-        let out = self.topbar.click_tray_settings();
-        self.handle_topbar_output(out);
+        self.toggle_quick_settings();
     }
 
     /// Renames via [`WorkspaceSettings::rename`], matching the production
