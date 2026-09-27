@@ -31,7 +31,13 @@ export async function loadCore({glue, module, fetch: fetchResource = globalThis.
  * already imported namespace. A URL must name the self-contained glue
  * build-web-core.sh writes: it imports nothing by relative path.
  */
-export async function importGlue(glue) {
-  if (typeof glue === 'string' || glue instanceof URL) return import(String(glue));
-  return glue;
+export async function importGlue(glue, {fetch: fetchResource = globalThis.fetch, importModule = url => import(url)} = {}) {
+  if (!(typeof glue === 'string' || glue instanceof URL)) return glue;
+  const url = String(glue);
+  if (!url.startsWith('blob:')) return importModule(url);
+  // A verified asset's blob carries no JavaScript type, which module imports
+  // require; re-wrap the same bytes as one.
+  const source = await (await fetchResource(url)).blob();
+  const typed = URL.createObjectURL(new Blob([source], {type: 'text/javascript'}));
+  try {return await importModule(typed);} finally {URL.revokeObjectURL(typed);}
 }

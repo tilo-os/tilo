@@ -47,3 +47,20 @@ test('a glue from a URL is imported; a namespace passes through', async () => {
   const imported = await importGlue(new URL('./testing/bindgen-glue.mjs?copy=url', import.meta.url));
   assert.equal(typeof imported.default, 'function');
 });
+
+test('an untyped blob URL (a verified registry asset) is imported as JavaScript', async () => {
+  const {readFile} = await import('node:fs/promises');
+  const source = await readFile(new URL('./testing/bindgen-glue.mjs', import.meta.url));
+  const untyped = URL.createObjectURL(new Blob([source], {type: 'application/octet-stream'}));
+  // Node cannot import blob: URLs; a browser does, if the blob is typed.
+  const imported = [];
+  const importModule = async url => {
+    const blob = await (await fetch(url)).blob();
+    imported.push({url, type: blob.type});
+    return import(`data:text/javascript;base64,${Buffer.from(await blob.arrayBuffer()).toString('base64')}`);
+  };
+  const glue = await importGlue(untyped, {importModule});
+  assert.deepEqual(imported.map(entry => entry.type), ['text/javascript']);
+  assert.notEqual(imported[0].url, untyped);
+  assert.equal((await loadCore({glue, module: coreModule()})).abi, 'test-abi');
+});
