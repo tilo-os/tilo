@@ -2747,9 +2747,8 @@ fn start_launch(
             command.service_identity.is_some(),
         );
         mark_launch_spawned(&app.package_id, child.id());
-        // The child cannot exec the launcher (and therefore cannot reach the
-        // public Wayland socket) until both registries above are complete.
-        let _ = launch_gate.write_all(&[1]);
+        // Recorded before the gate opens, so the session learns of the start
+        // before the app can do anything a start explains.
         events.push(LaunchEvent {
             package_id: app.package_id.clone(),
             display_name: app.display_name.clone(),
@@ -2757,6 +2756,9 @@ fn start_launch(
             managed_workspace_id: app.managed_workspace_id.clone(),
             kind: LaunchEventKind::Started { pid: child.id() },
         });
+        // The child cannot exec the launcher (and therefore cannot reach the
+        // public Wayland socket) until both registries above are complete.
+        let _ = launch_gate.write_all(&[1]);
 
         // Drain both pipes concurrently. A GUI normally keeps both streams
         // open for its entire lifetime, so reading either one to EOF before
