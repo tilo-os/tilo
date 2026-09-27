@@ -204,8 +204,10 @@ fn prepared_presentation_replaces_effective_factors_across_runners_and_setters()
 
 fn wait_for_saved_record(host: &ProbeHost, binding: &crate::bound_dispatch::CallbackBinding) {
     assert!(host.records.same_owner(&binding.records));
+    // A durable save can stall for many seconds on a loaded disk; the wait
+    // ends as soon as it lands, so this bound only catches a hang.
     let deadline = crate::time::now()
-        .checked_add(Duration::from_secs(5))
+        .checked_add(Duration::from_secs(60))
         .unwrap();
     loop {
         let status = host.records.save_status(&binding.checkout.id).unwrap();

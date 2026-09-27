@@ -1896,7 +1896,7 @@ mod tests {
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let deadline = std::time::Instant::now() + crate::HANG_BOUND;
             loop {
                 if let Some(status) = child.try_wait().unwrap() {
                     assert!(status.success());

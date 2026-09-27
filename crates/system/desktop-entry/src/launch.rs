@@ -338,6 +338,9 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
             authority.to_string_lossy().to_string(),
         );
         env.insert("_JAVA_AWT_WM_NONREPARENTING".to_string(), "1".to_string());
+        // The session's composing input method serves each workspace display
+        // over XIM; X11 toolkits find it through this name.
+        env.insert("XMODIFIERS".to_string(), "@im=fcitx".to_string());
         // Keep the conventional startup-id channel for X11 clients.  The
         // installed xwayland-satellite also reads XDG_ACTIVATION_TOKEN above
         // from the X client's environment and relays it on map.
@@ -578,6 +581,11 @@ mod tests {
                     .get("_JAVA_AWT_WM_NONREPARENTING")
                     .map(String::as_str),
                 Some("1")
+            );
+            assert_eq!(
+                launch.env.get("XMODIFIERS").map(String::as_str),
+                Some("@im=fcitx"),
+                "X11 apps find the session's input method over XIM"
             );
         }
         // Phase `to_command_starts_from_an_empty_environment`.

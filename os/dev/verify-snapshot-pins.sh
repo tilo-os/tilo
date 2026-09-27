@@ -82,6 +82,11 @@ fi
 for key in KERNEL_RPMS_X86_64_REF KERNEL_RPMS_AARCH64_REF; do
   ref="$(sed -n "s/^$key=//p" os/kernel-snapshot.env)"
   [ -n "$ref" ] || continue
-  ./os/dev/verify-kernel-provenance.sh "$ref" >/dev/null || fail "$key=$ref does not verify"
+  case "$key" in
+    KERNEL_RPMS_X86_64_REF) architecture=x86_64 ;;
+    KERNEL_RPMS_AARCH64_REF) architecture=aarch64 ;;
+  esac
+  ./os/dev/verify-kernel-provenance.sh "$ref" --architecture "$architecture" >/dev/null \
+    || fail "$key=$ref does not verify"
   echo "verify-snapshot-pins: $key $ref verifies"
 done

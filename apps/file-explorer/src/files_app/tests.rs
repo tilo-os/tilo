@@ -859,7 +859,7 @@ mod command_path_tests {
         exported_background_operations_have_valid_job_contracts();
         resource_catalogue_is_bounded_but_an_exact_visible_entry_resolves_lazily();
         template_resource_ids_are_stable_bounded_and_do_not_disclose_paths();
-        remote_dav_allows_recovery_from_stale_offline_but_honours_disabled();
+        a_mounted_remote_account_opens_even_offline_but_not_when_disabled();
     }
 
     fn resource_catalogue_exposes_view_and_favourite_commands_through_the_action_door() {
@@ -896,7 +896,6 @@ mod command_path_tests {
                 "folder resource must export {action}"
             );
         }
-        assert!(Widget::local_resource_operation_handlers(&w).contains(&"files.remote-dav"));
 
         for command in ["grid", "sort-size", "zoom-in", "shortcuts", "add-favorite"] {
             assert!(
@@ -997,14 +996,45 @@ mod command_path_tests {
         );
     }
 
-    fn remote_dav_allows_recovery_from_stale_offline_but_honours_disabled() {
+    fn remote_account(
+        health: crate::remote_accounts::RemoteAccountHealth,
+        mount: Option<PathBuf>,
+    ) -> crate::remote_accounts::RemoteAccount {
+        crate::remote_accounts::RemoteAccount {
+            id: accounts::AccountId::from("cloud"),
+            kind: crate::remote_accounts::RemoteAccountKind::Nextcloud,
+            label: "Cloud".into(),
+            host: "cloud.example".into(),
+            health,
+            mount,
+        }
+    }
+
+    fn a_mounted_remote_account_opens_even_offline_but_not_when_disabled() {
+        let home = tempfile::tempdir().unwrap();
+        let mount = home.path().join("Remote/Cloud");
+        std::fs::create_dir_all(&mount).unwrap();
+        let offline = remote_account(
+            crate::remote_accounts::RemoteAccountHealth::Offline,
+            Some(mount.clone()),
+        );
         assert_eq!(
-            remote_dav_availability(crate::remote_accounts::RemoteAccountHealth::Offline),
+            remote_folder_availability(&offline),
             Availability::Available,
-            "Offline is last observed status, so the next DAV attempt may discover recovery"
+            "cached files stay readable and writes queue while offline"
         );
         assert!(matches!(
-            remote_dav_availability(crate::remote_accounts::RemoteAccountHealth::Disabled),
+            remote_folder_availability(&remote_account(
+                crate::remote_accounts::RemoteAccountHealth::Disabled,
+                Some(mount),
+            )),
+            Availability::Unavailable { .. }
+        ));
+        assert!(matches!(
+            remote_folder_availability(&remote_account(
+                crate::remote_accounts::RemoteAccountHealth::Healthy,
+                Some(home.path().join("Remote/Missing")),
+            )),
             Availability::Unavailable { .. }
         ));
     }
@@ -1521,7 +1551,9 @@ mod command_path_tests {
     }
 
     fn every_exported_local_file_handler_is_declared_for_the_broker() {
-        let handlers = Widget::local_resource_operation_handlers(&FileExplorerWidget::new());
+        let handlers = Widget::local_resource_operation_handlers(
+            &FileExplorerWidget::with_persistence(None, None),
+        );
         for handler in [
             "files.refresh",
             "files.new-folder",
@@ -1534,7 +1566,6 @@ mod command_path_tests {
             "files.rename",
             "files.share-link",
             "files.remote-account",
-            "files.remote-dav",
         ] {
             assert!(handlers.contains(&handler), "missing handler {handler}");
         }
@@ -4788,6 +4819,57 @@ mod injected_startup_tests {
         child
     }
 
+    #[test]
+    fn a_remote_account_is_a_folder_with_a_health_badge() {
+        let home = tempfile::tempdir().unwrap();
+        let child = owned_child(home.path());
+        let mount = home.path().join("Remote/Cloud");
+        std::fs::create_dir_all(&mount).unwrap();
+        let mut inputs = startup(&child);
+        inputs
+            .remote_accounts
+            .push(crate::remote_accounts::RemoteAccount {
+                id: accounts::AccountId::from("cloud"),
+                kind: crate::remote_accounts::RemoteAccountKind::Nextcloud,
+                label: "Cloud".into(),
+                host: "cloud.example".into(),
+                health: crate::remote_accounts::RemoteAccountHealth::Offline,
+                mount: Some(mount.clone()),
+            });
+        let mut widget =
+            FileExplorerWidget::with_startup_inputs_and_services(inputs, absent_services());
+        let document = automerge::AutoCommit::new();
+        let resources = Widget::resources(&widget, &document);
+        let account = resources
+            .iter()
+            .flat_map(|r| r.children.iter())
+            .find(|r| r.kind == "files.remote-account")
+            .expect("the account is a resource");
+        let presentation = account.presentation.as_ref().expect("presentation");
+        assert_eq!(presentation.badge.as_deref(), Some("Offline"));
+        let open = account
+            .actions
+            .iter()
+            .find(|a| a.id == crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION)
+            .expect("an open action");
+        assert_eq!(open.contract.availability, Availability::Available);
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut widget,
+                OperationKind::View,
+                "files.remote-account",
+                &serde_json::to_vec(&vec!["open", "cloud"]).unwrap(),
+                &document,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            widget.current_path, mount,
+            "opening navigates into the folder"
+        );
+    }
+
     /// Each phase owns its fixture directory and fixture-IO guards, dropped before
     /// the next phase begins.
     #[test]
@@ -4809,6 +4891,7 @@ mod injected_startup_tests {
             label: "Host fixture".to_string(),
             host: "fixture.invalid".to_string(),
             health: crate::remote_accounts::RemoteAccountHealth::Disabled,
+            mount: None,
         };
         let mut inputs = startup(&child);
         inputs.remote_accounts.push(account.clone());

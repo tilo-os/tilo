@@ -622,6 +622,7 @@ impl CollaboratorsOverlay {
         reason = "a declarative accessibility tree for every panel control"
     )]
     pub fn accessibility_snapshot(&self) -> ui::a11y::AccessNode {
+        use crate::shell::i18n::{t, t_args};
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let people = self
@@ -631,22 +632,31 @@ impl CollaboratorsOverlay {
             .map(|(index, row)| {
                 let mut details = Vec::new();
                 if row.is_agent {
-                    details.push("Agent".to_string());
+                    details.push(t("a11y-shell-people-agent"));
                 }
                 if row.invited {
-                    details.push("Invited, not currently present".to_string());
+                    details.push(t("a11y-shell-people-invited"));
                 } else {
-                    details.push("Present now".to_string());
+                    details.push(t("a11y-shell-people-present"));
                 }
                 if let Some(activity) = &row.activity {
-                    details.push(format!("Now: {activity}"));
+                    details.push(t_args(
+                        "a11y-shell-people-now",
+                        &[("activity", activity.into())],
+                    ));
                 }
                 if let Some(status) = &row.status {
-                    details.push(format!(
-                        "Intent{}: {}",
-                        if status.automatic { ", inferred" } else { "" },
-                        status.text
-                    ));
+                    details.push(if status.automatic {
+                        t_args(
+                            "a11y-shell-people-intent-inferred",
+                            &[("status", (&status.text).into())],
+                        )
+                    } else {
+                        t_args(
+                            "a11y-shell-people-intent",
+                            &[("status", (&status.text).into())],
+                        )
+                    });
                 }
                 AccessNode::new(Role::ListItem)
                     .with_name(row.label.clone())
@@ -656,7 +666,7 @@ impl CollaboratorsOverlay {
             .collect();
         let mut children = vec![
             AccessNode::new(Role::List)
-                .with_name("People here now")
+                .with_name(t("a11y-shell-people-here-now"))
                 .with_children(people),
         ];
         for hit in self.focus_order() {
@@ -664,13 +674,16 @@ impl CollaboratorsOverlay {
             let (role, name, description, checked) = match hit {
                 CollaboratorsHit::EditStatus => {
                     let mut description = if self.accessibility_status_automatic {
-                        "Inferred on this device from recent semantic actions".to_string()
+                        t("a11y-shell-status-inferred")
                     } else {
-                        "Set what you are trying to accomplish".to_string()
+                        t("a11y-shell-status-set")
                     };
                     if let Some(activity) = &self.accessibility_own_activity {
-                        description.push_str("; Now: ");
-                        description.push_str(activity);
+                        description.push_str("; ");
+                        description.push_str(&t_args(
+                            "a11y-shell-people-now",
+                            &[("activity", activity.into())],
+                        ));
                     }
                     (
                         if self.accessibility_editing {
@@ -678,7 +691,7 @@ impl CollaboratorsOverlay {
                         } else {
                             Role::Button
                         },
-                        "Your collaboration status".to_string(),
+                        t("a11y-shell-status-name"),
                         description,
                         None,
                     )
@@ -686,19 +699,17 @@ impl CollaboratorsOverlay {
                 CollaboratorsHit::SetStatusSharing(mode) => (
                     Role::RadioButton,
                     match mode {
-                        ui::StatusSharing::Automatic => "Automatic status",
-                        ui::StatusSharing::ManualOnly => "Manual status only",
-                        ui::StatusSharing::Off => "Hide status",
-                    }
-                    .to_string(),
+                        ui::StatusSharing::Automatic => t("a11y-shell-status-automatic"),
+                        ui::StatusSharing::ManualOnly => t("a11y-shell-status-manual"),
+                        ui::StatusSharing::Off => t("a11y-shell-status-off"),
+                    },
                     match mode {
                         ui::StatusSharing::Automatic => {
-                            "Infer a short status locally from recent workspace actions"
+                            t("a11y-shell-status-automatic-description")
                         }
-                        ui::StatusSharing::ManualOnly => "Share only text you enter yourself",
-                        ui::StatusSharing::Off => "Publish no status to this workspace",
-                    }
-                    .to_string(),
+                        ui::StatusSharing::ManualOnly => t("a11y-shell-status-manual-description"),
+                        ui::StatusSharing::Off => t("a11y-shell-status-off-description"),
+                    },
                     Some(self.accessibility_sharing == mode),
                 ),
                 CollaboratorsHit::ToggleFollow(index) => {
@@ -706,41 +717,41 @@ impl CollaboratorsOverlay {
                     (
                         Role::Button,
                         row.map_or_else(
-                            || "Follow collaborator".to_string(),
-                            |row| format!("Follow {}", row.label),
+                            || t("a11y-shell-follow-collaborator"),
+                            |row| t_args("a11y-shell-follow", &[("name", (&row.label).into())]),
                         ),
-                        "Mirror this participant's live workspace view".to_string(),
+                        t("a11y-shell-follow-description"),
                         None,
                     )
                 }
                 CollaboratorsHit::PreviousPeople => (
                     Role::Button,
-                    "Previous people".to_string(),
-                    "Show the previous people in this workspace".to_string(),
+                    t("a11y-shell-people-previous"),
+                    t("a11y-shell-people-previous-description"),
                     None,
                 ),
                 CollaboratorsHit::NextPeople => (
                     Role::Button,
-                    "Next people".to_string(),
-                    "Show the next people in this workspace".to_string(),
+                    t("a11y-shell-people-next"),
+                    t("a11y-shell-people-next-description"),
                     None,
                 ),
                 CollaboratorsHit::Invite => (
                     Role::Button,
-                    "Invite people".to_string(),
-                    "Create an authenticated workspace invitation".to_string(),
+                    t("a11y-shell-invite"),
+                    t("a11y-shell-invite-description"),
                     None,
                 ),
                 CollaboratorsHit::Join => (
                     Role::Button,
-                    "Join workspace".to_string(),
-                    "Connect using an authenticated invitation".to_string(),
+                    t("a11y-shell-join"),
+                    t("a11y-shell-join-description"),
                     None,
                 ),
                 CollaboratorsHit::RoomActivity => (
                     Role::Button,
-                    "Workspace activity".to_string(),
-                    "Review grouped outcomes and what happened while you were away".to_string(),
+                    t("a11y-shell-workspace-activity"),
+                    t("a11y-shell-workspace-activity-description"),
                     None,
                 ),
                 CollaboratorsHit::Absorb | CollaboratorsHit::Dismiss => continue,
@@ -760,15 +771,16 @@ impl CollaboratorsOverlay {
             }
             children.push(node);
         }
-        let mut description =
-            "Live workspace presence, current activity, intent, and status privacy controls"
-                .to_string();
+        let mut description = t("a11y-shell-people-description");
         if let Some(exposure) = &self.accessibility_screen_exposure {
-            description.push_str("; Screen visible now: ");
-            description.push_str(exposure);
+            description.push_str("; ");
+            description.push_str(&t_args(
+                "a11y-shell-people-screen-visible",
+                &[("exposure", exposure.into())],
+            ));
         }
         AccessNode::new(Role::Dialog)
-            .with_name("People")
+            .with_name(t("a11y-shell-people"))
             .with_description(description)
             .with_children(children)
     }

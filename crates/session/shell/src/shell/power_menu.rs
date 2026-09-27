@@ -9,6 +9,7 @@ use vello::peniko::{BlendMode, Fill};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
+use crate::shell::i18n::t;
 use crate::shell::overlay_host::modal_transition_curve;
 
 /// A Panel opens and closes over the motion token's `base` (HIG §9.7). The
@@ -135,9 +136,7 @@ impl PowerMenu {
         }
         self.rows()
             .enumerate()
-            .map(|(index, (action, _, _, _))| {
-                (action.semantic_name(), self.action_rect(viewport, index))
-            })
+            .map(|(index, (action, _))| (action.semantic_name(), self.action_rect(viewport, index)))
             .collect()
     }
 
@@ -145,19 +144,19 @@ impl PowerMenu {
         use ui::a11y::{AccessNode, AccessState, Role};
         self.open.then(|| {
             AccessNode::new(Role::Dialog)
-                .with_name("Session")
+                .with_name(t("power-menu-title"))
                 .with_description(if self.user_switching {
-                    "Lock, leave, switch user, suspend, restart, or shut down this computer"
+                    t("power-menu-description-switch-user")
                 } else {
-                    "Lock, leave, suspend, restart, or shut down this computer"
+                    t("power-menu-description")
                 })
                 .with_state(AccessState::new().modal(true))
                 .with_children(
                     self.rows()
-                        .map(|(_, label, detail, _)| {
+                        .map(|(action, _)| {
                             AccessNode::new(Role::Button)
-                                .with_name(*label)
-                                .with_description(*detail)
+                                .with_name(action.label())
+                                .with_description(action.detail())
                                 .with_state(AccessState::new().focusable(true))
                         })
                         .collect(),
@@ -438,12 +437,13 @@ impl PowerMenu {
         let detail_size = theme.tokens.typography.scale.xs;
         // Panel title on the padding line (HIG §9.6), centred on the band
         // the metrics reserved for it.
+        let title = t("power-menu-title");
         let (_, title_h) =
-            text_renderer.measure_weighted("Session", title_size, None, TextWeight::Semibold);
+            text_renderer.measure_weighted(&title, title_size, None, TextWeight::Semibold);
         let title_band_h = m.rows_top - 2.0 * m.pad;
         text_renderer.draw_text_weighted(
             scene,
-            "Session",
+            &title,
             title_size,
             colors.text_primary,
             at(
@@ -458,7 +458,8 @@ impl PowerMenu {
         );
         let inset = f64::from(theme.tokens.spacing.s3);
         let icon_px = f64::from(theme.tokens.metrics.icon_md);
-        for (index, (_, label, detail, icon)) in self.rows().enumerate() {
+        for (index, (action, icon)) in self.rows().enumerate() {
+            let (label, detail) = (action.label(), action.detail());
             let row = self.action_rect(viewport, index);
             let selected = self.selected == index;
             // Control role: the chosen row is a lift (HIG §9.3), never an
@@ -507,12 +508,12 @@ impl PowerMenu {
             let text_x = icon_rect.x1 + inset;
             let avail = (row.x1 - inset - text_x).max(1.0);
             let label = text_renderer.elide_to_width_weighted(
-                label,
+                &label,
                 label_size,
                 text_width(avail),
                 TextWeight::Semibold,
             );
-            let detail = text_renderer.elide_to_width(detail, detail_size, text_width(avail));
+            let detail = text_renderer.elide_to_width(&detail, detail_size, text_width(avail));
             let (_, label_h) =
                 text_renderer.measure_weighted(&label, label_size, None, TextWeight::Semibold);
             let (_, detail_h) = text_renderer.measure(&detail, detail_size, None);
@@ -576,45 +577,54 @@ impl PowerMenuAction {
             Self::External(os_actions::SessionAction::ShutDown) => "power_shut_down",
         }
     }
+
+    /// The row's name.
+    fn label(self) -> String {
+        match self {
+            Self::Lock | Self::External(os_actions::SessionAction::Lock) => t("power-lock"),
+            Self::External(os_actions::SessionAction::Logout) => t("power-logout"),
+            Self::External(os_actions::SessionAction::SwitchUser) => t("power-switch-user"),
+            Self::External(os_actions::SessionAction::Suspend) => t("power-suspend"),
+            Self::External(os_actions::SessionAction::Restart) => t("power-restart"),
+            Self::External(os_actions::SessionAction::ShutDown) => t("power-shut-down"),
+        }
+    }
+
+    /// The line under the row's name.
+    fn detail(self) -> String {
+        match self {
+            Self::Lock | Self::External(os_actions::SessionAction::Lock) => t("power-lock-detail"),
+            Self::External(os_actions::SessionAction::Logout) => t("power-logout-detail"),
+            Self::External(os_actions::SessionAction::SwitchUser) => t("power-switch-user-detail"),
+            Self::External(os_actions::SessionAction::Suspend) => t("power-suspend-detail"),
+            Self::External(os_actions::SessionAction::Restart) => t("power-restart-detail"),
+            Self::External(os_actions::SessionAction::ShutDown) => t("power-shut-down-detail"),
+        }
+    }
 }
 
-type PowerMenuRow = (PowerMenuAction, &'static str, &'static str, ui::icons::Icon);
+type PowerMenuRow = (PowerMenuAction, ui::icons::Icon);
 
 const ACTIONS: [PowerMenuRow; 6] = [
-    (
-        PowerMenuAction::Lock,
-        "Lock",
-        "Keep apps running",
-        ui::icons::Icon::Shield,
-    ),
+    (PowerMenuAction::Lock, ui::icons::Icon::Shield),
     (
         PowerMenuAction::External(os_actions::SessionAction::Logout),
-        "Log out",
-        "End this session",
         ui::icons::Icon::ArrowRight,
     ),
     (
         PowerMenuAction::External(os_actions::SessionAction::SwitchUser),
-        "Switch user",
-        "Keep this session running",
         ui::icons::Icon::Users,
     ),
     (
         PowerMenuAction::External(os_actions::SessionAction::Suspend),
-        "Suspend",
-        "Resume where you left off",
         ui::icons::Icon::Sun,
     ),
     (
         PowerMenuAction::External(os_actions::SessionAction::Restart),
-        "Restart",
-        "Restart the computer",
         ui::icons::Icon::RotateCw,
     ),
     (
         PowerMenuAction::External(os_actions::SessionAction::ShutDown),
-        "Shut down",
-        "Turn off the computer",
         ui::icons::Icon::Power,
     ),
 ];

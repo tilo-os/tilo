@@ -42,6 +42,9 @@ ENGINE_OWNERS = (
     # which places changes by qdoc's storage keys.
     "crates/doc/qdoc-rich-text/",
     "crates/sdk/ui-core/",
+    # Toolkit lab/shots scenarios: lived under ui-core (an owner) until moved
+    # into this non-default member; they still exercise the same surfaces.
+    "crates/dev/ui-examples/",
     "crates/collab/actions/",
     "crates/system/app-state/",
 )
