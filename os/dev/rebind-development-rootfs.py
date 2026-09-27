@@ -84,6 +84,14 @@ def sanitized_diagnostic(value, limit=DIAGNOSTIC_LIMIT):
     return text
 
 
+def dracut_failure_diagnostic(log):
+    errors = '\n'.join(line for line in log.splitlines()
+                       if re.search(r'dracut\[E\]|\b(?:error|failed|cannot)\b|ldconfig:',
+                                    line, re.IGNORECASE))
+    return ('errors=' + sanitized_diagnostic(errors, limit=1024)
+            + '\ntail=' + sanitized_diagnostic(log, limit=1024))
+
+
 def failure_diagnostic(error):
     detail = {'schema': 1, 'error_type': type(error).__name__,
               'reason': sanitized_diagnostic(error)}
@@ -266,7 +274,8 @@ def transform(args):
                 log = command(['start', '--attach', container])
                 state = json.loads(command(['container', 'inspect', container]))[0]['State']
                 if state.get('Status') != 'exited' or type(state.get('ExitCode')) is not int or state['ExitCode'] != 0:
-                    raise ValueError('dracut did not exit successfully: ' + sanitized_diagnostic(log))
+                    raise ValueError('dracut did not exit successfully: '
+                                     + dracut_failure_diagnostic(log))
                 modules = module_evidence(log)
                 context = work / 'context'
                 context.mkdir()
