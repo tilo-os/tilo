@@ -20,7 +20,8 @@ use crate::id::Kind;
 use crate::manifest::{Entrypoint, EntrypointType, IsaRequirements, Manifest, Target};
 
 /// Custom section holding the toolkit-core build ABI id a module links
-/// against, as the bare UTF-8 id (16–64 lower-case hex digits).
+/// against (or the core provides), as UTF-8:
+/// `tilo-runtime/<version>+wasm.<32 hex>`.
 pub const RUNTIME_ABI_SECTION: &str = "tilo.runtime_abi";
 
 const TARGET_FEATURES_SECTION: &str = "target_features";
@@ -45,7 +46,7 @@ pub enum WebBuildError {
     Malformed(usize),
     #[error("custom section {0} appears more than once")]
     DuplicateSection(&'static str),
-    #[error("{RUNTIME_ABI_SECTION} section is not a 16–64 digit lower-case hex ABI id")]
+    #[error("{RUNTIME_ABI_SECTION} section is not a `tilo-runtime/<version>+wasm.<32 hex>` id")]
     BadRuntimeAbi,
     #[error(
         "the module carries no {RUNTIME_ABI_SECTION} section; build it against the toolkit core \
@@ -66,8 +67,8 @@ pub enum WebBuildError {
     AppWithoutRuntime,
     #[error("only kind=app and kind=runtime packages have a web build")]
     UnsupportedKind,
-    #[error("kind=runtime needs the release it provides, `tilo-runtime/<version>`")]
-    RuntimeWithoutRelease,
+    #[error("the manifest names runtime {declared}, but the module was built for {module}")]
+    RuntimeReleaseMismatch { declared: String, module: String },
     #[error("module path {0:?} must be a plain `.wasm` file name")]
     BadModulePath(String),
 }
@@ -109,7 +110,7 @@ pub fn inspect_wasm_module(bytes: &[u8]) -> Result<WasmModuleInfo, WebBuildError
                     return Err(WebBuildError::DuplicateSection(RUNTIME_ABI_SECTION));
                 }
                 let abi = std::str::from_utf8(payload).map_err(|_| WebBuildError::BadRuntimeAbi)?;
-                if !registry_types::valid_abi_id(abi) {
+                if registry_types::parse_web_runtime(abi).is_err() {
                     return Err(WebBuildError::BadRuntimeAbi);
                 }
                 info.runtime_abi = Some(abi.to_string());
@@ -183,8 +184,8 @@ pub struct WebBuildOptions<'a> {
     /// ABI id for a module without [`RUNTIME_ABI_SECTION`]; must agree with
     /// the section when both exist.
     pub runtime_abi: Option<&'a str>,
-    /// For `kind = "runtime"`: the release the core provides,
-    /// `tilo-runtime/<version>`.
+    /// For `kind = "runtime"`: the release the core is expected to provide,
+    /// `tilo-runtime/<version>`; checked against the ABI id.
     pub provides: Option<&'a str>,
 }
 
@@ -228,27 +229,34 @@ pub fn web_target(
         )
         .map_err(|error| WebBuildError::Isa(error.to_string()))?,
     };
-    let release = match manifest.package.kind {
-        Kind::App => manifest
-            .package
-            .runtime
-            .as_deref()
-            .ok_or(WebBuildError::AppWithoutRuntime)?,
-        Kind::Runtime => options
-            .provides
-            .ok_or(WebBuildError::RuntimeWithoutRelease)?,
+    let runtime = registry_types::parse_web_runtime(abi)
+        .map_err(|error| WebBuildError::Runtime(error.to_string()))?;
+    let declared = match manifest.package.kind {
+        Kind::App => Some(
+            manifest
+                .package
+                .runtime
+                .as_deref()
+                .ok_or(WebBuildError::AppWithoutRuntime)?,
+        ),
+        Kind::Runtime => options.provides,
         Kind::Service | Kind::FormatProvider | Kind::Plugin => {
             return Err(WebBuildError::UnsupportedKind);
         }
     };
-    let runtime = format!("{release}+abi.{abi}");
-    registry_types::parse_web_runtime(&runtime)
-        .map_err(|error| WebBuildError::Runtime(error.to_string()))?;
+    if let Some(declared) = declared
+        && declared != runtime.release()
+    {
+        return Err(WebBuildError::RuntimeReleaseMismatch {
+            declared: declared.to_string(),
+            module: abi.to_string(),
+        });
+    }
     Ok(Target {
         platform: registry_types::WEB_PLATFORM.into(),
         architecture: registry_types::WASM32_ARCHITECTURE.into(),
         isa,
-        runtime,
+        runtime: abi.to_string(),
         module: module_path.to_string(),
     })
 }
@@ -333,7 +341,7 @@ pub(crate) mod tests {
         }
     }
 
-    const ABI: &str = "00112233445566778899aabbccddeeff";
+    const ABI: &str = "tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff";
 
     fn authored(kind: &str, runtime: Option<&str>) -> Manifest {
         let runtime = runtime.map_or(String::new(), |r| format!("runtime = \"{r}\""));
@@ -434,7 +442,7 @@ commands = ["books"]
             web_manifest(&manifest, "books.wasm", &info, &WebBuildOptions::default()).unwrap();
         let target = web.target.clone().unwrap();
         assert_eq!(target.isa, "wasm32-mvp+bulk-memory+sign-ext");
-        assert_eq!(target.runtime, format!("tilo-runtime/2026.07+abi.{ABI}"));
+        assert_eq!(target.runtime, ABI);
         assert_eq!(target.module, "books.wasm");
         assert_eq!(web.package.id, manifest.package.id);
         assert_eq!(web.sandbox, manifest.sandbox);
@@ -480,7 +488,7 @@ commands = ["books"]
             "wasm32-mvp+mutable-globals"
         );
         let other_abi = WebBuildOptions {
-            runtime_abi: Some("ffeeddccbbaa99887766554433221100"),
+            runtime_abi: Some("tilo-runtime/2026.07+wasm.ffeeddccbbaa99887766554433221100"),
             ..isa.clone()
         };
         assert!(matches!(
@@ -509,6 +517,23 @@ commands = ["books"]
             web_target(&no_runtime, "books.wasm", &info, &isa),
             Err(WebBuildError::AppWithoutRuntime)
         );
+        let other_release = authored("app", Some("tilo-runtime/2026.08"));
+        assert!(matches!(
+            web_target(&other_release, "books.wasm", &info, &isa),
+            Err(WebBuildError::RuntimeReleaseMismatch { .. })
+        ));
+        let not_web = WasmModuleInfo {
+            runtime_abi: None,
+            features: None,
+        };
+        let bare_release = WebBuildOptions {
+            runtime_abi: Some("tilo-runtime/2026.07"),
+            ..isa.clone()
+        };
+        assert!(matches!(
+            web_target(&manifest, "books.wasm", &not_web, &bare_release),
+            Err(WebBuildError::Runtime(_))
+        ));
     }
 
     #[test]
@@ -518,21 +543,32 @@ commands = ["books"]
             runtime_abi: Some(ABI.into()),
             features: Some(vec!["mutable-globals".into()]),
         };
-        assert_eq!(
-            web_target(&manifest, "core.wasm", &info, &WebBuildOptions::default()),
-            Err(WebBuildError::RuntimeWithoutRelease)
-        );
-        let provides = WebBuildOptions {
-            provides: Some("tilo-runtime/2026.07"),
+        let web = web_manifest(&manifest, "core.wasm", &info, &WebBuildOptions::default()).unwrap();
+        assert!(web.entrypoint.is_none());
+        assert_eq!(web.target.as_ref().unwrap().runtime, ABI);
+        assert_eq!(crate::validate_manifest(&web), Ok(()));
+        let provides = |release| WebBuildOptions {
+            provides: Some(release),
             ..WebBuildOptions::default()
         };
-        let web = web_manifest(&manifest, "core.wasm", &info, &provides).unwrap();
-        assert!(web.entrypoint.is_none());
-        assert_eq!(
-            web.target.as_ref().unwrap().runtime,
-            format!("tilo-runtime/2026.07+abi.{ABI}")
+        assert!(
+            web_target(
+                &manifest,
+                "core.wasm",
+                &info,
+                &provides("tilo-runtime/2026.07")
+            )
+            .is_ok()
         );
-        assert_eq!(crate::validate_manifest(&web), Ok(()));
+        assert!(matches!(
+            web_target(
+                &manifest,
+                "core.wasm",
+                &info,
+                &provides("tilo-runtime/2026.08")
+            ),
+            Err(WebBuildError::RuntimeReleaseMismatch { .. })
+        ));
     }
 
     #[test]

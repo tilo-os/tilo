@@ -12,7 +12,7 @@ use tilo_app_package::{Manifest, SigningIdentity, pack, tapp, verify};
 
 use crate::fixtures::SAMPLE_APP_MANIFEST_TEMPLATE;
 
-const ABI: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+const ABI: &str = "tilo-runtime/2025.06+wasm.0f1e2d3c4b5a69788796a5b4c3d2e1f0";
 
 fn leb(mut value: usize) -> Vec<u8> {
     let mut out = Vec::new();
@@ -114,7 +114,7 @@ fn a_web_build_signs_and_verifies_like_a_native_package() {
     let target = manifest.target.as_ref().unwrap();
     assert_eq!(target.platform, "web");
     assert_eq!(target.isa, "wasm32-mvp+mutable-globals+sign-ext");
-    assert_eq!(target.runtime, format!("tilo-runtime/2025.06+abi.{ABI}"));
+    assert_eq!(target.runtime, ABI);
     assert_eq!(
         payload(&decoded.meta).keys().collect::<Vec<_>>(),
         ["assets/fonts/body.ttf", "editor.wasm"]

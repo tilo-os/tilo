@@ -511,7 +511,7 @@ fn run(args: &[&str]) -> std::process::Output {
 
 #[test]
 fn cli_packs_a_web_build_and_emits_its_registry_request() {
-    let abi = "00112233445566778899aabbccddeeff";
+    let abi = "tilo-runtime/2025.06+wasm.00112233445566778899aabbccddeeff";
     let workdir = tempfile::tempdir().unwrap();
     let path = |name: &str| workdir.path().join(name).to_str().unwrap().to_string();
     run(&["keygen", "--out", &path("publisher.json")]);
@@ -543,7 +543,7 @@ fn cli_packs_a_web_build_and_emits_its_registry_request() {
     let inspected = run(&["inspect", &path("example-web.tapp")]);
     let inspected = String::from_utf8_lossy(&inspected.stdout);
     assert!(inspected.contains("platform = \"web\""), "{inspected}");
-    assert!(inspected.contains(&format!("tilo-runtime/2025.06+abi.{abi}")));
+    assert!(inspected.contains(abi), "{inspected}");
     assert!(inspected.contains("assets/latin/body.ttf"), "{inspected}");
     assert!(inspected.contains("assets/icon.svg"), "{inspected}");
     run(&["verify", &path("example-web.tapp")]);
@@ -570,10 +570,7 @@ fn cli_packs_a_web_build_and_emits_its_registry_request() {
     assert_eq!(target.platform, registry_types::WEB_PLATFORM);
     assert_eq!(target.architecture, registry_types::WASM32_ARCHITECTURE);
     assert_eq!(target.isa, "wasm32-mvp+bulk-memory+sign-ext");
-    assert_eq!(
-        target.runtime.as_deref(),
-        Some(format!("tilo-runtime/2025.06+abi.{abi}").as_str())
-    );
+    assert_eq!(target.runtime.as_deref(), Some(abi));
 
     let native_as_web = Command::new(bin_path())
         .args([

@@ -67,7 +67,7 @@ pub struct Manifest {
 /// platform = "web"
 /// architecture = "wasm32"
 /// isa = "wasm32-mvp+bulk-memory+mutable-globals+sign-ext"
-/// runtime = "tilo-runtime/2026.07+abi.0123456789abcdef"
+/// runtime = "tilo-runtime/2026.07+wasm.fe8836616de68a65d59c02eb73caa005"
 /// module = "books.wasm"
 /// ```
 ///

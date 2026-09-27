@@ -12,8 +12,8 @@
 //!   `isa` is the native feature level and `runtime` is optional.
 //! - `web` — WebAssembly side modules loaded by the browser toolkit core;
 //!   `architecture` is `wasm32`, `isa` is a canonical feature-set string
-//!   ([`parse_wasm_isa`]) and `runtime` is required and names the exact core
-//!   build ABI ([`parse_web_runtime`]).
+//!   ([`parse_wasm_isa`]) and `runtime` is required and is the exact core
+//!   build ABI id ([`parse_web_runtime`]).
 
 use crate::entry::RegistryTarget;
 
@@ -54,8 +54,9 @@ pub const MAX_TARGET_ISA_BYTES: usize = 256;
 /// Longest accepted `runtime`.
 pub const MAX_TARGET_RUNTIME_BYTES: usize = 256;
 
-const MIN_ABI_ID_LEN: usize = 16;
-const MAX_ABI_ID_LEN: usize = 64;
+/// Hex digits of the build id after `+wasm.`: 128 bits of the core build's
+/// ABI digest.
+pub const WEB_RUNTIME_ID_HEX_LEN: usize = 32;
 const MAX_RUNTIME_VERSION_LEN: usize = 64;
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
@@ -76,7 +77,7 @@ pub enum TargetError {
     WasmIsa(String),
     #[error("web targets require a runtime")]
     MissingRuntime,
-    #[error("web runtime {0:?} is not `tilo-runtime/<version>+abi.<id>`")]
+    #[error("web runtime {0:?} is not `tilo-runtime/<version>+wasm.<32 hex>`")]
     WebRuntime(String),
 }
 
@@ -159,15 +160,17 @@ pub fn canonical_wasm_isa<'a>(
     Ok(isa)
 }
 
-/// A validated web runtime: the toolkit core release and build ABI a module
-/// links against (or, for the core itself, provides).
+/// A validated web runtime ABI id: the toolkit core release and build a
+/// module links against (or, for the core itself, provides).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WebRuntime<'a> {
-    /// Release, e.g. `2026.07`.
-    pub version: &'a str,
-    /// Build ABI identifier carried in every module's `tilo.runtime_abi`
+    /// The whole id, exactly the bytes of a module's `tilo.runtime_abi`
     /// custom section.
     pub abi: &'a str,
+    /// Release, e.g. `2026.07`.
+    pub version: &'a str,
+    /// The build digest after `+wasm.`.
+    pub build: &'a str,
 }
 
 impl WebRuntime<'_> {
@@ -178,17 +181,19 @@ impl WebRuntime<'_> {
     }
 }
 
-/// Parse a web runtime requirement:
+/// Parse a web runtime ABI id:
 ///
 /// ```text
-/// runtime = "tilo-runtime/" version "+abi." id
+/// runtime = "tilo-runtime/" version "+wasm." build
 /// version = 1*DIGIT 1*2( "." 1*DIGIT ) [ "-" pre ]   ; CalVer or SemVer core
 /// pre     = ( ALPHA / DIGIT ) *( ALPHA / DIGIT / "." / "-" )
-/// id      = 16*64( DIGIT / %x61-66 )                 ; lower-case hex
+/// build   = 32( DIGIT / %x61-66 )                    ; lower-case hex
 /// ```
 ///
-/// e.g. `tilo-runtime/2026.07+abi.3f0c9a1e5b7d2468`. `SemVer` build metadata
-/// is not allowed in `version`: `+` introduces the ABI.
+/// e.g. `tilo-runtime/2026.07+wasm.fe8836616de68a65d59c02eb73caa005`, the
+/// string the core and every app module carry in their `tilo.runtime_abi`
+/// section. `SemVer` build metadata is not allowed in `version`: `+`
+/// introduces the build.
 ///
 /// # Errors
 ///
@@ -202,20 +207,19 @@ pub fn parse_web_runtime(runtime: &str) -> Result<WebRuntime<'_>, TargetError> {
         .strip_prefix(WEB_RUNTIME_NAME)
         .and_then(|rest| rest.strip_prefix('/'))
         .ok_or_else(invalid)?;
-    let (version, abi) = rest.split_once("+abi.").ok_or_else(invalid)?;
-    if !valid_web_runtime_version(version) || !valid_abi_id(abi) {
+    let (version, build) = rest.split_once("+wasm.").ok_or_else(invalid)?;
+    let build_ok = build.len() == WEB_RUNTIME_ID_HEX_LEN
+        && build
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !valid_web_runtime_version(version) || !build_ok {
         return Err(invalid());
     }
-    Ok(WebRuntime { version, abi })
-}
-
-/// Whether `abi` is a canonical build ABI identifier: 16 to 64 lower-case
-/// hex digits.
-pub fn valid_abi_id(abi: &str) -> bool {
-    (MIN_ABI_ID_LEN..=MAX_ABI_ID_LEN).contains(&abi.len())
-        && abi
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    Ok(WebRuntime {
+        abi: runtime,
+        version,
+        build,
+    })
 }
 
 fn valid_web_runtime_version(version: &str) -> bool {
@@ -352,46 +356,49 @@ mod tests {
         assert!(parse_wasm_isa("wasm32-mvp").unwrap().is_satisfied_by(&[]));
     }
 
+    const BUILD: &str = "fe8836616de68a65d59c02eb73caa005";
+
     #[test]
-    fn web_runtime_binds_release_and_abi() {
-        let runtime = parse_web_runtime("tilo-runtime/2026.07+abi.0123456789abcdef").unwrap();
+    fn web_runtime_binds_release_and_build() {
+        let id = format!("tilo-runtime/2026.07+wasm.{BUILD}");
+        let runtime = parse_web_runtime(&id).unwrap();
+        assert_eq!(runtime.abi, id);
         assert_eq!(runtime.version, "2026.07");
-        assert_eq!(runtime.abi, "0123456789abcdef");
+        assert_eq!(runtime.build, BUILD);
         assert_eq!(runtime.release(), "tilo-runtime/2026.07");
-        let full = format!("tilo-runtime/2026.7.0-browser.1+abi.{}", "ab".repeat(32));
+        let full = format!("tilo-runtime/2026.7.0-browser.1+wasm.{BUILD}");
         assert_eq!(
             parse_web_runtime(&full).unwrap().version,
             "2026.7.0-browser.1"
         );
         for bad in [
-            "tilo-runtime/2026.07",
-            "tilo-runtime/2026.07+abi.",
-            "tilo-runtime/2026.07+abi.0123456789abcde",
-            "tilo-runtime/2026.07+abi.0123456789ABCDEF",
-            "tilo-runtime/2026.07+abi.0123456789abcdeg",
-            "other-runtime/2026.07+abi.0123456789abcdef",
-            "tilo-runtime/2026+abi.0123456789abcdef",
-            "tilo-runtime/1.2.3.4+abi.0123456789abcdef",
-            "tilo-runtime/1.2.3-+abi.0123456789abcdef",
-            "tilo-runtime/1.2.3+build+abi.0123456789abcdef",
-            "tilo-runtime/+abi.0123456789abcdef",
+            "tilo-runtime/2026.07".to_string(),
+            "tilo-runtime/2026.07+wasm.".to_string(),
+            format!("tilo-runtime/2026.07+abi.{BUILD}"),
+            format!("tilo-runtime/2026.07+wasm.{}", &BUILD[1..]),
+            format!("tilo-runtime/2026.07+wasm.{BUILD}0"),
+            format!("tilo-runtime/2026.07+wasm.{}", BUILD.to_uppercase()),
+            format!("tilo-runtime/2026.07+wasm.{}g", &BUILD[1..]),
+            format!("other-runtime/2026.07+wasm.{BUILD}"),
+            format!("tilo-runtime/2026+wasm.{BUILD}"),
+            format!("tilo-runtime/1.2.3.4+wasm.{BUILD}"),
+            format!("tilo-runtime/1.2.3-+wasm.{BUILD}"),
+            format!("tilo-runtime/1.2.3+build+wasm.{BUILD}"),
+            format!("tilo-runtime/+wasm.{BUILD}"),
         ] {
-            assert!(parse_web_runtime(bad).is_err(), "{bad:?} must be refused");
+            assert!(parse_web_runtime(&bad).is_err(), "{bad:?} must be refused");
         }
-        assert!(
-            parse_web_runtime(&format!("tilo-runtime/2026.07+abi.{}", "a".repeat(65))).is_err()
-        );
     }
 
     #[test]
     fn web_targets_require_wasm32_canonical_isa_and_runtime() {
-        let runtime = "tilo-runtime/2026.07+abi.0123456789abcdef";
+        let runtime = &format!("tilo-runtime/2026.07+wasm.{BUILD}");
         assert_eq!(web(RUST_DEFAULT, Some(runtime)).validate(), Ok(()));
         assert_eq!(
             web(RUST_DEFAULT, Some(runtime))
                 .web_runtime()
-                .map(|r| r.abi),
-            Some("0123456789abcdef")
+                .map(|r| r.build),
+            Some(BUILD)
         );
         assert_eq!(
             web(RUST_DEFAULT, None).validate(),

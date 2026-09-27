@@ -271,7 +271,7 @@ are accepted (`registry_types::target`):
 | `platform` | `architecture` | `isa` | `runtime` |
 |---|---|---|---|
 | `tilo-os` | `x86_64`, `aarch64` | `x86_64`, `x86_64-v2`…`v4`, `aarch64`, `aarch64-v8.2`/`v8.4`/`v9` | optional, `tilo-runtime/<version>` |
-| `web` | `wasm32` | canonical wasm feature set, see below | **required**, `tilo-runtime/<version>+abi.<id>` |
+| `web` | `wasm32` | canonical wasm feature set, see below | **required**, `tilo-runtime/<version>+wasm.<32 hex>` |
 
 A native release must publish a distinct `.tapp` for both architectures. Pass
 each tapp's target with `tilo-app-package entry --arch`; generic Linux, macOS,
@@ -291,13 +291,17 @@ Unknown features are refused rather than dropped: a client must be able to
 decide support from the string alone (it runs a module when the features it
 offers are a superset). The `isa` is at most 256 bytes.
 
-**Web `runtime`.** `tilo-runtime/<version>+abi.<id>`. `<version>` is the
+**Web `runtime`.** The web runtime ABI id,
+`tilo-runtime/<version>+wasm.<build>`, for example
+`tilo-runtime/2026.07+wasm.fe8836616de68a65d59c02eb73caa005`: exactly the
+bytes of the module's `tilo.runtime_abi` custom section (see
+`crates/browser/tilo-browser-runtime/WEB_RUNTIME.md`). `<version>` is the
 toolkit-core release, CalVer or a SemVer core (`2026.07`, `2026.7.0-browser.1`)
-without build metadata; `<id>` is the core's build ABI identifier, 16–64
-lower-case hex digits, exactly the bytes of the module's `tilo.runtime_abi`
-custom section. The loader refuses a module whose ABI differs from the loaded
-core, so the registry only offers an app version when a core with the same
-`<id>` is published.
+without build metadata, and equals the authored `package.runtime` of an app;
+`<build>` is exactly 32 lower-case hex digits. The loader refuses a module
+whose ABI id differs from the loaded core, so a client only offers an app
+version when a core (`kind = "runtime"`) with the same `runtime` is
+published.
 
 Existing native clients validate every version of every entry before trusting
 a snapshot and predate the `web` family: they reject a snapshot containing a
