@@ -546,6 +546,9 @@ pub struct BlockEditor {
     #[cfg(test)]
     painted_blocks: usize,
     dirty: bool,
+    /// Which blocks the person may have changed since the owning model last
+    /// asked ([`Self::take_edit_scope`]).
+    edit_scope: EditScope,
     /// Set when the block list grows/shrinks; drained by
     /// `take_structure_dirty` so the host rebuilds taffy.
     structure_dirty: bool,
@@ -706,6 +709,7 @@ impl BlockEditor {
             dirty: true,
             structure_dirty: true,
             edit_pending: false,
+            edit_scope: EditScope::Anywhere,
             commit_pending: false,
             last_mouse_pos: Point::ZERO,
             cross_block_drag_start: None,
@@ -1154,12 +1158,29 @@ impl BlockEditor {
     /// For tests + notes-app persistence to seed blocks directly;
     /// production code should prefer the public mutators.
     pub fn blocks_mut(&mut self) -> &mut Vec<Block> {
+        self.edit_scope = EditScope::Anywhere;
         &mut self.blocks
+    }
+
+    /// Which blocks the person may have changed since the last call: a host
+    /// that owns the document compares only those with what it presented.
+    /// Plain typing in a paragraph names that paragraph and its neighbours;
+    /// anything else (a structural edit, a pointer, an action, direct access
+    /// to the blocks) may have changed any block.
+    pub fn take_edit_scope(&mut self) -> EditScope {
+        std::mem::replace(&mut self.edit_scope, EditScope::Nothing)
+    }
+
+    /// Treat any block as possibly changed: for a host that changes blocks
+    /// through [`Self::blocks_mut`] or other direct access.
+    pub fn note_edit_anywhere(&mut self) {
+        self.edit_scope = EditScope::Anywhere;
     }
 
     /// For the notes app's markdown parser, which produces a richer
     /// representation (inline marks) than this widget's `from_markdown`.
     pub fn set_blocks(&mut self, blocks: Vec<Block>) {
+        self.edit_scope = EditScope::Anywhere;
         self.blocks = blocks;
         if self.blocks.is_empty() {
             self.blocks.push(Block::paragraph(""));
@@ -7698,141 +7719,30 @@ impl Widget for BlockEditor {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        use winit::event::{ElementState, MouseButton};
-
-        let mut ctx = EventCtx {
+        let typing = self.typing_position(event, *modifiers);
+        self.handle_event_unscoped(
+            event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
             focus_target,
             node_id,
             taffy,
+        );
+        let scope = match typing {
+            Some((index, count, id))
+                if self.blocks.len() == count
+                    && self.focused == Some(index)
+                    && self.document_selection.is_none()
+                    && self.blocks.get(index).is_some_and(|block| block.id == id) =>
+            {
+                EditScope::Blocks(index.saturating_sub(1)..index.saturating_add(2))
+            }
+            _ => EditScope::Anywhere,
         };
-
-        if self.handle_find_event(event, &mut ctx) {
-            return;
-        }
-
-        if self.handle_opening_code_fence(event, &mut ctx) {
-            return;
-        }
-
-        // While visible, intercept keystrokes BEFORE the editable line
-        // sees them. Same pattern as the slash menu below.
-        if self.handle_link_popover_key(event, &mut ctx) {
-            return;
-        }
-
-        // The menu owns arrow nav / Enter / Escape / typing-into-filter.
-        if self.handle_slash_menu_key(event, &mut ctx) {
-            return;
-        }
-
-        if let Some(start) = self.visual_formula_focus
-            && let WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
-                self.visual_formula_focus = None;
-                self.dirty = true;
-                *handled = true;
-                return;
-            }
-            if !matches!(logical_key, Key::Named(NamedKey::Tab)) {
-                let chrome = self.formula_chrome.get(start).and_then(|value| *value);
-                let changed = self.visual_formulas.get_mut(&start).is_some_and(|visual| {
-                    handle_visual_formula_key(&mut visual.editor, logical_key, *modifiers)
-                });
-                if changed && let Some(chrome) = chrome {
-                    self.commit_visual_formula_edit(start, chrome.end, chrome.descriptor.syntax);
-                }
-                self.dirty = true;
-                *handled = true;
-                return;
-            }
-        }
-
-        // A focused table cell owns editing shortcuts before the document.
-        if self.handle_visual_table_event(event, &mut ctx) {
-            return;
-        }
-        // Select-all is document-scoped, like a browser editing host, rather
-        // than stopping at the focused paragraph's TextInput.
-        if self.try_select_all_shortcut(event, &mut ctx) {
-            return;
-        }
-
-        // Code indentation owns whole selected lines before generic replacement.
-        if self.handle_code_keyboard(event, &mut ctx) {
-            return;
-        }
-
-        // A cross-block selection belongs to the document, not any one child
-        // TextInput. Consume clipboard/replacement input before line routing.
-        if self.handle_document_selection_event(event, *ctx.modifiers) {
-            *ctx.handled = true;
-            return;
-        }
-
-        if self.try_move_focused_block_shortcut(event, &mut ctx) {
-            return;
-        }
-
-        if self.handle_block_drag_lifecycle(event, &mut ctx) {
-            return;
-        }
-
-        if self.handle_image_event(event, &mut ctx) {
-            return;
-        }
-
-        // Reset the anchor on anything but a Ctrl+Shift+Arrow extend, so
-        // the next extend latches a fresh one.
-        self.maybe_reset_kbd_sel_anchor(event, *ctx.modifiers);
-
-        // Runs BEFORE event routing so the click doesn't fall through to
-        // TextInput (which would place the caret at byte 0).
-        if self.handle_mouse_press_gestures(event, &mut ctx) {
-            return;
-        }
-        if let WindowEvent::MouseInput {
-            state: ElementState::Released,
-            button: MouseButton::Left,
-            ..
-        } = event
-        {
-            self.cross_block_drag_start = None;
-        }
-        self.handle_cursor_moved(event, ctx.scale_factor);
-
-        // TextInput does NOT handle Tab, but intercept anyway so future
-        // TextInput changes don't break the contract.
-        if self.try_tab_indent(event, &mut ctx) {
-            return;
-        }
-
-        // The leading `/` still falls through to TextInput (visible
-        // feedback); `slash_open_at` remembers where to strip it on
-        // commit. Code blocks excluded — `/` there is meaningful text.
-        self.try_open_slash_menu(event);
-
-        // Focus whichever editable block the press lands on first, so the
-        // routing below's TextInput click handler sets the caret there.
-        self.focus_block_under_mouse(event, &mut ctx);
-
-        self.route_event_to_focused_block(event, &mut ctx);
-        // Consumed input can move the caret or selection without editing text.
-        // Repaint that change once; focus alone is not an animation source.
-        self.dirty |= *ctx.handled;
+        self.edit_scope.widen(scope);
     }
 
     fn name(&self) -> &'static str {
@@ -8472,6 +8382,7 @@ impl Widget for BlockEditor {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
+        self.edit_scope = EditScope::Anywhere;
         if matches!(action, crate::a11y::Action::Activate) {
             match target {
                 "notes.find:previous" if self.find_visible => {
@@ -9639,7 +9550,7 @@ fn code_header_height(blocks: &[Block], index: usize, scale: f64) -> f64 {
 
 #[path = "block_editor_present.rs"]
 mod present;
-pub use present::{BlockContent, PresenceKeyFn};
+pub use present::{BlockContent, EditScope, PresenceKeyFn};
 
 #[cfg(test)]
 #[path = "block_editor_fence_tests.rs"]
@@ -10687,3 +10598,193 @@ impl BlockEditor {
 #[cfg(test)]
 #[path = "block_editor_tests.rs"]
 mod tests;
+
+impl BlockEditor {
+    /// For an event that can only type into the focused paragraph (a
+    /// character, an IME commit, Backspace or Delete, with no selection
+    /// across paragraphs and no find bar), the paragraph's index, the block
+    /// count and its id: what must still hold afterwards for the edit to
+    /// have stayed in that paragraph.
+    fn typing_position(
+        &self,
+        event: &WindowEvent,
+        modifiers: Modifiers,
+    ) -> Option<(usize, usize, String)> {
+        use winit::keyboard::NamedKey;
+        let plain = match event {
+            WindowEvent::Ime(_) => true,
+            WindowEvent::KeyboardInput { event, .. } => {
+                let held = modifiers.state();
+                !held.control_key()
+                    && !held.alt_key()
+                    && !held.super_key()
+                    && matches!(
+                        &event.logical_key,
+                        Key::Character(_)
+                            | Key::Named(NamedKey::Backspace | NamedKey::Delete | NamedKey::Space)
+                    )
+            }
+            _ => false,
+        };
+        if !plain || self.find_visible || self.document_selection.is_some() || !self.is_focused {
+            return None;
+        }
+        let index = self.focused?;
+        let block = self.blocks.get(index)?;
+        Some((index, self.blocks.len(), block.id.clone()))
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the widget event entry point, less its edit-scope bookkeeping"
+    )]
+    fn handle_event_unscoped(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let modifiers = &modifiers;
+        use winit::event::{ElementState, MouseButton};
+
+        let mut ctx = EventCtx {
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        };
+
+        if self.handle_find_event(event, &mut ctx) {
+            return;
+        }
+
+        if self.handle_opening_code_fence(event, &mut ctx) {
+            return;
+        }
+
+        // While visible, intercept keystrokes BEFORE the editable line
+        // sees them. Same pattern as the slash menu below.
+        if self.handle_link_popover_key(event, &mut ctx) {
+            return;
+        }
+
+        // The menu owns arrow nav / Enter / Escape / typing-into-filter.
+        if self.handle_slash_menu_key(event, &mut ctx) {
+            return;
+        }
+
+        if let Some(start) = self.visual_formula_focus
+            && let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } = event
+        {
+            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+                self.visual_formula_focus = None;
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
+            if !matches!(logical_key, Key::Named(NamedKey::Tab)) {
+                let chrome = self.formula_chrome.get(start).and_then(|value| *value);
+                let changed = self.visual_formulas.get_mut(&start).is_some_and(|visual| {
+                    handle_visual_formula_key(&mut visual.editor, logical_key, *modifiers)
+                });
+                if changed && let Some(chrome) = chrome {
+                    self.commit_visual_formula_edit(start, chrome.end, chrome.descriptor.syntax);
+                }
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
+        }
+
+        // A focused table cell owns editing shortcuts before the document.
+        if self.handle_visual_table_event(event, &mut ctx) {
+            return;
+        }
+        // Select-all is document-scoped, like a browser editing host, rather
+        // than stopping at the focused paragraph's TextInput.
+        if self.try_select_all_shortcut(event, &mut ctx) {
+            return;
+        }
+
+        // Code indentation owns whole selected lines before generic replacement.
+        if self.handle_code_keyboard(event, &mut ctx) {
+            return;
+        }
+
+        // A cross-block selection belongs to the document, not any one child
+        // TextInput. Consume clipboard/replacement input before line routing.
+        if self.handle_document_selection_event(event, *ctx.modifiers) {
+            *ctx.handled = true;
+            return;
+        }
+
+        if self.try_move_focused_block_shortcut(event, &mut ctx) {
+            return;
+        }
+
+        if self.handle_block_drag_lifecycle(event, &mut ctx) {
+            return;
+        }
+
+        if self.handle_image_event(event, &mut ctx) {
+            return;
+        }
+
+        // Reset the anchor on anything but a Ctrl+Shift+Arrow extend, so
+        // the next extend latches a fresh one.
+        self.maybe_reset_kbd_sel_anchor(event, *ctx.modifiers);
+
+        // Runs BEFORE event routing so the click doesn't fall through to
+        // TextInput (which would place the caret at byte 0).
+        if self.handle_mouse_press_gestures(event, &mut ctx) {
+            return;
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            self.cross_block_drag_start = None;
+        }
+        self.handle_cursor_moved(event, ctx.scale_factor);
+
+        // TextInput does NOT handle Tab, but intercept anyway so future
+        // TextInput changes don't break the contract.
+        if self.try_tab_indent(event, &mut ctx) {
+            return;
+        }
+
+        // The leading `/` still falls through to TextInput (visible
+        // feedback); `slash_open_at` remembers where to strip it on
+        // commit. Code blocks excluded — `/` there is meaningful text.
+        self.try_open_slash_menu(event);
+
+        // Focus whichever editable block the press lands on first, so the
+        // routing below's TextInput click handler sets the caret there.
+        self.focus_block_under_mouse(event, &mut ctx);
+
+        self.route_event_to_focused_block(event, &mut ctx);
+        // Consumed input can move the caret or selection without editing text.
+        // Repaint that change once; focus alone is not an animation source.
+        self.dirty |= *ctx.handled;
+    }
+}
