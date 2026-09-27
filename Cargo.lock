@@ -3927,6 +3927,7 @@ dependencies = [
  "chrono",
  "feed-rs",
  "hex",
+ "quick-xml 0.41.0",
  "reqwest",
  "runtime-dylib",
  "serde",
@@ -8878,6 +8879,8 @@ dependencies = [
  "automerge",
  "blake3",
  "chrono",
+ "qdoc",
+ "qdoc-rich-text",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -8887,6 +8890,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-rich-text",
  "tilo-test-env",
  "tracing",
  "url",
@@ -13045,6 +13049,7 @@ dependencies = [
  "qcms",
  "qdoc",
  "qdoc-codecs",
+ "quick-xml 0.41.0",
  "rand_chacha 0.10.0",
  "rand_core 0.10.0",
  "rcgen",
@@ -13089,6 +13094,7 @@ dependencies = [
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-identity-host",
  "tilo-lockdown-policy",
  "tilo-moq",
  "tilo-native-media-control",
@@ -14811,6 +14817,7 @@ dependencies = [
 name = "tilo-dav"
 version = "0.1.0"
 dependencies = [
+ "quick-xml 0.41.0",
  "reqwest",
  "roxmltree 0.20.0",
  "test-http",
@@ -15007,6 +15014,35 @@ dependencies = [
  "winit",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-identity-host"
+version = "0.1.0"
+dependencies = [
+ "advisory-lock",
+ "atomic-file",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "libc",
+ "postcard",
+ "rand_core 0.10.0",
+ "runtime-identity",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "threshold-identity",
+ "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-relay-protocol",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-user-identity",
+ "tracing",
+ "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -15662,6 +15698,7 @@ dependencies = [
  "chrono",
  "clap",
  "hex",
+ "quick-xml 0.41.0",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -18428,6 +18465,7 @@ dependencies = [
  "hex",
  "launcher",
  "libc",
+ "quick-xml 0.41.0",
  "rand 0.10.1",
  "reqwest",
  "serde",

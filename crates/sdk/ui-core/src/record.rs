@@ -35,6 +35,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 mod native_file;
 pub use native_file::{FileHistoryReader, InitialFileHistory};
+pub mod transfer;
 
 /// Key, in a record's own document, of the map holding its identity.
 const META: &str = "tilo:record";
@@ -2245,6 +2246,10 @@ pub enum RecordOpenError {
     AlreadyExists,
     #[error("record initialization failed: {0}")]
     Initialization(String),
+    /// The record left this room (see [`transfer`]); its history stays, but
+    /// it is never opened as a live document again.
+    #[error("record was moved out of this room")]
+    Retired,
 }
 
 impl From<durable_store::StoreError> for RecordOpenError {
@@ -2299,6 +2304,9 @@ fn validate_identity(
         ObjectAt::Missing | ObjectAt::Invalid => {
             return Err(RecordOpenError::IdentityMismatch);
         }
+    }
+    if transfer::is_retired(doc) {
+        return Err(RecordOpenError::Retired);
     }
     if want.id.is_package_primary() {
         return if primary_document(doc)

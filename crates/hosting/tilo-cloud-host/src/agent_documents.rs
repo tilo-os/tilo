@@ -710,6 +710,46 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn worker_unmount_dropping_signer_reply_does_not_latch_service() {
+        let (dir, store, route, cert) = selected();
+        let mutation =
+            DocumentMutation::Snapshot(store.peer().unwrap().document("so.tilo.chat", "").unwrap());
+        drop(store);
+        let owner = Arc::new(
+            crate::agent_runtime_adapter::RuntimeOwner::open(dir.path(), "agent-admission")
+                .unwrap(),
+        );
+        let source = owner.policy_context().clock().new_origin();
+        owner
+            .policy_context()
+            .bind_source(source.capture().unwrap())
+            .unwrap();
+        let (documents, mut requests) =
+            tilo_action_broker::host_documents::HostDocuments::new(Arc::new(owner.ordinary()));
+        let signer = documents.bind(route.clone(), cert);
+        let task = tokio::spawn(signer.commit(&route, mutation));
+        let pending = requests.recv().await.unwrap();
+        // Worker unmount drops the commit future while the owner turn still runs.
+        task.abort();
+        let _ = task.await;
+        let (complete, outcome) = pending.apply(
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+            |route, cert, mutation| owner.store()?.commit_agent_document(route, cert, mutation),
+        );
+        assert!(
+            outcome.is_ok(),
+            "owner turn must finish after the waiting worker is gone: {outcome:?}"
+        );
+        complete();
+        assert!(
+            documents.health().is_ok(),
+            "dropping the worker reply must not latch the whole signer: {:?}",
+            documents.health()
+        );
+        assert_eq!(documents.pending_exact_receipts().unwrap(), 1);
+    }
+
     #[test]
     fn agent_runtime_document_uncertain_barrier_has_no_receipt_and_latches_owner() {
         use atomic_file::test_support::Checkpoint;
