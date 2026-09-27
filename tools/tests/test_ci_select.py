@@ -880,7 +880,7 @@ class SelectorTests(unittest.TestCase):
             changes = [
                 ".forgejo/workflows/check.yml",
                 ".forgejo/workflows/legacy-app-e2e.yml",
-                ".forgejo/workflows/tilo-relay.yaml",
+                ".forgejo/workflows/release-relay.yml",
                 "os/Containerfile.builder",
                 "os/tests/test_builder_candidate_workflow.py",
                 "tools/ci/affected_packages.py",

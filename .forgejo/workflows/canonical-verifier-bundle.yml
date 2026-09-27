@@ -1,4 +1,4 @@
-name: Platform / canonical verifier bundles
+name: Release / canonical verifier bundles
 
 # Platform maintenance only. Produces reviewable artifacts, never package uploads
 # or trust-policy changes. Application pushes do not rebuild these tools.
@@ -13,18 +13,6 @@ on:
 concurrency:
   group: canonical-verifier-bundle-${{ github.sha }}
   cancel-in-progress: false
-
-env:
-  # The compiler cache belongs to this repository: its key is a repository
-  # secret, not runner environment, because the runners serve every repository.
-  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
-  SCCACHE_REGION: us-west-2
-  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
-  SCCACHE_S3_USE_SSL: "true"
-  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
-  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 
 jobs:
   builder:
@@ -65,7 +53,6 @@ jobs:
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '4'
       CARGO_TERM_COLOR: never
-      SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
       VERIFIER_ARCH: ${{ matrix.arch }}
       BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
     steps:
@@ -105,6 +92,3 @@ jobs:
           path: |
             target/verifier-bundle/${{ matrix.arch }}.tar.gz
             target/verifier-bundle/${{ matrix.arch }}.tar.descriptor.json
-      - name: Report optional compiler cache
-        if: always()
-        run: bash tools/ci/sccache.sh report || true
