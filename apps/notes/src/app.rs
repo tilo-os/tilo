@@ -6023,7 +6023,7 @@ mod tests {
     const IO_HANG_BOUND: Duration = Duration::from_secs(60);
 
     fn settle_markdown_io(app: &mut NotesApp, doc: &mut AutoCommit) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + IO_HANG_BOUND;
         loop {
             app.drain_markdown_transfer(doc);
             if !app.markdown_job.is_pending() && app.markdown_transfer.is_none() {
