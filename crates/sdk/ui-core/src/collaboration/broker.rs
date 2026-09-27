@@ -1733,7 +1733,7 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
         reason = "certified inherited identities are supplied by Unix launch services"
     )
 )]
-trait SdkCertifiedIdentity: Send {
+trait SdkCertifiedIdentity: Send + Sync {
     fn channel_keys(
         &self,
         workspace_id: &str,
@@ -1856,7 +1856,8 @@ impl SdkCertifiedIdentity for runtime_identity::SigningIdentity {
 )]
 enum SdkDocumentSigner {
     Host(std::sync::Arc<dyn HostDocumentCommitter>),
-    Certified(Box<dyn SdkCertifiedIdentity>),
+    /// Shared so the identity service can be asked off the shovel thread.
+    Certified(std::sync::Arc<dyn SdkCertifiedIdentity>),
     /// Explicit-FD harnesses have no launcher identity service. Their
     /// in-process broker accepts this ephemeral signer; a production broker
     /// still rejects the uncertified join before any op reaches policy.
@@ -1933,7 +1934,7 @@ fn sdk_join_identity_from<I: SdkCertifiedIdentity + 'static>(
     Ok(SdkJoinIdentity {
         presentation,
         participant_kind: "person",
-        signer: SdkDocumentSigner::Certified(Box::new(identity)),
+        signer: SdkDocumentSigner::Certified(std::sync::Arc::new(identity)),
     })
 }
 
@@ -2817,6 +2818,10 @@ async fn drive_shovel(
     );
     let mut key_refresh = tokio::time::interval(CHANNEL_KEY_REFRESH);
     key_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // A certified identity service is asked on a blocking thread. The
+    // periodic round runs alongside this loop, which keeps sending while the
+    // routes keep receiving; at most one round is in flight.
+    let mut key_fetch: Option<KeyFetch> = None;
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
     let mut participant_handle: Option<String> = None;
@@ -2828,8 +2833,19 @@ async fn drive_shovel(
     loop {
         let queued = tokio::select! {
             queued = outbound_rx.recv() => queued,
-            _ = key_refresh.tick(), if asks_channel_keys => {
-                refresh_all_route_keys(&routes, &mut signer, &inbound_tx).await;
+            _ = key_refresh.tick(), if asks_channel_keys && key_fetch.is_none() => {
+                key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx).await;
+                continue;
+            }
+            fetched = async {
+                match key_fetch.as_mut() {
+                    Some(fetch) => fetch.await,
+                    None => std::future::pending().await,
+                }
+            }, if key_fetch.is_some() =>
+            {
+                key_fetch = None;
+                apply_fetched_keys(&routes, fetched, &mut signer, &inbound_tx).await;
                 continue;
             }
         };
@@ -3039,8 +3055,14 @@ async fn drive_shovel(
         }
         if asks_channel_keys && routes.len() > routes_before {
             // A route joined just now learns its keys (or that it waits)
-            // before its first edit rather than at the next tick.
-            refresh_all_route_keys(&routes, &mut signer, &inbound_tx).await;
+            // before its first edit rather than at the next tick. Only
+            // sending waits for that; the routes keep receiving.
+            if let Some(fetch) = key_fetch.take() {
+                apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx).await;
+            }
+            if let Some(fetch) = refresh_keys(&routes, &mut signer, &inbound_tx).await {
+                apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx).await;
+            }
         }
     }
 }
@@ -3962,20 +3984,27 @@ enum FrameSend {
     reason = "the host identity transport is retained only on the shovel LocalSet"
 )]
 async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigner) -> bool {
-    let Ok(known) = route.encryption.lock().map(|keys| {
-        keys.asks_identity_service()
-            .then(|| (keys.generation(), keys.state()))
-    }) else {
+    let Ok(known) = route
+        .encryption
+        .lock()
+        .map(|keys| keys.asks_identity_service().then(|| keys.generation()))
+    else {
         return false;
     };
-    let Some((generation, state)) = known else {
+    let Some(generation) = known else {
         return false;
     };
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
     let reply = match signer {
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
-            identity.channel_keys(&workspace_id, &route.spec.app_id, record_id, generation)
+            let query = KeyQuery::of(route, generation);
+            let mut fetched = certified_channel_keys(std::sync::Arc::clone(identity), vec![query])
+                .await
+                .into_iter();
+            return fetched
+                .next()
+                .is_some_and(|(_, _, reply)| update_route_keys(route, reply, generation));
         }
         LocalSdkDocumentSigner::Host(identity) => {
             identity
@@ -3986,22 +4015,160 @@ async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigne
             SdkDocumentSigner::Harness(_) | SdkDocumentSigner::Host(_),
         ) => return false,
     };
-    let reply = match reply {
-        Ok(reply) => reply,
-        Err(error) => {
-            tracing::debug!(?error, "collab: identity service refused channel keys");
-            runtime_identity::wire::ChannelKeysReply {
-                access: runtime_identity::wire::ChannelAccess::Unavailable,
-                generation,
-                keys: None,
-            }
+    update_route_keys(route, answered_keys(reply, generation), generation)
+}
+
+/// The keys the identity service answered, or, when it could not answer,
+/// that they are unavailable.
+fn answered_keys(
+    reply: Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>,
+    generation: u64,
+) -> runtime_identity::wire::ChannelKeysReply {
+    reply.unwrap_or_else(|error| {
+        tracing::debug!(?error, "collab: identity service refused channel keys");
+        runtime_identity::wire::ChannelKeysReply {
+            access: runtime_identity::wire::ChannelAccess::Unavailable,
+            generation,
+            keys: None,
         }
-    };
+    })
+}
+
+/// Take the identity service's `reply` for `route`, asked at `generation`.
+/// Returns whether the route's state or keys changed.
+fn update_route_keys(
+    route: &SdkRoute,
+    reply: runtime_identity::wire::ChannelKeysReply,
+    generation: u64,
+) -> bool {
     let Ok(mut keys) = route.encryption.lock() else {
         return false;
     };
+    let state = keys.state();
     keys.update(reply.access, reply.generation, reply.keys.as_deref());
     keys.generation() != generation || keys.state() != state
+}
+
+/// One route's question to the identity service, taken off the route so it
+/// can be asked on another thread.
+struct KeyQuery {
+    route: String,
+    workspace_id: String,
+    app_id: String,
+    record_id: String,
+    generation: u64,
+}
+
+impl KeyQuery {
+    fn of(route: &SdkRoute, generation: u64) -> Self {
+        Self {
+            route: route.spec.channel_id(),
+            workspace_id: route.spec.cluster_id.to_string(),
+            app_id: route.spec.app_id.clone(),
+            record_id: route.spec.record.clone().unwrap_or_default(),
+            generation,
+        }
+    }
+}
+
+/// The identity service's answers to one round of key questions: by route,
+/// with the generation each was asked at.
+type FetchedKeys = Vec<(String, u64, runtime_identity::wire::ChannelKeysReply)>;
+
+/// A round of key questions in flight on a blocking thread.
+type KeyFetch = std::pin::Pin<Box<dyn std::future::Future<Output = FetchedKeys>>>;
+
+/// Ask a certified identity service `queries` on a blocking thread: its
+/// socket answers as slowly as the service does, and the shovel thread
+/// carries every route's ops meanwhile.
+async fn certified_channel_keys(
+    identity: std::sync::Arc<dyn SdkCertifiedIdentity>,
+    queries: Vec<KeyQuery>,
+) -> FetchedKeys {
+    tokio::task::spawn_blocking(move || {
+        queries
+            .into_iter()
+            .map(|query| {
+                let reply = identity.channel_keys(
+                    &query.workspace_id,
+                    &query.app_id,
+                    &query.record_id,
+                    query.generation,
+                );
+                (
+                    query.route,
+                    query.generation,
+                    answered_keys(reply, query.generation),
+                )
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Start a round of key questions for every route that asks the identity
+/// service. A certified service is asked off this thread and the round is
+/// returned to be awaited alongside the loop; a host's asynchronous service
+/// is asked here, and its answers are taken at once.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+)]
+async fn refresh_keys(
+    routes: &std::collections::HashMap<String, SdkRoute>,
+    signer: &mut LocalSdkDocumentSigner,
+    inbound_tx: &InboundBridge,
+) -> Option<KeyFetch> {
+    let LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) = signer else {
+        refresh_all_route_keys(routes, signer, inbound_tx).await;
+        return None;
+    };
+    let queries: Vec<KeyQuery> = routes
+        .values()
+        .filter_map(|route| {
+            let keys = route.encryption.lock().ok()?;
+            keys.asks_identity_service()
+                .then(|| KeyQuery::of(route, keys.generation()))
+        })
+        .collect();
+    if queries.is_empty() {
+        return None;
+    }
+    Some(Box::pin(certified_channel_keys(
+        std::sync::Arc::clone(identity),
+        queries,
+    )))
+}
+
+/// Take a finished round's answers, then deliver what waited on them.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+)]
+async fn apply_fetched_keys(
+    routes: &std::collections::HashMap<String, SdkRoute>,
+    fetched: FetchedKeys,
+    signer: &mut LocalSdkDocumentSigner,
+    inbound_tx: &InboundBridge,
+) {
+    for (key, asked, reply) in fetched {
+        let Some(route) = routes.get(&key) else {
+            continue;
+        };
+        // A resend refreshed the route while the round was out: its answer
+        // is newer than this one.
+        if route
+            .encryption
+            .lock()
+            .is_ok_and(|keys| keys.generation() == asked)
+        {
+            update_route_keys(route, reply, asked);
+        }
+        if !deliver_waiting(route, signer, inbound_tx).await {
+            return;
+        }
+    }
 }
 
 /// Bring every route's keys up to date, report access changes to the app,
@@ -4017,43 +4184,61 @@ async fn refresh_all_route_keys(
 ) {
     for route in routes.values() {
         refresh_route_keys(route, signer).await;
-        let (state, outbound, inbound) = {
-            let Ok(mut keys) = route.encryption.lock() else {
-                continue;
-            };
-            (
-                keys.take_state_change(),
-                keys.take_held_outbound(),
-                keys.take_held_inbound(),
-            )
-        };
-        if let Some(state) = state
-            && !inbound_tx.send_durable(CollabEvent::ChannelAccess {
-                route: route.spec.clone(),
-                state,
-            })
-        {
+        if !deliver_waiting(route, signer, inbound_tx).await {
             return;
         }
-        for frame in outbound {
-            if send_document_frame(route, signer, frame, &inbound_tx.state)
-                .await
-                .is_err()
-            {
-                tracing::warn!("collab: an edit that waited for channel access was not sent");
-            }
-        }
-        for (envelope, from_user_id) in inbound {
-            let Ok(event) = signed_document_event(envelope, from_user_id, &route.encryption) else {
-                continue;
-            };
-            if let Some(complete) = complete_document_event(event, &inbound_tx.reassembly.live)
-                && !inbound_tx.send_document(complete).await
-            {
-                return;
-            }
+    }
+}
+
+/// Report `route`'s access change to the app, then send the edits and
+/// deliver the ciphertext that waited on its keys. `false` once the app
+/// side is gone.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+)]
+async fn deliver_waiting(
+    route: &SdkRoute,
+    signer: &mut LocalSdkDocumentSigner,
+    inbound_tx: &InboundBridge,
+) -> bool {
+    let (state, outbound, inbound) = {
+        let Ok(mut keys) = route.encryption.lock() else {
+            return true;
+        };
+        (
+            keys.take_state_change(),
+            keys.take_held_outbound(),
+            keys.take_held_inbound(),
+        )
+    };
+    if let Some(state) = state
+        && !inbound_tx.send_durable(CollabEvent::ChannelAccess {
+            route: route.spec.clone(),
+            state,
+        })
+    {
+        return false;
+    }
+    for frame in outbound {
+        if send_document_frame(route, signer, frame, &inbound_tx.state)
+            .await
+            .is_err()
+        {
+            tracing::warn!("collab: an edit that waited for channel access was not sent");
         }
     }
+    for (envelope, from_user_id) in inbound {
+        let Ok(event) = signed_document_event(envelope, from_user_id, &route.encryption) else {
+            continue;
+        };
+        if let Some(complete) = complete_document_event(event, &inbound_tx.reassembly.live)
+            && !inbound_tx.send_document(complete).await
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// Shovel-thread Cap'n Proto endpoint for an application's pull directory.
@@ -5244,6 +5429,8 @@ mod tests {
 
     #[derive(Default)]
     struct Captures {
+        /// How long after it is asked for the op stream hands out each op.
+        op_stream_delay: Option<Duration>,
         #[cfg(unix)]
         directory: DirectoryCaptures,
         committed_history_fixture: Option<Vec<u8>>,
@@ -5515,6 +5702,7 @@ mod tests {
 
     struct FakeOpStream {
         backlog: OpBacklog,
+        captures: SharedCaptures,
     }
 
     impl stream::Server for FakeOpStream {
@@ -5528,10 +5716,16 @@ mod tests {
                 return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
             }
             let (op, from) = backlog.remove(0);
-            let mut r = results.get();
-            r.set_op(&op);
-            r.set_from_user_id(&from);
-            Promise::ok(())
+            let delay = self.captures.lock().unwrap().op_stream_delay;
+            Promise::from_future(async move {
+                if let Some(delay) = delay {
+                    tokio::time::sleep(delay).await;
+                }
+                let mut r = results.get();
+                r.set_op(&op);
+                r.set_from_user_id(&from);
+                Ok(())
+            })
         }
     }
 
@@ -5809,6 +6003,7 @@ mod tests {
         ) -> Promise<(), capnp::Error> {
             let client: stream::Client = capnp_rpc::new_client(FakeOpStream {
                 backlog: self.op_backlog.clone(),
+                captures: self.captures.clone(),
             });
             results.get().set_stream(client);
             Promise::ok(())
@@ -6224,7 +6419,7 @@ mod tests {
             assert_eq!(presentation.workspace_id, cluster_id.to_string());
             assert_eq!(presentation.device_certificate, b"fixture certificate");
             assert_eq!(presentation.proof, vec![7; 64]);
-            let requests = requests_rx.recv_timeout(HANG_GUARD).unwrap();
+            let requests = tilo_test_env::recv("the host identity requests", &requests_rx);
             manager.send(CollabRequest::document_incremental(
                 b"fixture document change".to_vec(),
             ));
@@ -6234,12 +6429,14 @@ mod tests {
                     runtime_identity::wire::Request::CollaborationOp { .. }
                 )
             };
-            assert!(wait_until(
-                || host_identity_requests(&requests.lock().unwrap())
-                    .iter()
-                    .any(is_op),
-                HANG_GUARD
-            ));
+            tilo_test_env::wait_until(
+                "`host_identity_requests(&requests.lock().unwrap()).iter().any(is_op)`",
+                || {
+                    host_identity_requests(&requests.lock().unwrap())
+                        .iter()
+                        .any(is_op)
+                },
+            );
             let requests = host_identity_requests(&requests.lock().unwrap());
             assert!(
                 matches!(&requests[1], runtime_identity::wire::Request::CollaborationJoin { workspace_id } if workspace_id == &cluster_id.to_string())
@@ -6316,7 +6513,7 @@ mod tests {
                 _ => panic!("stream and identity bootstrap must not bypass refused Hello"),
             }
             assert_eq!(
-                attempt_rx.recv_timeout(HANG_GUARD).unwrap(),
+                tilo_test_env::recv("the primary join attempt", &attempt_rx),
                 channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
             );
             assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -6324,9 +6521,7 @@ mod tests {
                 attempt_rx.try_recv().is_err(),
                 "must not retry another route"
             );
-            stop_rx
-                .recv_timeout(HANG_GUARD)
-                .expect("fixture broker stops after failed manager");
+            tilo_test_env::recv("fixture broker stops after failed manager", &stop_rx);
         }
     }
 
@@ -6363,7 +6558,7 @@ mod tests {
             );
             let _ = result_tx.send(result.map(drop));
         });
-        started_rx.recv_timeout(HANG_GUARD).unwrap();
+        tilo_test_env::recv("the fixture broker to start", &started_rx);
         let result = result_rx
             .recv_timeout(SHOVEL_INIT_TIMEOUT * 2)
             .expect("a pending host handoff must not hang its caller");
@@ -6374,9 +6569,10 @@ mod tests {
             }
             _ => panic!("a pending handoff cannot produce a connected session"),
         }
-        dropped_rx
-            .recv_timeout(HANG_GUARD)
-            .expect("timed-out async handoff must release its owned resources");
+        tilo_test_env::recv(
+            "timed-out async handoff must release its owned resources",
+            &dropped_rx,
+        );
     }
 
     #[test]
@@ -6429,7 +6625,7 @@ mod tests {
             "must wait for the worker-side route deadline"
         );
         assert_eq!(
-            attempt_rx.recv_timeout(HANG_GUARD).unwrap(),
+            tilo_test_env::recv("the primary join attempt", &attempt_rx),
             channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -6437,9 +6633,10 @@ mod tests {
             attempt_rx.try_recv().is_err(),
             "must not retry another route"
         );
-        stop_rx
-            .recv_timeout(HANG_GUARD)
-            .expect("timed-out primary join must cancel and close the fixture broker");
+        tilo_test_env::recv(
+            "timed-out primary join must cancel and close the fixture broker",
+            &stop_rx,
+        );
         drop(release);
     }
 
@@ -6509,32 +6706,43 @@ mod tests {
                 Some(b"fixture certificate".to_vec()),
                 vec![runtime_identity::wire::Response::Signature(vec![7; 64])],
             );
-            let broker = Rc::new(FakeBroker {
-                captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            });
-            let gate = HostJoinGate {
-                broker,
-                release: RefCell::new(delayed.then_some(wait)),
-                attempted,
-                stopped,
-            };
             let (client, server) = tokio::io::duplex(64 * 1024);
-            let broker_client: collab_service::Client = capnp_rpc::new_client(gate);
-            let (r, w) = tokio::io::split(server);
-            let network = Box::new(twoparty::VatNetwork::new(
-                r.compat(),
-                w.compat_write(),
-                rpc_twoparty_capnp::Side::Server,
-                capnp::message::ReaderOptions::default(),
-            ));
-            let rpc = RpcSystem::new(network, Some(broker_client.client));
-            tokio::task::spawn_local(async move {
-                let _ = rpc.await;
-            });
+            // The broker is another process in production: serve it on its
+            // own thread, so it ends only when the manager closes the
+            // connection, never because the manager's worker ended.
+            thread::Builder::new()
+                .name("ui-collab-test-join-gate".into())
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    tokio::task::LocalSet::new().block_on(&runtime, async move {
+                        let broker = Rc::new(FakeBroker {
+                            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
+                            op_backlog: vec![],
+                            presence_backlog: vec![],
+                            context_backlog: vec![],
+                            scrollback_response: None,
+                        });
+                        let gate = HostJoinGate {
+                            broker,
+                            release: RefCell::new(delayed.then_some(wait)),
+                            attempted,
+                            stopped,
+                        };
+                        let broker_client: collab_service::Client = capnp_rpc::new_client(gate);
+                        let (r, w) = tokio::io::split(server);
+                        let network = Box::new(twoparty::VatNetwork::new(
+                            r.compat(),
+                            w.compat_write(),
+                            rpc_twoparty_capnp::Side::Server,
+                            capnp::message::ReaderOptions::default(),
+                        ));
+                        let _ = RpcSystem::new(network, Some(broker_client.client)).await;
+                    });
+                })
+                .unwrap();
             Ok((client, identity))
         });
         (connector, HostJoinRelease(Some(release)))
@@ -6604,9 +6812,9 @@ mod tests {
                 output: tilo_actions::ActionOutput::default(),
             },
         });
-        assert!(
-            wait_until(|| !manager.is_connected(), Duration::from_secs(2)),
-            "SDK stayed healthy after owner document RPC failed"
+        tilo_test_env::wait_until(
+            "the SDK to disconnect after the owner document RPC failed",
+            || !manager.is_connected(),
         );
         assert_eq!(
             captures.lock().unwrap().terminal_updates,
@@ -6643,10 +6851,7 @@ mod tests {
                 },
             });
         }
-        assert!(wait_until(
-            || !manager.is_connected(),
-            Duration::from_secs(2)
-        ));
+        tilo_test_env::wait_until("`!manager.is_connected()`", || !manager.is_connected());
         assert_eq!(
             captures.lock().unwrap().terminal_updates,
             2,
@@ -6691,12 +6896,14 @@ mod tests {
             record: Some("second".into()),
         };
         manager.join_route(secondary.clone());
-        assert!(wait_until(
-            || broker_state(&manager)
-                .document_reads
-                .publishable(&secondary.channel_id()),
-            Duration::from_secs(2)
-        ));
+        tilo_test_env::wait_until(
+            "`broker_state(&manager).document_reads.publishable(&secondary.channel_id())`",
+            || {
+                broker_state(&manager)
+                    .document_reads
+                    .publishable(&secondary.channel_id())
+            },
+        );
         assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
         let first = manager.begin_document_publication_barrier().unwrap();
         assert!(
@@ -6710,20 +6917,17 @@ mod tests {
         let second = manager.begin_document_publication_barrier().unwrap();
         let mut gates = gates.into_iter();
         let (entered, release) = gates.next().unwrap();
-        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the gated document RPC", &entered);
         assert_eq!(first.try_complete(), Ok(None));
         assert_eq!(second.try_complete(), Ok(None));
         release.send(Ok(())).unwrap();
         let (entered, release) = gates.next().unwrap();
-        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the gated document RPC", &entered);
         // The second RPC can only begin after the first marker has resolved.
         assert_eq!(first.wait(Some(Instant::now())), Ok(()));
         assert_eq!(second.try_complete(), Ok(None));
         release.send(Ok(())).unwrap();
-        assert_eq!(
-            second.wait(Some(Instant::now() + Duration::from_secs(2))),
-            Ok(())
-        );
+        assert_eq!(second.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
         assert_eq!(captures.lock().unwrap().signed_ops.len(), 2);
         assert!(manager.is_connected());
         drop(manager);
@@ -6854,7 +7058,7 @@ mod tests {
             Some(SdkJoinIdentity {
                 presentation: Vec::new(),
                 participant_kind: "person",
-                signer: SdkDocumentSigner::Certified(Box::new(KeyedIdentity {
+                signer: SdkDocumentSigner::Certified(Arc::new(KeyedIdentity {
                     asked: Arc::clone(&asked),
                 })),
             }),
@@ -6874,6 +7078,151 @@ mod tests {
         drop(manager);
         thread.join().unwrap();
         asked
+    }
+
+    /// A certified identity service that answers its first question at
+    /// once, with `keys`, and every later one only after `slow`.
+    #[cfg(unix)]
+    struct SlowIdentity {
+        keys: Vec<u8>,
+        asked: std::sync::atomic::AtomicUsize,
+        slow: Duration,
+    }
+
+    #[cfg(unix)]
+    impl SdkCertifiedIdentity for SlowIdentity {
+        fn channel_keys(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: u64,
+        ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>
+        {
+            let first = self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel) == 0;
+            if !first {
+                thread::sleep(self.slow);
+            }
+            Ok(runtime_identity::wire::ChannelKeysReply {
+                access: runtime_identity::wire::ChannelAccess::Ready,
+                generation: 1,
+                keys: first.then(|| self.keys.clone()),
+            })
+        }
+        fn device_certificate(&self) -> Option<&[u8]> {
+            Some(b"fixture")
+        }
+        fn signing_public_key(&self) -> [u8; 32] {
+            [5; 32]
+        }
+        fn sign_collaboration_join(
+            &self,
+            _: &str,
+        ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+            Ok([7; 64])
+        }
+        fn sign_collaboration_op(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[u8],
+        ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+            Ok([9; 64])
+        }
+    }
+
+    /// An endpoint keeps receiving while its identity service is slow to
+    /// answer a key refresh: an op that arrives during the refresh is
+    /// delivered at once, not once the service has answered.
+    #[test]
+    #[cfg(unix)]
+    fn a_slow_identity_service_never_holds_up_incoming_ops() {
+        const SLOW: Duration = Duration::from_secs(6);
+        // The op arrives after the first refresh tick, while it waits.
+        const ARRIVES: Duration = Duration::from_millis(1500);
+        let app_id = "so.tilo.test";
+        let cluster = Uuid::new_v4();
+        let workspace = cluster.to_string();
+        let channel = collab_types::document_channel_id(app_id, &workspace, "");
+        let artifact = collab_types::document_artifact_id(app_id, &workspace, "");
+        let group = channel_crypto::ChannelGroup::create(
+            channel,
+            channel_crypto::MemberKey::generate("device").unwrap(),
+        )
+        .unwrap();
+        let frame = collab_types::DocumentMutation::Incremental(b"remote change".to_vec())
+            .encode()
+            .unwrap();
+        let (metadata, ciphertext) = group
+            .seal_content(artifact, document_frame_retention(&frame), &frame)
+            .unwrap();
+        let op = SignedOp::new_unsigned_with_encryption(
+            ciphertext,
+            artifact,
+            collab_types::Ed25519PublicKey::from_bytes([3; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpClass::Splice,
+            crate::time::SystemTime::UNIX_EPOCH,
+            1,
+            metadata,
+        );
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                op_stream_delay: Some(ARRIVES),
+                ..Captures::default()
+            })),
+            op_backlog: vec![(postcard::to_stdvec(&op).unwrap(), "peer".to_owned())],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _captures, thread) = stand_up_fake_broker(broker);
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: SdkDocumentSigner::Certified(Arc::new(SlowIdentity {
+                    keys: group.content_keys().unwrap().to_bytes().unwrap().to_vec(),
+                    asked: std::sync::atomic::AtomicUsize::new(0),
+                    slow: SLOW,
+                })),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::disabled();
+        manager.backend = Backend::Transport(Box::new(sdk));
+        let joined = crate::time::now();
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: app_id.into(),
+            cluster_id: cluster,
+            record: None,
+            handle: None,
+        }));
+        manager.await_primary_route().unwrap();
+        let events = poll_until(&mut manager, |events| {
+            events
+                .iter()
+                .any(|event| matches!(event, CollabEvent::Document { .. }))
+        });
+        let delivered = joined.elapsed();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                CollabEvent::Document {
+                    decrypted_payload: Some(payload),
+                    ..
+                } if *payload == frame
+            )),
+            "the op arrived opened: {events:?}"
+        );
+        assert!(
+            delivered < ARRIVES + SLOW / 2,
+            "the op waited {delivered:?} on a key refresh"
+        );
+        drop(manager);
+        thread.join().unwrap();
     }
 
     /// A committed route's owner applies each edit itself and holds no
@@ -6902,7 +7251,7 @@ mod tests {
             Some(SdkJoinIdentity {
                 presentation: Vec::new(),
                 participant_kind: "person",
-                signer: SdkDocumentSigner::Certified(Box::new(RefusedDocumentIdentity)),
+                signer: SdkDocumentSigner::Certified(Arc::new(RefusedDocumentIdentity)),
             }),
         )
         .unwrap();
@@ -6919,7 +7268,7 @@ mod tests {
         // Signing may fail before the marker enqueue; either path must carry the cause.
         let error = match manager.begin_document_publication_barrier() {
             Ok(receipt) => receipt
-                .wait(Some(Instant::now() + Duration::from_secs(2)))
+                .wait(Some(tilo_test_env::hang_deadline()))
                 .unwrap_err(),
             Err(error) => error,
         };
@@ -6957,7 +7306,7 @@ mod tests {
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
         assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the gated document RPC", &observed);
         assert!(manager.send(CollabRequest::document_incremental(
             b"retained original".to_vec()
         )));
@@ -6966,10 +7315,9 @@ mod tests {
         let ready = state.document_reads.close_for_test(&key);
         let receipt = manager.begin_document_publication_barrier().unwrap();
         release.send(Ok(())).unwrap();
-        assert!(wait_until(
-            || captures.lock().unwrap().signed_ops.len() == 1,
-            Duration::from_secs(2)
-        ));
+        tilo_test_env::wait_until("`captures.lock().unwrap().signed_ops.len() == 1`", || {
+            captures.lock().unwrap().signed_ops.len() == 1
+        });
         std::thread::sleep(Duration::from_millis(60));
         assert_eq!(
             receipt.try_complete(),
@@ -6978,10 +7326,7 @@ mod tests {
         );
         assert!(state.command_bytes.0.load(Ordering::Acquire) >= b"retained original".len());
         ready.store(true, Ordering::Release);
-        assert_eq!(
-            receipt.wait(Some(Instant::now() + Duration::from_secs(2))),
-            Ok(())
-        );
+        assert_eq!(receipt.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
         let captured = captures.lock().unwrap().signed_ops.clone();
         assert_eq!(captured.len(), 2);
         let envelope: SignedOp = postcard::from_bytes(&captured[1]).unwrap();
@@ -7028,7 +7373,7 @@ mod tests {
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
         assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the gated document RPC", &observed);
         assert!(manager.send(CollabRequest::document_incremental(b"must replay".to_vec())));
         let state = broker_state(&manager);
         let ready = state
@@ -7036,15 +7381,14 @@ mod tests {
             .close_for_test(&manager.primary_route().unwrap().route.channel_id());
         let receipt = manager.begin_document_publication_barrier().unwrap();
         release.send(Ok(())).unwrap();
-        assert!(wait_until(
-            || captures.lock().unwrap().signed_ops.len() == 1,
-            Duration::from_secs(2)
-        ));
+        tilo_test_env::wait_until("`captures.lock().unwrap().signed_ops.len() == 1`", || {
+            captures.lock().unwrap().signed_ops.len() == 1
+        });
         if invalidate {
             state.fail_closed("actual test worker invalidation");
         }
         let error = receipt
-            .wait(Some(Instant::now() + Duration::from_secs(5)))
+            .wait(Some(tilo_test_env::hang_deadline()))
             .unwrap_err();
         assert!(
             matches!(error, DocumentPublicationError::Failed(_)),
@@ -7055,10 +7399,10 @@ mod tests {
         ready.store(true, Ordering::Release);
         assert!(!manager.send(CollabRequest::document_incremental(b"late reopen".to_vec())));
         assert_eq!(captures.lock().unwrap().signed_ops.len(), 1);
-        assert!(wait_until(
+        tilo_test_env::wait_until(
+            "`state.command_bytes.0.load(Ordering::Acquire) == 0`",
             || state.command_bytes.0.load(Ordering::Acquire) == 0,
-            Duration::from_secs(2)
-        ));
+        );
         drop(manager);
         thread.join().unwrap();
     }
@@ -7087,11 +7431,11 @@ mod tests {
         let (fd, _, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
         assert!(manager.send(CollabRequest::document_incremental(b"failed".to_vec())));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the gated document RPC", &observed);
         let receipt = manager.begin_document_publication_barrier().unwrap();
         release.send(Err("document RPC refused".into())).unwrap();
         let error = receipt
-            .wait(Some(Instant::now() + Duration::from_secs(2)))
+            .wait(Some(tilo_test_env::hang_deadline()))
             .unwrap_err();
         assert!(
             error.to_string().contains("document RPC refused"),
@@ -7188,7 +7532,7 @@ mod tests {
             manager
                 .begin_document_publication_barrier()
                 .unwrap()
-                .wait(Some(Instant::now() + Duration::from_secs(2))),
+                .wait(Some(tilo_test_env::hang_deadline())),
             Ok(())
         );
         assert!(manager.is_connected());
@@ -7223,26 +7567,23 @@ mod tests {
             mutation: collab_types::DocumentMutation::Snapshot(b"wedged document".to_vec()),
             authorization: None,
         }));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the gated document RPC", &observed);
         assert!(manager.send(CollabRequest::NativeMediaCommand {
             request_id: 1,
             command: Request::new(Command::SetMuted { muted: false })
         }));
-        assert!(wait_until(
+        tilo_test_env::wait_until(
+            "`captures.lock().unwrap().media_commands.len() == 1`",
             || captures.lock().unwrap().media_commands.len() == 1,
-            Duration::from_secs(1)
-        ));
+        );
         let start = Instant::now();
         assert!(manager.send(CollabRequest::NativeMediaCommand {
             request_id: 2,
             command: Request::new(Command::Leave)
         }));
-        assert!(
-            wait_until(
-                || captures.lock().unwrap().media_commands.len() == 2,
-                Duration::from_secs(1)
-            ),
-            "Leave waited behind document/unmute RPC"
+        tilo_test_env::wait_until(
+            "Leave to dispatch past the wedged document and unmute RPCs",
+            || captures.lock().unwrap().media_commands.len() == 2,
         );
         assert!(start.elapsed() < Duration::from_secs(1));
         let requests = captures.lock().unwrap().media_commands.clone();
@@ -7250,24 +7591,18 @@ mod tests {
         assert!(requests[1].intent > requests[0].intent);
         let _ = unmute_reply.send(());
         let mut retired = false;
-        assert!(
-            wait_until(
-                || {
-                    retired |= manager.poll().into_iter().any(|event| {
-                        matches!(
-                            event,
-                            CollabEvent::NativeMediaCommandResult {
-                                request_id: 1,
-                                result: Err(_)
-                            }
-                        )
-                    });
-                    retired
-                },
-                Duration::from_secs(1)
-            ),
-            "superseded unmute must retire its pending request"
-        );
+        tilo_test_env::wait_until("superseded unmute must retire its pending request", || {
+            retired |= manager.poll().into_iter().any(|event| {
+                matches!(
+                    event,
+                    CollabEvent::NativeMediaCommandResult {
+                        request_id: 1,
+                        result: Err(_)
+                    }
+                )
+            });
+            retired
+        });
         release.send(Ok(())).unwrap();
         drop(manager);
         worker.join().unwrap();
@@ -7302,28 +7637,28 @@ mod tests {
                 channel_id: "voice".into()
             })
         }));
-        assert!(wait_until(
+        tilo_test_env::wait_until(
+            "`captures.lock().unwrap().media_commands.len() == 1`",
             || captures.lock().unwrap().media_commands.len() == 1,
-            Duration::from_secs(1)
-        ));
+        );
         assert!(manager.send(CollabRequest::Document {
             mutation: collab_types::DocumentMutation::Snapshot(b"wedged document".to_vec()),
             authorization: None,
         }));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the gated document RPC", &observed);
         drop(manager);
-        assert!(
-            wait_until(
-                || captures
+        tilo_test_env::wait_until(
+            "manager drop must use reserved teardown before document completion",
+            || {
+                captures
                     .lock()
                     .unwrap()
                     .media_commands
                     .iter()
-                    .any(|request| request.intent == u64::MAX
-                        && matches!(request.command, Command::Leave)),
-                Duration::from_secs(1)
-            ),
-            "manager drop must use reserved teardown before document completion"
+                    .any(|request| {
+                        request.intent == u64::MAX && matches!(request.command, Command::Leave)
+                    })
+            },
         );
         release.send(Ok(())).unwrap();
         worker.join().unwrap();
@@ -7362,7 +7697,7 @@ mod tests {
         manager
             .begin_document_publication_barrier()
             .unwrap()
-            .wait(Some(Instant::now() + Duration::from_secs(2)))
+            .wait(Some(tilo_test_env::hang_deadline()))
             .unwrap();
         for (index, route) in routes.into_iter().enumerate() {
             assert!(
@@ -7377,10 +7712,10 @@ mod tests {
                     .is_ok()
             );
         }
-        assert!(wait_until(
+        tilo_test_env::wait_until(
+            "`captures.lock().unwrap().media_commands.len() == 8`",
             || captures.lock().unwrap().media_commands.len() == 8,
-            Duration::from_secs(1)
-        ));
+        );
         assert!(
             !manager.send(CollabRequest::NativeMediaCommand {
                 request_id: 9,
@@ -7395,15 +7730,14 @@ mod tests {
             }),
             "full normal lane cannot block teardown"
         );
-        assert!(wait_until(
-            || captures
+        tilo_test_env::wait_until("the reserved Leave to reach the broker", || {
+            captures
                 .lock()
                 .unwrap()
                 .media_commands
                 .iter()
-                .any(|request| matches!(request.command, Command::Leave)),
-            Duration::from_secs(1)
-        ));
+                .any(|request| matches!(request.command, Command::Leave))
+        });
         for release in releases {
             let _ = release.send(());
         }
@@ -7462,7 +7796,7 @@ mod tests {
                             Command::SetMuted { muted: false }
                         })
                     ));
-                    tokio::time::timeout(Duration::from_secs(1), async {
+                    tilo_test_env::within("the stop command to reach the broker", async {
                         while captures.lock().unwrap().media_commands.is_empty() {
                             tokio::task::yield_now().await;
                         }
@@ -7470,8 +7804,7 @@ mod tests {
                             tokio::task::yield_now().await;
                         }
                     })
-                    .await
-                    .unwrap();
+                    .await;
                     let captured = captures.lock().unwrap();
                     assert_eq!(
                         captured.media_stops, 1,
@@ -7532,13 +7865,12 @@ mod tests {
                         1,
                         Request::new(Command::SetMuted { muted: true })
                     ));
-                    tokio::time::timeout(Duration::from_secs(1), async {
+                    tilo_test_env::within("the mute command to reach the broker", async {
                         while captures.lock().unwrap().media_commands.is_empty() {
                             tokio::task::yield_now().await;
                         }
                     })
-                    .await
-                    .unwrap();
+                    .await;
                     assert!(sender.send(
                         "fixture-admitted-route".into(),
                         2,
@@ -7558,7 +7890,7 @@ mod tests {
                     } else {
                         drop(release);
                     }
-                    let later = tokio::time::timeout(Duration::from_secs(1), async {
+                    let later = tilo_test_env::within("the later unmute result", async {
                         loop {
                             if let CollabEvent::NativeMediaCommandResult {
                                 request_id: 2,
@@ -7569,8 +7901,7 @@ mod tests {
                             }
                         }
                     })
-                    .await
-                    .unwrap();
+                    .await;
                     if succeed {
                         assert!(later.is_ok());
                         assert!(captures.lock().unwrap().media_pending_consent);
@@ -7701,39 +8032,22 @@ mod tests {
         (manager, scope, wakes)
     }
 
-    /// Upper bound for waits on the fake broker. Every wait returns as soon
-    /// as its condition holds; the guard only turns a lost message into a
-    /// failure instead of a hang, so it can be generous without slowing a
-    /// passing run.
-    const HANG_GUARD: Duration = Duration::from_secs(30);
-
-    /// Poll until the events received so far satisfy `done`, or
-    /// [`HANG_GUARD`] passes. Returns everything received either way, so the
-    /// caller's assertions report what did arrive.
+    /// Poll until the events received so far satisfy `done`, or the hang
+    /// bound passes. Returns everything received either way, so the caller's
+    /// assertions report what did arrive.
     fn poll_until(
         mgr: &mut CollaborationManager,
         mut done: impl FnMut(&[CollabEvent]) -> bool,
     ) -> Vec<CollabEvent> {
-        let start = crate::time::now();
+        let deadline = tilo_test_env::hang_deadline();
         let mut events = Vec::new();
         loop {
             events.extend(mgr.poll());
-            if done(&events) || start.elapsed() >= HANG_GUARD {
+            if done(&events) || crate::time::now() >= deadline {
                 return events;
             }
             thread::sleep(Duration::from_millis(5));
         }
-    }
-
-    fn wait_until<F: FnMut() -> bool>(mut cond: F, deadline: Duration) -> bool {
-        let start = crate::time::now();
-        while start.elapsed() < deadline {
-            if cond() {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(5));
-        }
-        false
     }
 
     #[test]
@@ -8198,10 +8512,9 @@ mod tests {
                 presentation.clone(),
             );
 
-            assert!(
-                wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD,),
-                "join_channel must be observed"
-            );
+            tilo_test_env::wait_until("join_channel must be observed", || {
+                !captures.lock().unwrap().joined.is_empty()
+            });
             let joined = captures.lock().unwrap().joined.clone();
             assert_eq!(joined.len(), 1);
             assert_eq!(joined[0].1, presentation);
@@ -8232,21 +8545,18 @@ mod tests {
             // This calls the production layout/draw passes. No input, palette,
             // explicit publication, or app-owned action invocation primes the app.
             crate::app::draw_prepared_component_test_frame(&mut app);
-            assert!(
-                wait_until(
-                    || {
-                        let seen = captures.lock().unwrap();
-                        seen.action_directories.iter().any(|id| id == &app_id)
-                            && seen.action_publications.iter().any(|(id, actions)| {
-                                id == &app_id
-                                    && actions.iter().any(|(label, action)| {
-                                        label == "Complete" && action == "activate"
-                                    })
-                            })
-                    },
-                    Duration::from_secs(2)
-                ),
-                "the first rendered frame must publish its semantic actions to the broker without input"
+            tilo_test_env::wait_until(
+                "the first rendered frame must publish its semantic actions to the broker without input",
+                || {
+                    let seen = captures.lock().unwrap();
+                    seen.action_directories.iter().any(|id| id == &app_id)
+                        && seen.action_publications.iter().any(|(id, actions)| {
+                            id == &app_id
+                                && actions.iter().any(|(label, action)| {
+                                    label == "Complete" && action == "activate"
+                                })
+                        })
+                },
             );
         }
     }
@@ -8326,10 +8636,9 @@ mod tests {
             let cluster = Uuid::new_v4();
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", cluster);
 
-            assert!(
-                wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
-                "join_channel must be observed"
-            );
+            tilo_test_env::wait_until("join_channel must be observed", || {
+                !captures.lock().unwrap().joined.is_empty()
+            });
             let joined = captures.lock().unwrap().joined.clone();
             assert_eq!(joined.len(), 1);
             // The channel id carries the whole address, app id included.
@@ -8353,13 +8662,9 @@ mod tests {
                 envelope: Box::new(op),
             });
 
-            assert!(
-                wait_until(
-                    || !captures.lock().unwrap().signed_ops.is_empty(),
-                    HANG_GUARD,
-                ),
-                "send() must reach the SDK",
-            );
+            tilo_test_env::wait_until("send() must reach the SDK", || {
+                !captures.lock().unwrap().signed_ops.is_empty()
+            });
             let seen = captures.lock().unwrap().signed_ops.clone();
             assert_eq!(seen, vec![expected_bytes]);
         }
@@ -8388,33 +8693,23 @@ mod tests {
             let delta = document.save_after(&heads);
             // The route refuses documents until it is joined and its document
             // mode is resolved; the first refused attempt starts that join.
-            assert!(
-                wait_until(
-                    || {
-                        manager
-                            .try_send_to_route(
-                                route.clone(),
-                                CollabRequest::document_snapshot(snapshot.clone()),
-                            )
-                            .is_ok()
-                    },
-                    HANG_GUARD
-                ),
-                "the owned route becomes publishable"
-            );
+            tilo_test_env::wait_until("the owned route becomes publishable", || {
+                manager
+                    .try_send_to_route(
+                        route.clone(),
+                        CollabRequest::document_snapshot(snapshot.clone()),
+                    )
+                    .is_ok()
+            });
             manager
                 .try_send_to_route(
                     route.clone(),
                     CollabRequest::document_incremental(delta.clone()),
                 )
                 .unwrap();
-            assert!(
-                wait_until(
-                    || captures.lock().unwrap().signed_ops.len() == 2,
-                    HANG_GUARD
-                ),
-                "both raw requests reach SDK signed RPC"
-            );
+            tilo_test_env::wait_until("both raw requests reach SDK signed RPC", || {
+                captures.lock().unwrap().signed_ops.len() == 2
+            });
             let captured = captures.lock().unwrap();
             assert!(captured.joined.iter().any(|(channel, _)| channel
                 == &channel_key::format("actual-owner", &workspace.to_string(), "tab:qualified")));
@@ -8469,7 +8764,7 @@ mod tests {
             manager
                 .begin_document_publication_barrier()
                 .expect("the broker transport supports publication barriers")
-                .wait(Some(crate::time::now() + HANG_GUARD))
+                .wait(Some(tilo_test_env::hang_deadline()))
                 .expect("every queued document was published");
             assert_eq!(
                 captures.lock().unwrap().signed_ops.len(),
@@ -8492,10 +8787,9 @@ mod tests {
             };
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-            assert!(
-                wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
-                "join_channel must be observed",
-            );
+            tilo_test_env::wait_until("join_channel must be observed", || {
+                !captures.lock().unwrap().joined.is_empty()
+            });
 
             let key = PresenceKey::Tab {
                 id: "note-1".to_owned(),
@@ -8527,20 +8821,17 @@ mod tests {
                 payload: PresencePayload::Left,
             });
 
-            assert!(
-                wait_until(
-                    || {
-                        let c = captures.lock().unwrap();
-                        c.pointer_publishes.len() == 1
-                            && c.caret_publishes.len() == 1
-                            && c.selection_publishes.len() == 1
-                            && c.typing_publishes.len() == 1
-                            && c.arrived.len() == 1
-                            && c.left.len() == 1
-                    },
-                    HANG_GUARD,
-                ),
+            tilo_test_env::wait_until(
                 "every presence variant must reach the corresponding SDK method",
+                || {
+                    let c = captures.lock().unwrap();
+                    c.pointer_publishes.len() == 1
+                        && c.caret_publishes.len() == 1
+                        && c.selection_publishes.len() == 1
+                        && c.typing_publishes.len() == 1
+                        && c.arrived.len() == 1
+                        && c.left.len() == 1
+                },
             );
             let (
                 pointer_publishes,
@@ -8847,10 +9138,9 @@ mod tests {
             };
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, app_id, cluster);
-            assert!(wait_until(
-                || !captures.lock().unwrap().joined.is_empty(),
-                HANG_GUARD
-            ));
+            tilo_test_env::wait_until("`!captures.lock().unwrap().joined.is_empty()`", || {
+                !captures.lock().unwrap().joined.is_empty()
+            });
             mgr.install_document_encryption(
                 RouteSpec {
                     app_id: app_id.to_owned(),
@@ -9133,10 +9423,9 @@ mod tests {
             };
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-            assert!(
-                wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
-                "join_channel must precede scrollback fetch",
-            );
+            tilo_test_env::wait_until("join_channel must precede scrollback fetch", || {
+                !captures.lock().unwrap().joined.is_empty()
+            });
 
             let artifact = collab_types::ArtifactId::new();
             mgr.send(CollabRequest::FetchScrollback {
@@ -9259,7 +9548,7 @@ mod tests {
     fn assert_document_publication_failure(manager: &mut CollaborationManager, expected: &str) {
         let error = manager
             .begin_document_publication_barrier()
-            .and_then(|receipt| receipt.wait(Some(Instant::now() + Duration::from_secs(2))))
+            .and_then(|receipt| receipt.wait(Some(tilo_test_env::hang_deadline())))
             .unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
     }
@@ -9360,13 +9649,10 @@ mod tests {
             b"default before hydration".to_vec()
         )));
         let mut initial = None;
-        assert!(wait_until(
-            || {
-                initial = manager.prepare_native_record(&want.id);
-                initial.is_some()
-            },
-            Duration::from_secs(3)
-        ));
+        tilo_test_env::wait_until("the native record to hydrate", || {
+            initial = manager.prepare_native_record(&want.id);
+            initial.is_some()
+        });
         let read = initial.unwrap();
         let mut set = crate::record::RecordSet::in_memory().with_home(cluster.to_string());
         let mut state = crate::state::State::new();
@@ -9388,17 +9674,16 @@ mod tests {
             captures.lock().unwrap().signed_ops.is_empty(),
             "no default was signed or sent"
         );
-        assert!(wait_until(
-            || broker_state(&manager).document_reads.publishable(
+        tilo_test_env::wait_until("the primary route to become publishable", || {
+            broker_state(&manager).document_reads.publishable(
                 &manager
                     .primary_route
                     .accepted
                     .as_ref()
                     .unwrap()
                     .route
-                    .channel_id()
-            ),
-            Duration::from_secs(3)
-        ));
+                    .channel_id(),
+            )
+        });
     }
 }

@@ -186,9 +186,7 @@ fn generate_fixture() -> PathBuf {
         .expect("start generated media fixture encoder");
 
     let bus = pipeline.bus().expect("generated fixture pipeline bus");
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(120))
-        .expect("fixture deadline is representable");
+    let deadline = tilo_test_env::hang_deadline();
     let mut reached_eos = false;
     while std::time::Instant::now() < deadline {
         let Some(message) = bus.timed_pop(gstreamer::ClockTime::from_mseconds(500)) else {
@@ -377,10 +375,10 @@ pub fn decode_frame_at(
     target_ms: u64,
     what: &str,
 ) -> media::Frame {
-    let ok = engine.seek_and_wait(target_ms, std::time::Duration::from_secs(10));
+    let ok = engine.seek_and_wait(target_ms, tilo_test_env::hang_bound());
     assert!(
         ok,
-        "{what}: the pipeline produced no picture for {target_ms}ms within 10s. \
+        "{what}: the pipeline produced no picture for {target_ms}ms. \
          Decoder: {}",
         engine.hw_report().describe()
     );

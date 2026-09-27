@@ -41,6 +41,7 @@ pub mod hosted_test_control;
 pub mod idle;
 #[cfg(target_os = "linux")]
 pub mod idle_inhibit;
+pub mod input_environment;
 pub mod input_method;
 #[cfg(target_os = "linux")]
 pub mod input_method_service;

@@ -662,11 +662,11 @@ dependencies = [
 
 [[package]]
 name = "ar_archive_writer"
-version = "0.5.2"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4087686b4b0a3427190bae57a1d9a478dbb2d40c5dc1bd6e2b6d797913bdd348"
+checksum = "73cd58deff2140a0a8eae87e417bd01db68a33e148aa93d1e8cd837e55e312b6"
 dependencies = [
- "object 0.37.3",
+ "object",
 ]
 
 [[package]]
@@ -989,7 +989,7 @@ dependencies = [
  "const-oid 0.9.6",
  "der 0.7.10",
  "digest 0.10.7",
- "object 0.39.1",
+ "object",
  "spki 0.7.3",
  "x509-cert",
 ]
@@ -8991,6 +8991,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-test-env",
  "tracing",
  "url",
  "uuid",
@@ -9510,15 +9511,6 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-core-location",
  "objc2-foundation 0.2.2",
-]
-
-[[package]]
-name = "object"
-version = "0.37.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
-dependencies = [
- "memchr",
 ]
 
 [[package]]
@@ -14664,6 +14656,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-peer-state",
  "tilo-relay",
+ "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
  "tilo-workspace-host",
@@ -14687,6 +14680,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tilo-automerge",
+ "tilo-test-env",
  "uuid",
  "web-time",
 ]
@@ -15051,7 +15045,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "libc",
- "object 0.39.1",
+ "object",
  "p256 0.14.0",
  "rcgen",
  "ring",
@@ -15245,6 +15239,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-rt",
+ "tilo-test-env",
  "tokio",
  "tracing",
  "tts",
@@ -15662,6 +15657,7 @@ version = "0.1.0"
 dependencies = [
  "rayon",
  "thiserror 2.0.18",
+ "tilo-test-env",
  "tokio",
  "tracing",
  "workspace-hack",
@@ -19156,6 +19152,7 @@ dependencies = [
  "num-bigint 0.5.1",
  "num-integer",
  "num-traits",
+ "object",
  "once_cell",
  "p256 0.13.2",
  "p256 0.14.0",

@@ -261,7 +261,7 @@ pub enum Action {
     /// [`Action::AddHostedTab`] appends to the group that is already
     /// there, so a scenario built out of it can only ever end up with one
     /// window on screen. This one goes through
-    /// `placement::placement_for_new_window` and
+    /// `placement::placement_for` and
     /// `tab_binding::open_hosted_app`, so with a lone window selected the
     /// app lands in a *new group* beside it — which is what puts two
     /// apps, both drawing their real content, side by side in the strip.
@@ -817,7 +817,11 @@ fn apply_hosted_window_and_wheel_drag(driver: &mut ShellDriver, action: &Action)
                 // here rather than left for an adoption to pick up.
                 let placement = {
                     let tree = st.tree();
-                    shell::shell::placement::placement_for_new_window(&tree, st.strip_viewport())
+                    shell::shell::placement::placement_for(
+                        &tree,
+                        tilo_desktop_model::commands::OpenIntent::Launch,
+                        st.strip_viewport(),
+                    )
                 };
                 {
                     let mut tree = st.tree_mut();

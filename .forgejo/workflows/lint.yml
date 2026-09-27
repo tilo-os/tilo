@@ -53,6 +53,9 @@ jobs:
           cargo deny --version
           cargo machete --version
           cargo hakari --version
+          # ci-fast ships gcc as /usr/bin/cc (os/Containerfile.ci-fast); the
+          # Tilo app lints below compile tilo-app-cli and need that linker.
+          command -v cc
 
       - name: Check formatting of changed Rust files
         shell: bash
@@ -69,6 +72,12 @@ jobs:
 
       - name: Repository policy suite
         run: bash tools/policy/run.sh
+
+      # The lint app developers run locally: an app that adds platform code
+      # without moving it into a platform crate or declaring itself native
+      # fails here. ci-fast already provides /usr/bin/cc (pinned digest).
+      - name: Tilo app lints
+        run: cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all
 
       - name: cargo deny
         run: cargo deny --workspace check --hide-inclusion-graph

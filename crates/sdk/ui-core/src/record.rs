@@ -2713,6 +2713,30 @@ impl RecordStore {
         })
     }
 
+    /// Block until the store has committed or refused every write `id`'s
+    /// writer already submitted, without submitting its pending edits: the
+    /// acknowledgement [`Self::save_status`] reports, awaited instead of
+    /// polled.
+    ///
+    /// # Errors
+    /// Reports missing/busy records, an unpersisted record, and the writer's
+    /// outstanding failure.
+    pub fn await_submitted(&self, id: &RecordId) -> Result<(), String> {
+        let set = self
+            .0
+            .try_borrow()
+            .map_err(|_| "record store is busy".to_string())?;
+        let slot = set
+            .open
+            .get(id)
+            .ok_or_else(|| format!("{id}: record is not open"))?;
+        let saver = slot
+            .autosave
+            .as_ref()
+            .ok_or_else(|| format!("{id}: record is not persisted"))?;
+        saver.try_flush().map_err(|error| format!("{id}: {error}"))
+    }
+
     pub fn durability_error(&self, id: &RecordId) -> Option<String> {
         if self.0.borrow().portable.is_some() {
             return match self.save_status(id) {
@@ -3686,24 +3710,17 @@ mod tests {
                 .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
                 .unwrap();
             assert!(pending.1 > 0);
-            let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
-            loop {
-                let acknowledged = store.0.borrow().open[&checkout.id]
+            store.await_submitted(&checkout.id).unwrap();
+            assert_eq!(
+                store.0.borrow().open[&checkout.id]
                     .autosave
                     .as_ref()
                     .unwrap()
                     .durability_snapshot()
-                    .durable_heads
-                    == Some(older.clone());
-                if acknowledged {
-                    break;
-                }
-                assert!(
-                    crate::time::now() < deadline,
-                    "older writer acknowledgement missing"
-                );
-                std::thread::sleep(crate::time::Duration::from_millis(10));
-            }
+                    .durable_heads,
+                Some(older.clone()),
+                "older writer acknowledgement missing"
+            );
             assert_eq!(
                 store.save_status(&checkout.id).unwrap(),
                 RecordSaveStatus::Saving
