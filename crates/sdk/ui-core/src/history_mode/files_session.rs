@@ -701,7 +701,7 @@ pub(super) fn outcome_message(outcome: &Outcome) -> String {
         Outcome::PendingWrites => I18nManager::lookup_plain("history-files-outcome-pending-writes"),
         Outcome::UnsupportedOwner { mapping } => I18nManager::format(
             "history-files-outcome-unsupported-owner",
-            &[("mapping", mapping.to_string().into())],
+            &[("mapping", mapping.clone().into())],
         ),
         Outcome::Unavailable => I18nManager::lookup_plain("history-files-outcome-unavailable"),
         Outcome::InvalidRequest => I18nManager::lookup_plain("history-files-outcome-invalid"),

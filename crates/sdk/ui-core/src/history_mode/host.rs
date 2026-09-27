@@ -1219,7 +1219,7 @@ impl HistoryHost {
                     "history-mode-pending",
                     &[
                         ("id", review.id.value().to_string().into()),
-                        ("owner", review.owner.to_string().into()),
+                        ("owner", review.owner.clone().into()),
                         ("action", review.invocation.address.encode().into()),
                         (
                             "arguments",
