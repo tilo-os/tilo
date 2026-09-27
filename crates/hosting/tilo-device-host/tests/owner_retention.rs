@@ -7,7 +7,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::Path,
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
@@ -59,7 +59,7 @@ fn apply(peer: &mut StatePeer, author: [u8; 32], data: &[u8]) {
     );
 }
 async fn native_ready(owner: &mut SessionOwner, session: &mut NativeSubscription) {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while !session.is_ready() {
             match session.recv().await.expect("native Ready") {
                 Inbound::Delta { author, data } => {
@@ -138,27 +138,51 @@ impl Output {
         self.bytes += data.len();
         *self.routes.entry(route).or_default() += 1;
     }
-    fn assert_full_basis(&self, owner: &SessionOwner) {
-        // Independent canonical state, not outgoing publication metadata.
-        let mut expected = BTreeMap::from([(Route::Room(owner.peer().room().into()), 1)]);
+    /// Independent canonical state, not outgoing publication metadata.
+    fn canonical_routes(owner: &SessionOwner) -> BTreeSet<Route> {
+        let mut expected = BTreeSet::from([Route::Room(owner.peer().room().into())]);
         for row in owner.peer().rows() {
-            assert!(
-                expected
-                    .insert(
-                        Route::Document(owner.peer().room().into(), row.app_id, row.record_id),
-                        1
-                    )
-                    .is_none()
-            );
+            assert!(expected.insert(Route::Document(
+                owner.peer().room().into(),
+                row.app_id,
+                row.record_id
+            )));
         }
+        expected
+    }
+    /// A durable replay serves the selected basis: every route exactly once.
+    fn assert_full_basis(&self, owner: &SessionOwner) {
+        let expected = Self::canonical_routes(owner)
+            .into_iter()
+            .map(|route| (route, 1))
+            .collect::<BTreeMap<_, _>>();
         assert_eq!(
             self.routes, expected,
             "every canonical route appears exactly once"
         );
     }
+    /// Live output of a full checkpoint publication. The relay projects the
+    /// checkpoint frames its reader has queued together; a queued prefix that
+    /// lacks the final basis is published as Originals and the later complete
+    /// basis activates as a whole, so a route may reach a live subscriber once
+    /// as an Original and once in the activation, never more.
+    fn assert_live_full_basis(&self, owner: &SessionOwner) {
+        assert_eq!(
+            self.routes.keys().collect::<BTreeSet<_>>(),
+            Self::canonical_routes(owner)
+                .iter()
+                .collect::<BTreeSet<_>>(),
+            "live output covers exactly the canonical routes"
+        );
+        assert!(
+            self.routes.values().all(|count| (1..=2).contains(count)),
+            "a live route is published at most as an Original plus its activation: {:?}",
+            self.routes
+        );
+    }
 }
 async fn replay(session: &RelayCoeditSession, peers: &mut [&mut StatePeer]) -> Output {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         let mut output = Output::default();
         loop {
             match session.recv().await.expect("observer Ready") {
@@ -182,7 +206,7 @@ async fn converge(
     peer: &mut StatePeer,
     owner: &SessionOwner,
 ) -> Output {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         let mut output = Output::default();
         while !exact(peer, owner.peer()) {
             match session.recv().await.expect("live selected activation") {
@@ -334,7 +358,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
         replay(&session, &mut [&mut receiver]).await;
         publish(&owner, &native).unwrap();
         let output = converge(&session, &mut receiver, &owner).await;
-        output.assert_full_basis(&owner);
+        output.assert_live_full_basis(&owner);
         report(&owner, offline, "baseline", &output);
         let mut offline_peer = receiver.clone();
         let mut full_counts = BTreeSet::new();
@@ -354,7 +378,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
             );
             publish(&owner, &native).unwrap();
             let output = converge(&session, &mut receiver, &owner).await;
-            output.assert_full_basis(&owner);
+            output.assert_live_full_basis(&owner);
             let files = report(&owner, offline, &format!("refresh-{round}"), &output);
             full_counts.insert(files.2);
             assert_eq!(

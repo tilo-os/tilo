@@ -98,19 +98,25 @@ fn application_identity_and_metadata_share_native_match_bands() {
 }
 #[test]
 fn filters_targets_match_semantic_activation_after_draw() {
-    use crate::search::system::filters::{FilterAction, SearchFilters};
+    use crate::search::system::filters::{
+        FilterAction, FilterText, KindChip, ScopeSegment, SearchFilters,
+    };
     use crate::text_render::TextRenderer;
     use crate::theme::Theme;
     use vello::kurbo::{Affine, Rect};
     let mut filters = SearchFilters::default();
     filters.configure(
-        vec![ResourceKind::Application, ResourceKind::File],
+        vec![
+            KindChip::english(ResourceKind::Application),
+            KindChip::english(ResourceKind::File),
+        ],
         vec![],
         vec![
-            (SearchScope::Workspace, "Workspace".into()),
-            (SearchScope::All, "Everywhere".into()),
+            ScopeSegment::english(SearchScope::Workspace, "Workspace".into()),
+            ScopeSegment::english(SearchScope::All, "Everywhere".into()),
         ],
         SearchScope::All,
+        FilterText::default(),
     );
     let mut renderer = TextRenderer::new();
     let mut scene = vello::Scene::new();

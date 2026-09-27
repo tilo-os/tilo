@@ -276,9 +276,7 @@ where
                     crate::collaboration::route_keys::RouteKeys::plain(),
                 )),
             };
-            tokio::time::timeout(Duration::from_secs(10), run(route, mode, captured))
-                .await
-                .expect("bounded transport test");
+            tilo_test_env::within("bounded transport test", run(route, mode, captured)).await;
             task.abort();
             let _ = task.await;
         })
@@ -315,13 +313,9 @@ async fn managed_sender_transport_real_rpc_preserves_original_request_and_all_th
     over_wire(|route, _, captured| async move {
         let b = binding();
         for arg in [None, Some(""), Some("exact original argument")] {
-            let got = send(
-                &route,
-                request(48, &b, arg),
-                Instant::now() + Duration::from_secs(5),
-            )
-            .await
-            .unwrap();
+            let got = send(&route, request(48, &b, arg), tilo_test_env::hang_deadline())
+                .await
+                .unwrap();
             assert_eq!(got.host, HOST);
             assert_eq!(got.invocation, ID);
             assert_eq!(got.result.unwrap().update_json, UPDATE);
@@ -331,7 +325,7 @@ async fn managed_sender_transport_real_rpc_preserves_original_request_and_all_th
                 send(
                     &route,
                     request(kind, &b, None),
-                    Instant::now() + Duration::from_secs(5)
+                    tilo_test_env::hang_deadline()
                 )
                 .await
                 .unwrap()
@@ -374,7 +368,7 @@ async fn managed_sender_transport_real_rpc_refuses_uncorrelated_and_failed_repli
                     send(
                         &route,
                         request(kind, &b, None),
-                        Instant::now() + Duration::from_secs(5)
+                        tilo_test_env::hang_deadline()
                     )
                     .await,
                     Err(Failure::Unavailable)
@@ -394,7 +388,7 @@ async fn managed_sender_transport_real_rpc_absence_stays_absence() {
             let o = send(
                 &route,
                 request(kind, &b, None),
-                Instant::now() + Duration::from_secs(5),
+                tilo_test_env::hang_deadline(),
             )
             .await
             .unwrap();
@@ -472,9 +466,8 @@ async fn managed_sender_transport_real_rpc_ready_reply_after_deadline_is_refused
                 pending.as_mut().poll(&mut Context::from_waker(&waker)),
                 Poll::Pending
             ));
-            tokio::time::timeout(Duration::from_millis(500), wake.0.notified())
-                .await
-                .expect("actual response wakes the caller before its timer");
+            tilo_test_env::within("the actual response to wake the caller", wake.0.notified())
+                .await;
             assert!(
                 Instant::now() < deadline,
                 "wake must not be the elapsed timeout"

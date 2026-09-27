@@ -82,7 +82,7 @@ impl Dialer {
             grant,
             publish.map(|origin| origin.producer.consume()),
             subscribe.map(|origin| origin.producer.clone()),
-            Duration::from_secs(5),
+            tilo_test_env::hang_bound(),
         )
         .await
     }

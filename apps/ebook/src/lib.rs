@@ -39,6 +39,7 @@ pub mod actions;
 pub mod app;
 pub mod chrome;
 mod comment_overlay;
+pub mod component;
 pub mod content;
 pub mod doc;
 pub mod epub;
@@ -55,6 +56,7 @@ mod shelf_controls;
 pub mod xhtml;
 
 pub use app::BooksApp;
+pub use component::definition;
 
 /// Build and return the app's root widget tree.
 pub fn app_root() -> Box<dyn ui::widget::Widget> {

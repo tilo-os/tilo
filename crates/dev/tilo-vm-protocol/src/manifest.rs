@@ -101,7 +101,8 @@ pub struct Component {
     pub packages: Vec<String>,
     /// Package-qualified cargo features (`pkg/feature`).
     pub features: Vec<String>,
-    /// Features only dev builds enable, package-qualified.
+    /// Features only dev builds enable, normally package-qualified. A bare
+    /// feature can target a single package with a shadowing self dependency.
     pub dev_features: Vec<String>,
     pub profile: String,
     /// Absolute install paths (`to`) of the component's files; a trailing
@@ -469,6 +470,25 @@ mod tests {
                     .installer_args("target/release", "/l/tree")
                     .join(" "),
                 "os/scripts/install-components.py --quiet --from target/release --dest /l/tree browser"
+            );
+        }
+
+        // Phase: bare_dev_feature_reaches_a_single_package_even_with_a_self_dependency.
+        {
+            let m = Manifest::parse(
+                "[[component]]\nname = \"shell\"\npackages = [\"shell\"]\ndev_features = [\"dev-overrides\"]\n",
+            )
+            .unwrap();
+            let shell = m.get("shell").unwrap();
+            let extra = dev_override_features(
+                &serde_json::json!({"packages": [
+                    {"name": "shell", "features": {"dev-overrides": []}},
+                ]}),
+                &shell.packages,
+            );
+            assert_eq!(
+                shell.cargo_args(&extra).join(" "),
+                "build --locked --profile release -p shell --features dev-overrides,shell/dev-overrides"
             );
         }
 

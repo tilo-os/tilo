@@ -394,7 +394,7 @@ mod tests {
         .join()
         .unwrap();
         received
-            .recv_timeout(std::time::Duration::from_secs(1))
+            .recv_timeout(tilo_test_env::hang_bound())
             .expect("worker must wake the app");
         assert!(matches!(
             responses.try_recv().unwrap(),

@@ -150,7 +150,8 @@ impl Tpm {
             child,
         };
         let mut last = String::new();
-        for _ in 0..60 {
+        // Readiness usually takes a few probes; 300 x 100 ms only bounds a hang.
+        for _ in 0..300 {
             std::thread::sleep(std::time::Duration::from_millis(100));
             // Already-exited swtpm means the port pair was taken; retry with a new one.
             if let Ok(Some(status)) = tpm.child.try_wait() {

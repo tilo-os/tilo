@@ -25,7 +25,6 @@ thiserror.workspace = true
 tracing.workspace = true
 # Ordering keys, history, batched writes and diffs shared by every resource.
 tilo-resource = { path = "../../sdk/tilo-resource" }
-workspace-hack = { version = "0.1" }
 
 [[test]]
 name = "it"
@@ -33,3 +32,7 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

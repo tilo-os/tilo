@@ -618,9 +618,7 @@ fn composition_pointer_and_keyboard_send_use_the_live_request() {
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(5))
-                .expect("deadline fits in Instant");
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 if let Ok((mut stream, _)) = listener.accept() {
                     stream

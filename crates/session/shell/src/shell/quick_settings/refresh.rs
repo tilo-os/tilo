@@ -408,7 +408,7 @@ mod tests {
         let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_finished = std::sync::Arc::clone(&finished);
         let wait = move || {
-            let _ = release_rx.recv_timeout(Duration::from_secs(30));
+            let _ = release_rx.recv_timeout(tilo_test_env::hang_bound());
             worker_finished.store(true, std::sync::atomic::Ordering::SeqCst);
         };
         (release_tx, finished, wait)
@@ -462,7 +462,7 @@ mod tests {
             assert!(refresh.drain().is_empty());
             release_tx.send(()).expect("release wifi worker");
 
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 let readings = refresh.drain();
                 if let Some(QsReading::WifiJoin(result)) = readings.into_iter().next() {
@@ -498,7 +498,7 @@ mod tests {
                     vpns: None,
                 }))
             });
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = tilo_test_env::hang_deadline();
             let mut got = Vec::new();
             while got.is_empty() && Instant::now() < deadline {
                 got = r.drain();
@@ -531,9 +531,7 @@ mod tests {
 
             refresh.kick_fast_with(empty_fast);
 
-            wake_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("worker completion must wake an otherwise-idle UI");
+            tilo_test_env::recv("worker completion must wake an otherwise-idle UI", &wake_rx);
             assert_eq!(refresh.drain().len(), 1);
         }
 
@@ -560,9 +558,10 @@ mod tests {
                 empty_fast()
             });
 
-            started_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("first worker must be active before reruns are queued");
+            tilo_test_env::recv(
+                "first worker must be active before reruns are queued",
+                &started_rx,
+            );
             let selected_rerun = std::sync::Arc::new(AtomicUsize::new(0));
             for marker in 1..=3 {
                 let rerun_runs = std::sync::Arc::clone(&runs);
@@ -580,7 +579,7 @@ mod tests {
             );
 
             release_tx.send(()).expect("release first worker");
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = tilo_test_env::hang_deadline();
             let mut total = 0;
             while (total < 2 || r.is_in_flight()) && Instant::now() < deadline {
                 total += r.drain().len();
@@ -605,7 +604,7 @@ mod tests {
             r.kick_wifi_networks();
             assert!(r.is_in_flight());
             r.kick_fast_with(empty_fast);
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_deadline();
             let mut saw_fast = false;
             while !saw_fast && Instant::now() < deadline {
                 for reading in r.drain() {

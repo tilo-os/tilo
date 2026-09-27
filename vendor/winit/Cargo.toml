@@ -178,6 +178,10 @@ path = "tests/sync_object.rs"
 name = "web_animation_frame"
 path = "tests/web_animation_frame.rs"
 
+[[test]]
+name = "web_resize_size"
+path = "tests/web_resize_size.rs"
+
 [dependencies.bitflags]
 version = "2"
 

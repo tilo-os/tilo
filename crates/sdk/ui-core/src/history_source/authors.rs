@@ -116,17 +116,29 @@ impl AuthorDirectory {
 /// removes only the protocol prefix and adds a persistent, readable kind
 /// label. Human names and other identifiers pass through unchanged.
 pub fn participant_display_label(principal: &str) -> String {
-    let principal = principal.trim();
-    let Some(agent) = principal.strip_prefix("agent:") else {
-        return principal.to_string();
-    };
-    let name = agent.trim();
-    let name = if name.is_empty() {
-        "Unknown agent"
+    match agent_principal_name(principal) {
+        Some(name) => agent_display_label(&name),
+        None => principal.trim().to_string(),
+    }
+}
+
+/// The readable name of an `agent:<id>` principal, without the kind label:
+/// the id, or the localized unknown-agent name when it is empty. `None` for
+/// any principal that is not an agent. For surfaces that already mark the
+/// actor as software, such as an agent badge.
+pub fn agent_principal_name(principal: &str) -> Option<String> {
+    let name = principal.trim().strip_prefix("agent:")?.trim();
+    Some(if name.is_empty() {
+        crate::i18n::widget_format("participant-unknown-agent", &[])
     } else {
-        name
-    };
-    format!("{name} · Agent")
+        name.to_string()
+    })
+}
+
+/// `name` with the localized agent kind label, as every agent is shown in
+/// history, presence and activity.
+pub fn agent_display_label(name: &str) -> String {
+    crate::i18n::widget_format("participant-agent", &[("name", name.into())])
 }
 
 /// Build a [`HistoryAuthor`] from the Tilo identity on disk, if there is one.
