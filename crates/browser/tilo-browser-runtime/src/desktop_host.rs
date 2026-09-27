@@ -73,6 +73,9 @@ pub(crate) struct DesktopHandle {
     pub records: Rc<RefCell<BTreeMap<(String, String), OwnedRecord>>>,
     pub images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     pub errors: Rc<RefCell<Vec<String>>>,
+    /// The desktop's own notices, shown as banners and kept in the
+    /// notification centre.
+    pub notifications: Rc<crate::desktop_notifications::BrowserNotifications>,
     pub session_requests:
         Rc<RefCell<Vec<(uuid::Uuid, tilo_desktop_model::commands::BoundCommand)>>>,
     inbox: Rc<RefCell<Option<(Admission, ui::permissions::PermissionContext)>>>,
@@ -557,10 +560,14 @@ pub(crate) struct DesktopRoot {
     required_records: Vec<desktop::Requirement>,
     unsupported_apps: Vec<String>,
     pub(crate) activity: Option<crate::desktop_activity::BrowserActivity>,
+    overlays: crate::desktop_overlays::DesktopOverlays,
     pub(crate) activity_close_reason: Option<crate::desktop_activity::ActivityCloseReason>,
     pending_view_request: Option<activity::WorkspaceViewRequest>,
     surface_node: Option<NodeId>,
     activity_node: Option<NodeId>,
+    notification_node: Option<NodeId>,
+    /// The banner stack and, from the top bar, the notification centre.
+    notification_layer: crate::desktop_notifications::NotificationLayer,
     surface: DesktopSurface,
     handle: DesktopHandle,
     resolver: ApplicationCatalogTileResolver<Contexts>,
@@ -580,6 +587,13 @@ pub(crate) struct DesktopRoot {
     /// Placeholder tabs whose local scratch record (in the desktop's own
     /// fallback store, never published) exists, so the "Opening…" tile binds.
     placeholder_records: std::collections::BTreeSet<u64>,
+    /// Alt+Tab over the active workspace's windows. Browser windows have
+    /// no live pictures, so every card shows its app mark.
+    window_switcher: tilo_desktop::window_switcher::WindowSwitcher,
+    /// Where the pointer last was, for the switcher's cards.
+    cursor: Option<Point>,
+    /// The window the switcher settled on, focused during the next update.
+    pending_switch: Option<tilo_desktop::window_switcher::WindowAddress>,
 }
 impl DesktopRoot {
     /// LIVE_V1: record the laid-out window groups, the focused group and any
@@ -718,6 +732,7 @@ impl DesktopRoot {
             records: Rc::default(),
             images: Rc::default(),
             errors: Rc::default(),
+            notifications: Rc::default(),
             session_requests: Rc::default(),
             inbox: Rc::default(),
             navigation: Rc::new(RefCell::new(serde_json::Value::Null)),
@@ -777,10 +792,15 @@ impl DesktopRoot {
             required_records: admission.required,
             unsupported_apps: admission.unsupported,
             activity: None,
+            overlays: Default::default(),
             activity_close_reason: None,
             pending_view_request: None,
             surface_node: None,
             activity_node: None,
+            notification_node: None,
+            notification_layer: crate::desktop_notifications::NotificationLayer::new(
+                handle.notifications.clone(),
+            ),
             surface,
             handle: handle.clone(),
             resolver,
@@ -796,11 +816,98 @@ impl DesktopRoot {
             view_changed: false,
             admitted_tree,
             placeholder_records: Default::default(),
+            window_switcher: Default::default(),
+            cursor: None,
+            pending_switch: None,
         };
         handle.speculation.borrow_mut().set_namespace(namespace);
         root.collect_failures();
         root.refresh_navigation(true);
         Ok((root, handle))
+    }
+    /// Alt+Tab and the switcher it opens. Returns whether the event was
+    /// the switcher's.
+    fn route_window_switcher_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+    ) -> bool {
+        use tilo_desktop::window_switcher::{PlainWindows, SwitcherOutcome, SwitcherScope};
+        use winit::event::{ElementState, WindowEvent};
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.cursor = Some(Point::new(position.x / scale, position.y / scale));
+        }
+        let now = ui::time::Instant::now();
+        if !self.window_switcher.is_active() {
+            let WindowEvent::KeyboardInput { event: key, .. } = event else {
+                return false;
+            };
+            if key.state != ElementState::Pressed || self.activity.is_some() {
+                return false;
+            }
+            let Some(scope) = SwitcherScope::for_chord(&key.logical_key, modifiers.state()) else {
+                return false;
+            };
+            if !key.repeat {
+                self.window_switcher.set_host_rect(self.surface.get_rect());
+                let began = self.handle.tree.try_borrow().is_ok_and(|tree| {
+                    self.window_switcher.begin(
+                        &tree,
+                        &PlainWindows,
+                        scope,
+                        modifiers.state().shift_key(),
+                        now,
+                    )
+                });
+                if began {
+                    (self.notify)();
+                }
+            }
+            return true;
+        }
+        let outcome = self
+            .window_switcher
+            .route_event(event, modifiers.state(), self.cursor, now);
+        match outcome {
+            SwitcherOutcome::Ignored => return false,
+            SwitcherOutcome::Consumed | SwitcherOutcome::Cancelled => {}
+            SwitcherOutcome::Commit(address) => {
+                self.pending_switch = Some(address);
+                self.dirty = true;
+            }
+        }
+        (self.notify)();
+        !matches!(event, WindowEvent::ModifiersChanged(_))
+    }
+    /// Focus the window the switcher chose. A window closed while Alt was
+    /// held is skipped. Only call during update, after the runner has
+    /// captured outgoing focus.
+    fn focus_switcher_window(
+        &mut self,
+        address: tilo_desktop::window_switcher::WindowAddress,
+    ) -> bool {
+        let mut tree = self.handle.tree.borrow_mut();
+        let live = tree
+            .active_workspace()
+            .and_then(|workspace| workspace.strips.iter().find(|s| s.id == address.strip))
+            .and_then(|strip| strip.window_groups.iter().find(|g| g.id == address.group))
+            .is_some_and(|group| group.tabs.iter().any(|tab| tab.id == address.tab));
+        if !live {
+            return false;
+        }
+        self.surface.reveal_on_next_layout(address.strip);
+        Self::apply_local(
+            &self.handle,
+            &mut tree,
+            LocalViewIntent::Tab {
+                group: address.group,
+                tab: address.tab,
+            },
+        );
+        drop(tree);
+        self.view_changed = true;
+        self.reconcile()
     }
     fn image_factory(handle: &DesktopHandle) -> Rc<dyn Fn(u32) -> ui::ImageStore> {
         let images = handle.images.clone();
@@ -820,6 +927,10 @@ impl DesktopRoot {
             topbar: Box::new(
                 tilo_desktop::topbar::TopBarChrome::from_tree(tree).with_chrome(source),
             ),
+            // Navigation sits beside the surface, so no rail covers the canvas.
+            empty_workspace: Some(Box::new(
+                tilo_desktop::launchpad::CollaborationLaunchpad::new(|_| 0.0),
+            )),
             notify: Some(notify),
             ..SurfaceChrome::default()
         }
@@ -827,6 +938,13 @@ impl DesktopRoot {
     fn collect_failures(&mut self) {
         for error in self.surface.take_setup_failures() {
             self.handle.errors.borrow_mut().push(error.to_string());
+            self.handle.notifications.post(
+                tilo_desktop::notifications::Notification::new(
+                    tilo_desktop::i18n::t("notification-app-failed-title"),
+                    error.to_string(),
+                )
+                .with_severity(tilo_desktop::notifications::NotificationSeverity::Error),
+            );
             self.failures.push(error);
         }
     }
@@ -854,6 +972,68 @@ impl DesktopRoot {
             activity.finish();
             self.activity_close_reason = Some(reason);
             self.dirty = true;
+        }
+    }
+    /// Queue a desktop command for the room's topology owner, rendering its
+    /// expected result on the next frame.
+    fn enqueue_command(
+        &mut self,
+        command: tilo_desktop_model::commands::BoundCommand,
+    ) -> Result<uuid::Uuid, String> {
+        let mut queue = self.handle.session_requests.borrow_mut();
+        if queue.len() >= 32 {
+            self.handle
+                .errors
+                .borrow_mut()
+                .push("desktop request queue is full".into());
+            return Err("desktop request queue is full".into());
+        }
+        let invocation = uuid::Uuid::new_v4();
+        if let Ok(tree) = self.handle.tree.try_borrow() {
+            // Render the reorder on the next frame; the durable command
+            // confirms (or snaps back) in the background.
+            self.view_changed |= Self::speculate(&self.handle, &tree, invocation, &command);
+        }
+        queue.push((invocation, command));
+        self.dirty = true;
+        (self.notify)();
+        Ok(invocation)
+    }
+    /// Route the empty-workspace card the person chose through the same
+    /// open and Activity paths the palette and navigation use.
+    fn launchpad_request(&mut self, action: tilo_desktop::launchpad::LaunchpadAction) {
+        use tilo_desktop::launchpad::LaunchpadAction;
+        use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
+        let (active, room) = {
+            let tree = self.handle.tree.borrow();
+            (
+                tree.active,
+                tree.active_workspace().map(|w| w.room.to_string()),
+            )
+        };
+        let result = match (action.app_target(), action) {
+            (Some((app, _)), _) => match room {
+                Some(room) => self
+                    .enqueue_command(BoundCommand {
+                        source: CommandSource {
+                            room,
+                            heads: self.source_heads.clone(),
+                        },
+                        command: DesktopCommand::OpenApp { app: app.into() },
+                    })
+                    .map(|_| ()),
+                None => Err("No workspace is active".into()),
+            },
+            (None, LaunchpadAction::Activity) => {
+                self.queue_view_request(activity::WorkspaceViewRequest::OpenActivity {
+                    workspace: active,
+                    view: activity::ActivityView::default(),
+                })
+            }
+            (None, _) => Err("Inviting people is not available in this peer yet".into()),
+        };
+        if let Err(error) = result {
+            self.handle.errors.borrow_mut().push(error);
         }
     }
     /// External operations are inert until update: a frame must capture its
@@ -1127,8 +1307,15 @@ impl DesktopRoot {
             "playing":activity.pane.replay_is_playing(),
             "coverage":if activity.pane.feed_coverage().is_complete() { "complete" } else { "partial" }
         })).unwrap_or(serde_json::Value::Null);
+        let notifications = {
+            let log =
+                tilo_desktop::notifications::NotificationHost::log(&*self.handle.notifications);
+            json!({"banners":log.active().len(),"retained":log.history().len(),
+                "centerOpen":self.notification_layer.center_open()})
+        };
         for (key, value) in [
             ("capabilities", capabilities),
+            ("notifications", notifications),
             ("workspaceActivity", activity),
             (
                 "workspaceActivityCloseReason",
@@ -1514,11 +1701,32 @@ impl DesktopRoot {
                 tilo_desktop::chrome::ChromeIntent::SwitchWorkspace(delta) => {
                     Self::switch_workspace(&self.handle, &mut tree, delta);
                 }
-                _ => self
-                    .handle
-                    .errors
-                    .borrow_mut()
-                    .push("This desktop service is not available in this peer yet".into()),
+                tilo_desktop::chrome::ChromeIntent::ToggleWorkspaceSettings => {
+                    self.overlays.toggle_settings();
+                }
+                tilo_desktop::chrome::ChromeIntent::ToggleCollaborators => {
+                    self.overlays.toggle_collaborators();
+                }
+                // The browser has no Quick Settings; its top-bar control opens
+                // the notification centre.
+                tilo_desktop::chrome::ChromeIntent::ToggleQuickSettings => {
+                    self.notification_layer.toggle_center();
+                }
+                tilo_desktop::chrome::ChromeIntent::ShowQuickSettings => {
+                    self.notification_layer.show_center();
+                }
+                _ => {
+                    self.handle
+                        .errors
+                        .borrow_mut()
+                        .push("This desktop service is not available in this peer yet".into());
+                    self.handle
+                        .notifications
+                        .post(tilo_desktop::notifications::Notification::new(
+                            tilo_desktop::i18n::t("notification-service-unavailable"),
+                            "",
+                        ));
+                }
             }
         }
         let mut sink = BrowserCommands {
@@ -1925,23 +2133,7 @@ impl Widget for DesktopRoot {
         }
         let command: tilo_desktop_model::commands::BoundCommand =
             serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let mut queue = self.handle.session_requests.borrow_mut();
-        if queue.len() >= 32 {
-            self.handle
-                .errors
-                .borrow_mut()
-                .push("desktop request queue is full".into());
-            return Err("desktop request queue is full".into());
-        }
-        let invocation = uuid::Uuid::new_v4();
-        if let Ok(tree) = self.handle.tree.try_borrow() {
-            // Render the reorder on the next frame; the durable command
-            // confirms (or snaps back) in the background.
-            self.view_changed |= Self::speculate(&self.handle, &tree, invocation, &command);
-        }
-        queue.push((invocation, command));
-        self.dirty = true;
-        (self.notify)();
+        let invocation = self.enqueue_command(command)?;
         Ok(Some(tilo_actions::ActionOutput {
             value: Some(serde_json::Value::String(invocation.to_string())),
             resources: vec![],
@@ -1965,6 +2157,9 @@ impl Widget for DesktopRoot {
             }
             changed |= self.reconcile();
         }
+        if let Some(address) = self.pending_switch.take() {
+            changed |= self.focus_switcher_window(address);
+        }
         let command = self.handle.navigation_command.borrow_mut().take();
         if let Some(command) = command {
             let result = self.navigate(command, doc, path);
@@ -1973,18 +2168,28 @@ impl Widget for DesktopRoot {
                 Some(result.map(|(_, invocation)| invocation));
             changed |= self.reconcile();
         }
+        if let Some(action) = tilo_desktop::launchpad::LaunchpadAction::take(doc, path) {
+            self.launchpad_request(action);
+        }
         let updated = self.surface.update(doc, path);
-        changed || updated
+        if changed && let Ok(tree) = self.handle.tree.try_borrow() {
+            self.window_switcher.observe(&tree);
+        }
+        let notices = self.notification_layer.tick();
+        changed || updated || notices
     }
     fn needs_redraw(&self) -> bool {
         // Composition consumes structural dirtiness before a queued navigation
         // request reaches the next update. Keep that deferred work scheduled.
         self.pending_view_request.is_some()
             || self.dirty
+            || self.overlays.needs_redraw()
             || (self.activity.is_some() && !self.handle.history_available.get())
             || self.handle.inbox.borrow().is_some()
             || self.activity.as_ref().is_some_and(Widget::needs_redraw)
+            || self.notification_layer.needs_redraw()
             || self.surface.needs_redraw()
+            || self.window_switcher.needs_frame(ui::time::Instant::now())
     }
     fn build_layout(
         &mut self,
@@ -1998,37 +2203,33 @@ impl Widget for DesktopRoot {
             .activity
             .as_mut()
             .map(|activity| activity.build_layout(tree, theme, map));
-        if let Some(activity) = self.activity_node {
-            tree.new_with_children(
-                taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::percent(1.0),
-                    },
-                    ..Default::default()
+        let notifications = self.notification_layer.build_layout(tree, theme, map);
+        self.notification_node = Some(notifications);
+        let children: Vec<NodeId> = self
+            .activity_node
+            .into_iter()
+            .chain([surface, notifications])
+            .collect();
+        tree.new_with_children(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
                 },
-                &[activity, surface],
-            )
-            .unwrap()
-        } else {
-            tree.new_with_children(
-                taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[surface],
-            )
-            .unwrap()
-        }
+                ..Default::default()
+            },
+            &children,
+        )
+        .unwrap()
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.surface
             .apply_layout(tree, self.surface_node.unwrap_or(node), origin);
         if let (Some(activity), Some(node)) = (&mut self.activity, self.activity_node) {
             activity.apply_layout(tree, node, origin);
+        }
+        if let Some(node) = self.notification_node {
+            self.notification_layer.apply_layout(tree, node, origin);
         }
     }
     fn draw(
@@ -2040,8 +2241,32 @@ impl Widget for DesktopRoot {
         presence: &PresenceCtx,
     ) {
         self.surface.draw(scene, transform, text, theme, presence);
+        // Above the desktop, below the History modal.
+        self.notification_layer
+            .draw(scene, transform, text, theme, presence);
         if let Some(activity) = &mut self.activity {
             activity.draw(scene, transform, text, theme, presence);
+        } else {
+            let tree = self.handle.tree.borrow();
+            self.overlays.draw(
+                scene,
+                transform,
+                text,
+                theme,
+                self.surface.get_rect(),
+                (&tree, &self.resolver.host.author),
+            );
+        }
+        if self.window_switcher.is_active() {
+            self.window_switcher.draw(
+                scene,
+                transform,
+                text,
+                theme,
+                self.surface.get_rect(),
+                ui::time::Instant::now(),
+                &mut tilo_desktop::window_switcher::NoThumbnails,
+            );
         }
         self.refresh_navigation(false);
         self.capture_live();
@@ -2058,6 +2283,10 @@ impl Widget for DesktopRoot {
         node: NodeId,
         tree: &TaffyTree<()>,
     ) {
+        if self.route_window_switcher_event(event, scale, modifiers) {
+            *handled = true;
+            return;
+        }
         if let Some(activity) = &mut self.activity {
             activity.handle_event(
                 event,
@@ -2070,6 +2299,42 @@ impl Widget for DesktopRoot {
                 self.activity_node.unwrap_or(node),
                 tree,
             );
+            return;
+        }
+        let (consumed, request) = self.overlays.handle_event(event, scale, || {
+            self.handle
+                .tree
+                .borrow()
+                .active_workspace()
+                .map_or(0, |workspace| workspace.collaborators.len())
+        });
+        if consumed {
+            *handled = true;
+            if request == Some(crate::desktop_overlays::OverlayRequest::OpenActivity) {
+                let workspace = self.handle.tree.borrow().active;
+                if let Err(error) =
+                    self.queue_view_request(activity::WorkspaceViewRequest::OpenActivity {
+                        workspace,
+                        view: activity::ActivityView::default(),
+                    })
+                {
+                    self.handle.errors.borrow_mut().push(error);
+                }
+            }
+            return;
+        }
+        self.notification_layer.handle_event(
+            event,
+            scale,
+            modifiers,
+            doc,
+            path,
+            handled,
+            focus,
+            self.notification_node.unwrap_or(node),
+            tree,
+        );
+        if *handled {
             return;
         }
         self.surface.handle_event(
@@ -2088,14 +2353,14 @@ impl Widget for DesktopRoot {
         if let Some(activity) = &self.activity {
             vec![activity]
         } else {
-            vec![&self.surface]
+            vec![&self.surface, &self.notification_layer]
         }
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if let Some(activity) = &mut self.activity {
             vec![activity]
         } else {
-            vec![&mut self.surface]
+            vec![&mut self.surface, &mut self.notification_layer]
         }
     }
     fn name(&self) -> &str {
@@ -5685,6 +5950,67 @@ mod tests {
         );
     }
 
+    /// Alt+Tab itself belongs to the operating system in a browser, so
+    /// the chord that reaches the page walks the focused app's windows.
+    #[test]
+    fn alt_grave_switches_between_an_apps_windows_through_the_shared_switcher() {
+        let calculators = std::cell::RefCell::new(Vec::new());
+        let (root, handle, _) = fixture_with_extra_calculators(1, |tree| {
+            let strip = &mut tree.workspaces[0].strips[0];
+            let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+            strip.window_groups = tabs
+                .into_iter()
+                .enumerate()
+                .map(|(index, tab)| WindowGroup {
+                    id: 3 + index as u64,
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                })
+                .collect();
+            calculators.borrow_mut().extend(
+                strip
+                    .window_groups
+                    .iter()
+                    .filter(|group| {
+                        matches!(&group.tabs[0].tile, TileContent::AppPlaceholder {
+                            kind: AppKind::Other(app), ..
+                        } if app == "so.tilo.calculator")
+                    })
+                    .map(|group| group.id),
+            );
+            let first = calculators.borrow()[0];
+            tree.active_group.insert(strip.id, first);
+        });
+        let calculators = calculators.into_inner();
+        assert_eq!(calculators.len(), 2, "{calculators:?}");
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            root,
+            (1280, 720),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        settle_external_navigation(root_ptr, &mut frame);
+        let strip = handle.tree.borrow().workspaces[0].strips[0].id;
+        assert_eq!(handle.tree.borrow().active_group[&strip], calculators[0]);
+
+        frame.set_modifiers(&["alt".into()]);
+        frame.key("`");
+        // SAFETY: `frame` retains this boxed root and no harness method runs
+        // while the temporary reference is alive.
+        assert!(unsafe { (&*root_ptr).window_switcher.is_active() });
+        frame.set_modifiers(&[]);
+        frame.relayout();
+
+        assert!(!unsafe { (&*root_ptr).window_switcher.is_active() });
+        assert_eq!(handle.tree.borrow().active_group[&strip], calculators[1]);
+    }
+
     #[test]
     fn desktop_group_focus_selects_its_strip_and_rejects_stale_identity() {
         let (root, handle, _) = fixture();
@@ -6535,13 +6861,15 @@ mod tests {
                             order: 0,
                         },
                     );
-                    NotesDoc::fill_page_body(
+                    NotesDoc::apply_block_ops(
                         doc,
                         page,
-                        &[ui::widget::BlockContent::paragraph(
-                            "",
-                            "quasar-notes-body-only",
-                        )],
+                        &[ui::widget::BlockEditOp::Insert {
+                            block_id: uuid::Uuid::new_v4().to_string(),
+                            after: None,
+                            kind: "paragraph".into(),
+                            text: "quasar-notes-body-only".into(),
+                        }],
                     )
                     .unwrap();
                     notes::notebook::validate(doc).unwrap();

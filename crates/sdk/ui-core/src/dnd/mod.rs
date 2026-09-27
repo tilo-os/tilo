@@ -1,5 +1,3 @@
-use std::fmt::Write as _;
-
 use vello::kurbo::Point;
 
 #[derive(Clone, Debug)]
@@ -103,32 +101,16 @@ pub const URI_LIST_MIME: &str = "text/uri-list";
 
 /// The `text/uri-list` body for `paths`: one `file://` URI per line, CRLF
 /// terminated as RFC 2483 wants, with the bytes a URI cannot carry
-/// verbatim percent-encoded.
+/// verbatim percent-encoded. A path that is not absolute has no file URI and
+/// is left out.
 pub fn uri_list(paths: &[PathBuf]) -> String {
     let mut out = String::new();
-    for p in paths {
-        out.push_str("file://");
-        out.push_str(&percent_encode_path(&p.to_string_lossy()));
+    for uri in paths
+        .iter()
+        .filter_map(|p| url::Url::from_file_path(p).ok())
+    {
+        out.push_str(uri.as_str());
         out.push_str("\r\n");
-    }
-    out
-}
-
-/// Percent-encode the characters a `file://` URI may not carry literally.
-/// Deliberately conservative: everything outside the unreserved set plus
-/// `/` is escaped, so a space, a `#` or a newline in a file name survives.
-fn percent_encode_path(path: &str) -> String {
-    let mut out = String::with_capacity(path.len());
-    for b in path.as_bytes() {
-        let c = *b;
-        let unreserved = c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b'~' | b'/');
-        if unreserved {
-            out.push(c as char);
-        } else {
-            // Writing to a `String` cannot fail; discard the always-`Ok` result
-            // rather than allocating a temporary just to push it.
-            let _ = write!(out, "%{c:02X}");
-        }
     }
     out
 }

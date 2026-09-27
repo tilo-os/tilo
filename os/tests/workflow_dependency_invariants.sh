@@ -80,10 +80,18 @@ else
   fail=1
 fi
 
-if [ "$(grep -Fc '"crates/system/tilo-crypto/**"' "$kernel_workflow")" -eq 2 ]; then
-  printf 'ok    kernel CI retriggers when its Rust signer changes\n'
+if [ "$(grep -Fc '"crates/system/tilo-crypto/Cargo.toml"' "$kernel_workflow")" -eq 2 ] \
+   && [ "$(grep -Fc '"crates/system/tilo-crypto/src/lib.rs"' "$kernel_workflow")" -eq 2 ] \
+   && [ "$(grep -Fc '"crates/system/tilo-crypto/src/main.rs"' "$kernel_workflow")" -eq 2 ] \
+   && ! grep -Fq '"crates/system/tilo-crypto/**"' "$kernel_workflow" \
+   && ! grep -Fq 'tls_fixture' "$kernel_workflow" \
+   && grep -Fq 'COPY crates/system/tilo-crypto/src/lib.rs' "$repo/os/kernel/Containerfile" \
+   && grep -Fq 'COPY crates/system/tilo-crypto/src/main.rs' "$repo/os/kernel/Containerfile" \
+   && ! grep -Fq 'COPY crates/system/tilo-crypto/src /work/tilo-crypto/src' "$repo/os/kernel/Containerfile" \
+   && grep -Fq 'cargo build --release --frozen --no-default-features' "$repo/os/kernel/Containerfile"; then
+  printf 'ok    kernel CI retriggers for signer sources, not TLS fixtures\n'
 else
-  printf 'kernel CI does not retrigger for Rust signer changes\n' >&2
+  printf 'kernel CI does not isolate signer sources from TLS fixture inputs\n' >&2
   fail=1
 fi
 
