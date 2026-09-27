@@ -84,7 +84,7 @@ pub(super) fn with_view<T>(
     operation(&view).map_err(error)
 }
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    hex::encode(bytes)
 }
 fn namespace(n: &tilo_delivery_protocol::delivery_v3::media_wire::MediaNamespace) -> String {
     format!("{}/{}", hex(&n.call), hex(&n.publisher))

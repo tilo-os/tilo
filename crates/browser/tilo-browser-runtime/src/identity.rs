@@ -59,7 +59,7 @@ pub fn request(bytes: &[u8]) -> Result<String, String> {
     .map_err(|e| e.to_string())
 }
 fn encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    hex::encode(bytes)
 }
 fn challenge(
     material: &Material,

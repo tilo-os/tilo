@@ -326,25 +326,7 @@ fn decode_path(raw: &str) -> Option<String> {
 }
 
 fn base64(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in input.chunks(3) {
-        let b = [
-            chunk.first().copied().unwrap_or(0),
-            chunk.get(1).copied().unwrap_or(0),
-            chunk.get(2).copied().unwrap_or(0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        for (i, shift) in [18_u32, 12, 6, 0].into_iter().enumerate() {
-            if i <= chunk.len() {
-                let index = usize::try_from((n >> shift) & 63).unwrap_or(0);
-                out.push(char::from(TABLE.get(index).copied().unwrap_or(b'A')));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, input)
 }
 
 impl State {

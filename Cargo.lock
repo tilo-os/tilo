@@ -167,6 +167,7 @@ dependencies = [
  "bounded-command",
  "cloud-source",
  "getrandom 0.4.3",
+ "hex",
  "private-fs",
  "secret-vault",
  "serde",
@@ -2153,6 +2154,7 @@ dependencies = [
 name = "cloud-source-dav"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
  "cloud-source",
  "cloud-source-dav",
@@ -2193,6 +2195,7 @@ dependencies = [
  "chrono",
  "cloud-source",
  "cloud-source-gdrive",
+ "hex",
  "md-5",
  "reqwest",
  "serde",
@@ -4481,6 +4484,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "fs-content",
+ "hex",
  "libc",
  "workspace-hack",
 ]
@@ -6490,6 +6494,7 @@ version = "0.1.0"
 dependencies = [
  "advisory-lock",
  "automerge",
+ "base64",
  "blake3",
  "block-devices",
  "bounded-command",
@@ -14505,6 +14510,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
+ "hex",
  "postcard",
  "regex",
  "serde",
@@ -14689,6 +14695,7 @@ dependencies = [
  "ebook",
  "ed25519-dalek 3.0.0",
  "futures",
+ "hex",
  "iroh",
  "iroh-base",
  "js-sys",
