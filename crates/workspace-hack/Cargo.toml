@@ -84,7 +84,6 @@ group = { version = "0.13", default-features = false, features = ["alloc"] }
 guillotiere = { version = "0.7", default-features = false, features = ["std"] }
 half = { version = "2", features = ["num-traits"] }
 harfrust = { version = "0.5" }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17", default-features = false, features = ["default-hasher", "raw-entry"] }
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
@@ -148,6 +147,7 @@ rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
 read-fonts = { version = "0.39" }
+regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "brotli", "form", "gzip", "json", "query", "rustls-no-provider"] }
@@ -180,6 +180,7 @@ stable_deref_trait = { version = "1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
+tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["macros", "serde-well-known"] }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
@@ -292,7 +293,6 @@ group = { version = "0.13", default-features = false, features = ["alloc"] }
 guillotiere = { version = "0.7", default-features = false, features = ["std"] }
 half = { version = "2", features = ["num-traits"] }
 harfrust = { version = "0.5" }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17", default-features = false, features = ["default-hasher", "raw-entry"] }
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
@@ -356,6 +356,7 @@ rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
 read-fonts = { version = "0.39" }
+regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "brotli", "form", "gzip", "json", "query", "rustls-no-provider"] }
@@ -388,6 +389,7 @@ stable_deref_trait = { version = "1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
+tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["macros", "serde-well-known"] }
 time-macros = { version = "0.2", default-features = false, features = ["formatting", "parsing", "serde"] }
@@ -445,7 +447,6 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
-regex = { version = "1" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
@@ -480,7 +481,6 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
-regex = { version = "1" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
@@ -515,7 +515,6 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
-regex = { version = "1" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
@@ -550,7 +549,6 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
-regex = { version = "1" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }

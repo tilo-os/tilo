@@ -612,13 +612,18 @@ RUN --mount=type=cache,target=/build/.cargo-home \
                     || { cargo clean --release && cargo clean --profile thin-app; } ;; \
          *) printf '%s\n' 'TILO_CARGO_FRESHNESS must be clean or content' >&2; exit 1 ;; \
        esac \
+    # Thin apps use the same package set and features as dist/apps/app-collections.toml
+    # (default collection). Browser stays out of that graph: ui/webview from
+    # browser/wpe otherwise unifies into every tapp and was the ~1.9 MB .text gap
+    # versus CI package-apps (#1158). Ship browser through the separate runtime
+    # below, the same route prebuilt collections already use.
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then \
-         BROWSER_PKG=""; THIN_EXCLUDES="browser"; THIN_BROWSER_FEATURE=""; \
+         BROWSER_PKG=""; \
        else \
          BROWSER_PKG="-p browser --bin browser --features browser/wpe"; \
-         THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
        fi \
-    && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
+    && THIN_EXCLUDES="browser" \
+    && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
@@ -719,7 +724,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          && cp "$RUNTIME_DYLIB" /out/libruntime_dylib.so; \
        else \
          EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
-         APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
+         APP_FEATURES="${APP_FEATURES}" \
            /build/os/scripts/build-thin-apps.sh \
          && for m in /build/apps/*/tilo-app.toml; do \
               p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
@@ -812,17 +817,17 @@ RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
       && rm -f /out/runtime-bundle-identity.json; \
     fi
 
-# A full WPE browser is much larger than the application wire limit.
-# Keep its executable in a separately signed runtime and package only a tiny
-# entrypoint. This leaves the canonical app-size policy intact while giving
-# the browser the same app-store and sandbox route as every other app. The
-# special runtime is needed only when the main app collection was prebuilt;
-# source builds already make the browser thin in the unified runtime graph.
+# A full WPE browser is much larger than the application wire limit, and putting
+# browser/wpe into the thin-app Cargo graph unified ui/webview into every tapp
+# (~1.9 MB of .text on Settings vs CI). Keep the executable in a separately
+# signed runtime and package only a tiny entrypoint for both source and prebuilt
+# collections, matching dist/apps/app-collections.toml which excludes browser.
 ARG TILO_BROWSER_RUNTIME_PUBLISHER=""
 RUN --mount=type=secret,id=browser_runtime_identity \
     : > /out/browser-runtime-publisher.hex \
-    && if [ "${TILO_PREBUILT_APPS}" = 1 ] && [ "${TILO_WITH_BROWSER}" != 0 ]; then \
-         test "${RUNTIME_VERSION}" = 2026.07 \
+    && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
+         mkdir -p /out/browser-app \
+         && test "${RUNTIME_VERSION}" = 2026.07 \
          && test -x /out/optional/browser \
          && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
               test -s /run/secrets/browser_runtime_identity \
@@ -878,8 +883,7 @@ RUN --mount=type=secret,id=browser_app_identity \
     SHIM_BIN=/out/tilo-cli-shim \
     PUBKEY_OUT=/out/app-publisher.hex \
     /build/os/scripts/pack-apps.sh \
-    && { [ "${TILO_PREBUILT_APPS}" != 1 ] \
-         || [ "${TILO_WITH_BROWSER}" = 0 ] \
+    && { [ "${TILO_WITH_BROWSER}" = 0 ] \
          || { mkdir -p /tmp/browser-package-repo/apps/browser \
             && sed "s#tilo-runtime/${RUNTIME_VERSION}\"#tilo-runtime/2026.7.0-browser\"#" \
                  /build/apps/browser/tilo-app.toml \
@@ -917,6 +921,13 @@ FROM scratch AS native-builder-payload
 COPY --from=builder /out/ /out/
 COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
 COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
+
+# Fedora DNF/RPM record wall-clock transaction times in rpmdb and history.
+# Build the tiny clock shim separately so it does not invalidate Rust/WPE output.
+FROM ${WPE_BUILDROOT_REF} AS dnf-build-clock
+COPY os/scripts/build-clock.c /tmp/build-clock.c
+RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
+    /tmp/build-clock.c -o /build-clock.so
 
 # ---- Tilo build outputs, arranged by os/components.toml ---------------------
 # The manifest is the one record of which Tilo-built file lands where. This
@@ -1048,6 +1059,7 @@ COPY os/usr/share/doc/tilo/codec-pack.md /usr/share/doc/tilo/codec-pack.md
 # to be built over the *finished* rootfs (its composefs digest is the digest of
 # what will actually be mounted). See the split/uki/final stages at the end.
 FROM ${BASE_REF} AS rootfs
+ARG SOURCE_DATE_EPOCH=0
 
 # ---- Finalize SQLite's rpmdb after every rpm transaction --------------------
 # rpm's sqlite backend persists `rpmdb.sqlite-wal` and `rpmdb.sqlite-shm` rather
@@ -1120,6 +1132,12 @@ FROM ${BASE_REF} AS rootfs
 # directory. This avoids asking the layer diff to capture a heavily rewritten
 # database inode and turns corruption into an immediate failure.
 COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /usr/libexec/tilo/finalize-rpmdb
+COPY --chmod=0755 os/scripts/clean-dnf-layer-state.sh /usr/libexec/tilo/clean-dnf-layer-state
+COPY --from=dnf-build-clock /build-clock.so /usr/libexec/tilo/build-clock.so
+COPY --chmod=0755 os/scripts/dnf-fixed-time.sh /usr/local/bin/dnf
+COPY --chmod=0755 os/scripts/dnf-fixed-time.sh /usr/local/bin/rpm
+RUN test "$(command -v dnf)" = /usr/local/bin/dnf \
+    && test "$(command -v rpm)" = /usr/local/bin/rpm
 ARG FINALIZE_RPMDB="/usr/libexec/tilo/finalize-rpmdb"
 
 # Graphics stack. `at-spi2-core` supplies the D-Bus-activated org.a11y.Bus
@@ -2572,6 +2590,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # ldconfig -r in dracut requires absolute include patterns. Fedora's
     # default relative pattern resolves to the same directory without -r.
     sed -i 's@^include ld\.so\.conf\.d/\*\.conf$@include /etc/ld.so.conf.d/*.conf@' /etc/ld.so.conf; \
+    # Build containers do not guarantee a writable /dev/log. Keep -v stderr
+    # diagnostics while disabling the distro's default syslog sink.
+    printf 'sysloglvl=0\n' > /etc/dracut.conf.d/99-tilo-build-logging.conf; \
     dracut --force --reproducible --compress zstd -v --kver "$kver" \
         --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
         --omit-drivers "ext4 xfs" \
@@ -2791,6 +2812,7 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
     && bash /usr/local/bin/verify-no-ui-toolkits.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
+             /usr/local/bin/dnf /usr/local/bin/rpm /usr/libexec/tilo/build-clock.so \
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
     && bootc container lint
 

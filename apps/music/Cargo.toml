@@ -30,6 +30,7 @@ live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "dep:tilo-net", "dep:rquick
 lyrics = ["dep:reqwest", "dep:tilo-net"]
 
 [dependencies]
+fnv.workspace = true
 tilo-clock = { path = "../../crates/system/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
