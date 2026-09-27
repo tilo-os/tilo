@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc, transaction::Transactable};
+use automerge::{AutoCommit, ChangeHash, ObjId, transaction::Transactable};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -625,8 +625,9 @@ pub struct NotesApp {
     import_control_emitted: bool,
     /// View/legacy callback intents that must wait for a mutable bound record admission.
     pending_events: Vec<OutEvent>,
-    /// Last hydrated local spans distinguish input edits from stale projection.
-    canonical_marks: Vec<(String, Vec<actions::InlineMarkSpan>)>,
+    /// Dispatches the notebook upgrade when it opens. Its undo boundary is
+    /// never handed to the host: a format upgrade is not a person's edit.
+    upgrade_actions: ui::ActionHost,
     /// Last mouse position in logical coords. Used to hit-test
     /// link marks on mouse click without dragging the click event
     /// through every nested widget.
@@ -886,7 +887,6 @@ impl NotesApp {
         app.main = app.main.project_canonical(doc, &app.workspace)?;
         app.bound_page = app.workspace.selected();
         app.refresh_link_pages();
-        app.canonical_marks = app.main.inline_marks();
         Ok(app)
     }
 
@@ -969,7 +969,7 @@ impl NotesApp {
             pending_import_generation: 0,
             import_control_emitted: false,
             pending_events: Vec::new(),
-            canonical_marks: Vec::new(),
+            upgrade_actions: ui::ActionHost::new(),
             last_mouse: Point::ZERO,
             started: ui::clock::Instant::now(),
             synced_once: false,
@@ -1822,7 +1822,6 @@ impl NotesApp {
                 self.main.clear();
             }
             self.bound_page = None;
-            self.canonical_marks.clear();
             return;
         };
         if self.bound_page != Some(sel) {
@@ -1843,108 +1842,50 @@ impl NotesApp {
     /// we deliberately do NOT create it here, so binding can never fork
     /// the `pages` Map ahead of the handshake.
     fn bind_selected_page(&mut self, state: &mut AutoCommit, sel: PageId) {
-        let Some(list) = NotesDoc::page_blocks_list(state, sel) else {
+        if NotesDoc::page_body(state, sel).is_none() {
             return; // page not in the shared doc yet — wait for sync
-        };
+        }
         let title = self
             .workspace
             .get(sel)
             .map(|m| m.title.clone())
             .unwrap_or_default();
-        if self.legacy_fixture_storage.is_none() {
-            match self.main.bind_canonical_page(state, sel, &title, &list) {
-                Ok(()) => {
-                    self.bound_page = Some(sel);
-                    self.refresh_link_pages();
-                    self.canonical_marks = self.main.inline_marks();
+        if let Some(legacy) = &self.legacy_fixture_storage {
+            let body = match storage::read_page_body(&legacy.root, sel) {
+                Ok(body) => body,
+                Err(error) => {
+                    // Never turn an unreadable durable note into an editable
+                    // empty one: the saver would replace the original bytes.
+                    tracing::warn!(%error, page = %sel, "notes: page bind refused");
+                    if self.legacy_read_blocked != Some(sel) {
+                        self.report_page_read_failure(&error);
+                    }
+                    self.legacy_read_blocked = Some(sel);
+                    self.bound_page = None;
+                    return;
                 }
-                Err(error) => tracing::warn!(%error, "notes: canonical page bind refused"),
-            }
-            return;
-        }
-        let Some(legacy) = &self.legacy_fixture_storage else {
-            return;
-        };
-        let mut body = match storage::read_page_body(&legacy.root, sel) {
-            Ok(body) => body,
-            Err(error) => {
-                // Never turn an unreadable durable note into an editable empty
-                // one: the saver would replace the original bytes with it.
-                tracing::warn!(%error, page = %sel, "notes: page bind refused");
-                if self.legacy_read_blocked != Some(sel) {
-                    self.report_page_read_failure(&error);
-                }
-                self.legacy_read_blocked = Some(sel);
-                self.bound_page = None;
-                return;
-            }
-        };
-        if self.legacy_read_blocked.take() == Some(sel)
-            && self.main.page_id() == Some(sel)
-            && self.main.has_unsaved_body()
-        {
-            // The user may already have typed during the initial seed grace.
-            // Recover that draft, rather than replacing it with the disk copy.
-            body = self.main.take_body_snapshot();
-        }
-        // A page's first blocks are a durable mutation too. Seed them through
-        // the same action host that owns every subsequent editor delta; the
-        // panel only ever binds/adopts an already-action-owned list.
-        if state.length(&list) == 0 {
+            };
+            let body = if self.legacy_read_blocked.take() == Some(sel)
+                && self.main.page_id() == Some(sel)
+                && self.main.has_unsaved_body()
+            {
+                // The user may already have typed during the initial seed
+                // grace. Recover that draft rather than the disk copy.
+                self.main.take_body_snapshot()
+            } else {
+                body
+            };
+            // A page's first blocks are a durable mutation too. Seed them
+            // through the same action host that owns every later edit.
             self.seed_page_body(state, sel, &body);
         }
-        // Initial legacy seeding can happen after local typing. A same-page
-        // bind must not move its caret when the adopted content is identical.
-        let local_position = (self.main.page_id() == Some(sel)).then(|| {
-            let editor = self.main.editor();
-            let content = editor
-                .blocks()
-                .iter()
-                .map(|block| (block.kind.clone(), block.text().to_owned()))
-                .collect::<Vec<_>>();
-            let caret = editor.focused_index().and_then(|index| {
-                editor.blocks().get(index).map(|block| {
-                    (
-                        index,
-                        block.line.inner().caret_position(),
-                        block.line.selection_range(),
-                    )
-                })
-            });
-            (
-                content,
-                editor.is_focused(),
-                caret,
-                editor.document_selection(),
-            )
-        });
-        self.main.bind_page(state, sel, &title, list, &body);
-        if let Some((content, focused, caret, selection)) = local_position {
-            let editor = self.main.editor_mut();
-            if content.len() == editor.blocks().len()
-                && content
-                    .iter()
-                    .zip(editor.blocks())
-                    .all(|((kind, text), block)| *kind == block.kind && text == block.text())
-            {
-                if let Some(selection) = selection {
-                    editor.select_document_range(selection.anchor, selection.cursor);
-                } else if let Some((index, position, selection)) = caret {
-                    editor.focus_block(index, ui::widget::CursorPlacement::Byte(position.byte));
-                    if let Some(block) = editor.blocks_mut().get_mut(index) {
-                        let input = block.line.inner_mut();
-                        if let Some((start, end)) = selection {
-                            let anchor = if position.byte == start { end } else { start };
-                            input.set_selection(anchor, position.byte);
-                        } else {
-                            input.set_caret_position(position);
-                        }
-                    }
-                }
-                editor.set_focus(focused);
+        match self.main.bind_canonical_page(state, sel, &title) {
+            Ok(()) => {
+                self.bound_page = Some(sel);
+                self.refresh_link_pages();
             }
+            Err(error) => tracing::warn!(%error, "notes: page bind refused"),
         }
-        self.bound_page = Some(sel);
     }
 
     /// Adopt a legacy Markdown body only when the explicit disk adapter exists.
@@ -1969,11 +1910,14 @@ impl NotesApp {
     /// complete duplicate/imported content without the originating client
     /// having to open every descendant first.
     fn seed_page_body(&mut self, doc: &mut AutoCommit, page: PageId, body: &str) {
-        let Some(blocks) = NotesDoc::page_blocks_list(doc, page) else {
-            tracing::warn!(%page, "notes: refused to seed blocks for a missing page");
+        if NotesDoc::page_body(doc, page).is_none() {
+            tracing::warn!(%page, "notes: refused to seed a missing page");
             return;
-        };
-        if doc.length(&blocks) != 0 {
+        }
+        let empty = NotesDoc::page_block_snapshots(doc, page)
+            .iter()
+            .all(|(_, text)| text.is_empty());
+        if !empty || NotesDoc::page_blocks(doc, page).len() > 1 {
             return;
         }
         let titles = self
@@ -1982,9 +1926,11 @@ impl NotesApp {
             .iter()
             .map(|meta| (meta.title.clone(), meta.id))
             .collect::<HashMap<_, _>>();
-        let (ops, marks) =
-            MainPanel::seed_block_ops_with_marks(body, |title| titles.get(title).copied());
-        let action = actions::apply_block_ops_action(page, ops);
+        let blocks = MainPanel::seed_blocks(body, |title| titles.get(title).copied());
+        if blocks.iter().all(|block| block.text.is_empty()) && blocks.len() <= 1 {
+            return;
+        }
+        let action = actions::write_body_action(page, &blocks);
         if let Err(error) = self.actions.try_dispatch_with_context(
             doc,
             actions::NOTES_ACTION_TYPE,
@@ -1992,22 +1938,6 @@ impl NotesApp {
             actions::history_context(&action),
         ) {
             tracing::error!(%error, %page, "notes: could not seed page blocks");
-            return;
-        }
-        for (block_id, marks) in marks {
-            let action = actions::set_block_marks_action(page, block_id, marks);
-            if let Err(error) = self.actions.try_dispatch_with_context(
-                doc,
-                actions::NOTES_ACTION_TYPE,
-                &action,
-                actions::history_context(&action),
-            ) {
-                // The preceding insert action created this block. If a corrupt
-                // document still refuses it, retain the text and recover on a
-                // later bind rather than failing the whole workspace sync.
-                tracing::warn!(%error, %page, "notes: could not seed inline marks");
-                break;
-            }
         }
     }
 
@@ -2198,10 +2128,27 @@ impl NotesApp {
         Ok(())
     }
 
-    fn drain_canonical_editor(&mut self, doc: &mut AutoCommit) {
-        self.drain_block_ops(doc);
-        if self.main.editor_is_dirty() && self.bound_page.is_some() {
-            self.drain_inline_marks(doc);
+    /// Bring a notebook still holding first-format pages to rich text, once
+    /// it is open. A no-op for a current notebook.
+    fn upgrade_notebook(&mut self, doc: &mut AutoCommit) {
+        if !NotesDoc::needs_upgrade(doc) {
+            return;
+        }
+        let action = NotesAction::UpgradeNotebook;
+        match self.upgrade_actions.try_dispatch_with_context(
+            doc,
+            actions::NOTES_ACTION_TYPE,
+            &action,
+            actions::history_context(&action),
+        ) {
+            Ok(()) => {
+                // Not a person's edit: no undo step for it.
+                let _ = self.upgrade_actions.take_committed();
+                self.bound_page = None;
+                self.canonical_synced = None;
+                self.self_dirty = true;
+            }
+            Err(error) => tracing::error!(%error, "notes: notebook upgrade refused"),
         }
     }
 
@@ -2230,7 +2177,6 @@ impl NotesApp {
         doc: &mut AutoCommit,
         event: OutEvent,
     ) -> Result<(), String> {
-        self.drain_canonical_editor(doc);
         self.reconcile_canonical(doc)?;
         // Direct title/create affordances use the current published contract,
         // just like named actions. Check before any optimistic metadata edit.
@@ -2630,7 +2576,7 @@ impl NotesApp {
             let page_exists = if self.legacy_fixture_storage.is_some() {
                 self.workspace.get(page).is_some()
             } else {
-                NotesDoc::page_blocks_list(doc, page).is_some()
+                NotesDoc::page_body(doc, page).is_some()
             };
             if !page_exists {
                 // Deleted history entries are skipped, just as a browser skips
@@ -2935,16 +2881,15 @@ impl NotesApp {
                     .map(|block| block.id.clone())
             })
             .flatten();
-        let op = ui::widget::BlockEditOp::Insert {
-            block_id: uuid::Uuid::new_v4().to_string(),
-            after,
-            kind: "paragraph".into(),
-            text: format!("![{}]({destination})", alt.trim()),
+        let text = format!("![{}]({destination})", alt.trim());
+        let edit = match after {
+            Some(after) => qdoc_rich_text::RichTextAction::InsertParagraph { after, text },
+            None => qdoc_rich_text::RichTextAction::AppendParagraph { text },
         };
         let action = if let Some(bytes) = canonical_bytes {
-            actions::add_image_asset_action(page, bytes, op)
+            actions::add_image_asset_action(page, bytes, edit)
         } else {
-            actions::apply_block_ops_action(page, vec![op])
+            actions::edit_body_action(page, edit)
         };
         let scope = self.markdown_scope();
         let result = self.dispatch_transfer_action(doc, &action, scope.as_ref());
@@ -3222,7 +3167,7 @@ impl NotesApp {
         workspace.rename(page, title);
         workspace.set_selected(Some(page));
         let meta = workspace.get(page).ok_or("Imported page is unavailable")?;
-        let (ops, marks) = MainPanel::seed_block_ops_with_marks(&body, |title| {
+        let blocks = MainPanel::seed_blocks(&body, |title| {
             workspace
                 .pages()
                 .iter()
@@ -3231,8 +3176,7 @@ impl NotesApp {
         });
         let action = NotesAction::ImportPage {
             page: actions::PageData::from_meta(meta),
-            ops,
-            marks,
+            blocks: blocks.iter().map(actions::PageBlock::of).collect(),
             assets,
         };
         self.dispatch_transfer_action(doc, &action, scope)?;
@@ -3269,7 +3213,7 @@ impl NotesApp {
         workspace.rename(page, title);
         workspace.set_selected(Some(page));
         let meta = workspace.get(page).ok_or("Imported page is unavailable")?;
-        let (ops, marks) = MainPanel::seed_block_ops_with_marks(&body, |target| {
+        let blocks = MainPanel::seed_blocks(&body, |target| {
             workspace
                 .pages()
                 .iter()
@@ -3278,8 +3222,7 @@ impl NotesApp {
         });
         let action = NotesAction::ImportPage {
             page: actions::PageData::from_meta(meta),
-            ops,
-            marks,
+            blocks: blocks.iter().map(actions::PageBlock::of).collect(),
             assets: Vec::new(),
         };
         self.dispatch_canonical_action(doc, &action)?;
@@ -3422,13 +3365,13 @@ impl NotesApp {
                 Err("Markdown content import requires mutable host admission".into())
             }
             actions::NotesOperation::InsertImage { page } => {
-                if NotesDoc::page_blocks_list(doc, page).is_none() {
+                if NotesDoc::page_body(doc, page).is_none() {
                     return Err("page no longer exists".into());
                 }
                 self.request_image_insert(page)
             }
             actions::NotesOperation::ExportMarkdown { page } => {
-                if NotesDoc::page_blocks_list(doc, page).is_none() {
+                if NotesDoc::page_body(doc, page).is_none() {
                     return Err("page no longer exists".into());
                 }
                 self.request_markdown_export(doc, page)
@@ -3461,7 +3404,7 @@ impl NotesApp {
                 Ok(())
             }
             actions::NotesOperation::OpenPage { page, block_id } => {
-                if NotesDoc::page_blocks_list(doc, page).is_none() {
+                if NotesDoc::page_body(doc, page).is_none() {
                     return Err("page no longer exists".into());
                 }
                 if let Some(block_id) = block_id.as_ref()
@@ -3552,109 +3495,6 @@ impl NotesApp {
         if let Some(legacy) = &self.legacy_fixture_storage {
             let saver = &legacy.page_saver;
             saver.request(id, body);
-        }
-    }
-
-    /// Dispatch action-owned semantic editor deltas. A stale page/block is a
-    /// normal collaborative race, not a silent best-effort write: refuse it,
-    /// then force the panel to rebind from the document on the next sync.
-    fn drain_block_ops(&mut self, state: &mut AutoCommit) {
-        let ops = self.main.take_block_ops();
-        if ops.is_empty() {
-            return;
-        }
-        let Some(page) = self.main.page_id() else {
-            return;
-        };
-        let action = actions::apply_block_ops_action(page, ops);
-        if let Err(error) = self.actions.try_dispatch_with_context(
-            state,
-            actions::NOTES_ACTION_TYPE,
-            &action,
-            actions::history_context(&action),
-        ) {
-            tracing::warn!(%error, page = %page, "notes: rejected stale editor operation; reconciling");
-            self.bound_page = None;
-            self.self_dirty = true;
-        }
-    }
-
-    /// Persist the editor's rich inline spans as native Automerge text marks.
-    /// Text and structure already flow through `ApplyBlockOps`; formatting and
-    /// page links need their own typed action because they do not alter the
-    /// plain string. Comparing against the document avoids re-emitting an
-    /// action for ordinary typing: Automerge carries its native mark anchors
-    /// forward with the text splice.
-    fn drain_inline_marks(&mut self, state: &mut AutoCommit) {
-        if self.legacy_fixture_storage.is_none() && self.bound_page != self.main.page_id() {
-            return;
-        }
-        let local = self.main.inline_marks();
-        if self.legacy_fixture_storage.is_none() && local == self.canonical_marks {
-            return;
-        }
-        // Before the late-join handshake, the visible Markdown editor is a
-        // local preview and its page has deliberately not been created in the
-        // shared doc yet. Waiting for seed/adoption avoids a noisy stale-page
-        // action and then migrates the same spans on the first bound sync.
-        if !self.adopted {
-            return;
-        }
-        let Some(page) = self.main.page_id() else {
-            return;
-        };
-        let in_doc = NotesDoc::page_block_marks(state, page)
-            .into_iter()
-            .map(|(id, mut marks)| {
-                // RichTextLine retains spans in start order; native marks
-                // arrive grouped by mark name. Ordering is not an edit.
-                marks.sort_by_key(|mark| mark.start);
-                (id, marks)
-            })
-            .collect::<HashMap<_, _>>();
-        for (block_id, marks) in local.iter().cloned() {
-            if in_doc
-                .get(&block_id)
-                .is_some_and(|current| current == &marks)
-            {
-                continue;
-            }
-            let action = actions::set_block_marks_action(page, block_id, marks);
-            if let Err(error) = self.actions.try_dispatch_with_context(
-                state,
-                actions::NOTES_ACTION_TYPE,
-                &action,
-                actions::history_context(&action),
-            ) {
-                tracing::warn!(%error, page = %page, "notes: rejected inline-mark operation; reconciling");
-                self.bound_page = None;
-                self.self_dirty = true;
-                return;
-            }
-        }
-        if self.legacy_fixture_storage.is_none() {
-            self.canonical_marks = local;
-        }
-    }
-
-    /// Rehydrate the rich spans the shared widget intentionally does not own.
-    /// Native mark positions are read only for the bound page and only once a
-    /// page has crossed the explicit marks-action migration marker, keeping a
-    /// legacy local Markdown page's first bind intact long enough to migrate.
-    fn hydrate_inline_marks(&mut self, state: &AutoCommit) {
-        let Some(page) = self.main.page_id() else {
-            return;
-        };
-        if self.legacy_fixture_storage.is_some() && !NotesDoc::page_marks_are_canonical(state, page)
-        {
-            return;
-        }
-        let marks = NotesDoc::page_block_marks(state, page)
-            .into_iter()
-            .collect::<HashMap<_, _>>();
-        self.main.set_inline_marks(&marks);
-        if self.legacy_fixture_storage.is_none() {
-            self.canonical_marks = self.main.inline_marks();
         }
     }
 
@@ -4160,11 +4000,13 @@ impl ui::widget::AppWidget for NotesApp {
     ) -> Result<Option<ui::application_view::ApplicationLocalView>, ui::view::ThawError> {
         use crate::local_view::{BlockPosition, NotesFocus, NotesLocalViewV1};
         let editor = self.main.editor();
+        // Only blocks the note stores have a stable position; a placeholder
+        // in an empty note does not.
         let position = |index: usize, byte_offset| {
             editor
                 .blocks()
                 .get(index)
-                .filter(|block| block.line.bound_obj().is_some())
+                .filter(|block| self.main.stores_block(&block.id))
                 .map(|block| BlockPosition {
                     block_id: block.id.clone(),
                     byte_offset,
@@ -4235,7 +4077,16 @@ impl ui::widget::AppWidget for NotesApp {
             .main
             .project_canonical(doc, &workspace)
             .map_err(ui::view::ThawError::State)?;
-        let focus = PreparedFocus::resolve(&local, main.editor());
+        let stored = workspace
+            .selected()
+            .map(|page| {
+                NotesDoc::page_block_snapshots(doc, page)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect::<std::collections::HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let focus = PreparedFocus::resolve(&local, main.editor(), &|id| stored.contains(id));
         main.restore_scroll(local.editor_scroll);
         let mut sidebar = PageSidebar::new();
         sidebar.sync_from_workspace(&workspace);
@@ -4249,7 +4100,6 @@ impl ui::widget::AppWidget for NotesApp {
         self.sidebar = sidebar;
         self.active_tag_filter = active_tag;
         self.bound_page = self.workspace.selected();
-        self.canonical_marks = self.main.inline_marks();
         self.pending_events.clear();
         self.pending_block_reveal = None;
         self.drawer.snap(local.drawer_open);
@@ -4419,7 +4269,7 @@ impl Widget for NotesApp {
                 ui::widget::ResourceOperationStart::Accepted
             }
             actions::NotesOperation::ExportMarkdown { page } => {
-                if NotesDoc::page_blocks_list(doc, page).is_none() {
+                if NotesDoc::page_body(doc, page).is_none() {
                     return Err("page no longer exists".into());
                 }
                 let pending = PendingOperation::scoped(scope);
@@ -4428,7 +4278,7 @@ impl Widget for NotesApp {
                 ui::widget::ResourceOperationStart::Accepted
             }
             actions::NotesOperation::InsertImage { page } => {
-                if NotesDoc::page_blocks_list(doc, page).is_none() {
+                if NotesDoc::page_body(doc, page).is_none() {
                     return Err("page no longer exists".into());
                 }
                 let pending = PendingOperation::scoped(scope);
@@ -4624,8 +4474,8 @@ impl Widget for NotesApp {
         }
         self.drain_markdown_transfer(state);
         self.drain_external_link_opens();
+        self.upgrade_notebook(state);
         if self.legacy_fixture_storage.is_none() {
-            self.drain_canonical_editor(state);
             self.drain_title_rename(state);
             for event in std::mem::take(&mut self.pending_events) {
                 self.apply_and_dispatch(state, event);
@@ -4679,15 +4529,7 @@ impl Widget for NotesApp {
         self.refresh_transclusion_previews(state);
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
-        // Synthetic accessibility buttons do not pass through handle_event;
-        // drain their retained UUID operations here through the same action
-        // host/history path as pointer and keyboard edits.
-        self.drain_block_ops(state);
         self.drain_transclusion_opens(state);
-        self.hydrate_inline_marks(state);
-        if self.legacy_fixture_storage.is_some() {
-            self.drain_inline_marks(state);
-        }
         self.refresh_search_blocks(state);
         self.main.set_backlinks(self.selected_backlink_chips());
         if let Some((page, block_id)) = self.pending_block_reveal.as_ref()
@@ -4730,7 +4572,16 @@ impl Widget for NotesApp {
     /// its page-tree action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
+        // A body edit dispatches through the page's editor; everything else
+        // through the app's own host. One event does one or the other.
+        let body = self.main.body_editor_mut().take_committed_action();
+        let notes = self.actions.take_committed();
+        body.or(notes)
+    }
+
+    /// Typing a word in a note is one undo step.
+    fn keeps_undo_step_open(&self) -> bool {
+        self.main.keeps_undo_step_open()
     }
 
     /// Fold the notebook into the unified Ctrl+K palette: a snapshot
@@ -5865,9 +5716,7 @@ impl NotesApp {
                     state,
                     &automerge::ROOT,
                 );
-                self.drain_block_ops(state);
                 if self.main.editor_is_dirty() {
-                    self.drain_inline_marks(state);
                     self.save_current_editor_snapshot();
                 }
                 self.refresh_status();
@@ -5978,16 +5827,10 @@ impl NotesApp {
                 taffy,
             );
         }
-        // The panel has only produced local semantic deltas at this point.
-        // Apply them before its next sync so a widget never writes the shared
-        // document behind the action/history/undo path.
-        self.drain_block_ops(state);
-        // `editor_is_dirty` drains the widget's edit edge. Doing that before
-        // collecting rich spans means a pointer move or caret blink does not
-        // rescan every block in a long note; mark actions run only when an
-        // actual text/format/structure edit occurred.
+        // The body editor has applied the person's edit as a Notes action.
+        // `editor_is_dirty` drains the widget's edit edge, so a pointer move
+        // or caret blink never snapshots a long note for its Markdown file.
         if self.main.editor_is_dirty() {
-            self.drain_inline_marks(state);
             self.save_current_editor_snapshot();
         }
         // A committed edit of the note's in-page title renames the current
@@ -6247,10 +6090,10 @@ mod tests {
             let peer_page = peer.create_page(None);
             peer.rename(peer_page, "Peer note");
             NotesDoc::upsert_page_meta(&mut state.doc, peer.get(peer_page).unwrap());
-            NotesDoc::apply_block_ops(
+            NotesDoc::fill_page_body(
                 &mut state.doc,
                 peer_page,
-                &MainPanel::seed_block_ops("Peer contents"),
+                &MainPanel::seed_blocks("Peer contents", |_| None),
             )
             .unwrap();
             app.sync(&mut state.doc, &state.root);
@@ -6349,7 +6192,11 @@ mod tests {
             app.bypass_seed_grace_for_test();
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
-            assert!(NotesDoc::page_block_snapshots(&state.doc, page).is_empty());
+            assert!(
+                NotesDoc::page_block_snapshots(&state.doc, page)
+                    .iter()
+                    .all(|(_, text)| text.is_empty())
+            );
             assert_eq!(app.bound_page, None);
             assert_eq!(app.main.page_id(), Some(page));
             assert_eq!(app.main.editor().blocks()[0].text(), "Unsaved draft");
@@ -6451,13 +6298,13 @@ mod tests {
             );
             // Retain a pre-existing scoped attachment beside the new embedded
             // images; compatibility custody must not replace the canonical map.
-            let op = ui::widget::BlockEditOp::Insert {
-                block_id: uuid::Uuid::new_v4().to_string(),
-                after: images.last().map(|(id, _)| id.clone()),
-                kind: "paragraph".into(),
-                text: format!("![Existing]({legacy_reference})"),
-            };
-            let action = actions::apply_block_ops_action(page, vec![op]);
+            let action = actions::edit_body_action(
+                page,
+                qdoc_rich_text::RichTextAction::InsertParagraph {
+                    after: images.last().map(|(id, _)| id.clone()).unwrap(),
+                    text: format!("![Existing]({legacy_reference})"),
+                },
+            );
             app.actions
                 .try_dispatch_with_context(
                     &mut doc,
@@ -6736,8 +6583,7 @@ mod tests {
                 .selected()
                 .expect("new page becomes the active page");
             assert!(
-                NotesDoc::page_blocks_list(&state.doc, new_page)
-                    .is_some_and(|blocks| state.doc.length(&blocks) > 0),
+                !NotesDoc::page_blocks(&state.doc, new_page).is_empty(),
                 "the new page body also crossed the typed action executor"
             );
         }
@@ -7047,29 +6893,20 @@ mod tests {
                 .clone();
             app.perform_action(
                 &mut state.doc,
-                &actions::apply_block_ops_action(
+                &actions::edit_body_action(
                     source,
-                    vec![ui::widget::BlockEditOp::TextSplice {
-                        block_id: block.clone(),
-                        start: 0,
-                        end: 0,
-                        text: "Welcome".into(),
-                    }],
+                    qdoc_rich_text::RichTextAction::SpliceText {
+                        region: qdoc_rich_text::action::RegionKind::Body,
+                        block: block.clone(),
+                        at: 0,
+                        del: 0,
+                        ins: "Welcome".into(),
+                    },
                 ),
             );
             app.perform_action(
                 &mut state.doc,
-                &actions::set_block_marks_action(
-                    source,
-                    block,
-                    vec![actions::InlineMarkSpan {
-                        start: 0,
-                        end: 7,
-                        mark: actions::InlineMark::Link {
-                            page: target.to_string(),
-                        },
-                    }],
-                ),
+                &actions::set_mark_action(source, &block, 0..7, &ui::widget::Mark::Link(target)),
             );
             // Exercise the canonical reader rather than the legacy Markdown
             // fallback used by this fixture's launch path.
@@ -7126,16 +6963,11 @@ mod tests {
                 .expect("new page becomes the backlink destination");
             assert_ne!(source, target);
             let source_block = app.search_blocks[&source][0].id.clone();
-            let action = crate::actions::set_block_marks_action(
+            let action = crate::actions::set_mark_action(
                 source,
-                source_block,
-                vec![crate::actions::InlineMarkSpan {
-                    start: 0,
-                    end: 4,
-                    mark: crate::actions::InlineMark::Link {
-                        page: target.to_string(),
-                    },
-                }],
+                &source_block,
+                0..4,
+                &ui::widget::Mark::Link(target),
             );
             app.perform_action(&mut state.doc, &action);
 
@@ -7778,10 +7610,13 @@ mod tests {
                 end: 4,
                 mark: crate::actions::InlineMark::Underline,
             }];
-            let action =
-                crate::actions::set_block_marks_action(welcome, block.clone(), marks.clone());
+            let action = crate::actions::set_mark_action(
+                welcome,
+                &block,
+                0..4,
+                &ui::widget::marks::Mark::Underline,
+            );
             app.perform_action(&mut state.doc, &action);
-            assert!(NotesDoc::page_marks_are_canonical(&state.doc, welcome));
 
             // Simulate a remote structural refresh. The widget rebuilds plain
             // text/kinds, then Notes hydrates the native mark state back into the
@@ -7814,21 +7649,13 @@ mod tests {
             app.main.editor_mut().blocks_mut()[0].line.set_marks(vec![
                 ui::widget::marks::MarkSpan::new(0..4, ui::widget::marks::Mark::Underline),
             ]);
-            // Formatting changes no plain text, so exercise the exact dirty edge
-            // the event router observes after a Ctrl/Cmd formatting shortcut.
-            app.main.editor_mut().force_dirty_for_test();
-            assert!(app.main.editor_is_dirty());
-            app.drain_inline_marks(&mut state.doc);
-
-            let dispatched = app
-                .last_dispatched_for_test()
-                .expect("mark-only edit dispatched an action");
-            let action: crate::actions::NotesAction =
-                serde_json::from_slice(&dispatched.payload).expect("mark action payload decodes");
-            assert!(matches!(
-                action,
-                crate::actions::NotesAction::SetBlockMarks { .. }
-            ));
+            // Formatting changes no plain text; the editor still writes it as
+            // the page's own edit.
+            app.sync(&mut state.doc, &state.root);
+            assert!(
+                Widget::take_committed_action(&mut app).is_some(),
+                "the mark-only edit is an undoable Notes action"
+            );
             assert_eq!(
                 NotesDoc::page_block_marks(&state.doc, welcome)
                     .into_iter()
@@ -7844,8 +7671,7 @@ mod tests {
 
         eprintln!("phase collaborative_identical_insert_preserves_the_original_block_target");
         {
-            use automerge::ObjType;
-            use automerge::transaction::Transactable as _;
+            use tilo_actions::Action as _;
 
             let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
             let original = app.search_blocks[&welcome][1].clone();
@@ -7857,15 +7683,32 @@ mod tests {
             let payload = serde_json::to_vec(&operation).unwrap();
 
             // A collaborator inserts an identical-text block before the target.
-            // Content and index cannot distinguish them; CRDT object identity can.
-            let list = NotesDoc::page_blocks_list(&state.doc, welcome).unwrap();
-            let inserted = state.doc.insert_object(&list, 0, ObjType::Map).unwrap();
-            state.doc.put(&inserted, "kind", "paragraph").unwrap();
-            let text = state
-                .doc
-                .put_object(&inserted, "text", ObjType::Text)
-                .unwrap();
-            state.doc.splice_text(&text, 0, 0, &original.text).unwrap();
+            // Content and index cannot distinguish them; block identity can.
+            let last = app.search_blocks[&welcome].last().unwrap().id.clone();
+            crate::actions::edit_body_action(
+                welcome,
+                qdoc_rich_text::RichTextAction::InsertParagraph {
+                    after: last.clone(),
+                    text: original.text,
+                },
+            )
+            .apply(&mut state.doc)
+            .unwrap();
+            let inserted = NotesDoc::page_block_snapshots(&state.doc, welcome)
+                .into_iter()
+                .skip_while(|(id, _)| *id != last)
+                .nth(1)
+                .unwrap()
+                .0;
+            crate::actions::edit_body_action(
+                welcome,
+                qdoc_rich_text::RichTextAction::MoveBlocks {
+                    blocks: vec![inserted],
+                    after: None,
+                },
+            )
+            .apply(&mut state.doc)
+            .unwrap();
             app.sync(&mut state.doc, &state.root);
 
             let resolved = Widget::resource(&app, &state.doc, &old_address.resource)
