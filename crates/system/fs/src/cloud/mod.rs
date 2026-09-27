@@ -19,7 +19,6 @@
 //!   and runs one mount per account;
 //! - [`volume`]: one account's engine — cached metadata, ranged hydration,
 //!   write-back through a persisted queue, conflict copies;
-//! - [`cache`]: the bounded BLAKE3-keyed content cache;
 //! - [`fuse`]: the kernel adapter;
 //! - [`credential`]: the one-credential pipe between service and mount;
 //! - [`providers`]: which provider serves which account type.
@@ -27,11 +26,11 @@
 //! This module is separate from the room data plane on purpose: rooms
 //! replicate signed records between peers, while a cloud account mirrors a
 //! server that is the authority for its own tree. What they share is the
-//! conflict-copy convention ([`crate::conflict::conflict_name`]), the
-//! placeholder range bookkeeping ([`fs_native::ranges::RangeSet`]) and the
-//! BLAKE3 content addressing of cached bytes.
+//! conflict-copy convention ([`crate::conflict::conflict_name`]) and the
+//! content store: cached bytes live in the daemon's file-backed,
+//! range-resident, budgeted cache ([`crate::store::FileArea`]), keyed by
+//! remote revision, with identical revisions sharing extents.
 
-pub mod cache;
 pub mod credential;
 pub mod fuse;
 pub mod providers;

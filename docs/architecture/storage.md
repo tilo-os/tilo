@@ -737,10 +737,14 @@ providers, each with an in-process fake server (feature `fake-server`).
 - A read fetches only the missing, 1 MiB-aligned ranges of the requested
   window. The window widens for sequential readers. Every fetch is a ranged
   read pinned to the listed revision, so a read never mixes versions.
-- Fetched ranges land in a sparse file per revision, tracked with the Tier 1
-  placeholder `RangeSet`. A complete revision is promoted to a blob named by
-  its BLAKE3 hash. The cache has a byte budget and evicts the least recently
-  used entries.
+- Fetched ranges land in the content store's file area (§7, §12.2), keyed
+  by remote revision: a sparse file per revision with persisted range
+  residency, under the account's byte budget, least recently used first.
+  Complete revisions with identical bytes share extents. The FUSE adapter
+  stays separate from the rooms' FUSE filesystem: that one's inodes, reads
+  and writes are the namespace, records and ACL of a room, and its
+  passthrough needs privileges a per-user mount does not have. What the two
+  share is the content store underneath.
 - Local writes go to a staged copy. When the last writer closes the file,
   an upload is queued in a persisted outbox and sent in the background, with
   the revision the edit started from as an `If-Match` precondition.
