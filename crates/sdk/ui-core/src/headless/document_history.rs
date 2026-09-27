@@ -19,7 +19,9 @@ impl FrameHarness {
     /// app) keeps that one: wrapping it in the standalone adapter as well
     /// would stack two History toolbars and squeeze the app's layout.
     pub fn enable_document_history_chrome(&mut self) {
-        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+        if self.history.is_some()
+            || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+            || self.root.provides_document_history()
         {
             return;
         }
@@ -305,8 +307,28 @@ impl FrameHarness {
             .map(|_| ())
             .map_err(|error| format!("History is unavailable: {error:?}"))
         };
+        self.apply_confirmed_history_restore();
         self.history_focus_pending |= !was_open && self.document_history.is_open();
         result
+    }
+
+    /// The headless counterpart of the App's restore door: the same checked
+    /// write through the same undo log, attributed to this harness's author.
+    fn apply_confirmed_history_restore(&mut self) {
+        let Some(review) = self.document_history.take_confirmed_restore() else {
+            return;
+        };
+        let result = crate::standalone_history::apply_restore(
+            &mut self.state,
+            &review,
+            Some(self.author.clone()),
+        );
+        if matches!(result, Ok(true)) {
+            self.invalidate_layout_tree();
+        }
+        let _ = self
+            .with_history(super::super::standalone_history_host::StandaloneHistoryHost::refresh);
+        self.document_history.report_restore(&result);
     }
 
     pub(super) fn history_tick(&mut self) -> Result<(), String> {
@@ -354,6 +376,7 @@ impl FrameHarness {
             )
             .map(|_| ())
             .map_err(|error| format!("History is unavailable: {error:?}"));
+        self.apply_confirmed_history_restore();
         // Keep Accepted app jobs alive while browsing chrome. This existing idle
         // boundary records completed actions but does not commit unrelated typing.
         self.idle_control_tick();
@@ -387,9 +410,10 @@ impl FrameHarness {
         }
         self.document_history
             .sync(&mut self.state.doc, &self.state.root);
+        let reshaped = self.document_history.take_structure_dirty();
         (
             revision != self.document_history.revision(),
-            presented_open != self.document_history.is_open(),
+            presented_open != self.document_history.is_open() || reshaped,
         )
     }
 

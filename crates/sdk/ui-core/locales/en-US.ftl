@@ -9,6 +9,25 @@ standalone-history-select = Select changes
 standalone-history-compare = Compare selected changes
 standalone-history-entry-ids = Changes
 standalone-history-selected-details = Selected changes
+standalone-history-restore = Restore this version…
+standalone-history-restore-title = Restore this version?
+standalone-history-restore-body = The document goes back to how it was after “{ $version }”. This adds a new change: later versions stay in History, and Undo reverses the restore.
+standalone-history-restore-confirm = Restore version
+standalone-history-restore-cancel = Cancel
+standalone-history-restore-action = Restore version
+standalone-history-restore-done = Version restored. Undo reverses it.
+standalone-history-restore-stale = The document changed while you were reviewing. Select the version again to restore it.
+standalone-history-restore-pending = Finish the current edit, then restore the version.
+standalone-history-restore-denied = Only editors can restore a version.
+standalone-history-restore-unavailable = This version can't be restored here.
+history-edited-field = { $more ->
+    [0] Edited { $path }
+   *[other] Edited { $path } and { $more } more
+}
+history-removed-field = { $more ->
+    [0] Removed { $path }
+   *[other] Removed { $path } and { $more } more
+}
 
 music-open-audio-file = Open audio file
 
