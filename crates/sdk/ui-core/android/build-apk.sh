@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build an installable APK for a Tilo app.
 #
-#   crates/packaging/android/build-apk.sh <app-package> [--abi ABI]... [--release]
+#   crates/sdk/ui-core/android/build-apk.sh <app-package> [--abi ABI]... [--release]
 #       [--label LABEL] [--application-id ID]
 #
 # ABI is arm64-v8a or x86_64 (default: both). The app's Rust library is its
@@ -24,7 +24,7 @@ JAVA_RELEASE=11
 EPOCH=315532800
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-root=$(cd "$here/../../.." && pwd)
+root=$(cd "$here/../../../.." && pwd)
 
 die() {
     echo "build-apk: $*" >&2
