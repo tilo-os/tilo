@@ -728,11 +728,10 @@ impl Drop for ServiceRegistration {
     }
 }
 
-fn endpoint(
-    address: std::net::SocketAddr,
+fn server_config(
     certificates: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
-) -> Result<quinn::Endpoint> {
+) -> Result<quinn::ServerConfig> {
     let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -752,7 +751,34 @@ fn endpoint(
         .send_window(2 * 1024 * 1024)
         .max_idle_timeout(Some(Duration::from_secs(30).try_into()?));
     config.transport_config(Arc::new(transport));
-    Ok(quinn::Endpoint::server(config, address)?)
+    Ok(config)
+}
+
+fn endpoint(
+    address: std::net::SocketAddr,
+    certificates: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+) -> Result<quinn::Endpoint> {
+    Ok(quinn::Endpoint::server(
+        server_config(certificates, key)?,
+        address,
+    )?)
+}
+
+/// Build a QUIC endpoint on an already-bound UDP socket (socket activation / tests).
+fn endpoint_from_socket(
+    socket: std::net::UdpSocket,
+    certificates: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+) -> Result<quinn::Endpoint> {
+    socket.set_nonblocking(true)?;
+    let runtime = quinn::default_runtime().context("async runtime required for QUIC endpoint")?;
+    Ok(quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(server_config(certificates, key)?),
+        socket,
+        runtime,
+    )?)
 }
 #[expect(
     clippy::too_many_arguments,
