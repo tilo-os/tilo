@@ -9,6 +9,7 @@ description = "Deadline and byte-bounded subprocess capture for Tilo trust bound
 [dependencies]
 thiserror.workspace = true
 zeroize.workspace = true
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

@@ -28,6 +28,7 @@ anyhow.workspace = true
 clap.workspace = true
 # Only pulled in under `--features thin`; see the `thin` feature above.
 runtime-dylib = { path = "../../../crates/runtime/runtime-dylib", optional = true }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

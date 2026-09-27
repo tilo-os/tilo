@@ -20,6 +20,7 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-actions = { path = "../../collab/actions" }
 # Hyperlink targets a rich-text action may carry.
 url.workspace = true
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

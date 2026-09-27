@@ -49,6 +49,7 @@ mod ruler;
 mod style_color_picker;
 mod style_menu;
 mod template_picker;
+mod text_offsets;
 mod unsaved_changes;
 mod zoom_control;
 pub use ui::num;

@@ -42,6 +42,24 @@ pub fn derive_model(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Derive `JsonSchema`: the JSON Schema of the type's serde JSON form.
+///
+/// Reads the serde attributes that change the form — `rename`,
+/// `rename_all`, `tag`, `content`, `transparent`, `default`, `skip` — and
+/// refuses those it cannot describe (`flatten`, `untagged`, `with`), so the
+/// schema never differs from what serde reads. Doc comments become
+/// descriptions. Every field's type must implement `JsonSchema` too.
+#[proc_macro_derive(JsonSchema, attributes(serde))]
+pub fn derive_json_schema(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match schema::derive(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+mod schema;
+
 #[derive(Default)]
 struct FieldOptions {
     rename: Option<String>,
@@ -912,6 +930,10 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
 
             fn shape() -> ::core::option::Option<#krate::Shape> {
                 ::core::option::Option::Some(<Self as #krate::Model>::SHAPE)
+            }
+
+            fn action_schema() -> ::core::option::Option<#krate::__private::serde_json::Value> {
+                ::core::option::Option::Some(#krate::schema::record_action_schema::<Self>())
             }
         }
     })

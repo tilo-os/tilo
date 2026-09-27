@@ -41,6 +41,7 @@ TABLE_BYTES = GPT_ENTRIES * GPT_ENTRY_BYTES
 DIGEST_REF = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 MANIFEST_SCHEMA = "tilo.windows-direct-vm-template.v1"
 SAMPLE_BYTES = 64 * 1024
+MAX_TEMPLATE_ALLOCATION = 8 * 1024 * 1024
 
 
 def require(ok, message):
@@ -100,16 +101,70 @@ def write_template(stream, plan, *, rows=None, disk_guid=None):
     return rows
 
 
-def make_sparse_windows(stream):
-    if platform.system() != "Windows":
-        return
+def windows_file_info(stream):
+    """Read the native NTFS allocation and attributes from the same open handle."""
+    import msvcrt
+
+    class FileStandardInfo(ctypes.Structure):
+        _fields_ = [("allocation_size", ctypes.c_int64),
+                    ("end_of_file", ctypes.c_int64),
+                    ("number_of_links", ctypes.c_uint32),
+                    ("delete_pending", ctypes.c_ubyte),
+                    ("directory", ctypes.c_ubyte)]
+
+    class FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = [("file_attributes", ctypes.c_uint32),
+                    ("reparse_tag", ctypes.c_uint32)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetFileInformationByHandleEx.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                                     ctypes.c_void_p, ctypes.c_uint32]
+    kernel.GetFileInformationByHandleEx.restype = ctypes.c_int
+    handle = ctypes.c_void_p(msvcrt.get_osfhandle(stream.fileno()))
+    standard = FileStandardInfo()
+    attributes = FileAttributeTagInfo()
+    for information_class, value in ((1, standard), (9, attributes)):
+        if not kernel.GetFileInformationByHandleEx(handle, information_class,
+                                                   ctypes.byref(value), ctypes.sizeof(value)):
+            raise ctypes.WinError(ctypes.get_last_error())
+    return standard.end_of_file, standard.allocation_size, attributes.file_attributes
+
+
+def verify_sparse_windows(stream, expected_size):
+    stream.flush()
+    size, allocated, attributes = windows_file_info(stream)
+    require(attributes & 0x200, "VM source lost its Windows sparse attribute")
+    require(size == expected_size, "VM source has an unexpected logical size")
+    require(0 <= allocated <= MAX_TEMPLATE_ALLOCATION,
+            f"VM source unexpectedly allocated {allocated} bytes")
+
+
+def make_sparse_windows(stream, size):
     import msvcrt
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = ctypes.c_void_p(msvcrt.get_osfhandle(stream.fileno()))
+    kernel.DeviceIoControl.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p,
+                                       ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
+                                       ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+    kernel.DeviceIoControl.restype = ctypes.c_int
+    kernel.SetFilePointerEx.argtypes = [ctypes.c_void_p, ctypes.c_int64,
+                                        ctypes.c_void_p, ctypes.c_uint32]
+    kernel.SetFilePointerEx.restype = ctypes.c_int
+    kernel.SetEndOfFile.argtypes = [ctypes.c_void_p]
+    kernel.SetEndOfFile.restype = ctypes.c_int
     returned = ctypes.c_uint32()
-    ok = kernel.DeviceIoControl(ctypes.c_void_p(msvcrt.get_osfhandle(stream.fileno())),
-                                0x900C4, None, 0, None, 0, ctypes.byref(returned), None)
-    if not ok:
+    if not kernel.DeviceIoControl(handle, 0x900C4, None, 0, None, 0,
+                                  ctypes.byref(returned), None):
         raise ctypes.WinError(ctypes.get_last_error())
+    verify_sparse_windows(stream, 0)
+    # MSYS2's Python truncate() can zero-fill this terabyte-sized hole. Use
+    # Windows' file pointer and EOF calls directly after FSCTL_SET_SPARSE.
+    if not kernel.SetFilePointerEx(handle, size, None, 0):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if not kernel.SetEndOfFile(handle):
+        raise ctypes.WinError(ctypes.get_last_error())
+    verify_sparse_windows(stream, size)
+    stream.seek(0)
 
 
 def create_template(args):
@@ -123,9 +178,14 @@ def create_template(args):
     try:
         with output.open("xb") as stream:
             created = True
-            make_sparse_windows(stream)
-            stream.truncate(plan["windows_disk"]["size_bytes"])
+            disk_size = plan["windows_disk"]["size_bytes"]
+            if platform.system() == "Windows":
+                make_sparse_windows(stream, disk_size)
+            else:
+                stream.truncate(disk_size)
             rows = write_template(stream, plan, rows=plan["preserve_partitions"])
+            if platform.system() == "Windows":
+                verify_sparse_windows(stream, disk_size)
         with output.open("rb", buffering=0) as source:
             disk_guid, actual = direct.read_gpt(source, plan["windows_disk"]["size_bytes"])
             samples = [preserved_sample(source, row)

@@ -19,7 +19,9 @@ import json
 import os
 from pathlib import Path
 import platform
+import subprocess
 import sys
+import tempfile
 
 MIB = 1024**2
 GIB = 1024**3
@@ -237,8 +239,69 @@ def check_supported_shrink(request):
     state = stage.ps_json(rf'''$ErrorActionPreference='Stop'
 $s=Get-PartitionSupportedSize -DiskNumber {disk} -PartitionNumber {part} -ErrorAction Stop
 [pscustomobject]@{{min=[long]$s.SizeMin;max=[long]$s.SizeMax}}|ConvertTo-Json -Compress''')
-    require(type(state) is dict and state.get("min") <= size <= state.get("max"),
-            "Windows currently does not support the reviewed C: shrink")
+    require(type(state) is dict and type(state.get("min")) is int
+            and type(state.get("max")) is int and state["min"] <= state["max"],
+            "Windows returned an invalid supported C: size range")
+    require(size <= state["max"], "Windows reports C: smaller than the reviewed target")
+    return state["min"] <= size
+
+
+def c_ntfs_size():
+    volume = stage.ps_json(r'''$ErrorActionPreference='Stop'
+$v=Get-Volume -DriveLetter C -ErrorAction Stop
+[pscustomobject]@{filesystem=[string]$v.FileSystem;size_bytes=[long]$v.Size}|ConvertTo-Json -Compress''')
+    require(type(volume) is dict and str(volume.get("filesystem", "")).upper() == "NTFS"
+            and type(volume.get("size_bytes")) is int and volume["size_bytes"] > 0,
+            "C: is not a readable NTFS volume")
+    return volume["size_bytes"]
+
+
+def run_diskpart(commands):
+    """One fresh DiskPart process per script; caller validates all resulting geometry."""
+    descriptor, name = tempfile.mkstemp(prefix="tilo-exact-shrink-", suffix=".txt")
+    try:
+        with os.fdopen(descriptor, "w", encoding="ascii", newline="\r\n") as script:
+            script.write("select volume C\n" + commands + "\nexit\n")
+        result = subprocess.run(["diskpart.exe", "/s", name], capture_output=True,
+                                text=True, timeout=1800)
+        require(result.returncode == 0,
+                f"DiskPart exited with {result.returncode}: {(result.stderr or result.stdout).strip()}")
+        return result.stdout
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def exact_diskpart_shrink(request):
+    """Fallback for a stale Get-PartitionSupportedSize range, with exact checks."""
+    disk = request["windows_disk"]["number"]
+    shrink = request["target_free_extent"]["size_bytes"]
+    require(shrink > 0 and shrink % MIB == 0, "DiskPart shrink is not whole MiB")
+    amount_mib = shrink // MIB
+    run_diskpart("shrink querymax")
+    # QueryMax is advisory. Recheck the exact target immediately before the
+    # modifying command; DiskPart's localized text is not a safety check.
+    current = stage.snapshot(disk)
+    state, _ = classify(request, current)
+    require(state == "pre-shrink", "C: changed during DiskPart shrink preflight")
+    check_gpt(current)
+    c = windows_c_and_recovery()
+    check_c_state(request, c)
+    check_free_space(request, c, state)
+    stage.windows_install_gate()
+    before_ntfs = c_ntfs_size()
+    require(before_ntfs <= request["planned_windows_shrink"]["original_size_bytes"],
+            "C: NTFS size exceeds reviewed partition")
+    run_diskpart(f"shrink desired={amount_mib} minimum={amount_mib}")
+    current = stage.snapshot(disk)
+    state, _ = classify(request, current)
+    require(state == "post-shrink", "DiskPart did not produce the exact reviewed partition map")
+    check_gpt(current)
+    c = windows_c_and_recovery()
+    check_c_state(request, c)
+    after_ntfs = c_ntfs_size()
+    require(before_ntfs - after_ntfs == shrink
+            and after_ntfs <= request["planned_windows_shrink"]["new_size_bytes"],
+            "DiskPart did not produce the exact reviewed NTFS size change")
 
 
 def create_partition(request, index):
@@ -316,11 +379,13 @@ def execute(args):
     check_free_space(request, c, state)
     stage.windows_install_gate()
     if state == "pre-shrink":
-        check_supported_shrink(request)
-        shrink = request["planned_windows_shrink"]
-        stage.ps_json(rf'''$ErrorActionPreference='Stop'
+        if check_supported_shrink(request):
+            shrink = request["planned_windows_shrink"]
+            stage.ps_json(rf'''$ErrorActionPreference='Stop'
 Resize-Partition -DiskNumber {disk} -PartitionNumber {shrink['partition_number']} -Size {shrink['new_size_bytes']} -ErrorAction Stop|Out-Null
 [pscustomobject]@{{resized=$true}}|ConvertTo-Json -Compress''')
+        else:
+            exact_diskpart_shrink(request)
         current = stage.snapshot(disk)
         state, additions = classify(request, current)
         require(state == "post-shrink", "Windows shrink did not produce exact reviewed map")

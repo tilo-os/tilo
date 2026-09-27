@@ -1908,6 +1908,9 @@ pub enum ShortcutConfigError {
     Conflict(ShortcutAction),
     /// The chord is one of the shell's own fixed chords, named here.
     Fixed(&'static str),
+    /// The chord belongs to the fixed desktop shortcut with this
+    /// [`crate::keyboard_shortcuts::FixedShortcut::id`].
+    FixedShortcut(&'static str),
     /// The chord already runs another published action.
     TakenByAction,
 }
@@ -1921,6 +1924,9 @@ impl std::fmt::Display for ShortcutConfigError {
             Self::InvalidChord => f.write_str("that chord is not supported"),
             Self::Conflict(action) => write!(f, "the chord is already bound to {action:?}"),
             Self::Fixed(label) => write!(f, "the chord is the desktop's own “{label}”"),
+            Self::FixedShortcut(id) => {
+                write!(f, "the chord is the desktop's fixed shortcut `{id}`")
+            }
             Self::TakenByAction => f.write_str("the chord already runs another action"),
         }
     }
@@ -2223,10 +2229,15 @@ impl ShortcutConfig {
         self.actions.iter().find(|bound| bound.chord == *chord)
     }
 
+    /// Move `action` to `chord`. A chord that already belongs to someone
+    /// else is refused, naming the holder, rather than taken from it.
+    ///
     /// # Errors
     ///
     /// Returns an error without changing this binding when `chord` is invalid,
-    /// system-reserved, or already belongs to another action.
+    /// system-reserved, or already belongs to another action, to a fixed
+    /// desktop shortcut (other than one `action` shares by default), or to a
+    /// published action.
     pub fn set(
         &mut self,
         action: ShortcutAction,
@@ -2250,6 +2261,13 @@ impl ShortcutConfig {
             .find(|(a, c)| **a != action && **c == chord)
         {
             return Err(ShortcutConfigError::Conflict(*other));
+        }
+        // Some defaults are also fixed chords (Super+Page Up changes the
+        // workspace either way); an action may always return to its own.
+        if defaults.bindings.get(&action) != Some(&chord)
+            && let Some(fixed) = crate::keyboard_shortcuts::fixed_owner(&chord)
+        {
+            return Err(ShortcutConfigError::FixedShortcut(fixed.id));
         }
         if self.actions.iter().any(|bound| bound.chord == chord) {
             return Err(ShortcutConfigError::TakenByAction);
