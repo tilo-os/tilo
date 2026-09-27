@@ -1,0 +1,37 @@
+[package]
+name = "tilo-runtime"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The per-user shared runtime daemon: private profile, native endpoint, app attachment and the MCP projection of the action host."
+
+# Deliberately free of the compositor: the services themselves are supplied
+# by a host through `RuntimeServices`, so this crate builds on stock macOS and
+# on Linux without a Wayland stack.
+
+[lib]
+name = "tilo_runtime"
+path = "src/lib.rs"
+
+[dependencies]
+advisory-lock = { path = "../../system/advisory-lock" }
+libc.workspace = true
+runtime-fs = { path = "../runtime-fs" }
+runtime-identity = { path = "../runtime-identity" }
+serde.workspace = true
+serde_json.workspace = true
+tilo-actions = { path = "../../collab/actions" }
+tilo-rt.workspace = true
+tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
+uuid.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

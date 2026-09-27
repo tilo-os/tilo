@@ -64,9 +64,7 @@ pub(crate) fn run_isolated_native_consent_test(test_name: &str, assertions: impl
             .env("TILO_USER_ID", "environment-owner-must-not-select-identity")
             .env("TILO_USER_ID", "environment-owner-must-not-select-identity");
         let mut child = child.spawn().expect("spawn isolated native-consent test");
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(20))
-            .expect("isolated native-consent deadline");
+        let deadline = tilo_test_env::hang_deadline();
         let status = loop {
             match child.try_wait().expect("poll isolated native-consent test") {
                 Some(status) => break status,
@@ -99,9 +97,7 @@ pub(crate) fn native_consent_fixture_root() -> std::path::PathBuf {
 
 #[cfg(test)]
 pub(crate) fn wait_for_local_session_worker_teardown(lifecycle: &LocalSessionLifecycle) {
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(2))
-        .expect("teardown deadline");
+    let deadline = tilo_test_env::hang_deadline();
     while lifecycle.snapshot().is_some() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -119,7 +115,6 @@ pub mod tests {
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
     use automerge::{AutoCommit, ObjId};
     use std::sync::Arc;
-    use std::time::Duration;
     pub use tilo_action_broker::collab_broker_capnp::tests::DirectoryResolveMode;
     pub struct LocalDirectoryFixture {
         inner: tilo_action_broker::collab_broker_capnp::tests::LocalDirectoryFixture,
@@ -259,12 +254,7 @@ pub mod tests {
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty)
             ));
             drain_directory_bridge(&fixture).await;
-            let confirmation_reply = tokio::time::timeout(
-                Duration::from_millis(100),
-                confirmation,
-            )
-            .await
-            .expect("LocalSet reply deadline")
+            let confirmation_reply = tilo_test_env::within("LocalSet reply deadline", confirmation).await
             .expect("reply sender survives");
             assert!(matches!(
                 confirmation_reply,

@@ -1530,9 +1530,13 @@ mod tests {
         })
     }
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
+
     /// Run sync passes until the pane has no call in flight.
     fn settle(pane: &mut SpeakersPane, doc: &mut AutoCommit) {
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             pane.sync(doc, &automerge::ROOT);
             if pane.in_flight == 0 {
                 return;

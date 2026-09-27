@@ -11972,6 +11972,7 @@ mod history_reconcile_tests {
 #[cfg(test)]
 mod history_interruption_tests {
     use super::*;
+
     fn restore(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
         let heads = doc.get_heads();
         let plan = ui::history_mode::restore::prepare_content_restore(
@@ -12076,7 +12077,7 @@ mod history_interruption_tests {
             .as_ref()
             .unwrap()
             .rx
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(tilo_test_env::hang_bound())
             .unwrap();
         let DocumentJobResult::Save { result, .. } = &completed else {
             panic!("expected a save completion");

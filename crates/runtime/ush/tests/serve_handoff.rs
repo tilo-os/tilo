@@ -100,7 +100,7 @@ fn the_service_protocol_refuses_dsh_answers_garbage_and_never_hangs() {
         std::thread::spawn(move || {
             let _ = ush::supervisor::serve(&serve_socket, &store, &PathBuf::from("/"));
         });
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         while !socket.exists() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -230,9 +230,7 @@ fn run_handoff() {
     });
 
     // Wait for the listener rather than sleeping a fixed amount.
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(10))
-        .unwrap_or_else(Instant::now);
+    let deadline = tilo_test_env::hang_deadline();
     while !socket.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -292,7 +290,7 @@ fn run_handoff() {
     let written = unsafe { libc::write(fd, script.as_ptr().cast::<libc::c_void>(), script.len()) };
     assert!(written > 0, "could not write to the pty");
 
-    let seen = read_until(fd, marker, Duration::from_secs(60));
+    let seen = read_until(fd, marker, tilo_test_env::hang_bound());
     assert!(
         seen.contains(marker),
         "no shell answered on the pty within the timeout. What came back:\n{seen}"

@@ -9505,7 +9505,7 @@ mod tests {
             let url = format!("http://{}/filters", listener.local_addr().unwrap());
             listener.set_nonblocking(true).unwrap();
             let server = std::thread::spawn(move || {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                let deadline = tilo_test_env::hang_deadline();
                 let mut stream = loop {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
@@ -9576,7 +9576,7 @@ mod tests {
         );
         let mut document = AutoCommit::new();
         widget.sync(&mut document, &automerge::ROOT);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         while !done.exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }

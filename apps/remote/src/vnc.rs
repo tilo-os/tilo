@@ -364,6 +364,9 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
+
     /// A minimal RFB 3.8 server that offers `None` security and serves one
     /// 4x2 Raw framebuffer of known pixels. Real socket, real bytes — the
     /// client's handshake + decode run end-to-end against it.
@@ -453,7 +456,8 @@ mod tests {
             .unwrap();
 
             let mut got: Option<Framebuffer> = None;
-            for _ in 0..200 {
+            let deadline = Instant::now() + HANG_BOUND;
+            while Instant::now() < deadline {
                 if let SessionStatus::Failed(e) = vnc.status() {
                     panic!("vnc connect failed: {e}")
                 }
@@ -489,7 +493,8 @@ mod tests {
             })
             .unwrap();
             let mut failed = false;
-            for _ in 0..100 {
+            let deadline = Instant::now() + HANG_BOUND;
+            while Instant::now() < deadline {
                 if let SessionStatus::Failed(_) = vnc.status() {
                     failed = true;
                     break;

@@ -202,7 +202,9 @@ pub enum StepFailure {
     #[error("invalid arguments: {reason}")]
     Arguments { reason: String },
     #[error("the host refused: {error}")]
-    Host { error: ActionHostError },
+    // Boxed: the host's and the action's errors carry JSON details, whose size
+    // depends on the serde_json features the rest of the build enables.
+    Host { error: Box<ActionHostError> },
     #[error("the action failed: {}", error.message)]
     Action { error: Box<ActionFailure> },
     #[error("the action was cancelled")]
@@ -772,7 +774,9 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 .query(&self.caller, query.clone())
                 .await
                 .ok_or(StepFailure::Abandoned)?
-                .map_err(|error| StepFailure::Host { error })?;
+                .map_err(|error| StepFailure::Host {
+                    error: Box::new(error),
+                })?;
             if let Some(row) = find_row(&page.rows, app_id, target, action) {
                 return Ok(row.clone());
             }
@@ -800,7 +804,9 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     .invoke(&self.caller, request)
                     .await
                     .ok_or(StepFailure::Abandoned)?
-                    .map_err(|error| StepFailure::Host { error })?
+                    .map_err(|error| StepFailure::Host {
+                        error: Box::new(error),
+                    })?
                     .status
             }
         };
@@ -812,7 +818,11 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                         error: Box::new(error),
                     });
                 }
-                ReceiptStatus::Rejected { error } => return Err(StepFailure::Host { error }),
+                ReceiptStatus::Rejected { error } => {
+                    return Err(StepFailure::Host {
+                        error: Box::new(error),
+                    });
+                }
                 ReceiptStatus::Cancelled { message } => {
                     return Err(StepFailure::Cancelled { message });
                 }
@@ -821,7 +831,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     self.host
                         .observe(&self.caller, &id)
                         .ok_or(StepFailure::Host {
-                            error: ActionHostError::UnknownInvocation,
+                            error: Box::new(ActionHostError::UnknownInvocation),
                         })?
                         .receipt()
                         .status

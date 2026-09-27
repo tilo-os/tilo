@@ -45,6 +45,25 @@ pub fn render_html(snap: &DocSnapshot, opts: HtmlOptions, content: &dyn ContentS
     render_resolved(&Resolved::new(&snap, content), opts)
 }
 
+/// The rich text under `root` (a rich-text field of another document) as an HTML fragment: the
+/// body markup only, for a message part. `None` when `root` holds no rich text.
+pub fn render_html_fragment_under(
+    doc: &automerge::AutoCommit,
+    root: &automerge::ObjId,
+    content: &dyn ContentSource,
+) -> Option<String> {
+    let c = qdoc::model::open(doc, root).ok()?;
+    let options = HtmlOptions {
+        fragment: true,
+        ..HtmlOptions::default()
+    };
+    Some(render_html(
+        &qdoc::model::materialize(doc, &c),
+        options,
+        content,
+    ))
+}
+
 /// [`render_html`] over a snapshot whose images are already resolved.
 #[allow(
     clippy::needless_pass_by_value,

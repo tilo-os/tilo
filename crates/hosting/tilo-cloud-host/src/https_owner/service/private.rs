@@ -1055,7 +1055,7 @@ mod priority_lane_tests {
             policy,
         );
         let queued = runtime.occupy_command_queue();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::from_std(tilo_test_env::hang_deadline());
         let mut pending = queue
             .submit_certified_with_policy_time(evidence, deadline, time)
             .unwrap();

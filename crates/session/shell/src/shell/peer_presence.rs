@@ -599,7 +599,7 @@ pub fn room_roster(
             let role = ws.role_of(&name);
             let who = crate::shell::state::Collaborator::new(id, name).with_session(handle);
             let who = match role {
-                Some(role) => who.with_role(crate::shell::state::role_label(role)),
+                Some(role) => who.with_role(crate::shell::state::role_id(role)),
                 None => who,
             };
             if arrived.contains(&handle) {

@@ -14,14 +14,14 @@ use super::*;
 use automerge::ReadDoc as _;
 use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
 use tilo_action_broker::services::DesktopOpener;
-use tilo_desktop_model::commands::{
-    self as session_commands, DesktopCommand, TabLocation, TabPlacement,
-};
+use tilo_desktop_model::apps::{AppCatalogue, OpenableApp};
+use tilo_desktop_model::commands::{self as session_commands, DesktopCommand};
 use tilo_peer_state::desktop_command::{
     DesktopCommandError, DesktopCommandId, DesktopCommandIdOf as _, DesktopCommandReceipt,
     DesktopRefusal, OpenedWindow,
 };
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use tilo_workspace_host::canonical_records::Installed;
 
 /// Receipt output kind of a committed desktop command.
 const DESKTOP_RECEIPT_KIND: &str = tilo_peer_state::desktop_command::RECEIPT_KIND;
@@ -286,36 +286,23 @@ impl Store {
             .ok_or_else(|| anyhow!("workspace missing"))?;
         let owned = |id: u64| salts.contains(&tilo_desktop_model::peer_salt_of(id));
         let resolved = match &command.command {
-            DesktopCommand::OpenApp { app } => DesktopCommand::OpenTab {
-                app: app.clone(),
-                placement: session_commands::open_app_placement(workspace, owned)
-                    .map_err(anyhow::Error::msg)?,
-            },
             // The saver is the admitted caller, whatever the JSON claimed.
             DesktopCommand::SaveShortcut { shortcut_json } => DesktopCommand::SaveShortcut {
-                shortcut_json: tilo_desktop_model::commands::stamp_saver(shortcut_json, &person)
+                shortcut_json: session_commands::stamp_saver(shortcut_json, &person)
                     .map_err(anyhow::Error::msg)?,
             },
-            other => other.clone(),
+            other => session_commands::resolve_open_app(workspace, other.clone(), owned)
+                .map_err(anyhow::Error::msg)?,
         };
-        check_owned_targets(&resolved, owned)?;
-        let maximum = workspace
-            .strips
-            .iter()
-            .flat_map(|strip| {
-                std::iter::once(strip.id.0).chain(strip.window_groups.iter().flat_map(|group| {
-                    std::iter::once(group.id).chain(group.tabs.iter().map(|tab| tab.id))
-                }))
-            })
-            .filter(|id| tilo_desktop_model::peer_salt_of(*id) == salt)
-            .map(tilo_desktop_model::counter_of)
-            .max()
-            .unwrap_or(0);
+        session_commands::check_owned(&resolved, owned).map_err(anyhow::Error::msg)?;
         let stored = doc
             .get(automerge::ROOT, "desktop_counter_v1")?
             .and_then(|(value, _)| value.as_u64())
             .unwrap_or(1);
-        let mut ids = tilo_desktop_model::IdMinter::resume(salt, stored.max(maximum + 1));
+        let mut ids = tilo_desktop_model::IdMinter::resume(
+            salt,
+            session_commands::namespace_counter(workspace, salt, stored),
+        );
         let mut documents = vec![];
         let mut opened = vec![];
         let mut routes = tilo_desktop_model::apps::record_routes(&doc);
@@ -589,92 +576,6 @@ enum Prepared {
     Commit(Box<State>, tilo_peer_state::owner_commit::CommitBinding),
 }
 
-/// Never touch another topology owner's namespace (native peers, other
-/// hosts): every strip, group and tab a command names must be this host's.
-fn check_owned_targets(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Result<()> {
-    let own = |id: u64| {
-        if owned(id) {
-            Ok(())
-        } else {
-            Err(anyhow!("target belongs to another topology owner"))
-        }
-    };
-    let placement = |p: &TabPlacement| -> Result<()> {
-        match p {
-            TabPlacement::EmptyWorkspace => {}
-            TabPlacement::InGroup {
-                strip,
-                group,
-                after,
-            } => {
-                own(*strip)?;
-                own(*group)?;
-                if let Some(id) = after {
-                    own(*id)?;
-                }
-            }
-            TabPlacement::NewGroup { strip, after } => {
-                own(*strip)?;
-                if let Some(id) = after {
-                    own(*id)?;
-                }
-            }
-        }
-        Ok(())
-    };
-    let location = |l: &TabLocation| -> Result<()> {
-        own(l.strip)?;
-        own(l.group)?;
-        own(l.tab)
-    };
-    match command {
-        DesktopCommand::OpenApp { .. } => bail!("open-app must be resolved to a placement"),
-        DesktopCommand::OpenTab { placement: p, .. } => placement(p)?,
-        DesktopCommand::CloseTab { location: l } | DesktopCommand::DuplicateTab { location: l } => {
-            location(l)?;
-        }
-        DesktopCommand::ReorderTab {
-            location: l,
-            before,
-        }
-        | DesktopCommand::SplitTab {
-            location: l,
-            before,
-        } => {
-            location(l)?;
-            if let Some(id) = before {
-                own(*id)?;
-            }
-        }
-        DesktopCommand::ReorderGroup {
-            strip,
-            group,
-            before,
-        } => {
-            own(*strip)?;
-            own(*group)?;
-            if let Some(id) = before {
-                own(*id)?;
-            }
-        }
-        DesktopCommand::MoveTab {
-            location: l,
-            placement: p,
-        } => {
-            location(l)?;
-            placement(p)?;
-        }
-        DesktopCommand::RenameStrip { strip, .. } | DesktopCommand::RemoveStrip { strip } => {
-            own(*strip)?;
-        }
-        DesktopCommand::CreateStrip { .. }
-        | DesktopCommand::RenameWorkspace { .. }
-        | DesktopCommand::SaveShortcut { .. }
-        | DesktopCommand::DeleteShortcut { .. } => {}
-    }
-    Ok(())
-}
-
 /// The broker's desktop command service over the Cloud Store owner.
 pub(crate) struct CloudDesktopCommands {
     pub(crate) room: String,
@@ -711,8 +612,8 @@ impl tilo_action_broker::services::DesktopCommands for CloudDesktopCommands {
     ) -> tilo_action_broker::services::DesktopCommandFuture {
         self.run(request, Some(opener))
     }
-    fn openable_applications(&self) -> Vec<(String, String)> {
-        openable_applications()
+    fn catalogue(&self) -> &dyn AppCatalogue {
+        &Installed
     }
     fn receipt(&self, request: &OwnerCommitRequest) -> Option<DesktopCommandReceipt> {
         let id = DesktopCommandId::of(request)?;
@@ -734,9 +635,10 @@ pub(crate) fn desktop_descriptors(revision: &str) -> Vec<serde_json::Value> {
         },
         ..Default::default()
     };
-    let mut descriptors: Vec<_> = openable_applications()
+    let mut descriptors: Vec<_> = Installed
+        .openable()
         .into_iter()
-        .map(|(app, title)| {
+        .map(|OpenableApp { app_id: app, title }| {
             serde_json::json!({
                 "resource": format!("{OPEN_APP_RESOURCE_PREFIX}{app}"),
                 "action": OPEN_APP_ACTION,
@@ -789,10 +691,7 @@ pub(crate) fn person_request(
         {
             bail!("opening an application takes no arguments")
         }
-        if !openable_applications()
-            .iter()
-            .any(|(openable, _)| openable == app)
-        {
+        if Installed.find(app).is_none() {
             bail!("application cannot be opened here")
         }
         BoundCommand {
@@ -822,18 +721,6 @@ pub(crate) fn person_request(
             command,
         },
     })
-}
-
-/// Every application with an installed checked record factory.
-pub(crate) fn openable_applications() -> Vec<(String, String)> {
-    tilo_workspace_host::canonical_records::installed()
-        .map(|entry| {
-            (
-                entry.app_id().to_owned(),
-                entry.definition().title.to_owned(),
-            )
-        })
-        .collect()
 }
 
 #[cfg(test)]

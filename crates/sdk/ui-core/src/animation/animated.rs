@@ -276,6 +276,16 @@ impl Transition {
         self.anim.current(now).clamp(0.0, 1.0)
     }
 
+    /// `(alpha, dy, scale)` for a modal this transition drives, covering
+    /// both the enter (openness 0→1) and the exit (openness 1→0). The panel
+    /// starts 20 px low at `start_scale` and rises to rest on the enter; the
+    /// exit plays the same curve in reverse instead of the panel vanishing.
+    pub fn modal_curve(&self, now: Instant, start_scale: f64) -> (f32, f64, f64) {
+        let o = self.value(now);
+        let scale = start_scale + (1.0 - start_scale) * f64::from(o);
+        (o, 20.0 * f64::from(1.0 - o), scale)
+    }
+
     /// True while opening, open, or closing (openness `> 0`) — draw code
     /// gates on this, not the raw intent bool, so the exit curve paints
     /// instead of the panel vanishing.

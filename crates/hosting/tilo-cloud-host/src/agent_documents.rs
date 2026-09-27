@@ -664,10 +664,10 @@ mod tests {
         let pending = requests.recv().await.unwrap();
         assert_eq!(documents.outstanding_handoffs(), 1);
         source.invalidate();
-        let (complete, outcome) = pending.apply(
-            std::time::Instant::now() + std::time::Duration::from_secs(5),
-            |route, cert, mutation| owner.store()?.commit_agent_document(route, cert, mutation),
-        );
+        let (complete, outcome) = pending
+            .apply(tilo_test_env::hang_deadline(), |route, cert, mutation| {
+                owner.store()?.commit_agent_document(route, cert, mutation)
+            });
         assert!(outcome.is_err());
         complete();
         assert!(task.await.unwrap().is_err());
@@ -781,14 +781,12 @@ mod tests {
         let signer = documents.bind(route.clone(), cert.clone());
         let task = tokio::spawn(signer.commit(&route, mutation));
         let pending = requests.recv().await.unwrap();
-        let (complete, outcome) = pending.apply(
-            std::time::Instant::now() + std::time::Duration::from_secs(5),
-            |route, cert, mutation| {
+        let (complete, outcome) =
+            pending.apply(tilo_test_env::hang_deadline(), |route, cert, mutation| {
                 Store::open(dir.path(), "agent-admission")
                     .map_err(|e| e.to_string())?
                     .commit_agent_document(route, cert, mutation)
-            },
-        );
+            });
         outcome.unwrap();
         assert!(
             !task.is_finished(),

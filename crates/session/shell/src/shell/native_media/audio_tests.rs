@@ -25,6 +25,9 @@ use tilo_moq::client::{self, CapturedOpus, Client, ClientAuthority, ConnectionSc
 use tilo_moq::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};
 
 const CALL: &str = "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1";
+
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 fn namespace(who: char) -> String {
     format!("{CALL}/{}", who.to_string().repeat(64))
 }
@@ -333,11 +336,11 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
         channel_id: "voice".into(),
     });
     assert!(joined.muted);
-    let started = Instant::now();
+    let deadline = tilo_test_env::hang_deadline();
     while command(Command::Status).state != State::Live {
         assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "native call did not go live"
+            Instant::now() < deadline,
+            "native call did not go live within the hang bound"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -381,7 +384,8 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
         .send(PromptOutcome::AllowOnce)
         .unwrap();
     let mut first_audio_ms = None;
-    while approved_at.elapsed() < Duration::from_secs(3) {
+    let deadline = tilo_test_env::hang_deadline();
+    while Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(20)).await;
         tick();
         listener.drain();
@@ -394,7 +398,11 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
     }
     assert_eq!(evidence.starts.load(Ordering::SeqCst), 1);
     assert!(command(Command::Status).capture_active);
-    assert!(listener.tone >= 50, "decoded tone frames {}", listener.tone);
+    assert!(
+        listener.tone >= 50,
+        "the listener decoded only {} tone frames within the hang bound",
+        listener.tone
+    );
     let audible = (listener.frames, listener.tone);
 
     // "Mute microphone": capture/publication stop before the command returns.
@@ -417,7 +425,8 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
     command(Command::Leave);
     tick();
     assert!(!command(Command::Status).capture_active);
-    for _ in 0..50 {
+    let leave_started = std::time::Instant::now();
+    while leave_started.elapsed() < HANG_BOUND {
         if evidence.closes.load(Ordering::SeqCst) > 0 {
             break;
         }
