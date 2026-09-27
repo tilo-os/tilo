@@ -389,4 +389,39 @@ mod tests {
         assert!(fill_under(&mut doc, &missing, &[]).is_err());
         assert!(blocks_under(&doc, &missing).is_err());
     }
+
+    #[test]
+    fn a_record_field_is_written_whole_from_clips_and_read_back() {
+        let mut doc = AutoCommit::new();
+        let record = doc.put_object(ROOT, "comment", ObjType::Map).unwrap();
+        assert!(rich_text_at(&doc, &record, "text").is_none());
+        let mut bold = block(BlockKind::Paragraph, "plain bold");
+        bold.marks = vec![MarkSpan::new(6..10, Mark::Bold)];
+        let done = block(
+            BlockKind::Checklist {
+                indent: 0,
+                done: true,
+            },
+            "shipped",
+        );
+        let clips = crate::Draft::with_blocks(&[bold.clone(), done.clone()]).clip_blocks();
+        let root = put_rich_text(&mut doc, &record, "text", &clips).unwrap();
+        assert_eq!(rich_text_at(&doc, &record, "text"), Some(root.clone()));
+        let strip = |blocks: Vec<BlockContent>| -> Vec<BlockContent> {
+            blocks
+                .into_iter()
+                .map(|block| BlockContent {
+                    id: String::new(),
+                    ..block
+                })
+                .collect()
+        };
+        assert_eq!(strip(blocks_under(&doc, &root).unwrap()), [bold, done]);
+        // Written again, the field is replaced, not appended to.
+        let root = put_rich_text(&mut doc, &record, "text", &plain_clips("one\ntwo")).unwrap();
+        assert_eq!(RichText::plain_text_under(&doc, &root).unwrap(), "one\ntwo");
+        assert_eq!(plain_blocks("one\ntwo").len(), 2);
+        assert!(plain_blocks("").is_empty());
+        assert!(plain_clips("").is_empty());
+    }
 }
