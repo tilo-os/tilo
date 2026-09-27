@@ -257,7 +257,11 @@ fn play_one(backend: SoundBackend, cue: &SoundCue) {
     // One cue at a time. The bounded sender coalesces bursts while the worker
     // waits, preventing event storms from becoming a process storm. A broken
     // audio route cannot strand the worker or leave descendants.
+    #[cfg(not(target_arch = "wasm32"))]
     let _ = bounded_command::run_prepared(command, None, 1024, std::time::Duration::from_secs(5));
+    // The browser has no processes; its backend is always `Unavailable`.
+    #[cfg(target_arch = "wasm32")]
+    drop(command);
 }
 
 #[derive(Debug)]
