@@ -24,7 +24,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let is_names = path.extension().is_some_and(|ext| ext == "txt")
             && !stem.is_empty()
-            && stem.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+            && stem.starts_with(|c: char| c.is_ascii_lowercase())
+            && stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
             && stem != "en"
             && stem != "emoji";
         if is_names {

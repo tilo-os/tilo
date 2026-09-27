@@ -2306,3 +2306,42 @@ fn focused_block_ime_repaints_after_an_idle_paint() {
     editor.mark_drawn();
     assert!(!editor.needs_redraw());
 }
+
+#[test]
+fn toolbar_commands_format_the_focused_block() {
+    let mut e = BlockEditor::new();
+    e.set_blocks(vec![Block::paragraph("hello world")]);
+    assert!(!e.toggle_mark(Mark::Bold), "nothing is focused");
+    e.focus_block(0, CursorPlacement::End);
+    assert_eq!(e.focused_kind(), Some(&BlockKind::Paragraph));
+
+    // With nothing selected, a mark waits for the text typed next.
+    assert!(e.toggle_mark(Mark::Bold));
+    assert_eq!(e.active_marks(), [Mark::Bold]);
+    assert!(e.toggle_mark(Mark::Bold));
+    assert!(e.active_marks().is_empty());
+
+    // Over a selection, it marks the selection.
+    e.blocks[0].line.inner_mut().set_selection(0, 5);
+    assert!(e.toggle_mark(Mark::Italic));
+    assert_eq!(
+        e.blocks[0].line.marks(),
+        [MarkSpan::new(0..5, Mark::Italic)]
+    );
+    assert_eq!(e.active_marks(), [Mark::Italic]);
+
+    // A link over the selection, then one inserted at the caret.
+    assert!(e.insert_link("https://example.test"));
+    assert!(e.blocks[0].line.marks().contains(&MarkSpan::new(
+        0..5,
+        Mark::ExternalLink("https://example.test".into())
+    )));
+    e.blocks[0].line.set_cursor_pos(11);
+    assert!(!e.insert_link("  "), "a blank target links nothing");
+    assert!(e.insert_link("https://b.test"));
+    assert_eq!(e.blocks[0].line.value(), "hello worldhttps://b.test");
+    assert!(e.blocks[0].line.marks().contains(&MarkSpan::new(
+        11..25,
+        Mark::ExternalLink("https://b.test".into())
+    )));
+}
