@@ -21,6 +21,30 @@ pub use shot_frame::{ShotFrame, ShotLayout};
 #[cfg(not(target_arch = "wasm32"))]
 pub use shot_frame::render_widget_png;
 
+#[cfg(all(target_os = "android", feature = "native"))]
+pub mod android;
+#[cfg(any(all(target_os = "android", feature = "native"), test))]
+mod android_env;
+
+/// Export the Android entry point for this binary's `main`.
+///
+/// On Android an app is a shared library that `TiloActivity` loads, not an
+/// executable, so there is no process `main`. Invoked once at the top level
+/// of an app's `main.rs`, this defines the `android_main` the activity calls,
+/// which prepares the process and runs that same `main`. On every other
+/// target it expands to nothing. `crates/packaging/android` builds the file
+/// as a `cdylib` example.
+#[macro_export]
+macro_rules! android_main {
+    () => {
+        #[cfg(target_os = "android")]
+        #[unsafe(no_mangle)]
+        fn android_main(app: $crate::launch::android::AndroidApp) {
+            $crate::launch::android::run_main(app, main);
+        }
+    };
+}
+
 pub const DEFAULT_VIEWPORT: (u32, u32) = headless::DEFAULT_VIEWPORT;
 
 /// Explicit runner authority/presentation preparation; application metadata is never authority.

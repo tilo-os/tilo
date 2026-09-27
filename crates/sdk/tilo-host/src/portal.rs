@@ -64,7 +64,7 @@ pub trait EffectGate: Send + 'static {
 }
 
 use std::fs::File;
-#[cfg(any(feature = "portal", test))]
+#[cfg(any(all(feature = "portal", not(target_os = "android")), test))]
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -582,7 +582,11 @@ fn scoped_pick_worker(
 /// over) is simply dropped: the caller's receiver observes a closed
 /// channel, the same outward signal it must already handle for a worker
 /// that spawned but whose send lost the race with a dropped receiver.
-#[cfg(all(feature = "native", not(all(feature = "portal", freedesktop))))]
+#[cfg(all(
+    feature = "native",
+    not(target_os = "android"),
+    not(all(feature = "portal", freedesktop))
+))]
 pub(crate) fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
     let _ = std::thread::Builder::new()
         .name(name.to_string())
@@ -700,7 +704,7 @@ pub fn map_uris(uris: &[url::Url]) -> MultiOutcome {
 /// Turn an already validated portal URI into a descriptor-retaining outcome.
 /// This runs on the portal worker, immediately after the picker returns, so
 /// no UI-frame delay can turn an accepted path into a later reopen.
-#[cfg(any(feature = "portal", test))]
+#[cfg(any(all(feature = "portal", not(target_os = "android")), test))]
 pub(crate) fn open_selected_uri(uri: &url::Url) -> OpenFileOutcome {
     let Some(path) = to_local_path(uri) else {
         return OpenFileOutcome::Failed(format!("not a local file: {uri}"));
@@ -714,7 +718,7 @@ pub(crate) fn open_selected_uri(uri: &url::Url) -> OpenFileOutcome {
     }
 }
 
-#[cfg(any(feature = "portal", test))]
+#[cfg(any(all(feature = "portal", not(target_os = "android")), test))]
 fn display_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -726,7 +730,7 @@ fn display_name(path: &Path) -> String {
 /// the resulting descriptor is a regular file. Checking metadata on the open
 /// descriptor, rather than the path, keeps the type check bound to exactly
 /// what is handed to the caller.
-#[cfg(all(any(feature = "portal", test), unix))]
+#[cfg(all(any(all(feature = "portal", not(target_os = "android")), test), unix))]
 pub(crate) fn open_regular_file(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
 

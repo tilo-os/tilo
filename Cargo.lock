@@ -15556,6 +15556,7 @@ dependencies = [
  "image",
  "libc",
  "media",
+ "ndk",
  "percent-encoding",
  "pkg-config",
  "pollster",
