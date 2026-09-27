@@ -3987,6 +3987,10 @@ fn shot_and_inspection_plans_are_built_strictly() {
 /// manifest, output is not replaced before building, the payload overlay copies nested files and
 /// rejects symlinks, and profile names are safe Cargo arguments.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+)]
 fn packaging_is_scoped_safe_and_never_clobbers_output() {
     // Phase: package_spec_uses_manifest_entrypoint_and_cargo_package_name.
     {
@@ -4043,7 +4047,8 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
             &PackageRequest {
                 output: None,
                 identity: None,
-                profile: "release".into(),
+                profile: None,
+                static_link: false,
                 target: None,
                 features: Vec::new(),
                 no_default_features: false,
@@ -4052,6 +4057,75 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         )
         .unwrap_err();
         assert!(error.to_string().contains("pass --force"));
+    }
+
+    // Phase: a_thin_package_needs_the_thin_feature.
+    {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        create_app(request(destination.clone())).expect("create app");
+        let cargo = destination.join("Cargo.toml");
+        let source = std::fs::read_to_string(&cargo).expect("Cargo.toml");
+        let without = source.replace("thin = [\"dep:runtime-dylib\"]\n", "");
+        assert_ne!(source, without, "the scaffold declares a thin feature");
+        std::fs::write(&cargo, without).expect("drop thin feature");
+        assert!(
+            !load_app_package_spec(destination.clone())
+                .expect("spec")
+                .thin_feature
+        );
+        let error = package_app(
+            &destination,
+            &PackageRequest {
+                output: None,
+                identity: None,
+                profile: None,
+                static_link: false,
+                target: None,
+                features: Vec::new(),
+                no_default_features: false,
+                force: false,
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("--static"), "{error:#}");
+    }
+
+    // Phase: packing_signs_and_verifies_in_process.
+    {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        create_app(request(destination.clone())).expect("create app");
+        let spec = load_app_package_spec(destination).expect("spec");
+        assert!(spec.thin_feature);
+        let payload = temp.path().join("payload");
+        std::fs::create_dir_all(payload.join("bin")).expect("payload");
+        std::fs::write(payload.join("bin/reading-list"), b"\x7fELF not really").expect("binary");
+        let identity_path = temp.path().join("publisher.json");
+        std::fs::write(
+            &identity_path,
+            serde_json::json!({"secret_key_hex": "07".repeat(32)}).to_string(),
+        )
+        .expect("identity");
+        let identity = pack::load_identity(&identity_path).expect("load identity");
+        let output = temp.path().join("reading-list.tapp");
+        let packed =
+            pack::pack_payload(&spec.manifest_path, &payload, &output, &identity).expect("pack");
+        assert_eq!(
+            packed.bytes,
+            std::fs::metadata(&output).expect("tapp").len()
+        );
+        let reader = std::io::BufReader::new(std::fs::File::open(&output).expect("open"));
+        let tapp = tilo_app_package::tapp::read(reader, &mut tilo_app_package::DiscardBlobs)
+            .expect("decode");
+        assert_eq!(tapp.meta.id.to_string(), packed.id);
+        assert_eq!(tapp.meta.publisher(), identity.public_key_bytes());
+        assert!(tapp.missing().is_empty(), "the package carries its payload");
+
+        let again = pack::pack_payload(&spec.manifest_path, &payload, &output, &identity)
+            .err()
+            .expect("an existing output is not overwritten");
+        assert!(format!("{again:#}").contains("creating"), "{again:#}");
     }
 
     // Phase: payload_overlay_copies_nested_files_and_rejects_symlinks.

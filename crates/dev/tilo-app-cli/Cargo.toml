@@ -23,6 +23,7 @@ anyhow.workspace = true
 clap.workspace = true
 fluent.workspace = true
 fluent-syntax.workspace = true
+hex.workspace = true
 libc.workspace = true
 notify.workspace = true
 image = { workspace = true, features = ["png"] }

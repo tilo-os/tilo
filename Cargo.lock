@@ -14553,6 +14553,7 @@ dependencies = [
  "clap",
  "fluent",
  "fluent-syntax",
+ "hex",
  "image",
  "libc",
  "notify",
