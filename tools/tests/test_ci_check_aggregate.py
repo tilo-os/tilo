@@ -205,69 +205,6 @@ class CheckAggregateTests(unittest.TestCase):
                     self.assertNotEqual(self.aggregate(
                         security="skipped", security_required="false", event=event)[0], 0)
 
-    def select(self, event, ref, base="", dispatch_base=""):
-        """Run the production selection script with stubbed git and Python tools."""
-        script = re.sub(r"\$\{\{.*?\}\}", "", step_script(self.workflow, "plan"))
-        prefix = textwrap.dedent("""\
-            git() {
-              if [ "$1" = merge-base ] && [ "$2" != --is-ancestor ]; then echo "$2"; fi
-            }
-            python3() {
-              if [ "$1" = tools/ci/check_base.py ]; then
-                [ -n "$FIXTURE_BASE" ] || return 3
-                echo "$FIXTURE_BASE"
-                return 0
-              fi
-              echo "$*" > "$FIXTURE_ARGS"
-              echo '{}'
-            }
-            export -f git python3
-            """)
-        with tempfile.TemporaryDirectory() as directory:
-            args = Path(directory) / "args"
-            result = subprocess.run([self.bash, "-c", prefix + script], cwd=directory,
-                env={**os.environ, "GITHUB_OUTPUT": (Path(directory) / "outputs").as_posix(),
-                     "GITHUB_STEP_SUMMARY": (Path(directory) / "summary").as_posix(),
-                     "EVENT_NAME": event, "GITHUB_REF": ref, "PULL_REQUEST_BASE": "",
-                     "PUSH_BEFORE": "b" * 40, "DISPATCH_BASE": dispatch_base,
-                     "FIXTURE_BASE": base, "FIXTURE_ARGS": args.as_posix()},
-                capture_output=True, text=True)
-            return result.returncode, args.read_text().split() if args.exists() else []
-
-    def test_main_selection_covers_commits_whose_queued_run_was_coalesced(self):
-        started = "c" * 40
-        with self.subTest(phase='main push selects since the last started check'):
-            code, args = self.select("push", "refs/heads/main", base=started)
-            self.assertEqual(code, 0)
-            self.assertEqual(args[args.index("--base") + 1], started)
-            self.assertIn("--all-suites", args)
-            self.assertNotIn("--full", args)
-        with self.subTest(phase='main push without a checked ancestor selects everything'):
-            code, args = self.select("push", "refs/heads/main")
-            self.assertEqual(code, 0)
-            self.assertIn("--full", args)
-        with self.subTest(phase='other push branches keep the push-before base'):
-            code, args = self.select("push", "refs/heads/codex/arm64-platform-support", base=started)
-            self.assertEqual(args[args.index("--base") + 1], "b" * 40)
-        with self.subTest(phase='dispatch with a base selects like a main push'):
-            code, args = self.select("workflow_dispatch", "refs/heads/lander/bisect", dispatch_base=started)
-            self.assertEqual(code, 0)
-            self.assertEqual(args[args.index("--base") + 1], started)
-            self.assertIn("--all-suites", args)
-            self.assertNotIn("--full", args)
-        with self.subTest(phase='dispatch without a base stays a full acceptance run'):
-            code, args = self.select("workflow_dispatch", "refs/heads/main")
-            self.assertIn("--full", args)
-        with self.subTest(phase='dispatch base must be an exact commit'):
-            code, args = self.select("workflow_dispatch", "refs/heads/main", dispatch_base="main")
-            self.assertNotEqual(code, 0)
-            self.assertEqual(args, [])
-        select = section(self.workflow, "select", 2)
-        self.assertIn("FORGEJO_TOKEN: ${{ github.ref == 'refs/heads/main' && secrets.REGISTRY_TOKEN || '' }}",
-                      select)
-        self.assertIn("DISPATCH_BASE: ${{ github.event.inputs.base }}", select)
-        self.assertIn("+refs/notes/tilo-check-ci:refs/notes/tilo-check-ci", select)
-
     def test_selected_suites_wiring_and_receipt_preserve_the_real_outcome(self):
         with self.subTest(phase='path selected suites job is observable and required when selected'):
             self.doCleanups()
@@ -385,11 +322,7 @@ class CheckAggregateTests(unittest.TestCase):
             self.assertIn("SECURITY_RESULT: ${{ needs.security.result }}", receipt)
             self.assertIn("AFFECTED_RESULT: ${{ steps.aggregate.outcome }}", receipt)
             self.assertIn('tools/ci/receipt.sh record "$GITHUB_SHA" "$GITHUB_RUN_ID"\n'
-                          '          "$SELECT_RESULT" "$SECURITY_RESULT" "$AFFECTED_RESULT" origin\n'
-                          '          "$COVERS_FROM"', receipt)
-            # The receipt records the range the run selected, so a commit whose
-            # queued run was coalesced can be traced to the run that covered it.
-            self.assertIn("COVERS_FROM: ${{ needs.select.outputs.base }}", receipt)
+                          '          "$SELECT_RESULT" "$SECURITY_RESULT" "$AFFECTED_RESULT" origin', receipt)
             # The gate itself can never be softened; only recording its evidence
             # may fail without failing the required check.
             aggregate = checks.split("      - name: Checkout CI receipt tool\n", 1)[0]

@@ -37,7 +37,7 @@ pub fn group_label(notification: &Notification) -> String {
         .app_name
         .clone()
         .or_else(|| notification.app_id.clone())
-        .unwrap_or_else(|| "System".to_string())
+        .unwrap_or_else(|| crate::shell::i18n::t("notification-group-system"))
 }
 
 /// One row of the notification centre, newest first.

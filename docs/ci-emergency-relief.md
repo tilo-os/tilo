@@ -117,15 +117,12 @@ acceptance. Neither the scratch fix nor on-prem seed timings qualifies AWS reuse
 
 ## What stays protected
 
-- `lint.yml` retains validation for every main commit; the coalescer never
-  targets it. Every main commit is covered by a `check.yml` run of itself or of
-  a later commit: queued main check runs coalesce, and each run selects
-  everything since the last main commit whose own check started
-  (`tools/ci/check_base.py`). Cheap feedback can still wait for capacity;
-  preserving runs does not prove acceptable latency.
+- `check.yml` and `lint.yml` retain validation for every main commit. The
+  coalescer never targets either workflow. Cheap feedback can still wait for
+  capacity; preserving runs does not prove acceptable latency.
 - The coalescer targets only superseded, unstarted **main push** runs of
-  `build-image.yml`, `package-desktop.yml`, `release-apps.yml`, `fs-fuse.yml`,
-  `legacy-app-e2e.yml` and `check.yml`. It retains the newest eligible request per workflow.
+  `build-image.yml`, `package-desktop.yml`, `release-apps.yml`, `fs-fuse.yml`
+  and `legacy-app-e2e.yml`. It retains the newest eligible request per workflow.
 - Manual hardware/bring-up requests, tags, PRs, other branches and work observed
   to have started are outside its policy. It rechecks the replacement, jobs and
   candidate before cancelling. Forgejo has no atomic cancel-if-still-waiting
@@ -210,9 +207,8 @@ The reservation is one total on-prem quality slot: busy, idle and pending qualit
 guests all count, and general/heavy work cannot consume its reserved capacity.
 This prevents heavy builds from occupying every feedback slot; it does not make
 queueing impossible under sustained quality demand. Main check/lint concurrency
-uses the commit SHA and keeps `cancel-in-progress: false`, so no run replaces
-another in flight. The coalescer excludes lint and cancels only check runs that
-never started; the newest queued check run covers their commits.
+uses the commit SHA and keeps `cancel-in-progress: false`, preserving every main
+commit's result. The heavy-only coalescer still excludes both workflows.
 
 The earlier image pilot (run 22684) lost its runner heartbeat and ended in
 failure without a final step result. Its log/evidence remains retained. Cleanup

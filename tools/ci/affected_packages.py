@@ -75,7 +75,6 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.py": "tools/tests/test_ci_recorded_test_time.py",
     "tools/ci/queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
-    "tools/ci/check_base.py": "tools/tests/test_ci_check_base.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/ci/nextest_report.py": "tools/tests/test_nextest_report.py",
     "tools/ci/run_scoped_tests.py": "tools/tests/test_ci_scoped_tests.py",
@@ -122,7 +121,6 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     ),
     ".forgejo/workflows/check.yml": (
         "tools/tests/test_ci_check_aggregate.py",
-        "tools/tests/test_ci_check_base.py",
         "tools/tests/test_ci_queue_relief.py",
         "tools/tests/test_ci_receipt.sh",
         "tools/tests/test_resolve_ci_builder.py",

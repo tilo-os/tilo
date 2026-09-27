@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use settings_store::hardware::{TouchpadClickMethod, TouchpadScrollMethod};
+use settings_store::hardware::{InputDeviceKind, TouchpadClickMethod, TouchpadScrollMethod};
 
 /// Settings section these values live in.
 pub const SECTION: &str = "input";
@@ -246,6 +246,9 @@ pub struct InputSettings {
     pub key_repeat_delay_ms: Option<u32>,
     pub key_repeat_rate_hz: Option<u32>,
     pub tap_drag: bool,
+    /// A tap-and-drag survives lifting the finger until the next tap, so a
+    /// long drag can be repositioned mid-way. Off by default, as in libinput.
+    pub tap_drag_lock: bool,
     pub disable_while_typing: bool,
     pub middle_emulation: bool,
     pub left_handed: bool,
@@ -253,6 +256,8 @@ pub struct InputSettings {
     pub touchpad_gestures: bool,
     /// Whether touchpads send events at all; the touchpad-toggle key flips it.
     pub touchpad_enabled: bool,
+    /// Switch touchpads off while an external mouse is plugged in.
+    pub touchpad_disabled_on_external_mouse: bool,
     /// Which button a clickpad press means.
     pub touchpad_click_method: TouchpadClickMethod,
     /// Two-finger or edge scrolling on touchpads.
@@ -278,12 +283,14 @@ impl Default for InputSettings {
             key_repeat_delay_ms: None,
             key_repeat_rate_hz: None,
             tap_drag: true,
+            tap_drag_lock: false,
             disable_while_typing: true,
             middle_emulation: true,
             left_handed: false,
             flat_acceleration: false,
             touchpad_gestures: true,
             touchpad_enabled: true,
+            touchpad_disabled_on_external_mouse: false,
             touchpad_click_method: TouchpadClickMethod::Default,
             touchpad_scroll_method: TouchpadScrollMethod::TwoFinger,
             scroll_speed: 1.0,
@@ -348,6 +355,7 @@ impl InputSettings {
                 .and_then(|value| u32::try_from(value).ok())
                 .filter(|value| *value <= 1_000),
             tap_drag: bool_at("tap_drag", d.tap_drag),
+            tap_drag_lock: bool_at("tap_drag_lock", d.tap_drag_lock),
             disable_while_typing: bool_at("disable_while_typing", d.disable_while_typing),
             middle_emulation: bool_at("middle_emulation", d.middle_emulation),
             left_handed: bool_at("left_handed", d.left_handed),
@@ -359,6 +367,10 @@ impl InputSettings {
             touchpad_enabled: bool_at(
                 settings_store::hardware::TOUCHPAD_ENABLED_KEY,
                 d.touchpad_enabled,
+            ),
+            touchpad_disabled_on_external_mouse: bool_at(
+                settings_store::hardware::TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY,
+                d.touchpad_disabled_on_external_mouse,
             ),
             touchpad_click_method: section
                 .get("touchpad_click_method")
@@ -378,6 +390,11 @@ impl InputSettings {
     /// Read the live settings file. Any failure yields the defaults — a corrupt config must never leave the session without a working touchpad.
     pub fn load() -> Self {
         Self::from_section(&settings_store::load_section(SECTION))
+    }
+
+    /// Read the settings file at `path` with the same fallbacks as [`Self::load`].
+    pub fn load_at(path: &std::path::Path) -> Self {
+        Self::from_section(&settings_store::load_section_at(path, SECTION))
     }
 
     /// libinput's pointer-acceleration speed for this setting: the slider's `0.0 … 1.0` mapped onto libinput's `-1.0 … 1.0`, so the midpoint lands exactly on the untouched default of `0.0`.
@@ -532,6 +549,24 @@ pub struct DeviceCaps {
     pub default_click_method: Option<ClickMethod>,
     pub supports_two_finger_scroll: bool,
     pub supports_edge_scroll: bool,
+    /// libinput can switch the device off while an external mouse is present.
+    pub supports_disable_on_external_mouse: bool,
+    pub is_keyboard: bool,
+    /// A touchscreen: absolute contacts, not a touchpad's relative ones.
+    pub is_touch: bool,
+    /// A drawing tablet's pen digitiser.
+    pub is_tablet_tool: bool,
+    /// The buttons, rings and strips beside a drawing tablet's surface.
+    pub is_tablet_pad: bool,
+}
+
+/// A libinput send-events mode, independent of the libinput bindings so the
+/// plan stays a pure value.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SendEvents {
+    Enabled,
+    Disabled,
+    DisabledOnExternalMouse,
 }
 
 /// A libinput click method, independent of the libinput bindings so the plan
@@ -554,6 +589,26 @@ impl DeviceCaps {
     pub fn is_touchpad(&self) -> bool {
         self.supports_tap
     }
+
+    /// The Settings section this device belongs to. A tablet's pad and pen
+    /// are checked first: both can also report pointer capabilities.
+    pub fn kind(&self) -> InputDeviceKind {
+        if self.is_tablet_pad {
+            InputDeviceKind::TabletPad
+        } else if self.is_tablet_tool {
+            InputDeviceKind::Tablet
+        } else if self.is_touchpad() {
+            InputDeviceKind::Touchpad
+        } else if self.is_touch {
+            InputDeviceKind::Touchscreen
+        } else if self.is_pointer {
+            InputDeviceKind::Mouse
+        } else if self.is_keyboard {
+            InputDeviceKind::Keyboard
+        } else {
+            InputDeviceKind::Other
+        }
+    }
 }
 
 /// The configuration to push onto one device. `None` means "this device cannot be told that, so don't ask".
@@ -562,6 +617,9 @@ pub struct DevicePlan {
     pub tap: Option<bool>,
     /// Tap-and-drag rides with tapping: a user who taps to click expects tap-hold-move to drag. Turning tapping on without it produces a touchpad that clicks but cannot drag a window.
     pub tap_drag: Option<bool>,
+    /// Only ever on while tap-and-drag is: a lock on a drag that cannot
+    /// start would do nothing but confuse the next tap.
+    pub tap_drag_lock: Option<bool>,
     pub natural_scroll: Option<bool>,
     pub disable_while_typing: Option<bool>,
     pub middle_emulation: Option<bool>,
@@ -571,7 +629,7 @@ pub struct DevicePlan {
     pub flat_acceleration: Option<bool>,
     /// Whether the device sends events. Asked only of touchpads: a mouse or
     /// keyboard is never switched off by the touchpad key.
-    pub send_events: Option<bool>,
+    pub send_events: Option<SendEvents>,
     /// Always a method the device listed; `Default` resolves to the device's
     /// own default so switching back really undoes an earlier choice.
     pub click_method: Option<ClickMethod>,
@@ -592,6 +650,9 @@ pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
         tap_drag: caps
             .supports_tap
             .then_some(settings.tap_to_click && settings.tap_drag),
+        tap_drag_lock: caps
+            .supports_tap
+            .then_some(settings.tap_to_click && settings.tap_drag && settings.tap_drag_lock),
         natural_scroll: caps
             .supports_natural_scroll
             .then_some(settings.natural_scroll_for(caps.is_touchpad())),
@@ -616,7 +677,15 @@ pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
         flat_acceleration: caps
             .supports_flat_acceleration
             .then_some(settings.flat_acceleration),
-        send_events: caps.is_touchpad().then_some(settings.touchpad_enabled),
+        send_events: caps.is_touchpad().then_some(if !settings.touchpad_enabled {
+            SendEvents::Disabled
+        } else if settings.touchpad_disabled_on_external_mouse
+            && caps.supports_disable_on_external_mouse
+        {
+            SendEvents::DisabledOnExternalMouse
+        } else {
+            SendEvents::Enabled
+        }),
         click_method: match settings.touchpad_click_method {
             TouchpadClickMethod::Default => caps.default_click_method,
             TouchpadClickMethod::Areas => caps
@@ -632,6 +701,34 @@ pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
                 .then_some(ScrollMethod::TwoFinger),
             TouchpadScrollMethod::Edge => caps.supports_edge_scroll.then_some(ScrollMethod::Edge),
         },
+    }
+}
+
+/// A device the settings can be pushed onto. libinput devices implement it
+/// in the DRM runtime; anything else (a test double) proves the same path.
+pub trait ConfigurableDevice {
+    /// What the device can be told.
+    fn caps(&self) -> DeviceCaps;
+    /// Push `plan` onto the device. Every `None` field is left untouched.
+    fn apply(&mut self, plan: &DevicePlan);
+}
+
+/// Configure one device from `settings`: when it is added, and again for
+/// each settings change. Returns the plan that was applied.
+pub fn configure<D: ConfigurableDevice + ?Sized>(
+    settings: &InputSettings,
+    device: &mut D,
+) -> DevicePlan {
+    let plan = plan_for(settings, &device.caps());
+    device.apply(&plan);
+    plan
+}
+
+/// Re-apply `settings` to every attached device, so a change is felt on the
+/// touchpad under the user's fingers rather than on the next one plugged in.
+pub fn reconfigure_all<D: ConfigurableDevice>(settings: &InputSettings, devices: &mut [D]) {
+    for device in devices {
+        configure(settings, device);
     }
 }
 
@@ -746,6 +843,8 @@ mod tests {
             default_click_method: Some(ClickMethod::ButtonAreas),
             supports_two_finger_scroll: true,
             supports_edge_scroll: true,
+            supports_disable_on_external_mouse: true,
+            ..DeviceCaps::default()
         }
     }
 
@@ -874,18 +973,56 @@ mod tests {
         {
             assert_eq!(
                 plan_for(&InputSettings::default(), &touchpad()).send_events,
-                Some(true),
+                Some(SendEvents::Enabled),
                 "an absent preference leaves the touchpad on"
             );
             let off = InputSettings::from_section(&section(json!({"touchpad_enabled": false})));
             assert!(!off.touchpad_enabled);
-            assert_eq!(plan_for(&off, &touchpad()).send_events, Some(false));
+            assert_eq!(
+                plan_for(&off, &touchpad()).send_events,
+                Some(SendEvents::Disabled)
+            );
             assert_eq!(
                 plan_for(&off, &mouse()).send_events,
                 None,
                 "a mouse is never switched off by the touchpad key"
             );
             assert_eq!(plan_for(&off, &keyboard()).send_events, None);
+        }
+        // Phase `a_touchpad_can_step_aside_while_a_mouse_is_connected`.
+        {
+            let with_mouse = InputSettings::from_section(&section(json!({
+                "touchpad_disabled_on_external_mouse": true
+            })));
+            assert!(with_mouse.touchpad_disabled_on_external_mouse);
+            assert!(!InputSettings::default().touchpad_disabled_on_external_mouse);
+            assert_eq!(
+                plan_for(&with_mouse, &touchpad()).send_events,
+                Some(SendEvents::DisabledOnExternalMouse)
+            );
+            assert_eq!(
+                plan_for(&with_mouse, &mouse()).send_events,
+                None,
+                "the mouse itself is never switched off"
+            );
+            let unsupported = DeviceCaps {
+                supports_disable_on_external_mouse: false,
+                ..touchpad()
+            };
+            assert_eq!(
+                plan_for(&with_mouse, &unsupported).send_events,
+                Some(SendEvents::Enabled),
+                "a touchpad libinput cannot hand off keeps working"
+            );
+            let off = InputSettings::from_section(&section(json!({
+                "touchpad_enabled": false,
+                "touchpad_disabled_on_external_mouse": true
+            })));
+            assert_eq!(
+                plan_for(&off, &touchpad()).send_events,
+                Some(SendEvents::Disabled),
+                "switched off means off, mouse or not"
+            );
         }
         // Phase `turning_tap_off_turns_tap_drag_off_with_it`.
         {
@@ -1111,6 +1248,120 @@ mod tests {
             "out-of-range speeds clamp into the slider"
         );
         assert_eq!(InputSettings::default().scroll_speed, 1.0);
+    }
+
+    #[test]
+    fn drag_lock_rides_on_tapping_and_tap_and_drag() {
+        assert!(!InputSettings::default().tap_drag_lock);
+        assert_eq!(
+            plan_for(&InputSettings::default(), &touchpad()).tap_drag_lock,
+            Some(false),
+            "off by default, and said so explicitly so switching back undoes it"
+        );
+        let locked = InputSettings::from_section(&section(json!({"tap_drag_lock": true})));
+        assert!(locked.tap_drag_lock);
+        assert_eq!(plan_for(&locked, &touchpad()).tap_drag_lock, Some(true));
+        for (tap_to_click, tap_drag) in [(false, true), (true, false)] {
+            let without_drag = InputSettings {
+                tap_to_click,
+                tap_drag,
+                ..locked
+            };
+            assert_eq!(
+                plan_for(&without_drag, &touchpad()).tap_drag_lock,
+                Some(false),
+                "a lock needs a tap-and-drag to hold"
+            );
+        }
+        assert_eq!(plan_for(&locked, &mouse()).tap_drag_lock, None);
+    }
+
+    #[test]
+    fn every_touchpad_choice_reaches_its_libinput_setting() {
+        let s = InputSettings::from_section(&section(json!({
+            "tap_to_click": true,
+            "tap_drag": true,
+            "tap_drag_lock": true,
+            "disable_while_typing": false,
+            "middle_emulation": false,
+            "touchpad_natural_scroll": false,
+            "touchpad_click_method": "clickfinger",
+            "touchpad_scroll_method": "edge",
+        })));
+        let plan = plan_for(&s, &touchpad());
+        assert_eq!(plan.tap, Some(true));
+        assert_eq!(plan.tap_drag, Some(true));
+        assert_eq!(plan.tap_drag_lock, Some(true));
+        assert_eq!(plan.disable_while_typing, Some(false));
+        assert_eq!(plan.middle_emulation, Some(false));
+        assert_eq!(plan.natural_scroll, Some(false));
+        assert_eq!(plan.click_method, Some(ClickMethod::Clickfinger));
+        assert_eq!(plan.scroll_method, Some(ScrollMethod::Edge));
+    }
+
+    #[test]
+    fn device_kind_puts_each_device_in_one_settings_section() {
+        assert_eq!(touchpad().kind(), InputDeviceKind::Touchpad);
+        assert_eq!(mouse().kind(), InputDeviceKind::Mouse);
+        assert_eq!(keyboard().kind(), InputDeviceKind::Other);
+        let typing = DeviceCaps {
+            is_keyboard: true,
+            ..DeviceCaps::default()
+        };
+        assert_eq!(typing.kind(), InputDeviceKind::Keyboard);
+        let screen = DeviceCaps {
+            is_touch: true,
+            ..DeviceCaps::default()
+        };
+        assert_eq!(screen.kind(), InputDeviceKind::Touchscreen);
+        let pen = DeviceCaps {
+            is_tablet_tool: true,
+            is_pointer: true,
+            ..DeviceCaps::default()
+        };
+        assert_eq!(pen.kind(), InputDeviceKind::Tablet, "a pen is not a mouse");
+        let pad = DeviceCaps {
+            is_tablet_pad: true,
+            is_keyboard: true,
+            ..DeviceCaps::default()
+        };
+        assert_eq!(pad.kind(), InputDeviceKind::TabletPad);
+    }
+
+    #[derive(Default)]
+    struct Recorder {
+        caps: DeviceCaps,
+        applied: Vec<DevicePlan>,
+    }
+
+    impl ConfigurableDevice for Recorder {
+        fn caps(&self) -> DeviceCaps {
+            self.caps
+        }
+        fn apply(&mut self, plan: &DevicePlan) {
+            self.applied.push(*plan);
+        }
+    }
+
+    #[test]
+    fn reconfigure_all_reaches_every_device_with_its_own_plan() {
+        let mut devices = [
+            Recorder {
+                caps: touchpad(),
+                ..Recorder::default()
+            },
+            Recorder {
+                caps: mouse(),
+                ..Recorder::default()
+            },
+        ];
+        let s = InputSettings {
+            tap_to_click: false,
+            ..Default::default()
+        };
+        reconfigure_all(&s, &mut devices);
+        assert_eq!(devices[0].applied, [plan_for(&s, &touchpad())]);
+        assert_eq!(devices[1].applied, [plan_for(&s, &mouse())]);
     }
 
     // accessibility keyboard filters

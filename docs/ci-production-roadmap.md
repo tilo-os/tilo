@@ -97,7 +97,7 @@ is released.
 | Boundary | Required work |
 | --- | --- |
 | Pull request | Cheap applicability plan, lint and affected checks for the exact head. Do not build the whole OS. Show the selected products and expected expensive work before merge. A PR merges once the required checks pass for its current head and the branch is up to date with `main`; review state is informational and never blocks integration. See [delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow). |
-| `main` | Preserve lint for every commit; cover every commit with a check run of itself or a later commit (queued check runs coalesce). Package the affected Tilo/Linux apps and update immutable collection inputs. Advance a public development channel only after registry publication is enabled. Coalesce superseded expensive work without discarding fast results. |
+| `main` | Preserve check/lint for every commit. Package the affected Tilo/Linux apps and update immutable collection inputs. Advance a public development channel only after registry publication is enabled. Coalesce superseded expensive work without discarding fast results. |
 | Scheduled integration | Rebuild full app baselines, Linux desktop packages and a generic x86-64 OS candidate. Rotate ARM64 and other costly coverage according to measured drift and capacity. |
 | App/desktop release | Reuse accepted build nodes, install-test the release set, sign artifacts and provenance, then atomically move a channel manifest. |
 | OS release | Manual tag or explicit publish dispatch only. Require native x86-64 and ARM64 outputs, independent reproducibility, installed-VM boot/update/rollback, signatures, SBOM and provenance before promotion. |
