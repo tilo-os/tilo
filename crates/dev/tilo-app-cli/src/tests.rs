@@ -3208,6 +3208,24 @@ fn creation_inputs_are_validated_and_printed_safely() {
         assert_eq!(outcome.files.len(), 13);
     }
 
+    // Phase: an_app_outside_every_repository_becomes_one.
+    {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let lone = temp.path().join("lone");
+        let outcome = create_app(request(lone.clone())).expect("create app");
+        assert!(outcome.git_initialized);
+        assert!(lone.join(".git").is_dir());
+        assert!(outcome.summary().contains("git repository"));
+
+        let nested = lone.join("nested");
+        let outcome = create_app(request(nested.clone())).expect("create nested app");
+        assert!(
+            !outcome.git_initialized,
+            "an app inside a repository joins it"
+        );
+        assert!(!nested.join(".git").exists());
+    }
+
     // Phase: creation_summary_prints_copyable_commands_for_shell_unsafe_paths.
     {
         let outcome = CreateOutcome {
@@ -3218,6 +3236,7 @@ fn creation_inputs_are_validated_and_printed_safely() {
             dry_run: false,
             workspace_member: false,
             sdk: None,
+            git_initialized: false,
         };
         let summary = outcome.summary();
         assert!(summary.contains("tilo-app check '/tmp/O'\\''Reilly app'"));

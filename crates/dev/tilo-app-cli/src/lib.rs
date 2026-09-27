@@ -222,6 +222,9 @@ pub struct CreateOutcome {
     pub workspace_member: bool,
     /// Where a standalone app gets the SDK; `None` for a workspace member.
     pub sdk: Option<standalone::SdkSource>,
+    /// Whether the app became its own git repository. Only an app created
+    /// outside every git work tree gets one.
+    pub git_initialized: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -7181,6 +7184,9 @@ impl CreateOutcome {
         if let Some(sdk) = &self.sdk {
             let _ = write!(notes, "\n\nSDK: {}", sdk.describe());
         }
+        if self.git_initialized {
+            notes.push_str("\n\nInitialised a git repository for the app.");
+        }
         if self.app_id.starts_with("local.") {
             let _ = write!(
                 notes,
@@ -7449,6 +7455,8 @@ fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateO
             .flatten();
         publish_new_app(&destination, &rendered, workspace_update.as_ref())?;
     }
+    let git_initialized =
+        !request.dry_run && !workspace_member && init_git_repository(&destination);
 
     Ok(CreateOutcome {
         destination,
@@ -7458,7 +7466,41 @@ fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateO
         dry_run: request.dry_run,
         workspace_member,
         sdk: sdk_source,
+        git_initialized,
     })
+}
+
+/// Runs `git init` in a new app that no git work tree contains. Git is a
+/// convenience here: without it, or when it fails, the app is still complete.
+fn init_git_repository(destination: &Path) -> bool {
+    let inside = ProcessCommand::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(destination)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match inside {
+        Ok(status) if status.success() => return false,
+        Ok(_) => {}
+        Err(_) => {
+            eprintln!("[tilo-app] git is not installed; the app has no repository");
+            return false;
+        }
+    }
+    match ProcessCommand::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(destination)
+        .status()
+    {
+        Ok(status) if status.success() => true,
+        outcome => {
+            eprintln!(
+                "[tilo-app] git init in {} failed: {outcome:?}",
+                destination.display()
+            );
+            false
+        }
+    }
 }
 
 /// Apps in the Tilo workspace belong to Tilo. Anyone else's app starts in a
