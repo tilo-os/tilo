@@ -1172,6 +1172,16 @@ pub mod room {
     /// at most [`MAX_COMMENT_INDEX_KEYS_SCANNED`] index keys and returns at
     /// most [`MAX_LISTED_COMMENTS`].
     pub fn comments_on(doc: &AutoCommit, parent: &RecordId) -> Vec<RecordCheckout> {
+        let mut out = comments_where(doc, |candidate| candidate == parent);
+        out.truncate(MAX_LISTED_COMMENTS);
+        out
+    }
+
+    /// Every comment record this room references whose parent `on` accepts,
+    /// oldest id first: one pass over the index for a caller following
+    /// comments on many parents at once. Scans at most
+    /// [`MAX_COMMENT_INDEX_KEYS_SCANNED`] index keys.
+    pub fn comments_where(doc: &AutoCommit, on: impl Fn(&RecordId) -> bool) -> Vec<RecordCheckout> {
         let Some(idx) = index_ro(doc) else {
             return Vec::new();
         };
@@ -1181,7 +1191,7 @@ pub mod room {
             .filter(|key| key.starts_with(collab_types::COMMENT_RECORD_PREFIX))
             .filter_map(|key| {
                 let id = RecordId::parse(&key)?;
-                if id.comment_parent().as_ref() != Some(parent) {
+                if !id.comment_parent().as_ref().is_some_and(&on) {
                     return None;
                 }
                 let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&idx, key.as_str())
@@ -1194,7 +1204,6 @@ pub mod room {
             })
             .collect();
         out.sort();
-        out.truncate(MAX_LISTED_COMMENTS);
         out
     }
 

@@ -334,6 +334,40 @@ fn chat_provider(
     provider.expect("found")
 }
 
+/// The provider token of `person`'s own Chat: the only one whose posting
+/// actions the broker offers them, since nobody posts through another
+/// participant's Chat.
+fn own_chat(host: &BrokerActionHost, person: &Person, room: &mut Room) -> String {
+    let conversation = format!("chat.channel:{}", tilo_reference::ROOM_CONVERSATION);
+    let mut provider = None;
+    room.until("the person's own Chat", |_| {
+        let mut page = host.query(
+            &person.caller(),
+            CatalogueQuery {
+                needle: "remark".into(),
+                max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            },
+        );
+        if let PendingPoll::Ready(Ok(page)) = page.poll_ready() {
+            let mut own = page
+                .rows
+                .iter()
+                .filter(|row| {
+                    row.app_id == APP
+                        && row.action.as_ref().is_some_and(|action| {
+                            action.address.resource == conversation
+                                && action.address.action == "remark"
+                        })
+                })
+                .map(|row| row.provider.clone());
+            provider = own.next().filter(|_| own.next().is_none());
+        }
+        provider.is_some()
+    });
+    provider.expect("found")
+}
+
 fn may(app: &ui::App, verb: ui::permissions::Verb) -> bool {
     app.permission_ctx()
         .check(&ui::permissions::PermissionScope::workspace(verb))
@@ -445,8 +479,8 @@ fn the_triage_agent_links_a_repeat_files_only_what_an_editor_approved_and_stops_
         .expect("a starter workspace")
         .id
         .clone();
-    let team_chat = chat_provider(&host, &team, &[], &mut room);
-    let reporter_chat = chat_provider(&host, &reporter, &[&team_chat], &mut room);
+    let team_chat = own_chat(&host, &team, &mut room);
+    let reporter_chat = own_chat(&host, &reporter, &mut room);
 
     // The agent joins as its own Chat participant. Everything it keeps
     // lives under `agent/`, so a restart finds it again.
@@ -727,6 +761,124 @@ fn the_triage_agent_links_a_repeat_files_only_what_an_editor_approved_and_stops_
     assert!(
         agent_replies(&room, "m_third").is_empty(),
         "a removed agent does nothing"
+    );
+    drop(handle);
+}
+
+/// In a direct room the agent is a Contributor too: it may not write the
+/// conversation, so its reply to the reporter's private report is its own
+/// comment record in the room's ordinary conversation channel, which the
+/// team follows like any other message.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario across the team, a reporter and the agent, read top to bottom"
+)]
+fn the_triage_agent_answers_a_private_report_in_a_direct_room() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("info,tilo_agent=debug"))
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().expect("scratch");
+    let socket = dir.path().join("collab.sock");
+    let team = Person::new(81, 82, "team");
+    let reporter = Person::new(91, 92, "reporter");
+    let agent_device = Person::new(81, 83, "triage");
+
+    let mut workspace = Workspace::new(WorkspaceId(1), "Reporter and the Tilo team");
+    workspace.room = RoomId::parse(&ROOM.to_string()).expect("room id");
+    workspace.set_owner(team.principal());
+    workspace.grant_capability(collab_types::CapOverride::membership(
+        collab_types::Subject::person(reporter.principal()),
+        ROOM.to_string(),
+        collab_types::Verb::Write,
+    ));
+    for cap in triage::participant::contributor_grants(&ROOM.to_string(), AGENT) {
+        workspace.grant_capability(cap);
+    }
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.active = workspace.id;
+    tree.desktop.workspaces.push(workspace);
+    let handle = shell::shell::collab_broker::spawn_native_harness(
+        socket.clone(),
+        tree.shared(),
+        vec![
+            team.device.verifying_key().to_bytes(),
+            reporter.device.verifying_key().to_bytes(),
+            agent_device.device.verifying_key().to_bytes(),
+        ],
+    )
+    .expect("bind the broker");
+    let host = BrokerActionHost::new(handle.app_action_broker().expect("typed broker"));
+    let mut room = Room {
+        editor: team.chat(&socket, &dir.path().join("team")),
+        author: reporter.chat(&socket, &dir.path().join("reporter")),
+        agent: None,
+        standing: Standing::Waiting,
+    };
+    room.until("the conversation", |room| {
+        may(&room.editor, ui::permissions::Verb::Write)
+            && chat::doc::ChatDoc::is_seeded(&room.editor.state_mut_for_test().doc)
+    });
+    let team_chat = own_chat(&host, &team, &mut room);
+    let reporter_chat = own_chat(&host, &reporter, &mut room);
+    room.agent = Some(
+        Participant::connect(
+            participant::Config {
+                room: ROOM,
+                name: AGENT.into(),
+                scope: triage::Scope::direct(),
+                endpoint: Some(socket),
+                identity: Some(agent_device.identity()),
+                records: ui::record::RecordOwners::new(dir.path().join("agent"))
+                    .open(APP, &ROOM.to_string())
+                    .expect("the agent's record store"),
+                intents: triage::forge::Intents::in_memory(),
+            },
+            Box::new(NoModel),
+            Box::new(triage::forge::Unconnected),
+        )
+        .expect("the agent joins"),
+    );
+    room.until("the agent's grant", |room| {
+        room.standing != Standing::Waiting
+    });
+    let conversation = tilo_reference::ROOM_CONVERSATION;
+
+    // The reporter's private report is a row of the conversation: they may
+    // write it.
+    succeeded(
+        invoke(
+            &host,
+            &reporter,
+            &reporter_chat,
+            &format!("chat.channel:{conversation}"),
+            "remark",
+            remark(
+                "Send does nothing when the To field ends with a comma",
+                "m_private",
+            ),
+            &mut room,
+        ),
+        "posting the private report",
+    );
+    room.until("the agent to draft an issue for it", |room| {
+        let me = room.agent().me().to_string();
+        room.agent().hand().messages(conversation).iter().any(|m| {
+            m.author == me
+                && m.parent.as_deref() == Some("m_private")
+                && m.attachment.as_ref().is_some_and(|a| a.issue().is_some())
+        })
+    });
+    room.until("the team to see the agent's reply", |room| {
+        team_sees(room, "drafted a forge issue")
+    });
+    let me = room.agent().me().to_string();
+    assert!(
+        chat::doc::ChatDoc::list_messages(&room.editor.state_mut_for_test().doc, conversation)
+            .iter()
+            .all(|m| m.author != me),
+        "the agent wrote nothing into the conversation document"
     );
     drop(handle);
 }

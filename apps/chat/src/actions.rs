@@ -1417,10 +1417,24 @@ pub struct ChatResourceCtx {
     /// The room, for resolving an `@mention` typed through the palette's
     /// "Post message" prompt the same way the composer does.
     pub participants: Vec<crate::mention::Participant>,
-    /// Messages people wrote in their own comment records in feedback
-    /// channels (see [`crate::comments`]), which the conversation document
-    /// does not hold, with their reactions and the status Editors set.
+    /// Messages people wrote in their own comment records (see
+    /// [`crate::comments`]), which the conversation document does not hold,
+    /// with their reactions and the status Editors set.
     pub comment_messages: Vec<crate::model::Message>,
+    /// This participant may comment but not write the conversation (a
+    /// Commenter, a Contributor agent). What it posts, replies and reacts is
+    /// then its own comment record in every channel, as everyone's is in a
+    /// feedback channel.
+    pub comment_only: bool,
+}
+
+impl ChatResourceCtx {
+    /// Whether what this participant posts in `channel` is its own comment
+    /// record rather than a row of the conversation document.
+    #[must_use]
+    pub fn writes_comments(&self, channel: &ChannelResource) -> bool {
+        channel.feedback || self.comment_only
+    }
 }
 
 /// Keep the ordinary palette snapshot cheap even for a very large shared
@@ -1987,7 +2001,7 @@ fn build_channel_resource(
             &crate::i18n::t("chat-action-post-message"),
             &crate::i18n::t("chat-action-message"),
             &crate::i18n::t("chat-action-type-a-message"),
-            ch.feedback,
+            ctx.writes_comments(ch),
             {
                 let cid = ch.id.clone();
                 let me = ctx.me.clone();
@@ -2039,7 +2053,7 @@ fn build_channel_resource(
 
     // A remark composed elsewhere — something said about a resource, with the
     // recording of what happened — posted as an ordinary message here.
-    channel = channel.with_action(remark_spec(&ch.id, &ctx.me, ch.feedback));
+    channel = channel.with_action(remark_spec(&ch.id, &ctx.me, ctx.writes_comments(ch)));
 
     // Rename — a prompted action carrying the new name.
     channel = channel.with_action(ActionSpec::prompted(
@@ -2258,7 +2272,7 @@ fn build_message_resource(
             &crate::i18n::t("chat-action-add-reaction"),
             &crate::i18n::t("chat-action-emoji"),
             "👍",
-            ch.feedback,
+            ctx.writes_comments(ch),
             {
                 let cid = ch.id.clone();
                 let mid = m.id.clone();
@@ -2341,7 +2355,7 @@ fn with_participation_actions(
             &crate::i18n::t("chat-action-reply-in-thread"),
             &crate::i18n::t("chat-action-reply"),
             &crate::i18n::t("chat-action-type-a-reply"),
-            ch.feedback,
+            ctx.writes_comments(ch),
             {
                 let cid = ch.id.clone();
                 let parent = m.parent.clone().unwrap_or_else(|| m.id.clone());
@@ -2978,6 +2992,7 @@ mod tests {
                 })
                 .collect(),
             comment_messages: Vec::new(),
+            comment_only: false,
         }
     }
 
@@ -3778,11 +3793,70 @@ mod feedback_tests {
                 })
                 .collect(),
             comment_messages: Vec::new(),
+            comment_only: false,
         }
     }
 
     fn resolved(doc: &AutoCommit, me: &str, id: &str) -> Resource {
         resolve_resource(&ctx(doc, me), doc, id).unwrap_or_else(|| panic!("{id} resolves"))
+    }
+
+    /// A comment-only participant's post, reply and remark are its own
+    /// comment records in any channel, not only a feedback channel; a
+    /// participant who may write keeps writing the conversation there.
+    #[test]
+    fn a_comment_only_participant_writes_comment_records_in_any_channel() {
+        let mut doc = feedback_doc();
+        post(&mut doc, "m_plain", "u_a71c", None);
+        let plain = ChatDoc::list_channels(&doc)
+            .into_iter()
+            .find(|c| !c.feedback && c.kind == ChannelKind::Text)
+            .expect("an ordinary text channel");
+        dispatch(
+            &mut doc,
+            &send_message_action(
+                &plain.id,
+                "m_row",
+                "u_a71c",
+                TS,
+                "hi",
+                None,
+                None,
+                Vec::new(),
+            ),
+        );
+        let is_comment = |spec: &ActionSpec| {
+            let mut args = serde_json::Map::new();
+            if spec.params().iter().any(|p| p.name == "reference") {
+                args.insert("text".into(), "Send does nothing".into());
+                args.insert(
+                    "reference".into(),
+                    serde_json::to_value(ResourceRef::whole("mail.draft", "mail.draft:d", "D"))
+                        .unwrap(),
+                );
+            } else {
+                args.insert(tilo_actions::PROMPTED_PARAM.into(), "hello".into());
+            }
+            built(spec, &args).type_id == CHAT_OPERATION_TYPE
+        };
+        let mut commenter = ctx(&doc, model::ME);
+        commenter.comment_only = true;
+        let channel = resolve_resource(&commenter, &doc, &format!("chat.channel:{}", plain.id))
+            .expect("the channel");
+        for id in ["post", "remark"] {
+            assert!(
+                is_comment(action(&channel, id).unwrap()),
+                "{id} is a comment record"
+            );
+        }
+        let message = resolve_resource(&commenter, &doc, "chat.message:m_row").expect("row");
+        assert!(is_comment(action(&message, "reply").unwrap()));
+
+        let writer = resolved(&doc, model::ME, &format!("chat.channel:{}", plain.id));
+        assert!(
+            !is_comment(action(&writer, "post").unwrap()),
+            "a writer posts into the conversation"
+        );
     }
 
     fn action<'a>(resource: &'a Resource, id: &str) -> Option<&'a ActionSpec> {

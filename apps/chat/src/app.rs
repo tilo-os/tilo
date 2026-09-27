@@ -1217,6 +1217,14 @@ impl ChatApp {
         self.perms.can_comment()
     }
 
+    /// Whether the local peer may not write the conversation (a Commenter, a
+    /// Contributor agent): everything it posts is then its own comment
+    /// record, in any channel. Whether it may comment at all is the
+    /// broker's to decide when the record arrives.
+    pub(crate) fn comment_only(&self) -> bool {
+        self.perms.is_known() && !self.perms.can_participate()
+    }
+
     /// The active channel, when it is a feedback channel.
     pub(crate) fn active_feedback_channel(&self) -> bool {
         self.channel(&self.active_channel)
@@ -1228,14 +1236,12 @@ impl ChatApp {
     /// asks: the record is theirs to share. Posting a message by any path
     /// (the composer, the palette, a remark from another app, an agent) ends
     /// here, so there is one place a share can be forgotten, not five.
-    /// A channel's messages: the conversation document's, and in a feedback
-    /// channel also those people wrote in their own comment records, with
-    /// the reactions their reaction records carry and the status Editors set.
+    /// A channel's messages: the conversation document's, and those people
+    /// wrote in their own comment records, with the reactions their reaction
+    /// records carry and, in a feedback channel, the status Editors set.
     pub(crate) fn channel_messages(&mut self, doc: &AutoCommit, channel: &str) -> Vec<Message> {
         let mut messages = ChatDoc::list_messages(doc, channel);
-        if !ChatDoc::is_feedback_channel(doc, channel) {
-            return messages;
-        }
+        let feedback = ChatDoc::is_feedback_channel(doc, channel);
         for message in &mut messages {
             for reaction in self.comments.reactions_on_conversation_message(&message.id) {
                 match message
@@ -1256,7 +1262,9 @@ impl ChatApp {
         }
         let mut commented = self.comments.messages(channel);
         for message in &mut commented {
-            message.report = ChatDoc::comment_report(doc, &message.id);
+            if feedback {
+                message.report = ChatDoc::comment_report(doc, &message.id);
+            }
             message.approved = ChatDoc::issue_approval(doc, &message.id);
         }
         messages.extend(commented);
@@ -1275,7 +1283,10 @@ impl ChatApp {
         if !self.comments.available() {
             return None;
         }
-        let in_feedback = |channel: &str| ChatDoc::is_feedback_channel(doc, channel);
+        // Everyone's word in a feedback channel, and a comment-only
+        // participant's anywhere, is their own record.
+        let comment_only = self.comment_only();
+        let as_record = |channel: &str| comment_only || ChatDoc::is_feedback_channel(doc, channel);
         Some(match action {
             ChatAction::SendMessage {
                 channel,
@@ -1288,7 +1299,7 @@ impl ChatApp {
                 mentions,
                 reference,
                 references,
-            } if in_feedback(channel) => self.comments.post(&crate::comments::CommentMessage {
+            } if as_record(channel) => self.comments.post(&crate::comments::CommentMessage {
                 channel: channel.clone(),
                 id: id.clone(),
                 author: author.clone(),
@@ -1305,13 +1316,13 @@ impl ChatApp {
                 msg,
                 emoji,
                 user,
-            } if in_feedback(channel) => self.comments.react(msg, emoji, user, true),
+            } if as_record(channel) => self.comments.react(msg, emoji, user, true),
             ChatAction::RemoveReaction {
                 channel,
                 msg,
                 emoji,
                 user,
-            } if in_feedback(channel) => self.comments.react(msg, emoji, user, false),
+            } if as_record(channel) => self.comments.react(msg, emoji, user, false),
             ChatAction::WithdrawAttachment { msg, .. } if self.comments.holds(msg) => {
                 self.comments.withdraw(msg)
             }
@@ -1479,6 +1490,7 @@ impl ChatApp {
                 })
                 .cloned()
                 .collect(),
+            comment_only: self.comment_only(),
         }
     }
 
@@ -2830,13 +2842,13 @@ impl ChatApp {
                 ChatDoc::unread_count(doc, &c.id, &self.me.id)
             };
         }
-        let feedback_channels: Vec<Id> = self
-            .channels
+        let channels: Vec<Id> = self.channels.iter().map(|c| c.id.clone()).collect();
+        let messages: Vec<Id> = channels
             .iter()
-            .filter(|c| c.feedback)
-            .map(|c| c.id.clone())
+            .flat_map(|c| ChatDoc::list_messages(doc, c))
+            .map(|m| m.id)
             .collect();
-        self.comments.follow(&feedback_channels);
+        self.comments.follow(&channels, &messages);
         self.messages = self.channel_messages(doc, &self.active_channel.clone());
         self.arrange_reports();
         self.search_messages = self
@@ -4848,13 +4860,14 @@ impl Widget for ChatApp {
     }
 
     fn room_index_changed(&mut self, index: &AutoCommit) {
-        let channels: Vec<Id> = self
-            .channels
+        let channels: Vec<Id> = self.channels.iter().map(|c| c.id.clone()).collect();
+        let messages: Vec<Id> = self
+            .search_messages
             .iter()
-            .filter(|c| c.feedback)
-            .map(|c| c.id.clone())
+            .filter(|m| !self.comments.holds(&m.id))
+            .map(|m| m.id.clone())
             .collect();
-        self.comments.index_changed(index, &channels);
+        self.comments.index_changed(index, &channels, &messages);
         self.relayout = true;
     }
 
