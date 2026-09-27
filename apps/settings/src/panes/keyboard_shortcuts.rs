@@ -289,6 +289,12 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
             "Next keyboard layout",
             "Switch input source and remember the choice",
         ),
+        (
+            ShortcutAction::EmojiPicker,
+            "shortcuts.emoji_picker",
+            "Emoji",
+            "Search for an emoji and insert it where you are typing",
+        ),
     ]
     .to_vec()
 }
@@ -327,6 +333,7 @@ fn is_desktop_navigation(action: ShortcutAction) -> bool {
             | ShortcutAction::MagnifierZoomOut
             | ShortcutAction::PowerMenu
             | ShortcutAction::NextInputSource
+            | ShortcutAction::EmojiPicker
     )
 }
 
