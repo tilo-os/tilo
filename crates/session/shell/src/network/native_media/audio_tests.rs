@@ -264,13 +264,28 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
             "toneFrames": tone_frames,
             "expectedToneFrames": expected_tone_frames,
             "ownToneFrames": own_frames,
+            "senderCounters": format!("{:?}", sides[sender].client.counters()),
+            "receiverCounters": format!("{:?}", sides[receiver].client.counters()),
+            "missing": (0..frames).filter(|n| !rows.iter().any(|row| row.0 == *n)).collect::<Vec<_>>(),
             "transportLatencyMs": if latencies.is_empty() { serde_json::Value::Null } else { serde_json::json!({
                 "p50": percentile(&mut latencies, 0.5), "p90": percentile(&mut latencies, 0.9), "max": percentile(&mut latencies, 1.0)}) },
         });
         eprintln!("{summary}");
+        // The transport may drop a frame only by counting it: late to its
+        // budget, over capacity or a duplicate. Anything else vanished.
+        let counters = sides[receiver].client.counters();
+        let accounted = counters.received
+            + counters.late_dropped
+            + counters.capacity_dropped
+            + counters.duplicate_dropped;
+        assert!(
+            accounted >= frames as u64,
+            "{} of {frames} frames vanished without a drop reason: {counters:?}",
+            frames as u64 - accounted
+        );
         assert!(
             rows.len() * 100 >= frames * 95,
-            "delivered {} of {frames}",
+            "delivered {} of {frames}: {counters:?}",
             rows.len()
         );
         assert!(

@@ -20,9 +20,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::thread;
-use std::time::Duration;
-
 use crate::support::{document_mutation, typed_collab::TypedBroker};
 use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use tilo_ui::presence::PresenceKey;
@@ -34,8 +31,6 @@ fn n_peer_fanout_and_per_peer_attribution() {
     let mut b = broker.manager("peer-b");
     let mut c = broker.manager("peer-c");
 
-    // Give the broker time to register all three Hello handshakes.
-    thread::sleep(Duration::from_millis(150));
     let _ = a.poll();
     let _ = b.poll();
     let _ = c.poll();

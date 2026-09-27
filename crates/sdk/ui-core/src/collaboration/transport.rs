@@ -150,8 +150,10 @@ pub trait CollabTransport: Send {
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>>;
 
     /// Like [`Self::take_primary_route_result`], but a transport that can
-    /// block its caller may wait up to `timeout` for the result. Used only
-    /// by blocking constructors; poll-driven transports keep the default.
+    /// block its caller may wait up to `timeout` for the result. A transport
+    /// that timed the `Hello` from a deadline it shares with its remote end
+    /// waits for that deadline instead, so both sides give up together. Used
+    /// only by blocking constructors; poll-driven transports keep the default.
     fn wait_primary_route_result(
         &mut self,
         timeout: Duration,
