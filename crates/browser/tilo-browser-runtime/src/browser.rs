@@ -23,6 +23,26 @@ use winit::{
     window::{Window, WindowId},
 };
 
+#[cfg(feature = "cloud")]
+use crate::peer as cloud_peer;
+/// Without `cloud` no certified peer exists, so a mount that names one fails.
+#[cfg(not(feature = "cloud"))]
+mod cloud_peer {
+    const UNAVAILABLE: &str = "this runtime was built without the Cloud peer";
+    pub(super) fn permissions(_: u32) -> Result<ui::permissions::PermissionContext, String> {
+        Err(UNAVAILABLE.into())
+    }
+    pub(super) fn local_owned_document(
+        _: u32,
+        _: &str,
+        _: &str,
+        _: automerge::AutoCommit,
+    ) -> Result<(), String> {
+        Err(UNAVAILABLE.into())
+    }
+    pub(super) fn mark_failure(_: u32, _: String) {}
+}
+
 thread_local! {
     static LOOP: RefCell<Option<EventLoopProxy<u64>>> = const { RefCell::new(None) };
     static MOUNTS: RefCell<HashMap<u64, Mount>> = RefCell::new(HashMap::new());
@@ -498,7 +518,12 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         status,
     } = request;
     if config.app == DESKTOP {
+        #[cfg(feature = "cloud")]
         return begin_desktop(event_loop, id, canvas, config, fonts, hydrated, status);
+        #[cfg(not(feature = "cloud"))]
+        return Err(error(
+            "the canonical desktop requires a runtime built with the Cloud peer",
+        ));
     }
     let definition = crate::catalog::resolve_mount(&config.app).map_err(error)?;
     let storage = load_cache(&config.profile, &config.device, &hydrated)?;
@@ -534,7 +559,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         .map_err(error)?
         .map_or(RestoreInput::None, RestoreInput::Local);
     let permissions = Rc::new(RefCell::new(if let Some(peer) = config.peer {
-        crate::peer::permissions(peer).map_err(error)?
+        cloud_peer::permissions(peer).map_err(error)?
     } else {
         PermissionContext::from_capabilities(
             Actor::person(Some(Role::Owner), &config.author),
@@ -650,6 +675,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     initialize_gpu(id, 1, window);
     Ok(())
 }
+#[cfg(feature = "cloud")]
 fn begin_desktop(
     event_loop: &ActiveEventLoop,
     id: u64,
@@ -1151,10 +1177,10 @@ impl Mount {
                 &record.app,
                 &record.store,
                 &record.checkout.id,
-                |document| crate::peer::local_owned_document(peer, &record.app, id, document),
+                |document| cloud_peer::local_owned_document(peer, &record.app, id, document),
             );
             if let Err(error) = published {
-                crate::peer::mark_failure(peer, error.clone());
+                cloud_peer::mark_failure(peer, error.clone());
                 emit(
                     &self.status,
                     serde_json::json!({"phase":"failed","error":error}),
@@ -1702,10 +1728,10 @@ pub fn complete_asset(
     url: &str,
     bytes: Option<Vec<u8>>,
 ) -> Result<bool, JsValue> {
-    if let (Some(hash), Some(bytes)) = (url.strip_prefix("tilo-blob://"), bytes.as_ref()) {
-        if !tilo_content::verify(hash, bytes) {
-            return Err(error("asset bytes do not match their content hash"));
-        }
+    if let (Some(hash), Some(bytes)) = (url.strip_prefix("tilo-blob://"), bytes.as_ref())
+        && !tilo_content::verify(hash, bytes)
+    {
+        return Err(error("asset bytes do not match their content hash"));
     }
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
@@ -1847,6 +1873,7 @@ pub(crate) fn load_cache(
     Ok(storage)
 }
 
+#[cfg(feature = "cloud")]
 pub(crate) fn refresh_peer_mounts(peer: u32) {
     let state = crate::peer::desktop_state(peer);
     let permissions = crate::peer::permissions(peer);
@@ -1906,6 +1933,7 @@ pub(crate) fn refresh_peer_mounts(peer: u32) {
     });
 }
 
+#[cfg(feature = "cloud")]
 #[wasm_bindgen]
 pub fn rebind_peer(old: u32, new: u32) {
     MOUNTS.with_borrow_mut(|mounts| {
@@ -1921,6 +1949,7 @@ pub fn rebind_peer(old: u32, new: u32) {
     });
 }
 
+#[cfg(feature = "cloud")]
 #[wasm_bindgen]
 pub fn suspend_peer(peer: u32, suspended: bool) -> Result<(), JsValue> {
     if suspended {
@@ -1930,6 +1959,7 @@ pub fn suspend_peer(peer: u32, suspended: bool) -> Result<(), JsValue> {
     Ok(())
 }
 
+#[cfg(feature = "cloud")]
 pub(crate) fn prepare_peer_remote(peer: u32) -> Result<(), String> {
     MOUNTS.with_borrow(|mounts| {
         for mount in mounts.values().filter(|mount| mount.peer == Some(peer)) {
@@ -2283,6 +2313,7 @@ pub fn live_view_publication_window(id: u64, ms: Option<u32>) -> Result<(), JsVa
 /// so the accessibility DOM shows a collaborator's text in the same frame
 /// the canvas does. Remote live changes arrive at most once per publication
 /// window of the author, never per local keystroke.
+#[cfg(feature = "cloud")]
 pub(crate) fn expedite_peer_semantics(peer: u32) {
     MOUNTS.with_borrow(|mounts| {
         for mount in mounts.values().filter(|mount| mount.peer == Some(peer)) {
