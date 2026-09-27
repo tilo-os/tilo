@@ -3929,36 +3929,16 @@ pub fn lint_portability(start: &Path) -> Result<portability::PortabilityReport> 
 ///
 /// Returns an error when the selected app directory cannot be resolved.
 pub fn doctor_app(start: &Path) -> Result<DoctorReport> {
-    doctor_app_with_capnp_probe(start, probe_capnp_compiler)
-}
-
-fn doctor_app_with_capnp_probe(
-    start: &Path,
-    probe_capnp: impl FnOnce() -> std::result::Result<String, String>,
-) -> Result<DoctorReport> {
-    let app_dir = resolve_app_dir(start)?;
-    Ok(doctor_resolved_app_with_capnp_probe(app_dir, probe_capnp))
+    Ok(doctor_resolved_app(resolve_app_dir(start)?))
 }
 
 fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
-    #[cfg(not(test))]
-    let probe = probe_capnp_compiler;
-    #[cfg(test)]
-    let probe = || Ok("Cap'n Proto version 1.0.2".to_owned());
-    doctor_resolved_app_with_capnp_probe(app_dir, probe)
-}
-
-fn doctor_resolved_app_with_capnp_probe(
-    app_dir: PathBuf,
-    probe_capnp: impl FnOnce() -> std::result::Result<String, String>,
-) -> DoctorReport {
     let mut checks = Vec::new();
     let package_name = check_cargo_manifest(&app_dir, &mut checks);
     let manifest = check_package_manifest(&app_dir, &mut checks);
     let package_id = manifest
         .as_ref()
         .map(|manifest| manifest.package.id.clone());
-    check_capnp_compiler(&mut checks, probe_capnp);
 
     check_source_file(
         &app_dir,
@@ -4003,51 +3983,6 @@ fn doctor_resolved_app_with_capnp_probe(
     }
 
     DoctorReport { app_dir, checks }
-}
-
-fn probe_capnp_compiler() -> std::result::Result<String, String> {
-    let output = ProcessCommand::new("capnp")
-        .arg("--version")
-        .output()
-        .map_err(|error| format!("could not run `capnp --version`: {error}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let error_detail = if stderr.trim().is_empty() {
-            String::new()
-        } else {
-            format!(": {}", stderr.trim())
-        };
-        return Err(format!(
-            "`capnp --version` exited with {}{}",
-            output.status, error_detail
-        ));
-    }
-    let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    Ok(if version.is_empty() {
-        "`capnp --version` succeeded".to_owned()
-    } else {
-        version
-    })
-}
-
-fn check_capnp_compiler(
-    checks: &mut Vec<DoctorCheck>,
-    probe_capnp: impl FnOnce() -> std::result::Result<String, String>,
-) {
-    let (status, detail) = match probe_capnp() {
-        Ok(version) => (DoctorStatus::Pass, version),
-        Err(error) => (
-            DoctorStatus::Fail,
-            format!(
-                "{error}; install the Cap'n Proto compiler (`capnp`) or run tilo-app inside the Tilo development container"
-            ),
-        ),
-    };
-    checks.push(DoctorCheck {
-        status,
-        label: "Cap'n Proto compiler",
-        detail,
-    });
 }
 
 fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
@@ -5095,8 +5030,7 @@ fn rebuild_running_dev_app(
         report_child_exit(child);
         eprintln!("[tilo-app] change detected; rebuilding");
         let building_revision = source_revision.load(Ordering::Acquire);
-        // The startup plan already passed preflight. Re-running it shells out
-        // to `capnp --version` before rustc starts. A newer edit cancels this
+        // The startup plan already passed preflight. A newer edit cancels this
         // compile instead of waiting for a binary that will not be launched.
         let in_place = app_supports_in_place_reload(&plan.app_dir);
         let candidate = if in_place {

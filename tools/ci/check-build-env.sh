@@ -20,7 +20,7 @@ MODULES=(
 # do not download or compile it. The NTFS helper bootstraps its pinned reader
 # with autotools.
 BINARIES=(
-  capnp autoreconf libtoolize bwrap rust-analyzer sccache fc-match gst-inspect-1.0 jq rg yt-dlp
+  autoreconf libtoolize bwrap rust-analyzer sccache fc-match gst-inspect-1.0 jq rg yt-dlp
   cryptsetup swtpm swtpm_setup tpm2_getcap
 )
 FONTS=(

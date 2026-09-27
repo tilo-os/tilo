@@ -1,9 +1,5 @@
 use super::*;
 
-fn doctor_app(start: &Path) -> Result<DoctorReport> {
-    doctor_app_with_capnp_probe(start, || Ok("Cap'n Proto version 1.0.2".to_owned()))
-}
-
 fn request(dir: PathBuf) -> NewAppRequest {
     NewAppRequest {
         name: Some("reading-list".into()),
@@ -2824,7 +2820,7 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
 
 /// Doctor accumulates actionable failures, accepts registered document actions without widget
 /// glue, finds the SDK in target-specific dependencies, rejects one invalid target-specific UI
-/// dependency, and fails early with an actionable missing-capnp diagnostic.
+/// dependency, and never asks for the Cap'n Proto compiler the SDK no longer needs.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -2927,26 +2923,22 @@ fn doctor_reports_actionable_failures_in_app_manifests() {
         assert!(checks[0].detail.contains("not-tilo-app"));
     }
 
-    // Phase: doctor_fails_early_with_actionable_missing_capnp_diagnostic.
+    // Phase: doctor_does_not_require_the_capnp_compiler.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
         create_app(request(destination.clone())).unwrap();
 
-        let report = doctor_app_with_capnp_probe(&destination, || {
-            Err("could not run `capnp --version`: executable not found".to_owned())
-        })
-        .expect("doctor report");
+        let report = doctor_app(&destination).expect("doctor report");
 
-        assert!(!report.is_ready());
-        let check = report
-            .checks
-            .iter()
-            .find(|check| check.label == "Cap'n Proto compiler")
-            .expect("native compiler check");
-        assert_eq!(check.status, DoctorStatus::Fail);
-        assert!(check.detail.contains("install the Cap'n Proto compiler"));
-        assert!(check.detail.contains("Tilo development container"));
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|check| !check.label.contains("Cap'n Proto")),
+            "{:#?}",
+            report.checks
+        );
     }
 }
 

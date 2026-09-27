@@ -59,7 +59,7 @@ use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
     reason = "generated schema modules expose more than each consumer uses"
 )]
 pub mod fs_capnp {
-    include!(concat!(env!("OUT_DIR"), "/fs_capnp.rs"));
+    include!("generated/fs_capnp.rs");
 }
 
 #[allow(
@@ -81,7 +81,7 @@ pub mod fs_capnp {
     reason = "generated schema modules expose more than each consumer uses"
 )]
 pub mod blobs_capnp {
-    include!(concat!(env!("OUT_DIR"), "/blobs_capnp.rs"));
+    include!("generated/blobs_capnp.rs");
 }
 
 use capnp_rpc::rpc_twoparty_capnp;

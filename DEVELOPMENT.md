@@ -318,7 +318,6 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `fuse3` | `fuse3-devel` | `fs` |
 | `dbus-1` | `dbus-devel` | portals |
 | `gstreamer-1.0` `gstreamer-app-1.0` | `gstreamer1-devel` `gstreamer1-plugins-base-devel` | media apps, and the shell's video (sharing, projection, recording) |
-| `capnp` (binary) | `capnproto` | runtime-collab schema |
 | `autoreconf` `libtoolize` (binaries), `libgcrypt.m4` | `autoconf` `automake` `libtool` `libgcrypt-devel` | `tilo-ntfs-helper` bootstraps its pinned NTFS reader |
 | `libclang` (shared library) | `clang-libs` | bindgen for PipeWire bindings; Python 3 checks that it can load |
 | `bwrap` (binary) | `bubblewrap` | the launcher's confinement tests drive the real sandbox |
@@ -336,10 +335,7 @@ container.
 Install the pinned Rust toolchain, a Windows SDK, and the Visual Studio C++
 tools for the target architecture. Windows ARM64 needs the Build Tools
 component `Microsoft.VisualStudio.Component.VC.Tools.ARM64`; installing only
-the x64 C++ tools does not provide ARM64 target libraries. Put a working
-`capnp` schema compiler on PATH. For a fully native ARM64 toolchain, build it
-from the [Cap'n Proto source](https://capnproto.org/install.html) with CMake's
-Visual Studio generator and `-A ARM64`.
+the x64 C++ tools does not provide ARM64 target libraries.
 
 From an ARM64 host, run:
 
@@ -402,7 +398,7 @@ An NDK under `$ANDROID_NDK_HOME` or the SDK's `ndk/` also provides the
 ### Native Windows development
 
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
-architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
+architecture. The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
 Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor,
 Photos, Hex Editor, Code Editor, API Tester, Diff and Merge, Snippets, Database
@@ -414,7 +410,6 @@ application build command.
 From PowerShell at the workspace root:
 
 ```powershell
-capnp --version
 cargo check --locked -p ui --tests --features portal
 cargo run --locked -p calculator
 cargo run --locked -p notes
