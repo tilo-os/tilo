@@ -9324,3 +9324,21 @@ fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
     );
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn the_version_strip_is_the_only_history_control() {
+    let mut state = ui::State::new();
+    let mut wp = WordProcessorWidget::new();
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(&mut state.doc, "draft");
+    state.commit_action(None, None);
+    let mut harness = ui::headless::FrameHarness::new(state, Box::new(wp), (1200, 800));
+    harness.enable_document_history_chrome();
+    harness.relayout();
+    let targets = harness.targets();
+    assert!(
+        !targets.contains_key("standalone-history-open"),
+        "the shared History control must not sit beside the editor's own strip"
+    );
+    assert!(harness.local_history_resources().unwrap().is_empty());
+}
