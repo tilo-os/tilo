@@ -43,6 +43,7 @@ taffy.workspace = true
 # match the `qdoc-codecs` document codecs so the workspace resolves one copy of each.
 zip.workspace = true
 quick-xml.workspace = true
+workspace-hack = { version = "0.1" }
 # Host-native image open through the XDG Desktop Portal
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
 # chooser; on Tilo the compositor's portal backend renders Tilo's picker. The

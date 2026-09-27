@@ -247,6 +247,7 @@ tar.workspace = true
 # writer, ICU tokenizer, and other extras we don't need for a
 # home-directory index.
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Pairing-broker tests talk to a local broker on a loaded runner; the

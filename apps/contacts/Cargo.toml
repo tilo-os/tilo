@@ -45,6 +45,7 @@ taffy.workspace = true
 unicode-normalization = "0.1.25"
 # RFC 6350 content lines: folding, parameter quoting and TEXT escaping.
 pim-lines = { path = "../../crates/text/pim-lines" }
+workspace-hack = { version = "0.1" }
 
 # --- Host-native file open/save (XDG Desktop Portal) ------------------
 # Import (open) and Export (save) go through

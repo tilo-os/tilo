@@ -16,6 +16,7 @@ serde.workspace = true
 serde_json.workspace = true
 # The native diagnostic reports the note's BLAKE3 hash, never its text.
 blake3.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
