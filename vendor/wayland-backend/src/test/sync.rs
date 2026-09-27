@@ -72,6 +72,95 @@ expand_test!(sync, {
     assert!(client.get_data(sync_id).is_err());
 });
 
+#[test]
+fn bounded_rust_server_dispatch_yields_after_the_request_limit() {
+    let (tx, rx) = std::os::unix::net::UnixStream::pair().unwrap();
+    let mut server = server_rs::Backend::new().unwrap();
+    let client_id = server.handle().insert_client(rx, Arc::new(())).unwrap();
+    let client = client_rs::Backend::connect(tx).unwrap();
+    let display = client.display_id();
+
+    for _ in 0..5 {
+        client
+            .send_request(
+                message!(
+                    display.clone(),
+                    0,
+                    [Argument::NewId(client_rs::ObjectId::null())]
+                ),
+                Some(Arc::new(SyncData(AtomicBool::new(false)))),
+                Some((&interfaces::WL_CALLBACK_INTERFACE, 1)),
+            )
+            .unwrap();
+    }
+    client.flush().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    assert_eq!(
+        server
+            .dispatch_single_client_bounded(&mut (), client_id.clone(), 2)
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        server
+            .dispatch_single_client_bounded(&mut (), client_id.clone(), 2)
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        server
+            .dispatch_single_client_bounded(&mut (), client_id, 2)
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn bounded_ready_rust_server_dispatch_consumes_poll_readiness() {
+    let (tx, rx) = std::os::unix::net::UnixStream::pair().unwrap();
+    let mut server = server_rs::Backend::new().unwrap();
+    let _client_id = server.handle().insert_client(rx, Arc::new(())).unwrap();
+    let client = client_rs::Backend::connect(tx).unwrap();
+    let display = client.display_id();
+
+    for _ in 0..5 {
+        client
+            .send_request(
+                message!(
+                    display.clone(),
+                    0,
+                    [Argument::NewId(client_rs::ObjectId::null())]
+                ),
+                Some(Arc::new(SyncData(AtomicBool::new(false)))),
+                Some((&interfaces::WL_CALLBACK_INTERFACE, 1)),
+            )
+            .unwrap();
+    }
+    client.flush().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    // Each call drains the aggregate poll fd once. Decoding the first socket
+    // payload consumes its kernel readiness, so later bounded turns must come
+    // from the retained pending-work queue rather than a stale epoll wakeup.
+    assert_eq!(
+        server.dispatch_ready_clients_bounded(&mut (), 2).unwrap(),
+        2
+    );
+    assert!(server.has_pending_client_dispatch());
+    assert_eq!(
+        server.dispatch_ready_clients_bounded(&mut (), 2).unwrap(),
+        2
+    );
+    assert!(server.has_pending_client_dispatch());
+    assert_eq!(server.dispatch_all_clients(&mut ()).unwrap(), 1);
+    assert!(!server.has_pending_client_dispatch());
+    assert_eq!(
+        server.dispatch_ready_clients_bounded(&mut (), 2).unwrap(),
+        0
+    );
+}
+
 expand_test!(panic test_bad_placeholder, {
     let (tx, rx) = std::os::unix::net::UnixStream::pair().unwrap();
     let mut server = server_backend::Backend::new().unwrap();
