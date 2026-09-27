@@ -2492,21 +2492,11 @@ pub fn recording_delegates_rect(pane_rect: Rect) -> Rect {
     Rect::new(add.x1 + 12.0, add.y0, add.x1 + 12.0 + 236.0, add.y1)
 }
 
-/// The shared switch inside the recording row, at its trailing edge.
+/// The shared switch inside a room-switch row, at its own size and at the
+/// row's trailing edge.
 pub fn recording_delegates_switch_rect(row: Rect) -> Rect {
-    let top = row.center().y - RECORDING_SWITCH_HEIGHT / 2.0;
-    Rect::new(
-        row.x1 - RECORDING_SWITCH_WIDTH,
-        top,
-        row.x1,
-        top + RECORDING_SWITCH_HEIGHT,
-    )
+    ui::widget::ToggleFace::trailing(row, false).rect()
 }
-
-// The compact switch face a settings row carries; the shared Toggle widget
-// has no smaller size token, and these rows are drawn, not laid out.
-const RECORDING_SWITCH_WIDTH: f64 = 38.0;
-const RECORDING_SWITCH_HEIGHT: f64 = 22.0;
 
 /// Paint the "Members may record" row: its label and the shared switch,
 /// on while the room allows its members' recorders. The whole row is the
@@ -2550,7 +2540,7 @@ fn draw_room_switch(
     let label = elide(
         label,
         size,
-        (row.width() - RECORDING_SWITCH_WIDTH - 10.0).max(0.0),
+        (recording_delegates_switch_rect(row).x0 - row.x0 - 10.0).max(0.0),
         text_renderer,
     );
     text_renderer.draw_text(
@@ -2569,7 +2559,7 @@ fn draw_room_switch(
         scene,
         transform,
         theme,
-        &ui::widget::ToggleFace::new(recording_delegates_switch_rect(row), on).disabled(!is_owner),
+        &ui::widget::ToggleFace::trailing(row, on).disabled(!is_owner),
     );
 }
 
