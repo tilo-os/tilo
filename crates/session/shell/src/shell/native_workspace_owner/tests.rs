@@ -11,10 +11,6 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "so.tilo.chat";
-/// How long a test waits for the background authority publisher to go idle.
-/// Publication writes and fsyncs files, which can take many seconds on a
-/// loaded disk; this bound only catches a publisher that never finishes.
-const PUBLICATION_HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
     let mut cert = DeviceCert {
@@ -1054,6 +1050,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     use crate::shell::state::{CapOverride, Effect, Scope, Subject, Verb};
     use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
     use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
     /// Lets background fs-authority publication settle before the wrapped
     /// scope restores the environment it reads.
     struct RestoreEnv {
@@ -1062,9 +1059,20 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     impl Drop for RestoreEnv {
         fn drop(&mut self) {
             let _ = crate::shell::fs_authority::wait_for_fs_authority_publication_idle(
-                PUBLICATION_HANG_BOUND,
+                PUBLICATION_SETTLE_BUDGET,
             );
         }
+    }
+    /// Publication retires as soon as the fake publisher exits, which the
+    /// wait observes directly; this budget only bounds a publisher that
+    /// never succeeds, so it stays generous for a saturated CI host.
+    const PUBLICATION_SETTLE_BUDGET: Duration = Duration::from_secs(60);
+    #[track_caller]
+    fn settle_publication(step: &str) {
+        crate::shell::fs_authority::wait_for_fs_authority_publication_idle(
+            PUBLICATION_SETTLE_BUDGET,
+        )
+        .unwrap_or_else(|report| panic!("{step}: {report}"));
     }
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
@@ -1106,9 +1114,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     }
     let owner = NativeWorkspaceOwner::open(tree.clone()).unwrap();
     tree.read().export_fs_capabilities();
-    assert!(
-        crate::shell::fs_authority::wait_for_fs_authority_publication_idle(PUBLICATION_HANG_BOUND)
-    );
+    settle_publication("baseline ACL export must publish");
     let baseline_acl = std::fs::read(&acl).unwrap();
     assert!(String::from_utf8_lossy(&baseline_acl).contains("old-room-only"));
     let (intent, bootstrap, _, _, now) = raw_fixture();
@@ -1126,9 +1132,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
         failed.is_err(),
         "candidate side-effect consumed the failure before the actual owner barrier"
     );
-    assert!(
-        crate::shell::fs_authority::wait_for_fs_authority_publication_idle(PUBLICATION_HANG_BOUND)
-    );
+    settle_publication("failed install must leave publication idle");
     assert_eq!(tree.read().room_of(local), Some(previous));
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(std::fs::read(&acl).unwrap(), baseline_acl);
@@ -1137,9 +1141,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
         "no authority publisher may see the failed candidate"
     );
     owner.install(&complete, now).unwrap();
-    assert!(
-        crate::shell::fs_authority::wait_for_fs_authority_publication_idle(PUBLICATION_HANG_BOUND)
-    );
+    settle_publication("committed install must publish its ACL");
     let committed_acl = std::fs::read(&acl).unwrap();
     assert!(!String::from_utf8_lossy(&committed_acl).contains("old-room-only"));
     assert_eq!(std::fs::read(&observed_acl).unwrap(), committed_acl);
@@ -1152,9 +1154,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     std::fs::remove_file(&observed_acl).unwrap();
     std::fs::remove_file(&observed_state).unwrap();
     stale.flush_to_disk();
-    assert!(
-        crate::shell::fs_authority::wait_for_fs_authority_publication_idle(PUBLICATION_HANG_BOUND)
-    );
+    settle_publication("stale flush must leave publication idle");
     assert_eq!(std::fs::read(&acl).unwrap(), committed_acl);
     assert!(
         !observed_acl.exists(),
