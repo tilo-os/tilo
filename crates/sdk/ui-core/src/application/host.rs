@@ -323,12 +323,9 @@ fn stable_instance_id(app_id: &str) -> InstanceId {
     // FNV-1a is deliberately fixed rather than DefaultHasher, whose output is
     // not a persistence contract. The app id makes standalone view keys unique
     // even though InstanceViewStore itself is shared below the profile root.
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in app_id.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, app_id.as_bytes());
+    std::hash::Hasher::finish(&hasher)
 }
 
 fn persistent_device_id(profile_root: &Path) -> Result<String, LaunchError> {

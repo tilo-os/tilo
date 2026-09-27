@@ -490,34 +490,9 @@ impl AccessNode {
 /// and across processes — unlike [`std::collections::hash_map::RandomState`],
 /// which would hand an assistive technology a different id every launch.
 pub fn hash_key(value: &impl std::hash::Hash) -> u64 {
-    let mut h = FnvHasher::new();
+    let mut h = fnv::FnvHasher::default();
     std::hash::Hash::hash(value, &mut h);
     std::hash::Hasher::finish(&h)
-}
-
-/// FNV-1a, 64-bit. Small, dependency-free and — the part that matters here —
-/// **fixed-seed**, so an id derived from it is reproducible.
-#[derive(Clone, Copy)]
-pub(crate) struct FnvHasher(u64);
-
-impl FnvHasher {
-    pub(crate) const fn new() -> Self {
-        // FNV offset basis.
-        Self(0xcbf2_9ce4_8422_2325)
-    }
-}
-
-impl std::hash::Hasher for FnvHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 ^= u64::from(*b);
-            // FNV prime.
-            self.0 = self.0.wrapping_mul(0x100_0000_01b3);
-        }
-    }
 }
 
 /// Serializable absolute logical-pixel geometry for a synthetic

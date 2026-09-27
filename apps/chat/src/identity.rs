@@ -144,15 +144,12 @@ pub fn color_index_for(bytes: &[u8]) -> usize {
     color_from_bytes(bytes)
 }
 
-/// 64-bit FNV-1a — a tiny, dependency-free stable hash (never used for
+/// 64-bit FNV-1a — a stable hash (never used for
 /// security; only to spread ids across the colour palette / host fallback).
 fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01B3);
-    }
-    h
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, bytes);
+    std::hash::Hasher::finish(&hasher)
 }
 
 /// Present a tidy display name from `$USER`, splitting on common separators so

@@ -17,6 +17,7 @@ name = "install"
 path = "src/lib.rs"
 
 [dependencies]
+fnv.workspace = true
 xdg-paths = { path = "../../system/xdg-paths" }
 tilo-app-package = { path = "../tilo-app-package" }
 # The one installed-package registry and content store, shared with the

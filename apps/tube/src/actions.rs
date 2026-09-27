@@ -261,7 +261,7 @@ fn legacy_comment_key(video_id: &str, index: usize) -> String {
 /// id, so hash all immutable source fields with an explicitly fixed FNV-1a
 /// algorithm rather than addressing a row by its current list position.
 fn comment_key(video_id: &str, comment: &crate::model::Comment) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut hasher = fnv::FnvHasher::default();
     for field in [
         video_id,
         comment.author.as_str(),
@@ -269,12 +269,10 @@ fn comment_key(video_id: &str, comment: &crate::model::Comment) -> String {
         comment.text.as_str(),
         comment.time_ago.as_str(),
     ] {
-        for byte in field.bytes().chain(std::iter::once(0xff)) {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0100_0000_01b3);
-        }
+        std::hash::Hasher::write(&mut hasher, field.as_bytes());
+        std::hash::Hasher::write_u8(&mut hasher, 0xff);
     }
-    format!("{video_id}#{hash:016x}")
+    format!("{video_id}#{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
 /// Deterministic reply entity identity. Equal text is intentionally idempotent
@@ -282,12 +280,11 @@ fn comment_key(video_id: &str, comment: &crate::model::Comment) -> String {
 /// rather than accidentally posting a duplicate. The reply action carries the
 /// whole key, so replay never re-hashes under a changed implementation.
 fn reply_key(comment_id: &str, text: &str) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in comment_id.bytes().chain([0xff]).chain(text.bytes()) {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    format!("reply-{hash:016x}")
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, comment_id.as_bytes());
+    std::hash::Hasher::write_u8(&mut hasher, 0xff);
+    std::hash::Hasher::write(&mut hasher, text.as_bytes());
+    format!("reply-{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
 /// Every collaborative operation Tube exports. One serializable enum so a single
