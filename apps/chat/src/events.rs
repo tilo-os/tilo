@@ -595,7 +595,7 @@ impl ChatApp {
 
     /// Enter in the picker's search field picks the best match.
     fn pick_first_emoji_result(&mut self, doc: &mut AutoCommit) {
-        let first = emoji::Catalogue::english()
+        let first = crate::i18n::emoji_catalogue()
             .search(self.emoji_search.value(), 1)
             .first()
             .map(|e| e.text());

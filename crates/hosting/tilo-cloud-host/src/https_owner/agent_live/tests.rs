@@ -501,7 +501,6 @@ async fn publisher_task_reaches_a_fallback_subscriber_through_the_real_relay() {
         pending: Vec::new(),
     };
     assert_eq!(stream.frame().await.0, fallback::FRAME_HELLO);
-    let deadline = tilo_test_env::hang_bound();
     let activity = |state: &str| AgentLiveEvent::Activity {
         agent_id: "agent-9".into(),
         name: "Scribe".into(),
@@ -511,7 +510,7 @@ async fn publisher_task_reaches_a_fallback_subscriber_through_the_real_relay() {
     };
     events.try_send(activity("writing")).unwrap();
     // The agent namespace is announced as a member, then its presence arrives.
-    tokio::time::timeout(deadline, async {
+    tilo_test_env::within("the relay to announce the agent as a member", async {
         loop {
             let member = stream.until(fallback::FRAME_MEMBER).await;
             if member[..32] == agent && member[32] == 1 {
@@ -519,8 +518,7 @@ async fn publisher_task_reaches_a_fallback_subscriber_through_the_real_relay() {
             }
         }
     })
-    .await
-    .expect("agent member announced");
+    .await;
     let record = agent_activity_record().digest();
     relay
         .fallback_send(
@@ -529,22 +527,25 @@ async fn publisher_task_reaches_a_fallback_subscriber_through_the_real_relay() {
         )
         .unwrap();
     // Heartbeats keep both flowing: a presence datagram and an activity frame.
-    let (presence, value) = tokio::time::timeout(deadline, async {
-        let (mut presence, mut value) = (None, None);
-        while presence.is_none() || value.is_none() {
-            let (kind, payload) = stream.frame().await;
-            if kind == fallback::FRAME_PRESENCE && payload[..32] == agent {
-                presence = Some(PresenceFrame::decode(&payload[32..]).unwrap());
+    let (presence, value) =
+        tilo_test_env::within("the agent's presence datagram and activity frame", async {
+            let (mut presence, mut value) = (None, None);
+            while presence.is_none() || value.is_none() {
+                let (kind, payload) = stream.frame().await;
+                if kind == fallback::FRAME_PRESENCE && payload[..32] == agent {
+                    presence = Some(PresenceFrame::decode(&payload[32..]).unwrap());
+                }
+                if kind == fallback::FRAME_OPS
+                    && payload[..32] == agent
+                    && payload[32..64] == record
+                {
+                    let frame = OpsFrame::decode(&payload[64..]).unwrap();
+                    value = Some(AgentActivity::from_frame(&frame).unwrap().1);
+                }
             }
-            if kind == fallback::FRAME_OPS && payload[..32] == agent && payload[32..64] == record {
-                let frame = OpsFrame::decode(&payload[64..]).unwrap();
-                value = Some(AgentActivity::from_frame(&frame).unwrap().1);
-            }
-        }
-        (presence.unwrap(), value.unwrap())
-    })
-    .await
-    .expect("presence and activity delivered");
+            (presence.unwrap(), value.unwrap())
+        })
+        .await;
     assert!(presence.focus.is_none());
     assert_eq!(value.agent, "agent-9");
     assert_eq!(value.name, "Scribe");
