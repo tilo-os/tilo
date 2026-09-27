@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# rustc's linker for the web core: wasm-ld, with the rlibs of the crates named
+# in TILO_WEB_WHOLE_CRATES replaced by all of their objects, so the core
+# exports every function of those crates rather than only what it calls.
+set -euo pipefail
+whole=" ${TILO_WEB_WHOLE_CRATES:-} "
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+args=()
+inputs=()
+for arg in "$@"; do
+  # rustc falls back to a response file for a long command line.
+  if [[ "$arg" == @* ]]; then mapfile -t -O "${#inputs[@]}" inputs <"${arg#@}"; else inputs+=("$arg"); fi
+done
+for arg in "${inputs[@]}"; do
+  file=${arg##*/}
+  crate=${file#lib}
+  crate=${crate%-*.rlib}
+  if [[ "$file" == lib*-*.rlib && "$whole" == *" $crate "* ]]; then
+    dir="$scratch/$crate"
+    mkdir -p "$dir"
+    (cd "$dir" && ar x "$arg")
+    rm -f "$dir/lib.rmeta"
+    args+=("$dir"/*.o)
+  else
+    args+=("$arg")
+  fi
+done
+exec "${WASM_LD:-wasm-ld}" "${args[@]}"
