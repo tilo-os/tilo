@@ -392,6 +392,11 @@ else
   bad 'residual OpenSSL ABI gate does not inspect the finished rootfs'
 fi
 
+grep -Fq 'Qt5 packages or Qt5 consumers remain in the finished rootfs' "$runtime_package_gate" \
+  && ! sed -e '/^[[:space:]]*#/d' -e '/--exclude=/d' "$repo/os/Containerfile" \
+    | grep -Eq '^[[:space:]]+([[:alnum:]_.+]+-)*(qt5|fcitx5-mozc)(-[[:alnum:]_.+-]*)?([[:space:]\\]|$)' \
+  && ok 'finished rootfs rejects Qt5 and the image requests no Qt5-linked package' \
+  || bad 'Qt5 can reach the finished rootfs without failing the image build'
 if python3 "$repo/os/tests/test_runtime_crypto_packages.py" --gate "$runtime_package_gate"; then
   ok 'finished-rootfs RPM policy enforces conditional desktop/VM exceptions and rejects unknown consumers'
 else

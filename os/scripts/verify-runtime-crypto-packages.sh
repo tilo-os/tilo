@@ -69,7 +69,6 @@ pipewire-libs
 pkcs11-provider
 podman-sequoia
 python3-libs
-qt5-qtbase
 qt6-qtbase
 rpm-ostree
 rpm-sequoia
@@ -119,7 +118,6 @@ ngtcp2-crypto-ossl
 openldap
 podman-sequoia
 python3-libs
-qt5-qtbase
 qt6-qtbase
 rpm-ostree
 socat
@@ -183,7 +181,15 @@ require_parent() {
 require_parent gnutls-utils swtpm-tools
 require_parent openssh virt-viewer
 require_parent openssh-clients virt-viewer
-require_parent qt5-qtbase fcitx5-mozc
+# Qt5 is not part of the image: no package named for it (qt5-qtbase,
+# python3-qt5, ...) and no package linking its libraries may remain.
+qt5_installed="$( { grep -E '(^|-)qt5(-|$)' <<<"$installed" || true
+  awk -F '\t' '$2 ~ /^libQt5/ { print $1 }' "$requirements"; } | sort -u)"
+if [ -n "$qt5_installed" ]; then
+  echo 'Qt5 packages or Qt5 consumers remain in the finished rootfs:' >&2
+  printf '%s\n' "$qt5_installed" >&2
+  exit 1
+fi
 forbidden_installed="$(grep -Fx -f <(printf '%s\n' "$forbidden_packages") \
   <<<"$installed" || true)"
 if [ -n "$forbidden_installed" ]; then
