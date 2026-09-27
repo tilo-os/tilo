@@ -265,14 +265,14 @@ fetched only when text demands it, or during idle prewarm within its budget.
 
 ## Sizes
 
-`build-web-dev.sh` writes `build/sizes.md`. Measured 2026-09-27 (collection
-Books + Writer, no `cloud`):
+`build-web-dev.sh` writes `build/sizes.md`. Measured 2026-09-27 on main with
+the Cloud stack merged (collection Books + Writer, no `cloud`):
 
 | module | linked | linked, brotli | `-Oz` | `-Oz`, brotli |
 |---|---:|---:|---:|---:|
-| core | 31.46 MiB | 4.75 MiB | 16.00 MiB | 3.59 MiB |
-| Books (`so.tilo.ebook`) | 1.49 MiB | 286 KiB | 849 KiB | 247 KiB |
-| Writer (`so.tilo.word-processor`) | 4.86 MiB | 637 KiB | 2.00 MiB | 570 KiB |
+| core | 32.02 MiB | 4.81 MiB | 16.25 MiB | 3.65 MiB |
+| Books (`so.tilo.ebook`) | 1.50 MiB | 287 KiB | 854 KiB | 248 KiB |
+| Writer (`so.tilo.word-processor`) | 5.03 MiB | 661 KiB | 2.07 MiB | 588 KiB |
 
 | fonts | count | raw | brotli |
 |---|---:|---:|---:|
