@@ -12802,6 +12802,7 @@ dependencies = [
  "desktop-policy",
  "ed25519-dalek 3.0.0",
  "file-explorer",
+ "fluent",
  "fs",
  "futures-util",
  "gbm",

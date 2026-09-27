@@ -943,6 +943,17 @@ fn pump_floating_surface_service(
                         &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
                     );
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::SetCaptureProtection {
+                    protected,
+                } => {
+                    // The app id is the one the launcher vouched for, so a
+                    // request can only ever withhold the asking app's own
+                    // windows. It narrows what leaves the display, never
+                    // widens it, so any app may ask.
+                    foreign::store().request_app_capture_protection(connection, &app_id, protected);
+                    tracing::debug!(connection, %app_id, protected, "capture protection requested");
+                    changed = true;
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::Dismiss { id } => {
                     let internal = external_floating_id(connection, &id);
                     capture.dismiss_external_floating(internal.clone());
@@ -961,6 +972,7 @@ fn pump_floating_surface_service(
                     capture.dismiss_external_floating(id);
                 }
                 state.dismiss_floating_connection(connection);
+                foreign::store().release_capture_protection(connection);
                 tracing::debug!(connection, %app_id, "shell-ui client disconnected");
                 changed = true;
             }
@@ -1919,6 +1931,11 @@ impl ControlState for FrameBuilderControlState<'_> {
             // Each tab pill's artwork: `toplevel:` when the window set its
             // own, `theme:` for its application's icon.
             "tab_icons": tab_icons_json(&chrome.tree()),
+            // The Alt+Tab switcher while it is open: its windows in order,
+            // the selected one, and whether each card shows a live preview
+            // (`live`), its app mark because the app holds secrets
+            // (`withheld`), or its app mark for now (`none`).
+            "window_switcher": self.fb.host().window_switcher_state_json(),
             // Nested resource search is a visible place in the palette, not
             // merely provider-internal state. Expose the authenticated route
             // and label so agents and accessibility tooling can tell exactly
@@ -2362,7 +2379,7 @@ fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) 
                         error.notification_message(),
                     )
                     .with_severity(crate::shell::notification::NotificationSeverity::Error)
-                    .with_app_name("Host Apps")
+                    .with_app_name(crate::shell::i18n::t("notification-app-host-apps"))
                     .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
                 );
                 chrome.bump();
@@ -2751,6 +2768,11 @@ fn execute_planned_action(
             }
             // Mutate the modifier snapshot directly — the host reads it on the next chord dispatch, no event needed.
             apply_modifier_mask(ctx, mask);
+            // No key event carries this change, so a gesture held open by a
+            // modifier (Alt+Tab) hears the release here.
+            if fb.host_mut().note_modifiers(mask) {
+                fb.host_mut().flush_active_tab_writeback();
+            }
         }
         PlannedAction::Snapshot { path } => {
             // Re-render into a fresh OffscreenRenderer rather than tap a backend-cached
@@ -2899,7 +2921,9 @@ fn write_snapshot_png(
         );
         fb.compose_layout_scene(&feedback, &mut scene);
     }
-    let scene = scene;
+    // The snapshot leaves the display — to a script, a test or an agent — so
+    // it sees protected windows and secret prompts as a capture does.
+    let scene = fb.capture_scene(&scene).into_owned();
     // The renderer is kept between snapshots, rebuilt only on viewport resize.
     //
     // `OffscreenRenderer::try_new` initialises every vello shader pipeline, so
@@ -3843,7 +3867,7 @@ fn power_notification_to_incoming(
 ) -> crate::notifications::IncomingNotification {
     crate::notifications::IncomingNotification {
         dbus_id: bridge.alloc_id(),
-        app_name: "Power".to_string(),
+        app_name: crate::shell::i18n::t("notification-app-power"),
         summary: n.summary,
         body: n.body,
         actions: Vec::new(),
@@ -6489,6 +6513,27 @@ pub fn run() {
                 frame_builder.host_mut().open_portable_identity_backup()
             });
         }
+        // A pen goes to a tablet-aware client directly and stands in for the
+        // pointer everywhere else, so it expands into ordinary input here,
+        // in order, before the batch is dispatched.
+        if pending_events
+            .iter()
+            .any(|event| matches!(event, BackendEvent::Tablet(_)))
+        {
+            for event in std::mem::take(&mut pending_events) {
+                match event {
+                    BackendEvent::Tablet(input) => {
+                        pending_events.extend(client_input::route_tablet_event(
+                            &mut state,
+                            &frame_builder,
+                            &input,
+                            session.is_locked(),
+                        ));
+                    }
+                    other => pending_events.push_back(other),
+                }
+            }
+        }
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
         let mut accessibility_changed = false;
@@ -6733,19 +6778,27 @@ pub fn run() {
                             spatial_control = None;
                         }
                         session_changed = true;
-                    } else if state.pointer_lock.is_engaged()
+                    } else if (state.pointer_lock.is_engaged()
+                        || state.shortcut_inhibit.is_active())
                         && crate::compositor::pointer_lock::is_release_chord(
                             wev,
                             test_control_ctx.modifiers,
                         )
                     {
                         // Ctrl+Alt+Esc: always gets the pointer back from a
-                        // game that locked or confined it — ahead of the
-                        // client router, so the game cannot swallow it.
+                        // game that locked or confined it, and the shell
+                        // shortcuts back from an app that captured them —
+                        // ahead of the client router, so the app cannot
+                        // swallow it.
                         if let Some(change) = state.release_pointer_constraint() {
                             apply_pointer_constraint_change(backend.as_mut(), change);
                             frame_builder.with_chrome(|chrome| {
                                 chrome.show_osd(crate::shell::osd::Osd::pointer_held(false));
+                            });
+                        }
+                        if state.suspend_shortcut_inhibit() {
+                            frame_builder.with_chrome(|chrome| {
+                                chrome.show_osd(crate::shell::osd::Osd::keys_captured(false));
                             });
                         }
                         session_changed = true;
@@ -7027,8 +7080,10 @@ pub fn run() {
                     frame_builder.with_chrome(|st| st.flash_visual_alert(Instant::now()));
                     session_changed = true;
                 }
-                BackendEvent::Redraw => {
+                BackendEvent::Redraw | BackendEvent::Tablet(_) => {
                     // Redraw is implicit: the native loop paints every tick.
+                    // Pen events were expanded into client or pointer input
+                    // before the batch.
                 }
             }
         }
@@ -7659,6 +7714,10 @@ pub fn run() {
             .map(|surface| (surface.surface_id, surface.app_id.clone(), surface.rect))
             .collect::<Vec<_>>();
         frame_builder.set_floating_surfaces(&floating_surfaces);
+        state.sync_popup_capture_protection();
+        state.set_capture_placeholder_fill(
+            crate::shell::capture_protection::placeholder_fill_rgba8(frame_builder.theme()),
+        );
         let mut transient_surfaces = state.popup_surfaces();
         transient_surfaces.extend(state.input_method_popup_surfaces());
         frame_builder.set_transient_surfaces(&transient_surfaces);
@@ -7695,6 +7754,14 @@ pub fn run() {
                 injected_redraw_pending = true;
             }
             apply_pointer_constraint_change(backend.as_mut(), change);
+        }
+        let inhibit_allowed = !session.is_locked()
+            && !crate::shell::input_policy::chrome_captures_input(&frame_builder);
+        if state.sync_shortcut_inhibit(inhibit_allowed) == Some(true) {
+            frame_builder.with_chrome(|chrome| {
+                chrome.show_osd(crate::shell::osd::Osd::keys_captured(true));
+            });
+            injected_redraw_pending = true;
         }
 
         // Per-output HiDPI: tell each client the scale of its current display.
@@ -8490,6 +8557,7 @@ pub fn run() {
             let t_scene_start = Instant::now();
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
             let retained_damage_supported = backend.supports_retained_scene_damage();
+            frame_builder.set_session_locked(session.is_locked());
             let mut frame_paint = if session.is_locked() {
                 let theme = frame_builder.theme().clone();
                 // The lock overlay covers every known output, centred on each (single on
@@ -8829,7 +8897,8 @@ pub fn run() {
                     viewport.0.round().clamp(1.0, f64::from(u32::MAX)) as u32,
                     viewport.1.round().clamp(1.0, f64::from(u32::MAX)) as u32,
                 );
-                let _ = projection_capture.submit_scene(&frame_paint.scene, clamped_viewport);
+                let source = frame_builder.capture_scene(&frame_paint.scene);
+                let _ = projection_capture.submit_scene(&source, clamped_viewport);
             }
             // The idle dim goes on last, after captures and casts took their clean copy, so only
             // the local panel darkens.
@@ -9253,7 +9322,8 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::PointerHeld { .. }
         | crate::shell::osd::OsdKind::MouseKeys { .. }
         | crate::shell::osd::OsdKind::Magnifier { .. }
-        | crate::shell::osd::OsdKind::InputSource(_) => {}
+        | crate::shell::osd::OsdKind::InputSource(_)
+        | crate::shell::osd::OsdKind::KeysCaptured { .. } => {}
     }
 }
 
@@ -11767,7 +11837,8 @@ fn apply_shell_gesture(
 }
 
 /// Resolve an xdg fullscreen request to one live backend output and paint it
-/// above the normal tiled scene.  The requested `wl_output` wins; if it was
+/// above the normal tiled scene.  A compositor pin (the presenter view beside
+/// an audience surface) wins, then the requested `wl_output`; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
 /// The full-screen chord: the focused Wayland client enters or leaves
@@ -11811,10 +11882,12 @@ fn reconcile_fullscreen_overlay(
         frame.set_fullscreen_surface(None);
         return;
     };
-    let requested_id = target
-        .requested_output
-        .as_ref()
-        .and_then(|output| globals.id_for_resource(output));
+    let requested_id = target.pinned_output.or_else(|| {
+        target
+            .requested_output
+            .as_ref()
+            .and_then(|output| globals.id_for_resource(output))
+    });
     let current_rect = frame.foreign_surface_rect(target.surface_id);
     let centre = current_rect.map(|rect| rect.center());
     let output = select_fullscreen_output(requested_id, centre, outputs);
@@ -11825,7 +11898,9 @@ fn reconcile_fullscreen_overlay(
     // Logical, like every other configure: a 2x output's fullscreen client
     // is asked for half its pixels and renders them at scale 2.
     let size = size_to_signed(output.logical_size());
-    if target.configured_size != Some(size) {
+    // A compositor-placed presenter view is sized through its pinned
+    // placement by the ordinary configure pass, never told it is fullscreen.
+    if target.pinned_output.is_none() && target.configured_size != Some(size) {
         target.surface.with_pending_state(|pending| {
             pending.states.set(
                 smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,

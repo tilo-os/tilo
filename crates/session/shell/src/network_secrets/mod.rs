@@ -26,6 +26,7 @@ use std::sync::Arc;
 use zbus::zvariant::{OwnedValue, Value};
 use zeroize::Zeroizing;
 
+use crate::shell::i18n::{t, t_args};
 use crate::shell::portal_dialog::{SecretFieldRule, SecretFieldSpec};
 use store::{SecretStore, StoreKey};
 
@@ -204,17 +205,22 @@ fn certificate_note(connection: &ConnectionDict) -> String {
     let domain = prop_str(connection, "802-1x", "domain-suffix-match")
         .or_else(|| prop_str(connection, "802-1x", "domain-match"))
         .filter(|domain| !domain.is_empty());
-    let checked = if pinned {
-        "The network's certificate is checked against this connection's certificate authority."
+    let (checked, checked_domain) = if pinned {
+        (
+            "portal-network-cert-pinned",
+            "portal-network-cert-pinned-domain",
+        )
     } else if system {
-        "The network's certificate is checked against the system's trusted authorities."
+        (
+            "portal-network-cert-system",
+            "portal-network-cert-system-domain",
+        )
     } else {
-        return "The network's certificate is not checked. Only continue on a network you trust."
-            .to_string();
+        return t("portal-network-cert-unchecked");
     };
     domain.map_or_else(
-        || checked.to_string(),
-        |domain| format!("{checked} It must belong to {domain}."),
+        || t(checked),
+        |domain| t_args(checked_domain, &[("domain", domain.into())]),
     )
 }
 
@@ -263,20 +269,38 @@ fn ask_wifi(subject: &Subject<'_>) -> Result<Ask, AgentError> {
     let auth_alg = prop_str(subject.connection, SETTING, "auth-alg").unwrap_or_default();
     let (field, roaming) = match key_mgmt.as_str() {
         "wpa-psk" => (
-            masked("psk", "Password", true, SecretFieldRule::WpaPassphrase),
+            masked(
+                "psk",
+                &t("portal-network-password"),
+                true,
+                SecretFieldRule::WpaPassphrase,
+            ),
             Some(os_actions::WifiSecurity::Wpa2),
         ),
         "sae" => (
-            masked("psk", "Password", true, SecretFieldRule::Any),
+            masked(
+                "psk",
+                &t("portal-network-password"),
+                true,
+                SecretFieldRule::Any,
+            ),
             Some(os_actions::WifiSecurity::Wpa3),
         ),
         "none" => {
             let index = prop_u32(subject.connection, SETTING, "wep-tx-keyidx").unwrap_or(0);
             let key = format!("wep-key{}", index.min(3));
-            (masked(&key, "Key", true, SecretFieldRule::Any), None)
+            (
+                masked(&key, &t("portal-network-key"), true, SecretFieldRule::Any),
+                None,
+            )
         }
         "ieee8021x" if auth_alg == "leap" => (
-            masked("leap-password", "Password", true, SecretFieldRule::Any),
+            masked(
+                "leap-password",
+                &t("portal-network-password"),
+                true,
+                SecretFieldRule::Any,
+            ),
             None,
         ),
         other => {
@@ -286,8 +310,11 @@ fn ask_wifi(subject: &Subject<'_>) -> Result<Ask, AgentError> {
         }
     };
     let mut ask = Ask::new(
-        "Wi-Fi password required",
-        format!("Enter the password for “{}”.", subject.network()),
+        &t("portal-network-wifi-title"),
+        t_args(
+            "portal-network-enter-password",
+            &[("network", subject.network().into())],
+        ),
         vec![field],
     );
     ask.roaming_wifi = roaming
@@ -303,34 +330,50 @@ fn ask_8021x(subject: &Subject<'_>) -> Ask {
         .next()
         .unwrap_or_default();
     let identity = prop_str(subject.connection, SETTING, "identity");
-    let mut fields = vec![visible("identity", "User name", true, identity)];
+    let mut fields = vec![visible(
+        "identity",
+        &t("portal-network-user-name"),
+        true,
+        identity,
+    )];
+    let password = || {
+        masked(
+            "password",
+            &t("portal-network-password"),
+            true,
+            SecretFieldRule::Any,
+        )
+    };
     match method.as_str() {
         "tls" => fields.push(masked(
             "private-key-password",
-            "Private key password",
+            &t("portal-network-private-key-password"),
             true,
             SecretFieldRule::Any,
         )),
         "peap" | "ttls" | "fast" => {
             fields.push(visible(
                 "anonymous-identity",
-                "Anonymous identity (optional)",
+                &t("portal-network-anonymous-identity"),
                 false,
                 prop_str(subject.connection, SETTING, "anonymous-identity"),
             ));
-            fields.push(masked("password", "Password", true, SecretFieldRule::Any));
+            fields.push(password());
         }
-        _ => fields.push(masked("password", "Password", true, SecretFieldRule::Any)),
+        _ => fields.push(password()),
     }
     let wired = prop_str(subject.connection, "connection", "type")
         .is_some_and(|kind| kind == "802-3-ethernet");
     let mut ask = Ask::new(
-        if wired {
-            "Wired network sign-in"
+        &t(if wired {
+            "portal-network-wired-sign-in-title"
         } else {
-            "Network sign-in"
-        },
-        format!("“{}” needs your user name and password.", subject.network()),
+            "portal-network-sign-in-title"
+        }),
+        t_args(
+            "portal-network-sign-in-lead",
+            &[("network", subject.network().into())],
+        ),
         fields,
     );
     ask.notes.push(certificate_note(subject.connection));
@@ -355,11 +398,16 @@ fn ask_vpn(subject: &Subject<'_>, hinted: &[&str]) -> Ask {
             .collect();
     }
     if fields.is_empty() {
-        fields.push(masked("password", "Password", true, SecretFieldRule::Any));
+        fields.push(masked(
+            "password",
+            &t("portal-network-password"),
+            true,
+            SecretFieldRule::Any,
+        ));
     }
     let mut ask = Ask::new(
-        "VPN sign-in",
-        format!("Enter the secrets for “{}”.", subject.id),
+        &t("portal-network-vpn-title"),
+        t_args("portal-network-vpn-lead", &[("network", subject.id.into())]),
         fields,
     );
     ask.shape = ResponseShape::VpnSecrets;
@@ -371,8 +419,16 @@ fn ask_vpn(subject: &Subject<'_>, hinted: &[&str]) -> Ask {
 fn ask_password(title: &str, subject: &Subject<'_>) -> Ask {
     Ask::new(
         title,
-        format!("Enter the password for “{}”.", subject.id),
-        vec![masked("password", "Password", true, SecretFieldRule::Any)],
+        t_args(
+            "portal-network-enter-password",
+            &[("network", subject.id.into())],
+        ),
+        vec![masked(
+            "password",
+            &t("portal-network-password"),
+            true,
+            SecretFieldRule::Any,
+        )],
     )
 }
 
@@ -398,7 +454,7 @@ impl SecretRequest {
         }
         let id = prop_str(connection, "connection", "id")
             .filter(|id| !id.is_empty())
-            .unwrap_or_else(|| "this network".into());
+            .unwrap_or_else(|| t("portal-network-this-network"));
         let ssid = prop_bytes(connection, "802-11-wireless", "ssid")
             .map(|ssid| String::from_utf8_lossy(&ssid).into_owned())
             .filter(|ssid| !ssid.is_empty());
@@ -417,12 +473,20 @@ impl SecretRequest {
             "802-1x" => ask_8021x(&subject),
             "vpn" => ask_vpn(&subject, &hinted),
             "gsm" if hinted.contains(&"pin") => Ask::new(
-                "SIM PIN required",
-                format!("Enter the PIN to unlock the SIM for “{id}”."),
-                vec![masked("pin", "SIM PIN", true, SecretFieldRule::Any)],
+                &t("portal-network-sim-pin-title"),
+                t_args(
+                    "portal-network-sim-pin-lead",
+                    &[("network", id.as_str().into())],
+                ),
+                vec![masked(
+                    "pin",
+                    &t("portal-network-sim-pin"),
+                    true,
+                    SecretFieldRule::Any,
+                )],
             ),
-            "gsm" | "cdma" => ask_password("Mobile broadband password required", &subject),
-            "pppoe" => ask_password("DSL password required", &subject),
+            "gsm" | "cdma" => ask_password(&t("portal-network-mobile-title"), &subject),
+            "pppoe" => ask_password(&t("portal-network-dsl-title"), &subject),
             other => {
                 return Err(AgentError::InvalidConnection(format!(
                     "no secrets can be asked for setting {other:?}"
@@ -432,11 +496,11 @@ impl SecretRequest {
 
         let mut lines = Vec::new();
         if flags & FLAG_REQUEST_NEW != 0 && flags & FLAG_USER_REQUESTED == 0 {
-            lines.push("The last attempt did not work. Check it and try again.".to_string());
+            lines.push(t("portal-network-retry"));
         }
         lines.push(ask.lead);
         if flags & FLAG_WPS_PBC_ACTIVE != 0 {
-            lines.push("You can also press the WPS button on the router.".to_string());
+            lines.push(t("portal-network-wps"));
         }
         lines.extend(
             hints

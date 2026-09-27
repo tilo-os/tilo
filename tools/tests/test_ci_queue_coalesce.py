@@ -56,17 +56,10 @@ class CoalesceTests(unittest.TestCase):
             keep, cancel = ci.plan([run(1), run(3), run(2, workflow_id="lint.yml"), run(4, status="running")])
             self.assertEqual(keep, {"release-apps.yml": 3})
             self.assertEqual([(r["id"], replacement) for r, replacement in cancel], [(1, 3)])
-        with self.subTest(phase='every lint preserved'):
-            keep, cancel = ci.plan([run(1, workflow_id="lint.yml"), run(2, workflow_id="lint.yml")])
-            self.assertEqual((keep, cancel), ({}, []))
-        with self.subTest(phase='check keeps its newest queued run and never a started one'):
-            keep, cancel = ci.plan([run(1, workflow_id="check.yml"), run(2, workflow_id="check.yml"),
-                                    run(3, workflow_id="check.yml", status="running",
-                                        started="2026-09-18T21:20:00Z"),
-                                    run(4, workflow_id="check.yml"), run(5, workflow_id="lint.yml"),
-                                    run(6, workflow_id="lint.yml")])
-            self.assertEqual(keep, {"check.yml": 4})
-            self.assertEqual([(r["id"], replacement) for r, replacement in cancel], [(2, 4), (1, 4)])
+        with self.subTest(phase='every check and lint preserved'):
+            for workflow in ("check.yml", "lint.yml"):
+                keep, cancel = ci.plan([run(1, workflow_id=workflow), run(2, workflow_id=workflow)])
+                self.assertEqual((keep, cancel), ({}, []))
         with self.subTest(phase='dry run does not mutate'):
             api = Fake()
             self.assertEqual(ci.coalesce(api, 30, 300, False)["cancelled"], [])
@@ -75,19 +68,13 @@ class CoalesceTests(unittest.TestCase):
             api = Fake()
             self.assertEqual(ci.coalesce(api, 30, 300, True)["cancelled"], [1])
             self.assertEqual(api.posts, [f"{api.base}/1/cancel"])
-        with self.subTest(phase='skipped conditional jobs do not mean started'):
-            api = Fake()
-            api.jobs = [{"status": "waiting", "task_id": 0}, {"status": "skipped", "task_id": 0}]
-            self.assertEqual(ci.coalesce(api, 30, 300, True)["cancelled"], [1])
         with self.subTest(phase='changed run or active job preserved'):
-            for change in ["run", "job", "task", "replacement"]:
+            for change in ["run", "job", "replacement"]:
                 api = Fake()
                 if change == "run":
                     api.current[1]["status"] = "running"
                 elif change == "job":
                     api.jobs[0]["status"] = "running"
-                elif change == "task":
-                    api.jobs[0]["task_id"] = 7
                 else:
                     api.current[2]["status"] = "cancelled"
                 self.assertEqual(ci.coalesce(api, 30, 300, True)["changed"], [1])

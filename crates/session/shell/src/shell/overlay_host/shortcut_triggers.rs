@@ -67,6 +67,10 @@ impl ShortcutTriggerState {
         self.apps_generation = None;
     }
 
+    pub(super) fn broker(&self) -> Option<AppActionBroker> {
+        self.broker.clone()
+    }
+
     /// The applications publishing live actions, when that changed since
     /// the last look.
     fn live_apps(&mut self) -> Option<BTreeSet<String>> {

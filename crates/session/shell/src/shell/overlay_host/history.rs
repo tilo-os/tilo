@@ -34,7 +34,7 @@ pub(super) fn clipboard_history_source_label(
     fabric: Option<&DeviceFabricView>,
 ) -> String {
     let Some(source) = item.source_device.as_ref() else {
-        return "This device".to_string();
+        return crate::shell::i18n::t("history-this-device");
     };
     fabric
         .and_then(|fabric| fabric.devices.iter().find(|device| &device.id == source))
@@ -68,11 +68,11 @@ pub(super) fn clipboard_history_matches_query(
         .all(|term| searchable.contains(term))
 }
 
-pub(super) fn notification_severity_label(severity: NotificationSeverity) -> &'static str {
+pub(super) fn notification_severity_label(severity: NotificationSeverity) -> String {
     match severity {
-        NotificationSeverity::Info => "Information",
-        NotificationSeverity::Warning => "Warning",
-        NotificationSeverity::Error => "Error",
+        NotificationSeverity::Info => crate::shell::i18n::t("history-severity-info"),
+        NotificationSeverity::Warning => crate::shell::i18n::t("history-severity-warning"),
+        NotificationSeverity::Error => crate::shell::i18n::t("history-severity-error"),
     }
 }
 
@@ -87,15 +87,30 @@ pub(super) fn notification_history_accessible_description(
         .app_name
         .as_deref()
         .or(notification.app_id.as_deref())
-        .unwrap_or("System");
+        .map_or_else(
+            || crate::shell::i18n::t("history-source-system"),
+            str::to_string,
+        );
     let severity = notification_severity_label(notification.severity);
     let relative_time = notification_history_relative_time(notification, now);
     if notification.body.is_empty() {
-        format!("{severity}. From {source}. {relative_time}")
+        crate::shell::i18n::t_args(
+            "history-notification-description",
+            &[
+                ("severity", severity.into()),
+                ("source", source.into()),
+                ("time", relative_time.into()),
+            ],
+        )
     } else {
-        format!(
-            "{severity}. From {source}. {relative_time}. {}",
-            notification.body
+        crate::shell::i18n::t_args(
+            "history-notification-description-body",
+            &[
+                ("severity", severity.into()),
+                ("source", source.into()),
+                ("time", relative_time.into()),
+                ("body", notification.body.as_str().into()),
+            ],
         )
     }
 }

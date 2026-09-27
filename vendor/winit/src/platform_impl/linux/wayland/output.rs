@@ -38,6 +38,19 @@ impl MonitorHandle {
         output_data.with_output_info(|info| info.name.clone())
     }
 
+    /// The panel's physical extent in millimetres, as the compositor
+    /// advertised it in `wl_output.geometry`; `None` when it reported zero
+    /// (projectors, virtual outputs).
+    #[inline]
+    pub fn physical_size_mm(&self) -> Option<(u32, u32)> {
+        let output_data = self.proxy.data::<OutputData>().unwrap();
+        let (width, height) = output_data.with_output_info(|info| info.physical_size);
+        match (u32::try_from(width), u32::try_from(height)) {
+            (Ok(width), Ok(height)) if width > 0 && height > 0 => Some((width, height)),
+            _ => None,
+        }
+    }
+
     #[inline]
     pub fn native_identifier(&self) -> u32 {
         let output_data = self.proxy.data::<OutputData>().unwrap();
