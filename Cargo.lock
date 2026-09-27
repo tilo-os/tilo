@@ -14547,6 +14547,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-resource",
+ "tilo-search",
  "tilo-ui",
  "tracing",
  "workspace-hack",
