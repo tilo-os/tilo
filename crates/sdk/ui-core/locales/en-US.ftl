@@ -81,3 +81,18 @@ permission-prompt-session = This session
 permission-prompt-always = Always allow
 permission-prompt-deny = Deny
 permission-prompt-requested = { $capability } requested by { $app }
+
+# Relative times, as history and activity rows show them.
+relative-time-just-now = just now
+relative-time-minutes = { $count ->
+        [one] { $count } min ago
+       *[other] { $count } min ago
+    }
+relative-time-hours = { $count ->
+        [one] { $count } h ago
+       *[other] { $count } h ago
+    }
+relative-time-days = { $count ->
+        [one] { $count } d ago
+       *[other] { $count } d ago
+    }
