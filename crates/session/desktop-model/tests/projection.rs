@@ -13,9 +13,9 @@
 use automerge::AutoCommit;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::projection::{
-    changed_owned_entries, contents_of, declared_room, merge_room_contents, project_owned_contents,
-    project_room_records, project_workspace_shortcuts, project_workspace_tasks, room_records_of,
-    workspace_shortcuts_of, workspace_tasks_of,
+    EmptyStrips, Reader, changed_owned_entries, contents_of, declared_room, merge_room_contents,
+    project_owned_contents, project_room_records, project_workspace_shortcuts,
+    project_workspace_tasks, room_records_of, workspace_shortcuts_of, workspace_tasks_of,
 };
 use tilo_desktop_model::{
     AppKind, DesktopTree, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
@@ -74,7 +74,14 @@ fn projection_round_trips_owned_contents_once_shared() {
     {
         let mut doc = AutoCommit::new();
         let strip = strip_of(ALICE, 10);
-        project_owned_contents(&mut doc, std::slice::from_ref(&strip), ALICE, None).unwrap();
+        project_owned_contents(
+            &mut doc,
+            std::slice::from_ref(&strip),
+            ALICE,
+            None,
+            EmptyStrips::Skip,
+        )
+        .unwrap();
 
         let read = contents_of(&doc);
         assert_eq!(read.len(), 1);
@@ -92,11 +99,25 @@ fn projection_round_trips_owned_contents_once_shared() {
     // Phase `nothing_is_projected_without_an_id_space_or_before_the_share_floor`.
     {
         let mut unsalted = AutoCommit::new();
-        project_owned_contents(&mut unsalted, &[strip_of(0, 10)], 0, None).unwrap();
+        project_owned_contents(
+            &mut unsalted,
+            &[strip_of(0, 10)],
+            0,
+            None,
+            EmptyStrips::Skip,
+        )
+        .unwrap();
         assert!(contents_of(&unsalted).is_empty());
 
         let mut joined = AutoCommit::new();
-        project_owned_contents(&mut joined, &[strip_of(ALICE, 10)], ALICE, Some(1_000)).unwrap();
+        project_owned_contents(
+            &mut joined,
+            &[strip_of(ALICE, 10)],
+            ALICE,
+            Some(1_000),
+            EmptyStrips::Skip,
+        )
+        .unwrap();
         assert!(
             contents_of(&joined).is_empty(),
             "windows minted before joining stay private"
@@ -146,22 +167,43 @@ fn projection_detects_rewrites_and_merges_peer_windows() {
     {
         let mut ours = AutoCommit::new();
         let strip = strip_of(ALICE, 10);
-        project_owned_contents(&mut ours, std::slice::from_ref(&strip), ALICE, None).unwrap();
+        project_owned_contents(
+            &mut ours,
+            std::slice::from_ref(&strip),
+            ALICE,
+            None,
+            EmptyStrips::Skip,
+        )
+        .unwrap();
 
         let mut renamed = strip.clone();
         renamed.window_groups[0].tabs[0].title = "Hijacked".into();
         let mut candidate = ours.fork();
-        project_owned_contents(&mut candidate, &[renamed], ALICE, None).unwrap();
+        project_owned_contents(&mut candidate, &[renamed], ALICE, None, EmptyStrips::Skip).unwrap();
         assert_eq!(changed_owned_entries(Some(&ours), &candidate, ALICE), 1);
 
         let mut grown = ours.fork();
-        project_owned_contents(&mut grown, &[strip, strip_of(ALICE, 50)], ALICE, None).unwrap();
+        project_owned_contents(
+            &mut grown,
+            &[strip, strip_of(ALICE, 50)],
+            ALICE,
+            None,
+            EmptyStrips::Skip,
+        )
+        .unwrap();
         assert_eq!(changed_owned_entries(Some(&ours), &grown, ALICE), 0);
     }
     // Phase `a_peers_windows_merge_in_while_ours_keep_their_view_state`.
     {
         let mut bob_doc = AutoCommit::new();
-        project_owned_contents(&mut bob_doc, &[strip_of(BOB, 10)], BOB, None).unwrap();
+        project_owned_contents(
+            &mut bob_doc,
+            &[strip_of(BOB, 10)],
+            BOB,
+            None,
+            EmptyStrips::Skip,
+        )
+        .unwrap();
 
         let mut alice = DesktopTree::default();
         let mut ws = Workspace::new(WorkspaceId(compose_id(ALICE, 1)), "Shared");
@@ -173,7 +215,7 @@ fn projection_detects_rewrites_and_merges_peer_windows() {
             &mut alice,
             room(),
             contents_of(&bob_doc),
-            ALICE
+            Reader::Owner(ALICE)
         ));
         let strips = &alice.workspaces[0].strips;
         assert_eq!(strips.len(), 2);
@@ -192,7 +234,12 @@ fn projection_detects_rewrites_and_merges_peer_windows() {
         );
 
         assert!(
-            !merge_room_contents(&mut alice, room(), contents_of(&bob_doc), ALICE),
+            !merge_room_contents(
+                &mut alice,
+                room(),
+                contents_of(&bob_doc),
+                Reader::Owner(ALICE)
+            ),
             "merging the same document again changes nothing"
         );
     }
