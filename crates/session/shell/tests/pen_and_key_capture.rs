@@ -39,6 +39,7 @@ enum Wire {
     Tilt(f64, f64),
     Down,
     Up,
+    Button(u32, bool),
     Active,
     Inactive,
     Key(u32),
@@ -109,6 +110,17 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for Client {
             }
             zwp_tablet_tool_v2::Event::Down { .. } => state.wire.push(Wire::Down),
             zwp_tablet_tool_v2::Event::Up => state.wire.push(Wire::Up),
+            zwp_tablet_tool_v2::Event::Button {
+                button,
+                state: pressed,
+                ..
+            } => {
+                state.wire.push(Wire::Button(
+                    button,
+                    pressed
+                        == wayland_client::WEnum::Value(zwp_tablet_tool_v2::ButtonState::Pressed),
+                ));
+            }
             _ => {}
         }
     }
@@ -339,6 +351,10 @@ fn pen(phase: TabletPhase, position: (f64, f64)) -> TabletInput {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one pen over one app, through each way it can be routed"
+)]
 fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
     let mut h = Harness::new();
     let (_surface, app) = h.open("org.example.Draw");
@@ -400,6 +416,58 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
     let down = h.client.wire.iter().position(|w| *w == Wire::Down);
     let up = h.client.wire.iter().position(|w| *w == Wire::Up);
     assert!(down.is_some() && down < up, "{:?}", h.client.wire);
+    h.client.wire.clear();
+
+    // A barrel button, as the backend reports it after the tablet's
+    // settings remapped it, reaches the app as a tool button.
+    let routed = shell::compositor::client_input::route_tablet_event(
+        &mut h.state,
+        &h.fb,
+        &pen(
+            TabletPhase::Button {
+                button: 0x14b,
+                pressed: true,
+            },
+            centre,
+        ),
+        false,
+    );
+    assert!(routed.is_empty());
+    h.pump();
+    assert!(
+        h.client.wire.contains(&Wire::Button(0x14b, true)),
+        "{:?}",
+        h.client.wire
+    );
+    h.client.wire.clear();
+
+    // On the lock screen the pen is the pointer, even over a tablet-aware
+    // app, and the app sees none of it.
+    let locked = shell::compositor::client_input::route_tablet_event(
+        &mut h.state,
+        &h.fb,
+        &pen(TabletPhase::TipDown, centre),
+        true,
+    );
+    assert!(
+        matches!(
+            locked.as_slice(),
+            [
+                BackendEvent::Input(WindowEvent::CursorMoved { .. }),
+                BackendEvent::Input(WindowEvent::MouseInput { .. })
+            ]
+        ),
+        "the lock screen gets the tip as a click"
+    );
+    h.pump();
+    assert!(
+        !h.client
+            .wire
+            .iter()
+            .any(|w| matches!(w, Wire::Down | Wire::Button(..))),
+        "{:?}",
+        h.client.wire
+    );
 }
 
 fn key(logical: Key, pressed: bool) -> WindowEvent {

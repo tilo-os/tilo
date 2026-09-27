@@ -23,9 +23,19 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::compositor::backend::{TabletInput, TabletPhase, TabletToolKind};
 use crate::compositor::state::State;
 
-/// `BTN_STYLUS`, `BTN_STYLUS2`: the pen's barrel buttons.
-const BTN_STYLUS: u32 = 0x14b;
-const BTN_STYLUS2: u32 = 0x14c;
+/// Linux button codes (`linux/input-event-codes.h`) a pen reports, or
+/// that its buttons are remapped to in a tablet's settings.
+pub const BTN_LEFT: u32 = 0x110;
+pub const BTN_RIGHT: u32 = 0x111;
+pub const BTN_MIDDLE: u32 = 0x112;
+pub const BTN_SIDE: u32 = 0x113;
+pub const BTN_EXTRA: u32 = 0x114;
+/// The pen barrel button nearest the tip.
+pub const BTN_STYLUS: u32 = 0x14b;
+/// The pen barrel button further from the tip.
+pub const BTN_STYLUS2: u32 = 0x14c;
+/// A third barrel button, on pens that have one.
+pub const BTN_STYLUS3: u32 = 0x149;
 
 /// Clients that asked for a tablet seat.
 #[derive(Default)]
@@ -191,13 +201,26 @@ pub fn tablet_pointer_events(input: &TabletInput) -> Vec<WindowEvent> {
         TabletPhase::TipDown => vec![moved, button(MouseButton::Left, true)],
         TabletPhase::TipUp => vec![moved, button(MouseButton::Left, false)],
         TabletPhase::Button {
-            button: BTN_STYLUS,
+            button: BTN_STYLUS | BTN_RIGHT,
             pressed,
         } => vec![moved, button(MouseButton::Right, pressed)],
         TabletPhase::Button {
-            button: BTN_STYLUS2,
+            button: BTN_STYLUS2 | BTN_MIDDLE,
             pressed,
         } => vec![moved, button(MouseButton::Middle, pressed)],
+        // Buttons a tablet's settings remapped to a mouse button.
+        TabletPhase::Button {
+            button: BTN_LEFT,
+            pressed,
+        } => vec![moved, button(MouseButton::Left, pressed)],
+        TabletPhase::Button {
+            button: BTN_SIDE,
+            pressed,
+        } => vec![moved, button(MouseButton::Back, pressed)],
+        TabletPhase::Button {
+            button: BTN_EXTRA,
+            pressed,
+        } => vec![moved, button(MouseButton::Forward, pressed)],
         TabletPhase::ProximityIn | TabletPhase::Motion | TabletPhase::Button { .. } => vec![moved],
     }
 }
@@ -279,6 +302,22 @@ mod tests {
             ["move 812.5 403.25", "Middle Released"]
         );
         assert!(tablet_pointer_events(&pen(TabletPhase::ProximityOut)).is_empty());
+        for (code, expected) in [
+            (BTN_LEFT, "Left Pressed"),
+            (BTN_RIGHT, "Right Pressed"),
+            (BTN_MIDDLE, "Middle Pressed"),
+            (BTN_SIDE, "Back Pressed"),
+            (BTN_EXTRA, "Forward Pressed"),
+        ] {
+            assert_eq!(
+                kinds(&tablet_pointer_events(&pen(TabletPhase::Button {
+                    button: code,
+                    pressed: true
+                }))),
+                ["move 812.5 403.25", expected],
+                "a barrel button remapped to a mouse button clicks it"
+            );
+        }
     }
 
     #[test]

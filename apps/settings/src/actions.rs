@@ -211,27 +211,99 @@ pub enum KeyboardSourceOperation {
 /// keys or compositor options through the local-operation boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum InputOperation {
-    SetTouchpadNaturalScroll { enabled: bool },
-    SetMouseNaturalScroll { enabled: bool },
-    SetTapToClick { enabled: bool },
-    SetTouchpadPointerSpeed { value: f64 },
-    SetMousePointerSpeed { value: f64 },
-    SetKeyRepeat { value: f64 },
-    SetTapDrag { enabled: bool },
-    SetTapDragLock { enabled: bool },
-    SetDisableWhileTyping { enabled: bool },
-    SetMiddleEmulation { enabled: bool },
-    SetLeftHanded { enabled: bool },
-    SetTouchpadGestures { enabled: bool },
-    SetTouchpadEnabled { enabled: bool },
-    SetTouchpadDisabledOnExternalMouse { enabled: bool },
-    SetTouchpadClickMethod { method: String },
-    SetTouchpadScrollMethod { method: String },
-    SetScrollSpeed { value: f64 },
-    SetAccelerationProfile { profile: String },
-    SetComposeKey { key: String },
-    SetCapsLock { behavior: String },
-    SetActiveSource { label: String },
+    SetTouchpadNaturalScroll {
+        enabled: bool,
+    },
+    SetMouseNaturalScroll {
+        enabled: bool,
+    },
+    SetTapToClick {
+        enabled: bool,
+    },
+    SetTouchpadPointerSpeed {
+        value: f64,
+    },
+    SetMousePointerSpeed {
+        value: f64,
+    },
+    SetKeyRepeat {
+        value: f64,
+    },
+    SetTapDrag {
+        enabled: bool,
+    },
+    SetTapDragLock {
+        enabled: bool,
+    },
+    SetDisableWhileTyping {
+        enabled: bool,
+    },
+    SetMiddleEmulation {
+        enabled: bool,
+    },
+    SetLeftHanded {
+        enabled: bool,
+    },
+    SetTouchpadGestures {
+        enabled: bool,
+    },
+    SetTouchpadEnabled {
+        enabled: bool,
+    },
+    SetTouchpadDisabledOnExternalMouse {
+        enabled: bool,
+    },
+    SetTouchpadClickMethod {
+        method: String,
+    },
+    SetTouchpadScrollMethod {
+        method: String,
+    },
+    SetScrollSpeed {
+        value: f64,
+    },
+    SetAccelerationProfile {
+        profile: String,
+    },
+    SetComposeKey {
+        key: String,
+    },
+    SetCapsLock {
+        behavior: String,
+    },
+    SetActiveSource {
+        label: String,
+    },
+    /// Map the tablet `device` onto a monitor, or `whole desktop`.
+    SetTabletOutput {
+        device: String,
+        output: String,
+    },
+    SetTabletKeepAspect {
+        device: String,
+        enabled: bool,
+    },
+    SetTabletLeftHanded {
+        device: String,
+        enabled: bool,
+    },
+    /// Soft (`0.0`) … firm (`1.0`) pen pressure.
+    SetTabletTipFeel {
+        device: String,
+        value: f64,
+    },
+    /// `button` is `lower` or `upper`; `action` a stylus button choice id.
+    SetTabletButton {
+        device: String,
+        button: String,
+        action: String,
+    },
+    /// `action` is a pad button choice id.
+    SetPadButton {
+        device: String,
+        button: u32,
+        action: String,
+    },
 }
 
 /// Time & Date controls which reach a system service or durable local locale
@@ -3716,7 +3788,193 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         }
         sec = sec.with_child(resource);
     }
+    for child in tablet_resources() {
+        sec = sec.with_child(child);
+    }
     sec
+}
+
+/// One resource per attached drawing tablet and per tablet pad, carrying
+/// the same per-device choices as their cards.
+fn tablet_resources() -> Vec<Resource> {
+    use crate::panes::mouse_keyboard as pane;
+    use settings_store::hardware::{InputDeviceKind, InputHardwareSnapshot};
+    const TAGS: &[&str] = &["device-local", "input", "tablet"];
+    let Some(devices) = InputHardwareSnapshot::load() else {
+        return Vec::new();
+    };
+    let ids = |choices: Vec<(String, String)>| choices.into_iter().map(|(id, _)| id).collect();
+    let mut resources = Vec::new();
+    for tablet in devices
+        .of_kind(InputDeviceKind::Tablet)
+        .into_iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
+        let device = tablet.key.clone();
+        let op = move |operation: InputOperation| {
+            encode_local_operation(INPUT_OPERATION_TYPE, &operation)
+        };
+        let mut resource = Resource::new(
+            pane::tablet_resource_id(&tablet.key),
+            "settings.tablet",
+            tablet.name.clone(),
+        );
+        resource = resource.with_action(local_choice_spec(
+            "map-to",
+            "Map the tablet to a display",
+            INPUT_OPERATION_TYPE,
+            ids(pane::tablet_output_choices()),
+            TAGS,
+            {
+                let device = device.clone();
+                move |output| {
+                    op(InputOperation::SetTabletOutput {
+                        device: device.clone(),
+                        output,
+                    })
+                }
+            },
+        ));
+        resource = resource.with_action(local_bool_spec(
+            "keep-aspect",
+            "Keep the tablet's aspect ratio",
+            INPUT_OPERATION_TYPE,
+            TAGS,
+            {
+                let device = device.clone();
+                move |enabled| {
+                    op(InputOperation::SetTabletKeepAspect {
+                        device: device.clone(),
+                        enabled,
+                    })
+                }
+            },
+        ));
+        resource = resource.with_action(local_bool_spec(
+            "left-handed",
+            "Turn the tablet for left-handed use",
+            INPUT_OPERATION_TYPE,
+            TAGS,
+            {
+                let device = device.clone();
+                move |enabled| {
+                    op(InputOperation::SetTabletLeftHanded {
+                        device: device.clone(),
+                        enabled,
+                    })
+                }
+            },
+        ));
+        resource = resource.with_action(local_number_spec(
+            "tip-feel",
+            "Set pen tip feel, soft to firm",
+            INPUT_OPERATION_TYPE,
+            TAGS,
+            {
+                let device = device.clone();
+                move |value| {
+                    op(InputOperation::SetTabletTipFeel {
+                        device: device.clone(),
+                        value: value.clamp(0.0, 1.0),
+                    })
+                }
+            },
+        ));
+        for (id, label, button) in [
+            ("lower-button", "Set the lower pen button", "lower"),
+            ("upper-button", "Set the upper pen button", "upper"),
+        ] {
+            let device = device.clone();
+            resource = resource.with_action(local_choice_spec(
+                id,
+                label,
+                INPUT_OPERATION_TYPE,
+                ids(pane::stylus_button_choices()),
+                TAGS,
+                move |action| {
+                    op(InputOperation::SetTabletButton {
+                        device: device.clone(),
+                        button: button.into(),
+                        action,
+                    })
+                },
+            ));
+        }
+        resources.push(resource);
+    }
+    for pad in devices
+        .of_kind(InputDeviceKind::TabletPad)
+        .into_iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
+        let mut resource = Resource::new(
+            pane::pad_resource_id(&pad.key),
+            "settings.tablet-pad",
+            pad.name.clone(),
+        );
+        for button in 0..pad.pad_buttons.min(pane::MAX_PAD_BUTTONS) {
+            let device = pad.key.clone();
+            resource = resource.with_action(local_choice_spec(
+                format!("button-{button}"),
+                format!("Set pad button {}", button + 1),
+                INPUT_OPERATION_TYPE,
+                ids(pane::pad_button_choices()),
+                TAGS,
+                move |action| {
+                    encode_local_operation(
+                        INPUT_OPERATION_TYPE,
+                        &InputOperation::SetPadButton {
+                            device: device.clone(),
+                            button,
+                            action,
+                        },
+                    )
+                },
+            ));
+        }
+        resources.push(resource);
+    }
+    resources
+}
+
+/// Bind a control on a tablet or pad card to its device resource's action.
+fn tablet_binding<T: 'static>(
+    resource_id: &str,
+    action_id: &str,
+    parameter: &'static str,
+    to_value: fn(T) -> serde_json::Value,
+) -> Option<tilo_actions::ActionBinding<T>> {
+    let resource = tablet_resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == resource_id)?;
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, move |value| {
+        serde_json::Map::from_iter([(parameter.into(), to_value(value))])
+    })
+    .ok()
+}
+
+pub fn tablet_bool_binding(
+    resource_id: &str,
+    action_id: &str,
+) -> Option<tilo_actions::ActionBinding<bool>> {
+    tablet_binding(resource_id, action_id, "value", serde_json::Value::Bool)
+}
+
+pub fn tablet_number_binding(
+    resource_id: &str,
+    action_id: &str,
+) -> Option<tilo_actions::ActionBinding<f64>> {
+    tablet_binding(resource_id, action_id, "value", |value| {
+        serde_json::json!(value)
+    })
+}
+
+pub fn tablet_text_binding(
+    resource_id: &str,
+    action_id: &str,
+) -> Option<tilo_actions::ActionBinding<String>> {
+    tablet_binding(resource_id, action_id, "choice", serde_json::Value::String)
 }
 
 #[allow(
