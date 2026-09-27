@@ -1510,6 +1510,16 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         client.map_window(&compositor);
         compositor.chrome_copy("caption survives image copy", false);
         compositor.chrome_copy_image();
+        // The text copy's own selection may arrive first; the image copy
+        // replaces it with an offer advertising both formats.
+        client.wait_until(
+            |s| {
+                s.clipboard_offer_mimes
+                    .iter()
+                    .any(|mime| mime == "image/png")
+            },
+            "the image copy's selection never arrived",
+        );
 
         let png = client.read_clipboard_bytes("image/png", None);
         let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
@@ -1666,6 +1676,57 @@ fn a_touch_tap_on_a_client_activates_it_once() {
         buttons, 0,
         "a tap already delivered as wl_touch must not also click the client: {:?}",
         client.state.pointer_events
+    );
+}
+
+/// The desktop help overlay speaks the input language in use. A headless
+/// session starts with no input devices at all; the first touch contact
+/// attaches its panel and switches help to gestures, and typing switches it
+/// back to keyboard shortcuts while the touchscreen stays available.
+#[test]
+fn desktop_help_follows_the_input_device_in_use() {
+    let compositor = Compositor::start();
+    let input = || {
+        let response = compositor.control(&serde_json::json!({"op": "state_dump"}));
+        response
+            .get("state")
+            .and_then(|state| state.get("chrome"))
+            .and_then(|chrome| chrome.get("input"))
+            .cloned()
+            .unwrap_or_else(|| panic!("state_dump carries no chrome input: {response}"))
+    };
+
+    let initial = input();
+    assert_eq!(
+        initial["available"],
+        serde_json::json!([]),
+        "no input device may be assumed before one exists: {initial}"
+    );
+    assert_eq!(initial["help_modality"], "pointer", "{initial}");
+
+    let (w, h) = compositor.size;
+    let (x, y) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
+    compositor.touch("e2e-panel", 0, "down", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    compositor.touch("e2e-panel", 0, "up", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    let touched = input();
+    assert_eq!(touched["modality"], "touch", "{touched}");
+    assert_eq!(touched["help_modality"], "touch", "{touched}");
+    assert_eq!(
+        touched["available"],
+        serde_json::json!(["touch"]),
+        "{touched}"
+    );
+
+    compositor.key("F1");
+    let typed = input();
+    assert_eq!(typed["modality"], "keyboard", "{typed}");
+    assert_eq!(typed["help_modality"], "keyboard", "{typed}");
+    assert_eq!(
+        typed["available"],
+        serde_json::json!(["keyboard", "touch"]),
+        "{typed}"
     );
 }
 
