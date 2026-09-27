@@ -182,6 +182,13 @@ inputs = [
 suites = ["os/tests/test_pipewire_echo_cancel.py"]
 
 [[group]]
+name = "dev-feature-targets"
+# The dev features os/components.toml names, against the packages' manifests:
+# `pkg/feature` must reach the package, not a dependency of it named pkg.
+inputs = ["os/components.toml", "*Cargo.toml"]
+suites = ["os/tests/dev_feature_targets.py"]
+
+[[group]]
 name = "containerfile-sources"
 # Every host-side COPY source of every image Containerfile must exist, so a
 # move or deletion anywhere in the build context can break it.
