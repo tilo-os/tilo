@@ -9,8 +9,8 @@
   "license_file": "LICENSE",
   "requires_acceptance": false,
   "runtime": "llama-cpp-vulkan-b11176",
-  "required_memory_mib": 4608,
-  "required_accelerator_mib": 4352,
+  "required_memory_mib": 3840,
+  "required_accelerator_mib": 4480,
   "context_window": 8192,
   "capabilities": ["trace_review"],
   "accelerator_memory_percent": null

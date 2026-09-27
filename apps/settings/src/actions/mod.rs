@@ -6969,6 +6969,8 @@ mod tests {
                 fit: agent_provider_config::local::Fit::Excellent,
                 speed: agent_provider_config::local::ExpectedSpeed {
                     tokens_per_second: 8,
+                    prompt_tokens_per_second: 60,
+                    answer_seconds: 33,
                     class: agent_provider_config::local::SpeedClass::Slow,
                 },
             };

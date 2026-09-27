@@ -273,16 +273,82 @@ pub enum SpeedClass {
 /// An honest throughput estimate for one model on one runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExpectedSpeed {
+    /// Tokens written a second.
     pub tokens_per_second: u16,
+    /// Tokens of the request read a second.
+    pub prompt_tokens_per_second: u16,
+    /// Seconds for a typical answer: [`TYPICAL_PROMPT_TOKENS`] read, then
+    /// [`TYPICAL_ANSWER_TOKENS`] written. What the person waits for.
+    pub answer_seconds: u16,
     pub class: SpeedClass,
 }
 
-/// Token generation is bound by how fast the weights stream from memory:
-/// roughly the memory bandwidth divided by the bytes read per token (the
-/// quantized weights). Desktop DDR sustains about 25 GiB/s to eight or more
-/// CPU threads, and an integrated GPU reading the same RAM about twice that.
-/// A card's own memory is an order of magnitude faster; llama.cpp's Vulkan
-/// backend reaches somewhat less of it than a CUDA or `ROCm` engine.
+/// The request a typical local task sends: a feedback review reads about
+/// 500 tokens and writes about 200.
+pub const TYPICAL_PROMPT_TOKENS: u16 = 512;
+/// The answer a typical local task writes.
+pub const TYPICAL_ANSWER_TOKENS: u16 = 192;
+
+/// How fast one engine on one processor reads and writes, per GiB of
+/// quantized weights: writing streams every weight once per token, so it is
+/// bounded by memory bandwidth (GiB/s); reading a request is compute bound
+/// (tokens a second times GiB).
+struct Throughput {
+    decode_gib_per_second: f64,
+    prompt_tokens_gib_per_second: f64,
+}
+
+/// Measured with the Qwen3-4B `Q4_K_M` GGUF (2.33 GiB) in the pinned
+/// llama.cpp pack on a Ryzen 7 8845HS laptop with 32 GiB of DDR5 under
+/// ordinary desktop load, reviewing a 506-token recording:
+///
+/// | Placement | Reads | Writes | Review |
+/// | --- | --- | --- | --- |
+/// | Radeon 780M, Vulkan | 161 tok/s | 7.5 tok/s | 30 s |
+/// | RTX 4070 Laptop, Vulkan | 6.9 tok/s | 54 tok/s | 78 s |
+/// | 16 CPU threads | 54 tok/s | 3.4 tok/s | 44 s |
+///
+/// NVIDIA's Vulkan driver writes fast but reads a request slowly, so on a
+/// card vLLM's CUDA build is the one that answers quickly. The CUDA and
+/// `ROCm` builds, and Vulkan on a discrete AMD or Intel card, are not yet
+/// measured; their figures are conservative estimates from published
+/// results for the same class of card.
+fn throughput(
+    hardware: &HardwareSnapshot,
+    kind: RuntimeKind,
+    device: Option<&Accelerator>,
+) -> Throughput {
+    let throughput = |decode_gib_per_second, prompt_tokens_gib_per_second| Throughput {
+        decode_gib_per_second,
+        prompt_tokens_gib_per_second,
+    };
+    match (kind, device) {
+        (RuntimeKind::Cpu, _) | (_, None) => {
+            let threads = f64::from(hardware.cpu_threads.min(8)) / 8.0;
+            throughput(8.0 * threads, 125.0 * threads)
+        }
+        (_, Some(device)) if device.integrated => throughput(17.5, 375.0),
+        (RuntimeKind::Vulkan, Some(device)) if device.vendor == AcceleratorVendor::Nvidia => {
+            throughput(125.0, 16.0)
+        }
+        (RuntimeKind::Vulkan, Some(_)) => throughput(125.0, 1_500.0),
+        (RuntimeKind::NvidiaCuda | RuntimeKind::AmdRocm, Some(_)) => throughput(300.0, 4_000.0),
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to the non-negative u16 range first"
+)]
+fn to_u16(value: f64) -> u16 {
+    value.clamp(0.0, f64::from(u16::MAX)) as u16
+}
+
+/// How fast `model` answers on `kind` here, from how fast that placement
+/// reads a request and writes an answer (see [`throughput`]). The class is
+/// the wait for a typical answer: at most 20 seconds is interactive, at most
+/// two and a half minutes slow, longer impractical.
 #[must_use]
 pub fn expected_speed(
     hardware: &HardwareSnapshot,
@@ -293,26 +359,24 @@ pub fn expected_speed(
     let size_mib =
         u32::try_from(model.artifact.download_bytes() / (1024 * 1024)).unwrap_or(u32::MAX);
     let weights_gib = (f64::from(size_mib) / 1024.0).max(0.25);
-    let bandwidth_gib_s = match (kind, device) {
-        (RuntimeKind::Cpu, _) | (_, None) => 25.0 * (f64::from(hardware.cpu_threads.min(8)) / 8.0),
-        (_, Some(device)) if device.integrated => 50.0,
-        (RuntimeKind::Vulkan, Some(_)) => 240.0,
-        (RuntimeKind::NvidiaCuda | RuntimeKind::AmdRocm, Some(_)) => 300.0,
+    let rates = throughput(hardware, kind, device);
+    let decode = rates.decode_gib_per_second / weights_gib;
+    let prompt = rates.prompt_tokens_gib_per_second / weights_gib;
+    let seconds = if decode > 0.0 && prompt > 0.0 {
+        f64::from(TYPICAL_PROMPT_TOKENS) / prompt + f64::from(TYPICAL_ANSWER_TOKENS) / decode
+    } else {
+        f64::INFINITY
     };
-    let tokens = (bandwidth_gib_s / weights_gib).clamp(0.0, f64::from(u16::MAX));
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to the non-negative u16 range above"
-    )]
-    let tokens_per_second = tokens as u16;
-    let class = match tokens_per_second {
-        0..=2 => SpeedClass::Impractical,
-        3..=14 => SpeedClass::Slow,
-        _ => SpeedClass::Interactive,
+    let answer_seconds = to_u16(seconds.ceil());
+    let class = match answer_seconds {
+        0..=20 => SpeedClass::Interactive,
+        21..=150 => SpeedClass::Slow,
+        _ => SpeedClass::Impractical,
     };
     ExpectedSpeed {
-        tokens_per_second,
+        tokens_per_second: to_u16(decode),
+        prompt_tokens_per_second: to_u16(prompt),
+        answer_seconds,
         class,
     }
 }
@@ -799,7 +863,8 @@ impl LocalModelCatalog {
     /// a processor both support. It is offered only when the model fits the
     /// memory it may take there (on the CPU and an integrated GPU, the RAM
     /// the desktop can spare), storage holds it, and it answers faster than
-    /// [`SpeedClass::Impractical`]. Faster comes first, then more room.
+    /// [`SpeedClass::Impractical`]. The shorter wait for a typical answer
+    /// comes first, then more room.
     ///
     /// A card waiting for a restart holds the decision: nothing is offered
     /// until it boots, so nothing settles for a slower processor meanwhile.
@@ -875,12 +940,7 @@ impl LocalModelCatalog {
                 .speed
                 .class
                 .cmp(&left.speed.class)
-                .then(
-                    right
-                        .speed
-                        .tokens_per_second
-                        .cmp(&left.speed.tokens_per_second),
-                )
+                .then(left.speed.answer_seconds.cmp(&right.speed.answer_seconds))
                 .then(right.fit.cmp(&left.fit))
                 .then(right.model.context_window.cmp(&left.model.context_window))
                 .then(
@@ -1146,6 +1206,11 @@ mod tests {
             .collect()
     }
 
+    /// The ranking follows the wait for an answer, as measured on this
+    /// laptop: vLLM on the card, then llama.cpp on the integrated GPU (a
+    /// review in 30 s), on the processor (44 s), and on the card through
+    /// NVIDIA's Vulkan driver, which writes fast but reads a request slowly
+    /// (78 s).
     #[test]
     fn an_nvidia_card_beside_an_amd_igpu_ranks_vllm_first_and_offers_every_other_way() {
         let catalog = catalog();
@@ -1154,13 +1219,13 @@ mod tests {
             ranked(&catalog, &hardware),
             [
                 "vLLM NVIDIA GeForce RTX 4070 Laptop GPU qwen/qwen3-4b-awq",
-                "llama.cpp NVIDIA GeForce RTX 4070 Laptop GPU qwen/qwen3-4b-gguf",
                 "llama.cpp AMD Radeon 780M Graphics qwen/qwen3-4b-gguf",
                 "llama.cpp CPU qwen/qwen3-4b-gguf",
+                "llama.cpp NVIDIA GeForce RTX 4070 Laptop GPU qwen/qwen3-4b-gguf",
             ]
         );
         let found = catalog.configurations(&hardware);
-        let [vllm, card, igpu, cpu] = found.as_slice() else {
+        let [vllm, igpu, cpu, card] = found.as_slice() else {
             panic!("four configurations");
         };
         assert_eq!(vllm.kind, RuntimeKind::NvidiaCuda);
@@ -1168,14 +1233,31 @@ mod tests {
             (vllm.fit, vllm.speed.class),
             (Fit::Good, SpeedClass::Interactive)
         );
-        assert!(vllm.speed.tokens_per_second > card.speed.tokens_per_second);
+        // The measured rates, for the 2.33 GiB GGUF.
+        assert_eq!(
+            (
+                igpu.speed.prompt_tokens_per_second,
+                igpu.speed.tokens_per_second
+            ),
+            (161, 7)
+        );
+        assert_eq!(igpu.speed.answer_seconds, 29);
+        assert_eq!(
+            (
+                card.speed.prompt_tokens_per_second,
+                card.speed.tokens_per_second
+            ),
+            (6, 53)
+        );
+        assert!(card.speed.tokens_per_second > igpu.speed.tokens_per_second);
+        assert!(card.speed.answer_seconds > cpu.speed.answer_seconds);
         assert_eq!(card.kind, RuntimeKind::Vulkan);
         assert!(!card.shared_memory);
         // The iGPU's model memory is RAM: its own 512 MiB carve-out plus the
         // shared memory it can map, never more than the desktop can spare.
         assert!(igpu.shared_memory);
         assert_eq!(igpu.budget_mib, 512 + 15_644);
-        assert_eq!(igpu.speed.class, SpeedClass::Interactive);
+        assert_eq!(igpu.speed.class, SpeedClass::Slow);
         assert_eq!(cpu.kind, RuntimeKind::Cpu);
         assert_eq!(cpu.speed.class, SpeedClass::Slow);
         // A placement names the device it was ranked for, and resolves back.
@@ -1264,7 +1346,8 @@ mod tests {
             SpeedClass::Slow,
             "honest about being slow"
         );
-        assert_eq!(found[0].speed.tokens_per_second, 10);
+        assert_eq!(found[0].speed.tokens_per_second, 3);
+        assert_eq!(found[0].speed.answer_seconds, 66);
         // Enough RAM in total, but the desktop already holds most of it.
         let busy = HardwareSnapshot {
             available_memory_mib: 8_000,

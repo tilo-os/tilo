@@ -392,8 +392,8 @@ impl FrameProvider for Replayed {
 }
 
 /// What the AI hub offers for review on a laptop with an RTX 4070 beside a
-/// Radeon 780M: vLLM on the card, then llama.cpp on the card, the
-/// integrated GPU and the processor. Sample data lives only here.
+/// Radeon 780M: vLLM on the card, then llama.cpp on the integrated GPU, the
+/// processor and the card. Sample data lives only here.
 #[must_use]
 pub fn sample_offer() -> Vec<super::review::SetUpChoice> {
     let choice = |rank: usize, label: &str, terms: &str, fit: &str, speed: &str| {
@@ -419,23 +419,23 @@ pub fn sample_offer() -> Vec<super::review::SetUpChoice> {
         ),
         choice(
             1,
-            "Qwen3 4B (GGUF) with llama.cpp on NVIDIA GeForce RTX 4070 Laptop GPU",
-            "2.3 GiB download, 2.3 GiB on disk · License Apache-2.0 · Runs on this device · Needs 4.2 of 8.0 GiB graphics memory · Fast here, about 77 words a second",
-            "fit-good",
-            "speed-interactive",
+            "Qwen3 4B (GGUF) with llama.cpp on AMD Radeon 780M Graphics",
+            "2.3 GiB download, 2.3 GiB on disk · License Apache-2.0 · Runs on this device · Needs 4.4 GiB of the memory the desktop also uses, 15.8 GiB to spare · Slow here, about 29 seconds an answer",
+            "fit-excellent",
+            "speed-slow",
         ),
         choice(
             2,
-            "Qwen3 4B (GGUF) with llama.cpp on AMD Radeon 780M Graphics",
-            "2.3 GiB download, 2.3 GiB on disk · License Apache-2.0 · Runs on this device · Needs 4.2 GiB of the memory the desktop also uses, 15.8 GiB to spare · Fast here, about 15 words a second",
+            "Qwen3 4B (GGUF) with llama.cpp on the processor",
+            "2.3 GiB download, 2.3 GiB on disk · License Apache-2.0 · Runs on this device · Needs 3.8 GiB of the memory the desktop also uses, 18.0 GiB to spare · Slow here, about 66 seconds an answer",
             "fit-excellent",
-            "speed-interactive",
+            "speed-slow",
         ),
         choice(
             3,
-            "Qwen3 4B (GGUF) with llama.cpp on the processor",
-            "2.3 GiB download, 2.3 GiB on disk · License Apache-2.0 · Runs on this device · Needs 4.5 GiB of the memory the desktop also uses, 18.0 GiB to spare · Slow here, about 7 words a second",
-            "fit-excellent",
+            "Qwen3 4B (GGUF) with llama.cpp on NVIDIA GeForce RTX 4070 Laptop GPU",
+            "2.3 GiB download, 2.3 GiB on disk · License Apache-2.0 · Runs on this device · Needs 4.4 of 8.0 GiB graphics memory · Slow here, about 78 seconds an answer",
+            "fit-good",
             "speed-slow",
         ),
     ]

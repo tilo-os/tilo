@@ -39,7 +39,7 @@ def main():
     args = parser.parse_args()
 
     request = {
-        "version": 4,
+        "version": 5,
         "verb": "analyze_image",
         "profile_id": args.profile,
         "model_id": args.model,

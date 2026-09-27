@@ -73,7 +73,7 @@ and are not model weights, a runtime, or approved upstream release pins.
 | Model | Capability | Revision | Notes |
 | --- | --- | --- | --- |
 | `qwen3-4b-awq` (`Qwen/Qwen3-4B-AWQ`) | `trace_review` | `74d4bd2b…` | Apache-2.0, 2.7 GB, 8K context, 70 % of an 8 GiB card; vLLM |
-| `qwen3-4b-gguf` (`Qwen/Qwen3-4B-GGUF`, `Q4_K_M`) | `trace_review` | `bc640142…` | Apache-2.0, 2.5 GB, 8K context, 4.25 GiB on a GPU; llama.cpp |
+| `qwen3-4b-gguf` (`Qwen/Qwen3-4B-GGUF`, `Q4_K_M`) | `trace_review` | `bc640142…` | Apache-2.0, 2.5 GB, 8K context, 4.4 GiB on a GPU, 3.75 GiB on the CPU; llama.cpp |
 | `smolvlm2-500m` (`HuggingFaceTB/SmolVLM2-500M-Video-Instruct`) | `vision` | `a3992d50…` | Apache-2.0; no biometric capability |
 
 Each has `release.json` (catalog metadata) and `model-files.sha256` (every
@@ -93,6 +93,27 @@ dist/local-models/prepare-release.py \
 
 It needs `curl` and `skopeo`. Then compile
 `/secure/build/local-models/local-models.json` with the release key as above.
+
+## Measured
+
+The GGUF in the pinned llama.cpp pack, started with the supervisor's argv
+(no network, one device, socket only) on a Ryzen 7 8845HS laptop with
+32 GiB DDR5, an RTX 4070 Laptop GPU and a Radeon 780M, under ordinary
+desktop load, and asked for a review through the gateway's `review_trace`
+verb (a 506-token request):
+
+| Placement | Ready | Memory taken | Reads | Writes | Review |
+| --- | --- | --- | --- | --- | --- |
+| Radeon 780M, Vulkan | 22 s | 4.3 GiB of shared RAM | 161 tok/s | 7.5 tok/s | 30 s |
+| RTX 4070 Laptop, Vulkan | 32 s | 0.2 GiB RAM, the rest VRAM | 6.9 tok/s | 54 tok/s | 78 s |
+| 16 CPU threads | 23 s | 3.3 GiB RAM | 54 tok/s | 3.4 tok/s | 44 s |
+
+Each review redacted the recipient's name and the phone number and titled
+all four steps. `local::expected_speed` is calibrated on these runs and
+ranks by the wait for a typical answer, reading included: NVIDIA's Vulkan
+driver writes quickly but reads a request slowly, so on a card vLLM's CUDA
+build is recommended and llama.cpp on it is the last alternative. vLLM and
+Vulkan on a discrete AMD or Intel card are not yet measured.
 
 ## Developer catalog on this machine
 

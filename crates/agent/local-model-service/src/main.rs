@@ -2342,15 +2342,15 @@ mod tests {
                 ),
                 (
                     RuntimeEngine::LlamaCpp,
-                    Some("NVIDIA GeForce RTX 4070 Laptop GPU"),
-                    "qwen/qwen3-4b-gguf"
-                ),
-                (
-                    RuntimeEngine::LlamaCpp,
                     Some("AMD Radeon 780M Graphics"),
                     "qwen/qwen3-4b-gguf"
                 ),
                 (RuntimeEngine::LlamaCpp, None, "qwen/qwen3-4b-gguf"),
+                (
+                    RuntimeEngine::LlamaCpp,
+                    Some("NVIDIA GeForce RTX 4070 Laptop GPU"),
+                    "qwen/qwen3-4b-gguf"
+                ),
             ]
         );
         assert_eq!(snapshot.hardware.fit, HardwareFit::Good);
@@ -2359,7 +2359,7 @@ mod tests {
             "{}",
             snapshot.hardware.reason
         );
-        assert!(snapshot.available[2].shared_memory);
+        assert!(snapshot.available[1].shared_memory);
         assert_eq!(snapshot.models[0].placement, igpu);
         assert_eq!(snapshot.models[0].engine, RuntimeEngine::LlamaCpp);
         assert_eq!(

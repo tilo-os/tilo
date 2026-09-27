@@ -215,7 +215,7 @@ ai-releases-all-installed = Jedes Modell, das zu diesem Gerät passt, ist instal
 # { $speed } is how fast the model answers here.
 ai-download-terms = { $download } GiB Download, { $disk } GiB auf dem Datenträger · Lizenz { $license } ({ $url }) · Läuft auf diesem Gerät · { $memory } · { $speed }
 ai-speed-interactive = Hier schnell, etwa { $words } Wörter pro Sekunde
-ai-speed-slow = Hier langsam, etwa { $words } Wörter pro Sekunde
+ai-speed-slow = Hier langsam, etwa { $seconds } Sekunden pro Antwort
 ai-speed-impractical = Zu langsam für dieses Gerät
 ai-action-download = { $configuration } einrichten…
 ai-installed-title = Installiert

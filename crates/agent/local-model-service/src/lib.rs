@@ -1353,6 +1353,8 @@ mod tests {
             fit: Fit::Good,
             speed: ExpectedSpeed {
                 tokens_per_second: 20,
+                prompt_tokens_per_second: 200,
+                answer_seconds: 12,
                 class: SpeedClass::Interactive,
             },
         }

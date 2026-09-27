@@ -114,7 +114,10 @@ fn speed_label(available: &AvailableModel) -> String {
     let words = f64::from(words_per_second(available.speed.tokens_per_second));
     match available.speed.class {
         SpeedClass::Interactive => t_args("ai-speed-interactive", &[("words", words.into())]),
-        SpeedClass::Slow => t_args("ai-speed-slow", &[("words", words.into())]),
+        SpeedClass::Slow => t_args(
+            "ai-speed-slow",
+            &[("seconds", f64::from(available.speed.answer_seconds).into())],
+        ),
         SpeedClass::Impractical => t("ai-speed-impractical"),
     }
 }
@@ -2276,8 +2279,8 @@ fn demo_catalog() -> agent_provider_config::local::LocalModelCatalog {
         RuntimeEngine::LlamaCpp,
         ModelCapability::TraceReview,
     );
-    gguf.required_memory_mib = 4_608;
-    gguf.required_accelerator_mib = 4_352;
+    gguf.required_memory_mib = 3_840;
+    gguf.required_accelerator_mib = 4_480;
     let mut vision = release(
         "huggingface/smolvlm2-500m",
         "SmolVLM2 500M",

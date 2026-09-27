@@ -113,8 +113,10 @@ The ranking prefers the faster configuration and, between equals, the one
 that leaves more headroom for the desktop and attached apps. A CPU model is offered only when the memory the kernel
 reports available, less 4 GiB for the desktop, holds it, the machine has at
 least four threads, and its expected speed is better than impractical. The
-expected speed (memory bandwidth over the bytes of weights read per token) is
-shown beside the download, so a slow model says it is slow. Users may choose
+expected speed is the wait for a typical answer, reading the request and
+writing the answer, from rates measured per engine and processor (writing is
+memory bandwidth over the weights read per token; reading is compute bound).
+It is shown beside the download, so a slow model says it is slow. Users may choose
 another compatible installed model, but an unsupported combination cannot be
 forced through the UI.
 
