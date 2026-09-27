@@ -140,10 +140,40 @@ jobs:
       - name: Require a native build host
         run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
 
+      - name: Install and check native snapshot host tools
+        run: |
+          set -euo pipefail
+          missing=()
+          for tool in skopeo jq curl; do
+            command -v "$tool" >/dev/null || missing+=("$tool")
+          done
+          if ((${#missing[@]})); then
+            if command -v apt-get >/dev/null; then
+              sudo -n apt-get update
+              sudo -n apt-get install -y --no-install-recommends "${missing[@]}"
+            elif command -v dnf >/dev/null; then
+              sudo -n dnf install -y "${missing[@]}"
+            else
+              printf 'no supported package manager for missing snapshot tools: %s\n' "${missing[*]}" >&2
+              exit 1
+            fi
+          fi
+          for tool in skopeo jq curl python3 docker base64 sha256sum; do
+            command -v "$tool" >/dev/null || { printf 'snapshot host lacks %s\n' "$tool" >&2; exit 1; }
+          done
+          docker info >/dev/null || { echo 'snapshot host has no working Docker daemon' >&2; exit 1; }
+
       - name: Materialize checksum-verified external build inputs
         uses: ./.forgejo/actions/cache-github-assets
         with:
           key: github-assets-all-v1
+
+      - name: Log in to registry.tilo.so
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Ensure the digest-pinned base is mirrored
         run: ./os/dev/ensure-base-mirror.sh
@@ -157,13 +187,6 @@ jobs:
           test -n "$pkgs"
           echo "PACKAGES=$pkgs" >> "$GITHUB_ENV"
           echo "packages: $pkgs"
-
-      - name: Log in to registry.tilo.so
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: registry.tilo.so
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up buildx for native snapshot construction
         uses: ./.forgejo/actions/setup-buildx
