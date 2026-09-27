@@ -1226,6 +1226,20 @@ impl WorkspaceTree {
     /// ([`crate::network::behaviour::peer_liveness_handle`]), not the
     /// id — the document stores real identity, this bridges the gap. A
     /// peer with no entry is labelled with its handle.
+    /// Every device the room names, by transport endpoint: the devices a
+    /// record of the room may be asked for.
+    pub fn room_peer_endpoints(&self, room: RoomId) -> Vec<iroh::EndpointId> {
+        let named = if self.governs_room(room) {
+            self.room_peer_names.get(&room).cloned().unwrap_or_default()
+        } else {
+            self.room_peer_names_in_doc(room)
+        };
+        named
+            .keys()
+            .filter_map(|peer| peer.parse::<iroh::EndpointId>().ok())
+            .collect()
+    }
+
     pub fn room_peer_labels(&self, room: RoomId) -> std::collections::BTreeMap<u64, String> {
         let mut out = std::collections::BTreeMap::new();
         // Room documents aren't persisted, so a just-restarted machine

@@ -494,6 +494,80 @@ pub enum RemoteActionMessage {
         invocation: InvocationId,
         result: Result<(), ActionHostError>,
     },
+    /// Ask a device for a room record it holds, from `query.offset` on.
+    /// The same authenticated device-to-device route as an action, but
+    /// answered by the device from what its app last made durable, not by
+    /// an action host: a record is readable where it is kept whether or not
+    /// its app is running.
+    RecordRequest {
+        correlation: u64,
+        query: RecordQuery,
+    },
+    /// Answer to [`Self::RecordRequest`] with the same correlation: the next
+    /// piece of the record, or why it is not given.
+    RecordResponse {
+        correlation: u64,
+        result: Result<RecordPiece, ActionHostError>,
+    },
+}
+
+/// Largest piece of a record one answer carries, before encoding.
+pub const MAX_RECORD_PIECE_BYTES: usize = 384 * 1024;
+
+/// Largest record a device fetches from another at all.
+pub const MAX_FETCHED_RECORD_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Which record to read, and from where in its stored bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordQuery {
+    /// The room the record belongs to.
+    pub room: String,
+    /// The application whose record it is.
+    pub app: String,
+    /// The record's id in that room.
+    pub record: String,
+    /// Where in the stored document this piece starts.
+    pub offset: u64,
+}
+
+/// One piece of a stored record document.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordPiece {
+    /// The whole document's length.
+    pub total: u64,
+    /// Where this piece starts.
+    pub offset: u64,
+    /// The piece, hex-encoded so the frame stays self-describing text.
+    bytes: String,
+}
+
+impl RecordPiece {
+    #[must_use]
+    pub fn new(total: u64, offset: u64, bytes: &[u8]) -> Self {
+        Self {
+            total,
+            offset,
+            bytes: hex(bytes),
+        }
+    }
+
+    /// The piece's bytes; `None` when they are not well-formed.
+    #[must_use]
+    pub fn bytes(&self) -> Option<Vec<u8>> {
+        if !self.bytes.len().is_multiple_of(2) || self.bytes.len() > MAX_RECORD_PIECE_BYTES * 2 {
+            return None;
+        }
+        (0..self.bytes.len())
+            .step_by(2)
+            .map(|at| {
+                self.bytes
+                    .get(at..at.saturating_add(2))
+                    .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+            })
+            .collect()
+    }
 }
 
 impl RemoteActionMessage {
@@ -507,6 +581,7 @@ impl RemoteActionMessage {
                 | Self::Invoke(_)
                 | Self::Observe { .. }
                 | Self::Cancel { .. }
+                | Self::RecordRequest { .. }
         )
     }
 }
@@ -630,10 +705,21 @@ pub fn serve<H: ActionHost + ?Sized>(
                 result: host.cancel(caller, &invocation),
             })
         }
+        // A record is read by the device that keeps it, never through an
+        // action host; a host asked for one says so.
+        RemoteActionMessage::RecordRequest { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::RecordResponse {
+                correlation,
+                result: Err(ActionHostError::Unavailable {
+                    reason: "records are read from the device that keeps them".into(),
+                }),
+            })
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
-        | RemoteActionMessage::CancelResponse { .. } => return None,
+        | RemoteActionMessage::CancelResponse { .. }
+        | RemoteActionMessage::RecordResponse { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
     let (completer, answered) = pending();
@@ -668,10 +754,17 @@ pub fn refuse(
             invocation: *invocation,
             result: Err(error),
         },
+        RemoteActionMessage::RecordRequest { correlation, .. } => {
+            RemoteActionMessage::RecordResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
-        | RemoteActionMessage::CancelResponse { .. } => return None,
+        | RemoteActionMessage::CancelResponse { .. }
+        | RemoteActionMessage::RecordResponse { .. } => return None,
     })
 }
 
@@ -1123,6 +1216,42 @@ mod tests {
                 }),
             },
         ]
+    }
+
+    #[test]
+    fn a_record_piece_round_trips_and_action_hosts_never_serve_records() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        let request = RemoteActionMessage::RecordRequest {
+            correlation: 4,
+            query: RecordQuery {
+                room: "room".into(),
+                app: "dev.tilo.notes".into(),
+                record: "uuid:1".into(),
+                offset: 0,
+            },
+        };
+        assert!(request.is_request());
+        let answer = RemoteActionMessage::RecordResponse {
+            correlation: 4,
+            result: Ok(RecordPiece::new(256, 0, &bytes)),
+        };
+        let wire = RemoteActionFrame::new(answer.clone()).encode().unwrap();
+        let decoded = RemoteActionFrame::decode(&wire).unwrap().message;
+        assert_eq!(decoded, answer);
+        let RemoteActionMessage::RecordResponse {
+            result: Ok(piece), ..
+        } = decoded
+        else {
+            panic!("a record piece")
+        };
+        assert_eq!(piece.bytes(), Some(bytes));
+        assert!(matches!(
+            refuse(&request, ActionHostError::NotPermitted),
+            Some(RemoteActionMessage::RecordResponse {
+                correlation: 4,
+                result: Err(ActionHostError::NotPermitted)
+            })
+        ));
     }
 
     /// Every message round-trips through a frame, frames from another version are refused not
