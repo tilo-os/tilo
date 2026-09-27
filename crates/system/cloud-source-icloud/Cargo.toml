@@ -7,6 +7,7 @@ license.workspace = true
 description = "iCloud Drive as a best-effort cloud-source provider over Apple's undocumented web API: SRP sign-in with 2FA and trust tokens, drivews/docws listing, ranged downloads, uploads, moves and trash."
 
 [dependencies]
+mime_guess.workspace = true
 chrono = { workspace = true, features = ["std"] }
 cloud-source = { path = "../cloud-source" }
 tilo-net = { path = "../tilo-net", features = ["blocking"] }
