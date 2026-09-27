@@ -745,8 +745,7 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn host_signing_lost_response_keeps_committed_uncertainty_and_mailbox_failure_retires_health()
-     {
+    async fn host_signing_lost_response_keeps_receipt_and_mailbox_failure_retires_health() {
         let root = tempfile::tempdir().unwrap();
         let state = root.path().join("owner");
         let mut owner = SessionOwner::initialize(&state).unwrap();
@@ -766,7 +765,11 @@ mod tests {
         result.unwrap();
         complete();
         assert!(owner.status().generation > before);
-        assert!(service.health().unwrap_err().contains("outcome unknown"));
+        assert!(
+            service.health().is_ok(),
+            "dropping the waiting signer reply must not latch the service: {:?}",
+            service.health()
+        );
         assert_eq!(service.shared.pending_exact_receipts().unwrap(), 1);
         let committed = owner.status();
         drop(owner);
@@ -1040,7 +1043,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_signer_after_enqueue_preserves_owner_effect_and_fails_closed() {
+    async fn cancelled_signer_after_enqueue_preserves_owner_effect_without_latching() {
         let root = tempfile::tempdir().unwrap();
         let state = root.path().join("owner");
         let mut owner = SessionOwner::initialize(&state).unwrap();
@@ -1060,7 +1063,11 @@ mod tests {
         result.expect("enqueued owner turn remains authoritative after caller cancellation");
         complete();
         assert!(owner.status().generation > before);
-        assert!(service.health().unwrap_err().contains("outcome unknown"));
+        assert!(
+            service.health().is_ok(),
+            "dropping the waiting signer reply must not latch the service: {:?}",
+            service.health()
+        );
         assert_eq!(service.shared.pending_exact_receipts().unwrap(), 1);
         let committed = owner.status();
         drop(owner);

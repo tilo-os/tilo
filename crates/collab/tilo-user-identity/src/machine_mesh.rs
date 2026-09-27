@@ -5,6 +5,12 @@ use crate::{DeviceCert, verify_device_cert_at};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
+/// Grant scope for invoking the target's broker `NativeOperation`s over a link.
+///
+/// Replaces the retired AI-only `model_complete` label. Links still never grant
+/// workspace membership; the target checks the source device's ordinary permissions.
+pub const BROKER_ACTIONS_SCOPE: &str = "broker_actions";
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeshChallenge {
@@ -88,7 +94,7 @@ pub fn verify_request(request: &MeshRequest, now: u64) -> Result<(), String> {
         || request.source.machine_id == request.target.machine_id
         || request.source.host_certificate.device_public_key
             == request.target.host_certificate.device_public_key
-        || request.allowed_actions != ["model_complete"]
+        || request.allowed_actions != [BROKER_ACTIONS_SCOPE]
     {
         return Err("Invalid or unsupported mesh grant".into());
     }
