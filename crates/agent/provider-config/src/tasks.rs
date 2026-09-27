@@ -52,10 +52,14 @@ impl AllowedConsumer {
 }
 
 /// How private a task's input is, and therefore where it may be served.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Ordered from least to most private, so the stricter of two classes is
+/// their `max`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PrivacyClass {
     /// Any configured provider may serve it.
+    #[default]
     Open,
     /// Served on this device unless the person explicitly allows a hosted or
     /// private-network model for this task (or agent). Presets never grant
@@ -267,6 +271,26 @@ pub const FEEDBACK_REVIEW: TaskSpec = TaskSpec {
     request: TaskRequest::Fixed,
 };
 
+/// Triaging feedback reports: whether a new report repeats an earlier one,
+/// and a forge issue's title and summary. Public `#feedback` reports are
+/// open content, so the task is [`PrivacyClass::Open`]; a report from a
+/// private direct room is asked for as [`PrivacyClass::Sensitive`]
+/// (`assign::resolve_for`), which keeps it on this device by default.
+pub const FEEDBACK_TRIAGE: TaskSpec = TaskSpec {
+    id: "feedback.triage",
+    label_key: "ai-task-feedback-triage",
+    description_key: "ai-task-feedback-triage-description",
+    consumers: &[AllowedConsumer::App(AGENT_APP)],
+    requires: Requirements {
+        tools: false,
+        capabilities: &[],
+        min_context: 0,
+    },
+    privacy: PrivacyClass::Open,
+    per_agent: true,
+    request: TaskRequest::Fixed,
+};
+
 /// Every task the gateway serves.
 pub const REGISTRY: &[&TaskSpec] = &[
     &AGENT_PLANNING,
@@ -274,6 +298,7 @@ pub const REGISTRY: &[&TaskSpec] = &[
     &PHOTOS_VISION,
     &PHOTOS_FACES,
     &FEEDBACK_REVIEW,
+    &FEEDBACK_TRIAGE,
 ];
 
 /// Look up a registered task by id.
