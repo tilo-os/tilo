@@ -196,17 +196,17 @@ fn flight_failure(message: impl Into<String>) -> CliError {
 mod flight_tests {
     use super::*;
 
-    fn frames(rows: Value) -> Value {
+    fn frames(rows: &Value) -> Value {
         json!({ "foreign_frames": { "frames": rows } })
     }
 
     #[test]
     fn presented_flight_surface_must_be_new_matching_and_real() {
-        let baseline = frames(json!([
+        let baseline = frames(&json!([
             { "surface_id": 4, "app_id": "chatgpt", "frame_seq": 8, "presented": true }
         ]));
         let ids = foreign_surface_ids(&baseline);
-        let current = frames(json!([
+        let current = frames(&json!([
             { "surface_id": 4, "app_id": "chatgpt", "frame_seq": 9, "presented": true },
             { "surface_id": 5, "app_id": "other", "frame_seq": 1, "presented": true },
             { "surface_id": 6, "app_id": "chatgpt", "frame_seq": 0, "presented": false },
@@ -228,7 +228,7 @@ mod flight_tests {
 
     #[test]
     fn frame_lookup_tracks_the_same_surface_after_input() {
-        let value = frames(json!([
+        let value = frames(&json!([
             { "surface_id": 12, "app_id": "chatgpt", "frame_seq": 41, "presented": true },
             { "surface_id": 13, "app_id": "chatgpt", "frame_seq": 99, "presented": true }
         ]));
