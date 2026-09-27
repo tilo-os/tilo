@@ -5421,3 +5421,56 @@ fn the_dev_loop_supplies_a_runtime_host_only_where_none_serves() {
     ]});
     assert_eq!(sdk_root_from_metadata(&without), None);
 }
+
+/// Only an edit confined to `locales/*.ftl` skips the build; anything else in
+/// the same batch, a removed file, or a nested path still rebuilds.
+#[test]
+fn catalog_only_edits_reload_without_a_build() {
+    let app = Path::new("/apps/demo");
+    assert!(is_locale_catalog(
+        app,
+        Path::new("/apps/demo/locales/en-US.ftl")
+    ));
+    assert!(is_locale_catalog(
+        app,
+        Path::new("/apps/demo/locales/de-DE.FTL")
+    ));
+    assert!(!is_locale_catalog(
+        app,
+        Path::new("/apps/demo/locales/nested/en-US.ftl")
+    ));
+    assert!(!is_locale_catalog(
+        app,
+        Path::new("/apps/demo/src/locales.rs")
+    ));
+    assert!(!is_locale_catalog(
+        app,
+        Path::new("/apps/demo/locales/notes.txt")
+    ));
+    assert!(!is_locale_catalog(
+        app,
+        Path::new("/elsewhere/locales/en-US.ftl")
+    ));
+
+    let stamp = |secs| (SystemTime::UNIX_EPOCH + Duration::from_secs(secs), 10);
+    let before = HashMap::from([
+        (PathBuf::from("/apps/demo/locales/en-US.ftl"), stamp(1)),
+        (PathBuf::from("/apps/demo/src/lib.rs"), stamp(1)),
+        (PathBuf::from("/apps/demo/src/gone.rs"), stamp(1)),
+    ]);
+    let mut after = before.clone();
+    assert!(changed_sources(&before, &after).is_empty());
+    after.insert(PathBuf::from("/apps/demo/locales/en-US.ftl"), stamp(2));
+    after.remove(Path::new("/apps/demo/src/gone.rs"));
+    after.insert(PathBuf::from("/apps/demo/locales/fr-FR.ftl"), stamp(2));
+    let mut changed = changed_sources(&before, &after);
+    changed.sort();
+    assert_eq!(
+        changed,
+        [
+            Path::new("/apps/demo/locales/en-US.ftl"),
+            Path::new("/apps/demo/locales/fr-FR.ftl"),
+            Path::new("/apps/demo/src/gone.rs"),
+        ]
+    );
+}
