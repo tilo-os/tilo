@@ -3325,7 +3325,39 @@ impl ShellOverlayHost {
                 .with_live(Politeness::Polite)
                 .with_value(readout.unwrap_or_default()),
         );
+        let pad_map = self.chrome.as_ref().and_then(|chrome| {
+            chrome
+                .borrow()
+                .pad_map
+                .as_ref()
+                .map(|map| (map.name.clone(), map.narration()))
+        });
+        if let Some((name, narration)) = pad_map {
+            root.children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(name)
+                    .with_live(Politeness::Polite)
+                    .with_value(narration),
+            );
+        }
         root
+    }
+
+    /// Paint what a held pad's controls do, if a pad map is up.
+    fn draw_pad_map(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let chrome = chrome.borrow();
+        if let Some(map) = chrome.pad_map.as_ref() {
+            map.draw(scene, transform, text_renderer, theme, self.rect);
+        }
     }
 
     /// Paint the transient hardware-key readout, if one is up.
@@ -3349,6 +3381,12 @@ impl ShellOverlayHost {
         let Some(osd) = chrome.borrow().osd else {
             return;
         };
+        // The pad map names the mode itself.
+        if chrome.borrow().pad_map.is_some()
+            && matches!(osd.kind, crate::shell::osd::OsdKind::PadMode { .. })
+        {
+            return;
+        }
         let alpha = osd.alpha_at(now);
         if alpha <= 0.0 {
             return;
@@ -21498,6 +21536,9 @@ impl ShellOverlayHost {
             .draw(self.rect, scene, transform, text_renderer, theme, presence);
 
         self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
+
+        // A held pad button works over modals too, like the keys below.
+        self.draw_pad_map(scene, transform, text_renderer, theme);
 
         // Above everything, including modals — a physical key works
         // while a modal is up, so its readout must too.

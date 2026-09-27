@@ -428,6 +428,7 @@ impl PadInput {
                         time: button.time(),
                         mode_switch: (pressed && group.button_is_toggle(number))
                             .then(|| (group.index(), button.mode(), group.number_of_modes())),
+                        mode_button: group.button_is_toggle(number),
                     });
                 }
                 TabletPadEvent::Ring(ring) => events.push(RawPadEvent::Dial {
@@ -463,6 +464,8 @@ enum RawPadEvent {
         /// `(group, new mode, modes)` when the button is its group's mode
         /// switch.
         mode_switch: Option<(u32, u32, u32)>,
+        /// Whether the button switches its group's mode, pressed or not.
+        mode_button: bool,
     },
     /// A ring (degrees) or strip (`0.0..=1.0`) moved, or `None`: the finger
     /// lifted.
@@ -2542,6 +2545,7 @@ impl DrmDispatchState {
                     pressed,
                     time,
                     mode_switch,
+                    mode_button,
                 } => {
                     if let Some((group, mode, modes)) = mode_switch {
                         self.push(BackendEvent::TabletPad(PadEvent {
@@ -2550,6 +2554,21 @@ impl DrmDispatchState {
                             time_msec: time,
                             fallback: Vec::new(),
                         }));
+                    }
+                    // Holding a mode button, or the button picked for it,
+                    // shows what every control does.
+                    let config = self.tablets.configs.get(&pad);
+                    let map_button = config.is_some_and(|c| c.pad_map_button == Some(button));
+                    if mode_button || map_button {
+                        let shown = pressed.then(|| Box::new(config.cloned().unwrap_or_default()));
+                        self.push(BackendEvent::TabletPadMap {
+                            pad: pad.clone(),
+                            shown,
+                            time_msec: time,
+                        });
+                    }
+                    if map_button {
+                        continue;
                     }
                     let shortcut = self
                         .tablets
@@ -3952,11 +3971,25 @@ fn pad_description(
         .filter_map(|index| device.tablet_pad_mode_group(index))
         .map(|group| crate::compositor::backend::PadGroup {
             buttons: (0..buttons).filter(|b| group.has_button(*b)).collect(),
+            mode_buttons: (0..buttons)
+                .filter(|b| group.button_is_toggle(*b))
+                .collect(),
             rings: (0..rings).filter(|r| group.has_ring(*r)).collect(),
             strips: (0..strips).filter(|s| group.has_strip(*s)).collect(),
             modes: group.number_of_modes(),
         })
         .collect();
+    let dirs: Vec<PathBuf> = crate::compositor::pad_layout::LIBWACOM_DIRS
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+    let layout = crate::compositor::pad_layout::find_layout(
+        &dirs,
+        (device.id_vendor(), device.id_product()),
+        buttons,
+        rings,
+        strips,
+    );
     crate::compositor::backend::PadDescription {
         key: libinput_device_key(device),
         device: crate::compositor::backend::TabletDevice {
@@ -3966,6 +3999,7 @@ fn pad_description(
         },
         buttons,
         groups,
+        layout,
     }
 }
 

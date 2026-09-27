@@ -1,6 +1,7 @@
 //! A drawing app gets the pen and the pad's rings and strips itself over
 //! tablet-v2 while an app without a tablet seat sees the pen as a pointer
-//! and the rings as scrolling; a VM that inhibits shortcuts gets the
+//! and the rings as scrolling; the pad map shows the drawing app's labels
+//! for the controls, or Tilo's mapping where it gave none; a VM that inhibits shortcuts gets the
 //! shell's chords until focus leaves or the release chord hands them back.
 
 #![allow(
@@ -71,6 +72,11 @@ enum Wire {
 struct Client {
     globals: Vec<(u32, String, u32)>,
     wire: Vec<Wire>,
+    pads: Vec<zwp_tablet_pad_v2::ZwpTabletPadV2>,
+    rings: Vec<zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2>,
+    /// The serial of the pad's last `enter` or `mode_switch`, which
+    /// feedback names.
+    pad_serial: u32,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for Client {
@@ -104,7 +110,10 @@ impl Dispatch<zwp_tablet_seat_v2::ZwpTabletSeatV2, ()> for Client {
     ) {
         match event {
             zwp_tablet_seat_v2::Event::ToolAdded { .. } => state.wire.push(Wire::ToolAdded),
-            zwp_tablet_seat_v2::Event::PadAdded { .. } => state.wire.push(Wire::PadAdded),
+            zwp_tablet_seat_v2::Event::PadAdded { id } => {
+                state.pads.push(id);
+                state.wire.push(Wire::PadAdded);
+            }
             _ => {}
         }
     }
@@ -127,7 +136,10 @@ impl Dispatch<zwp_tablet_pad_v2::ZwpTabletPadV2, ()> for Client {
     ) {
         match event {
             zwp_tablet_pad_v2::Event::Done => state.wire.push(Wire::PadDone),
-            zwp_tablet_pad_v2::Event::Enter { .. } => state.wire.push(Wire::PadEnter),
+            zwp_tablet_pad_v2::Event::Enter { serial, .. } => {
+                state.pad_serial = serial;
+                state.wire.push(Wire::PadEnter);
+            }
             zwp_tablet_pad_v2::Event::Leave { .. } => state.wire.push(Wire::PadLeave),
             zwp_tablet_pad_v2::Event::Button {
                 button,
@@ -156,9 +168,13 @@ impl Dispatch<zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2, ()> for Client {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            zwp_tablet_pad_group_v2::Event::Ring { .. } => state.wire.push(Wire::PadRing),
+            zwp_tablet_pad_group_v2::Event::Ring { ring } => {
+                state.rings.push(ring);
+                state.wire.push(Wire::PadRing);
+            }
             zwp_tablet_pad_group_v2::Event::Strip { .. } => state.wire.push(Wire::PadStrip),
-            zwp_tablet_pad_group_v2::Event::ModeSwitch { mode, .. } => {
+            zwp_tablet_pad_group_v2::Event::ModeSwitch { mode, serial, .. } => {
+                state.pad_serial = serial;
                 state.wire.push(Wire::ModeSwitch(mode));
             }
             _ => {}
@@ -615,10 +631,12 @@ fn test_pad() -> PadDescription {
         buttons: 4,
         groups: vec![PadGroup {
             buttons: vec![0, 1, 2, 3],
+            mode_buttons: vec![3],
             rings: vec![0],
             strips: vec![0],
             modes: 2,
         }],
+        layout: None,
     }
 }
 
@@ -870,6 +888,247 @@ fn a_tablet_aware_app_gets_pad_rings_and_strips_and_others_scroll() {
         "{locked:?}"
     );
     assert_eq!(wire, [Wire::PadLeave], "{wire:?}");
+}
+
+/// One app with a tablet seat and keyboard focus, the test pad entered into
+/// it by a first touch of the ring.
+fn pad_in_tablet_app(h: &mut Harness) -> u64 {
+    let (_surface, app) = h.open("org.example.Draw");
+    let qh = h.queue.handle();
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
+    let manager = h.bind::<zwp_tablet_manager_v2::ZwpTabletManagerV2>("zwp_tablet_manager_v2", 1);
+    let _tablet_seat = manager.get_tablet_seat(&seat, &qh, ());
+    h.pump();
+    h.state.set_client_keyboard_focus(Some(app));
+    h.state.add_tablet_pad(test_pad());
+    h.pump();
+    let routed = shell::compositor::client_input::route_pad_event(
+        &mut h.state,
+        &h.fb,
+        pad_event(
+            &mut DialSteps::default(),
+            &TabletConfig::default(),
+            ring(Some(10.0)),
+            None,
+        ),
+        false,
+    );
+    h.pump();
+    assert!(routed.is_empty(), "the tablet-aware app takes the ring");
+    assert!(
+        h.client.wire.contains(&Wire::PadEnter),
+        "{:?}",
+        h.client.wire
+    );
+    h.client.wire.clear();
+    app
+}
+
+#[test]
+fn the_pad_map_shows_the_focused_apps_labels() {
+    use shell::shell::pad_map::{PadControl, PadMapAction};
+    let mut h = Harness::new();
+    let _app = pad_in_tablet_app(&mut h);
+    let serial = h.client.pad_serial;
+    let pad = h
+        .client
+        .pads
+        .first()
+        .cloned()
+        .expect("the pad was announced");
+    let ring_object = h.client.rings.first().cloned().expect("its ring too");
+    pad.set_feedback(0, "Undo".into(), serial);
+    pad.set_feedback(1, "Stale".into(), serial.wrapping_add(100));
+    pad.set_feedback(2, "Never shown".into(), serial);
+    ring_object.set_feedback("Brush size".into(), serial);
+    h.pump();
+
+    let mut config = TabletConfig::default();
+    config
+        .pad_buttons
+        .insert(2, settings_store::hardware::ShortcutAction::Search);
+    let key = test_pad().key;
+    let map = h
+        .state
+        .tablet_pad_map(&key, &config)
+        .expect("the pad is attached");
+    assert_eq!(
+        map.action(PadControl::Button(0)),
+        Some(&PadMapAction::App("Undo".into()))
+    );
+    assert_eq!(
+        map.action(PadControl::Ring(0)),
+        Some(&PadMapAction::App("Brush size".into()))
+    );
+    assert_eq!(
+        map.action(PadControl::Button(1)),
+        Some(&PadMapAction::AppDecides),
+        "a label naming an old serial is ignored"
+    );
+    assert_eq!(
+        map.action(PadControl::Button(2)),
+        Some(&PadMapAction::Shortcut(
+            settings_store::hardware::ShortcutAction::Search
+        )),
+        "a mapped shortcut never reaches the app, whatever it says"
+    );
+    assert_eq!(
+        map.action(PadControl::Strip(0)),
+        Some(&PadMapAction::AppDecides)
+    );
+    assert!(
+        map.narration().contains("Button 1: Undo"),
+        "{}",
+        map.narration()
+    );
+
+    // A mode switch asks the app for new labels: the old ones go.
+    let _ = shell::compositor::client_input::route_pad_event(
+        &mut h.state,
+        &h.fb,
+        pad_event(
+            &mut DialSteps::default(),
+            &config,
+            PadAction::ModeSwitch {
+                group: 0,
+                mode: 1,
+                modes: 2,
+            },
+            None,
+        ),
+        false,
+    );
+    h.pump();
+    let map = h.state.tablet_pad_map(&key, &config).expect("attached");
+    assert_eq!(
+        map.action(PadControl::Button(0)),
+        Some(&PadMapAction::AppDecides)
+    );
+    pad.set_feedback(0, "Redo".into(), h.client.pad_serial);
+    h.pump();
+    let map = h.state.tablet_pad_map(&key, &config).expect("attached");
+    drop(h);
+    assert_eq!(
+        map.action(PadControl::Button(0)),
+        Some(&PadMapAction::App("Redo".into()))
+    );
+}
+
+#[test]
+fn the_pad_map_falls_back_to_tilos_mapping() {
+    use settings_store::hardware::{PadDialAction, ShortcutAction};
+    use shell::shell::pad_map::{PadControl, PadMapAction};
+    let mut h = Harness::new();
+    let (_surface, app) = h.open("org.example.Plain");
+    h.state.set_client_keyboard_focus(Some(app));
+    h.state.add_tablet_pad(test_pad());
+    let mut config = TabletConfig {
+        pad_map_button: Some(1),
+        ..TabletConfig::default()
+    };
+    config
+        .pad_buttons
+        .insert(0, ShortcutAction::WorkspaceOverview);
+    config.set_dial_action(PadDial::Ring(0), 0, PadDialAction::Zoom);
+    config.set_dial_action(PadDial::Ring(0), 1, PadDialAction::Volume);
+    let key = test_pad().key;
+
+    let map = h.state.tablet_pad_map(&key, &config).expect("attached");
+    assert_eq!(
+        map.action(PadControl::Button(0)),
+        Some(&PadMapAction::Shortcut(ShortcutAction::WorkspaceOverview))
+    );
+    assert_eq!(
+        map.action(PadControl::Button(1)),
+        Some(&PadMapAction::ShowsMap)
+    );
+    assert_eq!(
+        map.action(PadControl::Button(2)),
+        Some(&PadMapAction::Nothing),
+        "an app without tablet support gets nothing from an unmapped button"
+    );
+    assert_eq!(
+        map.action(PadControl::Button(3)),
+        Some(&PadMapAction::ModeSwitch { mode: 0, modes: 2 })
+    );
+    assert_eq!(
+        map.action(PadControl::Ring(0)),
+        Some(&PadMapAction::Dial(PadDialAction::Zoom))
+    );
+    assert_eq!(
+        map.action(PadControl::Strip(0)),
+        Some(&PadMapAction::Dial(PadDialAction::Scroll))
+    );
+    assert_eq!(map.name, "Test tablet Pad");
+    assert!(map.layout.is_none(), "an unknown model is listed");
+    assert!(
+        map.narration().contains("Ring 1: Zoom"),
+        "{}",
+        map.narration()
+    );
+
+    // The ring's action follows its group's mode.
+    let fallback = shell::compositor::client_input::route_pad_event(
+        &mut h.state,
+        &h.fb,
+        pad_event(
+            &mut DialSteps::default(),
+            &config,
+            PadAction::ModeSwitch {
+                group: 0,
+                mode: 1,
+                modes: 2,
+            },
+            None,
+        ),
+        false,
+    );
+    assert!(fallback.is_empty());
+    let map = h.state.tablet_pad_map(&key, &config).expect("attached");
+    assert_eq!(
+        map.action(PadControl::Ring(0)),
+        Some(&PadMapAction::Dial(PadDialAction::Volume))
+    );
+    assert_eq!(
+        map.action(PadControl::Button(3)),
+        Some(&PadMapAction::ModeSwitch { mode: 1, modes: 2 })
+    );
+    h.state.remove_tablet_pad(&key);
+    let gone = h.state.tablet_pad_map(&key, &config).is_none();
+    drop(h);
+    assert!(gone, "a pad that went away has no map");
+}
+
+#[test]
+fn a_pad_leaves_the_app_as_soon_as_keyboard_focus_does() {
+    let mut h = Harness::new();
+    let app = pad_in_tablet_app(&mut h);
+    let (_other_surface, other) = h.open("org.example.Other");
+
+    h.state.set_client_keyboard_focus(Some(other));
+    h.pump();
+    assert_eq!(
+        h.client.wire,
+        [Wire::PadLeave],
+        "the app hears leave once focus moves, before any pad event"
+    );
+    h.client.wire.clear();
+
+    h.state.set_client_keyboard_focus(Some(app));
+    h.pump();
+    assert!(
+        !h.client.wire.contains(&Wire::PadEnter),
+        "the pad enters again at its next touch: {:?}",
+        h.client.wire
+    );
+    h.state.set_client_keyboard_focus(None);
+    h.pump();
+    let wire = std::mem::take(&mut h.client.wire);
+    drop(h);
+    assert!(
+        !wire.contains(&Wire::PadLeave),
+        "no second leave for a pad that is not in: {wire:?}"
+    );
 }
 
 fn key(logical: Key, pressed: bool) -> WindowEvent {
