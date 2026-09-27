@@ -33,8 +33,6 @@ use typed_peer::{TypedPeer as UnixStream, document_mutation, recv, send};
 
 const APP: &str = "so.tilo.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
 
 /// The capability an inviter issues an agent for the app it was invited
 /// to. The agent holds no role, so this grant is the whole of what it may
