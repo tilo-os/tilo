@@ -7436,6 +7436,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "launcher-macos"
+version = "0.1.0"
+dependencies = [
+ "launcher",
+ "libc",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
