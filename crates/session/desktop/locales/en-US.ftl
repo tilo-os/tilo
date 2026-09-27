@@ -426,3 +426,54 @@ search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ 
 }
 search-window-close-tab = Close tab “{ $tab }”
 search-window-close-tab-detail = App { $app } · workspace “{ $workspace }” · strip “{ $strip }” · group { $group } · tab { $tab }
+
+# Notifications: banner stack and notification centre
+drill-in-back = Back
+a11y-notifications-none = No retained notifications.
+a11y-notifications-description = Showing newest rows { $first } through { $last } of { $total }, grouped by app. Use Up and Down to select a notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification. Enter opens the selected notification or folds its app group, and Delete dismisses it.
+a11y-notifications-list = Retained notifications
+a11y-notifications-clear = Clear all notifications
+a11y-notifications-clear-description = Delete this session's retained notification history. An Undo action remains available for eight seconds.
+a11y-notifications-cleared = Notifications cleared
+a11y-notifications-undo = Undo clear notifications
+a11y-notifications-undo-description = Restore the cleared notifications in their original order. Press Enter or Space.
+a11y-notifications = Notifications
+notification-center-title = Notifications
+notification-center-empty = No recent notifications
+notification-center-cleared = Notifications cleared
+notification-center-clear-all = Clear all
+notification-center-position = Newest { $first }–{ $last } of { $total }
+notification-center-count = { $count ->
+        [one] { $count } notification
+       *[other] { $count } notifications
+    }
+notification-center-newer = ↑ Newer
+notification-center-at-newest = At newest
+notification-center-older = ↓ Older
+notification-center-at-oldest = At oldest
+history-severity-info = Information
+history-severity-warning = Warning
+history-severity-error = Error
+history-source-system = System
+history-notification-description = { $severity }. From { $source }. { $time }
+history-notification-description-body = { $severity }. From { $source }. { $time }. { $body }
+notification-center-group-description = { $count } notifications. Press Enter to { $expanded ->
+        [yes] collapse
+       *[no] expand
+    }, Delete to dismiss them all.
+notification-center-dismiss-all = Dismiss all from { $app }
+notification-center-dismiss = Dismiss
+notification-center-hand-to = Hand to { $agent }
+notification-center-hand-to-description = Give this notification to the workspace agent as a task.
+notification-center-group-count = { $count ->
+        [one] { $count } notification
+       *[other] { $count } notifications
+    }
+notification-lock-count = { $count ->
+    [one] 1 notification
+   *[other] { $count } notifications
+}
+notification-dnd-held = { $status } · { $count } held
+notification-stack-a11y = Notifications
+notification-group-system = System
+notification-center-undo = Undo

@@ -2960,7 +2960,7 @@ mod tests {
                 matches!(error, ActionError::Refused(message) if message.contains("no tab") || message.contains("No tab"))
             );
             assert!(
-                !chrome.borrow().notifications.is_empty(),
+                !chrome.borrow().notifications().is_empty(),
                 "the person still receives useful visible feedback"
             );
         }
