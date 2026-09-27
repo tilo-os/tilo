@@ -19,6 +19,10 @@
 
 %global tilo_summary Tilo compositor as a Wayland session
 %{!?tilo_version:%global tilo_version 0.1.12}
+# Release builds keep 1; a developer build names its commit here (e.g.
+# 0.202609271530.git5764267571) so `rpm -q tilo-session` on a host says which
+# tree is layered. See dist/rpm/host-update.sh.
+%{!?tilo_release:%global tilo_release 1}
 
 # The payload is already built and stripped; there is no source to extract
 # debug symbols from, and an empty -debuginfo subpackage would fail the
@@ -40,7 +44,7 @@
 
 Name:           tilo-session
 Version:        %{tilo_version}
-Release:        1%{?dist}
+Release:        %{tilo_release}%{?dist}
 Summary:        %{tilo_summary}
 License:        AGPL-3.0-only
 URL:            https://code.tilo.so/tilo/tilo
