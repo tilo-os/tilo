@@ -376,7 +376,6 @@ grep -Fq -- "-path '*/ossl-modules/legacy.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/gstreamer-1.0/libgstwebrtc.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/gstreamer-1.0/libgstnice.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/gstreamer-1.0/libgstsrtp.so'" "$repo/os/Containerfile" \
-  && grep -Fq -- "-path '*/qt6/plugins/tls/libqopensslbackend.so'" "$repo/os/Containerfile" \
   && grep -Fq 'optional OpenSSL modules and unused network media plugins absent' \
        "$repo/os/usr/libexec/tilo-security-audit" \
   || bad 'sealed rootfs does not remove and audit optional OpenSSL provider/engine/media modules'
@@ -392,11 +391,6 @@ else
   bad 'residual OpenSSL ABI gate does not inspect the finished rootfs'
 fi
 
-grep -Fq 'Qt5 packages or Qt5 consumers remain in the finished rootfs' "$runtime_package_gate" \
-  && ! sed -e '/^[[:space:]]*#/d' -e '/--exclude=/d' "$repo/os/Containerfile" \
-    | grep -Eq '^[[:space:]]+([[:alnum:]_.+]+-)*(qt5|fcitx5-mozc)(-[[:alnum:]_.+-]*)?([[:space:]\\]|$)' \
-  && ok 'finished rootfs rejects Qt5 and the image requests no Qt5-linked package' \
-  || bad 'Qt5 can reach the finished rootfs without failing the image build'
 if python3 "$repo/os/tests/test_runtime_crypto_packages.py" --gate "$runtime_package_gate"; then
   ok 'finished-rootfs RPM policy enforces conditional desktop/VM exceptions and rejects unknown consumers'
 else

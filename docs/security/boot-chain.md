@@ -219,7 +219,6 @@ The finished-rootfs build enumerates every installed RPM's direct `libssl.so`
 and `libcrypto.so` requirements. It accepts only the reviewed compatibility
 sets in `os/scripts/verify-runtime-crypto-packages.sh` and fails when any new
 consumer appears; the verifier itself is deleted before the image is sealed.
-The same verifier rejects any Qt5 package or Qt5-linked package outright.
 Tilo-owned ELF outputs are independently rejected for either ABI, and Tilo-owned
 TLS and signing remain Rust-native. The sealed root also deletes OpenSSL's
 optional legacy-provider DSO and loadable ENGINE modules, plus GStreamer's

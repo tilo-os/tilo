@@ -599,7 +599,7 @@ mod tests {
         service.accepting.store(true, Ordering::Release);
         service.process_group.store(42, Ordering::Release);
         service.set_owner(
-            InputMethodOwner::Composer(settings_store::hardware::InputMethodEngine::Pinyin),
+            InputMethodOwner::Composer(settings_store::hardware::InputMethodEngine::Rime),
             "us",
         );
         assert!(!service.accepting.load(Ordering::Acquire));
