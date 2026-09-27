@@ -49,9 +49,9 @@ pub use device_fabric::{
     RealtimeContinuityUiAction,
 };
 use device_fabric::{
-    DeviceFabricPaneRow, bluetooth_handoff_failure_label, device_fabric_pane_rows,
-    display_mirror_failure_label, media_handoff_failure_label, remote_capture_kind_label,
-    sentence_case, speaker_group_summary,
+    DeviceFabricPaneRow, bluetooth_handoff_failure_key, device_fabric_pane_rows,
+    display_mirror_failure_key, media_handoff_failure_key, remote_capture_kind_key, sentence_case,
+    speaker_group_summary,
 };
 #[cfg(test)]
 use history::notification_severity_label;
@@ -1052,7 +1052,7 @@ fn icon_for_kind(kind: &crate::shell::search::ResourceKind) -> ui::icons::Icon {
         K::Creator => Icon::Star,
         K::Video => Icon::Film,
         K::Playlist => Icon::List,
-        K::Custom(_) => Icon::Search,
+        K::Tab | K::WindowGroup | K::Custom(_) => Icon::Search,
     }
 }
 
@@ -7316,7 +7316,7 @@ impl ShellOverlayHost {
         let mut results: Vec<crate::shell::search::SearchResult> = Vec::new();
         let mut entries: Vec<CommandEntry> = Vec::new();
         for group in &groups {
-            let label = group.kind.label().to_string();
+            let label = group.kind.label();
             for r in &group.results {
                 let idx = results.len();
                 let mut e = CommandEntry::new(format!("result:{idx}"), r.title.clone())
@@ -7853,7 +7853,7 @@ impl ShellOverlayHost {
     /// only in case or punctuation, and two nodes sharing one address would
     /// make both unaddressable ("ambiguous target").
     fn search_filter_key(kinds: &[crate::shell::search::ResourceKind], i: usize) -> String {
-        let slug = |k: &crate::shell::search::ResourceKind| Self::search_filter_slug(k.label());
+        let slug = |k: &crate::shell::search::ResourceKind| Self::search_filter_slug(k.id());
         let Some(kind) = kinds.get(i) else {
             return format!("palette:filter:{i}");
         };
@@ -7935,7 +7935,7 @@ impl ShellOverlayHost {
             .enumerate()
             .map(|(idx, scope)| {
                 let label = self.search_scope_pill_label(scope);
-                let key = format!("palette:scope:{}", Self::search_filter_slug(scope.label()));
+                let key = format!("palette:scope:{}", scope.slug());
                 bounded(
                     AccessNode::new(Role::RadioButton)
                         .with_name(t_args(
@@ -8227,13 +8227,13 @@ impl ShellOverlayHost {
         )
     }
 
-    /// Result kinds the palette is filtered to, as chip labels. Empty
+    /// Result kinds the palette is filtered to, by stable kind id. Empty
     /// means every kind is on offer — otherwise "filtered to apps" and
     /// "a query only apps matched" produce the same row list.
     pub fn palette_kind_filter(&self) -> Vec<String> {
         self.active_kind_filter
             .iter()
-            .map(|k| k.label().to_string())
+            .map(|k| k.id().to_string())
             .collect()
     }
 
@@ -10102,7 +10102,7 @@ impl ShellOverlayHost {
                     .as_ref()
                     .and_then(|c| c.borrow().active_app_title())
                 else {
-                    return SearchScope::ActiveApp.label().to_string();
+                    return SearchScope::ActiveApp.label();
                 };
                 let title = if raw.chars().count() > MAX_APP_PILL_CHARS {
                     let head: String = raw.chars().take(MAX_APP_PILL_CHARS).collect();
@@ -10117,7 +10117,7 @@ impl ShellOverlayHost {
                     t_args("host-search-scope-app", &[("title", title.into())])
                 }
             }
-            other => other.label().to_string(),
+            other => other.label(),
         }
     }
 
@@ -13930,7 +13930,7 @@ impl ShellOverlayHost {
                             "host-fabric-speaker-joined",
                             &[
                                 ("group", consent.name.clone().into()),
-                                ("role", consent.role.describe().to_string().into()),
+                                ("role", consent.role.describe().into()),
                             ],
                         )
                     } else {
@@ -14412,7 +14412,7 @@ impl ShellOverlayHost {
                         "host-fabric-asked-capture",
                         &[
                             ("device", device.label.into()),
-                            ("input", remote_capture_kind_label(kind).to_string().into()),
+                            ("input", t(remote_capture_kind_key(kind)).into()),
                         ],
                     ),
                 ))
@@ -18415,7 +18415,7 @@ impl Widget for ShellOverlayHost {
                                             t_args(
                                                 "a11y-speaker-membership",
                                                 &[
-                                                    ("role", sentence_case(membership.role.describe()).into()),
+                                                    ("role", sentence_case(&membership.role.describe()).into()),
                                                     ("group", membership.name.as_str().into()),
                                                 ],
                                             ),
@@ -18459,7 +18459,7 @@ impl Widget for ShellOverlayHost {
                                             t_args(
                                                 "a11y-remote-capture-share",
                                                 &[
-                                                    ("input", remote_capture_kind_label(consent.profile.kind()).into()),
+                                                    ("input", t(remote_capture_kind_key(consent.profile.kind())).into()),
                                                     ("app", consent.app_label.as_str().into()),
                                                 ],
                                             ),
@@ -18474,7 +18474,7 @@ impl Widget for ShellOverlayHost {
                                         DeviceFabricPaneRow::RemoteCaptureSource(kind) => (
                                             t_args(
                                                 "a11y-remote-capture-source",
-                                                &[("input", remote_capture_kind_label(kind).into())],
+                                                &[("input", t(remote_capture_kind_key(kind)).into())],
                                             ),
                                             t("a11y-remote-capture-source-description"),
                                             Vec::new(),
@@ -18482,7 +18482,7 @@ impl Widget for ShellOverlayHost {
                                         DeviceFabricPaneRow::RemoteCaptureSession(session) => (
                                             t_args(
                                                 "a11y-remote-capture-session",
-                                                &[("input", remote_capture_kind_label(session.kind).into())],
+                                                &[("input", t(remote_capture_kind_key(session.kind)).into())],
                                             ),
                                             match session.phase {
                                                 crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Requesting =>
@@ -18501,7 +18501,7 @@ impl Widget for ShellOverlayHost {
                                         DeviceFabricPaneRow::RemoteCaptureDegraded(degraded) => (
                                             t_args(
                                                 "a11y-remote-capture-unavailable",
-                                                &[("input", remote_capture_kind_label(degraded.kind).into())],
+                                                &[("input", t(remote_capture_kind_key(degraded.kind)).into())],
                                             ),
                                             match degraded.reason {
                                                 crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::SourceUnavailable =>
@@ -18546,7 +18546,7 @@ impl Widget for ShellOverlayHost {
                                                 crate::shell::device_fabric_runtime::DisplayMirrorPhase::Failed(failure) =>
                                                     t_args(
                                                         "a11y-mirror-failed",
-                                                        &[("reason", display_mirror_failure_label(failure).into())],
+                                                        &[("reason", t(display_mirror_failure_key(failure)).into())],
                                                     ),
                                                 crate::shell::device_fabric_runtime::DisplayMirrorPhase::Stopped =>
                                                     t("a11y-mirror-stopped"),
@@ -18618,12 +18618,12 @@ impl Widget for ShellOverlayHost {
                                                 crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(failure) if status.outbound =>
                                                     t_args(
                                                         "a11y-handoff-failed-retry",
-                                                        &[("reason", bluetooth_handoff_failure_label(failure).into())],
+                                                        &[("reason", t(bluetooth_handoff_failure_key(failure)).into())],
                                                     ),
                                                 crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(failure) =>
                                                     t_args(
                                                         "a11y-handoff-failed",
-                                                        &[("reason", bluetooth_handoff_failure_label(failure).into())],
+                                                        &[("reason", t(bluetooth_handoff_failure_key(failure)).into())],
                                                     ),
                                                 crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled if status.outbound =>
                                                     t("a11y-handoff-cancelled-retry"),
@@ -18678,7 +18678,7 @@ impl Widget for ShellOverlayHost {
                                                 crate::shell::device_fabric_runtime::MediaHandoffPhase::Failed(failure) =>
                                                     t_args(
                                                         "a11y-handoff-failed-retry",
-                                                        &[("reason", media_handoff_failure_label(failure).into())],
+                                                        &[("reason", t(media_handoff_failure_key(failure)).into())],
                                                     ),
                                                 crate::shell::device_fabric_runtime::MediaHandoffPhase::Cancelled =>
                                                     t("a11y-handoff-cancelled-retry"),
@@ -23384,9 +23384,13 @@ impl ShellOverlayHost {
         // "everything shows", stated by the leading "All" chip. Every
         // chip is painted regardless of width; see [`lay_out_chip_strip`].
         let kinds = self.search_registry.registered_kinds();
+        let kind_labels: Vec<String> = kinds
+            .iter()
+            .map(super::search::ResourceKind::label)
+            .collect();
         let all_label = t("search-filter-all");
         let labels: Vec<&str> = std::iter::once(all_label.as_str())
-            .chain(kinds.iter().map(super::search::ResourceKind::label))
+            .chain(kind_labels.iter().map(String::as_str))
             .collect();
         // Chip padding is `s3` either side — the shared `Chip` primitive's
         // own padding, so a filter chip and a chip anywhere else in the
@@ -24719,7 +24723,7 @@ impl ShellOverlayHost {
                     t_args(
                         "a11y-speaker-membership",
                         &[
-                            ("role", sentence_case(membership.role.describe()).into()),
+                            ("role", sentence_case(&membership.role.describe()).into()),
                             ("group", membership.name.as_str().into()),
                         ],
                     ),
@@ -24796,7 +24800,7 @@ impl ShellOverlayHost {
                     (
                         t_args(
                             "qs-devices-capture-share",
-                            &[("input", remote_capture_kind_label(consent.profile.kind()).into())],
+                            &[("input", t(remote_capture_kind_key(consent.profile.kind())).into())],
                         ),
                         t_args(
                             "qs-devices-capture-requested",
@@ -24813,7 +24817,7 @@ impl ShellOverlayHost {
                 DeviceFabricPaneRow::RemoteCaptureSource(kind) => (
                     t_args(
                         "qs-devices-capture-use-remote",
-                        &[("input", remote_capture_kind_label(*kind).into())],
+                        &[("input", t(remote_capture_kind_key(*kind)).into())],
                     ),
                     t("qs-devices-capture-source-note"),
                     ui::icons::Icon::Camera,
@@ -24846,7 +24850,7 @@ impl ShellOverlayHost {
                     (
                         t_args(
                             "a11y-remote-capture-session",
-                            &[("input", remote_capture_kind_label(session.kind).into())],
+                            &[("input", t(remote_capture_kind_key(session.kind)).into())],
                         ),
                         detail,
                         ui::icons::Icon::Camera,
@@ -24860,7 +24864,7 @@ impl ShellOverlayHost {
                 DeviceFabricPaneRow::RemoteCaptureDegraded(degraded) => (
                     t_args(
                         "a11y-remote-capture-unavailable",
-                        &[("input", remote_capture_kind_label(degraded.kind).into())],
+                        &[("input", t(remote_capture_kind_key(degraded.kind)).into())],
                     ),
                     match degraded.reason {
                         crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::SourceUnavailable => {
@@ -24901,7 +24905,7 @@ impl ShellOverlayHost {
                         DisplayMirrorPhase::Starting => t("qs-devices-mirror-starting"),
                         DisplayMirrorPhase::Streaming => t("qs-devices-mirror-streaming"),
                         DisplayMirrorPhase::Failed(failure) => {
-                            display_mirror_failure_label(failure).into()
+                            sentence_case(&t(display_mirror_failure_key(failure)))
                         }
                         DisplayMirrorPhase::Stopped => t("a11y-mirror-stopped"),
                     };
@@ -24979,10 +24983,10 @@ impl ShellOverlayHost {
                         crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(failure) if status.outbound =>
                             t_args(
                                 "qs-devices-handoff-failed-retry",
-                                &[("reason", bluetooth_handoff_failure_label(failure).into())],
+                                &[("reason", sentence_case(&t(bluetooth_handoff_failure_key(failure))).into())],
                             ),
                         crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(failure) =>
-                            bluetooth_handoff_failure_label(failure).into(),
+                            sentence_case(&t(bluetooth_handoff_failure_key(failure))),
                         crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled if status.outbound =>
                             t("qs-devices-cancelled-retry"),
                         crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled =>
@@ -25052,7 +25056,7 @@ impl ShellOverlayHost {
                         crate::shell::device_fabric_runtime::MediaHandoffPhase::Failed(failure) =>
                             t_args(
                                 "qs-devices-media-failed",
-                                &[("reason", media_handoff_failure_label(failure).into())],
+                                &[("reason", t(media_handoff_failure_key(failure)).into())],
                             ),
                         crate::shell::device_fabric_runtime::MediaHandoffPhase::Cancelled =>
                             t("qs-devices-cancelled-retry"),
@@ -25180,7 +25184,7 @@ impl ShellOverlayHost {
                     {
                         t_args(
                             "qs-devices-use-input",
-                            &[("input", remote_capture_kind_label(kind).into())],
+                            &[("input", t(remote_capture_kind_key(kind)).into())],
                         )
                     } else if self.qs_selected_remote_audio.is_some()
                         && !device.is_local
