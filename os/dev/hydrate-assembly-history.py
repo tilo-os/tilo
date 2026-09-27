@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 
-PATHS = {'os/Containerfile', 'os/dev/build-wpe.sh', 'os/dev/build-image.sh',
+PATHS = {'os/Containerfile', 'os/Containerfile.wpe', 'os/dev/build-wpe.sh', 'os/dev/build-image.sh',
          'os/dev/windows_provider.py', 'os/tests/test_windows_provider.py',
          'docs/security/boot-chain.md', 'os/scripts/verify-runtime-crypto-packages.sh',
          'os/usr/libexec/tilo-security-audit'}
