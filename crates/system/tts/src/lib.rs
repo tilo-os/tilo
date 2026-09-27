@@ -50,8 +50,8 @@
 //! boundary**, which is *not* linkage and imposes **no GPL constraint** on this crate or
 //! anything that links it:
 //!
-//! * **speech-dispatcher** (GPL): reached over its **SSIP socket**, a line protocol
-//!   this crate speaks itself.
+//! * **speech-dispatcher** (GPL): reached over its **SSIP socket** via the pure-Rust
+//!   [`ssip-client`](https://crates.io/crates/ssip-client) crate (MIT OR Apache-2.0).
 //! * **espeak-ng** (GPL-3.0): reached as a **spawned subprocess** (text piped to its stdin);
 //!   also typically reached *through* speech-dispatcher as an output module.
 //! * **Piper** (OHF-Voice fork, GPL-3.0): reached as a **speech-dispatcher output module** —
