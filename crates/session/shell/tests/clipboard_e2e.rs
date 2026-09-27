@@ -1508,6 +1508,16 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         client.map_window(&compositor);
         compositor.chrome_copy("caption survives image copy", false);
         compositor.chrome_copy_image();
+        // The text copy's own selection may arrive first; the image copy
+        // replaces it with an offer advertising both formats.
+        client.wait_until(
+            |s| {
+                s.clipboard_offer_mimes
+                    .iter()
+                    .any(|mime| mime == "image/png")
+            },
+            "the image copy's selection never arrived",
+        );
 
         let png = client.read_clipboard_bytes("image/png", None);
         let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
