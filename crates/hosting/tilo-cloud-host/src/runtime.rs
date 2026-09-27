@@ -1349,6 +1349,11 @@ mod publication_tests {
 #[cfg(all(test, unix))]
 mod durability_runtime_tests {
     use super::*;
+    /// Hang bound for each step the runtime answers, never a speed limit:
+    /// on a loaded runner starting the daemon or joining the relay alone can
+    /// take many seconds, and the step still has to happen for the test to
+    /// mean anything.
+    const HANG: Duration = Duration::from_secs(120);
     #[test]
     fn durability_receive_owner_failure_stops_actual_runtime_after_rejected_input_survives() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1381,10 +1386,7 @@ mod durability_runtime_tests {
                 )
                 .await
             });
-            let address = tokio::time::timeout(Duration::from_secs(10), ready_rx)
-                .await
-                .unwrap()
-                .unwrap();
+            let address = tokio::time::timeout(HANG, ready_rx).await.unwrap().unwrap();
             let endpoint = Endpoint::builder(presets::Minimal)
                 .relay_mode(RelayMode::Disabled)
                 .bind()
@@ -1404,7 +1406,7 @@ mod durability_runtime_tests {
             let browser =
                 RelayCoeditSession::join(client, workspace, device.verifying_key().to_bytes())
                     .unwrap();
-            tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::time::timeout(HANG, async {
                 while !matches!(browser.recv().await, Some(Inbound::Ready { .. })) {}
                 loop {
                     let store = Store::open(dir.path(), "durability-runtime").unwrap();
@@ -1442,7 +1444,9 @@ mod durability_runtime_tests {
             || {
                 runtime.block_on(async {
                     publish(&browser, &StoredPublication::mutation(message).unwrap()).unwrap();
-                    tokio::time::timeout(Duration::from_secs(2), &mut daemon).await
+                    // The owner storage failure stops the runtime: wait for it,
+                    // with the fault still armed.
+                    tokio::time::timeout(HANG, &mut daemon).await
                 })
             },
         );
