@@ -66,7 +66,11 @@ impl ActionHost for StubHost {
         _caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        let mut page = CataloguePage::from_rows("1".into(), vec![self.row()], &query);
+        let mut row = self.row();
+        if let Some(provider) = query.provider.clone() {
+            row.provider = provider;
+        }
+        let mut page = CataloguePage::from_rows("1".into(), vec![row], &query);
         page.providers = vec![CatalogueProvider {
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
@@ -369,4 +373,40 @@ fn client_labels_are_bounded_and_printable() {
     assert!(label.starts_with("ab"));
     assert_eq!(label.chars().count(), MAX_LABEL_CHARS);
     assert_eq!(client_label(&json!({})), "MCP agent");
+}
+
+#[test]
+fn the_workspace_itself_is_addressable_for_installed_apps() {
+    let host = StubHost::default();
+    let invoked = Arc::clone(&host.invoked);
+    let endpoint = endpoint(host, None);
+    let (open, both) = run(async {
+        let session = open(&endpoint, "a").await;
+        let call = |arguments: Value| {
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"tilo_invoke","arguments":arguments}}).to_string()
+        };
+        let headers = headers(&[(SESSION_HEADER, &session)]);
+        let open = endpoint
+            .dispatch(
+                &Method::POST,
+                "/mcp",
+                &headers,
+                call(json!({"workspace":true,"revision":"1","resource":"test.note:1","action":tilo_resource::APPLY,"arguments":{}})).as_bytes(),
+            )
+            .await;
+        let both = endpoint
+            .dispatch(
+                &Method::POST,
+                "/mcp",
+                &headers,
+                call(json!({"peer_id":71,"workspace":true,"revision":"1","resource":"x","action":"y","arguments":{}})).as_bytes(),
+            )
+            .await;
+        (body(open).await, body(both).await)
+    });
+    assert_eq!(open["result"]["isError"], false, "{open}");
+    assert_eq!(both["result"]["isError"], true, "{both}");
+    let invoked = invoked.lock().unwrap().clone();
+    assert_eq!(invoked.len(), 1);
+    assert_eq!(invoked[0].target.provider, "workspace:room");
 }

@@ -25,7 +25,9 @@ struct ListArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct QueryArgs {
-    peer_id: u64,
+    peer_id: Option<u64>,
+    #[serde(default)]
+    workspace: bool,
     #[serde(default)]
     revision: String,
     #[serde(default)]
@@ -42,7 +44,9 @@ struct QueryArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetArgs {
-    peer_id: u64,
+    peer_id: Option<u64>,
+    #[serde(default)]
+    workspace: bool,
     revision: String,
     resource: String,
     action: String,
@@ -50,7 +54,9 @@ struct TargetArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InvokeArgs {
-    peer_id: u64,
+    peer_id: Option<u64>,
+    #[serde(default)]
+    workspace: bool,
     revision: String,
     resource: String,
     action: String,
@@ -307,11 +313,23 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             Err("Unavailable live application instance".into())
         }
     }
+    /// The provider a call addresses: one live application instance, or the
+    /// workspace itself (installed applications to open, shortcuts, …).
+    async fn provider(&self, peer_id: Option<u64>, workspace: bool) -> Result<String, String> {
+        match (peer_id, workspace) {
+            (None, true) => Ok(tilo_actions::remote::workspace_provider(&self.room)),
+            (Some(peer), false) => {
+                self.live_peer(peer).await?;
+                Ok(peer.to_string())
+            }
+            _ => Err("name exactly one of peer_id or workspace: true".into()),
+        }
+    }
     async fn query(&self, args: QueryArgs) -> Result<Value, String> {
-        self.live_peer(args.peer_id).await?;
+        let provider = self.provider(args.peer_id, args.workspace).await?;
         let page = self
             .ask(CatalogueQuery {
-                provider: Some(args.peer_id.to_string()),
+                provider: Some(provider),
                 parent_resource: (!args.parent_resource.is_empty()).then_some(args.parent_resource),
                 needle: args.needle,
                 target: None,
@@ -336,9 +354,8 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 if a.revision.is_empty() {
                     return Err("revision must not be empty".into());
                 }
-                self.live_peer(a.peer_id).await?;
                 let target = RemoteActionTarget {
-                    provider: a.peer_id.to_string(),
+                    provider: self.provider(a.peer_id, a.workspace).await?,
                     address: tilo_actions::ActionAddress::new(a.resource, a.action),
                 };
                 let page = self
@@ -357,13 +374,13 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 if a.revision.is_empty() {
                     return Err("revision must not be empty".into());
                 }
-                self.live_peer(a.peer_id).await?;
+                let provider = self.provider(a.peer_id, a.workspace).await?;
                 let invocation = a
                     .invocation_id
                     .as_deref()
                     .map_or_else(|| Ok(tilo_actions::InvocationId::new()), invocation_id)?;
                 let target = RemoteActionTarget {
-                    provider: a.peer_id.to_string(),
+                    provider,
                     address: tilo_actions::ActionAddress::new(a.resource, a.action),
                 };
                 let confirmation = self.confirmation(&target, &a.revision).await?;
@@ -549,7 +566,8 @@ fn row_json(row: &CatalogueRow) -> Value {
 fn tool_definitions() -> Vec<Value> {
     let integer = json!({"type":"integer","minimum":0});
     let string = json!({"type":"string"});
-    let target = json!({"peer_id":integer,"revision":string,"resource":string,"action":string});
+    let workspace = json!({"type":"boolean","description":"Address the workspace itself instead of a live app: installed applications to open (resource app.<id>, action open), shortcuts and workspace settings"});
+    let target = json!({"peer_id":integer,"workspace":workspace,"revision":string,"resource":string,"action":string});
     let mut invoke = target.clone();
     if let Some(properties) = invoke.as_object_mut() {
         properties.insert("arguments".into(), json!({"type":"object"}));
@@ -560,10 +578,10 @@ fn tool_definitions() -> Vec<Value> {
     }
     let read = json!({"readOnlyHint":true,"openWorldHint":false});
     [
-        ("tilo_list_apps","List a bounded page of live application instances",json!({"after_peer":integer,"max_results":{"type":"integer","minimum":1,"maximum":128}}),json!([]),read.clone()),
-        ("tilo_query","Browse a bounded live directory page; preserve revision and cursor. Each action's contract carries its risk level",json!({"peer_id":integer,"revision":string,"cursor":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"parent_resource":string,"needle":string,"max_results":integer,"max_bytes":integer,"max_work":integer,"max_depth":integer}),json!(["peer_id"]),read.clone()),
-        ("tilo_resolve","Resolve an exact current action contract",target,json!(["peer_id","revision","resource","action"]),read.clone()),
-        ("tilo_invoke","Atomically resolve and start an action; accepted is not succeeded. Retry with the same invocation_id to never start twice. Allowing this call confirms the action, including destructive ones; check the contract's risk first",invoke,json!(["peer_id","revision","resource","action","arguments"]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
+        ("tilo_list_apps","List a bounded page of live application instances. To start an app that is not running, tilo_query with workspace: true and invoke its open action",json!({"after_peer":integer,"max_results":{"type":"integer","minimum":1,"maximum":128}}),json!([]),read.clone()),
+        ("tilo_query","Browse a bounded live directory page; preserve revision and cursor. Each action's contract carries its risk level",json!({"peer_id":integer,"workspace":workspace,"revision":string,"cursor":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"parent_resource":string,"needle":string,"max_results":integer,"max_bytes":integer,"max_work":integer,"max_depth":integer}),json!([]),read.clone()),
+        ("tilo_resolve","Resolve an exact current action contract",target,json!(["revision","resource","action"]),read.clone()),
+        ("tilo_invoke","Atomically resolve and start an action; accepted is not succeeded. Retry with the same invocation_id to never start twice. Allowing this call confirms the action, including destructive ones; check the contract's risk first",invoke,json!(["revision","resource","action","arguments"]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
         ("tilo_status","Read an owned invocation's canonical update",json!({"invocation_id":string}),json!(["invocation_id"]),read),
         ("tilo_cancel","Request cancellation of an owned invocation and read its update",json!({"invocation_id":string}),json!(["invocation_id"]),json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})),
     ].into_iter().map(|(name,description,properties,required,annotations)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":annotations})).collect()
