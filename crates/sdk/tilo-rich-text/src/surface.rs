@@ -411,6 +411,38 @@ impl<S: RichTextSource> RichTextSurface<S> {
         true
     }
 
+    /// Replace the text with `text`, a paragraph per line, as an edit: the
+    /// editor's paragraphs keep their ids where there are as many, so the
+    /// document sees text replaced rather than paragraphs recreated.
+    fn set_text(&mut self, doc: &mut AutoCommit, text: &str) {
+        let ids: Vec<String> = self
+            .editor
+            .blocks()
+            .iter()
+            .map(|block| block.id.clone())
+            .collect();
+        let mut fresh = 0_usize;
+        let lines: Vec<BlockContent> = text
+            .split('\n')
+            .enumerate()
+            .map(|(index, line)| {
+                let id = ids.get(index).cloned().unwrap_or_else(|| {
+                    loop {
+                        fresh = fresh.saturating_add(1);
+                        let id = format!("set-value-{fresh}");
+                        if !ids.contains(&id) {
+                            break id;
+                        }
+                    }
+                });
+                BlockContent::paragraph(id, line)
+            })
+            .collect();
+        self.editor.present_blocks(&lines);
+        self.editor.note_edit_anywhere();
+        self.commit(doc);
+    }
+
     /// Apply what the person did since the last presentation, then show the
     /// document as the edit left it. A participant who may only view is
     /// shown the document again, as if their edit never happened.
@@ -593,6 +625,31 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
 
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
         self.source.take_committed()
+    }
+
+    /// An assistive technology focuses the field or sets its text, as a
+    /// person typing would: the new text is written through the source's
+    /// edits, a paragraph per line.
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        match action {
+            ui::a11y::Action::Focus => {
+                Widget::set_focus(&mut self.editor, true);
+                true
+            }
+            ui::a11y::Action::SetValue(text) => {
+                if self.source.read_only() || self.source.revision().is_none() {
+                    return false;
+                }
+                self.set_text(state, text);
+                true
+            }
+            _ => self.editor.perform_action(action, state, path),
+        }
     }
 
     fn keeps_undo_step_open(&self) -> bool {
