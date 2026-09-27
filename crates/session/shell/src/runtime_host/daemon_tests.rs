@@ -254,3 +254,14 @@ fn a_process_tree_counts_its_descendants_cpu_time_and_runnable_threads() {
         "{described:?}"
     );
 }
+
+/// Without per-task child lists, children are found by their parent pid.
+#[cfg(target_os = "linux")]
+#[test]
+fn parent_pids_find_a_spawned_child() {
+    let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let found = super::parent_pids().contains(&(child.id(), std::process::id()));
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(found);
+}

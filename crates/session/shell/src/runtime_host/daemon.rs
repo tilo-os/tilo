@@ -299,6 +299,8 @@ const OUTPUT_TAIL: u64 = 4096;
 const STAGE_LIMIT: usize = 200;
 /// Processes, and threads per process, a launcher inspects in a daemon's tree.
 const TREE_LIMIT: usize = 256;
+/// Processes a launcher reads when the kernel lists no children per task.
+const PROCESS_SCAN_LIMIT: usize = 8192;
 
 /// The daemon's side of [`STAGES_FILE`].
 struct StartupStages(std::fs::File);
@@ -398,6 +400,7 @@ fn tasks(pid: u32) -> Vec<String> {
 fn sample_tree(root: u32, describe: bool) -> Option<TreeSample> {
     let mut sample = TreeSample::default();
     let mut pending = vec![root];
+    let mut parents = None;
     for _ in 0..TREE_LIMIT {
         let Some(pid) = pending.pop() else { break };
         let Some(ticks) = cpu_ticks(pid) else {
@@ -432,16 +435,48 @@ fn sample_tree(root: u32, describe: bool) -> Option<TreeSample> {
                     .threads
                     .push(format!("{} {state}{wchan}", read("comm")));
             }
-            if let Ok(children) = std::fs::read_to_string(task.join("children")) {
-                pending.extend(
+            match std::fs::read_to_string(task.join("children")) {
+                Ok(children) => pending.extend(
                     children
                         .split_whitespace()
                         .filter_map(|child| child.parse::<u32>().ok()),
-                );
+                ),
+                // Kernels without per-task child lists: a process's children
+                // are the processes naming it as their parent.
+                Err(_) if tid == pid.to_string() => pending.extend(
+                    parents
+                        .get_or_insert_with(parent_pids)
+                        .iter()
+                        .filter(|(_, parent)| *parent == pid)
+                        .map(|(child, _)| *child),
+                ),
+                Err(_) => {}
             }
         }
     }
     Some(sample)
+}
+
+/// Every visible process with its parent, bounded.
+#[cfg(target_os = "linux")]
+fn parent_pids() -> Vec<(u32, u32)> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+        .take(PROCESS_SCAN_LIMIT)
+        .filter_map(|pid| {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            let parent = stat
+                .get(stat.rfind(')')?.checked_add(2)?..)?
+                .split(' ')
+                .nth(1)?
+                .parse()
+                .ok()?;
+            Some((pid, parent))
+        })
+        .collect()
 }
 #[cfg(not(target_os = "linux"))]
 fn sample_tree(_root: u32, _describe: bool) -> Option<TreeSample> {
