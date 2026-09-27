@@ -72,6 +72,15 @@ fn profile_root(data: &Path, room: RoomId) -> PathBuf {
         .join(".local/share")
 }
 
+fn read_record(
+    store: &Rc<dyn transfer::DurableStore>,
+    app: &str,
+    room: &str,
+    record: &RecordCheckout,
+) -> Result<automerge::AutoCommit, TransferError> {
+    transfer::read(store, app, room, &transfer::Origin::Record(record.clone()))
+}
+
 fn body(doc: &automerge::AutoCommit) -> Option<String> {
     match doc.get(ROOT, "body") {
         Ok(Some((Value::Scalar(value), _))) => value.as_str().map(str::to_owned),
@@ -401,7 +410,7 @@ fn a_moved_window_keeps_its_document_history_and_place_and_the_old_one_closes_la
         [120.0],
         "the saved presentation came along"
     );
-    let arrived = transfer::read(
+    let arrived = read_record(
         destination.store(),
         APP,
         destination.workspace_id(),
@@ -444,7 +453,7 @@ fn a_moved_window_keeps_its_document_history_and_place_and_the_old_one_closes_la
     drop(old);
     tick(&mut f.chrome.borrow_mut());
     assert!(!f.chrome.borrow().window_transfers.is_pending());
-    let arrived = transfer::read(
+    let arrived = read_record(
         destination.store(),
         APP,
         destination.workspace_id(),
@@ -454,7 +463,7 @@ fn a_moved_window_keeps_its_document_history_and_place_and_the_old_one_closes_la
     assert_eq!(body(&arrived).as_deref(), Some("Groceries: milk, eggs"));
     let source = f.profile(f.home_room);
     assert!(matches!(
-        transfer::read(source.store(), APP, source.workspace_id(), &f.record),
+        read_record(source.store(), APP, source.workspace_id(), &f.record),
         Err(TransferError::Open(RecordOpenError::Retired))
     ));
     assert!(f.tabs_in(f.home).is_empty());
@@ -525,7 +534,7 @@ fn late_edits_restart_a_destination_instance_that_already_has_the_record() {
     assert_eq!(f.bind(NEW_SURFACE + 1), new_tab);
     tick(&mut f.chrome.borrow_mut());
     assert!(!f.chrome.borrow().window_transfers.is_pending());
-    let merged = transfer::read(
+    let merged = read_record(
         destination.store(),
         APP,
         destination.workspace_id(),
@@ -571,7 +580,7 @@ fn a_move_whose_new_window_never_opens_rolls_back_and_keeps_the_old_one() {
     let (destination, _, carried) = f.arrived(INSTANCE);
     assert!(
         matches!(
-            transfer::read(
+            read_record(
                 destination.store(),
                 APP,
                 destination.workspace_id(),
@@ -583,7 +592,7 @@ fn a_move_whose_new_window_never_opens_rolls_back_and_keeps_the_old_one() {
     );
     drop(old);
     let source = f.profile(f.home_room);
-    let kept = transfer::read(source.store(), APP, source.workspace_id(), &f.record).unwrap();
+    let kept = read_record(source.store(), APP, source.workspace_id(), &f.record).unwrap();
     assert_eq!(body(&kept).as_deref(), Some("Groceries: milk"));
 }
 
@@ -605,7 +614,7 @@ fn an_old_window_that_crashes_mid_move_still_moves_its_saved_work_and_says_so() 
     );
     assert!(!f.chrome.borrow().window_transfers.is_pending());
     let (destination, _, carried) = f.arrived(INSTANCE);
-    let arrived = transfer::read(
+    let arrived = read_record(
         destination.store(),
         APP,
         destination.workspace_id(),
@@ -652,12 +661,12 @@ fn a_copy_leaves_the_original_window_and_document_where_they_are() {
     ));
     drop(old);
     let source = f.profile(f.home_room);
-    let original = transfer::read(source.store(), APP, source.workspace_id(), &f.record)
+    let original = read_record(source.store(), APP, source.workspace_id(), &f.record)
         .expect("the original stays live in its room");
     let beside = f.launched.borrow()[0].record_instance;
     assert_ne!(beside, INSTANCE, "a copy is a window of its own");
     let (destination, _, carried) = f.arrived(beside);
-    let copy = transfer::read(
+    let copy = read_record(
         destination.store(),
         APP,
         destination.workspace_id(),
@@ -745,4 +754,61 @@ fn a_second_window_on_the_same_document_blocks_move_but_not_copy() {
         sheet.detail()
     );
     drop(old);
+}
+
+#[test]
+fn an_app_without_records_carries_the_document_it_keeps_in_the_room() {
+    let (f, _) = Fixture::new(false, false);
+    // A plain persisted app: one document for itself in Home, which its
+    // running instance writes.
+    let root = profile_root(f.data.path(), f.home_room);
+    std::fs::create_dir_all(&root).unwrap();
+    let home = NativeProfile::open(&root, Some(&f.home_room.to_string())).unwrap();
+    let (mut state, mut old) = ui::persist::open_in(Rc::clone(home.store()), APP).unwrap();
+    state
+        .doc
+        .put(ROOT, "body", "Scratch: call the plumber")
+        .unwrap();
+    old.request(&mut state.doc);
+    old.flush();
+    global_registry()
+        .lock()
+        .unwrap()
+        .bind_tab(AppInstanceId(TAB), AppInstanceId(INSTANCE));
+
+    f.ask(TransferMode::Move);
+    let sheet = f.answer("Move");
+    assert_eq!(
+        sheet.choices().len(),
+        2,
+        "its document can move or be copied"
+    );
+    let (destination, _, carried) = f.arrived(INSTANCE);
+    assert_eq!(carried.kind.as_str(), transfer::APP_DOCUMENT_KIND);
+    let arrived = read_record(
+        destination.store(),
+        APP,
+        destination.workspace_id(),
+        &carried,
+    )
+    .unwrap();
+    assert_eq!(body(&arrived).as_deref(), Some("Scratch: call the plumber"));
+
+    f.bind(NEW_SURFACE);
+    tick(&mut f.chrome.borrow_mut());
+    assert_eq!(f.close_requests(), [SURFACE]);
+    f.destroy(SURFACE);
+    tick(&mut f.chrome.borrow_mut());
+    assert!(
+        f.chrome.borrow().window_transfers.is_busy(),
+        "the app document is not retired while its writer still runs"
+    );
+    drop((state, old));
+    tick(&mut f.chrome.borrow_mut());
+    assert!(!f.chrome.borrow().window_transfers.is_pending());
+    let origin = transfer::Origin::AppDocument(RecordKind::new(transfer::APP_DOCUMENT_KIND));
+    assert!(matches!(
+        transfer::read(home.store(), APP, home.workspace_id(), &origin),
+        Err(TransferError::Open(RecordOpenError::Retired))
+    ));
 }

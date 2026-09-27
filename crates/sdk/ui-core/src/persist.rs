@@ -156,6 +156,10 @@ pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, DocWriter) {
     }
 
     let attempt = || -> Result<(State, DocWriter), StoreError> {
+        // A carried window's record already holds what it brought.
+        if let Some(carried) = open_carried(manifest_id) {
+            return carried;
+        }
         let mut store = DocStore::open_with_manifest_id(manifest_id)?;
         match store.migrate_from(legacy) {
             Ok(true) => tracing::info!(
@@ -182,7 +186,47 @@ pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, DocWriter) {
 /// read-only home, a missing `HOME`, or a document a newer build wrote in
 /// an incompatible layout).
 pub fn try_open(manifest_id: &str) -> Result<(State, DocWriter), StoreError> {
+    if let Some(carried) = open_carried(manifest_id) {
+        return carried;
+    }
     Ok(finish(DocStore::open_with_manifest_id(manifest_id)?))
+}
+
+/// A window carried in from another workspace
+/// ([`crate::record::transfer`]) opens the record its instance's saved
+/// presentation names, rather than the app's own document in this room.
+/// `None` for every other launch, which opens the app's document as ever.
+fn open_carried(manifest_id: &str) -> Option<Result<(State, DocWriter), StoreError>> {
+    let (profile, instance) = crate::application::NativeProfile::of_launch()?;
+    let view = match profile.saved_view(instance) {
+        Ok(view) => view?,
+        Err(error) => {
+            tracing::warn!(%error, "saved presentation unreadable; opening the app document");
+            return None;
+        }
+    };
+    let package = crate::host::environment()
+        .identity
+        .package_id
+        .clone()
+        .unwrap_or_else(|| manifest_id.to_string());
+    let id = crate::record::RecordId::parse(&view.record_id)
+        .filter(|id| view.app_id == package && !id.is_package_primary())?;
+    let key = StorageKey::record(&package, profile.workspace_id(), id.storage_key());
+    let mut store = match DocStore::shared(Rc::clone(profile.store()), key) {
+        Ok(store) => store,
+        Err(error) => return Some(Err(error)),
+    };
+    match store.load() {
+        Ok(Some(mut doc)) if !crate::record::transfer::is_retired(&doc) => {
+            let mut autosave = store.writer();
+            autosave.seed(&mut doc);
+            Some(Ok((State::from_doc(doc), autosave)))
+        }
+        // Moved on again, or never arrived: this room's own document.
+        Ok(_) => None,
+        Err(error) => Some(Err(error)),
+    }
 }
 
 /// Open an explicitly selected canonical profile through the same private
@@ -306,6 +350,14 @@ fn finish_initial(
 
 fn finish(mut store: DocStore) -> (State, DocWriter) {
     let mut doc = store.load_or_new();
+    // The app's document moved to another workspace, which now holds it
+    // with its history; this room's app starts over.
+    if crate::record::transfer::is_retired(&doc) {
+        doc = store.new_document();
+        if let Err(error) = store.save(&mut doc) {
+            tracing::error!(%error, "could not start a new app document after a move");
+        }
+    }
     // A document written by a newer build is not opened, and the empty
     // stand-in must never reach disk — with autosave on, the first edit
     // (or the exit flush) would save it over the existing document. The store
@@ -512,6 +564,79 @@ mod tests {
                 note(&state).as_deref(),
                 Some("recovered"),
                 "state written after recovery must load on the next open"
+            );
+        }
+    }
+
+    #[test]
+    fn a_carried_window_opens_its_record_and_a_moved_app_document_starts_over() {
+        use crate::record::transfer::{self, Origin, Retirement};
+        const PACKAGE: &str = "so.tilo.persist-carry";
+        const HOME: &str = "3f2b1c00-0000-4000-8000-0000000000d1";
+        const ELSEWHERE: &str = "3f2b1c00-0000-4000-8000-0000000000d2";
+        const INSTANCE: u64 = 9;
+        let temp = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_DATA_HOME", temp.path())
+            .set("TILO_PACKAGE_ID", PACKAGE)
+            .set("TILO_WORKSPACE_ID", HOME)
+            .remove("TILO_CONTINUITY_INSTANCE");
+        {
+            let (mut state, mut autosave) = try_open(PACKAGE).unwrap();
+            state
+                .doc
+                .put(&ROOT, "note", ScalarValue::Str("from home".into()))
+                .unwrap();
+            autosave.request(&mut state.doc);
+            autosave.flush();
+        }
+
+        // What the shell does when the window moves.
+        let store = native(temp.path());
+        let origin = Origin::AppDocument(crate::record::RecordKind::new("tilo.app-document"));
+        let snapshot = transfer::read(&store, PACKAGE, HOME, &origin).unwrap();
+        let mut arrived = transfer::rehome(
+            &snapshot,
+            &origin,
+            HOME,
+            ELSEWHERE,
+            &crate::record::RecordId::minted(),
+        )
+        .unwrap();
+        let carried = transfer::install(&store, PACKAGE, ELSEWHERE, &mut arrived).unwrap();
+        let there = crate::application::NativeProfile::open(temp.path(), Some(ELSEWHERE)).unwrap();
+        let view = crate::application_view::SavedInstanceView {
+            version: 2,
+            app_id: PACKAGE.into(),
+            device_id: there.device_id().into(),
+            workspace_id: there.workspace_id().into(),
+            instance_id: INSTANCE,
+            record_id: carried.id.as_str().into(),
+            record_kind: carried.kind.as_str().into(),
+            view: crate::view::View::default(),
+            application: None,
+        };
+        there.adopt_view(&view, INSTANCE, &carried).unwrap();
+        transfer::retire(&store, PACKAGE, HOME, &origin, Retirement::Moved).unwrap();
+
+        env.set("TILO_WORKSPACE_ID", ELSEWHERE)
+            .set("TILO_CONTINUITY_INSTANCE", INSTANCE.to_string());
+        {
+            let (state, autosave) = try_open(PACKAGE).unwrap();
+            assert!(autosave.is_enabled());
+            assert_eq!(
+                note(&state).as_deref(),
+                Some("from home"),
+                "the carried window opens what it brought"
+            );
+        }
+        env.set("TILO_CONTINUITY_INSTANCE", (INSTANCE + 1).to_string());
+        {
+            let (state, _) = try_open(PACKAGE).unwrap();
+            assert_eq!(
+                note(&state),
+                None,
+                "a moved app document is never reopened; the app starts over"
             );
         }
     }
