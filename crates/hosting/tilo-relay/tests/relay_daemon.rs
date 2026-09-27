@@ -26,7 +26,7 @@ use std::time::Duration;
 use tilo_relay::{CoeditPayload, Envelope, Relay, RelayClient, RelayCoeditSession, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay, wait_for};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
@@ -69,8 +69,8 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .unwrap();
         let a_session = RelayCoeditSession::join(a_client, 19, a_key).unwrap();
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(2), a_session.recv()).await,
-            Ok(Some(tilo_relay::Inbound::Ready { pending: 0 }))
+            tilo_test_env::within("a message on a_session", a_session.recv()).await,
+            Some(tilo_relay::Inbound::Ready { pending: 0 })
         ));
         a_session
             .publish_checkpoint([7u8; 32], b"baseline-before-phone".to_vec())
@@ -93,9 +93,8 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         b_client
             .send(Envelope::Subscribe { workspace_id: 19 })
             .unwrap();
-        let received = tokio::time::timeout(Duration::from_secs(2), b_client.recv())
+        let received = tilo_test_env::within("a message on b_client", b_client.recv())
             .await
-            .unwrap()
             .unwrap();
         let Envelope::Delta { delta, .. } = received else {
             panic!("expected retained checkpoint, got {received:?}");
@@ -105,11 +104,11 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             Some(CoeditPayload::Checkpoint { body, .. }) if body == b"baseline-before-phone"
         ));
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(2), b_client.recv()).await,
-            Ok(Some(Envelope::Ready {
+            tilo_test_env::within("a message on b_client", b_client.recv()).await,
+            Some(Envelope::Ready {
                 workspace_id: 19,
                 pending_deltas: 1
-            }))
+            })
         ));
     }
     // Phase `home_host_remembers_authenticated_devices_for_offline_delivery`.
@@ -159,9 +158,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             client
                 .send(Envelope::Subscribe { workspace_id: 9 })
                 .unwrap();
-            let _ = tokio::time::timeout(Duration::from_secs(2), client.recv())
-                .await
-                .unwrap();
+            let _ = tilo_test_env::within("a message on client", client.recv()).await;
         }
         drop(b_client);
         let pending_dir = state
@@ -190,9 +187,9 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             .send(Envelope::Subscribe { workspace_id: 9 })
             .unwrap();
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(2), b_again.recv()).await,
-            Ok(Some(Envelope::Delta { ref delta, .. })) if delta == b"offline-change"
-        ));
+        tilo_test_env::within("a message on b_again", b_again.recv()).await,
+        Some(Envelope::Delta { ref delta, .. }) if delta == b"offline-change"
+            ));
         wait_for_ready_with_pending(&b_again).await;
 
         let members: Vec<String> = serde_json::from_slice(
@@ -257,9 +254,8 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         // Drain the Ready acks so we don't confuse them for the delta
         // later.
         for cli in [&a_client, &b_client] {
-            let env = tokio::time::timeout(Duration::from_secs(2), cli.recv())
+            let env = tilo_test_env::within("Ready timeout", cli.recv())
                 .await
-                .expect("Ready timeout")
                 .expect("Ready channel closed");
             match env {
                 Envelope::Ready {
@@ -282,9 +278,8 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         a_client.send(delta_env.clone()).unwrap();
 
         // B receives it.
-        let received = tokio::time::timeout(Duration::from_secs(2), b_client.recv())
+        let received = tilo_test_env::within("delta timeout", b_client.recv())
             .await
-            .expect("delta timeout")
             .expect("delta channel closed");
         match received {
             Envelope::Delta {
@@ -306,9 +301,6 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         // Metrics reflect activity.
         let snap = relay.relay.handle().metrics.snapshot();
         assert!(snap.conns_authed >= 2, "at least both peers authed");
-
-        // Squelch clippy's "unused" for the awaiter helper.
-        let _ = wait_for(|| true, 1).await;
     }
 }
 
@@ -344,7 +336,7 @@ async fn publish_until_queued(
 /// pending delta was queued for this reconnect.
 async fn wait_for_ready_with_pending(b_again: &RelayClient) {
     loop {
-        match tokio::time::timeout(Duration::from_secs(2), b_again.recv()).await {
+        match tokio::time::timeout(tilo_test_env::hang_bound(), b_again.recv()).await {
             Ok(Some(Envelope::Ready {
                 workspace_id: 9,
                 pending_deltas,

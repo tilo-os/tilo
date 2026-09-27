@@ -583,11 +583,17 @@ pub const PAIRING_FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian
 /// before it counts the peer as hung. The UI polls the broker from its
 /// frame loop, so a shipped build gives up fast on a peer that stops
 /// answering. Test builds share a loaded runner with everything else, so
-/// there the bound only catches a hang.
+/// there it is the shared test hang bound.
 #[cfg(not(any(test, feature = "test-support")))]
-pub const PAIRING_IO_TIMEOUT: Duration = Duration::from_secs(2);
+pub fn pairing_io_timeout() -> Duration {
+    Duration::from_secs(2)
+}
+/// How long either end of a pairing-broker exchange waits on its socket
+/// before it counts the peer as hung: in test builds, the shared hang bound.
 #[cfg(any(test, feature = "test-support"))]
-pub const PAIRING_IO_TIMEOUT: Duration = Duration::from_secs(120);
+pub fn pairing_io_timeout() -> Duration {
+    tilo_test_env::hang_bound()
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PairingBrokerRequest {
@@ -702,10 +708,11 @@ impl PairingHandshake {
     ) -> Option<PairingBrokerResponse> {
         use std::io::Write;
         let frame = PAIRING_FRAMING.encode_value(request).ok()?;
-        let tcp = std::net::TcpStream::connect_timeout(&endpoint.parse().ok()?, PAIRING_IO_TIMEOUT)
-            .ok()?;
-        tcp.set_read_timeout(Some(PAIRING_IO_TIMEOUT)).ok()?;
-        tcp.set_write_timeout(Some(PAIRING_IO_TIMEOUT)).ok()?;
+        let tcp =
+            std::net::TcpStream::connect_timeout(&endpoint.parse().ok()?, pairing_io_timeout())
+                .ok()?;
+        tcp.set_read_timeout(Some(pairing_io_timeout())).ok()?;
+        tcp.set_write_timeout(Some(pairing_io_timeout())).ok()?;
         if certificate.is_empty() || certificate.len() > 64 * 1024 {
             return None;
         }
