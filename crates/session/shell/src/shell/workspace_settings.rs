@@ -1611,7 +1611,9 @@ pub fn scope_label(scope: &Scope) -> String {
         Scope::NetHost(host) if host == "*" => "any network host".to_string(),
         Scope::NetHost(host) => format!("network host {host}"),
         Scope::Action { app, action } => {
-            format!("“{action}” in {}", tilo_desktop_model::apps::app_label(app))
+            let name = crate::shell::launcher::display_name_for_app_id(app)
+                .unwrap_or_else(|| crate::shell::launcher::display_name_for_package_id(app));
+            format!("“{action}” in {name}")
         }
         Scope::ResourceType(kind) => format!("every {}", artifact_kind_label(*kind)),
         Scope::ResourceInstance(id) => format!("one document ({})", short_id(&id.0.to_string())),
@@ -1747,7 +1749,9 @@ impl GrantSubject {
         match self.kind {
             SubjectKind::Member | SubjectKind::Agent => short_id(&self.id),
             SubjectKind::App | SubjectKind::AppAction => {
-                tilo_desktop_model::apps::app_label(&self.id).to_string()
+                crate::shell::launcher::display_name_for_app_id(&self.id).unwrap_or_else(|| {
+                    crate::shell::launcher::display_name_for_package_id(&self.id)
+                })
             }
             _ => self.id.clone(),
         }

@@ -13,7 +13,6 @@ use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
-use ui::search::{FieldWeight, RankField};
 
 use crate::portal::desktop_services::DynamicLauncherRecord;
 use crate::shell::catalogue::{self, CatalogueApp};
@@ -1102,38 +1101,7 @@ impl ApplicationsProvider {
     }
 }
 
-/// The package id in full names exactly one app, so an exact id is as
-/// strong as the name; a shared id prefix names a publisher and stays below
-/// an exact name.
-pub(crate) const PACKAGE_ID_WEIGHT: FieldWeight = FieldWeight::new(88);
-
-/// The shared ranker over an app's fields. The package id in full, or its
-/// last segment, identifies exactly one app and weighs as its name —
-/// `hex-editor` typed for `so.tilo.hex-editor` is the app's identity and must
-/// outrank an incidental substring. Category ranks below the id because it's
-/// a bucket, not an identity. Multi-word queries may span fields, so `office
-/// spreadsheet` can find an app whose category and description carry one
-/// word each. An empty needle matches everything at `0`, so an empty palette
-/// lists installed apps.
-pub(crate) fn match_score(
-    needle: &str,
-    name: &str,
-    package_id: &str,
-    category: Option<&str>,
-    description: Option<&str>,
-) -> Option<i32> {
-    let last_segment = package_id.rsplit('.').next().unwrap_or(package_id);
-    crate::shell::search::rank_fields(
-        needle,
-        &[
-            RankField::new(name, FieldWeight::TITLE),
-            RankField::new(last_segment, FieldWeight::TITLE),
-            RankField::new(package_id, PACKAGE_ID_WEIGHT),
-            RankField::new(category.unwrap_or_default(), FieldWeight::METADATA),
-            RankField::new(description.unwrap_or_default(), FieldWeight::BODY),
-        ],
-    )
-}
+pub(crate) use ui::search::system::{PACKAGE_ID_WEIGHT, application_match_score as match_score};
 
 #[cfg(test)]
 mod tests {
@@ -1219,7 +1187,7 @@ mod tests {
 
         // Phase `activating_with_no_workspace_reports_it_the_same_way`.
         // Must say so in the same words an installed app's launch uses, not
-        // fail silently. Drives the `on_open` closure.
+        // fail silently. Drives the real `on_open` closure.
         {
             let p = ApplicationsProvider::new();
             let c = chrome_rc();
@@ -1257,7 +1225,7 @@ mod tests {
         // A launch that cannot start must reach both audiences: a notification
         // for the screen, and a refusal for the caller that invoked the row by
         // address — without it, a script is told the app opened and waits for
-        // a window that never arrives. Drives the `on_open` closure.
+        // a window that never arrives. Drives the real `on_open` closure.
         {
             use crate::shell::search::action_api::ActionError;
 
@@ -2198,7 +2166,7 @@ mod native_application_tests {
                 doc_root: &automerge::ROOT,
             });
             assert_eq!(results.len(), 1);
-            assert_eq!(results[0].id, "org.tilo.Files");
+            assert_eq!(results[0].id, crate::shell::hosted_inputs::FILES_PACKAGE_ID);
             (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
             assert_eq!(chrome.borrow().active_app_title().as_deref(), Some("Files"));
             assert!(
@@ -2312,3 +2280,9 @@ mod native_application_tests {
         }
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;

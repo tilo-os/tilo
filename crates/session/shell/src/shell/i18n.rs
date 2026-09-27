@@ -21,7 +21,7 @@ const fn catalog() -> EmbeddedCatalog {
     let catalog = EmbeddedCatalog::new(
         "en-US",
         &[("en-US", SOURCE_FTL), ("de-DE", DE_FTL)],
-        "continuity-dismiss",
+        "continuity-continue",
     )
     .with_system_locale();
     // Unit tests assert source copy throughout the shell; keep them
@@ -104,7 +104,6 @@ mod tests {
         for key in [
             "continuity-continue",
             "continuity-continue-subtitle",
-            "continuity-dismiss",
             "continuity-dismiss-title",
             "continuity-dismiss-subtitle",
             "continuity-other-device",
@@ -281,11 +280,11 @@ mod tests {
 
     #[test]
     fn german_desktops_resolve_german_copy() {
-        let english = t("continuity-dismiss");
+        let english = t("tab-closed-undo");
         ui::i18n::I18nManager::set_locale("de-DE");
-        let german = t("continuity-dismiss");
+        let german = t("tab-closed-undo");
         ui::i18n::I18nManager::set_locale("en-US");
-        assert_eq!(english, "Dismiss");
-        assert_eq!(german, "Ausblenden");
+        assert_eq!(english, "Undo");
+        assert_eq!(german, "Rückgängig");
     }
 }

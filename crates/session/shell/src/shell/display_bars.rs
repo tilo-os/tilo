@@ -63,12 +63,16 @@ impl DisplayBars {
             let bar = {
                 let state = self.chrome.borrow();
                 let tree = state.tree();
-                match state.explicit_local_user() {
-                    Some(local) => TopBarChrome::from_tree_with_local_user(&tree, local.to_owned()),
-                    None => TopBarChrome::from_tree(&tree),
-                }
+                let local = state
+                    .explicit_local_user()
+                    .map_or_else(crate::shell::state::local_user_id, str::to_owned);
+                TopBarChrome::from_tree_with_local_user(&tree.desktop, local)
             };
-            let mut bar = bar.compact().with_chrome(self.chrome.clone());
+            let mut bar = bar
+                .compact()
+                .with_chrome(crate::shell::topbar_chrome::native_source(
+                    self.chrome.clone(),
+                ));
             bar.set_placement(Some(at));
             self.bars.push((id, bar));
         }
@@ -99,6 +103,14 @@ impl DisplayBars {
 }
 
 impl Widget for DisplayBars {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         for (_, bar) in &mut self.bars {
             bar.sync(state, root);

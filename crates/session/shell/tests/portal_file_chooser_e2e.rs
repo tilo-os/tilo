@@ -669,3 +669,9 @@ async fn file_chooser_answers_cancelled_and_concurrent_requests_instead_of_hangi
         assert_eq!(code1, 1);
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

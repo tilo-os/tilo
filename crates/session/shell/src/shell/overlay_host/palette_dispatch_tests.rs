@@ -1575,7 +1575,9 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
                 "tilo-identity:{}",
                 "42".repeat(32)
             ))),
-            PeerSyncRequest::AcceptInvite(_) => Err("not here".to_string()),
+            PeerSyncRequest::AcceptInvite(_)
+            | PeerSyncRequest::PollEnrollment(_)
+            | PeerSyncRequest::CancelEnrollment(_) => Err("not here".to_string()),
             PeerSyncRequest::ListPendingInvitations => {
                 Ok(PeerSyncResponse::PendingInvitations(Vec::new()))
             }

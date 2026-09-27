@@ -353,10 +353,9 @@ mod tests {
     #[test]
     fn a_resource_offers_the_shortcuts_that_run_on_its_kind_only() {
         let chrome = chrome_with_file_shortcut();
-        let broker =
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_membership(
-                chrome.borrow().tree_handle(),
-            );
+        let broker = crate::shell::broker_services::test_broker_with_membership(
+            chrome.borrow().tree_handle(),
+        );
         let provider = ShortcutsProvider::new(broker.clone());
         let everything = ids(&query(&provider, &chrome));
         assert!(
@@ -408,6 +407,8 @@ mod tests {
             assert!(Instant::now() < deadline, "the quick action never finished");
             std::thread::sleep(Duration::from_millis(10));
         };
+        drop(provider);
+        drop(broker);
         assert_eq!(
             output.value,
             Some(serde_json::json!("files.entry.image:0123")),
