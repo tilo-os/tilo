@@ -172,6 +172,8 @@ pub struct InputPrefs {
     /// xkb layout code, e.g. `"us"`, `"de"`.
     pub keyboard_layout: String,
     pub tap_drag: bool,
+    /// Keep a tap-and-drag going after the finger lifts, until the next tap.
+    pub tap_drag_lock: bool,
     pub disable_while_typing: bool,
     pub middle_emulation: bool,
     pub left_handed: bool,
@@ -219,6 +221,7 @@ impl Default for InputPrefs {
             key_repeat_rate_hz: None,
             keyboard_layout: "us".to_string(),
             tap_drag: true,
+            tap_drag_lock: false,
             disable_while_typing: true,
             middle_emulation: true,
             left_handed: false,
@@ -276,6 +279,7 @@ impl InputPrefs {
             mouse_natural_scroll: self.mouse_natural_scroll,
             tap_to_click: self.tap_to_click,
             tap_drag: self.tap_drag,
+            tap_drag_lock: self.tap_drag_lock,
             disable_while_typing: self.disable_while_typing,
             middle_emulation: self.middle_emulation,
             left_handed: self.left_handed,

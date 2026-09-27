@@ -1386,6 +1386,10 @@ impl SettingsApp {
                 prefs.input.tap_drag = enabled;
                 "tap and drag updated"
             }
+            crate::actions::InputOperation::SetTapDragLock { enabled } => {
+                prefs.input.tap_drag_lock = enabled;
+                "tap-and-drag lock updated"
+            }
             crate::actions::InputOperation::SetDisableWhileTyping { enabled } => {
                 prefs.input.disable_while_typing = enabled;
                 "disable while typing updated"
@@ -1416,13 +1420,13 @@ impl SettingsApp {
             }
             crate::actions::InputOperation::SetTouchpadClickMethod { method } => {
                 prefs.input.touchpad_click_method =
-                    crate::panes::mouse_keyboard::click_method_for_label(&method)
+                    crate::panes::mouse_keyboard::click_method_for_id(&method)
                         .ok_or_else(|| "unsupported touchpad click method".to_string())?;
                 "touchpad click method updated"
             }
             crate::actions::InputOperation::SetTouchpadScrollMethod { method } => {
                 prefs.input.touchpad_scroll_method =
-                    crate::panes::mouse_keyboard::scroll_method_for_label(&method)
+                    crate::panes::mouse_keyboard::scroll_method_for_id(&method)
                         .ok_or_else(|| "unsupported touchpad scroll method".to_string())?;
                 "touchpad scroll method updated"
             }
