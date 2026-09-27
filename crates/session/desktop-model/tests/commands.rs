@@ -12,7 +12,7 @@
 )]
 
 use tilo_desktop_model::commands::{
-    DesktopCommand, TabLocation, TabPlacement, apply_command, open_app_placement,
+    DesktopCommand, OpenContext, TabLocation, TabPlacement, apply_command, open_app_placement,
 };
 use tilo_desktop_model::{
     AppKind, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
@@ -107,13 +107,13 @@ fn a_failed_record_leaves_no_topology_and_the_last_close_keeps_its_strip() {
 fn open_app_lands_in_a_new_group_of_the_last_owned_strip() {
     let mut workspace = workspace_with_group();
     assert_eq!(
-        open_app_placement(&workspace, |_| true).unwrap(),
+        open_app_placement(&workspace, &OpenContext::default(), |_| true).unwrap(),
         TabPlacement::NewGroup {
             strip: 10,
             after: None
         }
     );
-    assert!(open_app_placement(&workspace, |_| false).is_err());
+    assert!(open_app_placement(&workspace, &OpenContext::default(), |_| false).is_err());
     apply_command(
         &mut workspace,
         &DesktopCommand::OpenApp {
