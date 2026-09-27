@@ -178,10 +178,7 @@ impl EditorApp {
                 self.disk_conflict = None;
             }
             Some(_) => {
-                self.disk_conflict = Some(
-                    "File changed on disk; unsaved edits are preserved for conflict resolution"
-                        .to_string(),
-                );
+                self.disk_conflict = Some(crate::shell::i18n::t("editor-disk-conflict"));
             }
         }
     }
@@ -541,19 +538,19 @@ impl EditorApp {
             at(transform, (self.rect.x0 + PADDING_X, self.rect.y0 + 18.0)),
             None,
         );
-        let hint = if self.disk_conflict.is_some() {
-            "File changed on disk — unsaved edits preserved"
+        let hint = crate::shell::i18n::t(if self.disk_conflict.is_some() {
+            "editor-hint-disk-conflict"
         } else if self.focused {
-            "Live-shared code  ·  Ctrl+Z to undo"
+            "editor-hint-focused"
         } else {
-            "Click to edit"
-        };
+            "editor-hint-click"
+        });
         #[expect(
             clippy::cast_possible_truncation,
             reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
         )]
         let hint = tr.elide_to_width(
-            hint,
+            &hint,
             hint_size,
             (self.rect.width() - 2.0 * PADDING_X).max(0.0) as f32,
         );

@@ -33,12 +33,14 @@ impl CapnpBrokerState {
         let mut actions = vec![desktop_command_action()];
         actions.extend(
             service
-                .openable_applications()
+                .catalogue()
+                .openable()
                 .into_iter()
-                .filter(|(app, _)| {
-                    open_app_resource(&format!("{OPEN_APP_PREFIX}{app}")) == Some(app.as_str())
+                .filter(|entry| {
+                    open_app_resource(&format!("{OPEN_APP_PREFIX}{}", entry.app_id))
+                        == Some(entry.app_id)
                 })
-                .map(|(app, title)| open_app_action(&app, &title)),
+                .map(|entry| open_app_action(entry.app_id, entry.title)),
         );
         self.surfaces
             .lock()
@@ -195,11 +197,7 @@ impl CapnpBrokerState {
             if !open_app_argument_is_empty(envelope.argument.as_deref()) {
                 return Err(Rejected("opening an application takes no arguments".into()));
             }
-            if !service
-                .openable_applications()
-                .iter()
-                .any(|(openable, _)| openable == app)
-            {
+            if service.catalogue().find(app).is_none() {
                 return Err(Rejected("application cannot be opened here".into()));
             }
             // Placement-independent: the owner places it in its own turn.
