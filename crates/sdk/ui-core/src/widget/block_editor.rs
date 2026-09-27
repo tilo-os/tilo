@@ -929,9 +929,10 @@ impl BlockEditor {
             }
             // Headings are never indented — use the raw `line`, not `body`.
             if let Some((level, prefix_len)) = heading_markdown_prefix(line) {
-                editor
-                    .blocks
-                    .push(Block::heading(level, line.get(prefix_len..).unwrap_or_default()));
+                editor.blocks.push(Block::heading(
+                    level,
+                    line.get(prefix_len..).unwrap_or_default(),
+                ));
             } else {
                 editor.blocks.push(Block::paragraph(line));
             }

@@ -56,8 +56,8 @@ use crate::ruler::{Ruler, RulerColors, RulerEffect, RulerModel};
 use crate::style_color_picker::StyleColorPicker;
 use crate::style_menu::{StyleMenu, StyleMenuAction};
 use crate::template_picker::TemplatePicker;
-use crate::unsaved_changes::{UnsavedChanges, UnsavedChoice};
 use crate::text_offsets::{byte_to_char, char_to_byte};
+use crate::unsaved_changes::{UnsavedChanges, UnsavedChoice};
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN, STEP as ZOOM_STEP, ZoomControl};
 use ui::paint::with_alpha;
@@ -10836,10 +10836,15 @@ impl WordProcessorWidget {
         let Some((start, end)) = self.selection_span_cached() else {
             return vec![];
         };
-        crate::word_processor::selection_block_ranges(&start, &end, |id| self.block_index_cached(id), |i| {
-            let b = self.blocks.get(i)?;
-            Some((b.id.clone(), b.text.chars().count()))
-        })
+        crate::word_processor::selection_block_ranges(
+            &start,
+            &end,
+            |id| self.block_index_cached(id),
+            |i| {
+                let b = self.blocks.get(i)?;
+                Some((b.id.clone(), b.text.chars().count()))
+            },
+        )
     }
 
     fn selection_bytes_for(&self, block_id: &str, text: &str) -> Option<(usize, usize)> {
