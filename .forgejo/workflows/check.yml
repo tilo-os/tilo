@@ -387,6 +387,8 @@ jobs:
         if: matrix.scoped_tests != ''
         env:
           SCOPED_TESTS: ${{ matrix.scoped_tests }}
+          # As above: only the NTFS helper's own tests read the native images.
+          TILO_TEST_NTFS_FIXTURES: ${{ contains(matrix.scoped_tests, '"tilo-ntfs-helper"') && '1' || '0' }}
           TILO_REQUIRE_MEDIA: "1"
           TILO_REQUIRE_AUDIO: "1"
           TILO_REQUIRE_GPU: "1"
