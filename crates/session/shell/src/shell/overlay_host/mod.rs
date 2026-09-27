@@ -5350,13 +5350,13 @@ impl ShellOverlayHost {
             // On a partitioned strip, the focused display's windows only:
             // a new window opens where the person is looking.
             let focused = focused_display.map(|d| row.group_ids_on(d));
-            Some(crate::shell::placement::StripViewport {
+            Some(tilo_desktop_model::commands::StripViewport {
                 strip: sid,
                 groups: row
                     .group_canvas_spans()
                     .into_iter()
                     .filter(|(id, _, _)| focused.as_ref().is_none_or(|on| on.contains(id)))
-                    .map(|(id, x0, x1)| crate::shell::placement::GroupSpan { id, x0, x1 })
+                    .map(|(id, x0, x1)| tilo_desktop_model::commands::GroupSpan { id, x0, x1 })
                     .collect(),
                 visible_x0,
                 visible_x1,
