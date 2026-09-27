@@ -3599,6 +3599,27 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
         }
     }
 
+    // Phase: only_workspace_members_depend_on_the_workspace_hack.
+    {
+        for workspace_member in [false, true] {
+            let spec = AppSpec {
+                package_name: "notes".into(),
+                crate_name: "notes".into(),
+                title: "Notes".into(),
+                app_id: "so.tilo.notes".into(),
+                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+                workspace_member,
+                template: Template::Starter,
+            };
+            let manifest: toml::Table =
+                toml::from_str(&cargo_toml(&spec)).expect("generated Cargo.toml");
+            let hack = manifest
+                .get("dependencies")
+                .and_then(|dependencies| dependencies.get("workspace-hack"));
+            assert_eq!(hack.is_some(), workspace_member, "{manifest:#?}");
+        }
+    }
+
     // Phase: every_template_generates_valid_rust_and_actions.
     {
         for template in [
@@ -4146,7 +4167,7 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
             ),
         )
         .unwrap();
-        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        seal_script(&cargo);
         let plan = CargoPlan {
             app_dir: app.clone(),
             program: cargo.into_os_string(),
@@ -4159,7 +4180,7 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
 
         let failing_cargo = app.join("failing-cargo");
         std::fs::write(&failing_cargo, "#!/bin/sh\nexit 9\n").unwrap();
-        std::fs::set_permissions(&failing_cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        seal_script(&failing_cargo);
         let error = build_dev_candidate(&CargoPlan {
             app_dir: app,
             program: failing_cargo.into_os_string(),
@@ -4183,7 +4204,7 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
             ),
         )
         .unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        seal_script(&executable);
         let mut child = spawn_dev_binary(
             temp.path(),
             &executable,
@@ -4230,7 +4251,7 @@ fn dev_build_cancels_when_a_newer_source_edit_arrives() {
         ),
     )
     .unwrap();
-    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+    seal_script(&cargo);
     let plan = CargoPlan {
         app_dir: app.clone(),
         program: cargo.into_os_string(),
@@ -4303,7 +4324,7 @@ fn dev_build_keeps_compiling_through_editor_noise() {
         format!("#!/bin/sh\nsleep 0.2\nprintf '%s\\n' '{message}'\n"),
     )
     .unwrap();
-    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+    seal_script(&cargo);
     let plan = CargoPlan {
         app_dir: app.clone(),
         program: cargo.into_os_string(),
@@ -4343,7 +4364,7 @@ while true; do\n\
 done\n",
     )
     .unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    seal_script(&executable);
     let session = dev_session_dir(&app);
     let _ = std::fs::remove_dir_all(&session);
 
@@ -4480,12 +4501,12 @@ fn platform_specific_app(root: &Path) -> PathBuf {
     let app = root.join("platform");
     create_app(request(app.clone())).unwrap();
     let cargo = std::fs::read_to_string(app.join("Cargo.toml")).unwrap();
-    let cargo = cargo.replacen("[dependencies]\n", "[dependencies]\nlibc = \"0.2\"\n", 1);
+    let cargo = cargo
+        .replacen("[dependencies]\n", "[dependencies]\nlibc = \"0.2\"\n", 1)
+        .replacen("[features]\n", "[features]\nmedia = [\"ui/mpris\"]\n", 1);
     std::fs::write(
         app.join("Cargo.toml"),
-        format!(
-            "{cargo}\n[features]\nmedia = [\"ui/mpris\"]\n\n[dev-dependencies]\nnix = \"0.29\"\n"
-        ),
+        format!("{cargo}\n[dev-dependencies]\nnix = \"0.29\"\n"),
     )
     .unwrap();
     let mut lib = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
@@ -4593,4 +4614,372 @@ fn portability_lint_reports_shipped_platform_code_with_remedies() {
     assert!(rendered.contains("= help: call a platform crate instead"));
     assert!(rendered.contains("enable the semantic SDK feature `ui/media-session`"));
     assert!(rendered.contains("[platform]\n    native = \"<one-line reason>\""));
+}
+
+#[test]
+#[cfg(unix)]
+fn rebuilt_dev_binary_receives_app_arguments_and_app_working_directory() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let output = temp.path().join("invocation.txt");
+    let executable = temp.path().join("app-bin");
+    std::fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n%s\\n%s\\n' \"$PWD\" \"$1\" \"$2\" > '{}'\n",
+            output.display()
+        ),
+    )
+    .unwrap();
+    seal_script(&executable);
+    let mut child = spawn_dev_binary(
+        temp.path(),
+        &executable,
+        &[OsString::from("--document"), OsString::from("A file.qdoc")],
+    )
+    .unwrap();
+    assert!(child.wait().unwrap().success());
+    assert_eq!(
+        std::fs::read_to_string(output).unwrap(),
+        format!("{}\n--document\nA file.qdoc\n", temp.path().display())
+    );
+}
+
+#[test]
+fn source_snapshot_notices_an_edit_inotify_did_not_deliver() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::create_dir(root.join("target")).unwrap();
+    std::fs::create_dir(root.join("ui")).unwrap();
+    let source = root.join("src/lib.rs");
+    std::fs::write(&source, "fn main() {}\n").unwrap();
+    std::fs::write(root.join("target/stale.rs"), "fn ignored() {}\n").unwrap();
+    std::fs::write(root.join("ui/screen.json"), "{}\n").unwrap();
+    let roots = vec![root.to_path_buf()];
+    let before = snapshot_restart_sources(&roots).expect("scan");
+    assert!(before.contains_key(&source));
+    assert!(!before.keys().any(|path| path.ends_with("stale.rs")));
+    assert!(!before.keys().any(|path| path.ends_with("screen.json")));
+    std::fs::write(&source, "fn main() { let _ = 1; }\n").unwrap();
+    let after = snapshot_restart_sources(&roots).expect("rescan");
+    assert_ne!(before, after);
+}
+
+/// One open window. Reload replaces `contents` and leaves `id` alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DevWindow {
+    id: &'static str,
+    contents: &'static str,
+}
+
+/// A reload builds new contents for each open window. It does not open,
+/// close, or reorder them. One failure leaves every window untouched.
+fn reload_open_windows(
+    windows: &[DevWindow],
+    mut updated: impl FnMut(&DevWindow) -> Result<&'static str, ()>,
+) -> Result<Vec<DevWindow>, ()> {
+    let mut next = Vec::with_capacity(windows.len());
+    for window in windows {
+        let contents = updated(window)?;
+        next.push(DevWindow {
+            id: window.id,
+            contents,
+        });
+    }
+    Ok(next)
+}
+
+#[test]
+fn reload_replaces_the_contents_of_every_open_window() {
+    let open = [
+        DevWindow {
+            id: "primary",
+            contents: "hello",
+        },
+        DevWindow {
+            id: "notes",
+            contents: "draft",
+        },
+    ];
+    let reloaded = reload_open_windows(&open, |window| {
+        Ok(match window.id {
+            "primary" => "hello-next",
+            "notes" => "draft-next",
+            _ => return Err(()),
+        })
+    })
+    .expect("both windows reload");
+    assert_eq!(
+        reloaded.iter().map(|window| window.id).collect::<Vec<_>>(),
+        vec!["primary", "notes"],
+        "reload keeps each window and its order"
+    );
+    assert_eq!(reloaded[0].contents, "hello-next");
+    assert_eq!(reloaded[1].contents, "draft-next");
+
+    let failed = reload_open_windows(&open, |window| {
+        if window.id == "notes" {
+            Err(())
+        } else {
+            Ok("unused")
+        }
+    });
+    assert!(failed.is_err(), "one failure reloads nothing");
+    assert_eq!(open[0].contents, "hello");
+    assert_eq!(open[1].contents, "draft");
+}
+
+#[test]
+#[cfg(unix)]
+fn dev_reload_signal_updates_every_window_without_a_new_process() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let state = temp.path().join("state");
+    let script = temp.path().join("app");
+    std::fs::write(
+        &script,
+        "#!/bin/bash\n\
+state=\"$1\"\n\
+printf '%s\\n' primary notes > \"$state.windows\"\n\
+printf '%s\\n' 'primary=hello' 'notes=draft' > \"$state.contents\"\n\
+printf '%s\\n' $$ > \"$state.pid\"\n\
+trap 'printf \"%s\\n\" \"primary=hello-next\" \"notes=draft-next\" > \"$state.contents\"' USR1\n\
+touch \"$state.ready\"\n\
+while true; do sleep 0.2; done\n",
+    )
+    .unwrap();
+    seal_script(&script);
+    let mut child = std::process::Command::new(&script)
+        .arg(&state)
+        .spawn()
+        .expect("app process");
+    let ready = state.with_extension("ready");
+    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(2)) else {
+        panic!("clock");
+    };
+    while Instant::now() < deadline && !ready.is_file() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(ready.is_file(), "the app did not open its windows");
+    let pid = std::fs::read_to_string(state.with_extension("pid")).unwrap();
+    assert!(
+        reload_running_dev_app(&child),
+        "the running app accepts an in-place reload"
+    );
+    let contents_path = state.with_extension("contents");
+    let mut contents = String::new();
+    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(2)) else {
+        panic!("clock");
+    };
+    while Instant::now() < deadline {
+        contents = std::fs::read_to_string(&contents_path).unwrap_or_default();
+        if contents.contains("hello-next") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(
+        std::fs::read_to_string(state.with_extension("windows")).unwrap(),
+        "primary\nnotes\n"
+    );
+    assert_eq!(contents, "primary=hello-next\nnotes=draft-next\n");
+    assert_eq!(
+        std::fs::read_to_string(state.with_extension("pid")).unwrap(),
+        pid,
+        "reload stays in the process that owns the windows"
+    );
+}
+
+#[test]
+fn source_snapshot_keeps_a_readable_root_when_another_cannot_be_read() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let app = temp.path().join("app");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    let source = app.join("src/lib.rs");
+    std::fs::write(&source, "fn main() {}\n").unwrap();
+    let roots = vec![temp.path().join("missing"), app];
+    let stamps = snapshot_restart_sources(&roots).expect("partial scan");
+    assert!(stamps.contains_key(&source));
+}
+
+#[test]
+fn dev_watch_tick_sees_a_save_while_access_events_are_pending() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path().join("app");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let source = root.join("src/lib.rs");
+    std::fs::write(&source, "fn main() {}\n").unwrap();
+    let roots = vec![root.clone()];
+    let mut sources = snapshot_restart_sources(&roots).expect("scan");
+    let mut next_poll = Instant::now() + Duration::from_secs(60);
+    let mut watcher = DevWatcher::new(notify::recommended_watcher(|_| {}).expect("watcher"));
+    watcher.watch_tree(&root).expect("watch");
+
+    std::fs::write(&source, "fn main() { let _ = 1; }\n").unwrap();
+    let (sender, events) = mpsc::channel();
+    let access = Event::new(EventKind::Access(notify::event::AccessKind::Open(
+        notify::event::AccessMode::Any,
+    )))
+    .add_path(source);
+    for _ in 0..32 {
+        sender.send(Ok(access.clone())).expect("queue access");
+    }
+
+    let waiting = watch_tick(&events, &roots, &mut watcher, &mut sources, &mut next_poll);
+    assert!(
+        matches!(waiting, WatchTick::Idle),
+        "the poll interval must elapse before a stamp change restarts"
+    );
+
+    next_poll = Instant::now();
+    let tick = watch_tick(&events, &roots, &mut watcher, &mut sources, &mut next_poll);
+    assert!(
+        matches!(
+            tick,
+            WatchTick::Rebuild {
+                bump_revision: true
+            }
+        ),
+        "a save must restart while open events are still queued, got {tick:?}"
+    );
+    drop(sender);
+}
+
+#[test]
+fn opening_a_watched_directory_does_not_rewatch_it() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path().join("app");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let mut watcher = DevWatcher::new(notify::recommended_watcher(|_| {}).expect("watcher"));
+    watcher.watch_tree(&root).expect("watch");
+    let directory_count = watcher.watched.len();
+    assert!(directory_count >= 2, "root and src are watched");
+
+    watcher.observe(
+        &Event::new(EventKind::Access(notify::event::AccessKind::Open(
+            notify::event::AccessMode::Any,
+        )))
+        .add_path(root.clone()),
+    );
+    assert_eq!(
+        watcher.watched.len(),
+        directory_count,
+        "an open event must not walk the tree again"
+    );
+
+    let created = root.join("locales");
+    std::fs::create_dir(&created).unwrap();
+    watcher.observe(
+        &Event::new(EventKind::Create(notify::event::CreateKind::Folder)).add_path(created.clone()),
+    );
+    assert!(
+        watcher.watched.contains(&created),
+        "a new directory is watched"
+    );
+}
+
+#[test]
+fn build_tick_leaves_a_non_restart_flood_queued() {
+    let root = PathBuf::from("/workspace/apps/demo");
+    let roots = [root.clone()];
+    let (sender, events) = mpsc::channel();
+    let access = Event::new(EventKind::Access(notify::event::AccessKind::Open(
+        notify::event::AccessMode::Any,
+    )))
+    .add_path(root.join("src/main.rs"));
+    for _ in 0..=DEV_EVENT_DRAIN_LIMIT {
+        sender.send(Ok(access.clone())).expect("queue access");
+    }
+    assert!(!newer_source_during_build(&events, &roots, &mut |_| {}));
+    assert!(
+        events.try_recv().is_ok(),
+        "Cargo must be reaped before an open flood is drained"
+    );
+    drop(sender);
+}
+
+#[test]
+fn in_place_reload_requires_the_shared_toolkit_and_the_entry_macro() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let app = temp.path().join("app");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(
+        app.join("Cargo.toml"),
+        "[features]\nthin = [\"dep:runtime-dylib\"]\n",
+    )
+    .unwrap();
+    std::fs::write(app.join("src/lib.rs"), "ui::dev_reload_entry!(App);\n").unwrap();
+    assert!(app_supports_in_place_reload(&app));
+    std::fs::write(app.join("src/lib.rs"), "fn main() {}\n").unwrap();
+    assert!(!app_supports_in_place_reload(&app));
+}
+
+#[test]
+#[cfg(unix)]
+fn in_place_build_stages_a_library_the_open_process_can_load() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let app = temp.path().join("app");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    let manifest = app.join("Cargo.toml");
+    std::fs::write(
+        &manifest,
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[features]\nthin = [\"dep:runtime-dylib\"]\n",
+    )
+    .unwrap();
+    std::fs::write(app.join("src/lib.rs"), "ui::dev_reload_entry!(App);\n").unwrap();
+    let manifest = manifest.canonicalize().unwrap();
+    let executable = app.join("target/debug/demo");
+    let library = app.join("target/debug/libdemo.so");
+    std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+    std::fs::write(&library, "library").unwrap();
+    let log = app.join("cargo-args.txt");
+    let cargo = app.join("fake-cargo");
+    std::fs::write(
+        &cargo,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\nargs=\"$*\"\ncase \"$args\" in\n*runtime-dylib*) exit 0 ;;\nesac\ncase \"$args\" in\n*cdylib*)\nprintf '%s\\n' '{{\"reason\":\"compiler-artifact\",\"manifest_path\":{},\"target\":{{\"name\":\"demo\"}},\"filenames\":[{}]}}'\nexit 0 ;;\nesac\nprintf '%s\\n' '{{\"reason\":\"compiler-artifact\",\"manifest_path\":{},\"target\":{{\"name\":\"demo\"}},\"executable\":{}}}'\n",
+            log.display(),
+            serde_json::to_string(&manifest).unwrap(),
+            serde_json::to_string(&library).unwrap(),
+            serde_json::to_string(&manifest).unwrap(),
+            serde_json::to_string(&executable).unwrap(),
+        ),
+    )
+    .unwrap();
+    seal_script(&cargo);
+    let plan = CargoPlan {
+        app_dir: app.clone(),
+        program: cargo.into_os_string(),
+        args: Vec::new(),
+    };
+    let built = build_in_place_dev_app(&plan, None, &[], |_| {}, true).expect("in-place build");
+    let DevCandidate::Built(host) = built else {
+        panic!("the host should be built");
+    };
+    assert_eq!(host, executable);
+    let staged = std::fs::read_to_string(dev_session_dir(&app).join("reload.path")).unwrap();
+    let staged = PathBuf::from(staged.trim());
+    assert_eq!(std::fs::read(&staged).unwrap(), b"library");
+    let args = std::fs::read_to_string(&log).unwrap();
+    assert!(args.contains("runtime-dylib"), "{args}");
+    assert!(args.contains("cdylib"), "{args}");
+    assert!(args.contains("prefer-dynamic"), "{args}");
+}
+
+/// Make a test-written script executable without leaving a writable
+/// descriptor on the executed inode: a sibling test thread that forks between
+/// our write and its exec would otherwise make `execve` fail with ETXTBSY.
+fn seal_script(path: &Path) {
+    let draft = path.with_extension("draft");
+    std::fs::rename(path, &draft).unwrap();
+    let status = std::process::Command::new("install")
+        .arg("-m")
+        .arg("755")
+        .arg(&draft)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "install {}", path.display());
+    std::fs::remove_file(&draft).unwrap();
 }
