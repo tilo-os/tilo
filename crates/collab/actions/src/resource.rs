@@ -934,6 +934,17 @@ impl ActionSpec {
         self
     }
 
+    /// Mark this action as speaking for the participant the app runs for:
+    /// it stamps that participant as its author or writes a record only
+    /// their device may write. Only that participant may invoke it; the
+    /// broker refuses anyone else. Recorded as
+    /// [`PARTICIPANT_TAG`](crate::PARTICIPANT_TAG).
+    #[must_use]
+    pub fn as_participant(mut self) -> Self {
+        push_tag(&mut self.contract, crate::contract::PARTICIPANT_TAG);
+        self
+    }
+
     /// Whether this action is offered only to programmatic callers. See
     /// [`programmatic`](Self::programmatic).
     pub fn is_programmatic(&self) -> bool {

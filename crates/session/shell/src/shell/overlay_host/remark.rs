@@ -1350,16 +1350,20 @@ impl ShellOverlayHost {
                 });
             }
         } else {
+            let caller =
+                tilo_actions::remote::Caller::local_person(job.me.clone()).in_room(room.clone());
+            // A remark is the author's own message, so it goes to the Chat
+            // that runs for the author, never to another participant's.
+            let author = crate::shell::collab_broker_capnp::BrokerActor::person(job.me.clone());
             let chat = broker.surfaces().into_iter().find(|surface| {
                 surface.live
                     && surface.app_id == CHAT_APP
                     && surface.route.cluster_id == room
+                    && broker.state().performs_for(surface.peer_id, &author)
                     && surface.actions.iter().any(|action| {
                         action.resource == resource && action.action == CHAT_REMARK_ACTION
                     })
             });
-            let caller =
-                tilo_actions::remote::Caller::local_person(job.me.clone()).in_room(room.clone());
             if let Some(chat) = chat {
                 let invocation = tilo_actions::InvocationId::new();
                 let serde_json::Value::Object(arguments) = job.delivery.arguments() else {

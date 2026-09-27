@@ -1876,6 +1876,10 @@ pub struct CapnpBrokerState {
     inspections: inspection::InspectionRegistry,
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
+    /// Who each application connection runs for: the certified participant
+    /// whose device writes whatever that connection's app writes. An action
+    /// that speaks as that participant is delivered only to its own caller.
+    invocation_performers: Mutex<HashMap<u64, BrokerActor>>,
     /// Changes to job discovery and receipts, independent of resource surfaces.
     invocation_generation: AtomicU64,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
@@ -3095,6 +3099,7 @@ impl CapnpBrokerState {
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
                 inspections: inspection::InspectionRegistry::default(),
                 invocation_subscribers: Mutex::new(HashMap::new()),
+                invocation_performers: Mutex::new(HashMap::new()),
                 invocation_generation: AtomicU64::new(0),
                 pending_invocations: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
@@ -4052,6 +4057,13 @@ impl CapnpBrokerState {
             return Err("the caller is not allowed to invoke that application action".into());
         }
         drop(tree);
+        if offered.1.contract.speaks_as_participant() && !self.performs_for(peer_id, actor) {
+            return Err(
+                "that action speaks for the participant its application runs for; \
+                 only they may invoke it"
+                    .into(),
+            );
+        }
         // The broker sees only the inert contract, so an action whose risk
         // depends on its arguments is gated as if it needed confirmation.
         if !matches!(
@@ -4150,6 +4162,17 @@ impl CapnpBrokerState {
             return Err("the application invocation stream closed".into());
         }
         Ok(InvocationJob { id, completion: rx })
+    }
+
+    /// Whether the application connection `peer_id` runs for `actor`: an
+    /// action it performs is written by `actor`'s own device. A connection
+    /// with no certified participant runs for nobody.
+    pub(crate) fn performs_for(&self, peer_id: u64, actor: &BrokerActor) -> bool {
+        self.invocation_performers
+            .lock()
+            .ok()
+            .and_then(|performers| performers.get(&peer_id).cloned())
+            .is_some_and(|performer| performer == *actor)
     }
 
     pub fn invocations_generation(&self) -> u64 {
@@ -4593,6 +4616,9 @@ impl CapnpBrokerState {
         self.refresh_action_directory_root_snapshot();
         if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
             subscribers.remove(&peer_id);
+        }
+        if let Ok(mut performers) = self.invocation_performers.lock() {
+            performers.remove(&peer_id);
         }
         self.inspections.remove_peer(peer_id);
         if let Ok(mut subscribers) = self.task_subscribers.lock() {
@@ -7181,6 +7207,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             return Promise::err(error);
         }
         let (tx, rx) = mpsc::unbounded_channel();
+        if let Ok(mut performers) = self.state.invocation_performers.lock() {
+            performers.insert(self.peer_id, self.verified_identity.broker_actor());
+        } else {
+            return Promise::err(capnp::Error::failed(
+                "invocation subscriber registry unavailable".into(),
+            ));
+        }
         if let Ok(mut subscribers) = self.state.invocation_subscribers.lock() {
             subscribers.insert(self.peer_id, tx);
         } else {
@@ -12068,6 +12101,123 @@ pub(crate) mod tests {
         assert_eq!(permission_verb(Requirement::Write), Some(Verb::Write));
         assert_eq!(permission_verb(Requirement::Invite), Some(Verb::Invite));
         assert_eq!(permission_verb(Requirement::Admin), Some(Verb::Admin));
+    }
+
+    /// An action that speaks as its app's participant (a post, a reaction)
+    /// reaches that app only from that participant. Anyone else, however
+    /// much authority they hold, would otherwise write under the other
+    /// participant's device, and is refused and never offered it.
+    #[test]
+    fn an_action_speaking_for_a_participant_is_delivered_only_from_them() {
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(32), "Chat room");
+        workspace.set_owner("owner");
+        workspace.grant_capability(collab_types::CapOverride::membership(
+            collab_types::Subject::person("reporter"),
+            workspace.room.to_string(),
+            Verb::Comment,
+        ));
+        let room = workspace.room.to_string();
+        let route = CrdtRoute::app("so.tilo.chat", room.clone());
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared()),
+            None,
+        );
+        let post = |action: &str, contract: tilo_actions::ActionContract| PublishedAction {
+            resource: "chat.channel:c_feedback".into(),
+            action: action.into(),
+            resource_kind: "chat.channel".into(),
+            resource_label: "feedback".into(),
+            resource_sensitivity: tilo_actions::Sensitivity::Public,
+            action_label: action.into(),
+            description: None,
+            operation_kind: tilo_actions::OperationKind::Effect,
+            params: Vec::new(),
+            contract,
+            view: None,
+            input: PublishedInput::None,
+        };
+        let spoken = tilo_actions::ActionContract {
+            permission: tilo_actions::PermissionRequirement::Comment,
+            tags: vec![tilo_actions::PARTICIPANT_TAG.into()],
+            ..tilo_actions::ActionContract::default()
+        };
+        // Peer 7 is the owner's Chat.
+        state.surfaces.lock().expect("surfaces").insert(
+            7,
+            PublishedSurface {
+                peer_id: 7,
+                app_id: "so.tilo.chat".into(),
+                route,
+                actions: vec![
+                    post("remark", spoken),
+                    post(
+                        "rename",
+                        tilo_actions::ActionContract {
+                            permission: tilo_actions::PermissionRequirement::Comment,
+                            ..tilo_actions::ActionContract::default()
+                        },
+                    ),
+                ],
+                live: true,
+            },
+        );
+        let (tx, mut invocations) = mpsc::unbounded_channel();
+        state
+            .invocation_subscribers
+            .lock()
+            .expect("subscribers")
+            .insert(7, tx);
+        state
+            .invocation_performers
+            .lock()
+            .expect("performers")
+            .insert(7, BrokerActor::person("owner"));
+
+        let reporter = tilo_actions::remote::Caller::local_person("reporter").in_room(&room);
+        let text = catalogue_text(&state, &reporter);
+        assert!(
+            text.contains("rename") && !text.contains("remark"),
+            "another participant's voice is not offered: {text}"
+        );
+        let refused = state
+            .start_invocation(7, "chat.channel:c_feedback", "remark", None, "reporter")
+            .err()
+            .expect("the reporter may not post through the owner's Chat");
+        assert!(refused.contains("speaks for the participant"), "{refused}");
+        assert!(invocations.try_recv().is_err(), "nothing reached the app");
+        state
+            .start_invocation(7, "chat.channel:c_feedback", "rename", None, "reporter")
+            .expect("an action that names nobody runs for any authorised caller");
+        drop(invocations.try_recv().expect("delivered"));
+
+        state
+            .start_invocation(7, "chat.channel:c_feedback", "remark", None, "owner")
+            .expect("the owner posts through their own Chat");
+        drop(invocations.try_recv().expect("delivered"));
+        // An agent is never the person who launched it.
+        assert!(
+            state
+                .start_invocation_confirmed_for(
+                    7,
+                    "chat.channel:c_feedback",
+                    "remark",
+                    None,
+                    &BrokerActor::agent("agent:owner"),
+                    None,
+                    None,
+                )
+                .is_err()
+        );
+        // A connection that closed runs for nobody.
+        state.remove_connection(7);
+        assert!(!state.performs_for(7, &BrokerActor::person("owner")));
     }
 
     fn verified_device(root: &SigningKey) -> VerifiedJoinIdentity {

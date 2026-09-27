@@ -207,6 +207,7 @@ fn participation_spec(id: &str, label: &str, feedback: bool, action: &ChatAction
         )
         .expect("ChatOperation is always serializable")
         .requiring(PermissionRequirement::Comment)
+        .as_participant()
     } else {
         immediate_spec(id, label, action).requiring(PermissionRequirement::Comment)
     }
@@ -243,6 +244,7 @@ fn participation_prompt(
         )
     };
     spec.requiring(PermissionRequirement::Comment)
+        .as_participant()
 }
 
 /// Wrap a built participation action as the comment operation, for a
@@ -702,6 +704,29 @@ impl Action for ChatAction {
 }
 
 impl ChatAction {
+    /// Whether this action names the participant performing it — a post's
+    /// author, a reaction's user, a status or approval's "by", a call
+    /// member. Such an action is only ever the performer's own word, so its
+    /// published form is marked [`ActionSpec::as_participant`].
+    pub fn speaks_for_participant(&self) -> bool {
+        matches!(
+            self,
+            ChatAction::SendMessage { .. }
+                | ChatAction::AddReaction { .. }
+                | ChatAction::RemoveReaction { .. }
+                | ChatAction::SetReportStatus { .. }
+                | ChatAction::ApproveIssue { .. }
+                | ChatAction::MarkRead { .. }
+                | ChatAction::SetAgentWork { .. }
+                | ChatAction::JoinCall { .. }
+                | ChatAction::LeaveCall { .. }
+                | ChatAction::SetCallState { .. }
+                | ChatAction::SetScreenShare { .. }
+                | ChatAction::SetCallTicket { .. }
+                | ChatAction::SetCallVideoCaps { .. }
+        )
+    }
+
     /// Message-row mutations: send, edit, delete, react, pin.
     fn apply_message(&self, doc: &mut Doc) {
         match self {
@@ -1419,6 +1444,11 @@ fn immediate_spec(id: &str, label: &str, action: &ChatAction) -> ActionSpec {
     let spec = ActionSpec::immediate(id, label, CHAT_ACTION_TYPE, action)
         .expect("encode chat action")
         .reversible();
+    let spec = if action.speaks_for_participant() {
+        spec.as_participant()
+    } else {
+        spec
+    };
     match action {
         ChatAction::DeleteMessage { .. }
         | ChatAction::DeleteChannel { .. }
@@ -2626,6 +2656,7 @@ fn remark_spec(channel: &str, me: &str, feedback: bool) -> ActionSpec {
         )
     };
     spec.requiring(PermissionRequirement::Comment)
+        .as_participant()
 }
 
 type RemarkParts = (
@@ -2743,6 +2774,7 @@ fn set_status_spec(channel: &str, msg: &str, me: &str) -> ActionSpec {
         },
     )
     .requiring(PermissionRequirement::Write)
+    .as_participant()
 }
 
 /// How this peer lists a feedback channel's reports.

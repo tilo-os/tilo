@@ -71,6 +71,14 @@ pub const PROGRAMMATIC_TAG: &str = "surface:programmatic";
 /// requiring confirmation (see [`ActionContract::advertised_confirmation`]).
 pub const ARGUMENT_RISK_TAG: &str = "confirmation:by-argument";
 
+/// [`ActionContract::tags`] entry of an action that speaks as the participant
+/// its app runs for: it stamps that participant as the author, or writes a
+/// record only that participant's device may write (a post, a reply, a
+/// reaction, a status set "by" someone). The app cannot run it on anyone
+/// else's behalf, so the broker delivers it only when the caller is that
+/// participant; anyone else asks their own app.
+pub const PARTICIPANT_TAG: &str = "performer:participant";
+
 /// Minimum authority required to see and invoke an action. Capability-denied
 /// actions remain absent; this value lets every allowed catalogue use the same
 /// gate instead of inferring authority inconsistently from `OperationKind`.
@@ -256,6 +264,12 @@ impl ActionContract {
     /// [`PROGRAMMATIC_TAG`].
     pub fn is_programmatic(&self) -> bool {
         self.tags.iter().any(|tag| tag == PROGRAMMATIC_TAG)
+    }
+
+    /// Whether the action speaks as its app's participant. See
+    /// [`PARTICIPANT_TAG`].
+    pub fn speaks_as_participant(&self) -> bool {
+        self.tags.iter().any(|tag| tag == PARTICIPANT_TAG)
     }
 
     /// Whether confirmation depends on the invocation's arguments. See

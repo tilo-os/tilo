@@ -555,6 +555,33 @@ fn the_triage_agent_links_a_repeat_files_only_what_an_editor_approved_and_stops_
         "the agent suggests; it never sets a status"
     );
 
+    // Nobody speaks through another participant's Chat: the reporter's
+    // remark addressed to the agent's Chat is refused, and nothing is
+    // written under the agent's device.
+    let agent_chat = chat_provider(&host, &team, &[&team_chat, &reporter_chat], &mut room);
+    let before = agent_replies(&room, "m_first").len();
+    let spoofed = invoke(
+        &host,
+        &reporter,
+        &agent_chat,
+        &format!("chat.channel:{feedback}"),
+        "remark",
+        remark("Written in the agent's name", "m_spoofed"),
+        &mut room,
+    );
+    assert!(
+        !matches!(spoofed, Ok(InvocationUpdate::Succeeded { .. })),
+        "a remark through another participant's Chat is refused: {spoofed:?}"
+    );
+    for _ in 0..20 {
+        room.step();
+    }
+    assert!(
+        !team_sees(&room, "Written in the agent's name"),
+        "nothing was written under the agent's device"
+    );
+    assert_eq!(agent_replies(&room, "m_first").len(), before);
+
     // Only an Editor approves. The reporter cannot.
     let refused = invoke(
         &host,

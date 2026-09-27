@@ -353,6 +353,7 @@ impl CapnpBrokerState {
         // callers on this machine, never to a remote device.
         let keymap = (with_rows && caller.device_public_key().is_none())
             .then(settings_store::hardware::ShortcutConfig::load);
+        let actor = BrokerActor::for_caller(caller);
         for (workspace, policy) in self.workspaces_for(caller) {
             let room = workspace.room.to_string();
             let mut live_apps = std::collections::HashSet::new();
@@ -382,7 +383,8 @@ impl CapnpBrokerState {
                                 &surface.app_id,
                                 &action.action,
                                 action.contract.permission,
-                            )
+                            ) && (!action.contract.speaks_as_participant()
+                                || self.performs_for(surface.peer_id, &actor))
                         })
                         .map(|action| {
                             action_row(
