@@ -223,6 +223,7 @@ fn a_linux_launch_without_tilo_launcher_is_refused() {
     assert!(apps.launched.0.lock().unwrap().is_empty());
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn a_payload_that_does_not_verify_is_refused() {
     let (_temp, root) = canonical_temp();
@@ -239,17 +240,17 @@ fn a_payload_that_does_not_verify_is_refused() {
             .find(|app| app.package_id == VIEWER)
             .unwrap()
     };
-    verify_installed(&store.catalog(), &installed()).unwrap();
+    macos::verify_installed(&store.catalog(), &installed()).unwrap();
 
     // phase: a_changed_payload_file
     std::fs::write(package.payload_root.join("probe"), b"tampered").unwrap();
-    let err = verify_installed(&store.catalog(), &installed()).unwrap_err();
+    let err = macos::verify_installed(&store.catalog(), &installed()).unwrap_err();
     assert!(err.contains("payload changed"), "{err}");
     std::fs::write(package.payload_root.join("probe"), b"binary").unwrap();
 
     // phase: a_file_the_package_did_not_ship
     std::fs::write(package.payload_root.join("extra.dylib"), b"?").unwrap();
-    let err = verify_installed(&store.catalog(), &installed()).unwrap_err();
+    let err = macos::verify_installed(&store.catalog(), &installed()).unwrap_err();
     assert!(err.contains("did not ship"), "{err}");
     std::fs::remove_file(package.payload_root.join("extra.dylib")).unwrap();
 
@@ -257,17 +258,14 @@ fn a_payload_that_does_not_verify_is_refused() {
     let record = package.manifest_path.parent().unwrap().join("signed-root");
     let signed = std::fs::read(&record).unwrap();
     std::fs::remove_file(&record).unwrap();
-    let err = verify_installed(&store.catalog(), &installed()).unwrap_err();
+    let err = macos::verify_installed(&store.catalog(), &installed()).unwrap_err();
     assert!(err.contains("refusing to launch"), "{err}");
-    #[cfg(target_os = "macos")]
-    {
-        let apps = apps(&store, &root, Vec::new());
-        let err = apps.start(VIEWER, ROOM).map(|_| ()).unwrap_err();
-        assert!(err.contains("refusing to launch"), "{err}");
-        assert!(apps.launched.0.lock().unwrap().is_empty());
-    }
+    let apps = apps(&store, &root, Vec::new());
+    let err = apps.start(VIEWER, ROOM).map(|_| ()).unwrap_err();
+    assert!(err.contains("refusing to launch"), "{err}");
+    assert!(apps.launched.0.lock().unwrap().is_empty());
     std::fs::write(&record, signed).unwrap();
-    verify_installed(&store.catalog(), &installed()).unwrap();
+    macos::verify_installed(&store.catalog(), &installed()).unwrap();
 }
 
 #[test]
