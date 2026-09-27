@@ -155,8 +155,8 @@ fn gpt(sector: u64, total_sectors: u64, parts: &[Part]) -> (Vec<u8>, Vec<u8>) {
     put(&mut header, 72, &2u64.to_le_bytes());
     put(&mut header, 80, &128u32.to_le_bytes());
     put(&mut header, 84, &128u32.to_le_bytes());
-    put(&mut header, 88, &layout::crc32(&entries).to_le_bytes());
-    let crc = layout::crc32(&header[..92]);
+    put(&mut header, 88, &crc32fast::hash(&entries).to_le_bytes());
+    let crc = crc32fast::hash(&header[..92]);
     put(&mut header, 16, &crc.to_le_bytes());
     let padded = entries.len().div_ceil(sector as usize) * sector as usize;
     entries.resize(padded, 0);
@@ -318,11 +318,6 @@ fn windows_binary_encodings_decode_and_reject_truncation() {
         ] {
             assert_eq!(layout::normalize_guid(bad), None, "{bad:?}");
         }
-    }
-
-    // Phase `crc32_matches_the_ieee_check_value`.
-    {
-        assert_eq!(layout::crc32(b"123456789"), 0xCBF4_3926);
     }
 
     // Phase `volume_extents_decode`.
