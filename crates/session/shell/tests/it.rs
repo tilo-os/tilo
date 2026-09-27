@@ -31,6 +31,8 @@ mod advertised_globals;
 mod apps_integration;
 #[path = "blend_layer_cost.rs"]
 mod blend_layer_cost;
+#[path = "bluetooth_pairing.rs"]
+mod bluetooth_pairing;
 #[path = "capability_enforcement.rs"]
 mod capability_enforcement;
 #[path = "capture_protection.rs"]

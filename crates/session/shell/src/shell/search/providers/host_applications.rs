@@ -265,7 +265,7 @@ impl HostApplicationsProvider {
                 Some(t_args(
                     "search-host-app-subtitle",
                     &[
-                        ("source", app.source_label.into()),
+                        ("source", app.source_display().into()),
                         ("id", app.desktop_id.as_str().into()),
                     ],
                 )),
