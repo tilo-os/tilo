@@ -470,6 +470,27 @@ impl WorkspaceDirectory {
         Ok(update)
     }
 
+    /// Sign a complete dependency-closed snapshot for a newly enrolled empty peer.
+    /// Unlike `sync_incremental`, this does not depend on the previous publication cursor.
+    ///
+    /// # Errors
+    /// Returns `DirectoryError::Canonical` if signing serialization fails.
+    pub fn signed_snapshot(
+        &mut self,
+        device_signing_key: &ed25519_dalek::SigningKey,
+        now_ns: u64,
+    ) -> Result<DirectoryUpdate, DirectoryError> {
+        let mut update = DirectoryUpdate {
+            author_device_public_key: device_signing_key.verifying_key().to_bytes(),
+            authored_at_ns: now_ns,
+            delta: self.doc.clone().save(),
+            signature: [0; 64],
+        };
+        let digest = crate::canonical::signing_digest(DIR_DELTA_PREIMAGE_TAG, &update.view())?;
+        update.signature = device_signing_key.sign(&digest).to_bytes();
+        Ok(update)
+    }
+
     /// Apply a peer's incremental delta after verifying signatures
     /// + cert chain + revocation status.
     ///

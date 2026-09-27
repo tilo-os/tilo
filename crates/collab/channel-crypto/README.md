@@ -210,6 +210,14 @@ plaintext path.
   `CollabEvent::ChannelAccess` and `App::channel_access()`. Once keys arrive
   it seals, sends and opens them in order. A send refused after a membership
   change is re-sealed under the new epoch and retried.
+- **Committed routes** stay cleartext. When the broker serves a route as a
+  committed document, its owner (the device host, the Cloud host or the
+  shell's native workspace owner) admits and applies each edit itself, and
+  it holds no channel keys: it could not open a sealed edit, and after one
+  it refuses cleartext on the route as a downgrade. Endpoints therefore do
+  not ask for keys on committed routes, and a host-signed endpoint commits
+  through its host. Committed routes take encryption once their owner runs
+  as a service member (below).
 - **Brokers and relays** hold gates, never keys. Every ingress path checks
   the channel's gate (`ChannelGate`): plaintext is closed off, and content
   sealed before the latest membership change is refused. Relays store and
