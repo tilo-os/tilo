@@ -339,8 +339,8 @@ class CheckAggregateTests(unittest.TestCase):
                 "      - name: Record an observable CI receipt without touching a branch\n", 1)
             self.assertLess(checks.index("id: aggregate"), checks.index("id: receipt-checkout"))
             self.assertIn("always() &&", checkout)
-            self.assertIn("(github.ref == 'refs/heads/main' ||\n"
-                          "           github.ref == 'refs/heads/codex/package-desktop-release')", checkout)
+            self.assertIn("github.ref == 'refs/heads/main'", checkout)
+            self.assertNotIn("codex/package-desktop-release", checkout)
             self.assertIn("token: ${{ secrets.REGISTRY_TOKEN }}", checkout)
             self.assertIn("fetch-depth: 0", checkout)
             self.assertIn("if: always() && steps.receipt-checkout.outcome == 'success'", receipt)
