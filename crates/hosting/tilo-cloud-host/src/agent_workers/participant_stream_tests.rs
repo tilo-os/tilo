@@ -58,7 +58,7 @@ async fn stream_reply(
                 argument: Some((*chunk).into()),
             })
             .unwrap();
-        let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
+        let deadline = crate::agent_workers::tests::harness_deadline();
         let reply = loop {
             workers.pump().unwrap();
             drain(workers, documents, network);
@@ -224,7 +224,7 @@ async fn agent_chat_post_is_authored_by_the_invoking_agent() {
             argument: Some("hello from Tide".into()),
         })
         .unwrap();
-    let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
+    let deadline = crate::agent_workers::tests::harness_deadline();
     let reply = loop {
         workers.pump().unwrap();
         drain(&mut workers, &mut documents, &mut network);
