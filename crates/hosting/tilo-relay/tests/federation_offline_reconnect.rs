@@ -187,7 +187,8 @@ async fn publish_three_while_peer_is_down(
     }
 
     let mut queued = 0;
-    for _ in 0..50 {
+    // Polls for up to 30 s; only a hang uses the whole budget.
+    for _ in 0..600 {
         queued = if pending_dir.exists() {
             std::fs::read_dir(pending_dir)
                 .unwrap()

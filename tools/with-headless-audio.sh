@@ -15,11 +15,10 @@ command -v pulseaudio >/dev/null || {
 # small length limit. Use a short private runtime path even if TMPDIR contains
 # spaces or points at a deeply nested build directory.
 audio_dir=$(mktemp -d /tmp/tilo-audio.XXXXXXXX)
-audio_pid=
+audio_started=
 cleanup() {
-    if [ -n "$audio_pid" ]; then
-        kill "$audio_pid" 2>/dev/null || true
-        wait "$audio_pid" 2>/dev/null || true
+    if [ -n "$audio_started" ]; then
+        pulseaudio --kill 2>/dev/null || true
     fi
     rm -rf -- "$audio_dir"
 }

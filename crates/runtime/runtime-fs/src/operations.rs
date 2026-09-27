@@ -1894,7 +1894,7 @@ pub(super) mod tests {
                         Instant::now() < deadline,
                         "terminal receipt failure was not surfaced"
                     );
-                    std::thread::yield_now();
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                 };
                 assert_publication(&error, expected);
                 assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));

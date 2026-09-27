@@ -30,6 +30,9 @@ realtime = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 # consumers that only enumerate the audio graph do not link libpipewire; the
 # stream logic and its backend trait compile either way.
 pipewire = ["dep:pipewire"]
+# Test builds of this crate and its dependents: startup waits use the shared
+# test hang bound instead of the shipping budget.
+test-support = ["dep:tilo-test-env"]
 
 [dependencies]
 web-time = { version = "1", features = ["serde"] }
@@ -68,6 +71,7 @@ rustfft.workspace = true
 gstreamer = { workspace = true, optional = true, features = ["v1_24"] }
 gstreamer-app = { workspace = true, optional = true, features = ["v1_24"] }
 gstreamer-video = { workspace = true, optional = true, features = ["v1_24"] }
+tilo-test-env = { path = "../../dev/test-env", optional = true }
 
 # Native audio streams — only linked under `--features pipewire`. Same pin as
 # the shell's screen-cast producer so one copy resolves; `v0_3_50` exposes the

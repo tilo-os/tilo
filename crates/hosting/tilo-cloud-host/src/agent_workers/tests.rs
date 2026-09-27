@@ -2,6 +2,29 @@ use super::*;
 use tilo_actions::Action;
 
 pub(crate) fn selected() -> (tempfile::TempDir, Arc<RuntimeOwner>) {
+    let directory = selected_store();
+    let owner = Arc::new(RuntimeOwner::open(directory.path(), "agent-admission").unwrap());
+    (directory, owner)
+}
+
+/// [`selected`] with an owner policy clock the test advances itself, for
+/// time budgets checked without waiting them out on the wall clock.
+pub(crate) fn selected_with_clock() -> (
+    tempfile::TempDir,
+    Arc<RuntimeOwner>,
+    tilo_action_broker::peer_actions::PolicyClockTestControl,
+) {
+    let directory = selected_store();
+    let (clock, control) = tilo_action_broker::peer_actions::OwnerPolicyClock::for_test(
+        tilo_delivery_protocol::clock::now_ns(),
+    );
+    let owner = Arc::new(
+        RuntimeOwner::open_with_clock(directory.path(), "agent-admission", clock).unwrap(),
+    );
+    (directory, owner, control)
+}
+
+fn selected_store() -> tempfile::TempDir {
     // The workers install the managed sender under the Store root.
     let (directory, mut store, _) = crate::agent_owner_tests::enrolled_admitted();
     let mut peer = store.peer().unwrap();
@@ -10,8 +33,7 @@ pub(crate) fn selected() -> (tempfile::TempDir, Arc<RuntimeOwner>) {
     state.bound.as_mut().unwrap().peer = peer.durable().unwrap();
     store.commit(state).unwrap();
     drop(store);
-    let owner = Arc::new(RuntimeOwner::open(directory.path(), "agent-admission").unwrap());
-    (directory, owner)
+    directory
 }
 
 // A second host/owner or a legacy/no-owner broker must not stand in for the
@@ -173,7 +195,7 @@ async fn certified_start(
     let mut pending = queue
         .submit_certified_with_policy_time(
             evidence,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(20),
+            tokio::time::Instant::from_std(tilo_test_env::hang_deadline()),
             workers.owner.policy_time().unwrap(),
         )
         .unwrap();
@@ -289,7 +311,7 @@ async fn cloud_worker_actual_action_waits_for_store_and_consumes_exact_receipt_o
             let (complete, outcome) = crate::agent_documents::apply_worker_document(
                 &owner,
                 pending,
-                std::time::Instant::now() + std::time::Duration::from_secs(5),
+                tilo_test_env::hang_deadline(),
             );
             outcome.unwrap();
             commits += 1;
@@ -539,7 +561,7 @@ async fn cloud_worker_postcommit_lost_reply_never_reports_success_or_reexecutes(
             let (complete, outcome) = crate::agent_documents::apply_worker_document(
                 &owner,
                 pending,
-                std::time::Instant::now() + std::time::Duration::from_secs(5),
+                tilo_test_env::hang_deadline(),
             );
             outcome.unwrap();
             workers.committed().unwrap();
@@ -578,7 +600,7 @@ async fn cloud_worker_postcommit_lost_reply_never_reports_success_or_reexecutes(
         while let Ok(pending) = documents.try_recv() {
             let owner = reopened.owner.clone();
             let (complete, outcome) = pending.apply_scoped_fenced(
-                std::time::Instant::now() + std::time::Duration::from_secs(5),
+                tilo_test_env::hang_deadline(),
                 |route, certificate, mutation, authorization| {
                     let mut store = owner.store()?;
                     let bytes = store
@@ -1267,7 +1289,7 @@ fn registered_source_owner() -> (
 fn settle_startup_document(workers: &mut AgentWorkers, pending: PendingHostDocument) {
     let owner = workers.owner.clone();
     let (complete, outcome) = pending.apply_scoped_fenced(
-        std::time::Instant::now() + std::time::Duration::from_secs(5),
+        tilo_test_env::hang_deadline(),
         |route, certificate, mutation, authorization| {
             let authorization = authorization.expect("required worker custody");
             let record = route.record.as_deref().unwrap_or("");
@@ -1692,7 +1714,7 @@ async fn pump_until(
     what: &str,
     done: impl Fn(&AgentWorkers) -> bool,
 ) {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     loop {
         workers.pump().unwrap();
         while let Ok(pending) = documents.try_recv() {

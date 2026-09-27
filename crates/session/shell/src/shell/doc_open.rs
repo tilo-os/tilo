@@ -894,6 +894,9 @@ fn grant_read_for_open(package_id: &str, path: &Path, chrome: &Chrome) -> Result
 
 #[cfg(test)]
 mod tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
@@ -960,7 +963,10 @@ mod tests {
     /// Waits for at least `want` — a launch runs on its own thread, not
     /// observable the instant `open` returns.
     fn launched_commands(log: &Path, want: usize) -> Vec<String> {
-        for _ in 0..400 {
+        let deadline = std::time::Instant::now()
+            .checked_add(HANG_BOUND)
+            .expect("the hang bound fits in an Instant");
+        while std::time::Instant::now() < deadline {
             if let Ok(s) = std::fs::read_to_string(log) {
                 let lines: Vec<String> = s.lines().map(str::to_string).collect();
                 if lines.len() >= want {

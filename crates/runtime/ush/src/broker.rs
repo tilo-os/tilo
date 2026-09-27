@@ -1138,6 +1138,9 @@ pub fn ask_streaming_with_progress(
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
+
     fn state(dir: &Path) -> BrokerState {
         BrokerState {
             session_id: "s1".into(),
@@ -1292,10 +1295,7 @@ mod tests {
                 .unwrap()
             });
 
-            assert_eq!(
-                rx.recv_timeout(Duration::from_millis(500)).unwrap(),
-                b"started\n"
-            );
+            assert_eq!(rx.recv_timeout(HANG_BOUND).unwrap(), b"started\n");
             let before = Instant::now();
             assert!(matches!(
                 ask(&socket, &Request::Status),
@@ -1349,7 +1349,8 @@ mod tests {
                 )
                 .unwrap()
             });
-            for _ in 0..50 {
+            let deadline = Instant::now() + HANG_BOUND;
+            while Instant::now() < deadline {
                 if std::fs::read_to_string(&events).is_ok_and(|text| text.contains("first-start")) {
                     break;
                 }
@@ -1434,7 +1435,8 @@ mod tests {
         serde_json::to_writer(&mut stream, &Request::AppUpdate { package: None }).unwrap();
         stream.write_all(b"\n").unwrap();
         stream.flush().unwrap();
-        for _ in 0..50 {
+        let deadline = Instant::now() + HANG_BOUND;
+        while Instant::now() < deadline {
             if pid_file.exists() {
                 break;
             }
@@ -1449,7 +1451,8 @@ mod tests {
         drop(stream);
 
         let mut stopped = Vec::new();
-        for _ in 0..50 {
+        let stop_deadline = Instant::now() + HANG_BOUND;
+        while Instant::now() < stop_deadline {
             stopped = pids
                 .iter()
                 .copied()

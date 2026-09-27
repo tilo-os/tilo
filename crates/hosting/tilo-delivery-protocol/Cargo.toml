@@ -45,6 +45,7 @@ uuid = { workspace = true, features = ["js"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "time"] }
 tilo-automerge-isolate.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

@@ -5,9 +5,9 @@
 //! Unicode order, with names and keywords from CLDR. It is checked in under
 //! `data/` and regenerated deterministically by `tools/regenerate.py`.
 //!
-//! - [`Catalogue::for_locale`] names and searches in de, es, fr, it, ja or
-//!   zh as well as English, keeping English for anything CLDR leaves
-//!   untranslated.
+//! - [`Catalogue::for_locale`] names and searches in de, es, fr, it, ja, zh or
+//!   zh-Hant, keeping English for anything CLDR leaves untranslated; English
+//!   names and keywords still match, ranked after native ones.
 //! - [`Catalogue::groups`] / [`Catalogue::subgroups`] walk the picker tabs.
 //! - [`Catalogue::search`] ranks by name and keyword (prefix > word > substring).
 //! - [`Catalogue::with_skin_tone`] tones only emoji that take a tone; a
@@ -303,10 +303,21 @@ impl Catalogue {
     /// or group the language does not name keeps its English name.
     #[must_use]
     pub fn for_locale(tag: &str) -> &'static Self {
-        let primary = tag.split(['-', '_', '.', '@']).next().unwrap_or_default();
+        let tag = tag.split(['.', '@']).next().unwrap_or_default();
+        let primary = tag.split(['-', '_']).next().unwrap_or_default();
+        let has = |wanted: &[&str]| {
+            tag.split(['-', '_'])
+                .skip(1)
+                .any(|s| wanted.iter().any(|w| s.eq_ignore_ascii_case(w)))
+        };
+        // Chinese splits by script: Traditional for an explicit Hant script
+        // or, without an explicit Hans, the regions that write it.
+        let traditional = primary.eq_ignore_ascii_case("zh")
+            && (has(&["hant"]) || (!has(&["hans"]) && has(&["tw", "hk", "mo"])));
+        let wanted = if traditional { "zh_Hant" } else { primary };
         TRANSLATIONS
             .iter()
-            .position(|(l, _)| l.eq_ignore_ascii_case(primary))
+            .position(|(l, _)| l.eq_ignore_ascii_case(wanted))
             .map_or_else(Self::english, Self::translated)
     }
 
@@ -434,7 +445,9 @@ impl Catalogue {
 
     /// Up to `limit` emoji matching `query`, best first. Every whitespace
     /// separated term must match the name or a keyword; a name prefix beats a
-    /// word match, which beats a substring. Ties keep Unicode order.
+    /// word match, which beats a substring. Ties keep Unicode order. In a
+    /// translated catalogue, emoji that match only in English follow every
+    /// native match, ranked the same way.
     #[must_use]
     pub fn search(&self, query: &str, limit: usize) -> Vec<&Emoji> {
         search::search(self, query, limit)

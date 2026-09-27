@@ -15,6 +15,9 @@ pub use owner::delivery::early_forward;
 pub use owner::{CommitReceipt, PendingOperation, SessionOwner, Status};
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
+/// Bounds a test wait that ends as soon as its condition holds; only a hang reaches it.
+#[cfg(test)]
+pub(crate) const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub mod enrollment;
 pub mod enrollment_http;

@@ -42,7 +42,9 @@
 #   packages    cargo package(s) built for this component
 #   bins        cargo bins those packages build for the image
 #   features    cargo features, package-qualified ("pkg/feature")
-#   dev_features  cargo features only dev builds enable, package-qualified.
+#   dev_features  cargo features only dev builds enable, normally package-qualified;
+#                 a bare feature may target a single-package component when a
+#                 same-named self dev-dependency shadows pkg/feature.
 #               The dev image rebuilds every component that has them, with
 #               them (os/Containerfile.dev); the production image never does.
 #   units       system units whose ExecStart runs these files (restart on swap)
@@ -106,7 +108,7 @@ kind = "userspace"
 scope = "session"
 packages = ["shell"]
 bins = ["shell"]
-dev_features = ["shell/dev-overrides"]
+dev_features = ["dev-overrides"]
 user_units = ["tilo-identity.service"]
 layer = "desktop-binaries"
 files = [
@@ -495,7 +497,7 @@ kind = "userspace"
 scope = "session"
 packages = ["shell"]
 bins = ["tilo-control"]
-dev_features = ["shell/dev-overrides"]
+dev_features = ["dev-overrides"]
 layer = "dev-tools"
 files = [
   { from = "tilo-control", to = "/usr/bin/tilo-control", mode = "0755" },

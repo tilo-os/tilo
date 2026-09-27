@@ -74,6 +74,7 @@ wire-frame = { path = "../../crates/system/wire-frame", optional = true, feature
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-copy-lint = { path = "../../crates/dev/copy-lint" }
 
 [lints]
 workspace = true

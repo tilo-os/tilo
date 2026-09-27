@@ -164,8 +164,8 @@ impl DocMut<'_> {
         after: Option<&str>,
         kind: &str,
     ) -> String {
-        let order = self.order_after_in(&container, after);
         let id = self.ids.mint();
+        let order = self.order_after_in(&container, after, &id);
         self.record_order(&container, &id, &order);
         let bulk = &mut self.ids.bulk;
         bulk.by_id.insert(id.clone(), bulk.blocks.len());

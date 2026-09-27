@@ -79,16 +79,13 @@ const TILO_SEAT_NAME: &str = "tilo-desktop";
 /// inherited package/workspace variables cannot redirect fixture documents.
 const FIXTURE_RECORD_SCOPE: &str = "00000000-0000-0000-0000-000000000000";
 
-/// How long any single wait-for-condition may take once the compositor is
-/// serving. Startup has its own budget, [`STARTUP_DEADLINE`].
-const DEADLINE: Duration = Duration::from_secs(25);
-
-/// How long a spawned compositor may take to go from `exec` to answering its
-/// first test-control request with a laid-out frame. Cold start compiles the
-/// renderer's pipelines and shapes the first chrome, which a loaded CI runner
-/// can stretch well past [`DEADLINE`]. This only bounds a hang: a compositor
-/// that exits, or closes its stderr, fails the wait at once with its log.
-const STARTUP_DEADLINE: Duration = Duration::from_secs(120);
+/// How long any single wait-for-condition may take, startup included: the
+/// workspace-wide hang bound. Every wait here returns as soon as its condition
+/// holds, and a compositor that exits or closes its stderr fails the wait at
+/// once with its log, so this only decides when a stuck wait is called hung.
+fn deadline() -> Duration {
+    tilo_test_env::hang_bound()
+}
 
 /// Spacing of the grid [`TestClient::pointer_target`] probes for a client.
 const POINTER_GRID_STEP: i32 = 40;
@@ -521,7 +518,7 @@ impl Compositor {
     /// the whole cold start to the first request a test makes. Readiness is
     /// therefore a handshake: all three sockets announced, then a
     /// `list_targets` request answered with at least one laid-out target,
-    /// which only a completed frame produces. One [`STARTUP_DEADLINE`],
+    /// which only a completed frame produces. One [`deadline`],
     /// measured from spawn, bounds all of it; a compositor that dies fails
     /// the wait immediately.
     fn wait_until_serving(
@@ -542,7 +539,7 @@ impl Compositor {
 
         let mut found: HashMap<String, String> = HashMap::new();
         while found.len() < 3 {
-            let remaining = STARTUP_DEADLINE.saturating_sub(started.elapsed());
+            let remaining = deadline().saturating_sub(started.elapsed());
             match rx.recv_timeout(remaining) {
                 Ok((key, value)) => {
                     found.insert(key, value);
@@ -553,7 +550,7 @@ impl Compositor {
                 ),
                 Err(mpsc::RecvTimeoutError::Timeout) => fail(
                     child,
-                    &format!("it announced only {found:?} within {STARTUP_DEADLINE:?}"),
+                    &format!("it announced only {found:?} within the hang bound"),
                 ),
             }
         }
@@ -612,10 +609,10 @@ impl Compositor {
             if let Ok(Some(status)) = child.try_wait() {
                 return Err(format!("it exited with {status}"));
             }
-            if started.elapsed() >= STARTUP_DEADLINE {
-                return Err(format!(
-                    "its event loop did not answer test control within {STARTUP_DEADLINE:?}"
-                ));
+            if started.elapsed() >= deadline() {
+                return Err(
+                    "its event loop did not answer test control within the hang bound".into(),
+                );
             }
         }
         let value: serde_json::Value = serde_json::from_slice(&response).map_err(|e| {
@@ -636,7 +633,7 @@ impl Compositor {
         let mut stream =
             UnixStream::connect(&self.control_socket).expect("connect to the test-control socket");
         stream
-            .set_read_timeout(Some(DEADLINE))
+            .set_read_timeout(Some(deadline()))
             .expect("set control read timeout");
         let mut line = serde_json::to_vec(request).expect("encode control request");
         line.push(b'\n');
@@ -865,7 +862,7 @@ fn wait_for_foreign_surface_count(
             return ids;
         }
         assert!(
-            started.elapsed() < DEADLINE,
+            started.elapsed() < deadline(),
             "{label}; wanted {count} surfaces, got {ids:?}.\n{}",
             compositor.debug_state()
         );
@@ -1120,7 +1117,7 @@ impl TestClient {
         self.attach_buffer(320, 240);
 
         let started = Instant::now();
-        while started.elapsed() < DEADLINE {
+        while started.elapsed() < deadline() {
             if self.state.keyboard_focused {
                 self.step("focused");
                 return;
@@ -1128,12 +1125,12 @@ impl TestClient {
             dispatch_any(
                 &mut [&mut *self],
                 None,
-                DEADLINE.saturating_sub(started.elapsed()),
+                deadline().saturating_sub(started.elapsed()),
             );
         }
         panic!(
             "the compositor never gave `{}` keyboard focus after mapping a toplevel \
-             (waited {DEADLINE:?}). Setting a selection requires focus, so nothing \
+             (waited out the hang bound). Setting a selection requires focus, so nothing \
              downstream can work without it.\n{}",
             self.app_id,
             compositor.debug_state(),
@@ -1271,25 +1268,25 @@ impl TestClient {
 
     /// Dispatch this client's events until `cond` holds, failing with `what`
     /// on timeout. Each wait wakes on the next event from the compositor but
-    /// never parks past [`DEADLINE`]: a plain `blocking_dispatch` would park
+    /// never parks past [`deadline()`]: a plain `blocking_dispatch` would park
     /// forever on a compositor that sends *nothing* — the exact failure this
     /// suite catches — instead of failing.
     fn wait_until(&mut self, cond: impl Fn(&ClientState) -> bool, what: &str) {
         let started = Instant::now();
-        while started.elapsed() < DEADLINE {
+        while started.elapsed() < deadline() {
             if cond(&self.state) {
                 return;
             }
             dispatch_any(
                 &mut [&mut *self],
                 None,
-                DEADLINE.saturating_sub(started.elapsed()),
+                deadline().saturating_sub(started.elapsed()),
             );
         }
         if cond(&self.state) {
             return;
         }
-        panic!("{what} (waited {DEADLINE:?}, app_id {})", self.app_id);
+        panic!("{what} (waited out the hang bound, app_id {})", self.app_id);
     }
 
     /// Pump without requiring progress, for waits on something outside this client.
@@ -1357,6 +1354,9 @@ impl TestClient {
         String::from_utf8(bytes).expect("selection bytes were not UTF-8")
     }
 
+    /// A selection set just before this call may still be on its way, with
+    /// an earlier selection's offer already delivered, so wait for an offer
+    /// that advertises `mime` rather than taking the first one.
     fn read_clipboard_bytes(&mut self, mime: &str, peer: Option<&mut TestClient>) -> Vec<u8> {
         // Successive copies each publish a new selection, and an earlier one
         // (the text a caller copied before an image, say) can reach this
@@ -1482,7 +1482,7 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         // client has to keep being dispatched while the mirror fills.
         let started = Instant::now();
         let mut seen = None;
-        while started.elapsed() < DEADLINE {
+        while started.elapsed() < deadline() {
             seen = compositor.chrome_paste(false);
             if seen.as_deref() == Some(payload) {
                 break;
@@ -1774,7 +1774,7 @@ fn drain_bytes(fd: Fd, reader: &mut TestClient, peer: Option<&mut TestClient>) -
     let mut chunk = [0u8; 4096];
     let started = Instant::now();
     let mut peer = peer;
-    while started.elapsed() < DEADLINE {
+    while started.elapsed() < deadline() {
         match file.read(&mut chunk) {
             Ok(0) => return out,
             Ok(n) => out.extend_from_slice(&chunk[..n]),
@@ -1782,7 +1782,7 @@ fn drain_bytes(fd: Fd, reader: &mut TestClient, peer: Option<&mut TestClient>) -
                 // Wake on bytes in the pipe or on either client's next event
                 // (the owner's `send` request is what produces the bytes).
                 use std::os::unix::io::AsFd;
-                let remaining = DEADLINE.saturating_sub(started.elapsed());
+                let remaining = deadline().saturating_sub(started.elapsed());
                 match peer.as_deref_mut() {
                     Some(p) => dispatch_any(&mut [&mut *reader, p], Some(file.as_fd()), remaining),
                     None => dispatch_any(&mut [&mut *reader], Some(file.as_fd()), remaining),
@@ -1792,7 +1792,7 @@ fn drain_bytes(fd: Fd, reader: &mut TestClient, peer: Option<&mut TestClient>) -
         }
     }
     panic!(
-        "the selection transfer never reached EOF within {DEADLINE:?}; \
+        "the selection transfer never reached EOF within the hang bound; \
          got {:?} so far",
         String::from_utf8_lossy(&out)
     );
@@ -2710,7 +2710,7 @@ fn installed_electron_client_maps_focuses_and_places_through_private_xwayland() 
             break;
         }
         assert!(
-            started.elapsed() < Duration::from_secs(45),
+            started.elapsed() < deadline(),
             "the installed Electron client never mapped through Tilo Xwayland.\nLast foreign-frame state:\n{}\nElectron log:\n{}\nCompositor log:\n{}",
             serde_json::to_string_pretty(&frames).unwrap_or_else(|_| frames.to_string()),
             log.lock().map(|lines| lines.join("\n")).unwrap_or_default(),
@@ -2823,7 +2823,7 @@ fn generic_x11_client_relays_compositor_token_through_private_satellite() {
             break;
         }
         assert!(
-            started.elapsed() < Duration::from_secs(15),
+            started.elapsed() < deadline(),
             "the private generic X11 probe did not map through satellite. compositor log:\n{}",
             compositor.recent_log()
         );
@@ -3122,7 +3122,7 @@ fn compositor_modes_take_and_return_client_input_cleanly() {
                 break;
             }
             assert!(
-                started.elapsed() < DEADLINE,
+                started.elapsed() < deadline(),
                 "power-menu Lock did not enter the Tilo locked state. {}",
                 compositor.debug_state()
             );
@@ -3294,7 +3294,7 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
                 return;
             }
             assert!(
-                started.elapsed() < DEADLINE,
+                started.elapsed() < deadline(),
                 "{label}; wanted {want:?}, got {got:?}.\n{}",
                 compositor.debug_state()
             );
@@ -3341,7 +3341,7 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
                 return;
             }
             assert!(
-                started.elapsed() < DEADLINE,
+                started.elapsed() < deadline(),
                 "{label}; selected {selected_surface:?} reappeared in {got:?}.\n{}",
                 compositor.debug_state()
             );
@@ -3556,7 +3556,7 @@ fn primary_selection_crosses_every_boundary_without_aliasing_the_clipboard() {
 
         let started = Instant::now();
         let mut seen = None;
-        while started.elapsed() < DEADLINE {
+        while started.elapsed() < deadline() {
             seen = compositor.chrome_paste(true);
             if seen.as_deref() == Some(payload) {
                 break;
@@ -3686,7 +3686,7 @@ fn client_text_drag_on_a_tiled_edge_opens_a_new_group() {
             break (shape, tree);
         }
         assert!(
-            started.elapsed() < DEADLINE,
+            started.elapsed() < deadline(),
             "the shell never opened the dragged text at the tiled edge.\n{}",
             compositor.debug_state()
         );
@@ -3807,7 +3807,7 @@ impl Compositor {
 
     fn named_center(&self, name: &str) -> (f64, f64) {
         let started = Instant::now();
-        while started.elapsed() < DEADLINE {
+        while started.elapsed() < deadline() {
             if let Some([x, y, w, h]) = self.named_rect(name)
                 && w > 0.0
                 && h > 0.0
@@ -3817,7 +3817,7 @@ impl Compositor {
             std::thread::sleep(Duration::from_millis(50));
         }
         panic!(
-            "chrome never laid out a target named {name:?} (waited {DEADLINE:?}).\n{}",
+            "chrome never laid out a target named {name:?} (waited out the hang bound).\n{}",
             self.debug_state()
         );
     }
@@ -3869,7 +3869,7 @@ impl Compositor {
         let mut equal = 1usize;
         while equal < SETTLED_SAMPLES {
             assert!(
-                started.elapsed() < DEADLINE,
+                started.elapsed() < deadline(),
                 "{what}: the layout never stopped moving; last {last:?}.\n{}",
                 self.debug_state()
             );
@@ -3885,13 +3885,13 @@ impl Compositor {
     }
 
     /// Wait until `cond` holds on the compositor's control state, failing
-    /// with `what` and the compositor's state after [`DEADLINE`].
+    /// with `what` and the compositor's state after [`deadline()`].
     fn wait_for(&self, what: &str, mut cond: impl FnMut(&Self) -> bool) {
         let started = Instant::now();
         while !cond(self) {
             assert!(
-                started.elapsed() < DEADLINE,
-                "{what} (waited {DEADLINE:?}).\n{}",
+                started.elapsed() < deadline(),
+                "{what} (waited out the hang bound).\n{}",
                 self.debug_state()
             );
             std::thread::sleep(Duration::from_millis(5));
@@ -4222,7 +4222,7 @@ fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
             break (shape, tree);
         }
         assert!(
-            started.elapsed() < DEADLINE,
+            started.elapsed() < deadline(),
             "the shell never opened photo.png at the body target.\n{}",
             compositor.debug_state()
         );
@@ -4326,7 +4326,7 @@ fn wait_for_word_processor_mapped(compositor: &Compositor, app_log: &Arc<Mutex<V
             break;
         }
         assert!(
-            started.elapsed() < Duration::from_secs(90),
+            started.elapsed() < deadline(),
             "the word processor never mapped a window.\nApp log:\n{}\nCompositor log:\n{}",
             app_log.lock().map(|l| l.join("\n")).unwrap_or_default(),
             compositor.recent_log()
@@ -4435,7 +4435,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
         if hit {
             break true;
         }
-        if started.elapsed() > DEADLINE {
+        if started.elapsed() > deadline() {
             break false;
         }
         std::thread::sleep(Duration::from_millis(100));

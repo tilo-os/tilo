@@ -399,19 +399,19 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
     let mut context = tilo_actions::ActionContext::for_action("so.tilo.chat", "Chat", action);
     let (label, channel, resource_id, kind) = match action {
         ChatAction::SendMessage { channel, id, .. } => {
-            ("Send message", channel, id, "chat.message")
+            ("chat-action-send-message", channel, id, "chat.message")
         }
         ChatAction::EditMessage { channel, id, .. } => {
-            ("Edit message", channel, id, "chat.message")
+            ("chat-action-edit-message", channel, id, "chat.message")
         }
         ChatAction::DeleteMessage { channel, id } => {
-            ("Delete message", channel, id, "chat.message")
+            ("chat-action-delete-message", channel, id, "chat.message")
         }
         ChatAction::AddReaction { channel, msg, .. } => {
-            ("Add reaction", channel, msg, "chat.message")
+            ("chat-emoji-add-reaction", channel, msg, "chat.message")
         }
         ChatAction::RemoveReaction { channel, msg, .. } => {
-            ("Remove reaction", channel, msg, "chat.message")
+            ("chat-action-remove-reaction", channel, msg, "chat.message")
         }
         ChatAction::PinMessage {
             channel,
@@ -419,26 +419,37 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
             pinned,
         } => (
             if *pinned {
-                "Pin message"
+                "chat-action-pin-message"
             } else {
-                "Unpin message"
+                "chat-action-unpin-message"
             },
             channel,
             msg,
             "chat.message",
         ),
-        ChatAction::SetAgentWork { channel, msg, .. } => {
-            ("Update agent work", channel, msg, "chat.message")
+        ChatAction::SetAgentWork { channel, msg, .. } => (
+            "chat-action-update-agent-work",
+            channel,
+            msg,
+            "chat.message",
+        ),
+        ChatAction::CreateChannel { id, .. } => {
+            ("chat-action-create-channel", id, id, "chat.channel")
         }
-        ChatAction::CreateChannel { id, .. } => ("Create channel", id, id, "chat.channel"),
-        ChatAction::CreateCategory { id, .. } => ("Create category", id, id, "chat.category"),
-        ChatAction::RenameCategory { id, .. } => ("Rename category", id, id, "chat.category"),
-        ChatAction::DeleteCategory { id } => ("Delete category", id, id, "chat.category"),
+        ChatAction::CreateCategory { id, .. } => {
+            ("chat-action-create-category", id, id, "chat.category")
+        }
+        ChatAction::RenameCategory { id, .. } => {
+            ("chat-action-rename-category", id, id, "chat.category")
+        }
+        ChatAction::DeleteCategory { id } => {
+            ("chat-action-delete-category", id, id, "chat.category")
+        }
         ChatAction::SetCategoryCollapsed { id, collapsed } => (
             if *collapsed {
-                "Collapse category"
+                "chat-action-collapse-category"
             } else {
-                "Expand category"
+                "chat-action-expand-category"
             },
             id,
             id,
@@ -446,59 +457,74 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
         ),
         ChatAction::ReorderChannel { id, up } => (
             if *up {
-                "Move channel up"
+                "chat-action-move-channel-up"
             } else {
-                "Move channel down"
+                "chat-action-move-channel-down"
             },
             id,
             id,
             "chat.channel",
         ),
-        ChatAction::RenameChannel { id, .. } => ("Rename channel", id, id, "chat.channel"),
-        ChatAction::DeleteChannel { id } => ("Delete channel", id, id, "chat.channel"),
+        ChatAction::RenameChannel { id, .. } => {
+            ("chat-action-rename-channel", id, id, "chat.channel")
+        }
+        ChatAction::DeleteChannel { id } => ("chat-action-delete-channel", id, id, "chat.channel"),
         ChatAction::ArchiveChannel { id, archived } => (
             if *archived {
-                "Archive channel"
+                "chat-action-archive-channel"
             } else {
-                "Unarchive channel"
+                "chat-action-unarchive-channel"
             },
             id,
             id,
             "chat.channel",
         ),
-        ChatAction::MarkRead { channel, .. } => {
-            ("Mark channel read", channel, channel, "chat.channel")
+        ChatAction::MarkRead { channel, .. } => (
+            "chat-action-mark-channel-read",
+            channel,
+            channel,
+            "chat.channel",
+        ),
+        ChatAction::JoinCall { channel, .. } => {
+            ("chat-action-join-call", channel, channel, "chat.call")
         }
-        ChatAction::JoinCall { channel, .. } => ("Join call", channel, channel, "chat.call"),
-        ChatAction::LeaveCall { channel, .. } => ("Leave call", channel, channel, "chat.call"),
-        ChatAction::SetCallState { channel, .. } => {
-            ("Update call state", channel, channel, "chat.call")
+        ChatAction::LeaveCall { channel, .. } => {
+            ("chat-action-leave-call", channel, channel, "chat.call")
         }
+        ChatAction::SetCallState { channel, .. } => (
+            "chat-action-update-call-state",
+            channel,
+            channel,
+            "chat.call",
+        ),
         ChatAction::SetScreenShare {
             channel, sharing, ..
         } => (
             if *sharing {
-                "Start presenting"
+                "chat-action-start-presenting"
             } else {
-                "Stop presenting"
+                "chat-action-stop-presenting"
             },
             channel,
             channel,
             "chat.call",
         ),
         ChatAction::SetCallTicket { channel, .. }
-        | ChatAction::SetCallVideoCaps { channel, .. } => {
-            ("Update call connection", channel, channel, "chat.call")
-        }
+        | ChatAction::SetCallVideoCaps { channel, .. } => (
+            "chat-action-update-call-connection",
+            channel,
+            channel,
+            "chat.call",
+        ),
         // A well-formed one delegated above; a nested wrapper applies nothing.
         ChatAction::AgentAuthored { .. } => return context,
     };
-    context.action_label = label.to_string();
+    context.action_label = crate::i18n::t(label);
     context.resource = Some(tilo_actions::ActionResource {
         id: format!("{kind}:{resource_id}"),
         kind: kind.to_string(),
         label: if kind == "chat.message" {
-            "Message".to_string()
+            crate::i18n::t("chat-action-message")
         } else {
             channel.clone()
         },
@@ -795,7 +821,12 @@ pub fn agent_authored(
 
 fn bounded_agent_name(name: &str) -> String {
     let name = name.trim();
-    let name = if name.is_empty() { "Agent" } else { name };
+    let fallback = crate::i18n::t("chat-action-agent-default-name");
+    let name = if name.is_empty() {
+        fallback.as_str()
+    } else {
+        name
+    };
     let end = name.floor_char_boundary(MAX_AGENT_AUTHOR_NAME_BYTES);
     name.get(..end).unwrap_or(name).to_owned()
 }
@@ -1130,12 +1161,16 @@ fn annotate_contracts(resource: &mut Resource) {
 
 /// A channel's palette label: `#name` for text, a speaker glyph for voice.
 fn channel_label(ch: &ChannelResource) -> String {
-    let name = if ch.name.trim().is_empty() {
-        "channel"
+    let name = ch.name.trim();
+    if name.is_empty() {
+        format!(
+            "{} {}",
+            ch.kind.glyph(),
+            crate::i18n::t("chat-action-unnamed-channel")
+        )
     } else {
-        ch.name.trim()
-    };
-    format!("{} {}", ch.kind.glyph(), name)
+        format!("{} {}", ch.kind.glyph(), name)
+    }
 }
 
 /// Build the resource tree Chat currently has open: the active workspace (root),
@@ -1208,13 +1243,17 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
         forest.push(workspace);
     }
 
-    let mut people = Resource::new("chat.people", "chat.people", "People");
+    let mut people = Resource::new(
+        "chat.people",
+        "chat.people",
+        crate::search_provider::person_kind(),
+    );
     for user in users.into_iter().take(EAGER_PEOPLE_LIMIT) {
         people = people.with_child(
             Resource::new(format!("chat.person:{}", user.id), "chat.person", user.name)
                 .with_action(view_operation(
                     "open",
-                    "Open person",
+                    &crate::i18n::t("chat-action-open-person"),
                     &ChatOperation::OpenPerson { user: user.id },
                 )),
         );
@@ -1228,14 +1267,14 @@ fn workspace_resource(id: &str, name: &str) -> Resource {
         format!("chat.workspace:{id}"),
         "chat.workspace",
         if name.trim().is_empty() {
-            "Workspace"
+            crate::i18n::t("chat-action-workspace")
         } else {
-            name
+            name.to_owned()
         },
     )
     .with_action(view_operation(
         "open",
-        "Open workspace",
+        &crate::i18n::t("chat-action-open-workspace"),
         &ChatOperation::OpenWorkspace {
             workspace: id.to_string(),
         },
@@ -1252,7 +1291,11 @@ fn workspace_resource(id: &str, name: &str) -> Resource {
 )]
 pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
     if id == "chat.people" {
-        return Some(Resource::new("chat.people", "chat.people", "People"));
+        return Some(Resource::new(
+            "chat.people",
+            "chat.people",
+            crate::search_provider::person_kind(),
+        ));
     }
     if let Some(workspace_id) = id.strip_prefix("chat.workspace:") {
         let workspace = ChatDoc::list_workspaces(doc)
@@ -1299,7 +1342,7 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
             Resource::new(format!("chat.person:{}", user.id), "chat.person", user.name)
                 .with_action(view_operation(
                     "open",
-                    "Open person",
+                    &crate::i18n::t("chat-action-open-person"),
                     &ChatOperation::OpenPerson { user: user.id },
                 )),
         );
@@ -1445,15 +1488,20 @@ fn channel_resource(channel: &crate::model::Channel) -> ChannelResource {
 fn new_channel_action_spec(workspace_id: &str) -> ActionSpec {
     ActionSpec::prompted(
         "new-channel",
-        "New channel",
-        "Name",
-        "channel name…",
+        crate::i18n::t("chat-action-new-channel"),
+        crate::i18n::t("chat-action-param-name"),
+        crate::i18n::t("chat-action-channel-name-placeholder"),
         ExecutionLocus::ClientLocal,
         {
             let ws = workspace_id.to_string();
             move |name: &str| {
                 let name = name.trim();
-                let name = if name.is_empty() { "new-channel" } else { name };
+                let fallback = crate::i18n::t("chat-action-new-channel-default-name");
+                let name = if name.is_empty() {
+                    fallback.as_str()
+                } else {
+                    name
+                };
                 let id = format!("c_{}", uuid::Uuid::new_v4().simple());
                 encode(&create_channel_action(
                     &ws,
@@ -1470,16 +1518,17 @@ fn new_channel_action_spec(workspace_id: &str) -> ActionSpec {
 fn new_category_action_spec(workspace_id: &str) -> ActionSpec {
     ActionSpec::prompted(
         "new-category",
-        "New category",
-        "Name",
-        "category name…",
+        crate::i18n::t("chat-action-new-category"),
+        crate::i18n::t("chat-action-param-name"),
+        crate::i18n::t("chat-action-category-name-placeholder"),
         ExecutionLocus::ClientLocal,
         {
             let workspace = workspace_id.to_string();
             move |name: &str| {
                 let name = name.trim();
+                let fallback = crate::i18n::t("chat-action-new-category-default-name");
                 let name = if name.is_empty() {
-                    "New Category"
+                    fallback.as_str()
                 } else {
                     name
                 };
@@ -1498,7 +1547,7 @@ fn build_category_resource(workspace_id: &str, category: &CategoryResource) -> R
     )
     .with_action(view_operation(
         "open",
-        "Open category",
+        &crate::i18n::t("chat-action-open-category"),
         &ChatOperation::OpenCategory {
             workspace: workspace_id.to_string(),
             category: category.id.clone(),
@@ -1506,9 +1555,9 @@ fn build_category_resource(workspace_id: &str, category: &CategoryResource) -> R
     ))
     .with_action(ActionSpec::prompted(
         "rename",
-        "Rename category",
-        "Name",
-        "category name…",
+        crate::i18n::t("chat-action-rename-category"),
+        crate::i18n::t("chat-action-param-name"),
+        crate::i18n::t("chat-action-category-name-placeholder"),
         ExecutionLocus::ClientLocal,
         {
             let id = category.id.clone();
@@ -1521,16 +1570,16 @@ fn build_category_resource(workspace_id: &str, category: &CategoryResource) -> R
         } else {
             "collapse"
         },
-        if category.collapsed {
-            "Expand category"
+        &crate::i18n::t(if category.collapsed {
+            "chat-action-expand-category"
         } else {
-            "Collapse category"
-        },
+            "chat-action-collapse-category"
+        }),
         &set_category_collapsed_action(&category.id, !category.collapsed),
     ));
     resource.with_action(immediate_spec(
         "delete",
-        "Delete category",
+        &crate::i18n::t("chat-action-delete-category"),
         &delete_category_action(&category.id),
     ))
 }
@@ -1557,7 +1606,7 @@ fn build_channel_resource(
     .with_action(crate::semantic_read::action::spec(&ch.id))
     .with_action(view_operation(
         "open",
-        "Open conversation",
+        &crate::i18n::t("chat-action-open-conversation"),
         &ChatOperation::OpenChannel {
             workspace: workspace_id.to_string(),
             channel: ch.id.clone(),
@@ -1574,9 +1623,9 @@ fn build_channel_resource(
     if timeline {
         channel = channel.with_action(ActionSpec::prompted(
             "post",
-            "Post message",
-            "Message",
-            "type a message… (@Name mentions a member)",
+            crate::i18n::t("chat-action-post-message"),
+            crate::i18n::t("chat-action-param-message"),
+            crate::i18n::t("chat-action-post-message-placeholder"),
             ExecutionLocus::ClientLocal,
             {
                 let cid = ch.id.clone();
@@ -1608,8 +1657,8 @@ fn build_channel_resource(
         // and canonical SendMessage action are collaborative.
         channel = channel.with_action(ActionSpec::prompted_operation(
             "attach",
-            "Attach file",
-            "File path",
+            crate::i18n::t("chat-action-attach-file"),
+            crate::i18n::t("chat-action-param-file-path"),
             "/var/workspace/report.pdf",
             OperationKind::Effect,
             CHAT_OPERATION_TYPE,
@@ -1632,9 +1681,9 @@ fn build_channel_resource(
     // Rename — a prompted action carrying the new name.
     channel = channel.with_action(ActionSpec::prompted(
         "rename",
-        "Rename channel",
-        "Name",
-        "channel name…",
+        crate::i18n::t("chat-action-rename-channel"),
+        crate::i18n::t("chat-action-param-name"),
+        crate::i18n::t("chat-action-channel-name-placeholder"),
         ExecutionLocus::ClientLocal,
         {
             let cid = ch.id.clone();
@@ -1646,13 +1695,13 @@ fn build_channel_resource(
     if ch.archived {
         channel = channel.with_action(immediate_spec(
             "unarchive",
-            "Unarchive channel",
+            &crate::i18n::t("chat-action-unarchive-channel"),
             &archive_channel_action(&ch.id, false),
         ));
     } else {
         channel = channel.with_action(immediate_spec(
             "archive",
-            "Archive channel",
+            &crate::i18n::t("chat-action-archive-channel"),
             &archive_channel_action(&ch.id, true),
         ));
     }
@@ -1662,14 +1711,14 @@ fn build_channel_resource(
     let count = ChatDoc::top_level_count(doc, &ch.id) as i64;
     channel = channel.with_action(immediate_spec(
         "mark-read",
-        "Mark as read",
+        &crate::i18n::t("chat-action-mark-as-read"),
         &mark_read_action(&ch.id, &ctx.me, count),
     ));
 
     // Delete the whole channel.
     channel = channel.with_action(immediate_spec(
         "delete",
-        "Delete channel",
+        &crate::i18n::t("chat-action-delete-channel"),
         &delete_channel_action(&ch.id),
     ));
 
@@ -1699,11 +1748,14 @@ fn build_call_resource(
     let mut call = Resource::new(
         format!("chat.call:{}", ch.id),
         "chat.call",
-        format!("Call: {}", channel_label(ch)),
+        crate::i18n::t_args(
+            "chat-action-call-label",
+            &[("channel", channel_label(ch).into())],
+        ),
     )
     .with_action(view_operation(
         "open",
-        "Open call conversation",
+        &crate::i18n::t("chat-action-open-call-conversation"),
         &ChatOperation::OpenChannel {
             workspace: workspace_id.into(),
             channel: ch.id.clone(),
@@ -1712,27 +1764,31 @@ fn build_call_resource(
     for (id, label, command) in [
         (
             "join",
-            "Join muted",
+            "chat-action-join-muted",
             Command::Join {
                 channel_id: ch.id.clone(),
             },
         ),
-        ("leave", "Leave call", Command::Leave),
-        ("mute", "Mute microphone", Command::SetMuted { muted: true }),
+        ("leave", "chat-action-leave-call", Command::Leave),
+        (
+            "mute",
+            "chat-action-mute-microphone",
+            Command::SetMuted { muted: true },
+        ),
         (
             "unmute",
-            "Request microphone",
+            "chat-action-request-microphone",
             Command::SetMuted { muted: false },
         ),
-        ("status", "Call status", Command::Status),
+        ("status", "chat-action-call-status", Command::Status),
     ] {
-        call = call.with_action(voice_operation(id, label, &ch.id, command));
+        call = call.with_action(voice_operation(id, &crate::i18n::t(label), &ch.id, command));
     }
     call.with_action(ActionSpec::prompted_operation(
         "select-input",
-        "Select microphone",
-        "Input",
-        "Input from call status",
+        crate::i18n::t("chat-action-select-microphone"),
+        crate::i18n::t("chat-action-param-input"),
+        crate::i18n::t("chat-action-select-microphone-placeholder"),
         OperationKind::Effect,
         CHAT_OPERATION_TYPE,
         {
@@ -1795,7 +1851,7 @@ fn build_message_resource(
     )
     .with_action(view_operation(
         "open",
-        "Reveal message",
+        &crate::i18n::t("chat-action-reveal-message"),
         &ChatOperation::RevealMessage {
             workspace: workspace_id.to_string(),
             channel: ch.id.clone(),
@@ -1807,9 +1863,9 @@ fn build_message_resource(
     // Edit — prompted; the edit timestamp is minted in the closure.
     message = message.with_action(ActionSpec::prompted(
         "edit",
-        "Edit message",
-        "Message",
-        "new text…",
+        crate::i18n::t("chat-action-edit-message"),
+        crate::i18n::t("chat-action-param-message"),
+        crate::i18n::t("chat-action-edit-message-placeholder"),
         ExecutionLocus::ClientLocal,
         {
             let cid = ch.id.clone();
@@ -1821,8 +1877,8 @@ fn build_message_resource(
     // React — prompted for an emoji; adds the local peer's reaction.
     message = message.with_action(ActionSpec::prompted(
         "react",
-        "Add reaction",
-        "Emoji",
+        crate::i18n::t("chat-emoji-add-reaction"),
+        crate::i18n::t("chat-emoji-title"),
         "👍",
         ExecutionLocus::ClientLocal,
         {
@@ -1837,13 +1893,13 @@ fn build_message_resource(
     if m.pinned {
         message = message.with_action(immediate_spec(
             "unpin",
-            "Unpin message",
+            &crate::i18n::t("chat-action-unpin-message"),
             &pin_message_action(&ch.id, &m.id, false),
         ));
     } else {
         message = message.with_action(immediate_spec(
             "pin",
-            "Pin message",
+            &crate::i18n::t("chat-action-pin-message"),
             &pin_message_action(&ch.id, &m.id, true),
         ));
     }
@@ -1851,7 +1907,7 @@ fn build_message_resource(
     // Delete the message.
     message = message.with_action(immediate_spec(
         "delete",
-        "Delete message",
+        &crate::i18n::t("chat-action-delete-message"),
         &delete_message_action(&ch.id, &m.id),
     ));
 
@@ -1896,7 +1952,7 @@ fn build_attachment_resource(
     )
     .with_action(view_operation(
         "open-message",
-        "Reveal shared message",
+        &crate::i18n::t("chat-action-reveal-shared-message"),
         &ChatOperation::RevealMessage {
             workspace: workspace_id.to_owned(),
             channel: ch.id.clone(),
@@ -1926,7 +1982,7 @@ fn build_reaction_resource(
     )
     .with_action(view_operation(
         "open-message",
-        "Reveal message",
+        &crate::i18n::t("chat-action-reveal-message"),
         &ChatOperation::RevealMessage {
             workspace: workspace_id.to_owned(),
             channel: ch.id.clone(),
@@ -1945,11 +2001,11 @@ fn build_reaction_resource(
         } else {
             "add"
         },
-        if reaction.reacted_by_me {
-            "Remove my reaction"
+        &crate::i18n::t(if reaction.reacted_by_me {
+            "chat-action-remove-my-reaction"
         } else {
-            "Add my reaction"
-        },
+            "chat-action-add-my-reaction"
+        }),
         &action,
     ));
     resource
@@ -1971,11 +2027,11 @@ fn message_label(
                 crate::model::Attachment::File { name, .. }
                 | crate::model::Attachment::Image { name, .. }
                 | crate::model::Attachment::Video { name, .. },
-            ) => name.as_str(),
-            None => "Attachment",
+            ) => name.clone(),
+            None => crate::i18n::t("chat-action-attachment"),
         }
     } else {
-        text.trim()
+        text.trim().to_owned()
     };
     let snippet = body.chars().take(72).collect::<String>();
     format!("{author}: {snippet}")
