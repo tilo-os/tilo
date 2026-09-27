@@ -523,17 +523,19 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         .await
         .unwrap();
     let mut receipt = Box::pin(receipt);
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        tokio::select! {
-            reached = reached => reached.unwrap(),
-            result = &mut receipt => panic!(
-                "selected pending frame did not span a work quantum: {:?}",
-                result.unwrap()
-            ),
-        }
-    })
-    .await
-    .expect("selected pending frame did not reach the held-work barrier");
+    tilo_test_env::within(
+        "selected pending frame did not reach the held-work barrier",
+        async {
+            tokio::select! {
+                reached = reached => reached.unwrap(),
+                result = &mut receipt => panic!(
+                    "selected pending frame did not span a work quantum: {:?}",
+                    result.unwrap()
+                ),
+            }
+        },
+    )
+    .await;
     assert!(
         budget.used() > 0,
         "selected pending bytes escaped their output-budget lease across a work quantum"

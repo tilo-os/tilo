@@ -34,8 +34,8 @@ pub(crate) fn install(
         let Some(definition) = crate::desktop::definition(&row.app_id) else {
             continue;
         };
-        let chat = crate::desktop::is_chat(&row.app_id);
-        let checkout = if chat && row.record_id.is_empty() {
+        let primary = crate::desktop::opens_package_primary(&row.app_id);
+        let checkout = if primary && row.record_id.is_empty() {
             RecordCheckout::package_primary(definition.record_kind.clone())
         } else {
             RecordCheckout::new(
@@ -43,8 +43,11 @@ pub(crate) fn install(
                 definition.record_kind.clone(),
             )
         };
-        if chat && !checkout.id.is_package_primary() {
-            return Err("Chat requires its package-primary route".into());
+        if primary && !checkout.id.is_package_primary() {
+            return Err(format!(
+                "{} requires its package-primary route",
+                definition.title
+            ));
         }
         let bytes = state
             .document(&row.app_id, &row.record_id)

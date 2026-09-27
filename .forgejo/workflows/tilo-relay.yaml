@@ -12,6 +12,7 @@ on:
     paths:
       - "apps/calculator/**"
       - "apps/chat/**"
+      - "apps/ebook/**"
       - "apps/notes/**"
       - "apps/word-processor/**"
       - "crates/browser/tilo-browser-runtime/**"
@@ -94,6 +95,7 @@ on:
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-identity/**"
       - "crates/dev/test-env/**"
+      - "crates/dev/copy-lint/**"
       - "crates/sdk/rt/**"
       - "crates/sdk/font-catalog/**"
       - "crates/sdk/tilo-resource/**"
@@ -139,6 +141,7 @@ on:
     paths:
       - "apps/calculator/**"
       - "apps/chat/**"
+      - "apps/ebook/**"
       - "apps/notes/**"
       - "apps/word-processor/**"
       - "crates/browser/tilo-browser-runtime/**"
@@ -220,6 +223,7 @@ on:
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-identity/**"
       - "crates/dev/test-env/**"
+      - "crates/dev/copy-lint/**"
       - "crates/sdk/rt/**"
       - "crates/sdk/font-catalog/**"
       - "crates/sdk/tilo-resource/**"

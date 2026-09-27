@@ -477,7 +477,7 @@ mod tests {
             std::fs::write(&path, &contents).unwrap();
             let (socket, inherited) = std::os::unix::net::UnixStream::pair().unwrap();
             socket
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let non_socket = std::fs::File::open(&path).unwrap();
             let fd = if mode == "non-socket" {
@@ -538,11 +538,9 @@ mod tests {
         }
 
         fn finish(&mut self) -> String {
-            let until = crate::time::now() + Duration::from_secs(6);
-            while self.child.try_wait().unwrap().is_none() {
-                assert!(crate::time::now() < until, "child must finish boundedly");
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            tilo_test_env::wait_until("the fixture child to finish", || {
+                self.child.try_wait().unwrap().is_some()
+            });
             std::fs::read_to_string(&self.output).unwrap()
         }
     }
@@ -617,14 +615,9 @@ mod tests {
     #[test]
     fn stalled_collector_cannot_release_click_after_old_twelve_second_cadence() {
         let mut child = GateChild::start(12_000_000, |_| {});
-        let startup_deadline = crate::time::now() + Duration::from_secs(5);
-        while delivered_ids(&std::fs::read_to_string(&child.output).unwrap()).is_empty() {
-            assert!(
-                crate::time::now() < startup_deadline,
-                "fixture must deliver its initial hover"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the fixture's initial hover", || {
+            !delivered_ids(&std::fs::read_to_string(&child.output).unwrap()).is_empty()
+        });
         // No collector reads or approval writes for longer than the original
         // 12s cadence. Removing the producer gate delivers click1 in this gap.
         std::thread::sleep(Duration::from_millis(12_250));

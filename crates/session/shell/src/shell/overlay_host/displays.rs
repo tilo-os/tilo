@@ -128,11 +128,6 @@ fn in_band(lanes: &[StripLane], (share, column): StripBand) -> Vec<StripLane> {
         .collect()
 }
 
-/// The display a dragged group was dropped on and its neighbours there,
-/// before and after, so a partitioned row's reorder can be written back
-/// into the partition and the strip's order.
-pub(super) type ReorderNeighbours = Option<(Option<u32>, Option<u64>, Option<u64>)>;
-
 /// Where Super+Left/Right takes focus on a partitioned strip.
 enum Step {
     /// Another window on the same display.

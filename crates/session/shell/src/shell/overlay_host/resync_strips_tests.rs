@@ -615,8 +615,8 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         {
             let mut st = chrome.borrow_mut();
             let mut tree = st.tree_mut();
-            assert!(tree.reorder_group_within_strip(strip_id, 202, 0));
-            assert!(tree.reorder_tab_within_group(first_group, 2, 0));
+            assert!(tree.reorder_group_for_tests(strip_id, 202, 0));
+            assert!(tree.reorder_tab_for_tests(first_group, 2, 0));
             drop(tree);
             st.bump();
         }
@@ -660,8 +660,8 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         {
             let mut st = chrome.borrow_mut();
             let mut tree = st.tree_mut();
-            assert!(tree.reorder_group_within_strip(strip_id, 202, 2));
-            assert!(tree.reorder_tab_within_group(first_group, 0, 2));
+            assert!(tree.reorder_group_for_tests(strip_id, 202, 2));
+            assert!(tree.reorder_tab_for_tests(first_group, 0, 2));
             drop(tree);
             st.bump();
         }
@@ -784,8 +784,8 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         );
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&local);
         let peer_base = peer.room_heads(room);
-        assert!(peer.reorder_group_within_strip(remote_strip, remote_id(4), 0));
-        assert!(peer.reorder_tab_within_group(remote_group, 2, 0));
+        assert!(peer.reorder_group_for_tests(remote_strip, remote_id(4), 0));
+        assert!(peer.reorder_tab_for_tests(remote_group, 2, 0));
         let delta = peer
             .export_room_changes_since(room, &peer_base)
             .expect("reorder room delta");

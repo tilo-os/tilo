@@ -63,7 +63,7 @@ impl HistoryOrigin {
 
     pub fn label(&self) -> String {
         match self {
-            Self::DesktopTree => "Workspace".to_string(),
+            Self::DesktopTree => crate::i18n::t("activity-source-workspace"),
             Self::AppRecord { app, id, .. } => format!("{app}: {id}"),
             Self::Record { id, .. } => id.file_path().map_or_else(
                 || id.as_str().to_string(),

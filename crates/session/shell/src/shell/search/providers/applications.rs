@@ -19,12 +19,12 @@ use crate::shell::catalogue::{self, CatalogueApp};
 use crate::shell::chrome_state::{Chrome, OpenTarget};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::launcher::{self, InstalledApp};
-use crate::shell::notification::{Notification, NotificationSeverity};
 use crate::shell::search::action_api::{ActionArgs, ActionError};
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
+use tilo_desktop::notifications::{Notification, NotificationSeverity};
 
 /// Chip label / group header for launchable apps; also the provider's `name()`.
 pub const APPLICATIONS_KIND: &str = "Applications";
@@ -1145,6 +1145,9 @@ pub(crate) use ui::search::system::{PACKAGE_ID_WEIGHT, application_match_score a
 
 #[cfg(test)]
 mod tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
@@ -1159,7 +1162,10 @@ mod tests {
     }
 
     fn refresh_until_ready(provider: &ApplicationsProvider, ctx: &SearchContext<'_>) {
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now()
+            .checked_add(HANG_BOUND)
+            .expect("the hang bound fits in an Instant");
+        while std::time::Instant::now() < deadline {
             provider.refresh_search_index(ctx);
             if provider.search_revision(ctx).starts_with("ready:") {
                 return;
@@ -1983,7 +1989,10 @@ mod tests {
         };
         let initial_revision = provider.search_revision(&ctx);
         provider.refresh_search_index(&ctx);
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now()
+            .checked_add(HANG_BOUND)
+            .expect("the hang bound fits in an Instant");
+        while std::time::Instant::now() < deadline {
             if source
                 .materializations
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -2260,7 +2269,7 @@ mod native_application_tests {
                 let mut state = chrome.borrow_mut();
                 state.hosted_inputs =
                     HostedTileInputs::for_host_directory(directory.path()).unwrap();
-                state.set_strip_viewport(Some(crate::shell::placement::StripViewport {
+                state.set_strip_viewport(Some(tilo_desktop_model::commands::StripViewport {
                     strip: strip_id,
                     groups: ids
                         .iter()
@@ -2268,7 +2277,7 @@ mod native_application_tests {
                         .map(|(index, id)| {
                             let index =
                                 f64::from(u32::try_from(index).expect("fixture group index"));
-                            crate::shell::placement::GroupSpan {
+                            tilo_desktop_model::commands::GroupSpan {
                                 id: *id,
                                 x0: index * 100.0,
                                 x1: index.mul_add(100.0, 100.0),

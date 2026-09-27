@@ -49,6 +49,21 @@ pub fn installed() -> impl ExactSizeIterator<Item = &'static CheckedCanonicalApp
     INSTALLED.iter()
 }
 
+/// The applications with an installed checked record factory: what a
+/// workspace host (and a Cloud host over it) can open.
+pub struct Installed;
+
+impl tilo_desktop_model::apps::AppCatalogue for Installed {
+    fn openable(&self) -> Vec<tilo_desktop_model::apps::OpenableApp> {
+        installed()
+            .map(|entry| tilo_desktop_model::apps::OpenableApp {
+                app_id: entry.app_id(),
+                title: entry.definition().title,
+            })
+            .collect()
+    }
+}
+
 /// Resolve an app id to its installed factory.
 pub fn resolve(app: &str) -> Option<CheckedCanonicalApplication> {
     installed().find(|entry| entry.app_id() == app).copied()

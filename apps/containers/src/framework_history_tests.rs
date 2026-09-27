@@ -468,7 +468,7 @@ fn expect_request(
     label: &str,
 ) -> crate::app::ControlledRuntimeRequest {
     requests
-        .recv_timeout(std::time::Duration::from_secs(1))
+        .recv_timeout(tilo_test_env::hang_bound())
         .unwrap_or_else(|error| panic!("missing controlled {label} request: {error}"))
 }
 

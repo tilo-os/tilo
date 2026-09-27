@@ -1820,7 +1820,7 @@ pub(super) mod tests {
     use std::{
         fs,
         sync::{Arc, Condvar, Mutex},
-        time::{Duration, Instant},
+        time::Instant,
     };
     use tempfile::TempDir;
 
@@ -1883,7 +1883,7 @@ pub(super) mod tests {
                 });
                 let mut job = f.session.start(f.copy("a")).unwrap();
                 let id = job.operation_id();
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = tilo_test_env::hang_deadline();
                 let mut updates = vec![];
                 let error = loop {
                     match job.poll() {
@@ -1894,7 +1894,7 @@ pub(super) mod tests {
                         Instant::now() < deadline,
                         "terminal receipt failure was not surfaced"
                     );
-                    std::thread::yield_now();
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                 };
                 assert_publication(&error, expected);
                 assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
@@ -1980,7 +1980,7 @@ pub(super) mod tests {
         f.store.hooks.lock().unwrap().publication_failure =
             Some(("Item", atomic_file::test_support::Checkpoint::BeforeCommit));
         barrier.release();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         // Wait for the terminal error without consuming the queued first item.
         while !job.control.results.lock().unwrap().error {
             assert!(Instant::now() < deadline);
@@ -2015,7 +2015,7 @@ pub(super) mod tests {
         });
         let mut job = f.session.start(f.moving("a")).unwrap();
         let id = job.operation_id();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         let error = loop {
             if let Err(error) = job.poll() {
                 break error;
@@ -2069,7 +2069,7 @@ pub(super) mod tests {
                 },
             )
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         let error = loop {
             if let Err(error) = job.poll() {
                 break error;
@@ -2111,7 +2111,7 @@ pub(super) mod tests {
             atomic_file::test_support::Checkpoint::BeforeCommit,
         ));
         barrier.release();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         let error = loop {
             if let Err(error) = job.poll() {
                 break error;
@@ -2165,7 +2165,7 @@ pub(super) mod tests {
             drop(state);
         }
         fn entered(&self) {
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = tilo_test_env::hang_deadline();
             let mut s = self.state.lock().unwrap();
             while !s.0 {
                 let left = deadline
@@ -2368,7 +2368,7 @@ pub(super) mod tests {
         }
     }
     fn drain(job: &mut FsJob) -> Vec<FsUpdate> {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         let mut updates = vec![];
         loop {
             updates.extend(job.poll().unwrap());
@@ -2394,7 +2394,7 @@ pub(super) mod tests {
             .unwrap()
     }
     fn terminal(f: &Fixture, id: &crate::recovery::OperationId) {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         while f.store.report(id).unwrap().state == OperationState::Running {
             assert!(
                 Instant::now() < deadline,
@@ -3307,7 +3307,7 @@ pub(super) mod tests {
                 ..Hooks::default()
             });
             drop(release);
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = tilo_test_env::hang_deadline();
             while !job.control.results.lock().unwrap().error {
                 assert!(Instant::now() < deadline, "receipt error deadline");
                 std::thread::yield_now();

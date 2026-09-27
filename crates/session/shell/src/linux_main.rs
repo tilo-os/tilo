@@ -404,6 +404,10 @@ pub fn run() -> std::process::ExitCode {
     let _startup_dump = tilo_startup_metrics::ScopedDumper;
     tilo_startup_metrics::mark("main-start");
 
+    // The shell's copy and every toolkit widget it draws, in the desktop's
+    // language.
+    shell::shell::i18n::ensure();
+
     // Inspect process shape while startup is still single-threaded. Host
     // packages pass an explicit installation context; deriving it from a
     // distro name, desktop variable or backend would conflate independent

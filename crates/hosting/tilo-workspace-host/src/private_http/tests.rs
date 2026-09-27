@@ -23,6 +23,7 @@ async fn private_http_installs_only_actual_live_broker_and_close_is_terminal() {
     actions.close(&owner).unwrap();
 }
 
+use crate::HANG_BOUND;
 use tilo_delivery_protocol::delivery_v3::{
     auth, http_proof,
     private_wire::{self, PrivateOperation, PrivateScope},
@@ -195,15 +196,10 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
         };
         assert_ne!(action.target, owner.host_certificate().device_public_key);
         let mut pending = with_admitted(&owner, &current, &action, op, |proof, peer| {
-            service.submit_with_policy_time(
-                proof,
-                peer,
-                Instant::now() + std::time::Duration::from_secs(5),
-                time.clone(),
-            )
+            service.submit_with_policy_time(proof, peer, Instant::now() + HANG_BOUND, time.clone())
         })
         .unwrap();
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let reply = tilo_test_env::within("the private HTTP reply", async {
             loop {
                 if let Some(reply) = pending.try_reply().unwrap() {
                     break reply;
@@ -211,8 +207,7 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
                 tokio::time::sleep(std::time::Duration::from_millis(2)).await;
             }
         })
-        .await
-        .unwrap();
+        .await;
         assert_eq!(reply.request_id, action.request_id);
         assert_eq!(reply.source, action.target);
         assert_eq!(reply.target, action.source);
@@ -290,7 +285,7 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
                     service.submit_with_policy_time(
                         proof,
                         peer,
-                        Instant::now() + std::time::Duration::from_secs(5),
+                        Instant::now() + HANG_BOUND,
                         time.clone(),
                     )
                 },
@@ -307,7 +302,7 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
             |proof, peer| service.submit_with_policy_time(
                 proof,
                 peer,
-                Instant::now() + std::time::Duration::from_secs(5),
+                Instant::now() + HANG_BOUND,
                 time.clone(),
             )
         ),
@@ -328,7 +323,7 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
             |proof, peer| service.submit_with_policy_time(
                 proof,
                 peer,
-                Instant::now() + std::time::Duration::from_secs(5),
+                Instant::now() + HANG_BOUND,
                 time.clone(),
             )
         ),
@@ -346,7 +341,7 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
         PrivateOperation::Status.path(),
         &[],
         &[1],
-        Instant::now() + std::time::Duration::from_secs(5),
+        Instant::now() + HANG_BOUND,
     );
     buffered
         .respond_with_credits(
@@ -373,7 +368,7 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
             |proof, peer| service.submit_with_policy_time(
                 proof,
                 peer,
-                Instant::now() + std::time::Duration::from_secs(5),
+                Instant::now() + HANG_BOUND,
                 time.clone(),
             )
         ),
@@ -387,12 +382,7 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
         &action,
         PrivateOperation::Status,
         |proof, peer| {
-            service.submit_with_policy_time(
-                proof,
-                peer,
-                Instant::now() + std::time::Duration::from_secs(5),
-                time.clone(),
-            )
+            service.submit_with_policy_time(proof, peer, Instant::now() + HANG_BOUND, time.clone())
         },
     )
     .unwrap();
@@ -464,7 +454,7 @@ fn private_event_slots_preserve_original_scope_transition_and_custody() {
             .submit(
                 admission.admit(&proof, &exact, context).unwrap(),
                 peer,
-                Instant::now() + std::time::Duration::from_secs(5),
+                Instant::now() + HANG_BOUND,
             )
             .unwrap();
         let incoming = receiver.try_recv().unwrap();
@@ -529,7 +519,7 @@ fn private_event_slots_preserve_original_scope_transition_and_custody() {
             .submit(
                 admission.admit(&proof, &exact, context).unwrap(),
                 peer,
-                Instant::now() + std::time::Duration::from_secs(5),
+                Instant::now() + HANG_BOUND,
             )
             .unwrap();
         let next = receiver.try_recv().unwrap();
@@ -595,27 +585,18 @@ fn private_event_slots_preserve_original_scope_transition_and_custody() {
         for _ in 0..31 {
             held.push(
                 queue
-                    .submit_certified(
-                        evidence.clone(),
-                        Instant::now() + std::time::Duration::from_secs(5),
-                    )
+                    .submit_certified(evidence.clone(), Instant::now() + HANG_BOUND)
                     .unwrap(),
             );
         }
         assert!(matches!(
-            queue.submit_certified(
-                evidence.clone(),
-                Instant::now() + std::time::Duration::from_secs(5)
-            ),
+            queue.submit_certified(evidence.clone(), Instant::now() + HANG_BOUND),
             Err(CarrierError::Capacity)
         ));
         drop(custody);
         held.push(
             queue
-                .submit_certified(
-                    evidence.clone(),
-                    Instant::now() + std::time::Duration::from_secs(5),
-                )
+                .submit_certified(evidence.clone(), Instant::now() + HANG_BOUND)
                 .unwrap(),
         );
         assert_eq!(service.watches.len(), 1);
@@ -677,13 +658,7 @@ async fn actual_agent_read_custody_survives_final_server_body_slice() {
             &current,
             &action,
             PrivateOperation::Status,
-            |proof, peer| {
-                service.submit(
-                    proof,
-                    peer,
-                    Instant::now() + std::time::Duration::from_secs(5),
-                )
-            },
+            |proof, peer| service.submit(proof, peer, Instant::now() + HANG_BOUND),
         )
     };
     let mut retained = Vec::new();
@@ -715,7 +690,7 @@ async fn actual_agent_read_custody_survives_final_server_body_slice() {
         PrivateOperation::Status.path(),
         &[],
         &[1],
-        Instant::now() + std::time::Duration::from_secs(5),
+        Instant::now() + HANG_BOUND,
     );
     buffered
         .respond_with_credits(

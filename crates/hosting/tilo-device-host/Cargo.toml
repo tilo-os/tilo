@@ -39,6 +39,7 @@ tilo-automerge.workspace = true
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 tilo-relay = { path = "../tilo-relay" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tilo-test-env = { path = "../../dev/test-env" }
 ed25519-dalek.workspace = true
 iroh.workspace = true
 iroh-base.workspace = true

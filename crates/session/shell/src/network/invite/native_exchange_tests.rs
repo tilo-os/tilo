@@ -320,7 +320,7 @@ async fn actual_exchange(restart: bool) {
     .unwrap();
     let publisher =
         tilo_relay::RelayCoeditSession::join(client, topic, governor.device_public_key).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tilo_test_env::within("the publisher's Ready", async {
         loop {
             if matches!(
                 publisher.recv().await,
@@ -330,8 +330,7 @@ async fn actual_exchange(restart: bool) {
             }
         }
     })
-    .await
-    .unwrap();
+    .await;
     let (commands, actor) = crate::network::actor::Actor::spawn_reporting_addrs(
         endpoint.clone(),
         iroh::address_lookup::memory::MemoryLookup::new(),
@@ -353,7 +352,7 @@ async fn actual_exchange(restart: bool) {
         ))
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tilo_test_env::within("the host to report ready", async {
         loop {
             if matches!(
                 received.recv().await,
@@ -363,8 +362,7 @@ async fn actual_exchange(restart: bool) {
             }
         }
     })
-    .await
-    .unwrap();
+    .await;
     for (bytes, kind) in &publications {
         let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
         let (channel, _) = tilo_peer_state::transport::retention(
@@ -383,7 +381,7 @@ async fn actual_exchange(restart: bool) {
         .unwrap();
     }
     let mut last = None;
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tilo_test_env::within("every native input publication", async {
         let mut count = 0;
         while count < publications.len() {
             if let Some(crate::network::actor::NetEvent::NativeInput(input)) = received.recv().await
@@ -397,8 +395,7 @@ async fn actual_exchange(restart: bool) {
             }
         }
     })
-    .await
-    .unwrap();
+    .await;
     receiving_owner
         .with_current(room, |view| {
             assert!(
@@ -412,7 +409,7 @@ async fn actual_exchange(restart: bool) {
         .send(crate::network::actor::NetCmd::LeaveWorkspace { ws: topic })
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tilo_test_env::within("the removed device to unsubscribe", async {
         loop {
             if !relay.is_subscribed(topic, &device.device_public_key).await {
                 break;
@@ -420,8 +417,7 @@ async fn actual_exchange(restart: bool) {
             tokio::task::yield_now().await;
         }
     })
-    .await
-    .unwrap();
+    .await;
     assert!(
         last.unwrap().admit(&identity).is_err(),
         "closed session input cannot cross the owner again"

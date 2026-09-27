@@ -108,6 +108,9 @@ pub enum Command {
     /// Manage dev VMs through the host's hypervisor.
     #[command(subcommand)]
     Vm(VmCommand),
+    /// Build this worktree's dev image (and dev disk) into a directory, for vm upgrade --image and vm create --image.
+    #[command(subcommand)]
+    Image(ImageCommand),
     /// Manage slots: your user, session and layer stack inside a VM.
     #[command(subcommand)]
     Slot(SlotCommand),
@@ -606,7 +609,7 @@ pub enum VmCommand {
     },
     /// Move the VM onto another dev image with bootc and reboot into it; slots survive in /var, and the previous image stays for rollback-image.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm upgrade                          # the newest build of the image the VM follows\n  tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:main-1a2b3c4\n  tilo-vm vm upgrade --from local             # build this worktree's dev image (cached steps skipped), move onto it\n  tilo-vm vm upgrade --from sha:1a2b3c4       # a CI build of main: no local OS build\n  tilo-vm vm upgrade --from local --rebuild-base\n  tilo-vm vm upgrade --from local:localhost/tilo-vm:mine   # an image already built, no build\n  tilo-vm vm upgrade --from local --no-reboot  # stage only; it takes effect at the next boot\n  tilo-vm vm rollback-image                   # back to the image before\n\n--from local runs os/dev/build-dev-image.sh (TILO_DEV_DISK=0), rebuilds the\nproduction base localhost/tilo:latest only when its inputs changed, sends only\nthe layers the VM lacks, then bootc switch and a reboot. --from ci:<tag> or\nsha:<commit> switches to CI's published dev image of that build, or builds one\nhere FROM its integration image (tilo-ci). For Containerfile, unit, /etc and\npackage changes: tilo-vm guide images."
+        after_help = "Examples:\n  tilo-vm vm upgrade                          # the newest build of the image the VM follows\n  tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:main-1a2b3c4\n  tilo-vm vm upgrade --image target/tilo-vm/image  # what tilo-vm image build wrote, here or on the rcargo builder\n  tilo-vm vm upgrade --from local             # build this worktree's dev image (cached steps skipped), move onto it\n  tilo-vm vm upgrade --from sha:1a2b3c4       # a CI build of main: no local OS build\n  tilo-vm vm upgrade --from local --rebuild-base\n  tilo-vm vm upgrade --from local:localhost/tilo-vm:mine   # an image already built, no build\n  tilo-vm vm upgrade --from local --no-reboot  # stage only; it takes effect at the next boot\n  tilo-vm vm rollback-image                   # back to the image before\n\n--from local runs os/dev/build-dev-image.sh (TILO_DEV_DISK=0), rebuilds the\nproduction base localhost/tilo:latest only when its inputs changed, sends only\nthe layers the VM lacks, then bootc switch and a reboot. --from ci:<tag> or\nsha:<commit> switches to CI's published dev image of that build, or builds one\nhere FROM its integration image (tilo-ci). For Containerfile, unit, /etc and\npackage changes: tilo-vm guide images."
     )]
     Upgrade(UpgradeArgs),
     /// Boot the VM's previous image again (bootc rollback) and reboot; slots survive in /var.
@@ -688,7 +691,8 @@ pub struct CreateArgs {
     /// the VM's disk: the VM boots its loader and UKI (libvirt, whpx).
     #[arg(long)]
     pub boot_esp: Option<String>,
-    /// WHPX: boot the kernel/initrd from a dev-disk companion JSON bundle.
+    /// WHPX: boot a local disk from this companion JSON bundle. Published
+    /// disks fetch and verify their matching bundle automatically.
     #[arg(long, conflicts_with = "boot_esp")]
     pub direct_boot_bundle: Option<String>,
     /// Published dev disk tag to download (default: the newest main or release build).
@@ -723,11 +727,37 @@ pub struct CreateArgs {
     pub template: Option<String>,
 }
 
+#[derive(Debug, Subcommand)]
+pub enum ImageCommand {
+    /// Build the dev image with os/dev/build-dev-image.sh and write it as an OCI layout (and with --disk a dev disk).
+    #[command(
+        after_help = "Examples:\n  tilo-vm image build                  # target/tilo-vm/image, the dev image as an OCI layout\n  tilo-vm image build --disk           # and target/tilo-vm/disk.qcow2\n  tilo-vm vm upgrade --image target/tilo-vm/image\n  tilo-vm vm create dev --image target/tilo-vm/disk.qcow2\n\nOn the rcargo builder instead of here, bringing back only what changed:\n  RCARGO_ENV_SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \\\n    rcargo --on-builder --fetch tilo-vm run -p tilo-vm -- image build\n  tilo-vm vm upgrade --image target/tilo-vm/image\n  tilo-vm image disk                   # a disk from it, written here (the builder has no loop devices)\n\nThe build is the one vm upgrade --from local runs: the production base is\nrebuilt only when its inputs changed, podman's layer cache and the builder\nstage's cargo cache skip unchanged steps, and a failed step reruns on its own.\nScratch goes to <out>-build (next to the output). tilo-vm guide images."
+    )]
+    Build {
+        /// Also write the dev disk, <out>/disk.qcow2.
+        #[arg(long)]
+        disk: bool,
+        /// Output directory, relative to the worktree.
+        #[arg(long, default_value = "target/tilo-vm")]
+        out: std::path::PathBuf,
+    },
+    /// Write the dev disk from an image image build left, without building: <layout dir>/../disk.qcow2.
+    #[command(
+        after_help = "Examples:\n  tilo-vm image disk                          # from target/tilo-vm/image\n  tilo-vm vm create dev --image target/tilo-vm/disk.qcow2\n\nFor an image built elsewhere, such as on the rcargo builder (tilo-vm image\nbuild --help): the layout goes into this host's podman storage as\nlocalhost/tilo-vm:latest and os/dev/build-image.sh (TILO_SKIP_BUILD=1) installs\nit to a disk, the disk step of the build itself. It needs passwordless sudo\n(loop device and mounts)."
+    )]
+    Disk {
+        /// The OCI layout image build wrote.
+        #[arg(long, default_value = "target/tilo-vm/image")]
+        image: std::path::PathBuf,
+    },
+}
+
 #[derive(Debug, Args)]
 pub struct UpgradeArgs {
     /// The VM to upgrade (default: the one this worktree uses).
     pub name: Option<String>,
-    /// A published dev image to switch to (default: the image the VM follows).
+    /// A published dev image to switch to (default: the image the VM follows),
+    /// or an OCI layout directory `tilo-vm image build` wrote (target/tilo-vm/image).
     #[arg(long, conflicts_with = "from")]
     pub image: Option<String>,
     /// `local`: build this worktree's dev image (localhost/tilo-vm:latest) and
