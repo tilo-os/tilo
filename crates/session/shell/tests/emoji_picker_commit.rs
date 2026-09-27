@@ -752,6 +752,7 @@ fn the_picker_opens_at_the_caret_and_centred_when_the_field_reports_none() {
 
     // Phase `centred_without_a_caret`.
     let card = open_with_caret(&mut h, None);
+    drop(h);
     assert!(
         (card.center().x - screen.center().x).abs() < 0.5,
         "a field that reports no caret gets the card centred: {card:?}"
