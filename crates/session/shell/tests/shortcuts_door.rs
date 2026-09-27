@@ -15,6 +15,20 @@
 //! sleep, a step asking for confirmation runs unattended only when its
 //! saver consented in advance, and revoking the saver's membership or
 //! deleting the shortcut stops its triggers.
+//!
+//! Applications reach the door under their own identity: the shortcuts app
+//! reads the catalogue it declared and uses its own library, but cannot
+//! invoke another app's action itself, and an app that declared nothing is
+//! refused the catalogue. An app that may invoke but holds no grant asks
+//! the person on the compositor's sheet: allowing once admits that call
+//! alone, always allowing records a grant that asks no more (until revoked),
+//! denying refuses, and with nobody present nothing is asked and the call is
+//! refused. An application opening starts a shortcut with the application's
+//! id bound as its input.
+//!
+//! A run started by a person at the screen asks them instead: its
+//! confirmations and questions appear in the shell's sheet, where an answer
+//! continues the run and Cancel stops it before anything else is applied.
 
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
@@ -26,11 +40,14 @@ use automerge::{AutoCommit, ReadDoc};
 use collab_types::{PermissionProfileRule, Scope, Verb};
 use ed25519_dalek::{Signer as _, SigningKey};
 use serde_json::{Map, Value, json};
+use shell::shell::app_action_consent::{AppActionConsent, SheetPrompter};
 use shell::shell::automation_triggers::{Firing, ManualClock, TriggerEvent, TriggerHost, armed};
+use shell::shell::portal_dialog::{DialogView, PortalDialogController, PortalDialogQueue};
 use shell::shell::state::WorkspaceAuthority as _;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
-    MAX_CATALOGUE_PAGE, Pending, ReceiptStatus, RemoteActionTarget, workspace_provider,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvokeArgument,
+    InvokeRequest, MAX_CATALOGUE_PAGE, Pending, ReceiptStatus, RemoteActionMessage,
+    RemoteActionTarget, workspace_provider,
 };
 use tilo_actions::{
     ActionAddress, ActionContext, ActionContract, ActionOutput, ActionParam, InvocationId,
@@ -52,6 +69,12 @@ const FIXTURE_HANDLE: &str = "drafts";
 const RECORD: &str = "file:drafts.qdoc";
 const INBOX: &str = "fixture.drafts:inbox";
 const DEADLINE: Duration = Duration::from_secs(20);
+/// Devices the owner runs applications on, each connecting as the owner.
+const SHORTCUTS_HANDLE: &str = "shortcuts-app";
+const SILENT_HANDLE: &str = "silent-app";
+const INVOKER_HANDLE: &str = "invoker-app";
+const SILENT_APP: &str = "so.tilo.fixture-silent";
+const INVOKER_APP: &str = "so.tilo.fixture-invoker";
 /// A member of the room who is not its owner.
 const BOB: &str = "person:bob";
 /// The person a fixture compositor session acts for.
@@ -164,7 +187,15 @@ fn spawn_broker(
     let broker = shell::shell::collab_broker::spawn_native_harness(
         path.to_path_buf(),
         std::sync::Arc::clone(&membership),
-        vec![device_key(FIXTURE_HANDLE).verifying_key().to_bytes()],
+        [
+            FIXTURE_HANDLE,
+            SHORTCUTS_HANDLE,
+            SILENT_HANDLE,
+            INVOKER_HANDLE,
+        ]
+        .iter()
+        .map(|handle| device_key(handle).verifying_key().to_bytes())
+        .collect(),
     )
     .expect("bind the collaboration service");
     (broker, membership)
@@ -480,6 +511,28 @@ impl Door {
         trigger: &TriggerSpec,
         run: RunId,
     ) -> Result<u64, ActionHostError> {
+        self.fire_with(person, shortcut, trigger, run, Map::new())
+    }
+
+    /// Start the run `firing` asks for, as `person`, with its payload.
+    fn fire_firing(&self, person: &str, firing: &Firing) -> Result<u64, ActionHostError> {
+        self.fire_with(
+            person,
+            &firing.shortcut,
+            &firing.trigger,
+            firing.run,
+            firing.inputs.clone(),
+        )
+    }
+
+    fn fire_with(
+        &self,
+        person: &str,
+        shortcut: &str,
+        trigger: &TriggerSpec,
+        run: RunId,
+        inputs: Map<String, Value>,
+    ) -> Result<u64, ActionHostError> {
         self.broker
             .app_action_broker()
             .expect("the action broker")
@@ -489,6 +542,7 @@ impl Door {
                 shortcut,
                 trigger,
                 run,
+                inputs,
             )
     }
 
@@ -612,7 +666,7 @@ fn publish_draft(id: &str, granted: &[&str]) -> Shortcut {
 /// Every change an action made in `doc` is grouped under run `run` of the
 /// shortcut "Publish a draft" in the fixture.
 fn assert_attributed_to(doc: &mut AutoCommit, run: InvocationId) {
-    let contexts: Vec<ActionContext> = qdoc::history::versions(doc)
+    let contexts: Vec<ActionContext> = tilo_resource::history::versions(doc)
         .into_iter()
         .filter_map(|version| ActionContext::from_change_message(version.message.as_deref()?))
         .collect();
@@ -946,14 +1000,80 @@ fn a_chord_the_desktop_owns_cannot_start_a_shortcut() {
         other => panic!("a fixed desktop chord must be refused: {other:?}"),
     }
     let watching = triggered_draft(
-        "on-open",
-        vec![TriggerSpec::AppOpened {
-            app_id: FIXTURE.into(),
+        "on-network",
+        vec![TriggerSpec::NetworkChanged {
+            network: None,
+            connected: Some(true),
         }],
     );
     assert!(
         matches!(door.save(&watching), Err(ActionHostError::Refused { .. })),
-        "only keyboard and schedule triggers can be saved"
+        "network triggers cannot be saved yet"
+    );
+}
+
+#[test]
+fn an_app_opening_runs_the_shortcut_with_the_app_bound_as_its_input() {
+    let mut door = Door::open();
+    let owner = owner_principal();
+    let mut on_open = publish_draft("on-open", &["draft", "publish"]);
+    on_open.inputs = vec![ActionParam::required(
+        "app_id",
+        ParamType::Text,
+        "The application that opened",
+    )];
+    on_open.steps[0] = invoke_step(
+        "draft",
+        "draft",
+        &[("title", Binding::Input("app_id".into()))],
+    );
+    on_open.triggers = vec![TriggerSpec::AppOpened {
+        app_id: FIXTURE.into(),
+    }];
+    door.save(&on_open)
+        .expect("a required input every trigger gives may be required");
+
+    let mut mistyped = on_open.clone();
+    mistyped.id = "mistyped".into();
+    mistyped.inputs[0].ty = ParamType::Integer;
+    match door.save(&mistyped) {
+        Err(ActionHostError::Refused { reason }) => {
+            assert!(reason.contains("`app_id` is integer"), "{reason}");
+        }
+        other => panic!("an input typed against its trigger is refused: {other:?}"),
+    }
+
+    let mut triggers = TriggerHost::new(utc_clock("2026-09-25T08:00:00Z"), None);
+    let observe = |triggers: &mut TriggerHost, running: &[&str]| {
+        let running: std::collections::BTreeSet<String> =
+            running.iter().map(ToString::to_string).collect();
+        let tree = door.membership.read();
+        let armed = armed(&tree.desktop.workspaces, |_| owner.clone());
+        let fired = triggers.observe(TriggerEvent::Apps(&running), &armed);
+        drop(tree);
+        fired
+    };
+    assert!(
+        observe(&mut triggers, &["so.tilo.notes"]).is_empty(),
+        "what is already running when the session starts did not just open"
+    );
+    let fired = observe(&mut triggers, &["so.tilo.notes", FIXTURE]);
+    assert_eq!(fired.len(), 1, "{fired:?}");
+    assert_eq!(fired[0].inputs.get("app_id"), Some(&json!(FIXTURE)));
+    assert!(observe(&mut triggers, &["so.tilo.notes", FIXTURE]).is_empty());
+
+    let job = door
+        .fire_firing(&owner, &fired[0])
+        .expect("the trigger starts the shortcut");
+    assert!(matches!(
+        door.job_to_end(job),
+        InvocationUpdate::Succeeded { .. }
+    ));
+    assert_eq!(served_actions(&door), ["draft", "publish"]);
+    assert_eq!(
+        door.app.served[0].1.get("title"),
+        Some(&json!(FIXTURE)),
+        "the opened app's id reached the step through the shortcut's input"
     );
 }
 
@@ -1183,4 +1303,792 @@ fn revoking_the_savers_membership_or_deleting_the_shortcut_stops_its_triggers() 
         door.fire(BOB, "bobs", &schedule, RunId::new()),
         Err(ActionHostError::UnknownAction)
     ));
+}
+
+/// An application the owner is using, connected as itself.
+struct AppConnection {
+    manager: CollaborationManager,
+    next_correlation: u64,
+}
+
+impl AppConnection {
+    fn connect(socket: &Path, app_id: &str, device: &str) -> Self {
+        let stream = UnixStream::connect(socket).expect("connect to the collaboration service");
+        let manager = CollaborationManager::for_route_fd_with_identity(
+            stream.into_raw_fd(),
+            app_id,
+            ROOM,
+            Some(format!("file:{device}.qdoc")),
+            None,
+            endpoint_identity(device),
+        )
+        .expect("start the collaboration client");
+        Self {
+            manager,
+            next_correlation: 1,
+        }
+    }
+
+    /// Send `message` and wait for the answer `answered` picks out, serving
+    /// the fixture meanwhile.
+    fn ask(
+        &mut self,
+        door: &mut Door,
+        message: RemoteActionMessage,
+        answered: impl Fn(&RemoteActionMessage) -> bool,
+    ) -> RemoteActionMessage {
+        self.ask_while(door, message, answered, || {})
+    }
+
+    /// [`Self::ask`], doing `meanwhile` each time round, as a person at
+    /// the screen would.
+    fn ask_while(
+        &mut self,
+        door: &mut Door,
+        message: RemoteActionMessage,
+        answered: impl Fn(&RemoteActionMessage) -> bool,
+        mut meanwhile: impl FnMut(),
+    ) -> RemoteActionMessage {
+        self.manager.send(CollabRequest::RemoteAction { message });
+        loop {
+            assert!(Instant::now() < door.deadline, "the door never answered");
+            door.app.pump();
+            meanwhile();
+            for event in self.manager.poll() {
+                if let CollabEvent::RemoteAction { message } = event
+                    && answered(&message)
+                {
+                    return message;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the result is the door's answer; a malformed answer fails the test"
+    )]
+    fn catalogue(&mut self, door: &mut Door) -> Result<CataloguePage, ActionHostError> {
+        let correlation = self.next_correlation;
+        self.next_correlation = self.next_correlation.wrapping_add(1);
+        let answer = self.ask(
+            door,
+            RemoteActionMessage::CatalogueRequest {
+                correlation,
+                query: CatalogueQuery {
+                    max_results: MAX_CATALOGUE_PAGE,
+                    ..CatalogueQuery::default()
+                },
+            },
+            |message| {
+                matches!(
+                    message,
+                    RemoteActionMessage::CatalogueResponse { correlation: answered, .. }
+                        if *answered == correlation
+                )
+            },
+        );
+        match answer {
+            RemoteActionMessage::CatalogueResponse { result, .. } => result,
+            other => panic!("not a catalogue answer: {other:?}"),
+        }
+    }
+
+    fn invoke(
+        &mut self,
+        door: &mut Door,
+        target: RemoteActionTarget,
+        arguments: &Value,
+    ) -> ReceiptStatus {
+        self.invoke_while(door, target, arguments, || {})
+    }
+
+    fn invoke_while(
+        &mut self,
+        door: &mut Door,
+        target: RemoteActionTarget,
+        arguments: &Value,
+        meanwhile: impl FnMut(),
+    ) -> ReceiptStatus {
+        let invocation = InvocationId::new();
+        let arguments = arguments.as_object().cloned().unwrap_or_default();
+        let answer = self.ask_while(
+            door,
+            RemoteActionMessage::Invoke(InvokeRequest {
+                invocation,
+                target,
+                argument: if arguments.is_empty() {
+                    InvokeArgument::None
+                } else {
+                    InvokeArgument::Json(arguments)
+                },
+                context: None,
+                confirmation: None,
+                revision: None,
+            }),
+            |message| {
+                matches!(
+                    message,
+                    RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation
+                )
+            },
+            meanwhile,
+        );
+        match answer {
+            RemoteActionMessage::Receipt(receipt) => receipt.status,
+            other => panic!("not a receipt: {other:?}"),
+        }
+    }
+
+    /// Invoke `target`, answering the grant sheet the way `answer` says —
+    /// `None` for a person who expects no sheet. Returns the receipt and
+    /// the sheet as the person saw it, if one came up.
+    fn invoke_answering(
+        &mut self,
+        door: &mut Door,
+        sheet: &mut PortalDialogController,
+        target: RemoteActionTarget,
+        arguments: &Value,
+        answer: Option<AppActionConsent>,
+    ) -> (ReceiptStatus, Option<DialogView>) {
+        let mut seen = None;
+        let status = self.invoke_while(door, target, arguments, || {
+            sheet.pump();
+            let Some(view) = sheet.view() else {
+                return;
+            };
+            let answer = answer.unwrap_or_else(|| panic!("no sheet was expected: {view:?}"));
+            seen = Some(view);
+            answer_sheet(sheet, answer);
+        });
+        (status, seen)
+    }
+}
+
+/// Answer the sheet on screen by clicking it, as the person would.
+fn answer_sheet(sheet: &mut PortalDialogController, answer: AppActionConsent) {
+    let layout = sheet
+        .layout(vello::kurbo::Rect::new(0.0, 0.0, 1600.0, 900.0))
+        .expect("the sheet is laid out");
+    if answer == AppActionConsent::Deny {
+        assert!(sheet.click(layout.cancel.center(), &layout), "Deny answers");
+        return;
+    }
+    let row = AppActionConsent::ALLOWING
+        .iter()
+        .position(|choice| *choice == answer)
+        .expect("an allowing answer");
+    assert!(sheet.click(layout.choices[row].center(), &layout));
+    assert!(
+        sheet.click(layout.confirm.center(), &layout),
+        "Allow answers"
+    );
+}
+
+/// The door with declared access: the shortcuts app may read the
+/// catalogue, the invoker may also invoke, the silent app declared nothing.
+fn door_with_declared_access() -> Door {
+    let door = Door::open();
+    door.broker
+        .app_action_broker()
+        .expect("the action broker")
+        .set_app_action_access(std::sync::Arc::new(|app: &str| {
+            shell::shell::app_action_access::ActionAccess {
+                query: app == SHORTCUTS_APP_ID || app == INVOKER_APP,
+                invoke: app == INVOKER_APP,
+            }
+        }));
+    door
+}
+
+fn fixture_draft(door: &Door) -> RemoteActionTarget {
+    answer(door.host.query(
+        &door.owner,
+        CatalogueQuery {
+            max_results: MAX_CATALOGUE_PAGE,
+            ..CatalogueQuery::default()
+        },
+    ))
+    .expect("catalogue")
+    .rows
+    .iter()
+    .find(|row| {
+        row.app_id == FIXTURE
+            && row
+                .action
+                .as_ref()
+                .is_some_and(|descriptor| descriptor.address.action == "draft")
+    })
+    .and_then(tilo_actions::remote::CatalogueRow::target)
+    .expect("the fixture offers `draft`")
+}
+
+fn library(action: &str) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: workspace_provider(&ROOM.to_string()),
+        address: ActionAddress::new("shortcuts", action),
+    }
+}
+
+#[test]
+fn an_app_that_declared_nothing_is_refused_the_catalogue() {
+    let mut door = door_with_declared_access();
+    let socket = door.dir.path().join("collab.sock");
+    let mut silent = AppConnection::connect(&socket, SILENT_APP, SILENT_HANDLE);
+    assert_eq!(
+        silent.catalogue(&mut door).map(|page| page.rows.len()),
+        Err(ActionHostError::NotPermitted),
+        "reading the catalogue needs `[actions] query`"
+    );
+    let draft = fixture_draft(&door);
+    assert!(matches!(
+        silent.invoke(&mut door, draft, &json!({"title": "x"})),
+        ReceiptStatus::Rejected {
+            error: ActionHostError::NotPermitted
+        }
+    ));
+    assert!(door.app.served.is_empty(), "nothing ran");
+}
+
+#[test]
+fn the_shortcuts_app_uses_its_library_but_cannot_invoke_another_app_itself() {
+    let mut door = door_with_declared_access();
+    let socket = door.dir.path().join("collab.sock");
+    let mut shortcuts = AppConnection::connect(&socket, SHORTCUTS_APP_ID, SHORTCUTS_HANDLE);
+
+    let page = shortcuts
+        .catalogue(&mut door)
+        .expect("the shortcuts app declared `[actions] query`");
+    assert!(
+        page.rows.iter().any(|row| row.app_id == FIXTURE),
+        "it reads what the person using it is offered"
+    );
+
+    let draft = fixture_draft(&door);
+    match shortcuts.invoke(&mut door, draft, &json!({"title": "x"})) {
+        ReceiptStatus::Rejected {
+            error: ActionHostError::NotPermitted,
+        } => {}
+        other => panic!("another app's action is not the shortcuts app's to invoke: {other:?}"),
+    }
+    assert!(door.app.served.is_empty(), "the fixture was never reached");
+
+    // Its own library is its own, used as the person.
+    let saved = publish_draft("from-the-app", &["draft", "publish"]);
+    let arguments = json!({ "shortcut": serde_json::to_value(&saved).unwrap() });
+    match shortcuts.invoke(&mut door, library("create"), &arguments) {
+        ReceiptStatus::Completed { .. } => {}
+        other => panic!("the shortcuts app saves through its own library: {other:?}"),
+    }
+    match shortcuts.invoke(&mut door, library("list"), &json!({})) {
+        ReceiptStatus::Completed { output } => {
+            let listed: Vec<Shortcut> =
+                serde_json::from_value(output.value.expect("the library")).unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].steps, saved.steps);
+            assert_eq!(
+                listed[0].saved_by.as_deref(),
+                Some(owner_principal().as_str()),
+                "saved as the person using the app, not as the app"
+            );
+        }
+        other => panic!("the library lists: {other:?}"),
+    }
+}
+
+#[test]
+fn an_app_that_may_invoke_still_needs_the_workspace_to_grant_it() {
+    let mut door = door_with_declared_access();
+    let socket = door.dir.path().join("collab.sock");
+    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let draft = fixture_draft(&door);
+
+    match invoker.invoke(&mut door, draft.clone(), &json!({"title": "x"})) {
+        ReceiptStatus::Rejected { .. } => {}
+        other => panic!("an ungranted app is refused: {other:?}"),
+    }
+    assert!(door.app.served.is_empty(), "nothing ran");
+
+    let owner = owner_principal();
+    door.membership
+        .write()
+        .desktop
+        .workspaces
+        .get_mut(0)
+        .expect("the room")
+        .grant_as(
+            &owner,
+            ui::permissions::CapOverride::grant(
+                ui::permissions::Subject::app(INVOKER_APP),
+                ui::permissions::Scope::App(FIXTURE.to_string()),
+                ui::permissions::Verb::Write,
+            ),
+        )
+        .expect("the owner grants the invoker the fixture");
+    if let ReceiptStatus::Rejected { error } =
+        invoker.invoke(&mut door, draft, &json!({"title": "Granted"}))
+    {
+        panic!("a granted app is admitted: {error:?}");
+    }
+    while door.app.served.is_empty() {
+        assert!(
+            Instant::now() < door.deadline,
+            "the fixture was never reached"
+        );
+        door.app.pump();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(door.app.served[0].0, "draft");
+}
+
+/// The door with declared access and a person who answers grant questions
+/// on the returned sheet when `present`.
+fn door_asking(present: bool) -> (Door, PortalDialogController) {
+    let door = door_with_declared_access();
+    let queue = PortalDialogQueue::default();
+    door.broker
+        .app_action_broker()
+        .expect("the action broker")
+        .set_app_action_consent(std::sync::Arc::new(SheetPrompter::new(
+            queue.clone(),
+            std::sync::Arc::new(move |_| present),
+        )));
+    (door, PortalDialogController::new(queue))
+}
+
+/// Grants that let the invoker use the fixture's `draft`.
+fn invoker_draft_grants(door: &Door) -> Vec<ui::permissions::CapOverride> {
+    door.membership
+        .read()
+        .desktop
+        .workspaces
+        .first()
+        .expect("the room")
+        .capabilities
+        .iter()
+        .filter(|capability| {
+            capability.subject == ui::permissions::Subject::app(INVOKER_APP)
+                && capability.scope
+                    == ui::permissions::Scope::Action {
+                        app: FIXTURE.to_string(),
+                        action: "draft".to_string(),
+                    }
+        })
+        .cloned()
+        .collect()
+}
+
+fn history_mentions(door: &Door, text: &str) -> bool {
+    door.membership
+        .read()
+        .desktop
+        .workspaces
+        .first()
+        .expect("the room")
+        .effect_receipts
+        .iter()
+        .any(|receipt| receipt.context.action_label.contains(text))
+}
+
+fn served_until(door: &mut Door, count: usize) {
+    while door.app.served.len() < count {
+        assert!(
+            Instant::now() < door.deadline,
+            "the fixture was never reached"
+        );
+        door.app.pump();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn not_permitted(status: &ReceiptStatus) -> bool {
+    matches!(
+        status,
+        ReceiptStatus::Rejected {
+            error: ActionHostError::NotPermitted
+        }
+    )
+}
+
+#[test]
+fn allowing_once_admits_that_call_and_the_next_asks_again() {
+    let (mut door, mut sheet) = door_asking(true);
+    let socket = door.dir.path().join("collab.sock");
+    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let draft = fixture_draft(&door);
+
+    let (status, seen) = invoker.invoke_answering(
+        &mut door,
+        &mut sheet,
+        draft.clone(),
+        &json!({"title": "Once"}),
+        Some(AppActionConsent::Once),
+    );
+    if let ReceiptStatus::Rejected { error } = status {
+        panic!("allowed once, the call goes ahead: {error:?}");
+    }
+    let seen = seen.expect("the person was asked");
+    assert!(
+        seen.title().contains("wants to use"),
+        "the sheet names who wants what: {seen:?}"
+    );
+    assert_eq!(seen.app_name(), "Write draft", "the action as published");
+    assert!(seen.detail().contains("Low risk"), "{seen:?}");
+    assert_eq!(
+        seen.choices(),
+        [
+            "Allow once",
+            "Allow for this session",
+            "Always allow in this workspace"
+        ]
+    );
+    assert_eq!(seen.cancel_label(), "Deny");
+    served_until(&mut door, 1);
+    assert_eq!(door.app.served[0].0, "draft");
+    assert!(
+        invoker_draft_grants(&door).is_empty(),
+        "a grant given once is gone once used"
+    );
+    assert!(
+        history_mentions(&door, "Allowed"),
+        "the grant is in the workspace's history"
+    );
+
+    let (status, seen) = invoker.invoke_answering(
+        &mut door,
+        &mut sheet,
+        draft,
+        &json!({"title": "Again"}),
+        Some(AppActionConsent::Deny),
+    );
+    assert!(seen.is_some(), "the next call asks again");
+    assert!(not_permitted(&status), "{status:?}");
+    door.serve_briefly();
+    assert_eq!(door.app.served.len(), 1, "the denied call never ran");
+}
+
+#[test]
+fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
+    let (mut door, mut sheet) = door_asking(true);
+    let socket = door.dir.path().join("collab.sock");
+    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let draft = fixture_draft(&door);
+
+    let (status, seen) = invoker.invoke_answering(
+        &mut door,
+        &mut sheet,
+        draft.clone(),
+        &json!({"title": "First"}),
+        Some(AppActionConsent::Always),
+    );
+    assert!(seen.is_some());
+    if let ReceiptStatus::Rejected { error } = status {
+        panic!("always allowed, the call goes ahead: {error:?}");
+    }
+    let grants = invoker_draft_grants(&door);
+    assert_eq!(grants.len(), 1, "one grant is recorded");
+    assert_eq!(grants[0].expiry, ui::permissions::Expiry::Never);
+    assert_eq!(grants[0].effect, ui::permissions::Effect::Grant);
+    assert_eq!(
+        grants[0].granted_by,
+        Some(collab_types::Principal::Person(owner_principal())),
+        "granted by the person who answered"
+    );
+
+    let (status, seen) = invoker.invoke_answering(
+        &mut door,
+        &mut sheet,
+        draft.clone(),
+        &json!({"title": "Second"}),
+        None,
+    );
+    assert!(seen.is_none());
+    if let ReceiptStatus::Rejected { error } = status {
+        panic!("a granted app is not asked again: {error:?}");
+    }
+    served_until(&mut door, 2);
+
+    // Agents and scripts take it back through the workspace's own action,
+    // with the confirmation any permission change needs.
+    let revoke = |confirmation| {
+        answer(
+            door.host.invoke(
+                &door.owner,
+                InvokeRequest {
+                    invocation: InvocationId::new(),
+                    target: RemoteActionTarget {
+                        provider: workspace_provider(&ROOM.to_string()),
+                        address: ActionAddress::new(
+                            format!("workspace.permissions:{ROOM}"),
+                            shell::shell::workspace_settings::APP_ACTION_REVOKE_ACTION_ID,
+                        ),
+                    },
+                    argument: InvokeArgument::Json(
+                        json!({"app": INVOKER_APP, "target_app": FIXTURE, "action": "draft"})
+                            .as_object()
+                            .cloned()
+                            .expect("an object"),
+                    ),
+                    context: None,
+                    confirmation,
+                    revision: None,
+                },
+            ),
+        )
+        .map(|receipt| receipt.status)
+    };
+    match revoke(None) {
+        Ok(ReceiptStatus::Rejected { .. }) | Err(_) => {}
+        other => panic!("revoking needs confirmation: {other:?}"),
+    }
+    assert_eq!(invoker_draft_grants(&door).len(), 1);
+    match revoke(Some(tilo_actions::remote::Confirmation::Confirmed)) {
+        Ok(ReceiptStatus::Rejected { error }) | Err(error) => {
+            panic!("the owner revokes: {error:?}")
+        }
+        Ok(_) => {}
+    }
+    assert!(invoker_draft_grants(&door).is_empty(), "the grant is gone");
+
+    let (status, seen) = invoker.invoke_answering(
+        &mut door,
+        &mut sheet,
+        draft,
+        &json!({"title": "Third"}),
+        Some(AppActionConsent::Deny),
+    );
+    assert!(seen.is_some(), "revoked, the app is asked again");
+    assert!(not_permitted(&status), "{status:?}");
+}
+
+#[test]
+fn denying_refuses_and_records_nothing() {
+    let (mut door, mut sheet) = door_asking(true);
+    let socket = door.dir.path().join("collab.sock");
+    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let draft = fixture_draft(&door);
+    let (status, seen) = invoker.invoke_answering(
+        &mut door,
+        &mut sheet,
+        draft,
+        &json!({"title": "No"}),
+        Some(AppActionConsent::Deny),
+    );
+    assert!(seen.is_some());
+    assert!(not_permitted(&status), "{status:?}");
+    door.serve_briefly();
+    assert!(door.app.served.is_empty(), "nothing ran");
+    assert!(invoker_draft_grants(&door).is_empty(), "nothing is granted");
+}
+
+#[test]
+fn with_nobody_present_the_call_is_refused_without_asking() {
+    let (mut door, mut sheet) = door_asking(false);
+    let socket = door.dir.path().join("collab.sock");
+    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let draft = fixture_draft(&door);
+    let (status, seen) = invoker.invoke_answering(
+        &mut door,
+        &mut sheet,
+        draft,
+        &json!({"title": "Unattended"}),
+        None,
+    );
+    assert!(seen.is_none(), "no sheet is shown");
+    assert!(not_permitted(&status), "{status:?}");
+    door.serve_briefly();
+    assert!(door.app.served.is_empty(), "nothing ran");
+    assert!(invoker_draft_grants(&door).is_empty());
+}
+
+/// A compositor session sharing the door's workspaces and broker, and the
+/// person it acts for.
+fn session_host(door: &Door) -> shell::shell::overlay_host::ShellOverlayHost {
+    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_handle(
+        std::sync::Arc::clone(&door.membership),
+        false,
+    );
+    host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+        .expect("the built-in shortcut table is valid");
+    host.attach_app_action_broker(door.broker.app_action_broker().expect("the action broker"));
+    host
+}
+
+fn archive_grant() -> PermissionProfileRule {
+    PermissionProfileRule::grant(
+        Scope::Action {
+            app: FIXTURE.into(),
+            action: "archive".into(),
+        },
+        Verb::Write,
+    )
+}
+
+/// Start `shortcut` from the palette's path, as the session's person.
+fn run_interactively(door: &Door, shortcut: &str) -> u64 {
+    door.broker
+        .app_action_broker()
+        .expect("the action broker")
+        .start_interactive_shortcut_run(
+            &Caller::local_person(session_person()).in_room(ROOM.to_string()),
+            &ROOM.to_string(),
+            shortcut,
+            Map::new(),
+        )
+        .expect("the run starts")
+}
+
+/// Serve the fixture until the shell shows a sheet; what it shows.
+fn await_sheet(
+    door: &mut Door,
+    host: &mut shell::shell::overlay_host::ShellOverlayHost,
+) -> shell::shell::portal_dialog::DialogView {
+    loop {
+        assert!(Instant::now() < door.deadline, "no sheet was shown");
+        door.app.pump();
+        host.pump_shortcut_step_prompts();
+        if let Some(view) = host.sheet_view() {
+            return view;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn type_text(host: &mut shell::shell::overlay_host::ShellOverlayHost, text: &str) {
+    for character in text.chars() {
+        press(
+            host,
+            winit::keyboard::Key::Character(character.to_string().into()),
+            winit::keyboard::ModifiersState::empty(),
+        );
+    }
+}
+
+fn press_named(
+    host: &mut shell::shell::overlay_host::ShellOverlayHost,
+    key: winit::keyboard::NamedKey,
+) {
+    press(
+        host,
+        winit::keyboard::Key::Named(key),
+        winit::keyboard::ModifiersState::empty(),
+    );
+}
+
+#[test]
+fn a_confirmation_step_is_approved_in_the_sheet_and_the_run_continues() {
+    let mut door = Door::open();
+    let mut tidy = triggered_draft("tidy", Vec::new());
+    tidy.steps = vec![invoke_step("archive", "archive", &[])];
+    tidy.output = None;
+    tidy.grant.push(archive_grant());
+    door.save_as(&Caller::local_person(session_person()), &tidy)
+        .expect("saved");
+    let mut host = session_host(&door);
+
+    let job = run_interactively(&door, "tidy");
+    let sheet = await_sheet(&mut door, &mut host);
+    assert_eq!(sheet.title(), "Archive inbox?");
+    assert!(
+        sheet.detail().contains("Inbox"),
+        "the sheet names what is acted on: {}",
+        sheet.detail()
+    );
+    assert!(door.app.served.is_empty(), "nothing runs before the answer");
+    press_named(&mut host, winit::keyboard::NamedKey::Enter);
+    assert!(matches!(
+        door.job_to_end(job),
+        InvocationUpdate::Succeeded { .. }
+    ));
+    assert_eq!(served_actions(&door), ["archive"]);
+    assert!(host.sheet_view().is_none(), "the sheet is gone");
+}
+
+#[test]
+fn a_question_answered_in_the_sheet_is_bound_and_a_secret_stays_hidden() {
+    let mut door = Door::open();
+    let mut ask = triggered_draft("ask", Vec::new());
+    ask.steps = vec![
+        Step::new(
+            "title",
+            StepKind::Ask {
+                param: ActionParam::required("title", ParamType::Text, "Title of the draft"),
+            },
+        ),
+        Step::new(
+            "token",
+            StepKind::Ask {
+                param: ActionParam::required("token", ParamType::Secret, "Publishing token"),
+            },
+        ),
+        invoke_step("draft", "draft", &[("title", Binding::step("title", ""))]),
+    ];
+    ask.output = None;
+    door.save_as(&Caller::local_person(session_person()), &ask)
+        .expect("saved");
+    let mut host = session_host(&door);
+
+    let job = run_interactively(&door, "ask");
+    assert_eq!(
+        await_sheet(&mut door, &mut host).title(),
+        "Title of the draft"
+    );
+    type_text(&mut host, "notes");
+    press_named(&mut host, winit::keyboard::NamedKey::Enter);
+
+    assert_eq!(
+        await_sheet(&mut door, &mut host).title(),
+        "Publishing token"
+    );
+    type_text(&mut host, "s3");
+    assert_eq!(
+        host.sheet_field_display().as_deref(),
+        Some("••"),
+        "a secret answer is masked on screen"
+    );
+    press_named(&mut host, winit::keyboard::NamedKey::Enter);
+
+    assert!(matches!(
+        door.job_to_end(job),
+        InvocationUpdate::Succeeded { .. }
+    ));
+    assert_eq!(
+        door.app.served,
+        [(
+            "draft".to_string(),
+            json!({"title": "notes"}).as_object().unwrap().clone()
+        )],
+        "the answer is bound into the next step"
+    );
+    let report = serde_json::to_value(&door.finished_runs()[0].report).unwrap();
+    let recorded = report.to_string();
+    assert!(
+        !recorded.contains("s3") && recorded.contains("[redacted]"),
+        "the secret is redacted from the report: {recorded}"
+    );
+}
+
+#[test]
+fn cancelling_the_sheet_stops_the_run_with_nothing_applied() {
+    let mut door = Door::open();
+    let mut tidy = triggered_draft("tidy-then-draft", Vec::new());
+    tidy.steps.insert(0, invoke_step("archive", "archive", &[]));
+    tidy.grant.push(archive_grant());
+    door.save_as(&Caller::local_person(session_person()), &tidy)
+        .expect("saved");
+    let mut host = session_host(&door);
+
+    let job = run_interactively(&door, "tidy-then-draft");
+    await_sheet(&mut door, &mut host);
+    press_named(&mut host, winit::keyboard::NamedKey::Escape);
+    match door.job_to_end(job) {
+        InvocationUpdate::Failed { error, .. } => {
+            assert!(error.message.contains("declined"), "{}", error.message);
+        }
+        other => panic!("a cancelled run stops: {other:?}"),
+    }
+    door.serve_briefly();
+    assert!(door.app.served.is_empty(), "nothing was applied");
+    assert!(host.sheet_view().is_none());
 }

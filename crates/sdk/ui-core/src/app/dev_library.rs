@@ -397,7 +397,7 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
             return -1;
         }
         unsafe { std::ptr::copy_nonoverlapping(next.as_ptr(), out, next.len()) };
-        next.len() as isize
+        isize::try_from(next.len()).unwrap_or(-1)
     }
 
     unsafe extern "C" fn probe_linked() -> *const () {

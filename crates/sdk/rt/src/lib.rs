@@ -186,41 +186,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn block_on_runs_a_future_that_needs_the_timer_driver() {
-        let value = block_on(async {
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-            7
-        })
-        .unwrap();
-        assert_eq!(value, 7);
-    }
-
-    #[test]
-    fn block_on_refuses_inside_a_runtime() {
-        let nested = block_on(async { block_on(async {}) }).unwrap();
-        assert!(matches!(nested, Err(Error::InsideRuntime)));
-    }
-
-    #[test]
-    fn blocking_pool_threads_may_block() {
-        let inner = block_on(async {
-            tokio::task::spawn_blocking(|| app().block_on(async { 9 }))
-                .await
-                .unwrap()
-        })
-        .unwrap();
-        assert_eq!(inner.unwrap(), 9);
-    }
-
-    #[test]
-    fn block_on_refuses_on_a_ui_thread() {
-        let result = spawn_thread("ui-test", || {
-            mark_ui_thread();
-            block_on(async { 1 })
-        })
-        .unwrap()
-        .join()
-        .unwrap();
-        assert!(matches!(result, Err(Error::UiThread)));
+    fn block_on_drives_timers_but_refuses_runtime_and_ui_threads() {
+        // phase: block_on_runs_a_future_that_needs_the_timer_driver
+        {
+            let value = block_on(async {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                7
+            })
+            .unwrap();
+            assert_eq!(value, 7);
+        }
+        // phase: block_on_refuses_inside_a_runtime
+        {
+            let nested = block_on(async { block_on(async {}) }).unwrap();
+            assert!(matches!(nested, Err(Error::InsideRuntime)));
+        }
+        // phase: blocking_pool_threads_may_block
+        {
+            let inner = block_on(async {
+                tokio::task::spawn_blocking(|| app().block_on(async { 9 }))
+                    .await
+                    .unwrap()
+            })
+            .unwrap();
+            assert_eq!(inner.unwrap(), 9);
+        }
+        // phase: block_on_refuses_on_a_ui_thread
+        {
+            let result = spawn_thread("ui-test", || {
+                mark_ui_thread();
+                block_on(async { 1 })
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+            assert!(matches!(result, Err(Error::UiThread)));
+        }
     }
 }

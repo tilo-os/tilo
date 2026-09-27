@@ -36,6 +36,12 @@ display-confirm-keep = Keep
 display-confirm-revert = Revert
 display-rejected = Couldn't apply this layout: { $reason }
 
+# Keep or revert a change a display tool (kanshi, wlr-randr) made
+display-confirm-tool-title = Keep the display settings { $tool } applied?
+display-confirm-tool-unknown-title = Keep the display settings a tool applied?
+display-confirm-always = Always keep changes from { $tool }
+display-confirm-a11y-description = A display tool changed your screens. Enter keeps the change, Escape restores the previous layout.
+
 # Wireless receivers, the lower section of the same sheet
 wireless-heading = Wireless displays
 wireless-share-audio = Share audio
@@ -61,3 +67,1328 @@ wireless-protocols = Miracast · Google Cast · AirPlay · FCast
 # Identify displays: the card painted on each display
 display-identify-builtin = Built-in display
 display-identify-unnamed = Display { $number }
+
+# The Alt+Tab window switcher.
+window-switcher-title = Switch windows
+window-switcher-description = Windows in this workspace, most recently used first. Hold Alt and press Tab or the arrow keys to move, release Alt to switch, or press Escape to stay.
+window-switcher-app-title = Switch windows of this app
+window-switcher-app-description = This app's windows in this workspace, most recently used first. Hold Alt and press ` to move, release Alt to switch, or press Escape to stay.
+window-switcher-untitled = Untitled window
+window-switcher-caption-paged = { $title } ({ $position } of { $count })
+
+# The overview's row of the current workspace's windows.
+overview-windows-title = Windows in this workspace
+overview-windows-description = Most recently used first. Left and Right move between them and Enter goes to one. Click or tap a window to go there, middle-click to close it, or drag it onto another workspace to move it there.
+overview-window-move-failed = Can't move this window
+
+# Fixed shell chords, as the shortcut guide and the keyboard map name them
+shortcut-screenshot = Screenshot
+shortcut-switch-windows = Switch windows
+shortcut-switch-windows-backwards = Switch windows backwards
+shortcut-switch-app-windows = Switch windows of the app
+shortcut-close-tab = Close tab
+shortcut-change-workspace = Change workspace
+shortcut-new-window = New window
+shortcut-add-tab = Add tab here
+shortcut-duplicate-tab = Duplicate tab
+shortcut-open-terminal = Open terminal
+shortcut-global-search = Global search
+shortcut-lock = Lock
+shortcut-workspace-wheel = Workspace wheel
+shortcut-display-layout = Display layout
+shortcut-capture-screenshot = Capture screenshot
+shortcut-picture-in-picture = Picture in picture
+shortcut-save-recent-replay = Save recent replay
+shortcut-workspace-history = Workspace history
+shortcut-explore-workspace-history = Explore workspace history
+shortcut-guide = Keyboard guide
+shortcut-stop-remote-input = Stop all remote input
+shortcut-toggle-mouse-keys = Toggle mouse keys
+
+# What an editable shortcut does, completing “Press a new shortcut to …”
+shortcut-action-search = open search
+shortcut-action-workspace-overview = open the workspace overview
+shortcut-action-lock = lock the screen
+shortcut-action-quick-settings = open Quick Settings
+shortcut-action-shortcut-help = open this guide
+shortcut-action-focus-previous-window = focus the previous window
+shortcut-action-focus-next-window = focus the next window
+shortcut-action-previous-tab = select the previous tab
+shortcut-action-next-tab = select the next tab
+shortcut-action-previous-strip = select the previous strip
+shortcut-action-next-strip = select the next strip
+shortcut-action-previous-workspace = select the previous workspace
+shortcut-action-next-workspace = select the next workspace
+shortcut-action-toggle-maximize = maximize or restore the window
+shortcut-action-detach-tab = move the tab into a new group
+shortcut-action-attach-tab-left = move the tab into the group on the left
+shortcut-action-attach-tab-right = move the tab into the group on the right
+shortcut-action-move-group-left = move the group left
+shortcut-action-move-group-right = move the group right
+shortcut-action-move-group-to-previous-display = move the group to the display on the left
+shortcut-action-move-group-to-next-display = move the group to the display on the right
+shortcut-action-resize-narrower = make the window narrower
+shortcut-action-resize-wider = make the window wider
+shortcut-action-reopen-closed-tab = reopen the tab you closed last
+shortcut-action-focus-group-1 = focus the first window in the strip
+shortcut-action-focus-group-2 = focus the second window in the strip
+shortcut-action-focus-group-3 = focus the third window in the strip
+shortcut-action-focus-group-4 = focus the fourth window in the strip
+shortcut-action-focus-group-5 = focus the fifth window in the strip
+shortcut-action-focus-group-6 = focus the sixth window in the strip
+shortcut-action-focus-group-7 = focus the seventh window in the strip
+shortcut-action-focus-group-8 = focus the eighth window in the strip
+shortcut-action-focus-group-9 = focus the ninth window in the strip
+shortcut-action-open-files = open Files
+shortcut-action-open-terminal = open a terminal
+shortcut-action-clipboard-history = open clipboard history
+shortcut-action-notifications = open notifications
+shortcut-action-toggle-fullscreen = make the window full screen or restore it
+shortcut-action-toggle-magnifier = turn the magnifier on or off
+shortcut-action-magnifier-zoom-in = magnify more
+shortcut-action-magnifier-zoom-out = magnify less
+shortcut-action-power-menu = open the power menu
+shortcut-action-next-input-source = switch to the next keyboard layout
+shortcut-action-emoji-picker = insert an emoji
+
+# Shortcut guide (F1)
+guide-title = Desktop help
+guide-reopen-hint = Press F1 anywhere to reopen this guide · Select a navigation keycap to change it
+guide-done = Done
+guide-press-new-shortcut = Press a new shortcut to { $action } · Esc cancels
+guide-message-esc-cancels = { $message } · Esc cancels
+guide-rebind-needs-modifier = Add Super, Ctrl, Alt or Shift to printable keys.
+guide-rebind-in-use = Already used to { $action }. Press another shortcut.
+guide-rebind-reserved = F1 and Print Screen are reserved by the desktop.
+guide-rebind-unsupported = That shortcut is not supported. Press another shortcut.
+guide-rebind-taken-by-action = Already used to run an action. Press another shortcut.
+guide-rebind-save-failed = Could not save that shortcut. Press another shortcut.
+guide-reset-in-use = A default is already used to { $action }. Change that shortcut first.
+guide-reset-taken-by-action = A default now runs an action. Change that shortcut first.
+guide-reset-invalid = Could not restore the default shortcuts.
+guide-reset-save-failed = Could not restore the defaults.
+guide-controller-intro = Move with the stick or D-pad. Hold { $guide } to arrange windows. In a fullscreen game only { $guide } chords reach the desktop.
+guide-row-move-focus = Move focus
+guide-row-select = Select
+guide-row-back = Back
+guide-row-app-actions = Actions for this app
+guide-row-search = Search
+guide-row-this-guide = This guide
+guide-row-windows = Windows
+guide-row-tabs = Tabs
+guide-row-move-tab = Move tab
+guide-row-strips = Strips
+guide-row-workspaces = Workspaces
+guide-row-move-group = Move group
+guide-row-move-window = Move window
+guide-row-resize = Resize
+guide-row-quick-settings = Quick settings
+guide-touch-intro = Gestures follow the desktop's horizontal windows and vertical workspaces.
+guide-touch-focus-next-window = Focus next window
+guide-touch-focus-previous-window = Focus previous window
+guide-touch-previous-workspace = Previous workspace
+guide-touch-next-workspace = Next workspace
+guide-touch-open-overview = Open overview
+guide-touch-close-overview = Close overview
+guide-navigation-heading = EDIT NAVIGATION SHORTCUTS
+guide-essentials-heading = DESKTOP ESSENTIALS
+guide-group-windows = WINDOWS & WORKSPACES
+guide-group-search = SEARCH & SYSTEM
+guide-group-capture = CAPTURE & DISPLAY
+guide-reopen-closed-tab = Reopen closed tab
+guide-emoji = Emoji
+guide-overview = Overview
+guide-quick-settings = Quick Settings
+guide-unassigned = Unassigned
+guide-unassigned-inline = unassigned
+guide-pointer = Pointer: click to focus · drag tabs or groups to reorder · drag an edge to resize
+guide-your-shortcuts = Your shortcuts: { $shortcuts }
+guide-vim-mode = Vim mode · h j k l
+guide-a11y-name = Desktop keyboard and mouse guide
+guide-a11y-description = Focus windows with { $window-back } or { $window-next }; tabs with { $tab-back } or { $tab-next }; strips with { $strip-back } or { $strip-next }; workspaces with { $workspace-back } or { $workspace-next }; move groups with { $group-left } or { $group-right }; resize with { $narrower } or { $wider }. Essential desktop actions: { $essentials }. Click a displayed navigation shortcut to change it; Escape cancels a pending change. A changed row gets a curved-arrow button that restores its defaults. With a mouse, click windows and tabs, drag tabs or empty tab-bar space to reorder, and drag window gaps to resize. Escape closes this guide.
+
+# Devices and media, the Quick Settings drill-in
+devices-media-title = Devices and media
+devices-media-description = Local audio outputs and identity-certified Tilo devices. Remote handoffs are direct and encrypted when reachable. Use Up and Down, Page Up and Page Down, Home, or End to move through every destination.
+devices-media-list = Media destinations
+
+# Quick Settings
+qs-title = Quick Settings
+qs-a11y-description = Frequently used system controls
+qs-back = Back
+qs-on = On
+qs-off = Off
+qs-connected = Connected
+qs-disconnected = Disconnected
+qs-connecting = Connecting…
+qs-not-connected = Not connected
+qs-tile-settings = Settings
+qs-tile-settings-description = Open device settings
+qs-tile-privacy = Privacy
+qs-tile-privacy-description = App grants and enforced access for this workspace
+qs-tile-history = History
+qs-tile-history-description = Notification history
+qs-tile-power = Power
+qs-tile-power-description = Lock, log out, restart or shut down
+qs-volume = Volume
+qs-brightness = Brightness
+qs-brightness-display = Brightness, { $display }
+qs-slider-a11y-description = Use Left and Right Arrow to adjust
+qs-network = Network
+qs-wired-network = Wired network
+qs-cable-unplugged = Cable unplugged
+qs-bluetooth = Bluetooth
+qs-vpn = VPN
+qs-vpn-no-profiles = No profiles
+qs-night-light = Night Light
+qs-airplane-mode = Airplane mode
+qs-mobile-data = Mobile data
+qs-do-not-disturb = Do Not Disturb
+qs-do-not-disturb-on = Notifications held
+qs-rotation-lock = Rotation lock
+qs-rotation-locked = Locked
+qs-rotation-unlocked = Rotates with device
+qs-devices = Devices
+qs-devices-audio-and-media = Audio and media
+qs-devices-count = { $count ->
+    [one] 1 device
+   *[other] { $count } devices
+}
+qs-devices-a11y-description = Personal devices, audio outputs and media routes
+qs-clipboard = Clipboard
+qs-clipboard-empty = Empty
+qs-clipboard-count = { $count ->
+    [one] 1 item
+   *[other] { $count } items
+}
+qs-clipboard-a11y-description = Private clipboard history
+qs-power-saver = Power Saver
+qs-power-balanced = Balanced
+qs-power-performance = Performance
+qs-power-profile-a11y = Change power profile
+qs-power-battery = { $percent }% battery
+qs-power-ac = AC power
+qs-power-kept-awake-by-app = { $power } · { $app } is preventing sleep
+qs-power-kept-awake-by-apps = { $power } · { $count } apps are preventing sleep
+
+# Quick Settings: editing the control grid
+qs-edit-controls = Edit controls
+qs-edit-help = Drag to reorder · Ctrl + Up/Down
+qs-edit-a11y-description = Edit controls; drag or use Control plus Arrow keys to reorder
+qs-edit-active-heading = ACTIVE CONTROLS
+qs-edit-available-heading = AVAILABLE
+qs-edit-reset = Reset defaults
+qs-edit-reset-a11y = Reset Quick Settings defaults
+qs-edit-done = Done
+qs-edit-done-a11y = Finish editing Quick Settings
+qs-edit-required-a11y = Required Quick Settings control
+qs-edit-remove-a11y = Remove Quick Settings control
+qs-edit-add-a11y = Add Quick Settings control
+qs-edit-required-control-a11y = Required; use Control plus Arrow keys to reorder
+qs-edit-optional-control-a11y = Select to add or remove; use Control plus Arrow keys to reorder
+
+# Quick Settings: Wi-Fi
+qs-wifi = Wi-Fi
+qs-wifi-off = Wi-Fi is off
+qs-wifi-scanning = Scanning for networks…
+qs-wifi-scan-failed = Couldn’t scan · Refresh to try again
+qs-wifi-none = No networks found
+qs-wifi-choose-a11y = Choose a network, refresh the scan, or manage the Wi-Fi radio and hotspot
+qs-wifi-rescan-a11y = Scan for Wi-Fi networks
+qs-wifi-secured = Secured
+qs-wifi-open = Open
+qs-wifi-turn-on = Turn on Wi-Fi
+qs-wifi-turn-off = Turn off Wi-Fi
+qs-wifi-hotspot = Hotspot
+qs-wifi-hotspot-a11y = Wi-Fi hotspot
+qs-wifi-hotspot-sharing = Sharing this connection
+qs-wifi-hotspot-turn-on = Turn on Wi-Fi hotspot
+qs-wifi-hotspot-turn-off = Turn off Wi-Fi hotspot
+
+# Quick Settings: Bluetooth
+qs-bluetooth-empty = No devices found
+qs-bluetooth-none-a11y = No paired Bluetooth devices found
+qs-bluetooth-choose-a11y = Choose a paired Bluetooth device
+qs-bluetooth-device-connected-a11y = Connected; open device actions
+qs-bluetooth-device-paired-a11y = Paired; activate to connect
+
+# Quick Settings: VPN
+qs-vpn-empty = No VPN profiles yet · add one in Settings
+qs-vpn-none-a11y = No VPN profiles configured
+qs-vpn-choose-a11y = Connect or disconnect a configured VPN profile
+qs-vpn-connected-a11y = VPN connected
+qs-vpn-disconnected-a11y = VPN disconnected
+
+# Quick Settings failures, as notifications
+qs-action-failed = { $action } failed
+qs-action-failed-refreshing = { $error }. The current device state is being refreshed.
+qs-bluetooth-connect-failed = Could not connect { $device }
+qs-bluetooth-disconnect-failed = Could not disconnect { $device }
+qs-bluetooth-disconnected = Disconnected { $device } from this device
+qs-vpn-change-failed = Could not change { $profile }
+
+# Portal and permission sheets: app choice, global shortcuts, reviews, administrator access, network secrets, app-action grants
+portal-choose-app-title = Choose an application
+portal-chooser-this-item = this item
+portal-chooser-detail = { $app } wants to open { $subject }
+portal-open = Open
+portal-cancel = Cancel
+portal-allow = Allow
+portal-authenticate = Authenticate
+portal-connect = Connect
+portal-shortcuts-title = Set global shortcuts
+portal-shortcuts-detail = Select a row, then press the shortcut. Tilo and active app shortcuts cannot be claimed. Backspace clears a row.
+portal-save-shortcuts = Save shortcuts
+portal-shortcut-not-set = Not set
+portal-shortcut-needs-modifier = Hold Ctrl, Alt, Shift, or Super, then press a key.
+portal-shortcut-reserved = Reserved by Tilo. Choose another shortcut.
+portal-shortcut-duplicate = Already assigned in this request. Choose another shortcut.
+portal-shortcut-taken = Already used by { $app }. Choose another shortcut.
+portal-shortcut-another-app = another application
+portal-auth-heading = Administrator access
+portal-auth-ended = Authentication ended unexpectedly.
+portal-auth-rejected = That password was not accepted.
+portal-grant-title = { $app } wants to use { $target }
+portal-grant-detail-confirms = { $risk }
+    It still asks you to confirm each time it runs.
+portal-grant-detail-unattended = { $risk }
+    It runs without asking you again.
+portal-grant-once = Allow once
+portal-grant-session = Allow for this session
+portal-grant-always = Always allow in this workspace
+portal-grant-deny = Deny
+portal-risk-none = Only shows information
+portal-risk-low = Low risk: an ordinary, reversible change
+portal-risk-destructive = Destructive: can delete or overwrite
+portal-risk-privileged = Privileged: crosses a security boundary
+portal-risk-sensitive = Sensitive: reads or exports private data
+portal-usb-title = Choose USB devices
+portal-usb-reason = Select devices individually; read-write can modify a device.
+portal-usb-resource = Space or click toggles a row. Access ends on release or disconnect.
+portal-usb-confirm = Allow selected
+portal-usb-unnamed-device = USB device
+portal-usb-row-read-write = { $device } — Read and write
+portal-usb-row-read-only = { $device } — Read only
+portal-account-title = Share your identity?
+portal-account-reason = The app is asking for your name and account identifier.
+portal-account-resource = Your selected identity for this workspace
+portal-account-confirm = Share identity
+portal-launcher-web-app-title = Install this web app?
+portal-launcher-title = Add this launcher?
+portal-launcher-reason = Review the launcher before it is added to your application library. The supplied image is checked but never opened from an app path or file descriptor.
+portal-launcher-confirm = Add launcher
+portal-launcher-icon-supplied = Supplied image (validated)
+portal-launcher-icon-monogram = Tilo monogram
+portal-launcher-icon-compass = Tilo web compass
+portal-background-title = Allow background activity?
+portal-background-resource = The app may keep working after its window is closed.
+portal-background-confirm = Allow in background
+portal-wallpaper-title = Set workspace wallpaper?
+portal-wallpaper-preview = A preview will be shown before this private workspace setting is applied.
+portal-wallpaper-private = This changes only this device's private workspace backdrop.
+portal-wallpaper-resource = Apply to { $target }
+    Private imported image
+portal-wallpaper-confirm = Set wallpaper
+portal-email-title = Open your mail app?
+portal-email-reason = Review the prefilled message before it is handed to your configured mail provider.
+portal-email-confirm = Open mail app
+portal-email-cc = Cc: { $address }
+portal-email-bcc = Bcc: { $address }
+portal-email-no-recipient = No recipient prefilled
+portal-email-subject = Subject: { $subject }
+portal-email-attachments = { $count ->
+    [one] 1 attachment will be available through the document portal.
+   *[other] { $count } attachments will be available through the document portal.
+}
+portal-remember-device = Remember on this device
+portal-secret-required = Fill in every required field.
+portal-secret-wifi-length = A Wi-Fi password is 8 to 63 characters, or 64 hexadecimal digits.
+portal-network-heading = Network
+portal-network-this-network = this network
+portal-network-password = Password
+portal-network-key = Key
+portal-network-user-name = User name
+portal-network-private-key-password = Private key password
+portal-network-anonymous-identity = Anonymous identity (optional)
+portal-network-wifi-title = Wi-Fi password required
+portal-network-enter-password = Enter the password for “{ $network }”.
+portal-network-wired-sign-in-title = Wired network sign-in
+portal-network-sign-in-title = Network sign-in
+portal-network-sign-in-lead = “{ $network }” needs your user name and password.
+portal-network-vpn-title = VPN sign-in
+portal-network-vpn-lead = Enter the secrets for “{ $network }”.
+portal-network-sim-pin-title = SIM PIN required
+portal-network-sim-pin-lead = Enter the PIN to unlock the SIM for “{ $network }”.
+portal-network-sim-pin = SIM PIN
+portal-network-mobile-title = Mobile broadband password required
+portal-network-dsl-title = DSL password required
+portal-network-retry = The last attempt did not work. Check it and try again.
+portal-network-wps = You can also press the WPS button on the router.
+portal-network-cert-pinned = The network's certificate is checked against this connection's certificate authority.
+portal-network-cert-pinned-domain = The network's certificate is checked against this connection's certificate authority. It must belong to { $domain }.
+portal-network-cert-system = The network's certificate is checked against the system's trusted authorities.
+portal-network-cert-system-domain = The network's certificate is checked against the system's trusted authorities. It must belong to { $domain }.
+portal-network-cert-unchecked = The network's certificate is not checked. Only continue on a network you trust.
+
+# Top bar
+topbar-workspace-name-tooltip = Open workspace settings
+topbar-workspace-fallback = Workspace
+topbar-calendar-none = No calendar connected
+topbar-sharing-agent-controls = AGENT CONTROLS · { $name }
+topbar-sharing-agent-viewing = AGENT VIEWING · { $name }
+topbar-sharing-person-controls = CONTROLS · { $name }
+topbar-sharing-person-viewing = VIEWING · { $name }
+topbar-sharing-session-controls = SESSION CONTROLS · { $name }
+topbar-sharing-session-viewing = SESSION VIEWING · { $name }
+topbar-sharing-count-controlling = { $controllers } CONTROL · { $viewers } VIEWING
+topbar-sharing-count = { $viewers } VIEWING
+topbar-sharing-surface = surface { $surface }
+topbar-open-overview = Open overview
+topbar-previous-workspace = Previous workspace
+topbar-next-workspace = Next workspace
+topbar-workspace-settings = Workspace settings for { $workspace }
+topbar-show-clock = Show clock
+topbar-show-system-monitor = Show system monitor
+topbar-show-calendar = Show calendar
+topbar-open-quick-settings = Open quick settings
+topbar-show-collaborators = Show collaborators
+topbar-viewer-can-control = can control { $targets }
+topbar-viewer-view-only = view only { $targets }
+topbar-viewer-entry = { $name } ({ $kind ->
+        [agent] agent
+        [person] person
+       *[session] unidentified session
+    }): { $access }
+topbar-collaborators-visible = Screen visible to { $viewers }. Show collaborators
+topbar-capture-privacy = Privacy settings for active capture
+topbar-control = Top bar control
+topbar-editor-control = Top bar editor control
+topbar-editor-remove-clock = Remove clock from top bar
+topbar-editor-remove-system-monitor = Remove system monitor from top bar
+topbar-editor-remove-calendar = Remove calendar from top bar
+topbar-editor-add-clock = Add clock to top bar
+topbar-editor-add-system-monitor = Add system monitor to top bar
+topbar-editor-add-calendar = Add calendar to top bar
+topbar-editor-title = Edit top bar
+topbar-editor-hint = Drag to reorder · click Remove
+topbar-widget-clock = Clock
+topbar-widget-system-monitor = System monitor
+topbar-widget-calendar = Calendar
+topbar-editor-remove = Remove
+topbar-editor-add-clock-chip = + Clock
+topbar-editor-add-monitor-chip = + Monitor
+topbar-editor-add-calendar-chip = + Calendar
+topbar-invite = Invite
+topbar-clocks-notification-title = Clocks
+topbar-clocks-notification-body = Time is up
+topbar-activity-unread = { $headline }  ·  { $count } new
+topbar-clock-resume = Resume
+topbar-clock-pause = Pause
+topbar-clock-lap = Lap
+topbar-clock-add-minute = +1 min
+topbar-clock-close-stopwatch = Close floating stopwatch
+topbar-clock-close-timer = Close floating timer
+topbar-clock-floating-stopwatch = Floating stopwatch
+topbar-clock-floating-timer = Floating timer
+topbar-clock-floating-description = Drag to reposition. With a keyboard, hold Alt and use the arrow keys; hold Shift for larger steps.
+topbar-clock-stopwatch = Stopwatch
+topbar-clock-timer = Timer
+topbar-clock-paused = Paused
+topbar-clock-running = Running
+topbar-clock-record-lap = Record lap
+topbar-clock-add-one-minute = Add one minute
+topbar-workspace-position = Workspace { $position } of { $total }
+topbar-desktop-navigation = Desktop navigation
+topbar-display-navigation = Display navigation
+
+# Workspace activity: what a collaborator is doing right now
+host-activity-working-on = Working on { $target }
+host-activity-working-in = Working in { $app }
+host-activity-editing = Editing shared content
+host-activity-organizing = Organizing shared content
+host-activity-updating-details = Updating workspace details
+host-activity-reviewing-discussion = Reviewing the discussion
+host-activity-cleaning-up = Cleaning up shared content
+host-activity-restoring = Restoring shared content
+host-activity-managing-access = Managing workspace access
+host-activity-maintaining-history = Maintaining workspace history
+host-activity-reviewing-sensitive = Reviewing sensitive history
+
+# Screen sharing, as the People popover describes it
+host-exposure-kind-unidentified = unidentified session
+host-exposure-kind-agent = agent
+host-exposure-kind-person = person
+host-exposure-surface = surface { $surface }
+host-exposure-controls = { $name } ({ $kind }) controls { $target }
+host-exposure-views = { $name } ({ $kind }) views { $target }
+
+# Invitations
+host-invite-unavailable-title = Invite unavailable
+host-invite-unavailable-body = You need permission to invite people to this workspace.
+host-this-workspace = this workspace
+
+# Notification sources
+host-source-applications = Applications
+host-source-system = System
+host-source-app-actions = Application actions
+
+# App launches and session actions
+host-app-did-not-open-title = Application did not open
+host-app-did-not-open-body = The app started but did not create a window. Check the session log and try again.
+host-session-action-failed = Session action failed
+host-session-lock-failed = Couldn’t lock the session. Check the session log and try again.
+host-session-logout-failed = Couldn’t log out. Check the session log and try again.
+host-session-switch-user-failed = Couldn’t switch users. Check the session log and try again.
+host-session-suspend-failed = Couldn’t suspend. Check the session log and try again.
+host-session-restart-failed = Couldn’t restart. Check the session log and try again.
+host-session-shut-down-failed = Couldn’t shut down. Check the session log and try again.
+host-session-action-blocked = Session action blocked
+
+# Search and app actions
+host-action-started = Started “{ $title }”
+host-action-admitted = Action job { $job } was admitted
+host-action-cannot-run = Can't run “{ $title }”
+host-search-placeholder = Search…
+host-search-in = Search in { $scope }…
+host-search-in-resource-fallback = resource
+host-search-scope-app = { $title } app
+host-json-arguments = JSON arguments: {"{"}{ $names }{"}"}
+host-a11y-filter-all = Filter: All
+host-a11y-filter-kind = Filter: { $kind }
+host-a11y-scope = Scope: { $scope }
+host-a11y-search-filters = Search filters
+host-a11y-result-kinds = Result kinds
+host-a11y-search-scope = Search scope
+
+# Tabs
+host-tab-duplicate-failed = Can't duplicate this tab
+host-tab-move-failed = Can't move this tab
+host-a11y-tab-menu = { $title } tab menu
+
+# Wi-Fi joins from Quick Settings
+host-wifi-connected-title = Connected to { $ssid }
+host-wifi-connected-shared-credential = Used the encrypted credential from one of your certified devices.
+host-wifi-connected-sharing-unavailable = Connected, but encrypted sharing is temporarily unavailable.
+host-wifi-connected-shared = Connected and encrypted separately for each certified device.
+host-wifi-connected-saved = Connected. This saved network will rejoin automatically.
+host-wifi-connected-open = Connected to the open network.
+host-wifi-saved-password-stale = The saved password no longer works. Enter the current password.
+host-wifi-join-check-password = Couldn't join. Check the password.
+host-wifi-connect-failed-title = Couldn’t connect to { $ssid }
+host-wifi-connect-failed-body = The network did not accept the connection. Try again from Wi‑Fi settings.
+
+# Quick Settings controls the device refused
+host-qs-change-failed-brightness = Couldn’t change brightness
+host-qs-change-failed-volume = Couldn’t change volume
+host-qs-change-failed-value-restored = The control was restored to the current device value.
+host-qs-change-failed-wifi = Couldn’t change Wi-Fi
+host-qs-change-failed-bluetooth = Couldn’t change Bluetooth
+host-qs-change-failed-wired = Couldn’t change wired network
+host-qs-change-failed-airplane = Couldn’t change airplane mode
+host-qs-change-failed-hotspot = Couldn’t change personal hotspot
+host-qs-change-failed-mobile = Couldn’t change mobile broadband
+host-qs-change-failed-power = Couldn’t change power mode
+host-qs-change-failed-state-restored = The control was restored to the current device state.
+
+# Workspace history outcomes
+host-history-partial-undo-title = Partially undid the selected work
+host-history-partial-undo-body = Later collaborator edits were preserved. History shows which parts were left intact.
+host-history-reverted-title = Reverted a room change
+host-history-reverted-body = Written forward: the version you reverted from is still in the history.
+host-history-compared-title = Comparison ready
+host-history-compared-body = The exact causal before/after state is shown in History.
+host-history-named-title = Named a version
+host-history-named-body = Saved in this workspace's history, so everyone here sees it.
+host-history-task-updated-title = Task Center updated
+host-history-task-updated-body = The task and its audit trail are shared with this workspace.
+host-review-activity-title = Review workspace activity
+host-review-activity-body = History is open so you can inspect the related changes before deciding.
+
+# Call handoff between devices
+host-call-handoff-title = Call handoff
+host-call-handoff-approved = Approved once; this device is preparing its local media
+host-call-handoff-declined = Declined on this device
+host-call-handoff-waiting = Waiting for explicit approval on { $device }; this call stays live here
+host-call-move-failed = Could not move call
+
+# Devices and media: what an action in the drill-in did
+host-fabric-notice-title = Devices & media
+host-fabric-action-failed = Could not complete device action
+host-fabric-certified-display = certified display
+host-fabric-the-display = the display
+host-fabric-calibration-applied = Applied the proposed placement for { $device }
+host-fabric-calibration-dismissed = Dismissed the placement suggestion for { $device }
+host-fabric-calibration-restored = Restored the previous placement for { $device }
+host-fabric-audio-allowed = Allowed { $source } to play here for this session
+host-fabric-audio-declined = Declined audio from { $source }
+host-fabric-speaker-joined = Joined { $group } as the { $role }
+host-fabric-speaker-declined = Declined to join { $group }
+host-fabric-speaker-stopped = Stopped playing on { $group }
+host-fabric-speaker-playing = Playing on { $group }
+host-fabric-speaker-playing-media = Playing on { $group }; the media keeps playing from here
+host-fabric-speaker-left = This device left { $group }
+host-fabric-audio-route-dismissed = Dismissed interrupted { $route }
+host-fabric-audio-route-stopped = Stopped routing { $route }
+host-fabric-input-allowed = Allowed { $app } to use this input once
+host-fabric-input-declined = Declined remote input for { $app }
+host-fabric-input-focused-app-allowed = Allowed the focused app to use this remote input once
+host-fabric-input-stopped = Stopped the remote input session
+host-fabric-mirror-allowed = Allowed { $device } to mirror here once
+host-fabric-mirror-declined = Declined display mirroring from { $device }
+host-fabric-mirror-stopped = Stopped display mirroring with { $device }
+host-fabric-pairing-approved = Approved pairing { $accessory } for this handoff
+host-fabric-pairing-declined = Declined pairing { $accessory }
+host-fabric-handoff-retrying = Retrying handoff of { $accessory }
+host-fabric-handoff-cancelling = Cancelling handoff of { $accessory }
+host-fabric-controller-allowed = Allowed { $controller } from { $device } for this session
+host-fabric-controller-declined = Declined controller from { $device }
+host-fabric-controller-stopped = Stopped forwarding { $controller }
+host-fabric-media-move-cancelled = Cancelled moving { $title } to { $device }
+host-fabric-media-retrying = Retrying { $title } on { $device }
+host-fabric-output-routed = Audio is now routed to { $output }
+host-fabric-input-selected = Recording from { $input }
+host-fabric-tethering-allowed = Allowed { $device } to use this phone's connection
+host-fabric-tethering-declined = Declined tethering for { $device }
+host-fabric-tethering-disconnected = Disconnected tethering with { $device }
+host-fabric-asked-mirror = Asked { $device } to allow display mirroring once
+host-fabric-asked-capture = Asked { $device } to share its { $input } once
+host-fabric-asked-audio = Asked { $device } to allow this audio once; playback stays local until approved
+host-fabric-asked-tethering = Asked { $device } to share its connection
+host-fabric-asked-controller = Asked { $device } to allow this controller once for the focused app
+host-fabric-media-preparing = Preparing media for { $device }; this device stays active until it opens
+host-fabric-bluetooth-moving = Moving { $accessory } to { $device }; it stays here until that device confirms its pairing
+host-fabric-place-left = { $device } will sit left of this display after it confirms
+host-fabric-place-right = { $device } will sit right of this display after it confirms
+host-fabric-place-above = { $device } will sit above this display after it confirms
+host-fabric-place-below = { $device } will sit below this display after it confirms
+host-fabric-control-revoked = { $device } can no longer control this device
+host-fabric-control-granted = { $device } may control this device for 15 minutes
+
+# Accessibility tree: workspace overlays
+a11y-workspace = Tilo workspace
+a11y-member-sheet = Workspace permission decision
+a11y-member-sheet-description = Choose a clearly labelled permission option with Up or Down, press Enter to confirm, or Escape to cancel. Destructive changes require a separate explicit confirmation and offer workspace activity for review.
+a11y-overview = Workspace overview
+a11y-new-workspace = New workspace
+a11y-workspace-settings = Workspace settings
+a11y-workspace-settings-description = Workspace identity, people, permissions, apps, files, and signed ownership governance.
+a11y-manage-ownership = Manage workspace ownership
+a11y-manage-ownership-description = Open the same signed ownership actions available to search and automation. Recipient acceptance immediately completes a pending transfer.
+a11y-workspace-name = Workspace name
+a11y-workspace-settings-content = Workspace settings content
+a11y-at-a-glance = At a glance
+
+# Accessibility tree: retained notifications
+a11y-notifications-none = No retained notifications.
+a11y-notifications-description = Showing newest rows { $first } through { $last } of { $total }, grouped by app. Use Up and Down to select a notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification. Enter opens the selected notification or folds its app group, and Delete dismisses it.
+a11y-notifications-list = Retained notifications
+a11y-notifications-clear = Clear all notifications
+a11y-notifications-clear-description = Delete this session's retained notification history. An Undo action remains available for eight seconds.
+a11y-notifications-cleared = Notifications cleared
+a11y-notifications-undo = Undo clear notifications
+a11y-notifications-undo-description = Restore the cleared notifications in their original order. Press Enter or Space.
+a11y-notifications = Notifications
+
+# Accessibility tree: clipboard history
+a11y-clipboard-data = Clipboard data
+a11y-clipboard-item-description = From { $source }; { $age }; { $bytes } bytes; { $pinned ->
+        [yes] pinned
+       *[no] not pinned
+    }
+a11y-clipboard-use = Use item
+a11y-clipboard-unpin = Unpin item
+a11y-clipboard-pin = Pin item
+a11y-clipboard-remove = Remove item
+a11y-clipboard-search = Search clipboard history
+a11y-clipboard-search-description = Type to filter by preview, content type, or source device. Backspace edits; Escape clears the search.
+a11y-clipboard = Clipboard
+a11y-clipboard-description = Private clipboard history shared only with your authenticated devices. Type to search. Use Up and Down, Page Up and Page Down, Home, or End to select an item, then Enter or Space to use it.
+a11y-clipboard-list = Retained clipboard items
+
+# Accessibility tree: moving a Bluetooth accessory
+a11y-bluetooth-accessory = Bluetooth accessory
+a11y-bluetooth-disconnect = Disconnect { $accessory } from this device
+a11y-bluetooth-move-to = Move to { $device }
+a11y-bluetooth-destination-local = This is the current certified device
+a11y-bluetooth-destination-online = The destination confirms its own local pairing before this device disconnects
+a11y-bluetooth-destination-offline = Offline certified device
+a11y-bluetooth-move = Move { $accessory }
+a11y-bluetooth-move-description = Choose a certified destination already paired with this accessory. Bond keys never leave either device. Use Up and Down, Page Up and Page Down, Home, or End to reach every destination.
+a11y-bluetooth-destinations = Bluetooth destinations
+
+# Accessibility tree: devices and media rows
+a11y-certified-display = Certified display
+a11y-placement-suggested = Suggested placement for { $display }
+a11y-placement-suggested-description = Fresh local sensor evidence proposes a reversible layout; proximity did not establish identity
+a11y-placement-apply = Apply this reversible display placement
+a11y-placement-dismiss = Dismiss this display placement suggestion
+a11y-placement-undo = Undo placement for { $display }
+a11y-display-fallback = display
+a11y-placement-undo-description = Restore the exact placement saved before calibration
+a11y-speaker-join = Join { $group } as the { $role }
+a11y-speaker-join-description = { $leader } asked; you are asked once and can leave at any time
+a11y-speaker-join-allow = Join this speaker group
+a11y-speaker-join-decline = Decline this speaker group
+a11y-speaker-playing-on = Playing on { $group }
+a11y-speaker-session-description = Speaker group playback; activate to stop
+a11y-speaker-group-description = Speaker group, { $summary }; select a source first, then activate to play on it
+a11y-speaker-setup = Set up speakers
+a11y-speaker-setup-description = Open Settings to use several devices as a stereo pair or room speakers
+a11y-speaker-membership = { $role } in { $group }
+a11y-speaker-membership-description = This device plays in this speaker group; activate to leave
+a11y-remote-audio-play-here = Play { $media } here
+a11y-remote-audio-consent-description = A certified device requested a one-session audio sink
+a11y-remote-audio-allow = Allow this remote audio once
+a11y-remote-audio-decline = Decline this remote audio
+a11y-remote-audio-source-app = Choose focused app audio; routing stops when focus changes
+a11y-remote-audio-source-system = Choose all system audio, then choose a certified destination
+a11y-remote-audio-route-interrupted = Remote audio route interrupted; activate to dismiss
+a11y-remote-audio-route-active = Remote audio route active or awaiting approval; activate to stop
+a11y-remote-capture-share = Share this device's { $input } with { $app }
+a11y-remote-capture-consent-description = A certified device requested one private capture session
+a11y-remote-capture-allow = Allow this remote input once
+a11y-remote-capture-decline = Decline this remote input
+a11y-remote-capture-source = Use { $input } from another device
+a11y-remote-capture-source-description = Choose a certified source device; it must approve the request
+a11y-remote-capture-session = Remote { $input }
+a11y-remote-capture-requesting = Waiting for the source device to approve
+a11y-remote-capture-provisioning = Preparing a private local endpoint
+a11y-remote-capture-app-approval = Local app approval is required
+a11y-remote-capture-waiting-receiver = Waiting for the receiving device
+a11y-remote-capture-streaming = Private session active; activate to stop
+a11y-remote-capture-unavailable = Remote { $input } unavailable
+a11y-remote-capture-source-unavailable = The source device cannot provide this input
+a11y-remote-capture-receiver-unavailable = This device cannot create the private receiver
+a11y-remote-capture-interrupted = The certified route was interrupted and closed
+a11y-mirror-from = Mirror display from { $source }
+a11y-mirror-consent-description = A certified device requested a private, view-only display mirror
+a11y-mirror-allow = Allow display mirroring once
+a11y-mirror-decline = Decline display mirroring
+a11y-mirror-source = Mirror this display
+a11y-mirror-source-description = Choose a certified video display; the target must approve once and receives no input authority
+a11y-mirror-with = Display mirror with { $peer }
+a11y-mirror-awaiting = Waiting for target approval; activate to cancel
+a11y-mirror-starting = Starting private view-only stream; activate to stop
+a11y-mirror-streaming = Private view-only stream active; activate to stop
+a11y-mirror-failed = Display mirroring ended: { $reason }
+a11y-mirror-stopped = Display mirroring stopped
+a11y-call-continue = Continue call in { $room }
+a11y-call-consent-description = Approve this one handoff and its requested local capture sources
+a11y-call-allow = Allow this call handoff once
+a11y-call-decline = Decline this call handoff
+a11y-call-in = Call in { $room }
+a11y-call-source-description = Choose this live call, then choose a certified destination
+a11y-bluetooth-pair = Pair { $accessory }
+a11y-bluetooth-pair-description = Approve one handoff requested by { $source }
+a11y-bluetooth-pair-allow = Allow pairing for this handoff once
+a11y-bluetooth-pair-decline = Decline this Bluetooth handoff
+a11y-bluetooth-handoff = { $accessory } with { $peer }
+a11y-handoff-preparing = Authenticating and inspecting the target; activate to cancel
+a11y-handoff-awaiting-approval = Waiting for approval on the target; activate to cancel
+a11y-handoff-releasing = Releasing the accessory on this device; activate to cancel
+a11y-handoff-pairing = Pairing on the target; activate to cancel
+a11y-handoff-connecting = Connecting on the target; activate to cancel
+a11y-handoff-confirming = Connected; waiting for authenticated confirmation; activate to cancel
+a11y-handoff-completed = Handoff completed
+a11y-handoff-failed-retry = Handoff failed: { $reason }; activate to retry
+a11y-handoff-failed = Handoff failed: { $reason }
+a11y-handoff-cancelled-retry = Handoff cancelled; activate to retry
+a11y-handoff-cancelled = Handoff cancelled
+a11y-controller-use = Use { $controller }
+a11y-controller-consent-description = Approve one typed controller session from { $source } for { $app }
+a11y-controller-allow = Allow this controller once
+a11y-controller-decline = Decline this controller
+a11y-controller-forwarding = Controller forwarding active or awaiting approval; activate to stop
+a11y-controller-local = Choose this local controller, then choose a certified destination
+a11y-media-handoff = { $media } on { $target }
+a11y-media-handoff-pending = Waiting for the destination to open; activate to cancel
+a11y-media-handoff-completed = Opened on the destination
+a11y-media-playing = Playing now; choose this media for routing
+a11y-media-paused = Paused; choose this media for routing
+a11y-output-current = Current local audio output
+a11y-output-route = Route current and future local audio here
+a11y-input-lower = Lower input level
+a11y-input-raise = Raise input level
+a11y-tethering-with = Tethering with { $peer }
+a11y-tethering-consent = A certified device requested one short-lived tethering grant
+a11y-tethering-active = Tethering is active; activate to disconnect
+a11y-tethering-status = Tethering lifecycle status
+a11y-tethering-allow = Allow tethering once
+a11y-tethering-decline = Decline tethering
+a11y-place-left = Place display to the left
+a11y-place-right = Place display to the right
+a11y-place-above = Place display above
+a11y-place-below = Place display below
+a11y-control-revoke = Revoke control of this device
+a11y-control-allow = Allow this device to control this device for 15 minutes
+
+# Inline permission prompt: what an app asks for
+capability-filesystem-read = read access to { $path }
+capability-filesystem-read-write = read/write access to { $path }
+capability-camera = Camera access
+capability-microphone = Microphone access
+capability-screencast = Screen capture
+capability-remote-desktop = Remote control (pointer + keyboard)
+capability-print = Send documents to a printer
+capability-network-hosts = Network access to { $hosts }
+capability-network = Network access
+
+# The shortcut-guide pill in the display corner
+help-pill = Help  F1 · Super+?
+
+# Workspace overview panel
+overview-go-to = Go to
+overview-no-room = No room selected
+overview-you-are-here = You are here
+overview-shared-out = Shared out of here
+overview-nothing-shared = Nothing in this workspace is shared out of it
+overview-more-shares = and { $count } more
+overview-share-with-two = { $first } and { $second }
+overview-share-with-many = { $count ->
+        [one] { $first } and { $count } other
+       *[other] { $first } and { $count } others
+    }
+overview-share-can-edit = { $with } · can edit
+overview-new-workspace = New workspace
+
+# Following someone's view
+follow-label = Following { $person }
+follow-detail = Your view · everyone here can see this
+follow-stop = Stop
+
+# Search filter chips
+search-filter-all = All
+
+# Quick Settings: notification history
+qs-notifications-title = Notifications
+qs-notifications-empty = No recent notifications
+qs-notifications-cleared = Notifications cleared
+qs-notifications-clear-all = Clear all
+qs-notifications-position = Newest { $first }–{ $last } of { $total }
+qs-notifications-count = { $count ->
+        [one] { $count } notification
+       *[other] { $count } notifications
+    }
+qs-notifications-source-system = System
+qs-notifications-newer = ↑ Newer
+qs-notifications-at-newest = At newest
+qs-notifications-older = ↓ Older
+qs-notifications-at-oldest = At oldest
+
+# Quick Settings: devices and media rows
+qs-devices-mic-other = Microphone · record from here
+qs-devices-mic-current = Current microphone
+qs-devices-mic-level = { " " }· input level { $level }%
+qs-devices-mic-muted = { " " }· muted
+qs-devices-this-device = This device · identity-certified
+qs-devices-offline = Offline · identity-certified
+qs-devices-sending = Sending securely · { $percent }% · resumable
+qs-devices-sent = Transfer sent securely
+qs-devices-transfer-failed = Transfer failed · source remains available
+qs-devices-mutual-control = Mutual control active · local input always wins
+qs-devices-may-control = May control this device · local input always wins
+qs-devices-control-granted = Control granted · place beside this display to cross
+qs-devices-play-here = Play { $media } here · direct encrypted handoff
+qs-devices-audio-only = Online · audio only for this video
+qs-devices-no-output = Online · no media output
+qs-devices-unavailable-media = Online · unavailable for this media
+qs-devices-online = Online · identity-certified
+qs-devices-health = { $reachability ->
+        [online] reachable
+        [stale] presence stale
+       *[offline] offline
+    } · { $latency } · { $power }{ $saver ->
+        [yes] { " " }· energy saver
+       *[no] {""}
+    } · { $routes } active routes
+qs-devices-latency-unknown = latency unknown
+qs-devices-latency = { $ms } ms
+qs-devices-battery-unknown = battery unknown
+qs-devices-external-power = external power
+qs-devices-charging = charging { $percent }%
+qs-devices-battery = battery { $percent }%
+
+# Quick Settings: moving a Bluetooth accessory
+qs-bluetooth-move-note = The destination must already have its own pairing · bond keys never leave a device
+qs-devices-fabric-unavailable = Personal device fabric is unavailable
+qs-bluetooth-this-device = This device
+qs-bluetooth-disconnect = Disconnect { $accessory } without forgetting it
+qs-bluetooth-this-certified = This certified device
+qs-bluetooth-move-here = Move here after its local pairing is confirmed
+qs-devices-showing = Showing { $first }–{ $last } of { $total } · scroll for more
+
+# Quick Settings: devices and media pane
+qs-devices-header = Devices & media
+qs-devices-no-identity = Set up your personal identity to connect devices
+qs-devices-note = Direct when reachable · no vendor cloud · certified devices only
+qs-devices-empty = Connected outputs and enrolled devices appear here
+qs-devices-place = Place { $display } { $side ->
+        [left] left
+        [right] right
+        [above] above
+       *[below] below
+    }
+qs-devices-place-note = Local sensor evidence · review before applying
+qs-devices-placement-undo-note = Restore the exact placement from before calibration
+qs-devices-speaker-join = Join { $group } as the { $role }?
+qs-devices-speaker-join-note = { $leader } asked · asked once, leave any time
+qs-devices-speaker-join-note-output = { $leader } asked · plays on { $output } · asked once, leave any time
+qs-devices-speaker-for = for { $peer } · select to stop
+qs-devices-another-device = another device
+qs-devices-speaker-connecting = { $playing } playing, { $waiting } connecting · select to stop
+qs-devices-speakers-playing = { $count ->
+        [one] { $count } speaker playing · select to stop
+       *[other] { $count } speakers playing · select to stop
+    }
+qs-devices-speaker-setup-note = Stereo pair or room speakers · opens Settings → Speakers
+qs-devices-speaker-membership-note = set up on { $leader } · select to leave
+qs-devices-another-certified = Another certified device
+qs-devices-requested-allow-once = { $source } requested this · allow once or decline
+qs-devices-audio-app = Focused app audio · stops when focus changes
+qs-devices-audio-system = All system audio · select a certified destination below
+qs-devices-certified-device = certified device
+qs-devices-audio-awaiting = waiting for approval with { $peer } · select to stop
+qs-devices-audio-streaming = streaming with { $peer } · select to stop
+qs-devices-audio-interrupted = interrupted with { $peer } · select to dismiss
+qs-devices-capture-share = Share this device's { $input }
+qs-devices-capture-requested = { $source } requested this for { $app } · allow once or decline
+qs-devices-capture-use-remote = Use remote { $input }
+qs-devices-capture-source-note = Select a certified source device below · approval required there
+qs-devices-capture-waiting-on = Waiting for approval on { $peer }
+qs-devices-capture-allow-app = Allow the focused app once
+qs-devices-capture-waiting-ready = Waiting for { $peer } to become ready
+qs-devices-capture-private = Private session with { $peer } · select to stop
+qs-devices-capture-source-unavailable = Source cannot provide this input
+qs-devices-capture-receiver-unavailable = Private receiver could not be created
+qs-devices-capture-interrupted = Certified route interrupted · session closed
+qs-devices-mirror-allow = Allow display mirroring?
+qs-devices-mirror-requested = { $source } requested a private view-only stream · allow once or decline
+qs-devices-mirror-source-note = Select a certified video display below · approval required there
+qs-devices-mirror-awaiting = Waiting for approval · select to cancel
+qs-devices-mirror-starting = Starting view-only stream · select to stop
+qs-devices-mirror-streaming = View-only stream active · select to stop
+qs-devices-mirror-with = Mirror · { $peer }
+qs-devices-call-requested = { $source } requested this · select to allow once
+qs-devices-call-source-note = Live here · select a certified destination below
+qs-devices-bluetooth-requested = { $source } requested this handoff · select to approve once
+qs-devices-handoff-checking = Checking { $peer } · select to cancel
+qs-devices-handoff-awaiting = Waiting for approval on { $peer } · select to cancel
+qs-devices-handoff-releasing = Releasing here · select to cancel
+qs-devices-handoff-pairing = Pairing on { $peer } · select to cancel
+qs-devices-handoff-connecting = Connecting on { $peer } · select to cancel
+qs-devices-handoff-confirming = Connected · confirming authenticated handoff
+qs-devices-handoff-connected = Now connected to { $peer }
+qs-devices-handoff-failed-retry = { $reason } · select to retry
+qs-devices-cancelled-retry = Cancelled · select to retry
+qs-devices-cancelled = Cancelled
+qs-devices-controller-requested = { $source } requested this for { $app } · allow once
+qs-devices-controller-local = Local controller · select a certified destination below
+qs-devices-controller-forwarding = Forwarding to { $target } · select to stop
+qs-devices-controller-awaiting = Waiting for approval on { $target } · select to cancel
+qs-devices-media-waiting = Waiting for destination · select to cancel
+qs-devices-media-opened = Opened on destination
+qs-devices-media-failed = Could not move media ({ $reason }) · select to retry
+qs-devices-media-playing = Playing now · select a destination below
+qs-devices-media-paused = Paused · select a destination below
+qs-devices-output-default = Local output · current default
+qs-devices-output-route = Local output · route current audio here
+qs-devices-output-bluetooth = Bluetooth { $codec } · route current audio here
+qs-devices-tether-requesting = Waiting for phone approval
+qs-devices-tether-consent = Allow once or decline
+qs-devices-tether-requester = Connected through this phone · select to disconnect
+qs-devices-tether-provider = Sharing this phone's connection · select to disconnect
+qs-devices-tether-denied = Declined on the phone
+qs-devices-tether-expired = Request expired
+qs-devices-tether-offline = Device went offline · disconnected
+qs-devices-tether-disabled = Wi-Fi Continuity was disabled
+qs-devices-tether-failed = Could not establish tethering
+qs-devices-tether-disconnected = Disconnected
+qs-devices-tether-with = Tethering · { $peer }
+qs-devices-ask-phone = Ask this phone to share its connection · approval required there
+qs-devices-use-controller = Use selected controller here · target approves once
+qs-devices-mirror-here = Mirror this display here · view-only · target approves once
+qs-devices-no-video = This device cannot receive video
+qs-devices-use-input = Use this device's { $input } · source approves once
+qs-devices-play-audio-here = Play selected audio here · target approves once
+qs-devices-no-audio = This device has no audio output
+qs-devices-place-this-left = Place this display to the left
+qs-devices-place-this-right = Place this display to the right
+qs-devices-place-this-above = Place this display above
+qs-devices-place-this-below = Place this display below
+
+# Quick Settings: clipboard history
+qs-clipboard-search-empty = Search clipboard… · type to filter
+qs-clipboard-search-matches = { $count ->
+        [one] Search: { $query } · { $count } match
+       *[other] Search: { $query } · { $count } matches
+    }
+qs-clipboard-empty-hint = Copied items appear here
+qs-clipboard-no-matches = No matches for ‘{ $query }’
+qs-clipboard-search-range = Search clipboard… · { $first }–{ $last } of { $total }
+qs-clipboard-search-count = { $count ->
+        [one] Search clipboard… · { $count } item
+       *[other] Search clipboard… · { $count } items
+    }
+qs-clipboard-clear = Clear
+qs-clipboard-clear-a11y = Clear unpinned clipboard history
+qs-clipboard-use-a11y = Use clipboard item
+qs-clipboard-mime-bytes = { $mime } · { $bytes } bytes
+qs-clipboard-row-detail = { $source } · { $age } · { $bytes } B
+qs-clipboard-remove-a11y = Remove clipboard item
+
+# Quick Settings: joining a protected Wi-Fi network
+qs-wifi-protected = This network is protected
+
+# Retained history: sources and severities
+history-this-device = This device
+history-severity-info = Information
+history-severity-warning = Warning
+history-severity-error = Error
+history-source-system = System
+history-notification-description = { $severity }. From { $source }. { $time }
+history-notification-description-body = { $severity }. From { $source }. { $time }. { $body }
+
+# Notification center rows
+notification-center-group-description = { $count } notifications. Press Enter to { $expanded ->
+        [yes] collapse
+       *[no] expand
+    }, Delete to dismiss them all.
+notification-center-dismiss-all = Dismiss all from { $app }
+notification-center-dismiss = Dismiss
+notification-center-hand-to = Hand to { $agent }
+notification-center-hand-to-description = Give this notification to the workspace agent as a task.
+notification-center-group-count = { $count ->
+        [one] { $count } notification
+       *[other] { $count } notifications
+    }
+
+# On-screen display for the hardware keys
+osd-play = Play
+osd-pause = Pause
+osd-next-track = Next track
+osd-previous-track = Previous track
+osd-stop = Stop
+osd-muted = Muted
+osd-volume = Volume { $percent }%
+osd-brightness = Brightness { $percent }%
+osd-microphone-muted = Microphone muted
+osd-microphone-on = Microphone on
+osd-keyboard-backlight-off = Keyboard backlight off
+osd-keyboard-backlight = Keyboard backlight { $percent }%
+osd-no-backlight = No adjustable display
+osd-airplane-mode-on = Airplane mode on
+osd-airplane-mode-off = Airplane mode off
+osd-touchpad-on = Touchpad on
+osd-touchpad-off = Touchpad off
+osd-magnifier-off = Magnifier off
+osd-magnifier = Magnifier { $zoom }
+osd-pointer-held = Pointer held by app · { $chord } releases
+osd-pointer-released = Pointer released
+osd-mouse-keys-on = Mouse keys on
+osd-mouse-keys-off = Mouse keys off
+
+# System status, the tray's accessible summary
+status-wired = Wired
+status-wired-named = Wired: { $name }
+status-wifi = Wi-Fi
+status-wifi-named = Wi-Fi: { $name }
+status-offline = Offline
+status-muted = Muted
+status-volume = Volume { $percent }%
+status-battery-charging = Battery { $percent }%, charging
+status-battery = Battery { $percent }%
+status-summary-empty = System status
+status-other-displays-a11y = Other displays
+
+# Notification toasts
+notification-source-caption = { $app } · From { $device }
+notification-lock-count = { $count ->
+    [one] 1 notification
+   *[other] { $count } notifications
+}
+notification-dnd-held = { $status } · { $count } held
+notification-stack-a11y = Notifications
+notification-group-system = System
+notification-app-host-apps = Host Apps
+notification-app-power = Power
+notification-remote-input-stopped = Remote input stopped
+notification-remote-input-stopped-sessions = Remote control and sharing sessions were stopped.
+notification-remote-input-stopped-shares = { $count ->
+    [one] Remote control was removed and sharing was stopped.
+   *[other] Remote control was removed from { $count } shares; sharing was stopped.
+}
+
+# Media codec pack notices
+codec-hardware-ready = Hardware H.264/HEVC is ready
+codec-installed = Media codecs installed
+codec-installed-mesa-waiting = { $applies } Hardware H.264/HEVC follows once RPM Fusion publishes a Mesa build matching this system.
+codec-failed = Media codecs could not be installed
+codec-failed-retry = Open Settings, Updates, to try again.
+codec-failed-with-error = { $error } Open Settings, Updates, to try again.
+codec-app-name = Media codecs
+
+# Screen capture surfaces
+capture-live-alt = Live capture: { $title }
+capture-pinned-alt = Pinned screenshot: { $title }
+capture-pinned-preview-alt = Pinned screenshot preview: { $title }
+capture-live-selection = Live selection
+capture-live-app = Live app
+capture-live-screen = Live screen
+capture-live-areas = { $count ->
+    [one] { $count } live area
+   *[other] { $count } live areas
+}
+capture-pinned-title = Screenshot · { $width } × { $height }
+
+# What a drag is carrying
+drag-image = Image
+drag-video = Video
+drag-audio = Audio
+drag-pdf = PDF document
+drag-text = Text
+drag-items = { $count ->
+    [one] 1 item
+   *[other] { $count } items
+}
+
+# App launch failures, as notifications
+launch-error-provider-unavailable = The required app execution service is unavailable. Try again when it is available.
+launch-error-not-installed = This app is no longer installed. Refresh the app list and try again.
+launch-error-not-gui-app = This app does not provide a window.
+launch-error-not-managed-service = This service cannot be opened as an app.
+launch-error-not-authorized = You do not have permission to start this workspace service.
+launch-error-launcher-unavailable = The app launcher is unavailable. Try again.
+launch-error-no-display = The desktop is still starting. Try again in a moment.
+launch-error-no-workspace = Choose a workspace, then try again.
+launch-error-shell-owned-intent = Open this destination from the desktop controls.
+launch-error-identity-unavailable = The workspace identity could not be loaded. Try again.
+launch-error-registry-unreadable = The app list could not be read. Try again.
+launch-error-host-app-refused = This app's desktop entry cannot be started.
+launch-failed-launcher-unavailable = The app launcher is unavailable. Open Applications and try again.
+launch-failed-stopped = The app stopped before opening. Open Applications and try again.
+launch-unnamed-app = application
+launch-failure-title = Couldn't open { $app }
+
+# Tab and window actions that could not be carried out
+window-duplicate-no-tab = There is no tab to duplicate.
+window-duplicate-foreign = This window belongs to an app the compositor doesn't host, so it can't be copied. Open a second one from search instead.
+window-tab-action-no-tab = There is no tab to act on.
+window-tab-action-unknown-tab = That tab is no longer open.
+window-tab-action-only-tab = This is the window's only tab; there is nothing to split it from.
+window-tab-action-document-refused = The workspace document did not accept the change, so nothing was moved.
+
+# Tab context menu, workspace toasts and placeholder tiles
+shell-workspace-renamed = Workspace renamed
+shell-tab-menu-close = Close Tab
+shell-tab-menu-split-right = Split Right
+shell-tab-menu-new-group = Move to New Group
+shell-terminal-unavailable = Terminal: { $error }
+shell-app-unavailable = Application unavailable
+shell-activity-title = While you were away
+shell-activity-loading = Loading workspace activity…
+
+# Session (power) menu
+power-menu-title = Session
+power-menu-description-switch-user = Lock, leave, switch user, suspend, restart, or shut down this computer
+power-menu-description = Lock, leave, suspend, restart, or shut down this computer
+power-lock = Lock
+power-lock-detail = Keep apps running
+power-logout = Log out
+power-logout-detail = End this session
+power-switch-user = Switch user
+power-switch-user-detail = Keep this session running
+power-suspend = Suspend
+power-suspend-detail = Resume where you left off
+power-restart = Restart
+power-restart-detail = Restart the computer
+power-shut-down = Shut down
+power-shut-down-detail = Turn off the computer
+
+# Lock screen
+lock-screen-a11y-name = Tilo lock screen
+lock-screen-locked = Session locked
+lock-screen-locked-at = Session locked, { $clock }
+lock-screen-locked-at-date = Session locked, { $clock }, { $date }
+lock-screen-password = Password
+lock-screen-help = Type your password and press Enter
+lock-screen-verifying-password = Verifying password
+lock-screen-prompt-elsewhere = Password prompt is on the primary display
+lock-screen-enter-password = Enter password
+lock-screen-verifying = Verifying…
+lock-screen-press-enter = Press Enter to unlock
+lock-screen-cannot-verify = Can't verify · Enter your password to try again
+lock-screen-sign-in-failed = Sign-in failed · Enter your password to try again
+
+# Bluetooth pairing prompt
+bluetooth-prompt-title-confirm-passkey = Does { $device } show this code?
+bluetooth-prompt-title-display = Type this on { $device }
+bluetooth-prompt-title-request-passkey = Enter the code shown on { $device }
+bluetooth-prompt-title-request-pin = Enter the PIN for { $device }
+bluetooth-prompt-title-confirm-pairing = Pair with { $device }?
+bluetooth-prompt-title-authorize-service = Let { $device } connect?
+bluetooth-prompt-explain-confirm-passkey = Compare it with the code on the other device. If they differ, something else is trying to pair — say no.
+bluetooth-prompt-explain-display = Enter this code on the other device to finish pairing.
+bluetooth-prompt-explain-request = The code is shown on the device you are pairing. Many keyboards ask you to type it and press Enter.
+bluetooth-prompt-explain-confirm-pairing = This device cannot show a code to compare, so there is nothing to check against. Only continue if you started this pairing yourself.
+bluetooth-prompt-explain-authorize-service = A device you have already paired is asking to use a new service. Paired devices can send input and audio to this machine.
+bluetooth-prompt-digits-entered = { $entered } of 6 digits entered
+bluetooth-prompt-service = Service { $uuid }
+bluetooth-prompt-pin-placeholder = PIN
+bluetooth-prompt-code-placeholder = 6-digit code
+bluetooth-prompt-reject = Don't pair
+bluetooth-prompt-cancel = Cancel
+bluetooth-prompt-accept-match = They match
+bluetooth-prompt-accept-allow = Allow
+bluetooth-prompt-accept-pair = Pair
+
+# Portal defaults: file picker buttons, notification default action, unnamed apps, capture sources
+portal-file-save = Save
+portal-file-choose-folder = Choose folder
+portal-file-open = Open
+portal-notification-open = Open
+portal-inhibit-unnamed-app = An app
+portal-capture-default-microphone = Default microphone
+portal-capture-default-camera = Default camera
+portal-capture-primary-display = Primary display
+portal-capture-system-audio = System audio
+
+# People panel, as assistive technology reads it
+a11y-shell-people = People
+a11y-shell-people-description = Live workspace presence, current activity, intent, and status privacy controls
+a11y-shell-people-screen-visible = Screen visible now: { $exposure }
+a11y-shell-people-here-now = People here now
+a11y-shell-people-agent = Agent
+a11y-shell-people-invited = Invited, not currently present
+a11y-shell-people-present = Present now
+a11y-shell-people-now = Now: { $activity }
+a11y-shell-people-intent = Intent: { $status }
+a11y-shell-people-intent-inferred = Intent, inferred: { $status }
+a11y-shell-status-name = Your collaboration status
+a11y-shell-status-inferred = Inferred on this device from recent semantic actions
+a11y-shell-status-set = Set what you are trying to accomplish
+a11y-shell-status-automatic = Automatic status
+a11y-shell-status-manual = Manual status only
+a11y-shell-status-off = Hide status
+a11y-shell-status-automatic-description = Infer a short status locally from recent workspace actions
+a11y-shell-status-manual-description = Share only text you enter yourself
+a11y-shell-status-off-description = Publish no status to this workspace
+a11y-shell-follow-collaborator = Follow collaborator
+a11y-shell-follow = Follow { $name }
+a11y-shell-follow-description = Mirror this participant's live workspace view
+a11y-shell-people-previous = Previous people
+a11y-shell-people-previous-description = Show the previous people in this workspace
+a11y-shell-people-next = Next people
+a11y-shell-people-next-description = Show the next people in this workspace
+a11y-shell-invite = Invite people
+a11y-shell-invite-description = Create an authenticated workspace invitation
+a11y-shell-join = Join workspace
+a11y-shell-join-description = Connect using an authenticated invitation
+a11y-shell-workspace-activity = Workspace activity
+a11y-shell-workspace-activity-description = Review grouped outcomes and what happened while you were away
+
+# Empty-workspace launchpad
+a11y-shell-launchpad-title = Make something together
+a11y-shell-launchpad-description = Choose a shared conversation, notes, tasks, meeting, invitation, or workspace activity.
+a11y-shell-launchpad-open-app = Open an app
+a11y-shell-launchpad-discuss = Discuss
+a11y-shell-launchpad-notes = Notes
+a11y-shell-launchpad-tasks = Tasks
+a11y-shell-launchpad-meet = Plan a meeting
+a11y-shell-launchpad-invite = Invite people
+a11y-shell-launchpad-activity = Catch up
+a11y-shell-launchpad-discuss-detail = Open the shared conversation
+a11y-shell-launchpad-notes-detail = Write ideas together
+a11y-shell-launchpad-tasks-detail = Plan work in Calendar
+a11y-shell-launchpad-meet-detail = Open Chat, then start a voice or video call
+a11y-shell-launchpad-invite-detail = Bring someone into this workspace
+a11y-shell-launchpad-activity-detail = See what changed and why
+
+# Workspace activity, as assistive technology reads it
+a11y-shell-activity-everyone = Everyone
+a11y-shell-activity-more-people = More people
+a11y-shell-activity-more-people-description = Show more contributor filters
+a11y-shell-activity-resume = Resume { $target }
+a11y-shell-activity-resume-description = Open the last resource you worked on: { $target }
+a11y-shell-activity-boundary-newer = Move the last action into the newer work session
+a11y-shell-activity-boundary-older = Move the first action into the older work session
+a11y-shell-activity-boundary-newer-description = Redraw this boundary by moving one action into the newer work session
+a11y-shell-activity-boundary-older-description = Redraw this boundary by moving one action into the older work session
+a11y-shell-activity-more-sessions = More work sessions
+a11y-shell-activity-more-sessions-description = Show more work sessions
+a11y-shell-activity-new-task = New task
+a11y-shell-activity-new-task-description = Create a workspace task without requiring a model
+a11y-shell-activity-create-task = Create task
+a11y-shell-activity-cancel-task = Cancel task creation
+a11y-shell-activity-everything = Everything
+a11y-shell-activity-agent-tasks = Agent tasks
+a11y-shell-activity-unclassified = Unclassified
+a11y-shell-activity-more-lenses = More lenses
+a11y-shell-activity-more-lenses-description = Show more history lenses
+a11y-shell-activity-history-entries = History entries
+a11y-shell-activity-previous-checkpoint = Previous checkpoint
+a11y-shell-activity-next-checkpoint = Next checkpoint
+a11y-shell-activity-pause-replay = Pause replay
+a11y-shell-activity-play-replay = Play replay
+a11y-shell-activity-history-scope = History scope
+a11y-shell-activity-history-view = History view
+a11y-shell-activity-time-range = Time range
+a11y-shell-activity-person-filter = Person filter
+a11y-shell-activity-brief-description = { $detail }; last changed { $when }; { $count } { $count ->
+        [one] change
+       *[other] changes
+    } by { $authors }
+a11y-shell-activity-task-unassigned = unassigned
+a11y-shell-activity-task-assigned-agent = assigned to an agent
+a11y-shell-activity-task-no-resource = no attached resource
+a11y-shell-activity-task-route = Task execution route
+a11y-shell-activity-task-composer-action = Task composer action
+a11y-shell-activity-task-action = Selected task action
+a11y-shell-activity-history-lens = History lens
+a11y-shell-activity-undo-task-description = Undo every affected record in this agent task; later collaborator edits are kept
+a11y-shell-activity-history-action = Selected history action
+a11y-shell-activity-explorer-panel = Explorer panel
+a11y-shell-activity-timeline-description = History entries; use arrow keys to navigate
+a11y-shell-activity-checkpoints-description = Move through workspace checkpoints
+a11y-shell-activity-replay-description = Play or pause the workspace replay
+a11y-shell-activity-view-catch-up = A summary of outcomes since this device last viewed the workspace
+a11y-shell-activity-view-tasks = Durable workspace tasks with resource links, execution routes, and audit trails
+a11y-shell-activity-view-explore = The complete workspace history with filters and provenance
+a11y-shell-activity-view-replay = A causal replay of workspace layout and participant activity
+a11y-shell-activity-entry-author = By { $author }
+a11y-shell-activity-tasks = Workspace tasks
+a11y-shell-activity-selected-detail = Selected history detail
+a11y-shell-activity-selected-detail-description = { $title }; { $count } { $count ->
+        [one] action
+       *[other] actions
+    }; by { $authors }
+a11y-shell-activity-agent-run-description = Instruction: { $instruction }; assigned by { $issuer }; run by { $agent }; reason: { $reason }
+a11y-shell-activity-reason-not-recorded = not recorded
+a11y-shell-activity-agent-step = { $app } in { $record }: { $summary }
+a11y-shell-activity-agent-review = Agent task review
+a11y-shell-activity-task-description = { $status }; { $route }; { $assignee }; { $count } audit events
+a11y-shell-activity-task-latest = latest: { $latest }
+
+# Workspace wheel
+a11y-shell-wheel = Workspace wheel
+a11y-shell-wheel-switch = Switch to { $workspace }
+a11y-shell-wheel-add = Add a workspace
+
+# The emoji picker (Super+. by default)
+emoji-picker-title = Emoji
+emoji-picker-search = Search emoji
+emoji-picker-groups = Emoji categories
+emoji-picker-recent = Recently used
+emoji-picker-results = Matching emoji
+emoji-picker-no-results = No emoji found
+emoji-picker-hint = Enter inserts · Esc closes
+emoji-picker-hint-tones = Enter inserts · Shift+Enter picks a skin tone
+emoji-picker-tones = Skin tones
+emoji-picker-tones-hint = Right-click, long-press or Shift+Enter for skin tones
+emoji-picker-a11y-description = Type to search. The arrow keys move between emoji, Tab changes the category, Enter inserts the highlighted emoji into the text field you were typing in, Shift+Enter picks a skin tone, Escape closes.
+# An emoji in a skin tone: "thumbs up, medium skin tone".
+emoji-picker-toned = { $name }, { $tone }
+emoji-picker-tone-light = light skin tone
+emoji-picker-tone-medium-light = medium-light skin tone
+emoji-picker-tone-medium = medium skin tone
+emoji-picker-tone-medium-dark = medium-dark skin tone
+emoji-picker-tone-dark = dark skin tone

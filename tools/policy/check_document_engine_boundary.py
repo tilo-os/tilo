@@ -38,7 +38,13 @@ BASELINE = Path(__file__).with_name("document_engine_baseline.toml")
 ENGINE_OWNERS = (
     "crates/doc/qdoc/",
     "crates/doc/qdoc-codecs/",
+    # The rich-text resource: qdoc's rich text as a tilo-resource resource,
+    # which places changes by qdoc's storage keys.
+    "crates/doc/qdoc-rich-text/",
     "crates/sdk/ui-core/",
+    # Toolkit lab/shots scenarios: lived under ui-core (an owner) until moved
+    # into this non-default member; they still exercise the same surfaces.
+    "crates/dev/ui-examples/",
     "crates/collab/actions/",
     "crates/system/app-state/",
 )

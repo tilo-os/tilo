@@ -29,7 +29,6 @@ live-media = [
     "dep:tokio",
     "dep:wire-frame",
     "dep:tilo-callstream",
-    "ui/portal",
 ]
 
 [dependencies]

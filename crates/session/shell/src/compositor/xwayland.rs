@@ -22,7 +22,6 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
-use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt as _;
@@ -38,6 +37,7 @@ use smithay::reexports::calloop::{
 };
 
 use super::backend::drm::input_config::KeyboardSettings;
+use super::xwayland_composer::ComposerClients;
 use crate::shell::host_apps::X11Session;
 
 const DISPLAY_ATTEMPTS: usize = 64;
@@ -57,6 +57,10 @@ const KEYMAP_UPDATE_TIMEOUT: Duration = Duration::from_secs(2);
 /// kernel's socket table once a second keeps idle detection off the frame
 /// budget.
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+/// How long a freshly started X server gets before the composing input
+/// method is asked to connect, so the request lands on a server that is
+/// already accepting rather than stalling the composer in the handshake.
+const COMPOSER_CONNECT_DELAY: Duration = Duration::from_secs(1);
 
 /// Every workspace display of this session, shared by the host-launch path
 /// (which creates displays) and the compositor-thread supervisor (which
@@ -153,6 +157,9 @@ pub(crate) struct WorkspaceDisplay {
     /// When the running bridge was first observed with no connected client.
     idle_since: Option<Instant>,
     idle_checked: Option<Instant>,
+    /// The composer process group already asked to serve the running
+    /// server, so each server and composer pair is asked once.
+    composer_asked: Option<libc::pid_t>,
 }
 
 struct Bridge {
@@ -217,10 +224,23 @@ impl Displays {
     /// Advance every display: reap exited bridges, stop idle ones and start
     /// one for each display with a waiting client. Returns the workspaces
     /// that just became unavailable.
+    #[cfg(test)]
     fn poll(&mut self, now: Instant, spawn: &mut Spawn<'_>) -> Vec<String> {
+        self.poll_with(now, spawn, &mut ComposerClients::for_group(None))
+    }
+
+    /// [`Self::poll`] with the composing input method's view: its
+    /// connections do not count towards keeping a server up, and it is
+    /// asked to serve each server that is running for a real client.
+    fn poll_with(
+        &mut self,
+        now: Instant,
+        spawn: &mut Spawn<'_>,
+        composer: &mut ComposerClients,
+    ) -> Vec<String> {
         let mut exhausted = Vec::new();
         for (workspace, display) in &mut self.workspaces {
-            if display.poll(now, spawn) {
+            if display.poll(now, spawn, composer) {
                 exhausted.push(workspace.clone());
             }
         }
@@ -292,6 +312,7 @@ impl WorkspaceDisplay {
                 rapid_exits: 0,
                 idle_since: None,
                 idle_checked: None,
+                composer_asked: None,
             });
         }
         Err("no unused X display number is available".to_string())
@@ -311,7 +332,12 @@ impl WorkspaceDisplay {
     }
 
     /// Returns `true` once the bridge has exited too often to restart.
-    fn poll(&mut self, now: Instant, spawn: &mut Spawn<'_>) -> bool {
+    fn poll(
+        &mut self,
+        now: Instant,
+        spawn: &mut Spawn<'_>,
+        composer: &mut ComposerClients,
+    ) -> bool {
         let session = self.session();
         if let Some(bridge) = self.bridge.as_mut() {
             bridge.poll_keyboard_update(&session);
@@ -334,6 +360,13 @@ impl WorkspaceDisplay {
                     return false;
                 }
             }
+            if let Some(group) = composer.process_group()
+                && self.composer_asked != Some(group)
+                && now.saturating_duration_since(bridge.started) >= COMPOSER_CONNECT_DELAY
+            {
+                self.composer_asked = Some(group);
+                composer.requests.push(session.display.clone());
+            }
             if self
                 .idle_checked
                 .is_some_and(|checked| now.saturating_duration_since(checked) < IDLE_CHECK_INTERVAL)
@@ -341,7 +374,7 @@ impl WorkspaceDisplay {
                 return false;
             }
             self.idle_checked = Some(now);
-            match connected_clients(&self.socket) {
+            match composer.connected_clients(&self.socket) {
                 Some(0) => {
                     let idle_since = *self.idle_since.get_or_insert(now);
                     if now.saturating_duration_since(idle_since) >= IDLE_TIMEOUT {
@@ -385,6 +418,7 @@ impl WorkspaceDisplay {
     fn stop_bridge(&mut self) {
         self.idle_since = None;
         self.idle_checked = None;
+        self.composer_asked = None;
         let Some(mut bridge) = self.bridge.take() else {
             return;
         };
@@ -603,7 +637,26 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
             Ok(binary) => spawn_satellite(binary, &wayland_socket, display),
             Err(reason) => Err(reason.clone()),
         };
-        let exhausted = self.sync(displays, &live, Instant::now(), &mut spawn);
+        let mut composer = ComposerClients::current();
+        let exhausted = self.sync(displays, &live, Instant::now(), &mut spawn, &mut composer);
+        if !composer.requests.is_empty() {
+            let authorities: Vec<PathBuf> = displays
+                .workspaces
+                .values()
+                .map(|display| display.authority.clone())
+                .collect();
+            let target = super::xwayland_composer::composer_authority_path(
+                &crate::shell::launcher::runtime_dir(),
+            );
+            match super::xwayland_composer::write_composer_authority(&target, &authorities) {
+                Ok(()) => {
+                    for display in composer.requests.drain(..) {
+                        super::xwayland_composer::request_connection(display);
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "composer cannot reach X11 displays"),
+            }
+        }
         drop(registry);
         for workspace in exhausted {
             tracing::warn!(%workspace, "X11 compatibility unavailable in workspace");
@@ -618,9 +671,10 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
         live: &HashSet<String>,
         now: Instant,
         spawn: &mut Spawn<'_>,
+        composer: &mut ComposerClients,
     ) -> Vec<String> {
         displays.retain_workspaces(live);
-        let exhausted = displays.poll(now, spawn);
+        let exhausted = displays.poll_with(now, spawn, composer);
         let gone: Vec<String> = self
             .watched
             .keys()
@@ -898,31 +952,6 @@ fn has_pending_connection(listener: &UnixListener) -> bool {
     ready > 0 && descriptor.revents & libc::POLLIN != 0
 }
 
-/// Connected X clients of the display bound at `socket`. Each connection the
-/// X server accepted appears in the kernel's socket table under the listening
-/// path, so this counts clients without talking X11. `None` when the table
-/// cannot be read.
-fn connected_clients(socket: &Path) -> Option<usize> {
-    fs::read_to_string("/proc/net/unix")
-        .ok()
-        .map(|table| count_connected(&table, socket))
-}
-
-fn count_connected(table: &str, socket: &Path) -> usize {
-    const SS_CONNECTED: &str = "03";
-    let target = socket.as_os_str().as_bytes();
-    table
-        .lines()
-        .skip(1)
-        .filter(|line| {
-            // Num RefCount Protocol Flags Type St Inode Path
-            let mut fields = line.split_ascii_whitespace();
-            fields.nth(5) == Some(SS_CONNECTED)
-                && fields.nth(1).is_some_and(|path| path.as_bytes() == target)
-        })
-        .count()
-}
-
 fn write_xauthority(path: &Path, display: u16) -> Result<(), String> {
     let mut cookie = [0_u8; 16];
     UnwrapErr(SysRng).fill_bytes(&mut cookie);
@@ -1056,6 +1085,7 @@ mod tests {
             keywords: Vec::new(),
             mime_types: Vec::new(),
             terminal: false,
+            icon: None,
             window_identities: vec!["steam".into()],
         };
         let command = |x11: Option<&X11Session>| {
@@ -1234,21 +1264,35 @@ mod tests {
         };
         let (session, _) = fixture.displays.session_for("room-a").unwrap();
         let now = Instant::now();
-        supervisor.sync(&mut fixture.displays, &live(&["room-a"]), now, &mut |_| {
-            sleeper()
-        });
+        supervisor.sync(
+            &mut fixture.displays,
+            &live(&["room-a"]),
+            now,
+            &mut |_| sleeper(),
+            &mut ComposerClients::for_group(None),
+        );
         assert!(supervisor.watched["room-a"].1);
 
         let _client = connect(&session, &fixture.displays);
-        supervisor.sync(&mut fixture.displays, &live(&["room-a"]), now, &mut |_| {
-            sleeper()
-        });
+        supervisor.sync(
+            &mut fixture.displays,
+            &live(&["room-a"]),
+            now,
+            &mut |_| sleeper(),
+            &mut ComposerClients::for_group(None),
+        );
         assert!(
             !supervisor.watched["room-a"].1,
             "a running bridge accepts its own clients"
         );
 
-        supervisor.sync(&mut fixture.displays, &live(&[]), now, &mut |_| sleeper());
+        supervisor.sync(
+            &mut fixture.displays,
+            &live(&[]),
+            now,
+            &mut |_| sleeper(),
+            &mut ComposerClients::for_group(None),
+        );
         assert!(supervisor.watched.is_empty());
         drop(supervisor);
         assert!(
@@ -1258,7 +1302,61 @@ mod tests {
     }
 
     #[test]
+    fn the_composer_is_asked_once_per_running_server_and_never_keeps_it_up() {
+        let mut fixture = fixture();
+        let (session, _) = fixture.displays.session_for("room-a").unwrap();
+        let start = Instant::now();
+        let composer_group = Some(4242);
+
+        // No server yet: nothing to connect to, and the request never
+        // starts one.
+        let mut composer = ComposerClients::for_group(composer_group);
+        fixture
+            .displays
+            .poll_with(start, &mut |_| sleeper(), &mut composer);
+        assert!(composer.requests.is_empty());
+
+        let client = connect(&session, &fixture.displays);
+        let mut composer = ComposerClients::for_group(composer_group);
+        fixture
+            .displays
+            .poll_with(start, &mut |_| sleeper(), &mut composer);
+        assert!(
+            composer.requests.is_empty(),
+            "a server that just started is given time to accept"
+        );
+
+        let later = start + COMPOSER_CONNECT_DELAY;
+        let mut composer = ComposerClients::for_group(composer_group);
+        fixture
+            .displays
+            .poll_with(later, &mut |_| sleeper(), &mut composer);
+        assert_eq!(composer.requests, std::slice::from_ref(&session.display));
+        let mut composer = ComposerClients::for_group(composer_group);
+        fixture.displays.poll_with(
+            later + IDLE_CHECK_INTERVAL,
+            &mut |_| sleeper(),
+            &mut composer,
+        );
+        assert!(composer.requests.is_empty(), "asked once per server");
+
+        let mut restarted = ComposerClients::for_group(Some(4343));
+        fixture.displays.poll_with(
+            later + IDLE_CHECK_INTERVAL * 2,
+            &mut |_| sleeper(),
+            &mut restarted,
+        );
+        assert_eq!(
+            restarted.requests,
+            std::slice::from_ref(&session.display),
+            "a restarted composer is asked again"
+        );
+        drop(client);
+    }
+
+    #[test]
     fn connected_clients_are_counted_from_the_socket_table() {
+        use super::super::xwayland_composer::{connected_clients, count_connected};
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("X1234");
         let listener = UnixListener::bind(&path).unwrap();
@@ -1276,86 +1374,90 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_settings_retain_layout_variant_and_options_for_xwayland() {
-        let section = serde_json::json!({
-            "keyboard_layout": "de:nodeadkeys",
-            "keyboard_layouts": ["de:nodeadkeys"],
-            "compose_key": "rwin"
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let settings = KeyboardSettings::from_section(&section);
-        assert_eq!(settings.layouts, "de");
-        assert_eq!(settings.variants, "nodeadkeys");
-        assert_eq!(settings.options.as_deref(), Some("compose:rwin"));
+    fn xwayland_keyboard_settings_compile_to_setxkbmap_arguments() {
+        // Phase `keyboard_settings_retain_layout_variant_and_options_for_xwayland`.
+        {
+            let section = serde_json::json!({
+                "keyboard_layout": "de:nodeadkeys",
+                "keyboard_layouts": ["de:nodeadkeys"],
+                "compose_key": "rwin"
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            let settings = KeyboardSettings::from_section(&section);
+            assert_eq!(settings.layouts, "de");
+            assert_eq!(settings.variants, "nodeadkeys");
+            assert_eq!(settings.options.as_deref(), Some("compose:rwin"));
+        }
+        // Phase `live_xwayland_update_selects_the_active_layout_and_clears_old_options`.
+        {
+            let section = serde_json::json!({
+                "keyboard_layouts": ["us", "de:nodeadkeys"],
+                "keyboard_layout": "de:nodeadkeys",
+                "compose_key": "rwin"
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            let settings = KeyboardSettings::from_section(&section);
+            assert_eq!(
+                setxkbmap_args(&settings),
+                [
+                    "-layout",
+                    "de",
+                    "-variant",
+                    "nodeadkeys",
+                    "-option",
+                    "",
+                    "-option",
+                    "compose:rwin",
+                ]
+                .map(OsString::from)
+            );
+
+            let plain = KeyboardSettings::default();
+            assert_eq!(
+                setxkbmap_args(&plain),
+                ["-layout", "us", "-option", ""].map(OsString::from)
+            );
+        }
     }
 
     #[test]
-    fn live_xwayland_update_selects_the_active_layout_and_clears_old_options() {
-        let section = serde_json::json!({
-            "keyboard_layouts": ["us", "de:nodeadkeys"],
-            "keyboard_layout": "de:nodeadkeys",
-            "compose_key": "rwin"
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let settings = KeyboardSettings::from_section(&section);
-        assert_eq!(
-            setxkbmap_args(&settings),
-            [
-                "-layout",
-                "de",
-                "-variant",
-                "nodeadkeys",
-                "-option",
-                "",
-                "-option",
-                "grp:alt_shift_toggle,compose:rwin",
-            ]
-            .map(OsString::from)
-        );
-
-        let plain = KeyboardSettings::default();
-        assert_eq!(
-            setxkbmap_args(&plain),
-            ["-layout", "us", "-option", ""].map(OsString::from)
-        );
-    }
-
-    #[test]
-    fn satellite_and_xwayland_are_resolved_from_one_runtime_first() {
-        let path = satellite_runtime_path(
-            Path::new("/usr/bin/xwayland-satellite"),
-            Some(OsStr::new("/run/host/usr/bin:/opt/tools:/usr/bin")),
-        )
-        .unwrap();
-        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
-        assert_eq!(
-            entries,
-            vec![
-                PathBuf::from("/usr/bin"),
-                PathBuf::from("/run/host/usr/bin"),
-                PathBuf::from("/opt/tools"),
-            ]
-        );
-    }
-
-    #[test]
-    fn authority_is_private_and_contains_no_text_cookie() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("Xauthority");
-        write_xauthority(&path, 1234).unwrap();
-        let metadata = fs::metadata(&path).unwrap();
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
-        let bytes = fs::read(path).unwrap();
-        assert!(bytes.windows(4).any(|window| window == b"1234"));
-        assert!(
-            bytes
-                .windows(b"MIT-MAGIC-COOKIE-1".len())
-                .any(|window| window == b"MIT-MAGIC-COOKIE-1")
-        );
+    fn xwayland_runtime_path_and_authority_are_private() {
+        // Phase `satellite_and_xwayland_are_resolved_from_one_runtime_first`.
+        {
+            let path = satellite_runtime_path(
+                Path::new("/usr/bin/xwayland-satellite"),
+                Some(OsStr::new("/run/host/usr/bin:/opt/tools:/usr/bin")),
+            )
+            .unwrap();
+            let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+            assert_eq!(
+                entries,
+                vec![
+                    PathBuf::from("/usr/bin"),
+                    PathBuf::from("/run/host/usr/bin"),
+                    PathBuf::from("/opt/tools"),
+                ]
+            );
+        }
+        // Phase `authority_is_private_and_contains_no_text_cookie`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("Xauthority");
+            write_xauthority(&path, 1234).unwrap();
+            let metadata = fs::metadata(&path).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+            let bytes = fs::read(path).unwrap();
+            assert!(bytes.windows(4).any(|window| window == b"1234"));
+            assert!(
+                bytes
+                    .windows(b"MIT-MAGIC-COOKIE-1".len())
+                    .any(|window| window == b"MIT-MAGIC-COOKIE-1")
+            );
+        }
     }
 
     #[test]

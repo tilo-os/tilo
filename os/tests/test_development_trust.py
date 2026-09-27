@@ -18,6 +18,18 @@ if LOCAL_CRYPTO.is_file():
     trust.CRYPTO = LOCAL_CRYPTO
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 @unittest.skipUnless(shutil.which('cosign') and trust.CRYPTO.is_file(),
                      'Cosign and Rust-native crypto required')
 class PublicBundleTests(unittest.TestCase):
@@ -54,91 +66,94 @@ class PublicBundleTests(unittest.TestCase):
         manifest['sha256'][name] = hashlib.sha256(data).hexdigest()
         path.write_text(json.dumps(manifest))
 
-    def test_valid_bundle_contains_only_public_inputs(self):
-        result = trust.validate(self.output)
-        self.assertEqual(result['purpose'], 'tilo-development')
-        self.assertEqual(set(result['identities']), set(trust.FILES))
-        self.assertEqual({p.name for p in self.output.iterdir()}, {*trust.FILES, 'manifest.json'})
-        self.assertEqual(result['identities']['registry-owner.pub'], 'ab' * 32)
+    def test_bundle_creation(self):
+        with self.subTest(phase="valid_bundle_contains_only_public_inputs"):
+            result = trust.validate(self.output)
+            self.assertEqual(result['purpose'], 'tilo-development')
+            self.assertEqual(set(result['identities']), set(trust.FILES))
+            self.assertEqual({p.name for p in self.output.iterdir()}, {*trust.FILES, 'manifest.json'})
+            self.assertEqual(result['identities']['registry-owner.pub'], 'ab' * 32)
+        restart_fixture(self)
+        with self.subTest(phase="existing_output_is_never_overwritten"):
+            before = (self.output / 'manifest.json').read_bytes()
+            with self.assertRaises(FileExistsError):
+                trust.create(self.sources, self.output)
+            self.assertEqual((self.output / 'manifest.json').read_bytes(), before)
 
-    def test_existing_output_is_never_overwritten(self):
-        before = (self.output / 'manifest.json').read_bytes()
-        with self.assertRaises(FileExistsError):
-            trust.create(self.sources, self.output)
-        self.assertEqual((self.output / 'manifest.json').read_bytes(), before)
+    def test_digest_binding_rejections(self):
+        with self.subTest(phase="tampered_public_key_fails_digest_binding"):
+            with (self.output / 'cosign.pub').open('ab') as stream:
+                stream.write(b'\n')
+            with self.assertRaisesRegex(ValueError, 'digest mismatch'):
+                trust.validate(self.output)
+        restart_fixture(self)
+        with self.subTest(phase="external_digest_rejects_consistent_bundle_substitution"):
+            expected = trust.validate(self.output)['manifest_sha256']
+            self.assertEqual(trust.validate(self.output, expected)['manifest_sha256'], expected)
+            self.replace_public('registry-owner.pub', b'cd' * 32)
+            trust.validate(self.output)  # Structurally valid is not identity authentication.
+            with self.assertRaisesRegex(ValueError, 'independently supplied digest'):
+                trust.validate(self.output, expected)
+        restart_fixture(self)
+        with self.subTest(phase="private_key_rejected_even_with_updated_manifest"):
+            private = (self.root / 'fixture-private.pem').read_bytes()
+            for data in (private, self.sources[0].read_bytes() + private):
+                with self.subTest(appended=data != private):
+                    self.replace_public('cosign.pub', data)
+                    with self.assertRaisesRegex(ValueError, 'exactly one public'):
+                        trust.validate(self.output)
+        restart_fixture(self)
+        with self.subTest(phase="wrong_pcr_algorithm_rejected"):
+            self.replace_public(trust.FILES[1], self.sources[0].read_bytes())
+            with self.assertRaises(ValueError):
+                trust.validate(self.output)
+        restart_fixture(self)
+        with self.subTest(phase="non_development_manifest_rejected"):
+            path = self.output / 'manifest.json'
+            manifest = json.loads(path.read_text())
+            manifest['purpose'] = 'production'
+            path.write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, 'invalid development'):
+                trust.validate(self.output)
+        restart_fixture(self)
+        with self.subTest(phase="duplicate_manifest_properties_rejected"):
+            path = self.output / 'manifest.json'
+            path.write_text(path.read_text().replace('"schema": 1', '"schema": 1, "schema": 1'))
+            with self.assertRaisesRegex(ValueError, 'duplicate'):
+                trust.validate(self.output)
 
-    def test_tampered_public_key_fails_digest_binding(self):
-        with (self.output / 'cosign.pub').open('ab') as stream:
-            stream.write(b'\n')
-        with self.assertRaisesRegex(ValueError, 'digest mismatch'):
-            trust.validate(self.output)
-
-    def test_external_digest_rejects_consistent_bundle_substitution(self):
-        expected = trust.validate(self.output)['manifest_sha256']
-        self.assertEqual(trust.validate(self.output, expected)['manifest_sha256'], expected)
-        self.replace_public('registry-owner.pub', b'cd' * 32)
-        trust.validate(self.output)  # Structurally valid is not identity authentication.
-        with self.assertRaisesRegex(ValueError, 'independently supplied digest'):
-            trust.validate(self.output, expected)
-
-    def test_private_key_rejected_even_with_updated_manifest(self):
-        private = (self.root / 'fixture-private.pem').read_bytes()
-        for data in (private, self.sources[0].read_bytes() + private):
-            with self.subTest(appended=data != private):
-                self.replace_public('cosign.pub', data)
-                with self.assertRaisesRegex(ValueError, 'exactly one public'):
-                    trust.validate(self.output)
-
-    def test_wrong_pcr_algorithm_rejected(self):
-        self.replace_public(trust.FILES[1], self.sources[0].read_bytes())
-        with self.assertRaises(ValueError):
-            trust.validate(self.output)
-
-    def test_extra_file_rejected(self):
-        (self.output / 'unexpected.pem').write_text('unexpected')
-        with self.assertRaisesRegex(ValueError, 'unexpected or missing'):
-            trust.validate(self.output)
-
-    def test_symlink_rejected(self):
-        path = self.output / 'cosign.pub'
-        path.unlink()
-        try:
-            path.symlink_to(self.sources[0])
-        except OSError:
-            self.skipTest('symlink creation unavailable')
-        with self.assertRaisesRegex(ValueError, 'link or junction'):
-            trust.validate(self.output)
-
-    def test_redirected_parent_rejected(self):
-        parent = self.output.parent / 'redirect'
-        try:
-            parent.symlink_to(self.output.parent, target_is_directory=True)
-        except OSError:
-            self.skipTest('symlink creation unavailable')
-        with self.assertRaisesRegex(ValueError, 'link or junction'):
-            trust.validate(parent / self.output.name)
-
-    def test_non_development_manifest_rejected(self):
-        path = self.output / 'manifest.json'
-        manifest = json.loads(path.read_text())
-        manifest['purpose'] = 'production'
-        path.write_text(json.dumps(manifest))
-        with self.assertRaisesRegex(ValueError, 'invalid development'):
-            trust.validate(self.output)
-
-    def test_duplicate_manifest_properties_rejected(self):
-        path = self.output / 'manifest.json'
-        path.write_text(path.read_text().replace('"schema": 1', '"schema": 1, "schema": 1'))
-        with self.assertRaisesRegex(ValueError, 'duplicate'):
-            trust.validate(self.output)
-
-    def test_zero_owner_and_oversized_input_rejected(self):
-        self.replace_public('registry-owner.pub', b'0' * 64)
-        with self.assertRaisesRegex(ValueError, 'nonzero'):
-            trust.validate(self.output)
-        self.replace_public('registry-owner.pub', b'a' * (trust.LIMIT + 1))
-        with self.assertRaisesRegex(ValueError, 'bounded regular'):
-            trust.validate(self.output)
+    def test_filesystem_rejections(self):
+        with self.subTest(phase="extra_file_rejected"):
+            (self.output / 'unexpected.pem').write_text('unexpected')
+            with self.assertRaisesRegex(ValueError, 'unexpected or missing'):
+                trust.validate(self.output)
+        restart_fixture(self)
+        with self.subTest(phase="symlink_rejected"):
+            path = self.output / 'cosign.pub'
+            path.unlink()
+            try:
+                path.symlink_to(self.sources[0])
+            except OSError:
+                self.skipTest('symlink creation unavailable')
+            with self.assertRaisesRegex(ValueError, 'link or junction'):
+                trust.validate(self.output)
+        restart_fixture(self)
+        with self.subTest(phase="redirected_parent_rejected"):
+            parent = self.output.parent / 'redirect'
+            try:
+                parent.symlink_to(self.output.parent, target_is_directory=True)
+            except OSError:
+                self.skipTest('symlink creation unavailable')
+            with self.assertRaisesRegex(ValueError, 'link or junction'):
+                trust.validate(parent / self.output.name)
+        restart_fixture(self)
+        with self.subTest(phase="zero_owner_and_oversized_input_rejected"):
+            self.replace_public('registry-owner.pub', b'0' * 64)
+            with self.assertRaisesRegex(ValueError, 'nonzero'):
+                trust.validate(self.output)
+            self.replace_public('registry-owner.pub', b'a' * (trust.LIMIT + 1))
+            with self.assertRaisesRegex(ValueError, 'bounded regular'):
+                trust.validate(self.output)
 
 
 if __name__ == '__main__':

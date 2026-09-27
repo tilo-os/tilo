@@ -20,8 +20,12 @@
 
 pub mod actions;
 pub(crate) mod animation_diagnostics;
+pub mod app_action_access;
+pub mod app_action_consent;
+pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
+pub mod capture_protection;
 pub(crate) mod capture_surface;
 pub mod catalogue;
 pub mod channel_encryption;
@@ -49,9 +53,12 @@ pub(crate) mod desktop_continuation;
 pub mod device_fabric;
 pub mod device_fabric_runtime;
 pub mod device_fabric_secrets;
+pub mod display_bars;
+pub mod display_confirm;
 pub mod display_identify;
 pub mod doc_open;
 pub mod editor_app;
+pub mod emoji_picker;
 pub mod fabric_clock;
 mod file_picker_overlay;
 pub mod fixed_chords;
@@ -70,6 +77,7 @@ pub mod identity_provisioning;
 pub mod input_policy;
 pub mod launch_gate;
 pub mod launcher;
+pub mod magnifier;
 pub mod media_keys;
 pub mod mpris;
 pub mod nearby_transfer;
@@ -77,6 +85,7 @@ pub mod network;
 pub mod notes_app;
 pub mod notification;
 pub mod notification_history;
+pub mod now_playing;
 pub mod osd;
 pub mod output_scene;
 pub mod overlay_host;
@@ -100,6 +109,7 @@ pub mod projection;
 mod projection_overlay;
 pub mod quick_settings;
 pub mod realtime_session;
+pub mod recent_files;
 pub mod remote_action_link;
 pub mod remote_actions;
 pub mod remote_audio;
@@ -108,18 +118,24 @@ pub mod remote_cursors;
 pub mod render;
 pub mod room_activity;
 pub mod room_records;
+pub mod screenshot_send;
 pub mod search;
 pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
+pub mod shell_narrator;
 pub mod sidebar_wheel_disc;
 pub mod spatial_calibration;
+pub mod speaker_calibration;
 pub mod speaker_group;
+pub mod speaker_group_audio;
 pub mod speaker_group_runtime;
+pub mod speaker_settings;
 pub mod split_row;
 pub mod state;
 pub mod status;
 pub mod system_monitor;
+pub mod system_sounds;
 pub mod tab_binding;
 pub mod tab_documents;
 pub mod test_control;
@@ -133,6 +149,8 @@ pub mod topbar;
 pub mod topbar_chrome;
 pub mod uri_open;
 pub mod window_actions;
+pub mod window_previews;
+pub mod window_switcher;
 #[cfg(target_os = "linux")]
 pub mod windows_compat;
 pub mod workspace_drop;
@@ -169,6 +187,8 @@ pub(crate) struct WorkspaceSceneParts {
     pub topbar: *mut topbar_chrome::TopBarChrome,
     pub workspace: *mut dyn Widget,
     pub work_area: *mut Column,
+    /// Compact top bars of the displays other than the primary.
+    pub display_bars: *mut display_bars::DisplayBars,
 }
 use crate::shell::topbar::TopBar;
 use crate::shell::workspace_settings::WorkspaceSettings;
@@ -652,7 +672,10 @@ impl Shell {
         {
             ws.name = new_name.to_string();
         }
-        self.toasts.push("Workspace renamed", ToastKind::Info);
+        self.toasts.push(
+            crate::shell::i18n::t("shell-workspace-renamed"),
+            ToastKind::Info,
+        );
     }
 
     // Default tile context menu: "Close Tab" / separator / "Split Right" /
@@ -714,15 +737,13 @@ pub enum TabMenuAction {
 }
 
 impl TabMenuAction {
-    /// User-facing label. English literals, following every other
-    /// accessibility name in `shell/src/shell` — the shell installs no
-    /// fluent catalogue (see `compositor/macos.rs`, which only
-    /// initialises `I18nManager`), so there is no key to look up yet.
-    pub fn label(self) -> &'static str {
+    /// User-facing label, from the shell's catalogue.
+    pub fn label(self) -> String {
+        use crate::shell::i18n::t;
         match self {
-            Self::CloseTab => "Close Tab",
-            Self::SplitRight => "Split Right",
-            Self::MoveToNewGroup => "Move to New Group",
+            Self::CloseTab => t("shell-tab-menu-close"),
+            Self::SplitRight => t("shell-tab-menu-split-right"),
+            Self::MoveToNewGroup => t("shell-tab-menu-new-group"),
         }
     }
 
@@ -781,45 +802,49 @@ mod tab_menu_item_tests {
     use super::*;
 
     #[test]
-    fn a_single_tab_group_is_offered_only_close() {
-        let items = tab_context_menu_items(1);
-        assert_eq!(items, vec![Some(TabMenuAction::CloseTab)]);
-        let (menu, _) = build_tab_context_menu(1);
-        assert_eq!(menu.items().len(), 1);
-    }
-
-    #[test]
-    fn a_multi_tab_group_gets_close_then_the_split_pair_after_a_separator() {
-        let items = tab_context_menu_items(3);
-        assert_eq!(
-            items,
-            vec![
-                Some(TabMenuAction::CloseTab),
-                None,
-                Some(TabMenuAction::SplitRight),
-                Some(TabMenuAction::MoveToNewGroup),
-            ]
-        );
-        let (menu, actions) = build_tab_context_menu(3);
-        assert_eq!(menu.items().len(), actions.len(), "one menu row per item");
-        let labels: Vec<_> = menu.items().iter().filter_map(|i| i.label()).collect();
-        assert_eq!(labels, ["Close Tab", "Split Right", "Move to New Group"]);
-    }
-
-    #[test]
-    fn semantic_keys_round_trip_and_are_unique() {
-        for action in [
-            TabMenuAction::CloseTab,
-            TabMenuAction::SplitRight,
-            TabMenuAction::MoveToNewGroup,
-        ] {
-            assert_eq!(
-                TabMenuAction::from_semantic_key(action.semantic_key()),
-                Some(action)
-            );
-            assert!(action.semantic_key().starts_with("tabmenu:"));
+    fn tab_menu_items_depend_on_group_size_and_keys_round_trip() {
+        fn a_single_tab_group_is_offered_only_close() {
+            let items = tab_context_menu_items(1);
+            assert_eq!(items, vec![Some(TabMenuAction::CloseTab)]);
+            let (menu, _) = build_tab_context_menu(1);
+            assert_eq!(menu.items().len(), 1);
         }
-        assert_eq!(TabMenuAction::from_semantic_key("tabmenu:nope"), None);
+
+        fn a_multi_tab_group_gets_close_then_the_split_pair_after_a_separator() {
+            let items = tab_context_menu_items(3);
+            assert_eq!(
+                items,
+                vec![
+                    Some(TabMenuAction::CloseTab),
+                    None,
+                    Some(TabMenuAction::SplitRight),
+                    Some(TabMenuAction::MoveToNewGroup),
+                ]
+            );
+            let (menu, actions) = build_tab_context_menu(3);
+            assert_eq!(menu.items().len(), actions.len(), "one menu row per item");
+            let labels: Vec<_> = menu.items().iter().filter_map(|i| i.label()).collect();
+            assert_eq!(labels, ["Close Tab", "Split Right", "Move to New Group"]);
+        }
+
+        fn semantic_keys_round_trip_and_are_unique() {
+            for action in [
+                TabMenuAction::CloseTab,
+                TabMenuAction::SplitRight,
+                TabMenuAction::MoveToNewGroup,
+            ] {
+                assert_eq!(
+                    TabMenuAction::from_semantic_key(action.semantic_key()),
+                    Some(action)
+                );
+                assert!(action.semantic_key().starts_with("tabmenu:"));
+            }
+            assert_eq!(TabMenuAction::from_semantic_key("tabmenu:nope"), None);
+        }
+
+        a_single_tab_group_is_offered_only_close();
+        a_multi_tab_group_gets_close_then_the_split_pair_after_a_separator();
+        semantic_keys_round_trip_and_are_unique();
     }
 }
 
@@ -870,7 +895,10 @@ fn default_demo_tabs(
                 "Terminal",
                 RuntimeTile::Stub {
                     kind: UiKind::Terminal,
-                    label: format!("Terminal: {e}"),
+                    label: crate::shell::i18n::t_args(
+                        "shell-terminal-unavailable",
+                        &[("error", e.to_string().into())],
+                    ),
                 },
             ));
         }
@@ -1001,7 +1029,7 @@ pub(crate) fn to_ui_tile_with_inputs(
     match try_to_ui_tile(t, terminal::HostedProcessServices::default(), inputs) {
         Ok(tile) => tile,
         Err(error) => UiTile::Notice {
-            title: "Application unavailable".into(),
+            title: crate::shell::i18n::t("shell-app-unavailable"),
             detail: error.to_string(),
         },
     }
@@ -1019,7 +1047,7 @@ pub(crate) fn to_ui_tile_for_tab_with_inputs(
         Some(tab),
     )
     .unwrap_or_else(|error| UiTile::Notice {
-        title: "Application unavailable".into(),
+        title: crate::shell::i18n::t("shell-app-unavailable"),
         detail: error.to_string(),
     })
 }
@@ -1047,8 +1075,8 @@ fn try_to_ui_tile_for_tab(
         // index. The neutral body exists only for the first reconciliation
         // frame before that controller has its content rect.
         ShellTile::WorkspaceActivity => UiTile::Notice {
-            title: "While you were away".into(),
-            detail: "Loading workspace activity…".into(),
+            title: crate::shell::i18n::t("shell-activity-title"),
+            detail: crate::shell::i18n::t("shell-activity-loading"),
         },
         ShellTile::Stub { kind, label } => UiTile::Stub {
             kind: to_ui_kind(kind),
@@ -1222,6 +1250,7 @@ pub fn to_ui_window_group_with_inputs(
                     id: t.id,
                     title: t.title.clone(),
                     app_kind: Some(kind),
+                    icon: crate::app_icons::for_tile(&t.tile),
                 },
                 to_ui_tile_for_tab_with_inputs(&t.tile, t.id, inputs),
             )
@@ -1239,6 +1268,9 @@ pub fn to_ui_window_group_with_inputs(
 /// [`doc_open::open_in_workspace`] — the explorer asks, the compositor
 /// answers. Named so a test can install it against its own chrome too.
 pub fn install_document_opener(chrome: &chrome_state::Chrome) {
+    file_explorer::open_with::set_open_with_route(std::rc::Rc::new(ShellOpenWithRoute {
+        chrome: chrome.clone(),
+    }));
     let chrome = chrome.clone();
     file_explorer::files_app::set_document_opener(move |path| {
         let native_app = { chrome.borrow().hosted_inputs.native_app_for_path(path) };
@@ -1285,6 +1317,49 @@ pub fn install_document_opener(chrome: &chrome_state::Chrome) {
             .map(|_| ())
             .map_err(|e| e.user_message())
     });
+}
+
+/// Files' "Open With": candidates, launches and defaults all come from
+/// [`doc_open`], under the active workspace's policy and the local person.
+struct ShellOpenWithRoute {
+    chrome: chrome_state::Chrome,
+}
+
+impl file_explorer::open_with::OpenWithRoute for ShellOpenWithRoute {
+    fn candidates(&self, path: &std::path::Path) -> file_explorer::open_with::OpenWithCandidates {
+        let apps = {
+            let state = self.chrome.borrow();
+            let tree = state.tree();
+            doc_open::open_with_choices(
+                path,
+                &state.local_user_id,
+                tree.desktop
+                    .active_workspace()
+                    .map(|workspace| &workspace.default_apps),
+            )
+        };
+        file_explorer::open_with::OpenWithCandidates {
+            type_label: doc_open::type_label(path),
+            apps: apps
+                .into_iter()
+                .map(|choice| file_explorer::open_with::OpenWithApp {
+                    id: choice.id,
+                    name: choice.name,
+                    is_default: choice.is_default,
+                })
+                .collect(),
+        }
+    }
+
+    fn open_with(&self, path: &std::path::Path, app_id: &str) -> Result<(), String> {
+        doc_open::open_with_app(path, &self.chrome, app_id)
+            .map(|_| ())
+            .map_err(|error| error.user_message())
+    }
+
+    fn set_default(&self, path: &std::path::Path, app_id: &str) -> Result<(), String> {
+        doc_open::set_personal_default(path, app_id)
+    }
 }
 
 /// The production entry point: threads the *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle)
@@ -1488,7 +1563,12 @@ pub(crate) fn build_workspace_root_with_scene_parts(
         .with_gap(0.0)
         .push(topbar)
         .push(workspace);
-    let stack = Stack::new().push(backdrop).push(Box::new(foreground_col));
+    let mut display_bars = Box::new(display_bars::DisplayBars::new(chrome.clone()));
+    let display_bars_ptr = &raw mut *display_bars;
+    let stack = Stack::new()
+        .push(backdrop)
+        .push(Box::new(foreground_col))
+        .push(display_bars);
 
     let root: Box<dyn Widget> = Box::new(
         Container::new()
@@ -1504,6 +1584,7 @@ pub(crate) fn build_workspace_root_with_scene_parts(
             topbar: topbar_ptr,
             workspace: workspace_ptr,
             work_area: work_area_ptr,
+            display_bars: display_bars_ptr,
         },
     )
 }
@@ -1668,43 +1749,47 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence:
 mod hosted_app_tests {
     use super::*;
 
-    /// Drag a tab into its own window and the group rebuilds from widgets,
-    /// which knows only the tab's title — if the recovered label isn't
-    /// what the hydration match arms name, the tab comes back as a
-    /// "coming soon" card. This is the failure this table exists to prevent.
     #[test]
-    fn every_hosted_app_round_trips_from_its_tab_title_into_a_live_app() {
-        for (title, label) in HOSTED_OTHER_APPS {
-            let recovered = hosted_label_for_title(title);
-            assert_eq!(
-                &recovered, label,
-                "a tab titled {title:?} must recover the label {label:?}",
-            );
+    fn hosted_app_titles_round_trip_into_live_apps_or_pass_through() {
+        /// Drag a tab into its own window and the group rebuilds from widgets,
+        /// which knows only the tab's title — if the recovered label isn't
+        /// what the hydration match arms name, the tab comes back as a
+        /// "coming soon" card. This is the failure this table exists to prevent.
+        fn every_hosted_app_round_trips_from_its_tab_title_into_a_live_app() {
+            for (title, label) in HOSTED_OTHER_APPS {
+                let recovered = hosted_label_for_title(title);
+                assert_eq!(
+                    &recovered, label,
+                    "a tab titled {title:?} must recover the label {label:?}",
+                );
 
-            let tile = ShellTile::AppPlaceholder {
-                kind: ShellKind::Other(recovered.clone()),
-                label: (*title).to_string(),
-            };
-            assert_eq!(
-                resolve_tile_shape_for_test(&tile),
-                "App",
-                "{title:?} hydrated into a placeholder card instead of the \
-                 app it names",
-            );
-            assert_eq!(
-                to_ui_kind(&ShellKind::Other(recovered)),
-                UiKind::Editor,
-                "{title:?} must wear an editor glyph, not the unknown-kind \
-                 settings cog",
-            );
+                let tile = ShellTile::AppPlaceholder {
+                    kind: ShellKind::Other(recovered.clone()),
+                    label: (*title).to_string(),
+                };
+                assert_eq!(
+                    resolve_tile_shape_for_test(&tile),
+                    "App",
+                    "{title:?} hydrated into a placeholder card instead of the \
+                     app it names",
+                );
+                assert_eq!(
+                    to_ui_kind(&ShellKind::Other(recovered)),
+                    UiKind::Editor,
+                    "{title:?} must wear an editor glyph, not the unknown-kind \
+                     settings cog",
+                );
+            }
         }
-    }
 
-    /// A title the shell does not host carries through untouched, so a
-    /// foreign or future app is not silently renamed into one of ours.
-    #[test]
-    fn an_unhosted_title_is_carried_through_unchanged() {
-        assert_eq!(hosted_label_for_title("Inkscape"), "Inkscape");
-        assert_eq!(hosted_label_for_title("report.odt"), "report.odt");
+        /// A title the shell does not host carries through untouched, so a
+        /// foreign or future app is not silently renamed into one of ours.
+        fn an_unhosted_title_is_carried_through_unchanged() {
+            assert_eq!(hosted_label_for_title("Inkscape"), "Inkscape");
+            assert_eq!(hosted_label_for_title("report.odt"), "report.odt");
+        }
+
+        every_hosted_app_round_trips_from_its_tab_title_into_a_live_app();
+        an_unhosted_title_is_carried_through_unchanged();
     }
 }

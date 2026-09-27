@@ -357,7 +357,16 @@ impl std::fmt::Debug for KeyHistory {
 mod tests {
     use super::*;
 
+    /// Content is bound to channel, epoch and artifact; conflicting keys are refused; a history
+    /// bundle round-trips only for its channel and epoch.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn sealed_content_opens_only_for_its_channel_epoch_and_artifact() {
+        content_is_bound_to_channel_epoch_and_artifact();
+        conflicting_keys_are_refused();
+        history_bundle_round_trips_only_for_its_channel_and_epoch();
+    }
+
     fn content_is_bound_to_channel_epoch_and_artifact() {
         let mut ring = ContentKeyring::new();
         ring.insert(1, SymmetricKey::generate().unwrap()).unwrap();
@@ -388,7 +397,6 @@ mod tests {
         assert!(ring.open(channel, artifact, &v1, &sealed).is_err());
     }
 
-    #[test]
     fn conflicting_keys_are_refused() {
         let mut ring = ContentKeyring::new();
         let key = SymmetricKey::generate().unwrap();
@@ -402,7 +410,6 @@ mod tests {
         assert!(ring.get(9).is_none(), "a refused merge changes nothing");
     }
 
-    #[test]
     fn history_bundle_round_trips_only_for_its_channel_and_epoch() {
         let mut ring = ContentKeyring::new();
         for epoch in 0..20 {

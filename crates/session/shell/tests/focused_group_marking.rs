@@ -124,121 +124,128 @@ fn lit(host: &mut ShellOverlayHost, strips: [StripId; 2]) -> Vec<(StripId, Group
 }
 
 #[test]
-fn the_tree_s_active_group_is_the_one_that_reports_focus() {
-    let (t, s_a, s_b) = tree();
-    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&t);
-    tick(&mut host);
-
-    assert_eq!(
-        lit(&mut host, [s_a, s_b]),
-        vec![(s_a, G_A1)],
-        "the group named by active_strip + active_group is lit, and it is the only one",
-    );
-}
-
-#[test]
-fn moving_the_pointer_to_a_sibling_moves_the_light() {
-    let (t, s_a, s_b) = tree();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&t);
-    tick(&mut host);
-    assert_eq!(
-        lit(&mut host, [s_a, s_b]),
-        vec![(s_a, G_A1)],
-        "precondition"
-    );
-
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn the_focus_light_follows_the_pointer_and_only_shows_with_two_windows() {
+    // Phase `the_tree_s_active_group_is_the_one_that_reports_focus`.
     {
-        let st = chrome.borrow();
-        st.tree_mut().desktop.set_active_group(s_a, G_A2);
+        let (t, s_a, s_b) = tree();
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&t);
+        tick(&mut host);
+
+        assert_eq!(
+            lit(&mut host, [s_a, s_b]),
+            vec![(s_a, G_A1)],
+            "the group named by active_strip + active_group is lit, and it is the only one",
+        );
     }
-    tick(&mut host);
 
-    assert_eq!(
-        lit(&mut host, [s_a, s_b]),
-        vec![(s_a, G_A2)],
-        "focus follows the pointer to the sibling group, and does not stay latched on the old one",
-    );
-}
-
-#[test]
-fn moving_the_pointer_to_another_strip_moves_the_light() {
-    let (t, s_a, s_b) = tree();
-    let ws_id = t.desktop.active;
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&t);
-    tick(&mut host);
-    assert_eq!(
-        lit(&mut host, [s_a, s_b]),
-        vec![(s_a, G_A1)],
-        "precondition"
-    );
-
+    // Phase `moving_the_pointer_to_a_sibling_moves_the_light`.
     {
-        let st = chrome.borrow();
-        st.tree_mut().desktop.active_strip.insert(ws_id, s_b);
+        let (t, s_a, s_b) = tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&t);
+        tick(&mut host);
+        assert_eq!(
+            lit(&mut host, [s_a, s_b]),
+            vec![(s_a, G_A1)],
+            "precondition"
+        );
+
+        {
+            let st = chrome.borrow();
+            st.tree_mut().desktop.set_active_group(s_a, G_A2);
+        }
+        tick(&mut host);
+
+        assert_eq!(
+            lit(&mut host, [s_a, s_b]),
+            vec![(s_a, G_A2)],
+            "focus follows the pointer to the sibling group, and does not stay latched on the old one",
+        );
     }
-    tick(&mut host);
 
-    assert_eq!(
-        lit(&mut host, [s_a, s_b]),
-        vec![(s_b, G_B1)],
-        "a strip focus change moves the light across strips; strip A goes dark",
-    );
-}
-
-#[test]
-fn a_strip_with_no_recorded_pointer_still_lights_a_window() {
-    let (mut t, s_a, s_b) = tree();
-    // A workspace can reach a frame with no active_group for a strip (fresh
-    // boot, or a strip never clicked into); resolution must fall back rather
-    // than leave the strip dark.
-    t.desktop.active_group.remove(&s_a);
-    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&t);
-    tick(&mut host);
-
-    assert_eq!(
-        lit(&mut host, [s_a, s_b]),
-        vec![(s_a, G_A1)],
-        "an unseeded strip falls back to its leftmost group; leaving every \
-         window unlit is the state this signal exists to abolish",
-    );
-}
-
-#[test]
-fn a_workspace_with_one_window_lights_nothing() {
-    // Same builder, trimmed to a single group on a single strip.
-    let (mut t, s_a, s_b) = tree();
+    // Phase `moving_the_pointer_to_another_strip_moves_the_light`.
     {
-        let ws = &mut t.desktop.workspaces[0];
-        ws.strips.retain(|s| s.id == s_a);
-        ws.strips[0].window_groups.retain(|g| g.id == G_A1);
+        let (t, s_a, s_b) = tree();
+        let ws_id = t.desktop.active;
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&t);
+        tick(&mut host);
+        assert_eq!(
+            lit(&mut host, [s_a, s_b]),
+            vec![(s_a, G_A1)],
+            "precondition"
+        );
+
+        {
+            let st = chrome.borrow();
+            st.tree_mut().desktop.active_strip.insert(ws_id, s_b);
+        }
+        tick(&mut host);
+
+        assert_eq!(
+            lit(&mut host, [s_a, s_b]),
+            vec![(s_b, G_B1)],
+            "a strip focus change moves the light across strips; strip A goes dark",
+        );
     }
-    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&t);
-    tick(&mut host);
 
-    assert_eq!(
-        lit(&mut host, [s_a, s_b]),
-        Vec::new(),
-        "the only window on the workspace needs no marker telling the user it \
-         is the one they are typing into",
-    );
-}
-
-#[test]
-fn a_second_window_anywhere_in_the_workspace_turns_the_marker_on() {
-    // One group per strip, two strips: nothing to disambiguate *within* a
-    // strip, plenty across the workspace — the case a per-strip count gets wrong.
-    let (mut t, s_a, s_b) = tree();
+    // Phase `a_strip_with_no_recorded_pointer_still_lights_a_window`.
     {
-        let ws = &mut t.desktop.workspaces[0];
-        ws.strips[0].window_groups.retain(|g| g.id == G_A1);
-    }
-    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&t);
-    tick(&mut host);
+        let (mut t, s_a, s_b) = tree();
+        // A workspace can reach a frame with no active_group for a strip (fresh
+        // boot, or a strip never clicked into); resolution must fall back rather
+        // than leave the strip dark.
+        t.desktop.active_group.remove(&s_a);
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&t);
+        tick(&mut host);
 
-    assert_eq!(
-        lit(&mut host, [s_a, s_b]),
-        vec![(s_a, G_A1)],
-        "two strips holding one window each is exactly when the user cannot \
-         tell which window the keyboard is aimed at",
-    );
+        assert_eq!(
+            lit(&mut host, [s_a, s_b]),
+            vec![(s_a, G_A1)],
+            "an unseeded strip falls back to its leftmost group; leaving every \
+             window unlit is the state this signal exists to abolish",
+        );
+    }
+
+    // Phase `a_workspace_with_one_window_lights_nothing`.
+    {
+        // Same builder, trimmed to a single group on a single strip.
+        let (mut t, s_a, s_b) = tree();
+        {
+            let ws = &mut t.desktop.workspaces[0];
+            ws.strips.retain(|s| s.id == s_a);
+            ws.strips[0].window_groups.retain(|g| g.id == G_A1);
+        }
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&t);
+        tick(&mut host);
+
+        assert_eq!(
+            lit(&mut host, [s_a, s_b]),
+            Vec::new(),
+            "the only window on the workspace needs no marker telling the user it \
+             is the one they are typing into",
+        );
+    }
+
+    // Phase `a_second_window_anywhere_in_the_workspace_turns_the_marker_on`.
+    {
+        // One group per strip, two strips: nothing to disambiguate *within* a
+        // strip, plenty across the workspace — the case a per-strip count gets wrong.
+        let (mut t, s_a, s_b) = tree();
+        {
+            let ws = &mut t.desktop.workspaces[0];
+            ws.strips[0].window_groups.retain(|g| g.id == G_A1);
+        }
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&t);
+        tick(&mut host);
+
+        assert_eq!(
+            lit(&mut host, [s_a, s_b]),
+            vec![(s_a, G_A1)],
+            "two strips holding one window each is exactly when the user cannot \
+             tell which window the keyboard is aimed at",
+        );
+    }
 }

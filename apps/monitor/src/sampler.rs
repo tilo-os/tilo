@@ -343,21 +343,46 @@ mod tests {
     use super::*;
     use crate::model::MonitorModel;
 
+    /// The sampler reports empty, permission and failure states distinctly, and signal
+    /// effects on an unknown or stale PID dispatch nothing.
     #[test]
-    fn process_source_status_distinguishes_empty_permission_and_failure() {
-        assert_eq!(process_snapshot_status(1, Ok(())), ProcessDataStatus::Ready);
-        assert_eq!(process_snapshot_status(0, Ok(())), ProcessDataStatus::Empty);
-        assert_eq!(
-            process_snapshot_status(
-                0,
-                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
-            ),
-            ProcessDataStatus::PermissionDenied
-        );
-        assert_eq!(
-            process_snapshot_status(0, Err(std::io::Error::other("source offline"))),
-            ProcessDataStatus::Unavailable
-        );
+    fn process_source_status_and_signals_refuse_to_pretend() {
+        // Phase `process_source_status_distinguishes_empty_permission_and_failure`.
+        {
+            assert_eq!(process_snapshot_status(1, Ok(())), ProcessDataStatus::Ready);
+            assert_eq!(process_snapshot_status(0, Ok(())), ProcessDataStatus::Empty);
+            assert_eq!(
+                process_snapshot_status(
+                    0,
+                    Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                ),
+                ProcessDataStatus::PermissionDenied
+            );
+            assert_eq!(
+                process_snapshot_status(0, Err(std::io::Error::other("source offline"))),
+                ProcessDataStatus::Unavailable
+            );
+        }
+
+        // Phase `signal_and_kill_reject_unknown_or_stale_pid`.
+        // Signal effects route through a generation-checked real process handle:
+        // an unknown or stale PID dispatches nothing rather than pretending to
+        // succeed.
+        {
+            let mut s = Sampler::new();
+            assert!(
+                !s.signal_if_current(u32::MAX, 0, StopKind::Term),
+                "no such process to SIGTERM"
+            );
+            assert!(
+                !s.signal_if_current(u32::MAX, 0, StopKind::Kill),
+                "no such process to SIGKILL"
+            );
+            assert!(
+                !s.kill_if_current(u32::MAX, 0),
+                "no such process to hard-kill"
+            );
+        }
     }
 
     /// A live refresh folds real metrics into the model and ties the
@@ -397,26 +422,6 @@ mod tests {
         assert_eq!(
             model.metrics.disk_write_hist.last(),
             model.metrics.disk_write
-        );
-    }
-
-    /// Signal effects route through a generation-checked real process handle:
-    /// an unknown or stale PID dispatches nothing rather than pretending to
-    /// succeed.
-    #[test]
-    fn signal_and_kill_reject_unknown_or_stale_pid() {
-        let mut s = Sampler::new();
-        assert!(
-            !s.signal_if_current(u32::MAX, 0, StopKind::Term),
-            "no such process to SIGTERM"
-        );
-        assert!(
-            !s.signal_if_current(u32::MAX, 0, StopKind::Kill),
-            "no such process to SIGKILL"
-        );
-        assert!(
-            !s.kill_if_current(u32::MAX, 0),
-            "no such process to hard-kill"
         );
     }
 }

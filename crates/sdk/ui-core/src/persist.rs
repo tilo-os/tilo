@@ -262,122 +262,126 @@ mod tests {
         }
     }
 
-    /// Opening an app for the SECOND time must keep persistence ON. If the
-    /// store treated an already-existing state directory as an error,
-    /// [`open`] would silently fall back to a disabled, in-memory
-    /// [`in_memory_fallback`] on every run but the first — a case
-    /// fresh-XDG CI never exercises, so this test creates the directory
-    /// up front and drives two opens against it.
     #[test]
-    fn open_keeps_autosave_enabled_when_the_state_dir_already_exists() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        let pkg = "so.tilo.persist-open-twice";
-
-        // Directory present before the first open, as on every later launch.
-        let dir = tmp.path().join(pkg);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // Run 1: write and flush a value.
+    fn persistence_opens_recovers_and_imports_the_legacy_index_once() {
+        // Case `open_keeps_autosave_enabled_when_the_state_dir_already_exists`:
+        // Opening an app for the SECOND time must keep persistence ON. If the
+        // store treated an already-existing state directory as an error,
+        // [`open`] would silently fall back to a disabled, in-memory
+        // [`in_memory_fallback`] on every run but the first — a case
+        // fresh-XDG CI never exercises, so this test creates the directory
+        // up front and drives two opens against it.
         {
-            let (mut state, mut autosave) = open_in(native(tmp.path()), pkg).expect("run 1 open");
-            assert!(autosave.is_enabled(), "run 1 must persist, not fall back");
-            state
-                .doc
-                .put(&ROOT, "note", ScalarValue::Str("survives".into()))
-                .unwrap();
-            autosave.request(&mut state.doc);
-            autosave.flush();
-            assert_eq!(autosave.last_error(), None, "no write may have failed");
-        }
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let pkg = "so.tilo.persist-open-twice";
 
-        // Run 2: the directory still exists; persistence must stay enabled
-        // and run 1's value must load.
-        let (state, autosave) = open_at(tmp.path(), pkg);
-        assert!(
-            autosave.is_enabled(),
-            "the SECOND open against an existing state dir must keep persistence \
-             enabled, not drop to the in-memory fallback"
-        );
-        assert_eq!(
-            note(&state).as_deref(),
-            Some("survives"),
-            "state written on the first run must load on the second open"
-        );
-    }
+            // Directory present before the first open, as on every later launch.
+            let dir = tmp.path().join(pkg);
+            std::fs::create_dir_all(&dir).unwrap();
 
-    #[test]
-    fn legacy_record_index_is_imported_by_one_room_only() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        let package = "so.tilo.legacy-room-index";
-        let id = crate::record::RecordId::minted();
-        let kind = crate::record::RecordKind::new("note");
-        let mut legacy = DocStore::shared(native(tmp.path()), StorageKey::package(package))
-            .expect("legacy store");
-        let mut legacy_doc = legacy.load_or_new();
-        crate::record::room::reference(&mut legacy_doc, &id, &kind);
-        legacy.save(&mut legacy_doc).expect("write legacy index");
-        let source = legacy.document_path().to_path_buf();
-        drop(legacy);
+            // Run 1: write and flush a value.
+            {
+                let (mut state, mut autosave) =
+                    open_in(native(tmp.path()), pkg).expect("run 1 open");
+                assert!(autosave.is_enabled(), "run 1 must persist, not fall back");
+                state
+                    .doc
+                    .put(&ROOT, "note", ScalarValue::Str("survives".into()))
+                    .unwrap();
+                autosave.request(&mut state.doc);
+                autosave.flush();
+                assert_eq!(autosave.last_error(), None, "no write may have failed");
+            }
 
-        let (a, _) = open_room_in(
-            native(tmp.path()),
-            package,
-            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        );
-        assert!(crate::record::room::holds(&a.doc, &id));
-        let (b, _) = open_room_in(
-            native(tmp.path()),
-            package,
-            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-        );
-        assert!(
-            !crate::record::room::holds(&b.doc, &id),
-            "a second room must not re-import a package-global index"
-        );
-        assert!(source.is_file(), "legacy source is retained for recovery");
-    }
-
-    /// An older app layout wrote the document as a zero-byte *file* at the
-    /// per-package state path. `open` must recover and come up with
-    /// persistence enabled, not swallow the `EEXIST` and fall back to the
-    /// disabled in-memory store.
-    #[test]
-    fn open_recovers_when_the_state_path_is_a_stale_file() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        let pkg = "so.tilo.stale-file-open";
-
-        // Old layout's leftover: a file where the new layout wants a directory.
-        let path = tmp.path().join(pkg);
-        std::fs::write(&path, b"").unwrap();
-        assert!(path.is_file(), "the leftover is a file, not a directory");
-
-        // Run 1: `open` must recover to enabled persistence.
-        {
-            let (mut state, mut autosave) = open_at(tmp.path(), pkg);
+            // Run 2: the directory still exists; persistence must stay enabled
+            // and run 1's value must load.
+            let (state, autosave) = open_at(tmp.path(), pkg);
             assert!(
                 autosave.is_enabled(),
-                "opening over a stale file must recover to enabled persistence, \
-                 not drop to the in-memory fallback"
+                "the SECOND open against an existing state dir must keep persistence \
+             enabled, not drop to the in-memory fallback"
             );
-            state
-                .doc
-                .put(&ROOT, "note", ScalarValue::Str("recovered".into()))
-                .unwrap();
-            autosave.request(&mut state.doc);
-            autosave.flush();
-            assert_eq!(autosave.last_error(), None, "no write may have failed");
+            assert_eq!(
+                note(&state).as_deref(),
+                Some("survives"),
+                "state written on the first run must load on the second open"
+            );
         }
 
-        // Run 2: the path is a directory now, and the value survives.
-        let (state, autosave) = open_at(tmp.path(), pkg);
-        assert!(
-            autosave.is_enabled(),
-            "persistence stays enabled after recovery"
-        );
-        assert_eq!(
-            note(&state).as_deref(),
-            Some("recovered"),
-            "state written after recovery must load on the next open"
-        );
+        // Case `legacy_record_index_is_imported_by_one_room_only`.
+        {
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let package = "so.tilo.legacy-room-index";
+            let id = crate::record::RecordId::minted();
+            let kind = crate::record::RecordKind::new("note");
+            let mut legacy = DocStore::shared(native(tmp.path()), StorageKey::package(package))
+                .expect("legacy store");
+            let mut legacy_doc = legacy.load_or_new();
+            crate::record::room::reference(&mut legacy_doc, &id, &kind);
+            legacy.save(&mut legacy_doc).expect("write legacy index");
+            let source = legacy.document_path().to_path_buf();
+            drop(legacy);
+
+            let (a, _) = open_room_in(
+                native(tmp.path()),
+                package,
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            );
+            assert!(crate::record::room::holds(&a.doc, &id));
+            let (b, _) = open_room_in(
+                native(tmp.path()),
+                package,
+                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            );
+            assert!(
+                !crate::record::room::holds(&b.doc, &id),
+                "a second room must not re-import a package-global index"
+            );
+            assert!(source.is_file(), "legacy source is retained for recovery");
+        }
+
+        // Case `open_recovers_when_the_state_path_is_a_stale_file`:
+        // An older app layout wrote the document as a zero-byte *file* at the
+        // per-package state path. `open` must recover and come up with
+        // persistence enabled, not swallow the `EEXIST` and fall back to the
+        // disabled in-memory store.
+        {
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let pkg = "so.tilo.stale-file-open";
+
+            // Old layout's leftover: a file where the new layout wants a directory.
+            let path = tmp.path().join(pkg);
+            std::fs::write(&path, b"").unwrap();
+            assert!(path.is_file(), "the leftover is a file, not a directory");
+
+            // Run 1: `open` must recover to enabled persistence.
+            {
+                let (mut state, mut autosave) = open_at(tmp.path(), pkg);
+                assert!(
+                    autosave.is_enabled(),
+                    "opening over a stale file must recover to enabled persistence, \
+                 not drop to the in-memory fallback"
+                );
+                state
+                    .doc
+                    .put(&ROOT, "note", ScalarValue::Str("recovered".into()))
+                    .unwrap();
+                autosave.request(&mut state.doc);
+                autosave.flush();
+                assert_eq!(autosave.last_error(), None, "no write may have failed");
+            }
+
+            // Run 2: the path is a directory now, and the value survives.
+            let (state, autosave) = open_at(tmp.path(), pkg);
+            assert!(
+                autosave.is_enabled(),
+                "persistence stays enabled after recovery"
+            );
+            assert_eq!(
+                note(&state).as_deref(),
+                Some("recovered"),
+                "state written after recovery must load on the next open"
+            );
+        }
     }
 }

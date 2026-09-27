@@ -2,11 +2,10 @@
 //!
 //! An item sends either pixels (`IconPixmap`, ARGB32 in network byte
 //! order, possibly several sizes) or a name (`IconName`) to look up in the
-//! icon theme, optionally under its own `IconThemePath`. PNG theme icons
-//! are decoded here; an item whose icon cannot be found or decoded still
+//! icon theme, optionally under its own `IconThemePath`, through
+//! [`crate::app_icons`]; an item whose icon cannot be found or decoded still
 //! gets a letter badge, so it is never an invisible, unclickable gap.
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// The edge the bar draws tray icons at; the pixmap nearest above it wins.
@@ -77,74 +76,15 @@ pub fn from_pixmaps(pixmaps: &[(i32, i32, Vec<u8>)]) -> Option<TrayIcon> {
     })
 }
 
-/// Directories icon themes live under, most specific first.
-fn icon_roots(theme_path: Option<&str>) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Some(path) = theme_path.filter(|path| !path.is_empty()) {
-        roots.push(PathBuf::from(path));
-    }
-    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
-        roots.push(PathBuf::from(data_home).join("icons"));
-    } else if let Some(home) = std::env::var_os("HOME") {
-        roots.push(PathBuf::from(home).join(".local/share/icons"));
-    }
-    let data_dirs = std::env::var("XDG_DATA_DIRS")
-        .ok()
-        .filter(|dirs| !dirs.is_empty())
-        .unwrap_or_else(|| "/usr/local/share:/usr/share".to_string());
-    for dir in data_dirs.split(':').filter(|dir| !dir.is_empty()) {
-        roots.push(Path::new(dir).join("icons"));
-    }
-    roots
-}
-
-/// Candidate files for icon `name`, best first: sized PNGs in hicolor
-/// (and directly under an item's own theme path), then pixmaps.
-pub fn candidates(name: &str, theme_path: Option<&str>) -> Vec<PathBuf> {
-    if name.is_empty() || name.contains("..") {
-        return Vec::new();
-    }
-    if Path::new(name).is_absolute() {
-        return vec![PathBuf::from(name)];
-    }
-    let file = format!("{name}.png");
-    let sizes = [
-        "22x22", "24x24", "32x32", "48x48", "64x64", "16x16", "128x128", "256x256",
-    ];
-    let categories = ["apps", "status", "panel", "devices"];
-    let mut out = Vec::new();
-    for root in icon_roots(theme_path) {
-        out.push(root.join(&file));
-        for size in sizes {
-            for category in categories {
-                out.push(root.join("hicolor").join(size).join(category).join(&file));
-            }
-        }
-    }
-    out.push(PathBuf::from("/usr/share/pixmaps").join(&file));
-    out
-}
-
-/// Look `name` up and decode the first PNG found.
+/// Look `name` up in the icon theme (under the item's own `theme_path`
+/// first) and rasterise it at twice the bar size, crisp on a high-density output.
 pub fn from_name(name: &str, theme_path: Option<&str>) -> Option<TrayIcon> {
-    candidates(name, theme_path)
-        .into_iter()
-        .filter(|path| path.is_file())
-        .find_map(|path| decode_png(&path))
-}
-
-fn decode_png(path: &Path) -> Option<TrayIcon> {
-    let bytes = std::fs::read(path).ok()?;
-    let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).ok()?;
-    let rgba = image.into_rgba8();
-    let (width, height) = rgba.dimensions();
-    if width == 0 || height == 0 || width > 1024 || height > 1024 {
-        return None;
-    }
+    let edge = u32::try_from(PREFERRED_PX.saturating_mul(2)).ok()?;
+    let raster = crate::app_icons::tray_raster(name, theme_path, edge)?;
     Some(TrayIcon::Pixels {
-        width,
-        height,
-        rgba: Arc::new(rgba.into_raw()),
+        width: raster.width,
+        height: raster.height,
+        rgba: raster.rgba,
     })
 }
 
@@ -200,15 +140,5 @@ mod tests {
             TrayIcon::Letter('K')
         );
         assert_eq!(TrayIcon::letter_for("  "), TrayIcon::Letter('?'));
-    }
-
-    #[test]
-    fn an_item_theme_path_is_searched_first() {
-        let found = candidates("steam_tray_mono", Some("/opt/steam/icons"));
-        assert_eq!(
-            found.first(),
-            Some(&PathBuf::from("/opt/steam/icons/steam_tray_mono.png"))
-        );
-        assert!(candidates("../etc/passwd", None).is_empty());
     }
 }

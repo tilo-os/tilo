@@ -888,42 +888,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zoom_depth_is_owned_and_clamped_by_panel() {
-        let mut panel = OfflinePanel::new(0);
-        panel.adjust_zoom(100);
-        assert_eq!(panel.zoom_extra, MAX_EXTRA_ZOOM);
-        panel.adjust_zoom(-100);
-        assert_eq!(panel.zoom_extra, 0);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn offline_panel_owns_zoom_depth_selection_and_hit_testing() {
+        // Phase `zoom_depth_is_owned_and_clamped_by_panel`.
+        {
+            let mut panel = OfflinePanel::new(0);
+            panel.adjust_zoom(100);
+            assert_eq!(panel.zoom_extra, MAX_EXTRA_ZOOM);
+            panel.adjust_zoom(-100);
+            assert_eq!(panel.zoom_extra, 0);
+        }
 
-    #[test]
-    fn reopening_drops_stale_search_selection() {
-        let mut panel = OfflinePanel::new(0);
-        let hit = RegionHit {
-            name: "Munich".to_string(),
-            context: "Germany".to_string(),
-            pos: crate::model::LatLon::new(48.5, 11.5),
-            sw: crate::model::LatLon::new(48.0, 11.0),
-            ne: crate::model::LatLon::new(49.0, 12.0),
-        };
-        panel.set_demo(42, "Mun", vec![hit]);
-        assert!(panel.query_matches("Mun"));
-        panel.close();
-        panel.open(84);
-        assert!(!panel.query_matches("Mun"));
-        assert!(panel.query.is_empty());
-        assert!(panel.pick.is_none());
-    }
+        // Phase `reopening_drops_stale_search_selection`.
+        {
+            let mut panel = OfflinePanel::new(0);
+            let hit = RegionHit {
+                name: "Munich".to_string(),
+                context: "Germany".to_string(),
+                pos: crate::model::LatLon::new(48.5, 11.5),
+                sw: crate::model::LatLon::new(48.0, 11.0),
+                ne: crate::model::LatLon::new(49.0, 12.0),
+            };
+            panel.set_demo(42, "Mun", vec![hit]);
+            assert!(panel.query_matches("Mun"));
+            panel.close();
+            panel.open(84);
+            assert!(!panel.query_matches("Mun"));
+            assert!(panel.query.is_empty());
+            assert!(panel.pick.is_none());
+        }
 
-    #[test]
-    fn topmost_panel_target_wins_hit_testing() {
-        let mut panel = OfflinePanel::new(0);
-        let rect = Rect::new(0.0, 0.0, 50.0, 50.0);
-        panel.targets.push((rect, OfflineAction::Close));
-        panel.targets.push((rect, OfflineAction::ClearCache));
-        assert_eq!(
-            panel.action_at(Point::new(10.0, 10.0)),
-            Some(OfflineAction::ClearCache)
-        );
+        // Phase `topmost_panel_target_wins_hit_testing`.
+        {
+            let mut panel = OfflinePanel::new(0);
+            let rect = Rect::new(0.0, 0.0, 50.0, 50.0);
+            panel.targets.push((rect, OfflineAction::Close));
+            panel.targets.push((rect, OfflineAction::ClearCache));
+            assert_eq!(
+                panel.action_at(Point::new(10.0, 10.0)),
+                Some(OfflineAction::ClearCache)
+            );
+        }
     }
 }

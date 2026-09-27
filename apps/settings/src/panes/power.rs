@@ -1289,231 +1289,242 @@ mod tests {
     }
 
     #[test]
-    fn profile_label_and_from_label_round_trip() {
+    fn profile_and_blank_labels_round_trip() {
         assert_eq!(profile_label(PowerProfile::Saver), "Power Saver");
         assert_eq!(
             profile_from_label("Performance"),
             Some(PowerProfile::Performance)
         );
         assert_eq!(profile_from_label("Nonsense"), None);
+        for (minutes, label) in [(0, "Never"), (10, "10 minutes")] {
+            assert_eq!(blank_label(minutes), label);
+        }
+        for (label, minutes) in [("30 minutes", 30), ("Never", 0)] {
+            assert_eq!(blank_from_label(label), Some(minutes), "{label}");
+        }
     }
 
+    /// Battery facts from sysfs, honest degradation without a battery, and the pane layout.
     #[test]
-    fn blank_label_and_from_label_round_trip() {
-        assert_eq!(blank_label(0), "Never");
-        assert_eq!(blank_label(10), "10 minutes");
-        assert_eq!(blank_from_label("30 minutes"), Some(30));
-        assert_eq!(blank_from_label("Never"), Some(0));
+    fn battery_reads_sysfs_and_the_pane_lays_out() {
+        // Case `reads_battery_from_sysfs_tree`.
+        {
+            // Build a throwaway /sys/class/power_supply-like tree.
+            let base = std::env::temp_dir().join(format!("tilo-power-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            let bat = base.join("BAT0");
+            let ac = base.join("ADP1");
+            std::fs::create_dir_all(&bat).unwrap();
+            std::fs::create_dir_all(&ac).unwrap();
+            std::fs::write(bat.join("type"), "Battery\n").unwrap();
+            std::fs::write(bat.join("capacity"), "84\n").unwrap();
+            std::fs::write(bat.join("status"), "Charging\n").unwrap();
+            std::fs::write(bat.join("cycle_count"), "37\n").unwrap();
+            std::fs::write(ac.join("type"), "Mains\n").unwrap();
+            std::fs::write(ac.join("online"), "1\n").unwrap();
+
+            let info = BatteryInfo::from_root(&base);
+            assert!(info.present);
+            assert_eq!(info.capacity, 84);
+            assert_eq!(info.status, "Charging");
+            assert_eq!(info.cycle_count, Some(37));
+            assert!(info.on_ac);
+            assert_eq!(info.summary(), "84% · Charging");
+            let _ = std::fs::remove_dir_all(&base);
+        }
+
+        // Case `missing_battery_degrades_honestly`.
+        {
+            let base =
+                std::env::temp_dir().join(format!("tilo-power-empty-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(&base).unwrap();
+            let info = BatteryInfo::from_root(&base);
+            assert!(!info.present);
+            assert!(info.on_ac, "no battery reads as mains-powered");
+            assert_eq!(info.summary(), "Running on AC power");
+            let _ = std::fs::remove_dir_all(&base);
+        }
+
+        // Case `builds_layout`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane = PowerPane::with_parts(
+                rec as Arc<dyn Dispatcher + Send + Sync>,
+                sample_battery(),
+                PowerProfile::Balanced,
+                PowerPrefs::default(),
+            );
+            let theme = Theme::dark();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        }
     }
 
+    /// Profile selection dispatches once, reverts on failure, and replicated latches never reach the device.
     #[test]
-    fn reads_battery_from_sysfs_tree() {
-        // Build a throwaway /sys/class/power_supply-like tree.
-        let base = std::env::temp_dir().join(format!("tilo-power-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let bat = base.join("BAT0");
-        let ac = base.join("ADP1");
-        std::fs::create_dir_all(&bat).unwrap();
-        std::fs::create_dir_all(&ac).unwrap();
-        std::fs::write(bat.join("type"), "Battery\n").unwrap();
-        std::fs::write(bat.join("capacity"), "84\n").unwrap();
-        std::fs::write(bat.join("status"), "Charging\n").unwrap();
-        std::fs::write(bat.join("cycle_count"), "37\n").unwrap();
-        std::fs::write(ac.join("type"), "Mains\n").unwrap();
-        std::fs::write(ac.join("online"), "1\n").unwrap();
+    fn profile_selection_dispatches_once_and_never_lies() {
+        // Case `selecting_profile_dispatches_once`.
+        // Selecting a profile dispatches `set_power_profile` once with the chosen
+        // profile, and not again while it rests — the real dispatch path.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane = PowerPane::with_parts(
+                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+                sample_battery(),
+                PowerProfile::Balanced,
+                PowerPrefs::default(),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert!(rec.calls().is_empty(), "seed must not dispatch");
+            let _ = doc.put(&root, PROFILE_KEY, "Performance");
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root); // idempotent at rest
+            assert_eq!(rec.calls(), vec!["set_power_profile(performance)"]);
+            assert_eq!(pane.profile(), PowerProfile::Performance);
+        }
 
-        let info = BatteryInfo::from_root(&base);
-        assert!(info.present);
-        assert_eq!(info.capacity, 84);
-        assert_eq!(info.status, "Charging");
-        assert_eq!(info.cycle_count, Some(37));
-        assert!(info.on_ac);
-        assert_eq!(info.summary(), "84% · Charging");
-        let _ = std::fs::remove_dir_all(&base);
+        // Case `failed_profile_change_reverts_instead_of_lying`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            rec.set_fail_power_profile(true);
+            let mut pane = PowerPane::with_parts(
+                rec as Arc<dyn Dispatcher + Send + Sync>,
+                sample_battery(),
+                PowerProfile::Balanced,
+                PowerPrefs::default(),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, PROFILE_KEY, "Performance");
+            pane.sync(&mut doc, &root);
+
+            assert_eq!(pane.profile(), PowerProfile::Balanced);
+            assert_eq!(
+                read_str_or_text(&doc, &root, PROFILE_KEY).as_deref(),
+                Some("Balanced")
+            );
+            assert!(
+                pane.profile_notice
+                    .as_deref()
+                    .is_some_and(|notice| notice.contains("simulated"))
+            );
+        }
+
+        // Case `replicated_power_latches_never_reach_device_or_persistence`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let rec = Arc::new(RecordingDispatcher::default());
+            let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Running {
+                token: crate::actions::local_operation_token_for(
+                    crate::actions::POWER_OPERATION_TYPE,
+                    &crate::actions::PowerOperation::SetBlankTimeout {
+                        label: "30 minutes".into(),
+                    },
+                ),
+            });
+            let commands = ui::LocalState::new(None);
+            let defaults = PowerPrefs::default();
+            let mut pane = PowerPane::with_parts(
+                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+                sample_battery(),
+                PowerProfile::Balanced,
+                defaults,
+            )
+            .with_command_state(&commands)
+            .with_operation_status(&status);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let initial_heads = doc.get_heads();
+            pane.sync(&mut doc, &root);
+            assert_eq!(doc.get_heads(), initial_heads);
+
+            // Only the exact blank-timeout command is admitted. Concurrent remote
+            // mutations of every other hardware latch remain inert.
+            let _ = doc.put(&root, PROFILE_KEY, "Performance");
+            let _ = doc.put(&root, AUTO_SUSPEND_KEY, false);
+            let _ = doc.put(&root, LID_KEY, PowerActionPref::Ignore.display());
+            pane.sync(&mut doc, &root);
+
+            assert!(rec.calls().is_empty());
+            assert_eq!(pane.profile(), PowerProfile::Balanced);
+            assert_eq!(pane.prefs().auto_suspend, defaults.auto_suspend);
+            assert_eq!(pane.prefs().lid_close_action, defaults.lid_close_action);
+        }
     }
 
+    /// Idle and behaviour preferences are adopted and persist to disk.
     #[test]
-    fn missing_battery_degrades_honestly() {
-        let base = std::env::temp_dir().join(format!("tilo-power-empty-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        let info = BatteryInfo::from_root(&base);
-        assert!(!info.present);
-        assert!(info.on_ac, "no battery reads as mains-powered");
-        assert_eq!(info.summary(), "Running on AC power");
-        let _ = std::fs::remove_dir_all(&base);
-    }
+    fn power_prefs_are_adopted_and_persist() {
+        // Case `idle_prefs_are_adopted_on_change`.
+        // The idle preferences are durable: toggling auto-suspend and choosing a
+        // blank timeout are adopted into the pane's tracked prefs (persisted via
+        // the shared store, asserted against disk in the persistence test).
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane = PowerPane::with_parts(
+                rec as Arc<dyn Dispatcher + Send + Sync>,
+                sample_battery(),
+                PowerProfile::Balanced,
+                PowerPrefs::default(),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(
+                &root,
+                AUTO_SUSPEND_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
+            let _ = doc.put(&root, BLANK_KEY, "30 minutes");
+            let _ = doc.put(&root, LOCK_KEY, "Never");
+            pane.sync(&mut doc, &root);
+            assert!(!pane.prefs().auto_suspend);
+            assert_eq!(pane.prefs().blank_minutes, 30);
+            assert_eq!(pane.prefs().lock_minutes, 0);
+            assert_eq!(SystemPrefs::load().power.lock_minutes, 0);
+        }
 
-    /// Selecting a profile dispatches `set_power_profile` once with the chosen
-    /// profile, and not again while it rests — the real dispatch path.
-    #[test]
-    fn selecting_profile_dispatches_once() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = PowerPane::with_parts(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-            sample_battery(),
-            PowerProfile::Balanced,
-            PowerPrefs::default(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert!(rec.calls().is_empty(), "seed must not dispatch");
-        let _ = doc.put(&root, PROFILE_KEY, "Performance");
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root); // idempotent at rest
-        assert_eq!(rec.calls(), vec!["set_power_profile(performance)"]);
-        assert_eq!(pane.profile(), PowerProfile::Performance);
-    }
+        // Case `power_behaviour_prefs_persist_to_disk`.
+        // The new power-behaviour controls (suspend timeout, lid, power key,
+        // critical action) are adopted on change and land on disk in the shared
+        // settings file — the real persist path the compositor reads.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane = PowerPane::with_parts(
+                rec as Arc<dyn Dispatcher + Send + Sync>,
+                sample_battery(),
+                PowerProfile::Balanced,
+                PowerPrefs::default(),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
 
-    #[test]
-    fn failed_profile_change_reverts_instead_of_lying() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        rec.set_fail_power_profile(true);
-        let mut pane = PowerPane::with_parts(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            sample_battery(),
-            PowerProfile::Balanced,
-            PowerPrefs::default(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, PROFILE_KEY, "Performance");
-        pane.sync(&mut doc, &root);
+            // Drive each new control through the CRDT the way the dropdowns do.
+            let _ = doc.put(&root, SUSPEND_KEY, "30 minutes");
+            let _ = doc.put(&root, LID_KEY, PowerActionPref::Lock.display());
+            let _ = doc.put(&root, POWER_KEY_KEY, PowerActionPref::Ignore.display());
+            let _ = doc.put(&root, CRITICAL_KEY, PowerActionPref::Suspend.display());
+            pane.sync(&mut doc, &root);
 
-        assert_eq!(pane.profile(), PowerProfile::Balanced);
-        assert_eq!(
-            read_str_or_text(&doc, &root, PROFILE_KEY).as_deref(),
-            Some("Balanced")
-        );
-        assert!(
-            pane.profile_notice
-                .as_deref()
-                .is_some_and(|notice| notice.contains("simulated"))
-        );
-    }
+            assert_eq!(pane.prefs().suspend_minutes, 30);
+            assert_eq!(pane.prefs().lid_close_action, PowerActionPref::Lock);
+            assert_eq!(pane.prefs().power_key_action, PowerActionPref::Ignore);
+            assert_eq!(pane.prefs().critical_action, PowerActionPref::Suspend);
 
-    #[test]
-    fn replicated_power_latches_never_reach_device_or_persistence() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let rec = Arc::new(RecordingDispatcher::default());
-        let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Running {
-            token: crate::actions::local_operation_token_for(
-                crate::actions::POWER_OPERATION_TYPE,
-                &crate::actions::PowerOperation::SetBlankTimeout {
-                    label: "30 minutes".into(),
-                },
-            ),
-        });
-        let commands = ui::LocalState::new(None);
-        let defaults = PowerPrefs::default();
-        let mut pane = PowerPane::with_parts(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-            sample_battery(),
-            PowerProfile::Balanced,
-            defaults,
-        )
-        .with_command_state(&commands)
-        .with_operation_status(&status);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let initial_heads = doc.get_heads();
-        pane.sync(&mut doc, &root);
-        assert_eq!(doc.get_heads(), initial_heads);
-
-        // Only the exact blank-timeout command is admitted. Concurrent remote
-        // mutations of every other hardware latch remain inert.
-        let _ = doc.put(&root, PROFILE_KEY, "Performance");
-        let _ = doc.put(&root, AUTO_SUSPEND_KEY, false);
-        let _ = doc.put(&root, LID_KEY, PowerActionPref::Ignore.display());
-        pane.sync(&mut doc, &root);
-
-        assert!(rec.calls().is_empty());
-        assert_eq!(pane.profile(), PowerProfile::Balanced);
-        assert_eq!(pane.prefs().auto_suspend, defaults.auto_suspend);
-        assert_eq!(pane.prefs().lid_close_action, defaults.lid_close_action);
-    }
-
-    /// The idle preferences are durable: toggling auto-suspend and choosing a
-    /// blank timeout are adopted into the pane's tracked prefs (persisted via
-    /// the shared store, asserted against disk in the persistence test).
-    #[test]
-    fn idle_prefs_are_adopted_on_change() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = PowerPane::with_parts(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            sample_battery(),
-            PowerProfile::Balanced,
-            PowerPrefs::default(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(
-            &root,
-            AUTO_SUSPEND_KEY,
-            automerge::ScalarValue::Boolean(false),
-        );
-        let _ = doc.put(&root, BLANK_KEY, "30 minutes");
-        let _ = doc.put(&root, LOCK_KEY, "Never");
-        pane.sync(&mut doc, &root);
-        assert!(!pane.prefs().auto_suspend);
-        assert_eq!(pane.prefs().blank_minutes, 30);
-        assert_eq!(pane.prefs().lock_minutes, 0);
-        assert_eq!(SystemPrefs::load().power.lock_minutes, 0);
-    }
-
-    /// The new power-behaviour controls (suspend timeout, lid, power key,
-    /// critical action) are adopted on change and land on disk in the shared
-    /// settings file — the real persist path the compositor reads.
-    #[test]
-    fn power_behaviour_prefs_persist_to_disk() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = PowerPane::with_parts(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            sample_battery(),
-            PowerProfile::Balanced,
-            PowerPrefs::default(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-
-        // Drive each new control through the CRDT the way the dropdowns do.
-        let _ = doc.put(&root, SUSPEND_KEY, "30 minutes");
-        let _ = doc.put(&root, LID_KEY, PowerActionPref::Lock.display());
-        let _ = doc.put(&root, POWER_KEY_KEY, PowerActionPref::Ignore.display());
-        let _ = doc.put(&root, CRITICAL_KEY, PowerActionPref::Suspend.display());
-        pane.sync(&mut doc, &root);
-
-        assert_eq!(pane.prefs().suspend_minutes, 30);
-        assert_eq!(pane.prefs().lid_close_action, PowerActionPref::Lock);
-        assert_eq!(pane.prefs().power_key_action, PowerActionPref::Ignore);
-        assert_eq!(pane.prefs().critical_action, PowerActionPref::Suspend);
-
-        // Reload from the real settings file: the compositor sees exactly this.
-        let reloaded = SystemPrefs::load().power;
-        assert_eq!(reloaded.suspend_minutes, 30);
-        assert_eq!(reloaded.lid_close_action, PowerActionPref::Lock);
-        assert_eq!(reloaded.power_key_action, PowerActionPref::Ignore);
-        assert_eq!(reloaded.critical_action, PowerActionPref::Suspend);
-    }
-
-    #[test]
-    fn builds_layout() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = PowerPane::with_parts(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            sample_battery(),
-            PowerProfile::Balanced,
-            PowerPrefs::default(),
-        );
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+            // Reload from the real settings file: the compositor sees exactly this.
+            let reloaded = SystemPrefs::load().power;
+            assert_eq!(reloaded.suspend_minutes, 30);
+            assert_eq!(reloaded.lid_close_action, PowerActionPref::Lock);
+            assert_eq!(reloaded.power_key_action, PowerActionPref::Ignore);
+            assert_eq!(reloaded.critical_action, PowerActionPref::Suspend);
+        }
     }
 }

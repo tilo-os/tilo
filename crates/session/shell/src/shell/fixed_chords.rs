@@ -20,6 +20,7 @@ pub enum FixedChordAction {
     Screenshot,
     SwitchWindows,
     SwitchWindowsBackwards,
+    SwitchAppWindows,
     CloseTab,
     ChangeWorkspace,
     NewWindow,
@@ -37,6 +38,7 @@ pub enum FixedChordAction {
     ExploreWorkspaceHistory,
     ShortcutGuide,
     StopRemoteInput,
+    ToggleMouseKeys,
 }
 
 /// One key under one exact modifier mask.
@@ -87,6 +89,7 @@ fn key_name(key: ChordKey) -> String {
         ChordKey::ArrowDown => "Down".into(),
         ChordKey::Escape => "Esc".into(),
         ChordKey::Delete => "Delete".into(),
+        ChordKey::NumLock => "Num Lock".into(),
         ChordKey::Function(n) => format!("F{n}"),
         ChordKey::Char(c) => c.to_ascii_uppercase().to_string(),
         ChordKey::Modifier | ChordKey::Other => String::new(),
@@ -97,14 +100,17 @@ fn key_name(key: ChordKey) -> String {
 #[derive(Clone, Copy, Debug)]
 pub struct FixedChordEntry {
     pub action: FixedChordAction,
-    /// Stable identifier for the label, usable as a localisation key.
+    /// The shell catalogue key of the words the shortcut guide shows.
     pub label_key: &'static str,
-    /// The English label the shortcut guide and the keyboard map show.
-    pub label: &'static str,
     pub chords: &'static [FixedChord],
 }
 
 impl FixedChordEntry {
+    /// What this action is called in the user's language.
+    pub fn label(&self) -> String {
+        crate::shell::i18n::t(self.label_key)
+    }
+
     /// Every chord of this action, joined for display. Two chords that
     /// differ only in the last word of the key share the rest
     /// (`Super+Page Up / Down`); unrelated chords are listed in full.
@@ -149,13 +155,11 @@ const fn chord(key: ChordKey, mods: ChordMods) -> FixedChord {
 const fn entry(
     action: FixedChordAction,
     label_key: &'static str,
-    label: &'static str,
     chords: &'static [FixedChord],
 ) -> FixedChordEntry {
     FixedChordEntry {
         action,
         label_key,
-        label,
         chords,
     }
 }
@@ -165,25 +169,26 @@ pub static FIXED_CHORDS: &[FixedChordEntry] = &[
     entry(
         FixedChordAction::Screenshot,
         "shortcut-screenshot",
-        "Screenshot",
         &[chord(ChordKey::PrintScreen, NONE)],
     ),
     entry(
         FixedChordAction::SwitchWindows,
         "shortcut-switch-windows",
-        "Switch windows",
         &[chord(ChordKey::Tab, ALT)],
     ),
     entry(
         FixedChordAction::SwitchWindowsBackwards,
         "shortcut-switch-windows-backwards",
-        "Switch windows backwards",
         &[chord(ChordKey::Tab, ALT_SHIFT)],
+    ),
+    entry(
+        FixedChordAction::SwitchAppWindows,
+        "shortcut-switch-app-windows",
+        &[chord(ChordKey::Char('`'), ALT)],
     ),
     entry(
         FixedChordAction::CloseTab,
         "shortcut-close-tab",
-        "Close tab",
         &[
             chord(ChordKey::Function(4), ALT),
             chord(ChordKey::Char('w'), SUPER),
@@ -192,7 +197,6 @@ pub static FIXED_CHORDS: &[FixedChordEntry] = &[
     entry(
         FixedChordAction::ChangeWorkspace,
         "shortcut-change-workspace",
-        "Change workspace",
         &[
             chord(ChordKey::PageUp, SUPER),
             chord(ChordKey::PageDown, SUPER),
@@ -201,92 +205,82 @@ pub static FIXED_CHORDS: &[FixedChordEntry] = &[
     entry(
         FixedChordAction::NewWindow,
         "shortcut-new-window",
-        "New window",
         &[chord(ChordKey::Char('n'), SUPER)],
     ),
     entry(
         FixedChordAction::AddTab,
         "shortcut-add-tab",
-        "Add tab here",
         &[chord(ChordKey::Char('t'), SUPER)],
     ),
     entry(
         FixedChordAction::DuplicateTab,
         "shortcut-duplicate-tab",
-        "Duplicate tab",
         &[chord(ChordKey::Char('d'), SUPER)],
     ),
     entry(
         FixedChordAction::OpenTerminal,
         "shortcut-open-terminal",
-        "Open terminal",
         &[chord(ChordKey::Enter, SUPER)],
     ),
     entry(
         FixedChordAction::GlobalSearch,
         "shortcut-global-search",
-        "Global search",
         &[chord(ChordKey::Space, SUPER)],
     ),
     entry(
         FixedChordAction::LockSession,
         "shortcut-lock",
-        "Lock",
         &[chord(ChordKey::Char('l'), SUPER)],
     ),
     entry(
         FixedChordAction::WorkspaceWheel,
         "shortcut-workspace-wheel",
-        "Workspace wheel",
         &[chord(ChordKey::Char('s'), SUPER)],
     ),
     entry(
         FixedChordAction::DisplayLayout,
         "shortcut-display-layout",
-        "Display layout",
         &[chord(ChordKey::Char('p'), SUPER)],
     ),
     entry(
         FixedChordAction::CaptureScreenshot,
         "shortcut-capture-screenshot",
-        "Capture screenshot",
         &[chord(ChordKey::Char('s'), SUPER_SHIFT)],
     ),
     entry(
         FixedChordAction::PictureInPicture,
         "shortcut-picture-in-picture",
-        "Picture in picture",
         &[chord(ChordKey::Char('p'), SUPER_SHIFT)],
     ),
     entry(
         FixedChordAction::SaveRecentReplay,
         "shortcut-save-recent-replay",
-        "Save recent replay",
         &[chord(ChordKey::Char('r'), SUPER_SHIFT)],
     ),
     entry(
         FixedChordAction::WorkspaceHistory,
         "shortcut-workspace-history",
-        "Workspace history",
         &[chord(ChordKey::Char('h'), SUPER)],
     ),
     entry(
         FixedChordAction::ExploreWorkspaceHistory,
         "shortcut-explore-workspace-history",
-        "Explore workspace history",
         &[chord(ChordKey::Char('h'), SUPER_SHIFT)],
     ),
     entry(
         FixedChordAction::ShortcutGuide,
         "shortcut-guide",
-        "Keyboard guide",
         &[chord(ChordKey::Function(1), NONE)],
     ),
     entry(
         FixedChordAction::StopRemoteInput,
         "shortcut-stop-remote-input",
-        "Stop all remote input",
         &[chord(ChordKey::Escape, SUPER)],
+    ),
+    entry(
+        FixedChordAction::ToggleMouseKeys,
+        "shortcut-toggle-mouse-keys",
+        &[chord(ChordKey::NumLock, ALT_SHIFT)],
     ),
 ];
 
@@ -320,7 +314,7 @@ pub fn keyboard_map_markdown() -> String {
     use std::fmt::Write as _;
     let mut out = String::from("| Intent | Keyboard |\n|---|---|\n");
     for entry in FIXED_CHORDS {
-        let _ = writeln!(out, "| {} | {} |", entry.label, entry.display());
+        let _ = writeln!(out, "| {} | {} |", entry.label(), entry.display());
     }
     out
 }
@@ -392,6 +386,10 @@ mod tests {
         assert_eq!(
             display(FixedChordAction::Screenshot).as_deref(),
             Some("Print Screen")
+        );
+        assert_eq!(
+            display(FixedChordAction::ToggleMouseKeys).as_deref(),
+            Some("Alt+Shift+Num Lock")
         );
     }
 

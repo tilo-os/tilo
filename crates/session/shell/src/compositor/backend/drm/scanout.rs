@@ -2575,52 +2575,38 @@ mod tests {
     use ui::ColorCompat as _;
 
     #[test]
-    fn connected_virtual_connector_with_usable_mode_is_scanout_eligible() {
+    fn only_connected_real_display_connectors_with_modes_are_scanout_eligible() {
+        // Phase `connected_virtual_connector_with_usable_mode_is_scanout_eligible`.
         assert!(connector_is_scanout_eligible(
             connector::State::Connected,
             connector::Interface::Virtual,
             true
         ));
-    }
-
-    #[test]
-    fn disconnected_connector_is_not_scanout_eligible() {
+        // Phase `disconnected_connector_is_not_scanout_eligible`.
         assert!(!connector_is_scanout_eligible(
             connector::State::Disconnected,
             connector::Interface::HDMIA,
             true
         ));
-    }
-
-    #[test]
-    fn connector_without_usable_mode_is_not_scanout_eligible() {
+        // Phase `connector_without_usable_mode_is_not_scanout_eligible`.
         assert!(!connector_is_scanout_eligible(
             connector::State::Connected,
             connector::Interface::HDMIA,
             false
         ));
-    }
-
-    #[test]
-    fn writeback_connector_is_not_scanout_eligible() {
+        // Phase `writeback_connector_is_not_scanout_eligible`.
         assert!(!connector_is_scanout_eligible(
             connector::State::Connected,
             connector::Interface::Writeback,
             true
         ));
-    }
-
-    #[test]
-    fn unknown_connector_is_not_scanout_eligible() {
+        // Phase `unknown_connector_is_not_scanout_eligible`.
         assert!(!connector_is_scanout_eligible(
             connector::State::Connected,
             connector::Interface::Unknown,
             true
         ));
-    }
-
-    #[test]
-    fn usb_c_display_interfaces_are_scanout_targets() {
+        // Phase `usb_c_display_interfaces_are_scanout_targets`.
         assert!(is_display_connector(connector::Interface::DisplayPort));
         assert!(is_display_connector(connector::Interface::USB));
         assert!(is_display_connector(connector::Interface::HDMIA));
@@ -2629,29 +2615,28 @@ mod tests {
     }
 
     #[test]
-    fn card_and_udev_share_the_same_dev_t_identity() {
-        // UdevEvent carries libc::dev_t and Card::dev_id reads
-        // fstat(card_fd).st_rdev, also libc::dev_t.  This conversion is the
-        // one used by both paths before looking in `DrmDispatchState::cards`.
-        let dev_t: libc::dev_t = 0x10203;
-        assert_eq!(device_id_from_dev_t(dev_t), 0x10203);
-    }
-
-    #[test]
-    fn pci_bdf_parser_accepts_vulkan_and_drm_forms() {
-        let expected = PciBdf {
-            domain: 0,
-            bus: 3,
-            device: 0,
-            function: 1,
-        };
-        assert_eq!(parse_pci_bdf("0000:03:00.1"), Some(expected));
-        assert_eq!(parse_pci_bdf("pci:0000:03:00.1"), Some(expected));
-        assert_eq!(parse_pci_bdf("PCI:0000:03:00.1"), None);
-    }
-
-    #[test]
-    fn direct_scanout_requires_the_same_pci_function() {
+    fn direct_scanout_device_identity_must_match_exactly() {
+        // Phase `card_and_udev_share_the_same_dev_t_identity`.
+        {
+            // UdevEvent carries libc::dev_t and Card::dev_id reads
+            // fstat(card_fd).st_rdev, also libc::dev_t.  This conversion is the
+            // one used by both paths before looking in `DrmDispatchState::cards`.
+            let dev_t: libc::dev_t = 0x10203;
+            assert_eq!(device_id_from_dev_t(dev_t), 0x10203);
+        }
+        // Phase `pci_bdf_parser_accepts_vulkan_and_drm_forms`.
+        {
+            let expected = PciBdf {
+                domain: 0,
+                bus: 3,
+                device: 0,
+                function: 1,
+            };
+            assert_eq!(parse_pci_bdf("0000:03:00.1"), Some(expected));
+            assert_eq!(parse_pci_bdf("pci:0000:03:00.1"), Some(expected));
+            assert_eq!(parse_pci_bdf("PCI:0000:03:00.1"), None);
+        }
+        // Phase `direct_scanout_requires_the_same_pci_function`.
         assert!(renderer_matches_drm_card(
             "0000:03:00.0",
             "pci:0000:03:00.0"
@@ -2664,10 +2649,7 @@ mod tests {
             "0000:03:00.0",
             "pci:0000:03:00.1"
         ));
-    }
-
-    #[test]
-    fn direct_scanout_fails_closed_for_missing_or_malformed_identity() {
+        // Phase `direct_scanout_fails_closed_for_missing_or_malformed_identity`.
         for identity in [
             "",
             "03:00.0",
@@ -2682,125 +2664,142 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sysfs_pci_identity_is_bound_to_the_exact_device_number() {
-        use std::os::unix::fs::symlink;
+    fn sysfs_pci_identity_is_bound_to_the_exact_pci_device() {
+        // Phase `sysfs_pci_identity_is_bound_to_the_exact_device_number`.
+        {
+            use std::os::unix::fs::symlink;
 
-        let root = tempfile::tempdir().expect("temp sysfs");
-        let sys_dev_char = root.path().join("dev/char");
-        let pci_device = root.path().join("devices/0000:66:00.0");
-        std::fs::create_dir_all(&sys_dev_char).expect("dev char root");
-        std::fs::create_dir_all(&pci_device).expect("pci device");
+            let root = tempfile::tempdir().expect("temp sysfs");
+            let sys_dev_char = root.path().join("dev/char");
+            let pci_device = root.path().join("devices/0000:66:00.0");
+            std::fs::create_dir_all(&sys_dev_char).expect("dev char root");
+            std::fs::create_dir_all(&pci_device).expect("pci device");
 
-        let dev = smithay::reexports::rustix::fs::makedev(226, 1);
-        let node = sys_dev_char.join("226:1");
-        std::fs::create_dir(&node).expect("char node");
-        symlink(&pci_device, node.join("device")).expect("device link");
-
-        assert_eq!(
-            sysfs_pci_bus_id_at(&sys_dev_char, dev).as_deref(),
-            Some("pci:0000:66:00.0")
-        );
-        assert_eq!(
-            sysfs_pci_bus_id_at(
-                &sys_dev_char,
-                smithay::reexports::rustix::fs::makedev(226, 0)
-            ),
-            None,
-            "another card's dev_t must not inherit this identity"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn sysfs_pci_identity_rejects_non_pci_and_malformed_devices() {
-        use std::os::unix::fs::symlink;
-
-        let root = tempfile::tempdir().expect("temp sysfs");
-        let sys_dev_char = root.path().join("dev/char");
-        std::fs::create_dir_all(&sys_dev_char).expect("dev char root");
-
-        for (minor, component) in [(1, "platform-gpu"), (2, "0000:66:00.8")] {
-            let target = root.path().join("devices").join(component);
-            let node = sys_dev_char.join(format!("226:{minor}"));
-            std::fs::create_dir_all(&target).expect("device target");
+            let dev = smithay::reexports::rustix::fs::makedev(226, 1);
+            let node = sys_dev_char.join("226:1");
             std::fs::create_dir(&node).expect("char node");
-            symlink(&target, node.join("device")).expect("device link");
+            symlink(&pci_device, node.join("device")).expect("device link");
+
+            assert_eq!(
+                sysfs_pci_bus_id_at(&sys_dev_char, dev).as_deref(),
+                Some("pci:0000:66:00.0")
+            );
             assert_eq!(
                 sysfs_pci_bus_id_at(
                     &sys_dev_char,
-                    smithay::reexports::rustix::fs::makedev(226, minor)
+                    smithay::reexports::rustix::fs::makedev(226, 0)
                 ),
-                None
+                None,
+                "another card's dev_t must not inherit this identity"
             );
         }
-    }
+        // Phase `sysfs_pci_identity_rejects_non_pci_and_malformed_devices`.
+        {
+            use std::os::unix::fs::symlink;
 
-    #[test]
-    fn direct_scanout_never_renders_front_or_flip_pending_slots() {
-        let mut state = DirectScanoutState::new(0);
-        assert_eq!(state.render_slot(), Some(1));
-        assert!(state.submit(1));
-        assert_eq!(state.render_slot(), None, "both slots are owned by KMS");
-        assert!(
-            !state.submit(0),
-            "front cannot be submitted as fresh output"
-        );
-        assert!(!state.submit(1), "pending slot cannot be submitted twice");
+            let root = tempfile::tempdir().expect("temp sysfs");
+            let sys_dev_char = root.path().join("dev/char");
+            std::fs::create_dir_all(&sys_dev_char).expect("dev char root");
 
-        assert!(state.complete());
-        assert_eq!(state.render_slot(), Some(0));
-        assert_eq!(state.front, 1);
-    }
-
-    #[test]
-    fn direct_scanout_renderer_or_pageflip_failure_keeps_back_slot_available() {
-        let state = DirectScanoutState::new(0);
-        let slot = state.render_slot().expect("initial back slot");
-
-        // Renderer failure performs no transition and therefore cannot expose
-        // the unfinished target. A failed page_flip likewise never calls
-        // `submit`, so the same slot remains available for a later frame.
-        assert_eq!(state.render_slot(), Some(slot));
-        assert_eq!(state.pending, None);
-        assert_eq!(state.front, 0);
-
-        // A page-flip failure does not call `submit`, so it is exactly the
-        // same no-transition state as a renderer failure.
-        assert_eq!(state.render_slot(), Some(slot));
-        assert_eq!(state.front, 0);
-    }
-
-    #[test]
-    fn direct_scanout_completion_alternates_two_slots() {
-        let mut state = DirectScanoutState::new(0);
-        for expected in [1, 0, 1, 0] {
-            assert_eq!(state.render_slot(), Some(expected));
-            assert!(state.submit(expected));
-            assert!(state.complete());
-            assert_eq!(state.front, expected);
+            for (minor, component) in [(1, "platform-gpu"), (2, "0000:66:00.8")] {
+                let target = root.path().join("devices").join(component);
+                let node = sys_dev_char.join(format!("226:{minor}"));
+                std::fs::create_dir_all(&target).expect("device target");
+                std::fs::create_dir(&node).expect("char node");
+                symlink(&target, node.join("device")).expect("device link");
+                assert_eq!(
+                    sysfs_pci_bus_id_at(
+                        &sys_dev_char,
+                        smithay::reexports::rustix::fs::makedev(226, minor)
+                    ),
+                    None
+                );
+            }
         }
-        assert!(!state.complete(), "duplicate completion is ignored");
     }
 
     #[test]
-    fn direct_retirement_waits_for_the_exact_crtc() {
-        let awaited = crtc::Handle::from(std::num::NonZeroU32::new(7).unwrap());
-        let sibling = crtc::Handle::from(std::num::NonZeroU32::new(9).unwrap());
+    fn direct_scanout_slots_never_reuse_busy_buffers_and_fail_safe() {
+        // Phase `direct_scanout_never_renders_front_or_flip_pending_slots`.
+        {
+            let mut state = DirectScanoutState::new(0);
+            assert_eq!(state.render_slot(), Some(1));
+            assert!(state.submit(1));
+            assert_eq!(state.render_slot(), None, "both slots are owned by KMS");
+            assert!(
+                !state.submit(0),
+                "front cannot be submitted as fresh output"
+            );
+            assert!(!state.submit(1), "pending slot cannot be submitted twice");
 
-        assert_eq!(retirement_after_poll(awaited, &[], false), None);
-        assert_eq!(retirement_after_poll(awaited, &[sibling], false), None);
+            assert!(state.complete());
+            assert_eq!(state.render_slot(), Some(0));
+            assert_eq!(state.front, 1);
+        }
+        // Phase `direct_scanout_renderer_or_pageflip_failure_keeps_back_slot_available`.
+        {
+            let state = DirectScanoutState::new(0);
+            let slot = state.render_slot().expect("initial back slot");
+
+            // Renderer failure performs no transition and therefore cannot expose
+            // the unfinished target. A failed page_flip likewise never calls
+            // `submit`, so the same slot remains available for a later frame.
+            assert_eq!(state.render_slot(), Some(slot));
+            assert_eq!(state.pending, None);
+            assert_eq!(state.front, 0);
+
+            // A page-flip failure does not call `submit`, so it is exactly the
+            // same no-transition state as a renderer failure.
+            assert_eq!(state.render_slot(), Some(slot));
+            assert_eq!(state.front, 0);
+        }
+        // Phase `direct_scanout_completion_alternates_two_slots`.
+        {
+            let mut state = DirectScanoutState::new(0);
+            for expected in [1, 0, 1, 0] {
+                assert_eq!(state.render_slot(), Some(expected));
+                assert!(state.submit(expected));
+                assert!(state.complete());
+                assert_eq!(state.front, expected);
+            }
+            assert!(!state.complete(), "duplicate completion is ignored");
+        }
+        // Phase `direct_retirement_waits_for_the_exact_crtc`.
+        {
+            let awaited = crtc::Handle::from(std::num::NonZeroU32::new(7).unwrap());
+            let sibling = crtc::Handle::from(std::num::NonZeroU32::new(9).unwrap());
+
+            assert_eq!(retirement_after_poll(awaited, &[], false), None);
+            assert_eq!(retirement_after_poll(awaited, &[sibling], false), None);
+            assert_eq!(
+                retirement_after_poll(awaited, &[sibling, awaited], false),
+                Some(DirectRetirement::Complete)
+            );
+            assert_eq!(
+                retirement_after_poll(awaited, &[sibling], true),
+                Some(DirectRetirement::TimedOut)
+            );
+        }
+        // Phase `pageflip_history_failure_does_not_skip_the_flip_decision`.
+        assert!(pageflip_history_commit_is_safe(true, true));
+        assert!(!pageflip_history_commit_is_safe(false, true));
+        assert!(!pageflip_history_commit_is_safe(true, false));
+        assert!(!pageflip_history_commit_is_safe(false, false));
+        // Phase `failed_paint_never_authorizes_presenting_the_back_buffer`.
+        assert_eq!(paint_completed::<&str>(Ok(())), Ok(true));
         assert_eq!(
-            retirement_after_poll(awaited, &[sibling, awaited], false),
-            Some(DirectRetirement::Complete)
-        );
-        assert_eq!(
-            retirement_after_poll(awaited, &[sibling], true),
-            Some(DirectRetirement::TimedOut)
+            paint_completed(Err("readback timed out")),
+            Err("readback timed out")
         );
     }
 
     #[test]
-    fn card_config_identity_prefers_bus_then_stable_sysfs_before_dev_t() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn card_and_connector_config_identity_survives_reenumeration() {
+        // Phase `card_config_identity_prefers_bus_then_stable_sysfs_before_dev_t`.
         assert_eq!(
             config_identity(
                 Some("pci:0000:03:00.0".into()),
@@ -2818,240 +2817,241 @@ mod tests {
             "drm-dev-77",
             "the final dev_t fallback is intentionally session-local"
         );
-    }
-
-    #[test]
-    fn card0_to_card1_reenumeration_matches_the_same_physical_gpu_before_open() {
-        // `dev_t` and card-node names are attachment identifiers; an eGPU
-        // may get both a new one during removal. The canonical sysfs identity
-        // remains the pre-open guard that prevents a second libseat lease.
-        let old_node = "/dev/dri/card0";
-        let new_node = "/dev/dri/card1";
-        assert_ne!(old_node, new_node);
-        let old_dev_t = 226_u64;
-        let new_dev_t = 227_u64;
-        assert_ne!(old_dev_t, new_dev_t);
-        assert!(same_physical_card_identity(
-            Some("sysfs-0000:03:00.0"),
-            Some("sysfs-0000:03:00.0")
-        ));
-        assert!(!same_physical_card_identity(
-            Some("sysfs-0000:03:00.0"),
-            Some("sysfs-0000:04:00.0")
-        ));
-    }
-
-    #[test]
-    fn duplicate_connector_labels_become_card_qualified_but_unique_stay_legacy() {
-        let first = DrmOutputKey {
-            device: 10,
-            connector: 7,
-        };
-        let second = DrmOutputKey {
-            device: 11,
-            connector: 7,
-        };
-        let panel = DrmOutputKey {
-            device: 10,
-            connector: 8,
-        };
-        let keys = resolve_connector_config_keys(
-            [
-                ConnectorKeyCandidate {
-                    key: first,
-                    connector_name: "HDMI-A-1",
-                    card_identity: "pci:0000:01:00.0",
-                },
-                ConnectorKeyCandidate {
-                    key: second,
-                    connector_name: "HDMI-A-1",
-                    card_identity: "pci:0000:03:00.0",
-                },
-                ConnectorKeyCandidate {
-                    key: panel,
-                    connector_name: "eDP-1",
-                    card_identity: "pci:0000:01:00.0",
-                },
-            ],
-            &settings_store::hardware::DisplayConfig::default(),
-        );
-        assert_eq!(
-            keys[&first], "pci:0000:01:00.0/HDMI-A-1",
-            "first duplicate must not retain an ambiguous legacy key"
-        );
-        assert_eq!(keys[&second], "pci:0000:03:00.0/HDMI-A-1");
-        assert_eq!(
-            keys[&panel], "eDP-1",
-            "single-GPU and unique-connector configs stay unchanged"
-        );
-    }
-
-    #[test]
-    fn qualified_connector_config_survives_duplicate_peer_unplug_and_replug() {
-        use settings_store::hardware::{DisplayConfig, OutputConfig, OutputMode};
-
-        let first = DrmOutputKey {
-            device: 10,
-            connector: 7,
-        };
-        let second = DrmOutputKey {
-            device: 11,
-            connector: 7,
-        };
-        let first_key = "pci:0000:01:00.0/HDMI-A-1";
-        let second_key = "pci:0000:03:00.0/HDMI-A-1";
-        let first_intent = OutputConfig {
-            enabled: false,
-            primary: true,
-            x: 320,
-            y: 180,
-            scale: 1.5,
-            mode: Some(OutputMode {
-                width: 2560,
-                height: 1440,
-                refresh_mhz: 120_000,
-            }),
-            mirror_of: Some(second_key.into()),
-            ..Default::default()
-        };
-        let mut config = DisplayConfig::default();
-        config
-            .outputs
-            .insert(first_key.into(), first_intent.clone());
-        config
-            .outputs
-            .insert(second_key.into(), OutputConfig::default());
-        let first_candidate = ConnectorKeyCandidate {
-            key: first,
-            connector_name: "HDMI-A-1",
-            card_identity: "pci:0000:01:00.0",
-        };
-        let second_candidate = ConnectorKeyCandidate {
-            key: second,
-            connector_name: "HDMI-A-1",
-            card_identity: "pci:0000:03:00.0",
-        };
-
-        let collided = resolve_connector_config_keys([first_candidate, second_candidate], &config);
-        assert_eq!(collided[&first], first_key);
-        assert_eq!(collided[&second], second_key);
-
-        // With only the first connector still attached, retaining its saved
-        // qualified key is what keeps all of its confirmed intent intact.
-        let unplugged = resolve_connector_config_keys([first_candidate], &config);
-        assert_eq!(unplugged[&first], first_key);
-        assert_eq!(
-            config.output_for(&unplugged[&first]),
-            Some(&first_intent),
-            "enabled/mode/scale/position/mirror intent must remain addressable"
-        );
-
-        let replugged = resolve_connector_config_keys([first_candidate, second_candidate], &config);
-        assert_eq!(replugged[&first], first_key);
-        assert_eq!(replugged[&second], second_key);
-    }
-
-    #[test]
-    fn cursor_bitmap_writes_opaque_and_transparent_pixels() {
-        // 64×64 ARGB, tight pitch.
-        let pitch = (CURSOR_DIM * 4) as usize;
-        let mut buf = vec![0xCDu8; pitch * CURSOR_DIM as usize];
-        paint_cursor_argb(&mut buf, pitch, Some(&arrow(24)));
-
-        // The explicit (0,0) hotspot sits immediately beside the first
-        // antialiased dark outline; it need not force an opaque corner.
-        let (fill, outline) = cursor::palette();
-        let outline_max = outline.r().max(outline.g()).max(outline.b());
-        assert_eq!(cursor::bitmap(CursorShape::Default, 24).hotspot, (0, 0));
-        assert!(
-            buf[..8 * pitch].chunks_exact(4).any(|pixel| pixel[3] > 0
-                && pixel[0] <= outline_max
-                && pixel[1] <= outline_max
-                && pixel[2] <= outline_max),
-            "tip neighbourhood should contain the dark outline"
-        );
-
-        // A blank area (far bottom-right) stays fully transparent.
-        let o = 60 * pitch + 60 * 4;
-        assert_eq!(
-            &buf[o..o + 4],
-            &[0, 0, 0, 0],
-            "blank cursor area is transparent"
-        );
-
-        // There is at least one fully covered fill pixel somewhere (BGRA).
-        let any_fill = buf
-            .chunks_exact(4)
-            .any(|p| p == [fill.b(), fill.g(), fill.r(), 0xFF]);
-        assert!(any_fill, "cursor must contain opaque fill pixels");
-    }
-
-    #[test]
-    fn software_cursor_draws_into_xrgb_buffer() {
-        // 32×32 XRGB destination, clamp-safe.
-        let (w, h) = (32usize, 32usize);
-        let pitch = w * 4;
-        let mut dst = vec![0u8; pitch * h];
-        draw_cursor(&mut dst, pitch, w, h, 4, 4, &arrow(24));
-        assert!(
-            dst.chunks_exact(4).any(|pixel| pixel[3] == 0xFF),
-            "cursor should composite visible pixels"
-        );
-        // A pixel far from the cursor is untouched (still zero).
-        assert_eq!(&dst[0..4], &[0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn software_cursor_clamps_at_edges_without_panic() {
-        // Drawing partially off the right/bottom edge must not panic.
-        let (w, h) = (20usize, 20usize);
-        let pitch = w * 4;
-        let mut dst = vec![0u8; pitch * h];
-        draw_cursor(&mut dst, pitch, w, h, 18, 18, &arrow(24));
-        draw_cursor(&mut dst, pitch, w, h, -3, -3, &arrow(24));
-    }
-
-    #[test]
-    fn software_cursor_damage_footprint_covers_every_clipped_write() {
-        let (width, height) = (80_usize, 80_usize);
-        let pitch = width * 4;
-        for cursor in [Some((4.0, 5.0)), Some((73.0, 75.0)), Some((-8.0, -6.0))] {
-            let mut bytes = vec![0xA7; pitch * height];
-            let before = bytes.clone();
-            if let Some((x, y)) = cursor {
-                draw_cursor(
-                    &mut bytes,
-                    pitch,
-                    width,
-                    height,
-                    pixel_coord(x),
-                    pixel_coord(y),
-                    &arrow(48),
-                );
-            }
-            let footprint = software_cursor_damage_rect(cursor, width, height, Some(&arrow(48)))
-                .expect("partially visible cursor has a restoration footprint");
-            for (offset, (actual, original)) in bytes.iter().zip(&before).enumerate() {
-                if actual == original {
-                    continue;
-                }
-                let pixel = offset / 4;
-                let x = pixel % width;
-                let y = pixel / width;
-                assert!(
-                    x >= usize::try_from(footprint.x).expect("test x")
-                        && x < usize::try_from(footprint.x + footprint.width).expect("test right")
-                        && y >= usize::try_from(footprint.y).expect("test y")
-                        && y < usize::try_from(footprint.y + footprint.height)
-                            .expect("test bottom"),
-                    "cursor write ({x},{y}) must be restored by its footprint {footprint:?}"
-                );
-            }
+        // Phase `card0_to_card1_reenumeration_matches_the_same_physical_gpu_before_open`.
+        {
+            // `dev_t` and card-node names are attachment identifiers; an eGPU
+            // may get both a new one during removal. The canonical sysfs identity
+            // remains the pre-open guard that prevents a second libseat lease.
+            let old_node = "/dev/dri/card0";
+            let new_node = "/dev/dri/card1";
+            assert_ne!(old_node, new_node);
+            let old_dev_t = 226_u64;
+            let new_dev_t = 227_u64;
+            assert_ne!(old_dev_t, new_dev_t);
+            assert!(same_physical_card_identity(
+                Some("sysfs-0000:03:00.0"),
+                Some("sysfs-0000:03:00.0")
+            ));
+            assert!(!same_physical_card_identity(
+                Some("sysfs-0000:03:00.0"),
+                Some("sysfs-0000:04:00.0")
+            ));
         }
-        assert_eq!(
-            software_cursor_damage_rect(None, width, height, Some(&arrow(24))),
-            None
-        );
+        // Phase `duplicate_connector_labels_become_card_qualified_but_unique_stay_legacy`.
+        {
+            let first = DrmOutputKey {
+                device: 10,
+                connector: 7,
+            };
+            let second = DrmOutputKey {
+                device: 11,
+                connector: 7,
+            };
+            let panel = DrmOutputKey {
+                device: 10,
+                connector: 8,
+            };
+            let keys = resolve_connector_config_keys(
+                [
+                    ConnectorKeyCandidate {
+                        key: first,
+                        connector_name: "HDMI-A-1",
+                        card_identity: "pci:0000:01:00.0",
+                    },
+                    ConnectorKeyCandidate {
+                        key: second,
+                        connector_name: "HDMI-A-1",
+                        card_identity: "pci:0000:03:00.0",
+                    },
+                    ConnectorKeyCandidate {
+                        key: panel,
+                        connector_name: "eDP-1",
+                        card_identity: "pci:0000:01:00.0",
+                    },
+                ],
+                &settings_store::hardware::DisplayConfig::default(),
+            );
+            assert_eq!(
+                keys[&first], "pci:0000:01:00.0/HDMI-A-1",
+                "first duplicate must not retain an ambiguous legacy key"
+            );
+            assert_eq!(keys[&second], "pci:0000:03:00.0/HDMI-A-1");
+            assert_eq!(
+                keys[&panel], "eDP-1",
+                "single-GPU and unique-connector configs stay unchanged"
+            );
+        }
+        // Phase `qualified_connector_config_survives_duplicate_peer_unplug_and_replug`.
+        {
+            use settings_store::hardware::{DisplayConfig, OutputConfig, OutputMode};
+
+            let first = DrmOutputKey {
+                device: 10,
+                connector: 7,
+            };
+            let second = DrmOutputKey {
+                device: 11,
+                connector: 7,
+            };
+            let first_key = "pci:0000:01:00.0/HDMI-A-1";
+            let second_key = "pci:0000:03:00.0/HDMI-A-1";
+            let first_intent = OutputConfig {
+                enabled: false,
+                primary: true,
+                x: 320,
+                y: 180,
+                scale: 1.5,
+                mode: Some(OutputMode {
+                    width: 2560,
+                    height: 1440,
+                    refresh_mhz: 120_000,
+                }),
+                mirror_of: Some(second_key.into()),
+                ..Default::default()
+            };
+            let mut config = DisplayConfig::default();
+            config
+                .outputs
+                .insert(first_key.into(), first_intent.clone());
+            config
+                .outputs
+                .insert(second_key.into(), OutputConfig::default());
+            let first_candidate = ConnectorKeyCandidate {
+                key: first,
+                connector_name: "HDMI-A-1",
+                card_identity: "pci:0000:01:00.0",
+            };
+            let second_candidate = ConnectorKeyCandidate {
+                key: second,
+                connector_name: "HDMI-A-1",
+                card_identity: "pci:0000:03:00.0",
+            };
+
+            let collided =
+                resolve_connector_config_keys([first_candidate, second_candidate], &config);
+            assert_eq!(collided[&first], first_key);
+            assert_eq!(collided[&second], second_key);
+
+            // With only the first connector still attached, retaining its saved
+            // qualified key is what keeps all of its confirmed intent intact.
+            let unplugged = resolve_connector_config_keys([first_candidate], &config);
+            assert_eq!(unplugged[&first], first_key);
+            assert_eq!(
+                config.output_for(&unplugged[&first]),
+                Some(&first_intent),
+                "enabled/mode/scale/position/mirror intent must remain addressable"
+            );
+
+            let replugged =
+                resolve_connector_config_keys([first_candidate, second_candidate], &config);
+            assert_eq!(replugged[&first], first_key);
+            assert_eq!(replugged[&second], second_key);
+        }
+    }
+
+    #[test]
+    fn software_cursor_writes_clips_and_reports_damage() {
+        // Phase `cursor_bitmap_writes_opaque_and_transparent_pixels`.
+        {
+            // 64×64 ARGB, tight pitch.
+            let pitch = (CURSOR_DIM * 4) as usize;
+            let mut buf = vec![0xCDu8; pitch * CURSOR_DIM as usize];
+            paint_cursor_argb(&mut buf, pitch, Some(&arrow(24)));
+
+            // The explicit (0,0) hotspot sits immediately beside the first
+            // antialiased dark outline; it need not force an opaque corner.
+            let (fill, outline) = cursor::palette();
+            let outline_max = outline.r().max(outline.g()).max(outline.b());
+            assert_eq!(cursor::bitmap(CursorShape::Default, 24).hotspot, (0, 0));
+            assert!(
+                buf[..8 * pitch].chunks_exact(4).any(|pixel| pixel[3] > 0
+                    && pixel[0] <= outline_max
+                    && pixel[1] <= outline_max
+                    && pixel[2] <= outline_max),
+                "tip neighbourhood should contain the dark outline"
+            );
+
+            // A blank area (far bottom-right) stays fully transparent.
+            let o = 60 * pitch + 60 * 4;
+            assert_eq!(
+                &buf[o..o + 4],
+                &[0, 0, 0, 0],
+                "blank cursor area is transparent"
+            );
+
+            // There is at least one fully covered fill pixel somewhere (BGRA).
+            let any_fill = buf
+                .chunks_exact(4)
+                .any(|p| p == [fill.b(), fill.g(), fill.r(), 0xFF]);
+            assert!(any_fill, "cursor must contain opaque fill pixels");
+        }
+        // Phase `software_cursor_draws_into_xrgb_buffer`.
+        {
+            // 32×32 XRGB destination, clamp-safe.
+            let (w, h) = (32usize, 32usize);
+            let pitch = w * 4;
+            let mut dst = vec![0u8; pitch * h];
+            draw_cursor(&mut dst, pitch, w, h, 4, 4, &arrow(24));
+            assert!(
+                dst.chunks_exact(4).any(|pixel| pixel[3] == 0xFF),
+                "cursor should composite visible pixels"
+            );
+            // A pixel far from the cursor is untouched (still zero).
+            assert_eq!(&dst[0..4], &[0, 0, 0, 0]);
+        }
+        // Phase `software_cursor_clamps_at_edges_without_panic`.
+        {
+            // Drawing partially off the right/bottom edge must not panic.
+            let (w, h) = (20usize, 20usize);
+            let pitch = w * 4;
+            let mut dst = vec![0u8; pitch * h];
+            draw_cursor(&mut dst, pitch, w, h, 18, 18, &arrow(24));
+            draw_cursor(&mut dst, pitch, w, h, -3, -3, &arrow(24));
+        }
+        // Phase `software_cursor_damage_footprint_covers_every_clipped_write`.
+        {
+            let (width, height) = (80_usize, 80_usize);
+            let pitch = width * 4;
+            for cursor in [Some((4.0, 5.0)), Some((73.0, 75.0)), Some((-8.0, -6.0))] {
+                let mut bytes = vec![0xA7; pitch * height];
+                let before = bytes.clone();
+                if let Some((x, y)) = cursor {
+                    draw_cursor(
+                        &mut bytes,
+                        pitch,
+                        width,
+                        height,
+                        pixel_coord(x),
+                        pixel_coord(y),
+                        &arrow(48),
+                    );
+                }
+                let footprint =
+                    software_cursor_damage_rect(cursor, width, height, Some(&arrow(48)))
+                        .expect("partially visible cursor has a restoration footprint");
+                for (offset, (actual, original)) in bytes.iter().zip(&before).enumerate() {
+                    if actual == original {
+                        continue;
+                    }
+                    let pixel = offset / 4;
+                    let x = pixel % width;
+                    let y = pixel / width;
+                    assert!(
+                        x >= usize::try_from(footprint.x).expect("test x")
+                            && x < usize::try_from(footprint.x + footprint.width)
+                                .expect("test right")
+                            && y >= usize::try_from(footprint.y).expect("test y")
+                            && y < usize::try_from(footprint.y + footprint.height)
+                                .expect("test bottom"),
+                        "cursor write ({x},{y}) must be restored by its footprint {footprint:?}"
+                    );
+                }
+            }
+            assert_eq!(
+                software_cursor_damage_rect(None, width, height, Some(&arrow(24))),
+                None
+            );
+        }
     }
 
     #[test]
@@ -3076,6 +3076,8 @@ mod tests {
             Err(error) => panic!("unexpected bridge error: {error:?}"),
         };
         bridge.warm_renderer_for_test();
+        // The fixture checks restored pixels, not frame latency.
+        bridge.wait_for_gpu_completion_for_test();
         let width = usize::try_from(WIDTH).expect("test width");
         let height = usize::try_from(HEIGHT).expect("test height");
         let pitch = width.checked_mul(4).expect("test pitch") + 16;
@@ -3310,65 +3312,48 @@ mod tests {
     }
 
     #[test]
-    fn pageflip_history_failure_does_not_skip_the_flip_decision() {
-        assert!(pageflip_history_commit_is_safe(true, true));
-        assert!(!pageflip_history_commit_is_safe(false, true));
-        assert!(!pageflip_history_commit_is_safe(true, false));
-        assert!(!pageflip_history_commit_is_safe(false, false));
-    }
-
-    #[test]
-    fn failed_paint_never_authorizes_presenting_the_back_buffer() {
-        assert_eq!(paint_completed::<&str>(Ok(())), Ok(true));
-        assert_eq!(
-            paint_completed(Err("readback timed out")),
-            Err("readback timed out")
-        );
-    }
-
-    #[test]
-    fn cursor_routing_single_output_is_global_coords() {
-        // One output at the origin contains every in-bounds point, so routing always selects index 0.
-        let rects = [(0, 0, 1920u32, 1080u32)];
-        assert_eq!(output_index_at(&rects, 0, 0), Some(0));
-        assert_eq!(output_index_at(&rects, 1919, 1079), Some(0));
-        assert_eq!(output_index_at(&rects, 1920, 0), None);
-    }
-
-    #[test]
-    fn cursor_routing_picks_output_under_pointer() {
-        // Two 1920x1080 outputs side by side: [0,1920) -> output 0, [1920,3840) -> output 1 — decides which crtc's cursor plane a pointer move drives.
-        let rects = [(0, 0, 1920u32, 1080u32), (1920, 0, 1920u32, 1080u32)];
-        assert_eq!(output_index_at(&rects, 10, 10), Some(0));
-        assert_eq!(output_index_at(&rects, 1919, 500), Some(0));
-        assert_eq!(output_index_at(&rects, 1920, 500), Some(1));
-        assert_eq!(output_index_at(&rects, 3000, 500), Some(1));
-        assert_eq!(output_index_at(&rects, 3840, 500), None);
-    }
-
-    #[test]
-    fn cursor_routing_gap_between_mismatched_heights_is_none() {
-        // A shorter second output leaves a gap below it; a point in that gap belongs to no output and must not panic / mis-route.
-        let rects = [(0, 0, 1920u32, 1080u32), (1920, 0, 1280u32, 720u32)];
-        assert_eq!(output_index_at(&rects, 2000, 700), Some(1));
-        assert_eq!(output_index_at(&rects, 2000, 800), None);
-    }
-
-    #[test]
-    fn cursor_coordinates_follow_output_rotation() {
-        use settings_store::hardware::OutputTransform as T;
-        // Portrait logical 1080×1920 on a physical 1920×1080 panel.
-        assert_eq!(
-            logical_to_physical_point(0, 0, 1080, 1920, T::Rotate90),
-            (1919, 0)
-        );
-        assert_eq!(
-            logical_to_physical_point(1079, 1919, 1080, 1920, T::Rotate90),
-            (0, 1079)
-        );
-        assert_eq!(
-            logical_to_physical_point(0, 0, 1080, 1920, T::Rotate270),
-            (0, 1079)
-        );
+    fn cursor_routing_picks_the_output_under_the_pointer() {
+        // Phase `cursor_routing_single_output_is_global_coords`.
+        {
+            // One output at the origin contains every in-bounds point, so routing always selects index 0.
+            let rects = [(0, 0, 1920u32, 1080u32)];
+            assert_eq!(output_index_at(&rects, 0, 0), Some(0));
+            assert_eq!(output_index_at(&rects, 1919, 1079), Some(0));
+            assert_eq!(output_index_at(&rects, 1920, 0), None);
+        }
+        // Phase `cursor_routing_picks_output_under_pointer`.
+        {
+            // Two 1920x1080 outputs side by side: [0,1920) -> output 0, [1920,3840) -> output 1 — decides which crtc's cursor plane a pointer move drives.
+            let rects = [(0, 0, 1920u32, 1080u32), (1920, 0, 1920u32, 1080u32)];
+            assert_eq!(output_index_at(&rects, 10, 10), Some(0));
+            assert_eq!(output_index_at(&rects, 1919, 500), Some(0));
+            assert_eq!(output_index_at(&rects, 1920, 500), Some(1));
+            assert_eq!(output_index_at(&rects, 3000, 500), Some(1));
+            assert_eq!(output_index_at(&rects, 3840, 500), None);
+        }
+        // Phase `cursor_routing_gap_between_mismatched_heights_is_none`.
+        {
+            // A shorter second output leaves a gap below it; a point in that gap belongs to no output and must not panic / mis-route.
+            let rects = [(0, 0, 1920u32, 1080u32), (1920, 0, 1280u32, 720u32)];
+            assert_eq!(output_index_at(&rects, 2000, 700), Some(1));
+            assert_eq!(output_index_at(&rects, 2000, 800), None);
+        }
+        // Phase `cursor_coordinates_follow_output_rotation`.
+        {
+            use settings_store::hardware::OutputTransform as T;
+            // Portrait logical 1080×1920 on a physical 1920×1080 panel.
+            assert_eq!(
+                logical_to_physical_point(0, 0, 1080, 1920, T::Rotate90),
+                (1919, 0)
+            );
+            assert_eq!(
+                logical_to_physical_point(1079, 1919, 1080, 1920, T::Rotate90),
+                (0, 1079)
+            );
+            assert_eq!(
+                logical_to_physical_point(0, 0, 1080, 1920, T::Rotate270),
+                (0, 1079)
+            );
+        }
     }
 }

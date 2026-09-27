@@ -206,149 +206,148 @@ mod tests {
     }
 
     #[test]
-    fn a_machine_with_no_power_supply_class_reports_absent() {
-        let snap = snapshot_in(Path::new("/definitely/not/a/path"));
-        assert!(!snap.present);
-        assert_eq!(snap.state, BatteryState::Unknown);
-    }
-
-    #[test]
-    fn a_desktop_with_only_a_mains_supply_reports_absent_and_not_on_battery() {
-        let t = tree(&[("AC", &[("type", "Mains\n"), ("online", "1\n")])]);
-        assert!(!snapshot_in(t.path()).present);
-        assert!(!on_battery_in(t.path()));
-    }
-
-    #[test]
-    fn energy_counters_drive_the_percentage() {
-        let t = tree(&[(
-            "BAT0",
-            &[
-                ("type", "Battery\n"),
-                ("status", "Discharging\n"),
-                ("energy_now", "21000000\n"),
-                ("energy_full", "50000000\n"),
-            ],
-        )]);
-        let snap = snapshot_in(t.path());
-        assert!(snap.present);
-        assert_eq!(snap.percent, 42, "21 of 50 Wh");
-        assert_eq!(snap.state, BatteryState::Discharging);
-    }
-
-    #[test]
-    fn charge_counters_are_accepted_when_energy_is_absent() {
-        let t = tree(&[(
-            "BAT0",
-            &[
-                ("type", "Battery\n"),
-                ("status", "Charging\n"),
-                ("charge_now", "3000000\n"),
-                ("charge_full", "4000000\n"),
-            ],
-        )]);
-        let snap = snapshot_in(t.path());
-        assert_eq!(snap.percent, 75);
-        assert_eq!(snap.state, BatteryState::Charging);
-    }
-
-    #[test]
-    fn capacity_is_the_fallback_when_no_counters_exist() {
-        let t = tree(&[(
-            "BAT0",
-            &[
-                ("type", "Battery\n"),
-                ("status", "Full\n"),
-                ("capacity", "97\n"),
-            ],
-        )]);
-        let snap = snapshot_in(t.path());
-        assert_eq!(snap.percent, 97);
-        assert_eq!(snap.state, BatteryState::Full);
-    }
-
-    #[test]
-    fn two_packs_aggregate_by_energy_not_by_averaging_percentages() {
-        // 10/10 Wh full + 0/40 Wh empty is 20% of the machine's energy,
-        // not the 50% a naive mean of the two percentages would report.
-        let t = tree(&[
-            (
+    fn sysfs_supplies_report_absence_mains_and_percentage_sources() {
+        // Phase `a_machine_with_no_power_supply_class_reports_absent`.
+        {
+            let snap = snapshot_in(Path::new("/definitely/not/a/path"));
+            assert!(!snap.present);
+            assert_eq!(snap.state, BatteryState::Unknown);
+        }
+        // Phase `a_desktop_with_only_a_mains_supply_reports_absent_and_not_on_battery`.
+        {
+            let t = tree(&[("AC", &[("type", "Mains\n"), ("online", "1\n")])]);
+            assert!(!snapshot_in(t.path()).present);
+            assert!(!on_battery_in(t.path()));
+        }
+        // Phase `energy_counters_drive_the_percentage`.
+        {
+            let t = tree(&[(
+                "BAT0",
+                &[
+                    ("type", "Battery\n"),
+                    ("status", "Discharging\n"),
+                    ("energy_now", "21000000\n"),
+                    ("energy_full", "50000000\n"),
+                ],
+            )]);
+            let snap = snapshot_in(t.path());
+            assert!(snap.present);
+            assert_eq!(snap.percent, 42, "21 of 50 Wh");
+            assert_eq!(snap.state, BatteryState::Discharging);
+        }
+        // Phase `charge_counters_are_accepted_when_energy_is_absent`.
+        {
+            let t = tree(&[(
+                "BAT0",
+                &[
+                    ("type", "Battery\n"),
+                    ("status", "Charging\n"),
+                    ("charge_now", "3000000\n"),
+                    ("charge_full", "4000000\n"),
+                ],
+            )]);
+            let snap = snapshot_in(t.path());
+            assert_eq!(snap.percent, 75);
+            assert_eq!(snap.state, BatteryState::Charging);
+        }
+        // Phase `capacity_is_the_fallback_when_no_counters_exist`.
+        {
+            let t = tree(&[(
                 "BAT0",
                 &[
                     ("type", "Battery\n"),
                     ("status", "Full\n"),
-                    ("energy_now", "10000000\n"),
-                    ("energy_full", "10000000\n"),
+                    ("capacity", "97\n"),
                 ],
-            ),
-            (
-                "BAT1",
-                &[
-                    ("type", "Battery\n"),
-                    ("status", "Discharging\n"),
-                    ("energy_now", "0\n"),
-                    ("energy_full", "40000000\n"),
-                ],
-            ),
-        ]);
-        let snap = snapshot_in(t.path());
-        assert_eq!(snap.percent, 20);
-        assert_eq!(
-            snap.state,
-            BatteryState::Discharging,
-            "one pack draining means the machine is draining"
-        );
+            )]);
+            let snap = snapshot_in(t.path());
+            assert_eq!(snap.percent, 97);
+            assert_eq!(snap.state, BatteryState::Full);
+        }
     }
 
     #[test]
-    fn an_absent_pack_in_a_dual_bay_is_skipped() {
-        let t = tree(&[
-            (
-                "BAT0",
-                &[
-                    ("type", "Battery\n"),
-                    ("present", "1\n"),
-                    ("status", "Discharging\n"),
-                    ("energy_now", "5000000\n"),
-                    ("energy_full", "10000000\n"),
-                ],
-            ),
-            (
-                "BAT1",
-                &[
-                    ("type", "Battery\n"),
-                    ("present", "0\n"),
-                    ("status", "Unknown\n"),
-                    ("energy_now", "0\n"),
-                    ("energy_full", "90000000\n"),
-                ],
-            ),
-        ]);
-        let snap = snapshot_in(t.path());
-        assert_eq!(snap.percent, 50, "the removed pack contributes nothing");
-    }
-
-    #[test]
-    fn charging_outranks_discharging_in_the_composite_state() {
-        assert_eq!(
-            composite_state(&[BatteryState::Discharging, BatteryState::Charging]),
-            BatteryState::Charging
-        );
-    }
-
-    #[test]
-    fn unplugged_mains_means_on_battery() {
-        let t = tree(&[
-            ("AC", &[("type", "Mains\n"), ("online", "0\n")]),
-            (
-                "BAT0",
-                &[
-                    ("type", "Battery\n"),
-                    ("status", "Discharging\n"),
-                    ("capacity", "55\n"),
-                ],
-            ),
-        ]);
-        assert!(on_battery_in(t.path()));
+    fn multiple_packs_aggregate_by_energy_and_composite_state() {
+        // Phase `two_packs_aggregate_by_energy_not_by_averaging_percentages`.
+        {
+            // 10/10 Wh full + 0/40 Wh empty is 20% of the machine's energy,
+            // not the 50% a naive mean of the two percentages would report.
+            let t = tree(&[
+                (
+                    "BAT0",
+                    &[
+                        ("type", "Battery\n"),
+                        ("status", "Full\n"),
+                        ("energy_now", "10000000\n"),
+                        ("energy_full", "10000000\n"),
+                    ],
+                ),
+                (
+                    "BAT1",
+                    &[
+                        ("type", "Battery\n"),
+                        ("status", "Discharging\n"),
+                        ("energy_now", "0\n"),
+                        ("energy_full", "40000000\n"),
+                    ],
+                ),
+            ]);
+            let snap = snapshot_in(t.path());
+            assert_eq!(snap.percent, 20);
+            assert_eq!(
+                snap.state,
+                BatteryState::Discharging,
+                "one pack draining means the machine is draining"
+            );
+        }
+        // Phase `an_absent_pack_in_a_dual_bay_is_skipped`.
+        {
+            let t = tree(&[
+                (
+                    "BAT0",
+                    &[
+                        ("type", "Battery\n"),
+                        ("present", "1\n"),
+                        ("status", "Discharging\n"),
+                        ("energy_now", "5000000\n"),
+                        ("energy_full", "10000000\n"),
+                    ],
+                ),
+                (
+                    "BAT1",
+                    &[
+                        ("type", "Battery\n"),
+                        ("present", "0\n"),
+                        ("status", "Unknown\n"),
+                        ("energy_now", "0\n"),
+                        ("energy_full", "90000000\n"),
+                    ],
+                ),
+            ]);
+            let snap = snapshot_in(t.path());
+            assert_eq!(snap.percent, 50, "the removed pack contributes nothing");
+        }
+        // Phase `charging_outranks_discharging_in_the_composite_state`.
+        {
+            assert_eq!(
+                composite_state(&[BatteryState::Discharging, BatteryState::Charging]),
+                BatteryState::Charging
+            );
+        }
+        // Phase `unplugged_mains_means_on_battery`.
+        {
+            let t = tree(&[
+                ("AC", &[("type", "Mains\n"), ("online", "0\n")]),
+                (
+                    "BAT0",
+                    &[
+                        ("type", "Battery\n"),
+                        ("status", "Discharging\n"),
+                        ("capacity", "55\n"),
+                    ],
+                ),
+            ]);
+            assert!(on_battery_in(t.path()));
+        }
     }
 }

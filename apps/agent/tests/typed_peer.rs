@@ -296,7 +296,9 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
 /// Resolve and execute a document invocation through an application's real
 /// action registry, broadcasting the resulting CRDT delta like the toolkit
 /// host. The caller owns when to send the returned terminal update, allowing
-/// concurrency tests to interleave another participant first.
+/// concurrency tests to interleave another participant first. `context` is
+/// the invocation's own provenance (the calling run's intent group), recorded
+/// with the change exactly as the toolkit host records it.
 ///
 /// # Panics
 ///
@@ -316,8 +318,13 @@ pub fn service_document_invocation(
     action: String,
     argument: Option<&str>,
     actor: &str,
+    context: Option<&tilo_actions::ActionContext>,
 ) -> tilo_actions::InvocationUpdate {
     let address = ActionAddress::new(resource, action);
+    let provenance = tilo_actions::door::InvocationProvenance {
+        actor: actor.as_bytes(),
+        ambient: context,
+    };
     let mut registry = ActionRegistry::new();
     register(&mut registry);
     let mut transport = LocalTransport::new();
@@ -333,7 +340,7 @@ pub fn service_document_invocation(
                     resources,
                     &address,
                     &arguments,
-                    actor.as_bytes(),
+                    provenance,
                     &registry,
                     &mut transport,
                 )
@@ -344,7 +351,7 @@ pub fn service_document_invocation(
             resources,
             &address,
             argument,
-            actor.as_bytes(),
+            provenance,
             &registry,
             &mut transport,
         )
@@ -484,10 +491,22 @@ pub fn spawn_with_agent_actions(
         .map(|handle| device_key(handle).verifying_key().to_bytes())
         .into_iter()
         .collect();
-    shell::shell::collab_broker::spawn_native_harness(
+    let broker = shell::shell::collab_broker::spawn_native_harness(
         path.to_path_buf(),
         tree.shared(),
         trusted_devices,
     )
-    .expect("bind the typed collaboration service")
+    .expect("bind the typed collaboration service");
+    // The fixture apps read the catalogue to see their own publication land,
+    // as an app declaring `[actions] query` may.
+    broker
+        .app_action_broker()
+        .expect("the harness serves actions")
+        .set_app_action_access(std::sync::Arc::new(|_: &str| {
+            shell::shell::app_action_access::ActionAccess {
+                query: true,
+                invoke: false,
+            }
+        }));
+    broker
 }

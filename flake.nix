@@ -57,6 +57,11 @@
             environment.etc."pam.d/tilo-unlock".source = "${cfg.package}/etc/pam.d/tilo-unlock";
             environment.etc."systemd/user/tilo-graphical-session.target".source =
               "${cfg.package}/share/systemd/user/tilo-graphical-session.target";
+            # NixOS's PipeWire reads /etc/pipewire, not the package's share
+            # directory; Settings offers "Reduce echo in calls" only when
+            # `pipewire -c tilo-echo-cancel.conf` can find the config.
+            environment.etc."pipewire/tilo-echo-cancel.conf".source =
+              "${cfg.package}/share/pipewire/tilo-echo-cancel.conf";
             xdg.portal.enable = true;
             xdg.portal.extraPortals = [ cfg.package ];
           };

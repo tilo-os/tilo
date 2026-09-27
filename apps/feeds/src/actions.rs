@@ -902,76 +902,235 @@ mod tests {
         }
     }
 
+    /// The published reader resource tree is complete, bounded, resolves late articles exactly and keeps tag ids lossless.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one contract test deliberately audits the complete nested reader resource tree"
+    )]
     #[test]
-    fn contextual_resource_tree_is_bounded_and_late_articles_resolve_exactly() {
-        let mut ctx = FeedsResourceCtx::default();
-        for feed_index in 0..(MAX_CONTEXT_FEED_RESOURCES + 2) {
-            let feed_id = Uuid::from_u128(feed_index as u128 + 1);
-            let articles = (0..3)
-                .map(|article_index| ArticleRef {
-                    id: Uuid::from_u128(10_000 + (feed_index * 3 + article_index) as u128),
-                    title: format!("Article {feed_index}-{article_index}"),
-                    read: false,
-                    starred: false,
-                    tags: Vec::new(),
-                })
-                .collect::<Vec<_>>();
-            ctx.feeds.push(FeedRef {
-                id: feed_id,
-                title: format!("Feed {feed_index:03}"),
-                folder: None,
-                unread: articles.iter().map(|article| article.id).collect(),
-                articles,
-            });
+    fn reader_resource_tree_is_complete_bounded_and_exact() {
+        // --- phase: contextual_resource_tree_is_bounded_and_late_articles_resolve_exactly ---
+        {
+            let mut ctx = FeedsResourceCtx::default();
+            for feed_index in 0..(MAX_CONTEXT_FEED_RESOURCES + 2) {
+                let feed_id = Uuid::from_u128(feed_index as u128 + 1);
+                let articles = (0..3)
+                    .map(|article_index| ArticleRef {
+                        id: Uuid::from_u128(10_000 + (feed_index * 3 + article_index) as u128),
+                        title: format!("Article {feed_index}-{article_index}"),
+                        read: false,
+                        starred: false,
+                        tags: Vec::new(),
+                    })
+                    .collect::<Vec<_>>();
+                ctx.feeds.push(FeedRef {
+                    id: feed_id,
+                    title: format!("Feed {feed_index:03}"),
+                    folder: None,
+                    unread: articles.iter().map(|article| article.id).collect(),
+                    articles,
+                });
+            }
+            let late = ctx
+                .feeds
+                .last()
+                .and_then(|feed| feed.articles.last())
+                .expect("fixture has a late article")
+                .id;
+
+            let page = provide_resources(&ctx, &AutoCommit::new());
+            let root = &page[0];
+            assert!(
+                root.children
+                    .iter()
+                    .filter(|resource| resource.kind == "feeds.subscription")
+                    .count()
+                    <= MAX_CONTEXT_FEED_RESOURCES
+            );
+            assert!(
+                root.children
+                    .iter()
+                    .flat_map(|resource| &resource.children)
+                    .filter(|resource| resource.kind == "feeds.article")
+                    .count()
+                    <= MAX_CONTEXT_ARTICLE_RESOURCES
+            );
+            assert!(
+                tilo_actions::door::resolve(&page, &open_article_address(late)).is_none(),
+                "the late article is intentionally outside the contextual page"
+            );
+            let exact = resolve_resource(&ctx, &article_resource_id(late))
+                .expect("the omitted article resolves lazily");
+            assert!(
+                tilo_actions::door::resolve(&[exact], &open_article_address(late)).is_some(),
+                "lazy resolution exports the exact canonical open action"
+            );
+            assert!(
+                resolve_resource(&ctx, &article_resource_id(Uuid::new_v4())).is_none(),
+                "a stale article id is refused"
+            );
         }
-        let late = ctx
-            .feeds
-            .last()
-            .and_then(|feed| feed.articles.last())
-            .expect("fixture has a late article")
-            .id;
 
-        let page = provide_resources(&ctx, &AutoCommit::new());
-        let root = &page[0];
-        assert!(
-            root.children
-                .iter()
-                .filter(|resource| resource.kind == "feeds.subscription")
-                .count()
-                <= MAX_CONTEXT_FEED_RESOURCES
-        );
-        assert!(
-            root.children
-                .iter()
-                .flat_map(|resource| &resource.children)
-                .filter(|resource| resource.kind == "feeds.article")
-                .count()
-                <= MAX_CONTEXT_ARTICLE_RESOURCES
-        );
-        assert!(
-            tilo_actions::door::resolve(&page, &open_article_address(late)).is_none(),
-            "the late article is intentionally outside the contextual page"
-        );
-        let exact = resolve_resource(&ctx, &article_resource_id(late))
-            .expect("the omitted article resolves lazily");
-        assert!(
-            tilo_actions::door::resolve(&[exact], &open_article_address(late)).is_some(),
-            "lazy resolution exports the exact canonical open action"
-        );
-        assert!(
-            resolve_resource(&ctx, &article_resource_id(Uuid::new_v4())).is_none(),
-            "a stale article id is refused"
-        );
-    }
+        // --- phase: tag_resource_ids_are_lossless_canonical_and_bounded ---
+        {
+            let tag = "design/日本語";
+            let id = tag_resource_id(tag);
+            assert_eq!(tag_from_resource_id(&id).as_deref(), Some(tag));
+            assert!(tag_from_resource_id("feeds.tag:44455349474e").is_none());
+            assert!(tag_from_resource_id("feeds.tag:0").is_none());
+            assert!(tag_from_resource_id(&format!("feeds.tag:{}", "aa".repeat(193))).is_none());
+        }
 
-    #[test]
-    fn tag_resource_ids_are_lossless_canonical_and_bounded() {
-        let tag = "design/日本語";
-        let id = tag_resource_id(tag);
-        assert_eq!(tag_from_resource_id(&id).as_deref(), Some(tag));
-        assert!(tag_from_resource_id("feeds.tag:44455349474e").is_none());
-        assert!(tag_from_resource_id("feeds.tag:0").is_none());
-        assert!(tag_from_resource_id(&format!("feeds.tag:{}", "aa".repeat(193))).is_none());
+        // --- phase: ctrl_k_publishes_the_reader_tree ---
+        // Ctrl+K on Feeds yields the tree: the reader with a "New folder" action, a
+        // `feeds.folder` child per folder (rename + delete), and a
+        // `feeds.subscription` child per feed (rename + mark-read + move +
+        // unsubscribe). Drives the real resource hook.
+        {
+            let (app, doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let handlers: std::collections::HashSet<String> = app
+                .local_resource_operation_handlers()
+                .iter()
+                .map(|handler| (*handler).to_string())
+                .collect();
+            let violations = tilo_actions::validate_surface(&resources, &registry(), &handlers);
+            assert!(violations.is_empty(), "{violations:?}");
+            assert_eq!(resources.len(), 1, "one reader root");
+            let reader = &resources[0];
+            assert_eq!(reader.kind, "feeds.reader");
+            let reader_actions: Vec<&str> = reader.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(
+                reader_actions.contains(&"add-subscription"),
+                "{reader_actions:?}"
+            );
+            assert!(
+                reader_actions.contains(&"mark-all-read"),
+                "{reader_actions:?}"
+            );
+            assert!(reader_actions.contains(&"new-folder"), "{reader_actions:?}");
+            for id in ["import-opml", "export-opml"] {
+                let action = reader
+                    .actions
+                    .iter()
+                    .find(|action| action.id == id)
+                    .unwrap();
+                assert_eq!(action.kind, OperationKind::View);
+                assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+            }
+            assert!(
+                reader_actions.contains(&"refresh-all"),
+                "{reader_actions:?}"
+            );
+            let refresh = reader
+                .actions
+                .iter()
+                .find(|a| a.id == "refresh-all")
+                .unwrap();
+            assert_eq!(
+                refresh.contract.execution,
+                tilo_actions::ExecutionMode::Background { cancellable: false }
+            );
+            assert_eq!(refresh.contract.result, tilo_actions::ResultSpec::Job);
+            assert!(
+                refresh
+                    .contract
+                    .result
+                    .validate(&tilo_actions::ActionOutput::default())
+                    .is_ok()
+            );
+            assert_eq!(refresh.kind, OperationKind::Effect);
+
+            let folder = reader
+                .children
+                .iter()
+                .find(|r| r.kind == "feeds.folder")
+                .expect("a folder resource");
+            let f_actions: Vec<&str> = folder.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(f_actions.contains(&"rename"), "{f_actions:?}");
+            assert!(f_actions.contains(&"delete"), "{f_actions:?}");
+
+            let feed = reader
+                .children
+                .iter()
+                .find(|r| r.kind == "feeds.subscription")
+                .expect("a subscription resource");
+            let s_actions: Vec<&str> = feed.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(s_actions.contains(&"rename"), "{s_actions:?}");
+            assert!(s_actions.contains(&"mark-read"), "{s_actions:?}");
+            assert!(s_actions.contains(&"move"), "{s_actions:?}");
+            assert!(s_actions.contains(&"unsubscribe"), "{s_actions:?}");
+            assert_eq!(
+                feed.actions.iter().find(|a| a.id == "open").unwrap().kind,
+                OperationKind::View
+            );
+            assert_eq!(
+                feed.actions
+                    .iter()
+                    .find(|a| a.id == "mark-read")
+                    .unwrap()
+                    .kind,
+                OperationKind::Document
+            );
+            assert_eq!(
+                feed.actions.iter().find(|a| a.id == "rename").unwrap().kind,
+                OperationKind::Document
+            );
+            assert_eq!(
+                feed.actions
+                    .iter()
+                    .find(|a| a.id == "unsubscribe")
+                    .unwrap()
+                    .contract
+                    .risk,
+                tilo_actions::RiskLevel::Destructive
+            );
+
+            let article = feed
+                .children
+                .iter()
+                .find(|resource| resource.kind == "feeds.article")
+                .expect("articles are first-class nested resources");
+            assert_eq!(
+                article
+                    .actions
+                    .iter()
+                    .find(|a| a.id == "open")
+                    .unwrap()
+                    .kind,
+                OperationKind::View
+            );
+            assert_eq!(
+                article
+                    .actions
+                    .iter()
+                    .find(|a| a.id == "read")
+                    .unwrap()
+                    .kind,
+                OperationKind::Document
+            );
+            assert_eq!(
+                article
+                    .actions
+                    .iter()
+                    .find(|a| a.id == "star")
+                    .unwrap()
+                    .kind,
+                OperationKind::Document
+            );
+
+            // The full flattened tree exports every action — the palette's Actions
+            // group is display-capped, so reachability is asserted on the flatten.
+            let flat: Vec<&str> = tilo_actions::flatten(&resources)
+                .iter()
+                .map(|f| f.action.label.as_str())
+                .collect();
+            assert!(flat.contains(&"Add subscription"), "{flat:?}");
+            assert!(flat.contains(&"Mark all articles as read"), "{flat:?}");
+            assert!(flat.contains(&"New folder"), "{flat:?}");
+            assert!(flat.contains(&"Unsubscribe"), "{flat:?}");
+            assert!(flat.contains(&"Delete folder"), "{flat:?}");
+        }
     }
 
     /// A demo reader synced into a fresh document, plus the app that owns it.
@@ -982,203 +1141,82 @@ mod tests {
         (app, doc)
     }
 
-    /// Ctrl+K on Feeds yields the tree: the reader with a "New folder" action, a
-    /// `feeds.folder` child per folder (rename + delete), and a
-    /// `feeds.subscription` child per feed (rename + mark-read + move +
-    /// unsubscribe). Drives the real resource hook.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one contract test deliberately audits the complete nested reader resource tree"
-    )]
+    /// Reader actions add subscriptions through the replayable contract, treat a blank prompt as a no-op and delete folders without losing feeds.
     #[test]
-    fn ctrl_k_publishes_the_reader_tree() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let handlers: std::collections::HashSet<String> = app
-            .local_resource_operation_handlers()
-            .iter()
-            .map(|handler| (*handler).to_string())
-            .collect();
-        let violations = tilo_actions::validate_surface(&resources, &registry(), &handlers);
-        assert!(violations.is_empty(), "{violations:?}");
-        assert_eq!(resources.len(), 1, "one reader root");
-        let reader = &resources[0];
-        assert_eq!(reader.kind, "feeds.reader");
-        let reader_actions: Vec<&str> = reader.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(
-            reader_actions.contains(&"add-subscription"),
-            "{reader_actions:?}"
-        );
-        assert!(
-            reader_actions.contains(&"mark-all-read"),
-            "{reader_actions:?}"
-        );
-        assert!(reader_actions.contains(&"new-folder"), "{reader_actions:?}");
-        for id in ["import-opml", "export-opml"] {
-            let action = reader
+    fn reader_actions_replay_and_edit_the_library() {
+        // --- phase: reader_level_add_subscription_uses_the_replayable_action_contract ---
+        {
+            let (app, mut doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let add = resources[0]
                 .actions
                 .iter()
-                .find(|action| action.id == id)
-                .unwrap();
-            assert_eq!(action.kind, OperationKind::View);
-            assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+                .find(|action| action.id == "add-subscription")
+                .expect("reader exports canonical add-subscription");
+            let encoded = prompted_encode(add, "https://example.test/updates.xml");
+            assert_eq!(encoded.type_id, FEEDS_ACTION_TYPE);
+
+            let decoded = registry()
+                .decode(&encoded)
+                .expect("prompt result decodes through the Feeds registry");
+            let mut transport = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
+                .expect("canonical prompt result applies deterministically");
+            assert!(
+                FeedsDoc::load(&doc)
+                    .feeds
+                    .iter()
+                    .any(|feed| feed.url == "https://example.test/updates.xml")
+            );
         }
-        assert!(
-            reader_actions.contains(&"refresh-all"),
-            "{reader_actions:?}"
-        );
-        let refresh = reader
-            .actions
-            .iter()
-            .find(|a| a.id == "refresh-all")
-            .unwrap();
-        assert_eq!(
-            refresh.contract.execution,
-            tilo_actions::ExecutionMode::Background { cancellable: false }
-        );
-        assert_eq!(refresh.contract.result, tilo_actions::ResultSpec::Job);
-        assert!(
-            refresh
-                .contract
-                .result
-                .validate(&tilo_actions::ActionOutput::default())
-                .is_ok()
-        );
-        assert_eq!(refresh.kind, OperationKind::Effect);
 
-        let folder = reader
-            .children
-            .iter()
-            .find(|r| r.kind == "feeds.folder")
-            .expect("a folder resource");
-        let f_actions: Vec<&str> = folder.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(f_actions.contains(&"rename"), "{f_actions:?}");
-        assert!(f_actions.contains(&"delete"), "{f_actions:?}");
-
-        let feed = reader
-            .children
-            .iter()
-            .find(|r| r.kind == "feeds.subscription")
-            .expect("a subscription resource");
-        let s_actions: Vec<&str> = feed.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(s_actions.contains(&"rename"), "{s_actions:?}");
-        assert!(s_actions.contains(&"mark-read"), "{s_actions:?}");
-        assert!(s_actions.contains(&"move"), "{s_actions:?}");
-        assert!(s_actions.contains(&"unsubscribe"), "{s_actions:?}");
-        assert_eq!(
-            feed.actions.iter().find(|a| a.id == "open").unwrap().kind,
-            OperationKind::View
-        );
-        assert_eq!(
-            feed.actions
-                .iter()
-                .find(|a| a.id == "mark-read")
-                .unwrap()
-                .kind,
-            OperationKind::Document
-        );
-        assert_eq!(
-            feed.actions.iter().find(|a| a.id == "rename").unwrap().kind,
-            OperationKind::Document
-        );
-        assert_eq!(
-            feed.actions
-                .iter()
-                .find(|a| a.id == "unsubscribe")
-                .unwrap()
-                .contract
-                .risk,
-            tilo_actions::RiskLevel::Destructive
-        );
-
-        let article = feed
-            .children
-            .iter()
-            .find(|resource| resource.kind == "feeds.article")
-            .expect("articles are first-class nested resources");
-        assert_eq!(
-            article
+        // --- phase: blank_canonical_subscription_prompt_is_a_safe_no_op ---
+        {
+            let (app, mut doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let add = resources[0]
                 .actions
                 .iter()
-                .find(|a| a.id == "open")
-                .unwrap()
-                .kind,
-            OperationKind::View
-        );
-        assert_eq!(
-            article
-                .actions
-                .iter()
-                .find(|a| a.id == "read")
-                .unwrap()
-                .kind,
-            OperationKind::Document
-        );
-        assert_eq!(
-            article
-                .actions
-                .iter()
-                .find(|a| a.id == "star")
-                .unwrap()
-                .kind,
-            OperationKind::Document
-        );
+                .find(|action| action.id == "add-subscription")
+                .expect("reader exports canonical add-subscription");
+            let encoded = prompted_encode(add, "   ");
+            let decoded = registry().decode(&encoded).expect("prompt still decodes");
+            let before = FeedsDoc::load(&doc).feeds.len();
+            let mut transport = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
+                .expect("blank action is harmless");
+            assert_eq!(FeedsDoc::load(&doc).feeds.len(), before);
+        }
 
-        // The full flattened tree exports every action — the palette's Actions
-        // group is display-capped, so reachability is asserted on the flatten.
-        let flat: Vec<&str> = tilo_actions::flatten(&resources)
-            .iter()
-            .map(|f| f.action.label.as_str())
-            .collect();
-        assert!(flat.contains(&"Add subscription"), "{flat:?}");
-        assert!(flat.contains(&"Mark all articles as read"), "{flat:?}");
-        assert!(flat.contains(&"New folder"), "{flat:?}");
-        assert!(flat.contains(&"Unsubscribe"), "{flat:?}");
-        assert!(flat.contains(&"Delete folder"), "{flat:?}");
-    }
-
-    #[test]
-    fn reader_level_add_subscription_uses_the_replayable_action_contract() {
-        let (app, mut doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let add = resources[0]
-            .actions
-            .iter()
-            .find(|action| action.id == "add-subscription")
-            .expect("reader exports canonical add-subscription");
-        let encoded = prompted_encode(add, "https://example.test/updates.xml");
-        assert_eq!(encoded.type_id, FEEDS_ACTION_TYPE);
-
-        let decoded = registry()
-            .decode(&encoded)
-            .expect("prompt result decodes through the Feeds registry");
-        let mut transport = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
-            .expect("canonical prompt result applies deterministically");
-        assert!(
-            FeedsDoc::load(&doc)
+        // --- phase: delete_folder_keeps_its_feeds ---
+        // Deleting a folder through its action drops the folder but keeps its feeds,
+        // unparented to uncategorised — a subscription is never lost with its folder.
+        {
+            let (app, mut doc) = seeded();
+            let folder = app.store_folder_ids()[0];
+            let feeds_in: Vec<Id> = FeedsDoc::load(&doc)
                 .feeds
                 .iter()
-                .any(|feed| feed.url == "https://example.test/updates.xml")
-        );
-    }
+                .filter(|f| f.folder == Some(folder))
+                .map(|f| f.id)
+                .collect();
+            assert!(!feeds_in.is_empty(), "the folder starts with feeds");
 
-    #[test]
-    fn blank_canonical_subscription_prompt_is_a_safe_no_op() {
-        let (app, mut doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let add = resources[0]
-            .actions
-            .iter()
-            .find(|action| action.id == "add-subscription")
-            .expect("reader exports canonical add-subscription");
-        let encoded = prompted_encode(add, "   ");
-        let decoded = registry().decode(&encoded).expect("prompt still decodes");
-        let before = FeedsDoc::load(&doc).feeds.len();
-        let mut transport = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
-            .expect("blank action is harmless");
-        assert_eq!(FeedsDoc::load(&doc).feeds.len(), before);
+            let action = delete_folder_action(folder);
+            let encoded = encode(&action);
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+
+            let loaded = FeedsDoc::load(&doc);
+            assert!(loaded.folder(folder).is_none(), "the folder is gone");
+            for fid in &feeds_in {
+                let feed = loaded
+                    .feed(*fid)
+                    .expect("the feed survives the folder deletion");
+                assert_eq!(feed.folder, None, "the feed is now uncategorised");
+            }
+        }
     }
 
     /// The reader a peer holding `doc` would publish: a fresh app mirrors the
@@ -1251,35 +1289,5 @@ mod tests {
                 ))
             }),
         ],
-    }
-
-    /// Deleting a folder through its action drops the folder but keeps its feeds,
-    /// unparented to uncategorised — a subscription is never lost with its folder.
-    #[test]
-    fn delete_folder_keeps_its_feeds() {
-        let (app, mut doc) = seeded();
-        let folder = app.store_folder_ids()[0];
-        let feeds_in: Vec<Id> = FeedsDoc::load(&doc)
-            .feeds
-            .iter()
-            .filter(|f| f.folder == Some(folder))
-            .map(|f| f.id)
-            .collect();
-        assert!(!feeds_in.is_empty(), "the folder starts with feeds");
-
-        let action = delete_folder_action(folder);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-
-        let loaded = FeedsDoc::load(&doc);
-        assert!(loaded.folder(folder).is_none(), "the folder is gone");
-        for fid in &feeds_in {
-            let feed = loaded
-                .feed(*fid)
-                .expect("the feed survives the folder deletion");
-            assert_eq!(feed.folder, None, "the feed is now uncategorised");
-        }
     }
 }

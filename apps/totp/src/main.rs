@@ -70,6 +70,9 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 
 fn configure(app: &mut ui::App) {
     app.set_window_title(Some("Authenticator".into()));
+    // One-time codes are live credentials: keep them out of screenshots,
+    // recordings and screen shares.
+    app.set_capture_protected(true);
     totp::actions::register(app.action_registry_mut());
 }
 

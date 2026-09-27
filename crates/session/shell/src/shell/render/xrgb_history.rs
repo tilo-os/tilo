@@ -410,234 +410,252 @@ mod tests {
     }
 
     #[test]
-    fn transaction_binds_the_exact_prepared_delta_without_rejecting_a_gap() {
-        let mut history = XrgbTargetHistory::new(1);
-        let regions = [rect(2, 3)];
-        let transaction = history.prepare(0, Some(identity(1)), 9, Some(4), Some(&regions), &[]);
-        assert!(transaction.matches_frame(9, Some(4), Some(&regions)));
-        assert!(
-            !transaction.matches_frame(9, Some(8), Some(&regions)),
-            "actual previous revision must be the one prepared, not a mutable history value"
-        );
-        assert!(
-            !transaction.matches_frame(10, Some(4), Some(&regions)),
-            "revision changes invalidate the staged frame"
-        );
-        let different = [rect(3, 3)];
-        assert!(
-            !transaction.matches_frame(9, Some(4), Some(&different)),
-            "regions are an exact bounded frame-input claim"
-        );
-        transaction.abort();
-    }
-
-    #[test]
-    fn oversized_regions_match_then_choose_a_full_boundary() {
-        let mut history = XrgbTargetHistory::new(1);
-        let regions = vec![rect(2, 3); MAX_RECTS + 1];
-        let transaction = history.prepare(0, Some(identity(1)), 1, None, Some(&regions), &[]);
-        assert!(transaction.matches_frame(1, None, Some(&regions)));
-        assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
-        transaction.abort();
-    }
-
-    #[test]
-    fn oversized_destination_only_rects_are_rejected_without_scanning() {
-        let mut history = XrgbTargetHistory::new(1);
-        let seed = [rect(2, 3)];
-        let transaction = history.prepare(0, Some(identity(1)), 1, None, Some(&seed), &[]);
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
-
-        let extras = vec![rect(4, 5); MAX_RECTS + 1];
-        let transaction = history.prepare(0, Some(identity(1)), 2, Some(1), Some(&seed), &extras);
-        assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
-        transaction.abort();
-    }
-
-    #[test]
-    fn accepted_delta_is_partial_only_for_a_proven_target_and_identity() {
-        let mut history = XrgbTargetHistory::new(1);
-        let regions = [rect(2, 3)];
-        let transaction = history.prepare(0, Some(identity(1)), 1, None, Some(&regions), &[]);
-        assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
-
-        let transaction = history.prepare(0, Some(identity(1)), 2, Some(1), Some(&regions), &[]);
-        assert!(matches!(transaction.write_plan(), XrgbWritePlan::Rects(_)));
-        transaction.commit(XrgbHistoryCommit::DamageAccepted);
-
-        let changed_identity = XrgbHistoryIdentity {
-            bridge_epoch: 8,
-            ..identity(1)
-        };
-        let transaction =
-            history.prepare(0, Some(changed_identity), 3, Some(2), Some(&regions), &[]);
-        assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
-        transaction.abort();
-    }
-
-    #[test]
-    fn layout_scanout_epoch_and_invalid_target_are_full_boundaries() {
-        let mut history = XrgbTargetHistory::new(2);
-        let regions = [rect(2, 3)];
-        let transaction = history.prepare(0, Some(identity(2)), 1, None, Some(&regions), &[]);
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
-
-        let changed_layout = XrgbHistoryIdentity {
-            pitch: identity(2).pitch.saturating_add(16),
-            ..identity(2)
-        };
-        let transaction = history.prepare(0, Some(changed_layout), 2, Some(1), Some(&regions), &[]);
-        assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
-        transaction.abort();
-
-        let transaction = history.prepare(0, Some(identity(2)), 1, None, Some(&regions), &[]);
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
-        let transaction = history.prepare(
-            0,
-            Some(identity(2).with_scanout_epoch(4)),
-            2,
-            Some(1),
-            Some(&regions),
-            &[],
-        );
-        assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
-        transaction.abort();
-
-        let transaction = history.prepare(9, Some(identity(2)), 2, Some(1), Some(&regions), &[]);
-        assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
-        transaction.abort();
-    }
-
-    #[test]
-    fn two_targets_accumulate_intervening_delta_before_partial_reuse() {
-        let mut history = XrgbTargetHistory::new(2);
-        let first = [rect(2, 3)];
-        let second = [rect(10, 11)];
-        let transaction = history.prepare(0, Some(identity(2)), 1, None, Some(&first), &[]);
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
-
-        let transaction = history.prepare(0, Some(identity(2)), 2, Some(1), Some(&second), &[]);
-        transaction.commit(XrgbHistoryCommit::DamageAccepted);
-
-        // Target one has no bytes yet, so it must be filled completely. Its accepted commit
-        // carries the missed delta onto target zero's pending list.
-        let transaction = history.prepare(1, Some(identity(2)), 3, Some(2), Some(&first), &[]);
-        assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
-        transaction.commit(XrgbHistoryCommit::DamageAccepted);
-
-        let transaction = history.prepare(0, Some(identity(2)), 4, Some(3), Some(&second), &[]);
-        let XrgbWritePlan::Rects(plan) = transaction.write_plan() else {
-            panic!("a valid target must repair its accumulated missed deltas");
-        };
-        assert!(
-            plan.len() >= 2,
-            "pending + current delta remain separate exact rects"
-        );
-        transaction.abort();
-    }
-
-    #[test]
-    fn uncommitted_transaction_invalidates_instead_of_replaying() {
-        let mut history = XrgbTargetHistory::new(1);
-        let regions = [rect(2, 3)];
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn xrgb_history_reuses_a_delta_only_for_the_proven_target() {
+        // Phase `transaction_binds_the_exact_prepared_delta_without_rejecting_a_gap`.
         {
-            let transaction = history.prepare(0, Some(identity(1)), 1, None, Some(&regions), &[]);
-            transaction.commit(XrgbHistoryCommit::FullBoundary);
+            let mut history = XrgbTargetHistory::new(1);
+            let regions = [rect(2, 3)];
+            let transaction =
+                history.prepare(0, Some(identity(1)), 9, Some(4), Some(&regions), &[]);
+            assert!(transaction.matches_frame(9, Some(4), Some(&regions)));
+            assert!(
+                !transaction.matches_frame(9, Some(8), Some(&regions)),
+                "actual previous revision must be the one prepared, not a mutable history value"
+            );
+            assert!(
+                !transaction.matches_frame(10, Some(4), Some(&regions)),
+                "revision changes invalidate the staged frame"
+            );
+            let different = [rect(3, 3)];
+            assert!(
+                !transaction.matches_frame(9, Some(4), Some(&different)),
+                "regions are an exact bounded frame-input claim"
+            );
+            transaction.abort();
         }
+
+        // Phase `accepted_delta_is_partial_only_for_a_proven_target_and_identity`.
         {
+            let mut history = XrgbTargetHistory::new(1);
+            let regions = [rect(2, 3)];
+            let transaction = history.prepare(0, Some(identity(1)), 1, None, Some(&regions), &[]);
+            assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
+            transaction.commit(XrgbHistoryCommit::FullBoundary);
+
             let transaction =
                 history.prepare(0, Some(identity(1)), 2, Some(1), Some(&regions), &[]);
             assert!(matches!(transaction.write_plan(), XrgbWritePlan::Rects(_)));
-            // Drop without committing: RAII clears the chain.
+            transaction.commit(XrgbHistoryCommit::DamageAccepted);
+
+            let changed_identity = XrgbHistoryIdentity {
+                bridge_epoch: 8,
+                ..identity(1)
+            };
+            let transaction =
+                history.prepare(0, Some(changed_identity), 3, Some(2), Some(&regions), &[]);
+            assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
+            transaction.abort();
         }
-        let transaction = history.prepare(0, Some(identity(1)), 3, Some(2), Some(&regions), &[]);
-        assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
-        transaction.abort();
-    }
 
-    #[test]
-    fn accumulated_other_target_rectangles_cap_and_invalidate_that_target() {
-        let mut history = XrgbTargetHistory::new(2);
-        let initial = [rect(2, 3)];
-        let transaction = history.prepare(0, Some(identity(2)), 1, None, Some(&initial), &[]);
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
+        // Phase `two_targets_accumulate_intervening_delta_before_partial_reuse`.
+        {
+            let mut history = XrgbTargetHistory::new(2);
+            let first = [rect(2, 3)];
+            let second = [rect(10, 11)];
+            let transaction = history.prepare(0, Some(identity(2)), 1, None, Some(&first), &[]);
+            transaction.commit(XrgbHistoryCommit::FullBoundary);
 
-        // The first 64 in-bounds deltas remain representable for target zero. The 65th must
-        // invalidate it rather than truncating a destination-age repair plan.
-        for revision in 2_u64..=65 {
-            let index = u32::try_from(revision - 2).expect("bounded test index");
+            let transaction = history.prepare(0, Some(identity(2)), 2, Some(1), Some(&second), &[]);
+            transaction.commit(XrgbHistoryCommit::DamageAccepted);
+
+            // Target one has no bytes yet, so it must be filled completely. Its accepted commit
+            // carries the missed delta onto target zero's pending list.
+            let transaction = history.prepare(1, Some(identity(2)), 3, Some(2), Some(&first), &[]);
+            assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
+            transaction.commit(XrgbHistoryCommit::DamageAccepted);
+
+            let transaction = history.prepare(0, Some(identity(2)), 4, Some(3), Some(&second), &[]);
+            let XrgbWritePlan::Rects(plan) = transaction.write_plan() else {
+                panic!("a valid target must repair its accumulated missed deltas");
+            };
+            assert!(
+                plan.len() >= 2,
+                "pending + current delta remain separate exact rects"
+            );
+            transaction.abort();
+        }
+
+        // Phase `uncommitted_transaction_invalidates_instead_of_replaying`.
+        {
+            let mut history = XrgbTargetHistory::new(1);
+            let regions = [rect(2, 3)];
+            {
+                let transaction =
+                    history.prepare(0, Some(identity(1)), 1, None, Some(&regions), &[]);
+                transaction.commit(XrgbHistoryCommit::FullBoundary);
+            }
+            {
+                let transaction =
+                    history.prepare(0, Some(identity(1)), 2, Some(1), Some(&regions), &[]);
+                assert!(matches!(transaction.write_plan(), XrgbWritePlan::Rects(_)));
+                // Drop without committing: RAII clears the chain.
+            }
+            let transaction =
+                history.prepare(0, Some(identity(1)), 3, Some(2), Some(&regions), &[]);
+            assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
+            transaction.abort();
+        }
+
+        // Phase `accumulated_other_target_rectangles_cap_and_invalidate_that_target`.
+        {
+            let mut history = XrgbTargetHistory::new(2);
+            let initial = [rect(2, 3)];
+            let transaction = history.prepare(0, Some(identity(2)), 1, None, Some(&initial), &[]);
+            transaction.commit(XrgbHistoryCommit::FullBoundary);
+
+            // The first 64 in-bounds deltas remain representable for target zero. The 65th must
+            // invalidate it rather than truncating a destination-age repair plan.
+            for revision in 2_u64..=65 {
+                let index = u32::try_from(revision - 2).expect("bounded test index");
+                let regions = [FineDamageRect {
+                    x: index % 32,
+                    y: 20_u32.checked_add(index / 32).expect("bounded test row"),
+                    width: 1,
+                    height: 1,
+                }];
+                let transaction = history.prepare(
+                    1,
+                    Some(identity(2)),
+                    revision,
+                    Some(revision - 1),
+                    Some(&regions),
+                    &[],
+                );
+                transaction.commit(XrgbHistoryCommit::DamageAccepted);
+            }
+            assert!(
+                history.targets[0].valid,
+                "64 pending rects retain the stale target"
+            );
+            assert_eq!(history.targets[0].pending.len(), MAX_RECTS);
+
             let regions = [FineDamageRect {
-                x: index % 32,
-                y: 20_u32.checked_add(index / 32).expect("bounded test row"),
+                x: 0,
+                y: 22,
                 width: 1,
                 height: 1,
             }];
-            let transaction = history.prepare(
-                1,
-                Some(identity(2)),
-                revision,
-                Some(revision - 1),
-                Some(&regions),
-                &[],
-            );
+            let transaction =
+                history.prepare(1, Some(identity(2)), 66, Some(65), Some(&regions), &[]);
             transaction.commit(XrgbHistoryCommit::DamageAccepted);
+            assert!(
+                !history.targets[0].valid,
+                "the 65th in-bounds accumulated delta invalidates rather than truncates"
+            );
+
+            let next = [rect(2, 3)];
+            let transaction = history.prepare(0, Some(identity(2)), 67, Some(66), Some(&next), &[]);
+            assert!(
+                matches!(transaction.write_plan(), XrgbWritePlan::Full),
+                "the 65th accumulated delta invalidates the stale target instead of truncating it"
+            );
+            transaction.abort();
         }
-        assert!(
-            history.targets[0].valid,
-            "64 pending rects retain the stale target"
-        );
-        assert_eq!(history.targets[0].pending.len(), MAX_RECTS);
-
-        let regions = [FineDamageRect {
-            x: 0,
-            y: 22,
-            width: 1,
-            height: 1,
-        }];
-        let transaction = history.prepare(1, Some(identity(2)), 66, Some(65), Some(&regions), &[]);
-        transaction.commit(XrgbHistoryCommit::DamageAccepted);
-        assert!(
-            !history.targets[0].valid,
-            "the 65th in-bounds accumulated delta invalidates rather than truncates"
-        );
-
-        let next = [rect(2, 3)];
-        let transaction = history.prepare(0, Some(identity(2)), 67, Some(66), Some(&next), &[]);
-        assert!(
-            matches!(transaction.write_plan(), XrgbWritePlan::Full),
-            "the 65th accumulated delta invalidates the stale target instead of truncating it"
-        );
-        transaction.abort();
     }
 
     #[test]
-    fn empty_large_and_invalid_delta_inputs_are_full_boundaries() {
-        let cases = [
-            None,
-            Some(Vec::new()),
-            Some(vec![FineDamageRect {
-                x: 63,
-                y: 0,
-                width: 2,
-                height: 1,
-            }]),
-            Some(vec![FineDamageRect {
-                x: 0,
-                y: 0,
-                width: 40,
-                height: 48,
-            }]),
-        ];
-        for regions in cases {
+    fn xrgb_history_turns_oversized_invalid_and_epoch_changes_into_full_boundaries() {
+        // Phase `oversized_regions_match_then_choose_a_full_boundary`.
+        {
+            let mut history = XrgbTargetHistory::new(1);
+            let regions = vec![rect(2, 3); MAX_RECTS + 1];
+            let transaction = history.prepare(0, Some(identity(1)), 1, None, Some(&regions), &[]);
+            assert!(transaction.matches_frame(1, None, Some(&regions)));
+            assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
+            transaction.abort();
+        }
+
+        // Phase `oversized_destination_only_rects_are_rejected_without_scanning`.
+        {
             let mut history = XrgbTargetHistory::new(1);
             let seed = [rect(2, 3)];
             let transaction = history.prepare(0, Some(identity(1)), 1, None, Some(&seed), &[]);
             transaction.commit(XrgbHistoryCommit::FullBoundary);
+
+            let extras = vec![rect(4, 5); MAX_RECTS + 1];
             let transaction =
-                history.prepare(0, Some(identity(1)), 2, Some(1), regions.as_deref(), &[]);
+                history.prepare(0, Some(identity(1)), 2, Some(1), Some(&seed), &extras);
             assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
             transaction.abort();
+        }
+
+        // Phase `layout_scanout_epoch_and_invalid_target_are_full_boundaries`.
+        {
+            let mut history = XrgbTargetHistory::new(2);
+            let regions = [rect(2, 3)];
+            let transaction = history.prepare(0, Some(identity(2)), 1, None, Some(&regions), &[]);
+            transaction.commit(XrgbHistoryCommit::FullBoundary);
+
+            let changed_layout = XrgbHistoryIdentity {
+                pitch: identity(2).pitch.saturating_add(16),
+                ..identity(2)
+            };
+            let transaction =
+                history.prepare(0, Some(changed_layout), 2, Some(1), Some(&regions), &[]);
+            assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
+            transaction.abort();
+
+            let transaction = history.prepare(0, Some(identity(2)), 1, None, Some(&regions), &[]);
+            transaction.commit(XrgbHistoryCommit::FullBoundary);
+            let transaction = history.prepare(
+                0,
+                Some(identity(2).with_scanout_epoch(4)),
+                2,
+                Some(1),
+                Some(&regions),
+                &[],
+            );
+            assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
+            transaction.abort();
+
+            let transaction =
+                history.prepare(9, Some(identity(2)), 2, Some(1), Some(&regions), &[]);
+            assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
+            transaction.abort();
+        }
+
+        // Phase `empty_large_and_invalid_delta_inputs_are_full_boundaries`.
+        {
+            let cases = [
+                None,
+                Some(Vec::new()),
+                Some(vec![FineDamageRect {
+                    x: 63,
+                    y: 0,
+                    width: 2,
+                    height: 1,
+                }]),
+                Some(vec![FineDamageRect {
+                    x: 0,
+                    y: 0,
+                    width: 40,
+                    height: 48,
+                }]),
+            ];
+            for regions in cases {
+                let mut history = XrgbTargetHistory::new(1);
+                let seed = [rect(2, 3)];
+                let transaction = history.prepare(0, Some(identity(1)), 1, None, Some(&seed), &[]);
+                transaction.commit(XrgbHistoryCommit::FullBoundary);
+                let transaction =
+                    history.prepare(0, Some(identity(1)), 2, Some(1), regions.as_deref(), &[]);
+                assert!(matches!(transaction.write_plan(), XrgbWritePlan::Full));
+                transaction.abort();
+            }
         }
     }
 }

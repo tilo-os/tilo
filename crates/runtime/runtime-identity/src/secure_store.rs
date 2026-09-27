@@ -368,41 +368,43 @@ mod secret_service_tests {
     use super::*;
 
     #[test]
-    fn secret_service_removes_the_identity_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let command = dir.path().join("secret-tool-fixture");
-        let command = tilo_test_env::script(
-            &command,
-            r#"#!/bin/sh
+    fn secret_service_removes_the_entry_and_reports_corrupt_secrets() {
+        // phase: secret_service_removes_the_identity_entry
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let command = dir.path().join("secret-tool-fixture");
+            let command = tilo_test_env::script(
+                &command,
+                r#"#!/bin/sh
 [ "$1" = clear ] || exit 99
 [ "$2" = tilo-purpose ] || exit 1
 [ "$3" = tilo-identity-signing-v1 ] || exit 99
 [ "$4" = tilo-identity-key ] || exit 99
 exit 0
 "#,
-        )
-        .unwrap();
-        secret_service_remove(&"ab".repeat(32), &command.exec_argv()).unwrap();
-    }
-
-    #[test]
-    fn corrupt_secret_is_reported_as_invalid_data() {
-        let dir = tempfile::tempdir().unwrap();
-        let command = dir.path().join("secret-tool-fixture");
-        let command = tilo_test_env::script(
-            &command,
-            r#"#!/bin/sh
+            )
+            .unwrap();
+            secret_service_remove(&"ab".repeat(32), &command.exec_argv()).unwrap();
+        }
+        // phase: corrupt_secret_is_reported_as_invalid_data
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let command = dir.path().join("secret-tool-fixture");
+            let command = tilo_test_env::script(
+                &command,
+                r#"#!/bin/sh
 [ "$1" = lookup ] || exit 99
 [ "$2" = tilo-purpose ] || exit 1
 printf 'not-hex'
 "#,
-        )
-        .unwrap();
-        assert_eq!(
-            secret_service_load(&"ab".repeat(32), &command.exec_argv())
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidData
-        );
+            )
+            .unwrap();
+            assert_eq!(
+                secret_service_load(&"ab".repeat(32), &command.exec_argv())
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
     }
 }

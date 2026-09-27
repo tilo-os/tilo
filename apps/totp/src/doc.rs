@@ -227,70 +227,74 @@ mod tests {
     use crate::model::demo_accounts;
     use tilo_automerge::ApplyIncoming;
 
+    /// The vault document round-trips metadata without secrets, never deletes missing accounts, lets tombstones win, and merges.
     #[test]
-    fn round_trips_metadata_without_a_secret() {
-        let mut doc = AutoCommit::new();
-        let accounts = demo_accounts();
-        AuthDoc::sync_vault(&mut doc, &accounts);
-        let read = AuthDoc::list_accounts(&doc);
-        assert_eq!(read.len(), accounts.len());
-        // Order preserved.
-        assert_eq!(read[0].issuer, accounts[0].issuer);
-        assert!(
-            read.iter().all(|account| account.secret.is_empty()),
-            "the collaborative document contains metadata only"
-        );
-    }
+    fn vault_doc_merges_metadata_without_secrets_or_resurrection() {
+        // Case `round_trips_metadata_without_a_secret`.
+        {
+            let mut doc = AutoCommit::new();
+            let accounts = demo_accounts();
+            AuthDoc::sync_vault(&mut doc, &accounts);
+            let read = AuthDoc::list_accounts(&doc);
+            assert_eq!(read.len(), accounts.len());
+            // Order preserved.
+            assert_eq!(read[0].issuer, accounts[0].issuer);
+            assert!(
+                read.iter().all(|account| account.secret.is_empty()),
+                "the collaborative document contains metadata only"
+            );
+        }
 
-    #[test]
-    fn sync_vault_never_deletes_an_account_missing_from_this_device() {
-        let mut doc = AutoCommit::new();
-        let mut accounts = demo_accounts();
-        AuthDoc::sync_vault(&mut doc, &accounts);
-        let retained_remote = accounts.remove(0);
-        AuthDoc::sync_vault(&mut doc, &accounts);
-        let read = AuthDoc::list_accounts(&doc);
-        assert_eq!(read.len(), accounts.len() + 1);
-        assert!(read.iter().any(|a| a.id == retained_remote.id));
-    }
+        // Case `sync_vault_never_deletes_an_account_missing_from_this_device`.
+        {
+            let mut doc = AutoCommit::new();
+            let mut accounts = demo_accounts();
+            AuthDoc::sync_vault(&mut doc, &accounts);
+            let retained_remote = accounts.remove(0);
+            AuthDoc::sync_vault(&mut doc, &accounts);
+            let read = AuthDoc::list_accounts(&doc);
+            assert_eq!(read.len(), accounts.len() + 1);
+            assert!(read.iter().any(|a| a.id == retained_remote.id));
+        }
 
-    #[test]
-    fn tombstone_wins_over_a_concurrent_metadata_update() {
-        let mut a = AutoCommit::new();
-        let account = demo_accounts().remove(0);
-        AuthDoc::upsert_account(&mut a, &account);
-        a.commit();
-        let mut b = AutoCommit::load(&a.save()).unwrap();
+        // Case `tombstone_wins_over_a_concurrent_metadata_update`.
+        {
+            let mut a = AutoCommit::new();
+            let account = demo_accounts().remove(0);
+            AuthDoc::upsert_account(&mut a, &account);
+            a.commit();
+            let mut b = AutoCommit::load(&a.save()).unwrap();
 
-        AuthDoc::delete_account(&mut a, account.id);
-        AuthDoc::set_label(&mut b, account.id, "updated elsewhere");
-        a.merge_incoming(&mut b).unwrap();
+            AuthDoc::delete_account(&mut a, account.id);
+            AuthDoc::set_label(&mut b, account.id, "updated elsewhere");
+            a.merge_incoming(&mut b).unwrap();
 
-        assert!(
-            AuthDoc::list_accounts(&a)
-                .iter()
-                .all(|entry| entry.id != account.id),
-            "a concurrent field update cannot resurrect a deleted account"
-        );
-    }
+            assert!(
+                AuthDoc::list_accounts(&a)
+                    .iter()
+                    .all(|entry| entry.id != account.id),
+                "a concurrent field update cannot resurrect a deleted account"
+            );
+        }
 
-    #[test]
-    fn two_docs_merge_accounts() {
-        let mut a = AutoCommit::new();
-        let acc_a = demo_accounts();
-        AuthDoc::upsert_account(&mut a, &acc_a[0]);
+        // Case `two_docs_merge_accounts`.
+        {
+            let mut a = AutoCommit::new();
+            let acc_a = demo_accounts();
+            AuthDoc::upsert_account(&mut a, &acc_a[0]);
 
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        AuthDoc::upsert_account(&mut b, &acc_a[1]);
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            AuthDoc::upsert_account(&mut b, &acc_a[1]);
 
-        let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b_loaded).unwrap();
+            let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b_loaded).unwrap();
 
-        let issuers: Vec<_> = AuthDoc::list_accounts(&a)
-            .into_iter()
-            .map(|x| x.issuer)
-            .collect();
-        assert!(issuers.contains(&acc_a[0].issuer));
-        assert!(issuers.contains(&acc_a[1].issuer));
+            let issuers: Vec<_> = AuthDoc::list_accounts(&a)
+                .into_iter()
+                .map(|x| x.issuer)
+                .collect();
+            assert!(issuers.contains(&acc_a[0].issuer));
+            assert!(issuers.contains(&acc_a[1].issuer));
+        }
     }
 }

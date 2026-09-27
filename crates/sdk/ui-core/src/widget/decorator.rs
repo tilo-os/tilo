@@ -470,6 +470,10 @@ pub trait Decorator {
         self.inner().cursor_shape(point)
     }
 
+    fn claims_raw_touch(&self, point: vello::kurbo::Point) -> bool {
+        self.inner().claims_raw_touch(point)
+    }
+
     fn tooltip(&self) -> Option<&str> {
         self.inner().tooltip()
     }
@@ -731,6 +735,10 @@ pub trait Decorator {
 
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.inner_mut().take_committed_action()
+    }
+
+    fn keeps_undo_step_open(&self) -> bool {
+        self.inner().keeps_undo_step_open()
     }
 
     fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
@@ -1244,6 +1252,10 @@ impl<T: Decorator> Widget for T {
         Decorator::cursor_shape(self, point)
     }
 
+    fn claims_raw_touch(&self, point: vello::kurbo::Point) -> bool {
+        Decorator::claims_raw_touch(self, point)
+    }
+
     fn tooltip(&self) -> Option<&str> {
         Decorator::tooltip(self)
     }
@@ -1499,6 +1511,10 @@ impl<T: Decorator> Widget for T {
 
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         Decorator::take_committed_action(self)
+    }
+
+    fn keeps_undo_step_open(&self) -> bool {
+        Decorator::keeps_undo_step_open(self)
     }
 
     fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {

@@ -106,84 +106,81 @@ mod tests {
     use crate::speaker::Priority;
 
     #[test]
-    fn plain_append_preserves_order() {
-        let mut q = SpeechQueue::new();
-        let interrupted = q.push(Utterance::new("a").with_interrupt(false));
-        assert!(!interrupted);
-        q.push(Utterance::new("b").with_interrupt(false));
-        q.push(Utterance::new("c").with_interrupt(false));
-        assert_eq!(q.len(), 3);
-        assert_eq!(q.pop().unwrap().text, "a");
-        assert_eq!(q.pop().unwrap().text, "b");
-        assert_eq!(q.pop().unwrap().text, "c");
-        assert!(q.is_empty());
-    }
-
-    #[test]
-    fn interrupt_drops_equal_and_lower_priority_pending() {
-        let mut q = SpeechQueue::new();
-        q.push(Utterance::new("focus 1")); // Message, interrupt
-        q.push(Utterance::new("focus 2")); // Message, interrupt -> drops focus 1
-        assert_eq!(q.len(), 1);
-        assert_eq!(q.peek().unwrap().text, "focus 2");
-    }
-
-    #[test]
-    fn interrupt_keeps_strictly_higher_priority_pending() {
-        let mut q = SpeechQueue::new();
-        // An error is queued (Important).
-        q.push(Utterance::new("error!").with_priority(Priority::Important));
-        // A focus change comes in (Message, interrupting).
-        let interrupted = q.push(Utterance::new("button"));
-        assert!(interrupted);
-        // The Important error must survive; the focus narration is appended after.
-        assert_eq!(q.len(), 2);
-        assert_eq!(q.pop().unwrap().text, "error!");
-        assert_eq!(q.pop().unwrap().text, "button");
-    }
-
-    #[test]
-    fn lower_priority_text_dropped_by_message_interrupt() {
-        let mut q = SpeechQueue::new();
-        q.push(
-            Utterance::new("a long document being read aloud")
-                .with_priority(Priority::Text)
-                .with_interrupt(false),
-        );
-        // Focus change interrupts bulk reading.
-        q.push(Utterance::new("Cancel button"));
-        assert_eq!(q.len(), 1);
-        assert_eq!(q.peek().unwrap().text, "Cancel button");
-    }
-
-    #[test]
-    fn clear_empties() {
-        let mut q = SpeechQueue::new();
-        q.push_text("a");
-        q.push_text("b");
-        q.clear();
-        assert!(q.is_empty());
-        assert_eq!(q.pop(), None);
-    }
-
-    #[test]
-    fn drive_flushes_into_speaker_in_order() {
-        use crate::null::NullSpeaker;
-        let mut q = SpeechQueue::new();
-        q.push(Utterance::new("one").with_interrupt(false));
-        q.push(Utterance::new("two").with_interrupt(false));
-        let mut spk = NullSpeaker::new();
-        q.drive(&mut spk);
-        assert!(q.is_empty());
-        assert_eq!(spk.spoken(), &["one".to_string(), "two".to_string()]);
-    }
-
-    #[test]
-    fn non_interrupting_does_not_clear() {
-        let mut q = SpeechQueue::new();
-        q.push(Utterance::new("important focus"));
-        let interrupted = q.push(Utterance::new("polite toast").with_interrupt(false));
-        assert!(!interrupted);
-        assert_eq!(q.len(), 2);
+    fn the_queue_orders_interrupts_and_drains_by_priority() {
+        // Phase `plain_append_preserves_order`.
+        {
+            let mut q = SpeechQueue::new();
+            let interrupted = q.push(Utterance::new("a").with_interrupt(false));
+            assert!(!interrupted);
+            q.push(Utterance::new("b").with_interrupt(false));
+            q.push(Utterance::new("c").with_interrupt(false));
+            assert_eq!(q.len(), 3);
+            assert_eq!(q.pop().unwrap().text, "a");
+            assert_eq!(q.pop().unwrap().text, "b");
+            assert_eq!(q.pop().unwrap().text, "c");
+            assert!(q.is_empty());
+        }
+        // Phase `interrupt_drops_equal_and_lower_priority_pending`.
+        {
+            let mut q = SpeechQueue::new();
+            q.push(Utterance::new("focus 1")); // Message, interrupt
+            q.push(Utterance::new("focus 2")); // Message, interrupt -> drops focus 1
+            assert_eq!(q.len(), 1);
+            assert_eq!(q.peek().unwrap().text, "focus 2");
+        }
+        // Phase `interrupt_keeps_strictly_higher_priority_pending`.
+        {
+            let mut q = SpeechQueue::new();
+            // An error is queued (Important).
+            q.push(Utterance::new("error!").with_priority(Priority::Important));
+            // A focus change comes in (Message, interrupting).
+            let interrupted = q.push(Utterance::new("button"));
+            assert!(interrupted);
+            // The Important error must survive; the focus narration is appended after.
+            assert_eq!(q.len(), 2);
+            assert_eq!(q.pop().unwrap().text, "error!");
+            assert_eq!(q.pop().unwrap().text, "button");
+        }
+        // Phase `lower_priority_text_dropped_by_message_interrupt`.
+        {
+            let mut q = SpeechQueue::new();
+            q.push(
+                Utterance::new("a long document being read aloud")
+                    .with_priority(Priority::Text)
+                    .with_interrupt(false),
+            );
+            // Focus change interrupts bulk reading.
+            q.push(Utterance::new("Cancel button"));
+            assert_eq!(q.len(), 1);
+            assert_eq!(q.peek().unwrap().text, "Cancel button");
+        }
+        // Phase `clear_empties`.
+        {
+            let mut q = SpeechQueue::new();
+            q.push_text("a");
+            q.push_text("b");
+            q.clear();
+            assert!(q.is_empty());
+            assert_eq!(q.pop(), None);
+        }
+        // Phase `drive_flushes_into_speaker_in_order`.
+        {
+            use crate::null::NullSpeaker;
+            let mut q = SpeechQueue::new();
+            q.push(Utterance::new("one").with_interrupt(false));
+            q.push(Utterance::new("two").with_interrupt(false));
+            let mut spk = NullSpeaker::new();
+            q.drive(&mut spk);
+            assert!(q.is_empty());
+            assert_eq!(spk.spoken(), &["one".to_string(), "two".to_string()]);
+        }
+        // Phase `non_interrupting_does_not_clear`.
+        {
+            let mut q = SpeechQueue::new();
+            q.push(Utterance::new("important focus"));
+            let interrupted = q.push(Utterance::new("polite toast").with_interrupt(false));
+            assert!(!interrupted);
+            assert_eq!(q.len(), 2);
+        }
     }
 }

@@ -25,7 +25,7 @@ use collab_types::caps::CapOverride;
 use crate::app::AppKind;
 use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
-use crate::projection::{ROOM_AUTOMATIONS_KEY, ROOM_EFFECT_RECEIPTS_KEY};
+use crate::projection::{ROOM_AUTOMATIONS_KEY, ROOM_EFFECT_RECEIPTS_KEY, ROOM_SCHEDULE_CLAIMS_KEY};
 use crate::task::{WorkspaceEffectReceipt, WorkspaceTask};
 use crate::topology::{DropTarget, TabMove};
 use crate::tree::DesktopTree;
@@ -263,6 +263,12 @@ pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
                 .iter()
                 .map(|shortcut| (shortcut.id.clone(), shortcut)),
         );
+        put_blob_map(
+            doc,
+            &entry,
+            ROOM_SCHEDULE_CLAIMS_KEY,
+            ws.schedule_claims.iter().map(|claim| (claim.key(), claim)),
+        );
         let Ok(strips) = doc.put_object(&entry, STRIPS_KEY, ObjType::List) else {
             continue;
         };
@@ -322,6 +328,13 @@ fn read_shortcuts(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::Short
         read_blob_map(doc, entry, ROOM_AUTOMATIONS_KEY).unwrap_or_default();
     shortcuts.sort_by(|left, right| left.id.cmp(&right.id));
     shortcuts
+}
+
+fn read_schedule_claims(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::ScheduleClaim> {
+    let mut claims: Vec<tilo_automation::ScheduleClaim> =
+        read_blob_map(doc, entry, ROOM_SCHEDULE_CLAIMS_KEY).unwrap_or_default();
+    claims.sort_by_key(tilo_automation::ScheduleClaim::key);
+    claims
 }
 
 fn read_effect_receipts(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceEffectReceipt> {
@@ -386,6 +399,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
         ws.tasks = read_tasks(doc, entry);
         ws.effect_receipts = read_effect_receipts(doc, entry);
         ws.shortcuts = read_shortcuts(doc, entry);
+        ws.schedule_claims = read_schedule_claims(doc, entry);
         rebuilt.push(ws);
     }
     desktop.workspaces = rebuilt;
@@ -621,6 +635,21 @@ pub fn remove_shortcut(doc: &mut AutoCommit, workspace_id: WorkspaceId, shortcut
     };
     doc.get(&shortcuts, shortcut_id).ok().flatten().is_some()
         && doc.delete(&shortcuts, shortcut_id).is_ok()
+}
+
+/// Record a schedule claim under its schedule, replacing the earlier one.
+pub fn upsert_schedule_claim(
+    doc: &mut AutoCommit,
+    workspace_id: WorkspaceId,
+    claim: &tilo_automation::ScheduleClaim,
+) -> bool {
+    upsert_blob(
+        doc,
+        workspace_id,
+        ROOM_SCHEDULE_CLAIMS_KEY,
+        &claim.key(),
+        claim,
+    )
 }
 
 /// Record an effect receipt under its invocation.

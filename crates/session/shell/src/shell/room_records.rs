@@ -1050,228 +1050,238 @@ mod tests {
     }
 
     #[test]
-    fn a_room_holds_references_and_the_record_is_untouched() {
-        let mut rr = RoomRecords::in_memory();
-        let a = room();
-        let b = room();
-        let id = RecordId::minted();
-        let kind = RecordKind::new("book");
+    fn rooms_hold_distinct_recognisable_references_to_untouched_records() {
+        // Phase `a_room_holds_references_and_the_record_is_untouched`.
+        {
+            let mut rr = RoomRecords::in_memory();
+            let a = room();
+            let b = room();
+            let id = RecordId::minted();
+            let kind = RecordKind::new("book");
 
-        assert!(rr.reference(a, &id, &kind), "first reference adds");
-        assert!(
-            !rr.reference(a, &id, &kind),
-            "referencing twice adds nothing"
-        );
-        assert!(rr.holds(a, &id));
-        assert!(!rr.holds(b, &id));
+            assert!(rr.reference(a, &id, &kind), "first reference adds");
+            assert!(
+                !rr.reference(a, &id, &kind),
+                "referencing twice adds nothing"
+            );
+            assert!(rr.holds(a, &id));
+            assert!(!rr.holds(b, &id));
 
-        assert!(rr.reference(b, &id, &kind));
-        assert!(rr.holds(a, &id) && rr.holds(b, &id));
-        assert_eq!(rr.records_in(a), rr.records_in(b));
+            assert!(rr.reference(b, &id, &kind));
+            assert!(rr.holds(a, &id) && rr.holds(b, &id));
+            assert_eq!(rr.records_in(a), rr.records_in(b));
 
-        assert!(rr.unreference(a, &id));
-        assert!(!rr.holds(a, &id));
-        assert!(rr.holds(b, &id), "the record is still in the other room");
-    }
+            assert!(rr.unreference(a, &id));
+            assert!(!rr.holds(a, &id));
+            assert!(rr.holds(b, &id), "the record is still in the other room");
+        }
 
-    #[test]
-    fn known_keeps_equal_record_ids_in_different_rooms_distinct() {
-        let mut rr = RoomRecords::in_memory();
-        let home = room();
-        let other = room();
-        let scanned = RecordId::for_file("/work/report.odt");
-        rr.seed_observed([ObservedRecord {
-            id: scanned.clone(),
-            kind: RecordKind::new("document"),
-            home: Some(home),
-            package_id: "so.tilo.word-processor".into(),
-        }]);
-        rr.reference(other, &scanned, &RecordKind::new("document"));
+        // Phase `known_keeps_equal_record_ids_in_different_rooms_distinct`.
+        {
+            let mut rr = RoomRecords::in_memory();
+            let home = room();
+            let other = room();
+            let scanned = RecordId::for_file("/work/report.odt");
+            rr.seed_observed([ObservedRecord {
+                id: scanned.clone(),
+                kind: RecordKind::new("document"),
+                home: Some(home),
+                package_id: "so.tilo.word-processor".into(),
+            }]);
+            rr.reference(other, &scanned, &RecordKind::new("document"));
 
-        let known = rr.known();
-        assert_eq!(
-            known.len(),
-            2,
-            "one id names two room-scoped records: {known:?}"
-        );
-        let observed = known
-            .iter()
-            .find(|record| record.home == Some(home))
-            .expect("scanned home record");
-        assert_eq!(observed.id, scanned);
-        assert!(observed.held_by.is_empty());
-        assert_eq!(
-            observed.package_id.as_deref(),
-            Some("so.tilo.word-processor")
-        );
-        let referenced = known
-            .iter()
-            .find(|record| record.home == Some(other))
-            .expect("other room reference");
-        assert_eq!(referenced.id, scanned);
-        assert_eq!(referenced.held_by, vec![other]);
-        assert_eq!(referenced.title(), "report.odt");
-    }
-
-    #[test]
-    fn titles_name_the_thing_a_person_would_recognise() {
-        let file = RecordId::for_file("/home/q/books/dune.epub");
-        assert_eq!(record_title(&file, &RecordKind::new("book")), "dune.epub");
-        let markup = RecordId::derived("annotations", &file);
-        assert_eq!(
-            record_title(&markup, &RecordKind::new("annotation-set")),
-            "annotations of dune.epub"
-        );
-        let minted = RecordId::minted();
-        assert_eq!(
-            record_title(&minted, &RecordKind::new("playlist")),
-            "playlist"
-        );
-    }
-
-    #[test]
-    fn every_change_is_visible_in_the_next_answer() {
-        let mut rr = RoomRecords::in_memory();
-        let a = room();
-        let b = room();
-        let id = RecordId::minted();
-        let kind = RecordKind::new("book");
-
-        assert!(rr.known().is_empty(), "nothing yet");
-
-        rr.reference(a, &id, &kind);
-        assert_eq!(rr.known().len(), 1, "a reference is visible immediately");
-        assert_eq!(rr.known()[0].held_by, vec![a]);
-
-        rr.reference(b, &id, &kind);
-        assert_eq!(rr.known().len(), 2, "the second room is a separate scope");
-        assert!(rr.known().iter().any(|record| record.home == Some(a)));
-        assert!(rr.known().iter().any(|record| record.home == Some(b)));
-
-        rr.reference(b, &id, &RecordKind::new("field-guide"));
-        assert_eq!(
-            rr.known()
+            let known = rr.known();
+            assert_eq!(
+                known.len(),
+                2,
+                "one id names two room-scoped records: {known:?}"
+            );
+            let observed = known
                 .iter()
-                .find(|record| record.home == Some(b))
-                .map(|record| record.kind.as_str()),
-            Some("field-guide")
-        );
+                .find(|record| record.home == Some(home))
+                .expect("scanned home record");
+            assert_eq!(observed.id, scanned);
+            assert!(observed.held_by.is_empty());
+            assert_eq!(
+                observed.package_id.as_deref(),
+                Some("so.tilo.word-processor")
+            );
+            let referenced = known
+                .iter()
+                .find(|record| record.home == Some(other))
+                .expect("other room reference");
+            assert_eq!(referenced.id, scanned);
+            assert_eq!(referenced.held_by, vec![other]);
+            assert_eq!(referenced.title(), "report.odt");
+        }
 
-        rr.unreference(a, &id);
-        assert_eq!(
-            rr.known()[0].held_by,
-            vec![b],
-            "dropping a reference is visible immediately"
-        );
-
-        rr.seed_observed([ObservedRecord {
-            id: RecordId::for_file("/work/other.odt"),
-            kind: RecordKind::new("document"),
-            home: Some(a),
-            package_id: "so.tilo.word-processor".into(),
-        }]);
-        assert_eq!(
-            rr.known().len(),
-            2,
-            "a seeded record is visible immediately"
-        );
+        // Phase `titles_name_the_thing_a_person_would_recognise`.
+        {
+            let file = RecordId::for_file("/home/q/books/dune.epub");
+            assert_eq!(record_title(&file, &RecordKind::new("book")), "dune.epub");
+            let markup = RecordId::derived("annotations", &file);
+            assert_eq!(
+                record_title(&markup, &RecordKind::new("annotation-set")),
+                "annotations of dune.epub"
+            );
+            let minted = RecordId::minted();
+            assert_eq!(
+                record_title(&minted, &RecordKind::new("playlist")),
+                "playlist"
+            );
+        }
     }
 
     #[test]
-    fn an_unchanged_index_hands_back_the_same_corpus() {
-        let mut rr = RoomRecords::in_memory();
-        rr.reference(room(), &RecordId::minted(), &RecordKind::new("book"));
-        let first = rr.known();
-        let second = rr.known();
-        assert!(
-            std::rc::Rc::ptr_eq(&first, &second),
-            "two reads with no change between them must not recompute"
-        );
-        rr.reference(room(), &RecordId::minted(), &RecordKind::new("book"));
-        assert!(
-            !std::rc::Rc::ptr_eq(&first, &rr.known()),
-            "and a change must produce a new one"
-        );
-    }
-
-    #[test]
-    fn an_in_memory_index_never_reaches_the_disk() {
-        let rr = RoomRecords::in_memory();
-        assert!(
-            rr.scan_complete(),
-            "an in-memory index has no scan to wait for"
-        );
-        assert!(rr.known().is_empty());
-    }
-
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the test keeps index guards alive through each generation-invalidation assertion"
     )]
-    #[test]
-    fn exhausted_generations_refuse_mutations_and_scan_replacements() {
-        let mut rr = RoomRecords::in_memory();
-        let room = room();
-        let old = RecordId::for_file("old.odt");
-        let new = RecordId::for_file("new.odt");
-        let kind = RecordKind::new("document");
-        rr.generation = u64::MAX;
-        let generation = rr.search_generation();
-        assert!(!rr.reference(room, &old, &kind));
-        rr.seed_observed([ObservedRecord {
-            id: old.clone(),
-            kind: kind.clone(),
-            home: Some(room),
-            package_id: "so.tilo.word-processor".into(),
-        }]);
-        assert!(rr.known().is_empty());
-        assert_eq!(rr.search_generation(), generation);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn record_index_answers_fresh_stays_in_memory_and_refuses_exhausted_generations() {
+        // Phase `every_change_is_visible_in_the_next_answer`.
+        {
+            let mut rr = RoomRecords::in_memory();
+            let a = room();
+            let b = room();
+            let id = RecordId::minted();
+            let kind = RecordKind::new("book");
 
-        rr.generation = 0;
-        rr.replace_scanned_records_for_test(vec![ObservedRecord {
-            id: old.clone(),
-            kind: kind.clone(),
-            home: Some(room),
-            package_id: "so.tilo.word-processor".into(),
-        }]);
-        let scan = Arc::clone(rr.scan.as_ref().unwrap());
-        scan.lock().unwrap().revision = u64::MAX;
-        rr.replace_scanned_records_for_test(vec![ObservedRecord {
-            id: new,
-            kind,
-            home: Some(room),
-            package_id: "so.tilo.word-processor".into(),
-        }]);
-        let scan = scan.lock().unwrap();
-        assert_eq!(scan.records.len(), 1);
-        assert_eq!(scan.records[0].id, old);
-        assert_eq!(scan.revision, u64::MAX);
-    }
+            assert!(rr.known().is_empty(), "nothing yet");
 
-    #[test]
-    fn validated_cold_load_is_read_only_and_checks_record_identity() {
-        let temp = tempfile::tempdir().unwrap();
-        let record_dir = temp.path().join("records").join("one");
-        std::fs::create_dir_all(&record_dir).unwrap();
-        let document = record_dir.join(app_state::DOCUMENT_FILE);
-        let expected = RecordId::for_file("cold.md");
-        let mut doc = AutoCommit::new();
-        ui::record::init(&mut doc, &expected, &RecordKind::new("note"), "");
-        doc.put(&automerge::ROOT, "body", "cold history").unwrap();
-        doc.commit_with(CommitOptions::default().with_time(10));
-        std::fs::write(&document, doc.save()).unwrap();
+            rr.reference(a, &id, &kind);
+            assert_eq!(rr.known().len(), 1, "a reference is visible immediately");
+            assert_eq!(rr.known()[0].held_by, vec![a]);
 
-        let root = temp.path().canonicalize().unwrap();
-        let location = validate_record_location(&root, &document).unwrap();
-        let mut loaded = read_validated_record_document(&expected, &location).unwrap();
-        assert!(!loaded.get_heads().is_empty());
-        assert!(
-            read_validated_record_document(&RecordId::minted(), &location).is_none(),
-            "a path may not be reused to answer for a different record"
-        );
-        assert!(
-            !record_dir.join(app_state::LOCK_FILE).exists(),
-            "history reads must not acquire or create a writer lock"
-        );
+            rr.reference(b, &id, &kind);
+            assert_eq!(rr.known().len(), 2, "the second room is a separate scope");
+            assert!(rr.known().iter().any(|record| record.home == Some(a)));
+            assert!(rr.known().iter().any(|record| record.home == Some(b)));
+
+            rr.reference(b, &id, &RecordKind::new("field-guide"));
+            assert_eq!(
+                rr.known()
+                    .iter()
+                    .find(|record| record.home == Some(b))
+                    .map(|record| record.kind.as_str()),
+                Some("field-guide")
+            );
+
+            rr.unreference(a, &id);
+            assert_eq!(
+                rr.known()[0].held_by,
+                vec![b],
+                "dropping a reference is visible immediately"
+            );
+
+            rr.seed_observed([ObservedRecord {
+                id: RecordId::for_file("/work/other.odt"),
+                kind: RecordKind::new("document"),
+                home: Some(a),
+                package_id: "so.tilo.word-processor".into(),
+            }]);
+            assert_eq!(
+                rr.known().len(),
+                2,
+                "a seeded record is visible immediately"
+            );
+        }
+
+        // Phase `an_unchanged_index_hands_back_the_same_corpus`.
+        {
+            let mut rr = RoomRecords::in_memory();
+            rr.reference(room(), &RecordId::minted(), &RecordKind::new("book"));
+            let first = rr.known();
+            let second = rr.known();
+            assert!(
+                std::rc::Rc::ptr_eq(&first, &second),
+                "two reads with no change between them must not recompute"
+            );
+            rr.reference(room(), &RecordId::minted(), &RecordKind::new("book"));
+            assert!(
+                !std::rc::Rc::ptr_eq(&first, &rr.known()),
+                "and a change must produce a new one"
+            );
+        }
+
+        // Phase `an_in_memory_index_never_reaches_the_disk`.
+        {
+            let rr = RoomRecords::in_memory();
+            assert!(
+                rr.scan_complete(),
+                "an in-memory index has no scan to wait for"
+            );
+            assert!(rr.known().is_empty());
+        }
+
+        // Phase `exhausted_generations_refuse_mutations_and_scan_replacements`.
+        {
+            let mut rr = RoomRecords::in_memory();
+            let room = room();
+            let old = RecordId::for_file("old.odt");
+            let new = RecordId::for_file("new.odt");
+            let kind = RecordKind::new("document");
+            rr.generation = u64::MAX;
+            let generation = rr.search_generation();
+            assert!(!rr.reference(room, &old, &kind));
+            rr.seed_observed([ObservedRecord {
+                id: old.clone(),
+                kind: kind.clone(),
+                home: Some(room),
+                package_id: "so.tilo.word-processor".into(),
+            }]);
+            assert!(rr.known().is_empty());
+            assert_eq!(rr.search_generation(), generation);
+
+            rr.generation = 0;
+            rr.replace_scanned_records_for_test(vec![ObservedRecord {
+                id: old.clone(),
+                kind: kind.clone(),
+                home: Some(room),
+                package_id: "so.tilo.word-processor".into(),
+            }]);
+            let scan = Arc::clone(rr.scan.as_ref().unwrap());
+            scan.lock().unwrap().revision = u64::MAX;
+            rr.replace_scanned_records_for_test(vec![ObservedRecord {
+                id: new,
+                kind,
+                home: Some(room),
+                package_id: "so.tilo.word-processor".into(),
+            }]);
+            let scan = scan.lock().unwrap();
+            assert_eq!(scan.records.len(), 1);
+            assert_eq!(scan.records[0].id, old);
+            assert_eq!(scan.revision, u64::MAX);
+        }
+
+        // Phase `validated_cold_load_is_read_only_and_checks_record_identity`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let record_dir = temp.path().join("records").join("one");
+            std::fs::create_dir_all(&record_dir).unwrap();
+            let document = record_dir.join(app_state::DOCUMENT_FILE);
+            let expected = RecordId::for_file("cold.md");
+            let mut doc = AutoCommit::new();
+            ui::record::init(&mut doc, &expected, &RecordKind::new("note"), "");
+            doc.put(&automerge::ROOT, "body", "cold history").unwrap();
+            doc.commit_with(CommitOptions::default().with_time(10));
+            std::fs::write(&document, doc.save()).unwrap();
+
+            let root = temp.path().canonicalize().unwrap();
+            let location = validate_record_location(&root, &document).unwrap();
+            let mut loaded = read_validated_record_document(&expected, &location).unwrap();
+            assert!(!loaded.get_heads().is_empty());
+            assert!(
+                read_validated_record_document(&RecordId::minted(), &location).is_none(),
+                "a path may not be reused to answer for a different record"
+            );
+            assert!(
+                !record_dir.join(app_state::LOCK_FILE).exists(),
+                "history reads must not acquire or create a writer lock"
+            );
+        }
     }
 }

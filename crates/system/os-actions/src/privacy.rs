@@ -426,76 +426,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hardware_camera_shutter_wins_over_software_state() {
-        let root = tempfile::tempdir().unwrap();
-        let dev = tempfile::tempdir().unwrap();
-        let camera = root.path().join("rfkill0");
-        std::fs::create_dir(&camera).unwrap();
-        std::fs::write(camera.join("type"), "camera\n").unwrap();
-        std::fs::write(camera.join("soft"), "0\n").unwrap();
-        std::fs::write(camera.join("hard"), "1\n").unwrap();
+    fn device_use_is_attributed_only_from_server_side_security_evidence() {
+        // Phase `hardware_camera_shutter_wins_over_software_state`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let dev = tempfile::tempdir().unwrap();
+            let camera = root.path().join("rfkill0");
+            std::fs::create_dir(&camera).unwrap();
+            std::fs::write(camera.join("type"), "camera\n").unwrap();
+            std::fs::write(camera.join("soft"), "0\n").unwrap();
+            std::fs::write(camera.join("hard"), "1\n").unwrap();
 
-        let status = get_privacy_status_from(root.path(), dev.path());
-        assert_eq!(status.camera_kill, KillState::HardwareBlocked);
-    }
-
-    #[test]
-    fn pipewire_attribution_uses_security_pid_and_kernel_executable() {
-        use std::os::unix::fs::symlink;
-        let proc = tempfile::tempdir().unwrap();
-        let process = proc.path().join("4242");
-        std::fs::create_dir_all(&process).unwrap();
-        std::fs::write(
-            process.join("status"),
-            "Name:\tbad\nUid:\t1000\t1000\t1000\t1000\n",
-        )
-        .unwrap();
-        symlink("/usr/bin/tilo-video-chat", process.join("exe")).unwrap();
-        let json = r#"[
-          {"id":7,"type":"PipeWire:Interface:Client","info":{"props":{
-            "pipewire.sec.pid":4242,"application.name":"Settings (spoofed)"}}},
-          {"id":9,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{
-            "client.id":7,"media.class":"Stream/Input/Audio"}}}
-        ]"#;
-        let uses = parse_pipewire_media(json, proc.path(), 1000).unwrap();
-        assert_eq!(uses.len(), 1);
-        assert_eq!(uses[0].label, "Local process · Video Chat");
-        assert_eq!(uses[0].kind, MediaKind::Microphone);
-        assert!(!uses[0].label.contains("Settings"));
-    }
-
-    #[test]
-    fn client_claim_without_server_security_pid_is_not_attributed() {
-        let json = r#"[
-          {"id":7,"type":"PipeWire:Interface:Client","info":{"props":{
-            "application.process.id":1,"application.name":"Trusted App"}}},
-          {"id":9,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{
-            "client.id":7,"media.class":"Stream/Input/Video"}}}
-        ]"#;
-        assert!(
-            parse_pipewire_media(json, Path::new("/proc"), effective_uid())
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn portal_identity_requires_server_flatpak_security_marker() {
-        use std::os::unix::fs::symlink;
-        let proc = tempfile::tempdir().unwrap();
-        let process = proc.path().join("4242");
-        std::fs::create_dir_all(&process).unwrap();
-        std::fs::write(process.join("status"), "Uid:\t1000\t1000\t1000\t1000\n").unwrap();
-        symlink("/app/bin/chat", process.join("exe")).unwrap();
-        let json = r#"[
-          {"id":7,"type":"PipeWire:Interface:Client","info":{"props":{
-            "pipewire.sec.pid":4242,"pipewire.sec.flatpak":"true",
-            "pipewire.access.portal.app_id":"org.example.Chat"}}},
-          {"id":9,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{
-            "client.id":7,"media.class":"Stream/Input/Video"}}}
-        ]"#;
-        let uses = parse_pipewire_media(json, proc.path(), 1000).unwrap();
-        assert_eq!(uses[0].app_id, "flatpak:org.example.Chat");
-        assert_eq!(uses[0].label, "Chat");
+            let status = get_privacy_status_from(root.path(), dev.path());
+            assert_eq!(status.camera_kill, KillState::HardwareBlocked);
+        }
+        // Phase `pipewire_attribution_uses_security_pid_and_kernel_executable`.
+        {
+            use std::os::unix::fs::symlink;
+            let proc = tempfile::tempdir().unwrap();
+            let process = proc.path().join("4242");
+            std::fs::create_dir_all(&process).unwrap();
+            std::fs::write(
+                process.join("status"),
+                "Name:\tbad\nUid:\t1000\t1000\t1000\t1000\n",
+            )
+            .unwrap();
+            symlink("/usr/bin/tilo-video-chat", process.join("exe")).unwrap();
+            let json = r#"[
+              {"id":7,"type":"PipeWire:Interface:Client","info":{"props":{
+                "pipewire.sec.pid":4242,"application.name":"Settings (spoofed)"}}},
+              {"id":9,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{
+                "client.id":7,"media.class":"Stream/Input/Audio"}}}
+            ]"#;
+            let uses = parse_pipewire_media(json, proc.path(), 1000).unwrap();
+            assert_eq!(uses.len(), 1);
+            assert_eq!(uses[0].label, "Local process · Video Chat");
+            assert_eq!(uses[0].kind, MediaKind::Microphone);
+            assert!(!uses[0].label.contains("Settings"));
+        }
+        // Phase `client_claim_without_server_security_pid_is_not_attributed`.
+        {
+            let json = r#"[
+              {"id":7,"type":"PipeWire:Interface:Client","info":{"props":{
+                "application.process.id":1,"application.name":"Trusted App"}}},
+              {"id":9,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{
+                "client.id":7,"media.class":"Stream/Input/Video"}}}
+            ]"#;
+            assert!(
+                parse_pipewire_media(json, Path::new("/proc"), effective_uid())
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        // Phase `portal_identity_requires_server_flatpak_security_marker`.
+        {
+            use std::os::unix::fs::symlink;
+            let proc = tempfile::tempdir().unwrap();
+            let process = proc.path().join("4242");
+            std::fs::create_dir_all(&process).unwrap();
+            std::fs::write(process.join("status"), "Uid:\t1000\t1000\t1000\t1000\n").unwrap();
+            symlink("/app/bin/chat", process.join("exe")).unwrap();
+            let json = r#"[
+              {"id":7,"type":"PipeWire:Interface:Client","info":{"props":{
+                "pipewire.sec.pid":4242,"pipewire.sec.flatpak":"true",
+                "pipewire.access.portal.app_id":"org.example.Chat"}}},
+              {"id":9,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{
+                "client.id":7,"media.class":"Stream/Input/Video"}}}
+            ]"#;
+            let uses = parse_pipewire_media(json, proc.path(), 1000).unwrap();
+            assert_eq!(uses[0].app_id, "flatpak:org.example.Chat");
+            assert_eq!(uses[0].label, "Chat");
+        }
     }
 }

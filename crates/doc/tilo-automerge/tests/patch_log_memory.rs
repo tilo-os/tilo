@@ -20,6 +20,10 @@ static HEAP: ThreadCounting = ThreadCounting;
 
 const ROUNDS: usize = 20;
 const OPS_PER_ROUND: usize = 1000;
+const META_EVERY: usize = 10;
+const TYPED_RUN: &str = "xxxxxxxxx";
+// Every round is still 1000 ops: 100 map writes and 900 typed characters.
+const _: () = assert!(TYPED_RUN.len() == META_EVERY - 1);
 
 /// The incremental saves of a peer typing into a text and writing a map, one per round.
 fn remote_rounds() -> Vec<Vec<u8>> {
@@ -29,19 +33,19 @@ fn remote_rounds() -> Vec<Vec<u8>> {
     let mut rounds = vec![remote.save_incremental()];
     let mut typed = 0usize;
     for round in 0..ROUNDS {
-        for op in 0..OPS_PER_ROUND {
-            if op % 10 == 0 {
-                remote
-                    .put(
-                        &meta,
-                        format!("k{}", op % 50),
-                        i64::try_from(round).unwrap(),
-                    )
-                    .unwrap();
-            } else {
-                remote.splice_text(&text, typed, 0, "x").unwrap();
-                typed += 1;
-            }
+        // Each map write is followed by nine typed characters. One splice of the nine
+        // records the same nine single-character inserts, each after the last, as nine
+        // one-character splices do, without locating the insertion point nine times.
+        for op in (0..OPS_PER_ROUND).step_by(META_EVERY) {
+            remote
+                .put(
+                    &meta,
+                    format!("k{}", op % 50),
+                    i64::try_from(round).unwrap(),
+                )
+                .unwrap();
+            remote.splice_text(&text, typed, 0, TYPED_RUN).unwrap();
+            typed += TYPED_RUN.len();
         }
         remote.commit();
         rounds.push(remote.save_incremental());

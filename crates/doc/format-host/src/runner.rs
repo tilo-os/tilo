@@ -309,46 +309,41 @@ mod tests {
     }
 
     #[test]
-    fn minimal_module_loads() {
+    fn provider_modules_are_validated_at_load_and_bounded_at_call() {
         load(MINIMAL).unwrap();
-    }
 
-    #[test]
-    fn rejects_missing_export() {
-        let wat = MINIMAL.replace("tilo_fp_export", "something_else");
-        let err = load(&wat).err().unwrap().to_string();
-        assert!(err.contains("missing export tilo_fp_export"), "{err}");
-    }
+        let detect = r#"(func (export "tilo_fp_detect") (param i32 i32) (result i64) i64.const 0)"#;
+        for (name, from, to, want) in [
+            (
+                "missing export",
+                "tilo_fp_export",
+                "something_else",
+                "missing export tilo_fp_export",
+            ),
+            (
+                "wrong signature",
+                detect,
+                r#"(func (export "tilo_fp_detect") (param i32) (result i64) i64.const 0)"#,
+                "tilo_fp_detect has signature",
+            ),
+            (
+                "foreign imports",
+                "(memory",
+                r#"(import "wasi_snapshot_preview1" "fd_write" (func (param i32 i32 i32 i32) (result i32))) (memory"#,
+                "wasi_snapshot_preview1::fd_write",
+            ),
+            (
+                "other ABI version",
+                "(result i32) i32.const 1)",
+                "(result i32) i32.const 2)",
+                "ABI version 2",
+            ),
+        ] {
+            let err = load(&MINIMAL.replace(from, to)).err().unwrap().to_string();
+            assert!(err.contains(want), "case {name}: {err}");
+        }
 
-    #[test]
-    fn rejects_wrong_signature() {
-        let wat = MINIMAL.replace(
-            r#"(func (export "tilo_fp_detect") (param i32 i32) (result i64) i64.const 0)"#,
-            r#"(func (export "tilo_fp_detect") (param i32) (result i64) i64.const 0)"#,
-        );
-        let err = load(&wat).err().unwrap().to_string();
-        assert!(err.contains("tilo_fp_detect has signature"), "{err}");
-    }
-
-    #[test]
-    fn rejects_foreign_imports() {
-        let wat = MINIMAL.replace(
-            "(memory",
-            r#"(import "wasi_snapshot_preview1" "fd_write" (func (param i32 i32 i32 i32) (result i32))) (memory"#,
-        );
-        let err = load(&wat).err().unwrap().to_string();
-        assert!(err.contains("wasi_snapshot_preview1::fd_write"), "{err}");
-    }
-
-    #[test]
-    fn rejects_other_abi_version() {
-        let wat = MINIMAL.replace("(result i32) i32.const 1)", "(result i32) i32.const 2)");
-        let err = load(&wat).err().unwrap().to_string();
-        assert!(err.contains("ABI version 2"), "{err}");
-    }
-
-    #[test]
-    fn out_of_bounds_response_is_a_trap() {
+        // An out-of-bounds response is a trap, not a read.
         let wat = MINIMAL.replace(
             r#"(func (export "tilo_fp_import") (param i32 i32) (result i64) i64.const 0)"#,
             r#"(func (export "tilo_fp_import") (param i32 i32) (result i64) i64.const 0x0010000000000000)"#,

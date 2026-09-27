@@ -16,6 +16,18 @@ artifact = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(artifact)
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class ImportTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -74,84 +86,87 @@ class ImportTests(unittest.TestCase):
     def destination(self):
         return self.repo / 'os/hardware/firmware/board'
 
-    def test_verified_payload_staged_and_identical_repeat_allowed(self):
-        receipt = self.execute()
-        self.assertEqual((self.destination / 'radio.bin').read_bytes(), b'firmware')
-        self.assertEqual(receipt['manifest_sha256'], self.args.manifest_sha256)
-        self.assertEqual(self.execute(), receipt)
-        self.assertEqual(self.calls[-1][0][:2], ('image', 'unmount'))
-        self.assertTrue(all(call[0][0] in ('pull', 'image') for call in self.calls))
-        self.assertEqual(len({storage for _, storage in self.calls[:4]}), 1)
-        self.assertEqual(len({storage for _, storage in self.calls[4:]}), 1)
-        self.assertNotEqual(self.calls[0][1], self.calls[4][1])
-        self.assertTrue(all(not storage.exists() for _, storage in self.calls))
-
-    def test_independent_manifest_mismatch_unmounts_without_staging(self):
-        self.args.manifest_sha256 = '0' * 64
-        with self.assertRaisesRegex(ValueError, 'independent digest'):
+    def test_verified_import(self):
+        with self.subTest(phase="verified_payload_staged_and_identical_repeat_allowed"):
+            receipt = self.execute()
+            self.assertEqual((self.destination / 'radio.bin').read_bytes(), b'firmware')
+            self.assertEqual(receipt['manifest_sha256'], self.args.manifest_sha256)
+            self.assertEqual(self.execute(), receipt)
+            self.assertEqual(self.calls[-1][0][:2], ('image', 'unmount'))
+            self.assertTrue(all(call[0][0] in ('pull', 'image') for call in self.calls))
+            self.assertEqual(len({storage for _, storage in self.calls[:4]}), 1)
+            self.assertEqual(len({storage for _, storage in self.calls[4:]}), 1)
+            self.assertNotEqual(self.calls[0][1], self.calls[4][1])
+            self.assertTrue(all(not storage.exists() for _, storage in self.calls))
+        restart_fixture(self)
+        with self.subTest(phase="existing_different_files_preserved"):
             self.execute()
-        self.assertFalse(self.destination.exists())
-        self.assertEqual(self.calls[-1][0][:2], ('image', 'unmount'))
+            (self.destination / 'radio.bin').write_bytes(b'original')
+            with self.assertRaisesRegex(ValueError, 'existing firmware'):
+                self.execute()
+            self.assertEqual((self.destination / 'radio.bin').read_bytes(), b'original')
+        restart_fixture(self)
+        with self.subTest(phase="nested_podman_uses_private_vfs_store"):
+            store = self.base / 'private-store'
+            with patch.object(artifact.subprocess, 'run') as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = b''
+                artifact.command('pull', self.args.reference, storage=store)
+            argv = run.call_args.args[0]
+            self.assertEqual(argv[:5], ['podman', '--remote=false', '--storage-driver=vfs',
+                                        f'--root={store / "graph"}', f'--runroot={store / "run"}'])
+            self.assertEqual(argv[5:], ['pull', self.args.reference])
+            self.assertNotIn('REGISTRY_TOKEN', run.call_args.kwargs['env'])
 
-    def test_blob_corruption_unmounts_without_staging(self):
-        (self.firmware / 'radio.bin').write_bytes(b'corrupt')
-        with self.assertRaisesRegex(ValueError, 'hash differs'):
-            self.execute()
-        self.assertFalse(self.destination.exists())
-        self.assertEqual(self.calls[-1][0][:2], ('image', 'unmount'))
+    def test_corrupted_payload_never_staged(self):
+        with self.subTest(phase="independent_manifest_mismatch_unmounts_without_staging"):
+            self.args.manifest_sha256 = '0' * 64
+            with self.assertRaisesRegex(ValueError, 'independent digest'):
+                self.execute()
+            self.assertFalse(self.destination.exists())
+            self.assertEqual(self.calls[-1][0][:2], ('image', 'unmount'))
+        restart_fixture(self)
+        with self.subTest(phase="blob_corruption_unmounts_without_staging"):
+            (self.firmware / 'radio.bin').write_bytes(b'corrupt')
+            with self.assertRaisesRegex(ValueError, 'hash differs'):
+                self.execute()
+            self.assertFalse(self.destination.exists())
+            self.assertEqual(self.calls[-1][0][:2], ('image', 'unmount'))
+        restart_fixture(self)
+        with self.subTest(phase="unknown_file_rejected"):
+            (self.firmware / 'extra').write_text('extra')
+            with self.assertRaisesRegex(ValueError, 'exactly'):
+                self.execute()
+            self.assertFalse(self.destination.exists())
+        restart_fixture(self)
+        with self.subTest(phase="symlink_rejected"):
+            path = self.firmware / 'radio.bin'
+            path.unlink()
+            path.symlink_to(self.firmware / 'manifest.json')
+            with self.assertRaisesRegex(ValueError, 'symlink'):
+                self.execute()
+            self.assertFalse(self.destination.exists())
+        restart_fixture(self)
+        with self.subTest(phase="failed_unmount_never_stages"):
+            self.fail_unmount = True
+            with self.assertRaisesRegex(ValueError, 'unmount failed'):
+                self.execute()
+            self.assertFalse(self.destination.exists())
 
-    def test_unknown_file_rejected(self):
-        (self.firmware / 'extra').write_text('extra')
-        with self.assertRaisesRegex(ValueError, 'exactly'):
-            self.execute()
-        self.assertFalse(self.destination.exists())
-
-    def test_symlink_rejected(self):
-        path = self.firmware / 'radio.bin'
-        path.unlink()
-        path.symlink_to(self.firmware / 'manifest.json')
-        with self.assertRaisesRegex(ValueError, 'symlink'):
-            self.execute()
-        self.assertFalse(self.destination.exists())
-
-    def test_existing_different_files_preserved(self):
-        self.execute()
-        (self.destination / 'radio.bin').write_bytes(b'original')
-        with self.assertRaisesRegex(ValueError, 'existing firmware'):
-            self.execute()
-        self.assertEqual((self.destination / 'radio.bin').read_bytes(), b'original')
-
-    def test_failed_unmount_never_stages(self):
-        self.fail_unmount = True
-        with self.assertRaisesRegex(ValueError, 'unmount failed'):
-            self.execute()
-        self.assertFalse(self.destination.exists())
-
-    def test_architecture_or_digest_mismatch_never_mounts(self):
-        for key, value in [('Architecture', 'amd64'), ('Digest', 'sha256:' + '3' * 64), ('RepoDigests', [])]:
-            with self.subTest(key=key), patch.dict(self.info, {key: value}):
-                self.calls.clear()
-                with self.assertRaisesRegex(ValueError, 'identity or architecture'):
-                    self.execute()
-                self.assertFalse(any(call[0][:2] == ('image', 'mount') for call in self.calls))
-
-    def test_mutable_reference_rejected_before_tools(self):
-        self.args.reference = 'code.tilo.so/tilo/firmware:latest'
-        with self.assertRaisesRegex(ValueError, 'immutable'):
-            self.execute()
-        self.assertEqual(self.calls, [])
-
-    def test_nested_podman_uses_private_vfs_store(self):
-        store = self.base / 'private-store'
-        with patch.object(artifact.subprocess, 'run') as run:
-            run.return_value.returncode = 0
-            run.return_value.stdout = b''
-            artifact.command('pull', self.args.reference, storage=store)
-        argv = run.call_args.args[0]
-        self.assertEqual(argv[:5], ['podman', '--remote=false', '--storage-driver=vfs',
-                                    f'--root={store / "graph"}', f'--runroot={store / "run"}'])
-        self.assertEqual(argv[5:], ['pull', self.args.reference])
-        self.assertNotIn('REGISTRY_TOKEN', run.call_args.kwargs['env'])
+    def test_reference_rejected_before_tools(self):
+        with self.subTest(phase="architecture_or_digest_mismatch_never_mounts"):
+            for key, value in [('Architecture', 'amd64'), ('Digest', 'sha256:' + '3' * 64), ('RepoDigests', [])]:
+                with self.subTest(key=key), patch.dict(self.info, {key: value}):
+                    self.calls.clear()
+                    with self.assertRaisesRegex(ValueError, 'identity or architecture'):
+                        self.execute()
+                    self.assertFalse(any(call[0][:2] == ('image', 'mount') for call in self.calls))
+        restart_fixture(self)
+        with self.subTest(phase="mutable_reference_rejected_before_tools"):
+            self.args.reference = 'code.tilo.so/tilo/firmware:latest'
+            with self.assertRaisesRegex(ValueError, 'immutable'):
+                self.execute()
+            self.assertEqual(self.calls, [])
 
 
 if __name__ == '__main__':

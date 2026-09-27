@@ -29,6 +29,8 @@ mod apps_integration;
 mod blend_layer_cost;
 #[path = "capability_enforcement.rs"]
 mod capability_enforcement;
+#[path = "capture_protection.rs"]
+mod capture_protection;
 #[path = "clipboard_e2e.rs"]
 mod clipboard_e2e;
 #[path = "collab_policy_state.rs"]
@@ -69,6 +71,8 @@ mod document_open_e2e;
 mod drm_backend_boot;
 #[path = "e2e_shell_flows.rs"]
 mod e2e_shell_flows;
+#[path = "emoji_picker_commit.rs"]
+mod emoji_picker_commit;
 #[path = "expand_fullscreen_visual.rs"]
 mod expand_fullscreen_visual;
 #[path = "file_drop_routing.rs"]
@@ -103,6 +107,10 @@ mod headless_examples_smoke;
 mod identity_startup;
 #[path = "idle_inhibit_protocol.rs"]
 mod idle_inhibit_protocol;
+#[path = "input_device_settings.rs"]
+mod input_device_settings;
+#[path = "input_method_wire.rs"]
+mod input_method_wire;
 #[path = "interaction_test.rs"]
 mod interaction_test;
 #[path = "keyboard_focus_wire.rs"]
@@ -121,10 +129,18 @@ mod notification_center;
 mod onboarding_visual;
 #[path = "opening_configure_carries_the_tab_size.rs"]
 mod opening_configure_carries_the_tab_size;
+#[path = "output_management_protocol.rs"]
+mod output_management_protocol;
+#[path = "overview_window_actions.rs"]
+mod overview_window_actions;
 #[path = "peer_join_toast_batches.rs"]
 mod peer_join_toast_batches;
 #[path = "peer_sync_test.rs"]
 mod peer_sync_test;
+#[path = "pen_and_key_capture.rs"]
+mod pen_and_key_capture;
+#[path = "per_output_groups.rs"]
+mod per_output_groups;
 #[path = "per_output_scale.rs"]
 mod per_output_scale;
 #[path = "permission_prompt_pump.rs"]
@@ -143,6 +159,8 @@ mod portal_grant_reaches_sandbox;
 mod portal_prompt_drain_e2e;
 #[path = "portal_test.rs"]
 mod portal_test;
+#[path = "presenter_screen.rs"]
+mod presenter_screen;
 #[path = "qs_actions_click_routing.rs"]
 mod qs_actions_click_routing;
 #[path = "real_apps_visual.rs"]
@@ -151,6 +169,8 @@ mod real_apps_visual;
 mod remote_cursors_test;
 #[path = "reopen_closed_tab.rs"]
 mod reopen_closed_tab;
+#[path = "runtime_daemon_process.rs"]
+mod runtime_daemon_process;
 #[path = "sandbox_check.rs"]
 mod sandbox_check;
 #[path = "server_side_decorations.rs"]
@@ -159,6 +179,8 @@ mod server_side_decorations;
 mod session_lock_e2e;
 #[path = "shell_chrome_test.rs"]
 mod shell_chrome_test;
+#[path = "shell_narration.rs"]
+mod shell_narration;
 #[path = "shell_state_test.rs"]
 mod shell_state_test;
 #[path = "shortcuts_door.rs"]
@@ -177,12 +199,18 @@ mod system_monitor_test;
 mod tilo_e2e_test;
 #[path = "toplevel_configure_states.rs"]
 mod toplevel_configure_states;
+#[path = "toplevel_icon_protocol.rs"]
+mod toplevel_icon_protocol;
 #[path = "transient_sheets.rs"]
 mod transient_sheets;
 #[path = "two_netns_share.rs"]
 mod two_netns_share;
 #[path = "wayland_test.rs"]
 mod wayland_test;
+#[path = "window_previews.rs"]
+mod window_previews;
+#[path = "window_switcher.rs"]
+mod window_switcher;
 #[path = "workspace_settings_state_test.rs"]
 mod workspace_settings_state_test;
 #[path = "xdg_activation.rs"]

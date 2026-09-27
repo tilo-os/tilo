@@ -457,25 +457,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rewrites_keep_entries_drop_replaced_keys_and_append() {
-        let dict =
-            b"<</Type/Annot/Subtype/Text/Rect[1 2 3 4]/AP 9 0 R/T(Ada \\(A\\))/C[1 0 0]/P 5 0 R>>";
-        let out = rewrite_dict(dict, &["AP"], "/IRT 7 0 R/RT/R").unwrap();
-        let text = String::from_utf8(out.clone()).unwrap();
-        assert!(!text.contains("/AP"), "{text}");
-        assert!(text.contains("/Rect [1 2 3 4]"), "{text}");
-        assert!(text.contains("/P 5 0 R"), "{text}");
-        assert!(text.ends_with("/IRT 7 0 R/RT/R>>"), "{text}");
-        let reparsed = <Dict<'_> as hayro_syntax::object::FromBytes>::from_bytes(&out).unwrap();
-        let author = reparsed
-            .get::<hayro_syntax::object::String<'_>>(b"T")
-            .unwrap();
-        assert_eq!(author.as_bytes(), b"Ada (A)");
-    }
-
-    #[test]
-    fn finds_the_last_startxref() {
-        let bytes = b"%PDF-1.7\nstartxref\n5\n%%EOF\nmore\nstartxref\n12\n%%EOF\n";
-        assert_eq!(last_startxref(bytes), Some(12));
+    fn incremental_updates_rewrite_entries_after_the_last_startxref() {
+        // Phase `rewrites_keep_entries_drop_replaced_keys_and_append`.
+        {
+            let dict =
+                b"<</Type/Annot/Subtype/Text/Rect[1 2 3 4]/AP 9 0 R/T(Ada \\(A\\))/C[1 0 0]/P 5 0 R>>";
+            let out = rewrite_dict(dict, &["AP"], "/IRT 7 0 R/RT/R").unwrap();
+            let text = String::from_utf8(out.clone()).unwrap();
+            assert!(!text.contains("/AP"), "{text}");
+            assert!(text.contains("/Rect [1 2 3 4]"), "{text}");
+            assert!(text.contains("/P 5 0 R"), "{text}");
+            assert!(text.ends_with("/IRT 7 0 R/RT/R>>"), "{text}");
+            let reparsed = <Dict<'_> as hayro_syntax::object::FromBytes>::from_bytes(&out).unwrap();
+            let author = reparsed
+                .get::<hayro_syntax::object::String<'_>>(b"T")
+                .unwrap();
+            assert_eq!(author.as_bytes(), b"Ada (A)");
+        }
+        // Phase `finds_the_last_startxref`.
+        {
+            let bytes = b"%PDF-1.7\nstartxref\n5\n%%EOF\nmore\nstartxref\n12\n%%EOF\n";
+            assert_eq!(last_startxref(bytes), Some(12));
+        }
     }
 }

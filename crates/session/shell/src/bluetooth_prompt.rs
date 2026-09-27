@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 
+use crate::shell::i18n::{t, t_args};
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tilo_bluez::{PairingPrompt, PairingReply, PairingRequest};
@@ -58,47 +59,43 @@ impl PairingPromptView {
 
     /// Headline. Names the device, because "Pair with a device?" tells the user nothing they can check.
     fn title(&self) -> String {
+        let device = [(
+            "device",
+            ui::i18n::ArgValue::from(self.request.device_name.as_str()),
+        )];
         match &self.request.prompt {
             PairingPrompt::ConfirmPasskey { .. } => {
-                format!("Does {} show this code?", self.request.device_name)
+                t_args("bluetooth-prompt-title-confirm-passkey", &device)
             }
             PairingPrompt::DisplayPasskey { .. } | PairingPrompt::DisplayPinCode { .. } => {
-                format!("Type this on {}", self.request.device_name)
+                t_args("bluetooth-prompt-title-display", &device)
             }
             PairingPrompt::RequestPasskey => {
-                format!("Enter the code shown on {}", self.request.device_name)
+                t_args("bluetooth-prompt-title-request-passkey", &device)
             }
-            PairingPrompt::RequestPinCode => {
-                format!("Enter the PIN for {}", self.request.device_name)
+            PairingPrompt::RequestPinCode => t_args("bluetooth-prompt-title-request-pin", &device),
+            PairingPrompt::ConfirmPairing => {
+                t_args("bluetooth-prompt-title-confirm-pairing", &device)
             }
-            PairingPrompt::ConfirmPairing => format!("Pair with {}?", self.request.device_name),
             PairingPrompt::AuthorizeService { .. } => {
-                format!("Let {} connect?", self.request.device_name)
+                t_args("bluetooth-prompt-title-authorize-service", &device)
             }
         }
     }
 
     /// The sentence under the headline. Says what accepting actually grants, in terms of what the device will be able to do.
-    fn explanation(&self) -> &'static str {
+    fn explanation(&self) -> String {
         match &self.request.prompt {
-            PairingPrompt::ConfirmPasskey { .. } => {
-                "Compare it with the code on the other device. If they differ, something else \
-                 is trying to pair — say no."
-            }
+            PairingPrompt::ConfirmPasskey { .. } => t("bluetooth-prompt-explain-confirm-passkey"),
             PairingPrompt::DisplayPasskey { .. } | PairingPrompt::DisplayPinCode { .. } => {
-                "Enter this code on the other device to finish pairing."
+                t("bluetooth-prompt-explain-display")
             }
             PairingPrompt::RequestPasskey | PairingPrompt::RequestPinCode => {
-                "The code is shown on the device you are pairing. Many keyboards ask you to \
-                 type it and press Enter."
+                t("bluetooth-prompt-explain-request")
             }
-            PairingPrompt::ConfirmPairing => {
-                "This device cannot show a code to compare, so there is nothing to check \
-                 against. Only continue if you started this pairing yourself."
-            }
+            PairingPrompt::ConfirmPairing => t("bluetooth-prompt-explain-confirm-pairing"),
             PairingPrompt::AuthorizeService { .. } => {
-                "A device you have already paired is asking to use a new service. Paired \
-                 devices can send input and audio to this machine."
+                t("bluetooth-prompt-explain-authorize-service")
             }
         }
     }
@@ -109,7 +106,7 @@ impl PairingPromptView {
             .with_gap(18.0)
             .push(Box::new(Text::new(&self.title()).with_size(20.0)))
             .push(Box::new(
-                Text::new(self.explanation())
+                Text::new(&self.explanation())
                     .with_size(13.0)
                     .with_color(theme.text_dim),
             ));
@@ -133,17 +130,23 @@ impl PairingPromptView {
             && *entered > 0
         {
             body = body.push(Box::new(
-                Text::new(&format!("{entered} of 6 digits entered"))
-                    .with_size(12.0)
-                    .with_color(theme.text_dim),
+                Text::new(&t_args(
+                    "bluetooth-prompt-digits-entered",
+                    &[("entered", (*entered).into())],
+                ))
+                .with_size(12.0)
+                .with_color(theme.text_dim),
             ));
         }
 
         if let PairingPrompt::AuthorizeService { uuid } = &self.request.prompt {
             body = body.push(Box::new(
-                Text::new(&format!("Service {uuid}"))
-                    .with_size(11.0)
-                    .with_color(theme.text_dim),
+                Text::new(&t_args(
+                    "bluetooth-prompt-service",
+                    &[("uuid", uuid.into())],
+                ))
+                .with_size(11.0)
+                .with_color(theme.text_dim),
             ));
         }
 
@@ -152,9 +155,9 @@ impl PairingPromptView {
                 TextInput::new(Vec::new())
                     .with_id("bluetooth.pair.entry.field")
                     .with_on_change_path(KEY_ENTRY)
-                    .with_placeholder(match self.request.prompt {
-                        PairingPrompt::RequestPinCode => "PIN",
-                        _ => "6-digit code",
+                    .with_placeholder(&match self.request.prompt {
+                        PairingPrompt::RequestPinCode => t("bluetooth-prompt-pin-placeholder"),
+                        _ => t("bluetooth-prompt-code-placeholder"),
                     })
                     .with_font_size(15.0),
             ));
@@ -166,13 +169,13 @@ impl PairingPromptView {
             vec![
                 Box::new(Button::new(
                     "bluetooth.pair.reject",
-                    "Don't pair",
+                    &t("bluetooth-prompt-reject"),
                     Some(KEY_REJECT),
                 )),
                 Box::new(
                     Button::new(
                         "bluetooth.pair.accept",
-                        accept_label(&self.request.prompt),
+                        &accept_label(&self.request.prompt),
                         Some(KEY_ACCEPT),
                     )
                     .with_style(ButtonStyle::Primary),
@@ -181,7 +184,7 @@ impl PairingPromptView {
         } else {
             vec![Box::new(Button::new(
                 "bluetooth.pair.reject",
-                "Cancel",
+                &t("bluetooth-prompt-cancel"),
                 Some(KEY_REJECT),
             ))]
         };
@@ -199,11 +202,11 @@ impl PairingPromptView {
     }
 }
 
-fn accept_label(prompt: &PairingPrompt) -> &'static str {
+fn accept_label(prompt: &PairingPrompt) -> String {
     match prompt {
-        PairingPrompt::ConfirmPasskey { .. } => "They match",
-        PairingPrompt::AuthorizeService { .. } => "Allow",
-        _ => "Pair",
+        PairingPrompt::ConfirmPasskey { .. } => t("bluetooth-prompt-accept-match"),
+        PairingPrompt::AuthorizeService { .. } => t("bluetooth-prompt-accept-allow"),
+        _ => t("bluetooth-prompt-accept-pair"),
     }
 }
 
@@ -332,7 +335,7 @@ impl Widget for PairingPromptView {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "mirrors the Widget event inputs")]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -418,124 +421,122 @@ mod tests {
     }
 
     #[test]
-    fn the_headline_names_the_device() {
-        let v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
-        assert!(
-            v.title().contains("Studio Headphones"),
-            "a prompt the user cannot check is not a prompt: {}",
-            v.title()
-        );
-    }
-
-    #[test]
-    fn accepting_a_comparison_answers_accept() {
-        let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 424_242 });
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_ACCEPT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::Accept));
-    }
-
-    #[test]
-    fn declining_answers_reject() {
-        let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_REJECT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::Reject));
-    }
-
-    /// Reject must win over accept when both keys are somehow set — the safe reading of an ambiguous state is "no".
-    #[test]
-    fn reject_wins_over_a_simultaneous_accept() {
-        let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_ACCEPT);
-        press(&mut doc, KEY_REJECT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::Reject));
-    }
-
-    #[test]
-    fn a_typed_passkey_is_parsed_and_returned() {
-        let mut v = view(PairingPrompt::RequestPasskey);
-        let mut doc = AutoCommit::new();
-        let _ = doc.put(
-            &automerge::ROOT,
-            KEY_ENTRY,
-            ScalarValue::Str("654321".into()),
-        );
-        press(&mut doc, KEY_ACCEPT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::Passkey(654_321)));
-    }
-
-    /// A blank or nonsense entry refuses rather than sending a zero, which the device rejects anyway and reads as an unexplained failure.
-    #[test]
-    fn an_unparseable_passkey_refuses_rather_than_sending_zero() {
-        for entry in ["", "   ", "abcdef"] {
-            let mut v = view(PairingPrompt::RequestPasskey);
-            let mut doc = AutoCommit::new();
-            let _ = doc.put(&automerge::ROOT, KEY_ENTRY, ScalarValue::Str(entry.into()));
-            press(&mut doc, KEY_ACCEPT);
-            v.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(
-                v.take_answer(),
-                Some(PairingReply::Reject),
-                "entry {entry:?}"
+    fn every_prompt_kind_builds_a_layout_with_honest_copy() {
+        // Phase `the_headline_names_the_device`.
+        {
+            let v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
+            assert!(
+                v.title().contains("Studio Headphones"),
+                "a prompt the user cannot check is not a prompt: {}",
+                v.title()
             );
+        }
+        // Phase `six_digits_are_split_for_comparison`.
+        {
+            assert_eq!(spaced("424242"), "424 242");
+            assert_eq!(spaced("0000"), "0000", "a legacy PIN is left alone");
+        }
+        // Phase `the_just_works_prompt_admits_it_cannot_be_verified`.
+        // The just-works prompt must say out loud that there's nothing to check, because it's the weakest flow and looks identical otherwise.
+        {
+            let v = view(PairingPrompt::ConfirmPairing);
+            assert!(
+                v.explanation().contains("nothing to check"),
+                "{}",
+                v.explanation()
+            );
+        }
+        // Phase `every_prompt_builds_a_layout`.
+        {
+            let prompts = [
+                PairingPrompt::ConfirmPasskey { passkey: 424_242 },
+                PairingPrompt::DisplayPasskey {
+                    passkey: 1,
+                    entered: 3,
+                },
+                PairingPrompt::DisplayPinCode { pin: "0000".into() },
+                PairingPrompt::RequestPasskey,
+                PairingPrompt::RequestPinCode,
+                PairingPrompt::ConfirmPairing,
+                PairingPrompt::AuthorizeService {
+                    uuid: "0000110b-0000-1000-8000-00805f9b34fb".into(),
+                },
+            ];
+            for p in prompts {
+                let mut v = view(p);
+                let theme = Theme::dark();
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let _ = v.build_layout(&mut taffy, &theme, &mut node_map);
+            }
         }
     }
 
     #[test]
-    fn a_typed_pin_is_returned_verbatim() {
-        let mut v = view(PairingPrompt::RequestPinCode);
-        let mut doc = AutoCommit::new();
-        let _ = doc.put(&automerge::ROOT, KEY_ENTRY, ScalarValue::Str("0000".into()));
-        press(&mut doc, KEY_ACCEPT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::PinCode("0000".into())));
-    }
-
-    #[test]
-    fn six_digits_are_split_for_comparison() {
-        assert_eq!(spaced("424242"), "424 242");
-        assert_eq!(spaced("0000"), "0000", "a legacy PIN is left alone");
-    }
-
-    /// The just-works prompt must say out loud that there's nothing to check, because it's the weakest flow and looks identical otherwise.
-    #[test]
-    fn the_just_works_prompt_admits_it_cannot_be_verified() {
-        let v = view(PairingPrompt::ConfirmPairing);
-        assert!(
-            v.explanation().contains("nothing to check"),
-            "{}",
-            v.explanation()
-        );
-    }
-
-    #[test]
-    fn every_prompt_builds_a_layout() {
-        let prompts = [
-            PairingPrompt::ConfirmPasskey { passkey: 424_242 },
-            PairingPrompt::DisplayPasskey {
-                passkey: 1,
-                entered: 3,
-            },
-            PairingPrompt::DisplayPinCode { pin: "0000".into() },
-            PairingPrompt::RequestPasskey,
-            PairingPrompt::RequestPinCode,
-            PairingPrompt::ConfirmPairing,
-            PairingPrompt::AuthorizeService {
-                uuid: "0000110b-0000-1000-8000-00805f9b34fb".into(),
-            },
-        ];
-        for p in prompts {
-            let mut v = view(p);
-            let theme = Theme::dark();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let _ = v.build_layout(&mut taffy, &theme, &mut node_map);
+    fn prompt_answers_are_exact_and_refuse_rather_than_guess() {
+        // Phase `accepting_a_comparison_answers_accept`.
+        {
+            let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 424_242 });
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_ACCEPT);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.take_answer(), Some(PairingReply::Accept));
+        }
+        // Phase `declining_answers_reject`.
+        {
+            let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_REJECT);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.take_answer(), Some(PairingReply::Reject));
+        }
+        // Phase `reject_wins_over_a_simultaneous_accept`.
+        // Reject must win over accept when both keys are somehow set — the safe reading of an ambiguous state is "no".
+        {
+            let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_ACCEPT);
+            press(&mut doc, KEY_REJECT);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.take_answer(), Some(PairingReply::Reject));
+        }
+        // Phase `a_typed_passkey_is_parsed_and_returned`.
+        {
+            let mut v = view(PairingPrompt::RequestPasskey);
+            let mut doc = AutoCommit::new();
+            let _ = doc.put(
+                &automerge::ROOT,
+                KEY_ENTRY,
+                ScalarValue::Str("654321".into()),
+            );
+            press(&mut doc, KEY_ACCEPT);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.take_answer(), Some(PairingReply::Passkey(654_321)));
+        }
+        // Phase `an_unparseable_passkey_refuses_rather_than_sending_zero`.
+        // A blank or nonsense entry refuses rather than sending a zero, which the device rejects anyway and reads as an unexplained failure.
+        {
+            for entry in ["", "   ", "abcdef"] {
+                let mut v = view(PairingPrompt::RequestPasskey);
+                let mut doc = AutoCommit::new();
+                let _ = doc.put(&automerge::ROOT, KEY_ENTRY, ScalarValue::Str(entry.into()));
+                press(&mut doc, KEY_ACCEPT);
+                v.sync(&mut doc, &automerge::ROOT);
+                assert_eq!(
+                    v.take_answer(),
+                    Some(PairingReply::Reject),
+                    "entry {entry:?}"
+                );
+            }
+        }
+        // Phase `a_typed_pin_is_returned_verbatim`.
+        {
+            let mut v = view(PairingPrompt::RequestPinCode);
+            let mut doc = AutoCommit::new();
+            let _ = doc.put(&automerge::ROOT, KEY_ENTRY, ScalarValue::Str("0000".into()));
+            press(&mut doc, KEY_ACCEPT);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.take_answer(), Some(PairingReply::PinCode("0000".into())));
         }
     }
 }

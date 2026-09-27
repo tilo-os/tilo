@@ -639,7 +639,13 @@ mod tests {
         let mut copy = AutoCommit::load(&right.save()).unwrap();
         left.merge_incoming(&mut copy).unwrap();
     }
+    /// Storage shape: legacy migration keeps identity; repeated snapshot writes stay bounded.
     #[test]
+    fn project_doc_storage_migrates_legacy_and_stays_bounded() {
+        migrates_legacy_scalar_without_changing_project_identity();
+        repetitive_snapshot_writes_do_not_materialize_unbounded_graphs();
+    }
+
     fn migrates_legacy_scalar_without_changing_project_identity() {
         let project = Project::blank();
         let mut doc = AutoCommit::new();
@@ -650,7 +656,15 @@ mod tests {
         assert!(doc.get(&ROOT, V2_KEY).unwrap().is_some());
         assert!(doc.get(&ROOT, LEGACY_KEY).unwrap().is_some());
     }
+    /// Concurrent participants converge per adjustment: interleaved adds, independent
+    /// metadata/parameter edits, and delete-wins without resurrection.
     #[test]
+    fn concurrent_project_edits_converge_per_node() {
+        two_participants_keep_interleaved_adjustments();
+        independent_metadata_and_node_parameters_converge_without_graph_replacement();
+        delete_wins_over_interleaved_parameter_edit_without_resurrection();
+    }
+
     fn two_participants_keep_interleaved_adjustments() {
         let mut a = AutoCommit::new();
         ProjectDoc::seed(&mut a);
@@ -676,7 +690,6 @@ mod tests {
         assert!(pa.operations.contains_key("contrast-b"));
         assert_eq!(pa.graph.evaluation_order().unwrap().len(), 4);
     }
-    #[test]
     fn independent_metadata_and_node_parameters_converge_without_graph_replacement() {
         let mut a = AutoCommit::new();
         ProjectDoc::seed(&mut a);
@@ -722,7 +735,6 @@ mod tests {
             matches!(project.operations["crop-b"], Operation::Crop { x, y, width, height } if (x, y, width, height) == (0.1, 0.2, 0.7, 0.6))
         );
     }
-    #[test]
     fn delete_wins_over_interleaved_parameter_edit_without_resurrection() {
         let mut a = AutoCommit::new();
         ProjectDoc::seed(&mut a);
@@ -747,7 +759,6 @@ mod tests {
             &Operation::Exposure { stops: 0.5 }
         ));
     }
-    #[test]
     fn repetitive_snapshot_writes_do_not_materialize_unbounded_graphs() {
         let mut doc = AutoCommit::new();
         ProjectDoc::seed(&mut doc);

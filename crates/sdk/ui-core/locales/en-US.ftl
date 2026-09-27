@@ -59,3 +59,18 @@ greeter-welcome-back = Welcome back to Tilo
 greeter-sign-in = Sign in to continue
 greeter-passcode-intro = Enter your passcode to open your desktop.
 lock-welcome-back = Welcome back
+
+# Now playing: Quick Settings and the lock screen.
+now-playing-title = Now playing
+now-playing-play = Play
+now-playing-pause = Pause
+now-playing-previous = Previous track
+now-playing-next = Next track
+now-playing-seek = Playback position
+now-playing-seek-help = Use Left and Right Arrow to move five seconds
+now-playing-choose-player = Choose player
+now-playing-choose-output = Choose where to play
+now-playing-output-local = On this computer
+now-playing-output-device = One of your devices
+now-playing-output-speaker-group = One of your speaker groups
+now-playing-route-gone = That destination is no longer available

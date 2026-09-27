@@ -191,63 +191,67 @@ pub fn extract_on_host(
 mod tests {
     use super::*;
 
+    /// Sources parse and host extraction copies each manifest path.
     #[test]
-    fn sources_parse() {
-        assert_eq!(parse("worktree", None).unwrap(), Source::Worktree);
-        assert_eq!(
-            parse("layer:ab12", None).unwrap(),
-            Source::Layer("ab12".into())
-        );
-        assert_eq!(
-            parse("ci:main-1a2b3c4", None).unwrap(),
-            Source::Ci {
-                tag: "main-1a2b3c4".into(),
-                commit: None
-            }
-        );
-        assert_eq!(
-            parse("sha:1A2B3C4D5E", None).unwrap(),
-            Source::Ci {
-                tag: "main-1a2b3c4".into(),
-                commit: None
-            }
-        );
-        let full = "0123456789abcdef0123456789abcdef01234567";
-        assert_eq!(
-            parse(&format!("sha:{full}"), None).unwrap(),
-            Source::Ci {
-                tag: "main-0123456".into(),
-                commit: Some(full.into())
-            }
-        );
-        for bad in ["sha:xyz", "sha:12ab", "ci:", "ci:a b", "branch:main"] {
-            assert!(
-                matches!(parse(bad, None), Err(CliError::InvalidSource(_))),
-                "{bad}"
+    fn ci_sources_parse_and_host_extraction_copies_each_manifest_path() {
+        // Phase: sources_parse.
+        {
+            assert_eq!(parse("worktree", None).unwrap(), Source::Worktree);
+            assert_eq!(
+                parse("layer:ab12", None).unwrap(),
+                Source::Layer("ab12".into())
             );
+            assert_eq!(
+                parse("ci:main-1a2b3c4", None).unwrap(),
+                Source::Ci {
+                    tag: "main-1a2b3c4".into(),
+                    commit: None
+                }
+            );
+            assert_eq!(
+                parse("sha:1A2B3C4D5E", None).unwrap(),
+                Source::Ci {
+                    tag: "main-1a2b3c4".into(),
+                    commit: None
+                }
+            );
+            let full = "0123456789abcdef0123456789abcdef01234567";
+            assert_eq!(
+                parse(&format!("sha:{full}"), None).unwrap(),
+                Source::Ci {
+                    tag: "main-0123456".into(),
+                    commit: Some(full.into())
+                }
+            );
+            for bad in ["sha:xyz", "sha:12ab", "ci:", "ci:a b", "branch:main"] {
+                assert!(
+                    matches!(parse(bad, None), Err(CliError::InvalidSource(_))),
+                    "{bad}"
+                );
+            }
         }
-    }
 
-    #[cfg(unix)]
-    #[test]
-    fn host_extraction_copies_each_manifest_path() {
-        let (commands, cleanup) = host_commands(
-            &image("main-1a2b3c4"),
-            "aarch64",
-            "c1",
-            &["/usr/bin/app".into(), "/usr/lib/tilo-runtime/".into()],
-            Path::new("/s/tree"),
-        );
-        let text: Vec<String> = commands.iter().map(CommandLine::display).collect();
-        assert_eq!(
-            text,
-            [
-                "podman pull --arch arm64 registry.tilo.so/tilo/tilo:main-1a2b3c4",
-                "podman create --name c1 registry.tilo.so/tilo/tilo:main-1a2b3c4 /bin/true",
-                "podman cp c1:/usr/bin/app /s/tree/usr/bin/app",
-                "podman cp c1:/usr/lib/tilo-runtime /s/tree/usr/lib/tilo-runtime",
-            ]
-        );
-        assert_eq!(cleanup.display(), "podman rm --force c1");
+        // Phase: host_extraction_copies_each_manifest_path.
+        #[cfg(unix)]
+        {
+            let (commands, cleanup) = host_commands(
+                &image("main-1a2b3c4"),
+                "aarch64",
+                "c1",
+                &["/usr/bin/app".into(), "/usr/lib/tilo-runtime/".into()],
+                Path::new("/s/tree"),
+            );
+            let text: Vec<String> = commands.iter().map(CommandLine::display).collect();
+            assert_eq!(
+                text,
+                [
+                    "podman pull --arch arm64 registry.tilo.so/tilo/tilo:main-1a2b3c4",
+                    "podman create --name c1 registry.tilo.so/tilo/tilo:main-1a2b3c4 /bin/true",
+                    "podman cp c1:/usr/bin/app /s/tree/usr/bin/app",
+                    "podman cp c1:/usr/lib/tilo-runtime /s/tree/usr/lib/tilo-runtime",
+                ]
+            );
+            assert_eq!(cleanup.display(), "podman rm --force c1");
+        }
     }
 }

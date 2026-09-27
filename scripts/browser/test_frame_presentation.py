@@ -15,57 +15,56 @@ def display(cpu=5, time=10.017):
         drawable_id=cpu, presented_time_s=time, backend='metal'))
 
 class FramePresentationTests(unittest.TestCase):
-    def test_exact_identity_join_and_first_cached_presentation(self):
-        result = analyze([display(6, 10.030), scene(6), receipt(), scene(), display()])
-        self.assertEqual(len(result['samples']), 1)
-        sample = result['samples'][0]
-        self.assertEqual(sample['cpu_frame_id'], 5)
-        self.assertAlmostEqual(sample['latency_low_ms'], 16)
-        self.assertAlmostEqual(sample['latency_high_ms'], 17)
-        self.assertEqual(result['unpresented_frame_ids'], [])
+    def test_receipts_join_to_their_first_exact_presentation(self):
+        with self.subTest(case='exact identity join and first cached presentation'):
+            result = analyze([display(6, 10.030), scene(6), receipt(), scene(), display()])
+            self.assertEqual(len(result['samples']), 1)
+            sample = result['samples'][0]
+            self.assertEqual(sample['cpu_frame_id'], 5)
+            self.assertAlmostEqual(sample['latency_low_ms'], 16)
+            self.assertAlmostEqual(sample['latency_high_ms'], 17)
+            self.assertEqual(result['unpresented_frame_ids'], [])
+        with self.subTest(case='zero-based cpu and worker frame indices are valid'):
+            result = analyze([receipt(), scene(cpu=0), display(cpu=0)])
+            self.assertEqual(len(result["samples"]), 1)
+            self.assertFalse(result["issues"])
+        with self.subTest(case='overwritten receipts are not zero latency'):
+            result = analyze([receipt(), receipt(2), scene(ids=[2]), display()])
+            self.assertEqual(result['unpresented_frame_ids'], [1])
+            self.assertEqual(len(result['samples']), 1)
 
-    def test_zero_based_cpu_and_worker_frame_indices_are_valid(self):
-        result = analyze([receipt(), scene(cpu=0), display(cpu=0)])
-        self.assertEqual(len(result["samples"]), 1)
-        self.assertFalse(result["issues"])
-
-    def test_overwritten_receipts_are_not_zero_latency(self):
-        result = analyze([receipt(), receipt(2), scene(ids=[2]), display()])
-        self.assertEqual(result['unpresented_frame_ids'], [1])
-        self.assertEqual(len(result['samples']), 1)
-
-    def test_dropped_scene_has_no_sample(self):
-        result = analyze([receipt(), scene()])
-        self.assertEqual(result['samples'], [])
-        self.assertEqual(result['unpresented_frame_ids'], [1])
-
-    def test_duplicate_presentation_is_ambiguous(self):
-        result = analyze([receipt(), scene(), display(), display(time=10.020)])
-        self.assertEqual(result['samples'], [])
-        self.assertIn('ambiguous_presentation', result['issues'])
-
-    def test_overflow_and_missing_receipt_are_explicit(self):
-        for bad in [scene(overflow=True), scene(ids=[99])]:
-            result = analyze([receipt(), bad, display()])
+    def test_unjoinable_or_ambiguous_evidence_yields_no_sample(self):
+        with self.subTest(case='dropped scene'):
+            result = analyze([receipt(), scene()])
             self.assertEqual(result['samples'], [])
-            self.assertTrue(result['issues'])
-
-    def test_invalid_clocks_and_timestamps_are_rejected(self):
-        for bad in [receipt(hi=9), receipt(lo=float('nan')), receipt(hi=None)]:
-            self.assertEqual(analyze([bad, scene(), display()])['samples'], [])
+            self.assertEqual(result['unpresented_frame_ids'], [1])
+        with self.subTest(case='duplicate presentation is ambiguous'):
+            result = analyze([receipt(), scene(), display(), display(time=10.020)])
+            self.assertEqual(result['samples'], [])
+            self.assertIn('ambiguous_presentation', result['issues'])
+        with self.subTest(case='mixed process log cannot join pidless display records'):
+            result = analyze([receipt(), receipt(2, pid=43), scene(), display()])
+            self.assertEqual(result['samples'], [])
+            self.assertIn('mixed_processes', result['issues'])
+        # Explicit issues: overflow, missing receipt, duplicate receipt, null cpu.
+        for label, rows in (
+            ('overflow', [receipt(), scene(overflow=True), display()]),
+            ('missing receipt', [receipt(), scene(ids=[99]), display()]),
+            ('duplicate receipt', [receipt(), receipt(), scene(), display()]),
+            ('null cpu', [receipt(), scene(cpu=None), display()]),
+        ):
+            with self.subTest(case=label):
+                result = analyze(rows)
+                self.assertEqual(result['samples'], [])
+                self.assertTrue(result['issues'])
+        for label, bad in (('receipt hi before lo', receipt(hi=9)),
+                           ('receipt nan lo', receipt(lo=float('nan'))),
+                           ('receipt missing hi', receipt(hi=None))):
+            with self.subTest(case=label):
+                self.assertEqual(analyze([bad, scene(), display()])['samples'], [])
         for value in [0, float('nan'), float('inf'), 9]:
-            self.assertEqual(analyze([receipt(), scene(), display(time=value)])['samples'], [])
-
-    def test_mixed_process_log_cannot_join_pidless_display_records(self):
-        result = analyze([receipt(), receipt(2, pid=43), scene(), display()])
-        self.assertEqual(result['samples'], [])
-        self.assertIn('mixed_processes', result['issues'])
-
-    def test_duplicate_receipt_and_null_cpu_do_not_guess(self):
-        for rows in [[receipt(), receipt(), scene(), display()], [receipt(), scene(cpu=None), display()]]:
-            result = analyze(rows)
-            self.assertEqual(result['samples'], [])
-            self.assertTrue(result['issues'])
+            with self.subTest(case=f'display time {value}'):
+                self.assertEqual(analyze([receipt(), scene(), display(time=value)])['samples'], [])
 
 if __name__ == '__main__':
     unittest.main()

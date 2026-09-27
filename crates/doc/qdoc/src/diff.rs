@@ -3,13 +3,15 @@
 //! A CRDT-native document has stable block identity — a paragraph keeps its id across every edit
 //! and save/load — so two versions align by id instead of fuzzy text matching.
 //! The diff includes added, removed, and changed blocks, plus run-level changes
-//! within changed blocks. Blocks align by an LCS over shared ids when possible;
-//! otherwise the implementation falls back to positional pairing.
+//! within changed blocks. Blocks align by id ([`tilo_resource::diff::align`])
+//! when the versions share any; otherwise they pair by position.
 
 use crate::document::MarkSpan;
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+pub use tilo_resource::diff::{RunOp, TextRun, text_runs};
+use tilo_resource::diff::{Step, align};
 
 /// The full structural diff of a document between two versions (`old` → `new`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -100,25 +102,6 @@ pub struct AttrChange {
     pub new: Option<AttrVal>,
 }
 
-/// A run of characters in the text-level diff.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TextRun {
-    pub op: RunOp,
-    pub text: String,
-}
-
-/// The kind of a [`TextRun`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RunOp {
-    Equal,
-    Insert,
-    Delete,
-}
-
-/// Above this many characters a paragraph's run diff falls back to a coarse whole-text replace, so
-/// the O(n·m) alignment can't be driven quadratic by a pathologically long "paragraph".
-const RUN_DIFF_CHAR_CAP: usize = 8_192;
-
 /// Diff two whole-document snapshots (`old` → `new`). See the module docs for the alignment strategy.
 pub fn diff_snapshots(old: &DocSnapshot, new: &DocSnapshot) -> DocDiff {
     let blocks = diff_block_lists(&old.blocks, &new.blocks);
@@ -157,20 +140,20 @@ pub fn diff_block_lists(old: &[BlockView], new: &[BlockView]) -> Vec<BlockDiff> 
     let new_by_id: BTreeMap<&str, &BlockView> = new.iter().map(|b| (b.id.as_str(), b)).collect();
 
     let mut out = Vec::new();
-    for step in lcs_align(&old_ids, &new_ids) {
+    for step in align(&old_ids, &new_ids) {
         match step {
-            AlignStep::Both(oid, nid) => {
-                if let (Some(&ob), Some(&nb)) = (old_by_id.get(oid), new_by_id.get(nid)) {
+            Step::Both(id) => {
+                if let (Some(&ob), Some(&nb)) = (old_by_id.get(*id), new_by_id.get(*id)) {
                     out.push(compare_blocks(ob, nb));
                 }
             }
-            AlignStep::OldOnly(oid) => {
-                if let Some(&ob) = old_by_id.get(oid) {
+            Step::OldOnly(id) => {
+                if let Some(&ob) = old_by_id.get(*id) {
                     out.push(removed_block(ob));
                 }
             }
-            AlignStep::NewOnly(nid) => {
-                if let Some(&nb) = new_by_id.get(nid) {
+            Step::NewOnly(id) => {
+                if let Some(&nb) = new_by_id.get(*id) {
                     out.push(added_block(nb));
                 }
             }
@@ -304,168 +287,6 @@ fn diff_attrs(old: &BTreeMap<String, AttrVal>, new: &BTreeMap<String, AttrVal>) 
     out
 }
 
-/// Character-level diff of two paragraph texts into `Equal`/`Insert`/`Delete` runs, LCS-based
-/// (minimal shared subsequence as `Equal`, surrounding edits as insert/delete). Capped by `RUN_DIFF_CHAR_CAP`.
-pub fn text_runs(old: &str, new: &str) -> Vec<TextRun> {
-    if old == new {
-        return if old.is_empty() {
-            Vec::new()
-        } else {
-            vec![TextRun {
-                op: RunOp::Equal,
-                text: old.to_string(),
-            }]
-        };
-    }
-    let a: Vec<char> = old.chars().collect();
-    let b: Vec<char> = new.chars().collect();
-    if a.len() > RUN_DIFF_CHAR_CAP || b.len() > RUN_DIFF_CHAR_CAP {
-        // Coarse fallback: whole-text replace. Still valid, just not minimal.
-        let mut runs = Vec::new();
-        if !a.is_empty() {
-            runs.push(TextRun {
-                op: RunOp::Delete,
-                text: old.to_string(),
-            });
-        }
-        if !b.is_empty() {
-            runs.push(TextRun {
-                op: RunOp::Insert,
-                text: new.to_string(),
-            });
-        }
-        return runs;
-    }
-    let ops = lcs_char_ops(&a, &b);
-    coalesce(ops)
-}
-
-enum AlignStep<'a> {
-    Both(&'a str, &'a str),
-    OldOnly(&'a str),
-    NewOnly(&'a str),
-}
-
-/// `dp[i][j]`, or `0` past either edge — matches the DP table's own boundary condition.
-fn dp_at(dp: &[Vec<u32>], i: usize, j: usize) -> u32 {
-    dp.get(i).and_then(|row| row.get(j)).copied().unwrap_or(0)
-}
-
-/// LCS alignment over two id sequences → an ordered list of steps: shared ids in the longest
-/// common subsequence become `Both`; the rest are `OldOnly`/`NewOnly` interleaved in reading order.
-fn lcs_align<'a>(old: &[&'a str], new: &[&'a str]) -> Vec<AlignStep<'a>> {
-    let n = old.len();
-    let m = new.len();
-    // dp[i][j] = LCS length of old[i..] and new[j..].
-    let mut dp = vec![vec![0u32; m.saturating_add(1)]; n.saturating_add(1)];
-    for i in (0..n).rev() {
-        for j in (0..m).rev() {
-            let value = match (old.get(i).copied(), new.get(j).copied()) {
-                (Some(oi), Some(nj)) if oi == nj => {
-                    dp_at(&dp, i.saturating_add(1), j.saturating_add(1)).saturating_add(1)
-                }
-                _ => dp_at(&dp, i.saturating_add(1), j).max(dp_at(&dp, i, j.saturating_add(1))),
-            };
-            if let Some(cell) = dp.get_mut(i).and_then(|row| row.get_mut(j)) {
-                *cell = value;
-            }
-        }
-    }
-    let mut steps = Vec::new();
-    let (mut i, mut j) = (0, 0);
-    while i < n && j < m {
-        let (Some(oi), Some(nj)) = (old.get(i).copied(), new.get(j).copied()) else {
-            break;
-        };
-        if oi == nj {
-            steps.push(AlignStep::Both(oi, nj));
-            i = i.saturating_add(1);
-            j = j.saturating_add(1);
-        } else if dp_at(&dp, i.saturating_add(1), j) >= dp_at(&dp, i, j.saturating_add(1)) {
-            steps.push(AlignStep::OldOnly(oi));
-            i = i.saturating_add(1);
-        } else {
-            steps.push(AlignStep::NewOnly(nj));
-            j = j.saturating_add(1);
-        }
-    }
-    while i < n {
-        let Some(oi) = old.get(i).copied() else { break };
-        steps.push(AlignStep::OldOnly(oi));
-        i = i.saturating_add(1);
-    }
-    while j < m {
-        let Some(nj) = new.get(j).copied() else { break };
-        steps.push(AlignStep::NewOnly(nj));
-        j = j.saturating_add(1);
-    }
-    steps
-}
-
-/// Per-character LCS edit script over two char vectors.
-fn lcs_char_ops(old: &[char], new: &[char]) -> Vec<(RunOp, char)> {
-    let n = old.len();
-    let m = new.len();
-    let mut dp = vec![vec![0u32; m.saturating_add(1)]; n.saturating_add(1)];
-    for i in (0..n).rev() {
-        for j in (0..m).rev() {
-            let value = match (old.get(i).copied(), new.get(j).copied()) {
-                (Some(oi), Some(nj)) if oi == nj => {
-                    dp_at(&dp, i.saturating_add(1), j.saturating_add(1)).saturating_add(1)
-                }
-                _ => dp_at(&dp, i.saturating_add(1), j).max(dp_at(&dp, i, j.saturating_add(1))),
-            };
-            if let Some(cell) = dp.get_mut(i).and_then(|row| row.get_mut(j)) {
-                *cell = value;
-            }
-        }
-    }
-    let mut ops = Vec::new();
-    let (mut i, mut j) = (0, 0);
-    while i < n && j < m {
-        let (Some(oi), Some(nj)) = (old.get(i).copied(), new.get(j).copied()) else {
-            break;
-        };
-        if oi == nj {
-            ops.push((RunOp::Equal, oi));
-            i = i.saturating_add(1);
-            j = j.saturating_add(1);
-        } else if dp_at(&dp, i.saturating_add(1), j) >= dp_at(&dp, i, j.saturating_add(1)) {
-            ops.push((RunOp::Delete, oi));
-            i = i.saturating_add(1);
-        } else {
-            ops.push((RunOp::Insert, nj));
-            j = j.saturating_add(1);
-        }
-    }
-    while i < n {
-        let Some(oi) = old.get(i).copied() else { break };
-        ops.push((RunOp::Delete, oi));
-        i = i.saturating_add(1);
-    }
-    while j < m {
-        let Some(nj) = new.get(j).copied() else { break };
-        ops.push((RunOp::Insert, nj));
-        j = j.saturating_add(1);
-    }
-    ops
-}
-
-/// Merge a per-character op stream into contiguous runs.
-fn coalesce(ops: Vec<(RunOp, char)>) -> Vec<TextRun> {
-    let mut runs: Vec<TextRun> = Vec::new();
-    for (op, ch) in ops {
-        match runs.last_mut() {
-            Some(r) if r.op == op => r.text.push(ch),
-            _ => runs.push(TextRun {
-                op,
-                text: ch.to_string(),
-            }),
-        }
-    }
-    runs
-}
-
 fn diff_props(old: &BTreeMap<String, String>, new: &BTreeMap<String, String>) -> Vec<PropChange> {
     let mut out = Vec::new();
     let mut keys: Vec<&String> = old.keys().chain(new.keys()).collect();
@@ -495,128 +316,130 @@ mod tests {
     }
 
     #[test]
-    fn detects_added_removed_changed_blocks() {
-        let mut doc = Document::new();
-        let alpha_id = doc.insert_block(None, "paragraph");
-        doc.splice_text(&alpha_id, 0, 0, "alpha");
-        let beta_id = doc.insert_block(Some(&alpha_id), "paragraph");
-        doc.splice_text(&beta_id, 0, 0, "beta");
-        let gamma_id = doc.insert_block(Some(&beta_id), "paragraph");
-        doc.splice_text(&gamma_id, 0, 0, "gamma");
-        let v1 = snap_of(&doc);
+    fn block_diffs_pair_by_id_or_position_and_keep_runs_minimal() {
+        // Phase `detects_added_removed_changed_blocks`.
+        {
+            let mut doc = Document::new();
+            let alpha_id = doc.insert_block(None, "paragraph");
+            doc.splice_text(&alpha_id, 0, 0, "alpha");
+            let beta_id = doc.insert_block(Some(&alpha_id), "paragraph");
+            doc.splice_text(&beta_id, 0, 0, "beta");
+            let gamma_id = doc.insert_block(Some(&beta_id), "paragraph");
+            doc.splice_text(&gamma_id, 0, 0, "gamma");
+            let v1 = snap_of(&doc);
 
-        doc.splice_text(&beta_id, 0, 4, "BETA"); // "beta" -> "BETA"
-        doc.remove_block(&gamma_id);
-        let epsilon_id = doc.insert_block(Some(&alpha_id), "paragraph");
-        doc.splice_text(&epsilon_id, 0, 0, "epsilon");
-        let v2 = snap_of(&doc);
+            doc.splice_text(&beta_id, 0, 4, "BETA"); // "beta" -> "BETA"
+            doc.remove_block(&gamma_id);
+            let epsilon_id = doc.insert_block(Some(&alpha_id), "paragraph");
+            doc.splice_text(&epsilon_id, 0, 0, "epsilon");
+            let v2 = snap_of(&doc);
 
-        let diff = diff_snapshots(&v1, &v2);
-        assert_eq!(diff.summary.added, 1, "one new paragraph");
-        assert_eq!(diff.summary.removed, 1, "one removed paragraph");
-        assert_eq!(diff.summary.changed, 1, "one edited paragraph");
+            let diff = diff_snapshots(&v1, &v2);
+            assert_eq!(diff.summary.added, 1, "one new paragraph");
+            assert_eq!(diff.summary.removed, 1, "one removed paragraph");
+            assert_eq!(diff.summary.changed, 1, "one edited paragraph");
 
-        let changed: Vec<_> = diff.changed_blocks().collect();
-        let edited = changed.iter().find(|b| b.op == BlockOp::Changed).unwrap();
-        assert_eq!(edited.id, beta_id);
-        assert_eq!(edited.old_text.as_deref(), Some("beta"));
-        assert_eq!(edited.new_text.as_deref(), Some("BETA"));
-        assert!(
-            edited
-                .runs
+            let changed: Vec<_> = diff.changed_blocks().collect();
+            let edited = changed.iter().find(|b| b.op == BlockOp::Changed).unwrap();
+            assert_eq!(edited.id, beta_id);
+            assert_eq!(edited.old_text.as_deref(), Some("beta"));
+            assert_eq!(edited.new_text.as_deref(), Some("BETA"));
+            assert!(
+                edited
+                    .runs
+                    .iter()
+                    .any(|r| r.op == RunOp::Insert && r.text == "BETA")
+            );
+
+            let added = changed.iter().find(|x| x.op == BlockOp::Added).unwrap();
+            assert_eq!(added.new_text.as_deref(), Some("epsilon"));
+            let removed = changed.iter().find(|x| x.op == BlockOp::Removed).unwrap();
+            assert_eq!(removed.id, gamma_id);
+            assert_eq!(removed.old_text.as_deref(), Some("gamma"));
+        }
+        // Phase `identical_snapshots_diff_empty`.
+        {
+            let mut d = Document::new();
+            let p = d.insert_block(None, "paragraph");
+            d.splice_text(&p, 0, 0, "same");
+            let v = snap_of(&d);
+            let diff = diff_snapshots(&v, &v);
+            assert!(diff.is_empty(), "a snapshot vs itself has no changes");
+            assert_eq!(diff.summary.changed, 0);
+        }
+        // Phase `positional_fallback_across_independent_docs`.
+        {
+            // Two docs with no shared ids still diff by position.
+            let mut a = Document::new();
+            let pa = a.insert_block(None, "paragraph");
+            a.splice_text(&pa, 0, 0, "first line");
+            let mut b = Document::new();
+            let pb = b.insert_block(None, "paragraph");
+            b.splice_text(&pb, 0, 0, "first LINE");
+
+            let diff = diff_snapshots(&snap_of(&a), &snap_of(&b));
+            assert_eq!(
+                diff.summary.changed, 1,
+                "positional pairing found the edited paragraph"
+            );
+            assert!(diff.blocks[0].runs.iter().any(|r| r.op == RunOp::Insert));
+        }
+        // Phase `char_run_diff_is_minimal`.
+        {
+            let runs = text_runs("the quick fox", "the quick brown fox");
+            assert!(
+                runs.iter()
+                    .any(|r| r.op == RunOp::Insert && r.text.contains("brown"))
+            );
+            let equal: String = runs
                 .iter()
-                .any(|r| r.op == RunOp::Insert && r.text == "BETA")
-        );
-
-        let added = changed.iter().find(|x| x.op == BlockOp::Added).unwrap();
-        assert_eq!(added.new_text.as_deref(), Some("epsilon"));
-        let removed = changed.iter().find(|x| x.op == BlockOp::Removed).unwrap();
-        assert_eq!(removed.id, gamma_id);
-        assert_eq!(removed.old_text.as_deref(), Some("gamma"));
+                .filter(|r| r.op == RunOp::Equal)
+                .map(|r| r.text.clone())
+                .collect();
+            assert!(equal.contains("the quick"));
+            assert!(equal.contains("fox"));
+        }
     }
 
     #[test]
-    fn identical_snapshots_diff_empty() {
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "same");
-        let v = snap_of(&d);
-        let diff = diff_snapshots(&v, &v);
-        assert!(diff.is_empty(), "a snapshot vs itself has no changes");
-        assert_eq!(diff.summary.changed, 0);
-    }
+    fn mark_attr_and_property_changes_are_reported() {
+        // Phase `detects_mark_and_attr_changes`.
+        {
+            let mut d = Document::new();
+            let p = d.insert_block(None, "paragraph");
+            d.splice_text(&p, 0, 0, "hello world");
+            let v1 = snap_of(&d);
+            d.add_mark(&p, 0, 5, "strong", true);
+            let v2 = snap_of(&d);
 
-    #[test]
-    fn detects_mark_and_attr_changes() {
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "hello world");
-        let v1 = snap_of(&d);
-        d.add_mark(&p, 0, 5, "strong", true);
-        let v2 = snap_of(&d);
+            let diff = diff_snapshots(&v1, &v2);
+            let ch = diff.changed_blocks().next().unwrap();
+            assert_eq!(ch.op, BlockOp::Changed);
+            assert!(
+                ch.marks_added.iter().any(|m| m.name == "strong"),
+                "bold added surfaced"
+            );
+            assert!(ch.marks_removed.is_empty());
+        }
+        // Phase `property_changes_are_reported`.
+        {
+            let mut d = Document::new();
+            d.set_doc_prop("title", "Draft");
+            let v1 = snap_of(&d);
+            d.set_doc_prop("title", "Final");
+            d.set_doc_prop("author", "Ada");
+            let v2 = snap_of(&d);
 
-        let diff = diff_snapshots(&v1, &v2);
-        let ch = diff.changed_blocks().next().unwrap();
-        assert_eq!(ch.op, BlockOp::Changed);
-        assert!(
-            ch.marks_added.iter().any(|m| m.name == "strong"),
-            "bold added surfaced"
-        );
-        assert!(ch.marks_removed.is_empty());
-    }
-
-    #[test]
-    fn char_run_diff_is_minimal() {
-        let runs = text_runs("the quick fox", "the quick brown fox");
-        assert!(
-            runs.iter()
-                .any(|r| r.op == RunOp::Insert && r.text.contains("brown"))
-        );
-        let equal: String = runs
-            .iter()
-            .filter(|r| r.op == RunOp::Equal)
-            .map(|r| r.text.clone())
-            .collect();
-        assert!(equal.contains("the quick"));
-        assert!(equal.contains("fox"));
-    }
-
-    #[test]
-    fn positional_fallback_across_independent_docs() {
-        // Two docs with no shared ids still diff by position.
-        let mut a = Document::new();
-        let pa = a.insert_block(None, "paragraph");
-        a.splice_text(&pa, 0, 0, "first line");
-        let mut b = Document::new();
-        let pb = b.insert_block(None, "paragraph");
-        b.splice_text(&pb, 0, 0, "first LINE");
-
-        let diff = diff_snapshots(&snap_of(&a), &snap_of(&b));
-        assert_eq!(
-            diff.summary.changed, 1,
-            "positional pairing found the edited paragraph"
-        );
-        assert!(diff.blocks[0].runs.iter().any(|r| r.op == RunOp::Insert));
-    }
-
-    #[test]
-    fn property_changes_are_reported() {
-        let mut d = Document::new();
-        d.set_doc_prop("title", "Draft");
-        let v1 = snap_of(&d);
-        d.set_doc_prop("title", "Final");
-        d.set_doc_prop("author", "Ada");
-        let v2 = snap_of(&d);
-
-        let diff = diff_snapshots(&v1, &v2);
-        let title = diff.properties.iter().find(|p| p.name == "title").unwrap();
-        assert_eq!(title.old.as_deref(), Some("Draft"));
-        assert_eq!(title.new.as_deref(), Some("Final"));
-        assert!(
-            diff.properties
-                .iter()
-                .any(|p| p.name == "author" && p.new.as_deref() == Some("Ada"))
-        );
+            let diff = diff_snapshots(&v1, &v2);
+            let title = diff.properties.iter().find(|p| p.name == "title").unwrap();
+            assert_eq!(title.old.as_deref(), Some("Draft"));
+            assert_eq!(title.new.as_deref(), Some("Final"));
+            assert!(
+                diff.properties
+                    .iter()
+                    .any(|p| p.name == "author" && p.new.as_deref() == Some("Ada"))
+            );
+        }
     }
 }
 // Spreadsheet (workbook) structural diff, appended here: same "stable identity → clean structural
@@ -827,63 +650,65 @@ mod sheet_diff_tests {
     use crate::{CellInput, CellType, Workbook};
 
     #[test]
-    fn workbook_diff_reports_added_changed_removed_cells() {
-        let mut a = Workbook::new();
-        let s = a.add_sheet("S");
-        a.set_cell(&s, "A1", CellInput::number("1"));
-        a.set_cell(&s, "A2", CellInput::formula("A1+1", "2", CellType::Number));
-        let v1 = a.materialize();
+    fn workbook_diffs_report_cell_and_sheet_changes() {
+        // Phase `workbook_diff_reports_added_changed_removed_cells`.
+        {
+            let mut a = Workbook::new();
+            let s = a.add_sheet("S");
+            a.set_cell(&s, "A1", CellInput::number("1"));
+            a.set_cell(&s, "A2", CellInput::formula("A1+1", "2", CellType::Number));
+            let v1 = a.materialize();
 
-        a.set_cell(&s, "A1", CellInput::number("9")); // changed
-        a.set_cell(&s, "B1", CellInput::text("new")); // added
-        a.clear_cell(&s, "A2"); // removed
-        let v2 = a.materialize();
+            a.set_cell(&s, "A1", CellInput::number("9")); // changed
+            a.set_cell(&s, "B1", CellInput::text("new")); // added
+            a.clear_cell(&s, "A2"); // removed
+            let v2 = a.materialize();
 
-        let diff = diff_workbooks(&v1, &v2);
-        assert_eq!(diff.summary.cells_changed, 1, "A1 changed");
-        assert_eq!(diff.summary.cells_added, 1, "B1 added");
-        assert_eq!(diff.summary.cells_removed, 1, "A2 removed");
-        let sheet = diff.changed_sheets().next().unwrap();
-        assert!(
-            sheet
-                .cells
-                .iter()
-                .any(|c| c.reference == "A1" && c.op == CellOp::Changed)
-        );
-        assert!(
-            sheet
-                .cells
-                .iter()
-                .any(|c| c.reference == "B1" && c.op == CellOp::Added)
-        );
-        assert!(
-            sheet
-                .cells
-                .iter()
-                .any(|c| c.reference == "A2" && c.op == CellOp::Removed)
-        );
-        let json = serde_json::to_string(&diff).expect("sheet diff serializes to JSON");
-        assert!(json.contains("A1") && json.contains("B1"));
-    }
-
-    #[test]
-    fn workbook_diff_detects_added_and_removed_sheets() {
-        let mut a = Workbook::new();
-        a.add_sheet("Keep");
-        let v1 = a.materialize();
-        let s2 = a.add_sheet("Added");
-        a.set_cell(&s2, "A1", CellInput::number("1"));
-        let v2 = a.materialize();
-        let diff = diff_workbooks(&v1, &v2);
-        assert_eq!(diff.summary.sheets_added, 1);
-        assert!(
-            diff.sheets
-                .iter()
-                .any(|s| s.name == "Added" && s.op == SheetOp::Added)
-        );
-        assert!(
-            diff_workbooks(&v1, &v1).is_empty(),
-            "a snapshot vs itself is empty"
-        );
+            let diff = diff_workbooks(&v1, &v2);
+            assert_eq!(diff.summary.cells_changed, 1, "A1 changed");
+            assert_eq!(diff.summary.cells_added, 1, "B1 added");
+            assert_eq!(diff.summary.cells_removed, 1, "A2 removed");
+            let sheet = diff.changed_sheets().next().unwrap();
+            assert!(
+                sheet
+                    .cells
+                    .iter()
+                    .any(|c| c.reference == "A1" && c.op == CellOp::Changed)
+            );
+            assert!(
+                sheet
+                    .cells
+                    .iter()
+                    .any(|c| c.reference == "B1" && c.op == CellOp::Added)
+            );
+            assert!(
+                sheet
+                    .cells
+                    .iter()
+                    .any(|c| c.reference == "A2" && c.op == CellOp::Removed)
+            );
+            let json = serde_json::to_string(&diff).expect("sheet diff serializes to JSON");
+            assert!(json.contains("A1") && json.contains("B1"));
+        }
+        // Phase `workbook_diff_detects_added_and_removed_sheets`.
+        {
+            let mut a = Workbook::new();
+            a.add_sheet("Keep");
+            let v1 = a.materialize();
+            let s2 = a.add_sheet("Added");
+            a.set_cell(&s2, "A1", CellInput::number("1"));
+            let v2 = a.materialize();
+            let diff = diff_workbooks(&v1, &v2);
+            assert_eq!(diff.summary.sheets_added, 1);
+            assert!(
+                diff.sheets
+                    .iter()
+                    .any(|s| s.name == "Added" && s.op == SheetOp::Added)
+            );
+            assert!(
+                diff_workbooks(&v1, &v1).is_empty(),
+                "a snapshot vs itself is empty"
+            );
+        }
     }
 }
