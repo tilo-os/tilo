@@ -164,6 +164,9 @@ pub struct RichTextState {
     /// paragraph's map, its text, its attributes), so a change to one is
     /// placed without asking the document.
     objects: HashMap<ObjId, tilo_resource::Path>,
+    /// The objects indexed for each paragraph, so forgetting one touches
+    /// only its own.
+    paragraph_objects: HashMap<String, Vec<ObjId>>,
     header: Rc<Vec<BlockView>>,
     footer: Rc<Vec<BlockView>>,
     notes: Rc<Vec<NoteView>>,
@@ -378,14 +381,17 @@ impl RichTextState {
     fn index_paragraph(&mut self, doc: &Doc, id: &str) {
         self.forget_paragraph(id);
         let objects = paragraph_objects(doc, &self.containers, &self.root_path, id);
+        self.paragraph_objects.insert(
+            id.to_owned(),
+            objects.iter().map(|(obj, _)| obj.clone()).collect(),
+        );
         self.objects.extend(objects);
     }
 
     fn forget_paragraph(&mut self, id: &str) {
-        self.objects.retain(|_, path| {
-            path.get(1)
-                .is_none_or(|(_, prop)| !matches!(prop, automerge::Prop::Map(key) if key == id))
-        });
+        for obj in self.paragraph_objects.remove(id).unwrap_or_default() {
+            self.objects.remove(&obj);
+        }
     }
 }
 
@@ -417,6 +423,16 @@ impl Resource for RichText {
     }
 
     fn load(state: &mut RichTextState, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
+        // Every paragraph demanded and every one already read: a view that
+        // shows the whole document, after an edit refreshed what it touched.
+        let everything = demand.keys.is_empty()
+            && demand
+                .ranges
+                .iter()
+                .any(|range| range.start == 0 && range.end >= state.body.len());
+        if everything && state.loaded.len() == state.body.len() {
+            return Ok(());
+        }
         let mut wanted: HashSet<String> = demand
             .positions(state.body.len())
             .filter_map(|position| state.body.id_at(position).map(str::to_owned))
@@ -555,6 +571,7 @@ impl RichText {
             featured: Rc::new(featured),
             loaded: HashMap::new(),
             objects: HashMap::new(),
+            paragraph_objects: HashMap::new(),
             header: Rc::new(model::materialize_region(doc, &c, Region::Header)),
             footer: Rc::new(model::materialize_region(doc, &c, Region::Footer)),
             notes: Rc::new(model::materialize_notes(doc, &c)),
