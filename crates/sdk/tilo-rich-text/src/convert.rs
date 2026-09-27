@@ -143,8 +143,43 @@ pub(crate) const EDITOR_MARKS: [&str; 7] = [
     "transclusion",
 ];
 
+/// A paragraph as the paste vocabulary carries it: kind, text, marks and
+/// attributes, so an action can write it elsewhere (a comment reply, a
+/// message) as it was written.
+pub fn clip_block(view: &BlockView) -> qdoc_rich_text::ClipBlock {
+    use qdoc_rich_text::ClipAttr;
+    let attrs = view
+        .attrs
+        .iter()
+        .filter(|(key, _)| !matches!(key.as_str(), "level" | "ordered" | "align"))
+        .filter_map(|(key, value)| {
+            let value = match value {
+                qdoc::AttrVal::Bool(value) => ClipAttr::Bool(*value),
+                qdoc::AttrVal::Int(value) => ClipAttr::Int(*value),
+                qdoc::AttrVal::Str(value) => ClipAttr::Str(value.clone()),
+                qdoc::AttrVal::Float(_) => return None,
+            };
+            Some((key.clone(), value))
+        })
+        .collect();
+    qdoc_rich_text::ClipBlock {
+        kind: view.kind.clone(),
+        text: view.text.clone(),
+        marks: view
+            .marks
+            .iter()
+            .filter(|mark| mark.start < mark.end)
+            .cloned()
+            .collect(),
+        level: int_attr(view, "level"),
+        ordered: bool_attr(view, "ordered"),
+        align: str_attr(view, "align").map(str::to_owned),
+        attrs,
+    }
+}
+
 /// What a paragraph shows as in the editor.
-pub(crate) fn content_of(view: &BlockView) -> BlockContent {
+pub fn content_of(view: &BlockView) -> BlockContent {
     let text = view.text.clone();
     let mut marks: Vec<MarkSpan> = view
         .marks

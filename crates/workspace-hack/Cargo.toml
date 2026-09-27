@@ -439,6 +439,7 @@ getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-f
 hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
@@ -473,6 +474,7 @@ getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-f
 hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
@@ -507,6 +509,7 @@ getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-f
 hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
@@ -541,6 +544,7 @@ getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-f
 hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }

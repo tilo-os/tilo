@@ -1643,7 +1643,9 @@ jobs:
             else
               qemu_packages='edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core'
             fi
-            sudo -n dnf install -y binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs \
+            # Fedora keeps QEMU's efi-virtio.rom in ipxe-roms-qemu, separate
+            # from the architecture-specific QEMU system/device packages.
+            sudo -n dnf install -y binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs ipxe-roms-qemu \
               jq openssh-clients podman qemu-img qemu-ui-egl-headless qemu-ui-opengl skopeo slirp4netns socat sshpass \
               sudo systemd util-linux $qemu_packages
           else
