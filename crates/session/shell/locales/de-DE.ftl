@@ -505,3 +505,878 @@ topbar-clock-add-one-minute = Eine Minute hinzufügen
 topbar-workspace-position = Arbeitsbereich { $position } von { $total }
 topbar-desktop-navigation = Desktop-Navigation
 topbar-display-navigation = Bildschirmnavigation
+
+# Arbeitsbereichsaktivität: woran eine mitarbeitende Person gerade arbeitet
+host-activity-working-on = Arbeitet an { $target }
+host-activity-working-in = Arbeitet in { $app }
+host-activity-editing = Bearbeitet gemeinsame Inhalte
+host-activity-organizing = Ordnet gemeinsame Inhalte
+host-activity-updating-details = Aktualisiert Details des Arbeitsbereichs
+host-activity-reviewing-discussion = Sieht sich die Diskussion an
+host-activity-cleaning-up = Räumt gemeinsame Inhalte auf
+host-activity-restoring = Stellt gemeinsame Inhalte wieder her
+host-activity-managing-access = Verwaltet den Zugriff auf den Arbeitsbereich
+host-activity-maintaining-history = Pflegt den Verlauf des Arbeitsbereichs
+host-activity-reviewing-sensitive = Prüft vertraulichen Verlauf
+
+# Bildschirmfreigabe, wie das Personen-Popover sie beschreibt
+host-exposure-kind-unidentified = nicht identifizierte Sitzung
+host-exposure-kind-agent = Agent
+host-exposure-kind-person = Person
+host-exposure-surface = Oberfläche { $surface }
+host-exposure-controls = { $name } ({ $kind }) steuert { $target }
+host-exposure-views = { $name } ({ $kind }) sieht { $target }
+
+# Einladungen
+host-invite-unavailable-title = Einladen nicht möglich
+host-invite-unavailable-body = Du brauchst die Berechtigung, Personen in diesen Arbeitsbereich einzuladen.
+host-this-workspace = diesen Arbeitsbereich
+
+# Absender von Benachrichtigungen
+host-source-applications = Anwendungen
+host-source-system = System
+host-source-app-actions = App-Aktionen
+
+# App-Starts und Sitzungsaktionen
+host-app-did-not-open-title = Anwendung wurde nicht geöffnet
+host-app-did-not-open-body = Die App wurde gestartet, hat aber kein Fenster erstellt. Sieh im Sitzungsprotokoll nach und versuche es erneut.
+host-session-action-failed = Sitzungsaktion fehlgeschlagen
+host-session-lock-failed = Die Sitzung konnte nicht gesperrt werden. Sieh im Sitzungsprotokoll nach und versuche es erneut.
+host-session-logout-failed = Abmelden fehlgeschlagen. Sieh im Sitzungsprotokoll nach und versuche es erneut.
+host-session-switch-user-failed = Benutzerwechsel fehlgeschlagen. Sieh im Sitzungsprotokoll nach und versuche es erneut.
+host-session-suspend-failed = Bereitschaft fehlgeschlagen. Sieh im Sitzungsprotokoll nach und versuche es erneut.
+host-session-restart-failed = Neustart fehlgeschlagen. Sieh im Sitzungsprotokoll nach und versuche es erneut.
+host-session-shut-down-failed = Herunterfahren fehlgeschlagen. Sieh im Sitzungsprotokoll nach und versuche es erneut.
+host-session-action-blocked = Sitzungsaktion blockiert
+
+# Suche und App-Aktionen
+host-action-started = „{ $title }“ gestartet
+host-action-admitted = Aktionsauftrag { $job } wurde angenommen
+host-action-cannot-run = „{ $title }“ kann nicht ausgeführt werden
+host-search-placeholder = Suchen …
+host-search-in = In { $scope } suchen …
+host-search-in-resource-fallback = Ressource
+host-search-scope-app = App { $title }
+host-json-arguments = JSON-Argumente: {"{"}{ $names }{"}"}
+host-a11y-filter-all = Filter: Alle
+host-a11y-filter-kind = Filter: { $kind }
+host-a11y-scope = Bereich: { $scope }
+host-a11y-search-filters = Suchfilter
+host-a11y-result-kinds = Ergebnisarten
+host-a11y-search-scope = Suchbereich
+
+# Tabs
+host-tab-duplicate-failed = Dieser Tab kann nicht dupliziert werden
+host-tab-move-failed = Dieser Tab kann nicht verschoben werden
+host-a11y-tab-menu = Tab-Menü für { $title }
+
+# WLAN-Verbindungen aus den Schnelleinstellungen
+host-wifi-connected-title = Mit { $ssid } verbunden
+host-wifi-connected-shared-credential = Die verschlüsselten Zugangsdaten von einem deiner zertifizierten Geräte wurden verwendet.
+host-wifi-connected-sharing-unavailable = Verbunden, aber verschlüsseltes Teilen ist vorübergehend nicht verfügbar.
+host-wifi-connected-shared = Verbunden und für jedes zertifizierte Gerät einzeln verschlüsselt.
+host-wifi-connected-saved = Verbunden. Dieses gespeicherte Netzwerk wird automatisch wieder verbunden.
+host-wifi-connected-open = Mit dem offenen Netzwerk verbunden.
+host-wifi-saved-password-stale = Das gespeicherte Passwort funktioniert nicht mehr. Gib das aktuelle Passwort ein.
+host-wifi-join-check-password = Verbindung fehlgeschlagen. Prüfe das Passwort.
+host-wifi-connect-failed-title = Verbindung mit { $ssid } fehlgeschlagen
+host-wifi-connect-failed-body = Das Netzwerk hat die Verbindung nicht angenommen. Versuche es in den WLAN-Einstellungen erneut.
+
+# Schnelleinstellungen, die das Gerät abgelehnt hat
+host-qs-change-failed-brightness = Helligkeit konnte nicht geändert werden
+host-qs-change-failed-volume = Lautstärke konnte nicht geändert werden
+host-qs-change-failed-value-restored = Das Bedienelement zeigt wieder den aktuellen Wert des Geräts.
+host-qs-change-failed-wifi = WLAN konnte nicht geändert werden
+host-qs-change-failed-bluetooth = Bluetooth konnte nicht geändert werden
+host-qs-change-failed-wired = Kabelnetzwerk konnte nicht geändert werden
+host-qs-change-failed-airplane = Flugmodus konnte nicht geändert werden
+host-qs-change-failed-hotspot = Persönlicher Hotspot konnte nicht geändert werden
+host-qs-change-failed-mobile = Mobilfunk konnte nicht geändert werden
+host-qs-change-failed-power = Energiemodus konnte nicht geändert werden
+host-qs-change-failed-state-restored = Das Bedienelement zeigt wieder den aktuellen Zustand des Geräts.
+
+# Ergebnisse im Arbeitsbereichsverlauf
+host-history-partial-undo-title = Ausgewählte Arbeit teilweise rückgängig gemacht
+host-history-partial-undo-body = Spätere Änderungen anderer wurden beibehalten. Der Verlauf zeigt, welche Teile unverändert blieben.
+host-history-reverted-title = Raumänderung zurückgesetzt
+host-history-reverted-body = Vorwärts geschrieben: Die Version, von der du zurückgesetzt hast, bleibt im Verlauf.
+host-history-compared-title = Vergleich bereit
+host-history-compared-body = Der genaue kausale Vorher-nachher-Zustand wird im Verlauf angezeigt.
+host-history-named-title = Version benannt
+host-history-named-body = Im Verlauf dieses Arbeitsbereichs gespeichert, damit alle hier sie sehen.
+host-history-task-updated-title = Aufgabenzentrale aktualisiert
+host-history-task-updated-body = Die Aufgabe und ihr Prüfprotokoll werden mit diesem Arbeitsbereich geteilt.
+host-review-activity-title = Arbeitsbereichsaktivität prüfen
+host-review-activity-body = Der Verlauf ist geöffnet, damit du die zugehörigen Änderungen vor deiner Entscheidung ansehen kannst.
+
+# Anrufübergabe zwischen Geräten
+host-call-handoff-title = Anrufübergabe
+host-call-handoff-approved = Einmal genehmigt; dieses Gerät bereitet seine lokalen Medien vor
+host-call-handoff-declined = Auf diesem Gerät abgelehnt
+host-call-handoff-waiting = Warte auf ausdrückliche Genehmigung auf { $device }; der Anruf läuft hier weiter
+host-call-move-failed = Anruf konnte nicht verschoben werden
+
+# Geräte und Medien: was eine Aktion im Untermenü bewirkt hat
+host-fabric-notice-title = Geräte & Medien
+host-fabric-action-failed = Geräteaktion konnte nicht abgeschlossen werden
+host-fabric-certified-display = einen zertifizierten Bildschirm
+host-fabric-the-display = den Bildschirm
+host-fabric-calibration-applied = Vorgeschlagene Anordnung für { $device } übernommen
+host-fabric-calibration-dismissed = Anordnungsvorschlag für { $device } verworfen
+host-fabric-calibration-restored = Vorherige Anordnung für { $device } wiederhergestellt
+host-fabric-audio-allowed = { $source } darf in dieser Sitzung hier abspielen
+host-fabric-audio-declined = Audio von { $source } abgelehnt
+host-fabric-speaker-joined = { $group } als { $role } beigetreten
+host-fabric-speaker-declined = Beitritt zu { $group } abgelehnt
+host-fabric-speaker-stopped = Wiedergabe auf { $group } beendet
+host-fabric-speaker-playing = Wiedergabe auf { $group }
+host-fabric-speaker-playing-media = Wiedergabe auf { $group }; die Medien laufen weiter von hier
+host-fabric-speaker-left = Dieses Gerät hat { $group } verlassen
+host-fabric-audio-route-dismissed = Unterbrochene Übertragung { $route } verworfen
+host-fabric-audio-route-stopped = Übertragung { $route } beendet
+host-fabric-input-allowed = { $app } darf diese Eingabe einmal verwenden
+host-fabric-input-declined = Entfernte Eingabe für { $app } abgelehnt
+host-fabric-input-focused-app-allowed = Die fokussierte App darf diese entfernte Eingabe einmal verwenden
+host-fabric-input-stopped = Sitzung für entfernte Eingabe beendet
+host-fabric-mirror-allowed = { $device } darf einmal hierher spiegeln
+host-fabric-mirror-declined = Bildschirmspiegelung von { $device } abgelehnt
+host-fabric-mirror-stopped = Bildschirmspiegelung mit { $device } beendet
+host-fabric-pairing-approved = Kopplung von { $accessory } für diese Übergabe genehmigt
+host-fabric-pairing-declined = Kopplung von { $accessory } abgelehnt
+host-fabric-handoff-retrying = Übergabe von { $accessory } wird erneut versucht
+host-fabric-handoff-cancelling = Übergabe von { $accessory } wird abgebrochen
+host-fabric-controller-allowed = { $controller } von { $device } für diese Sitzung erlaubt
+host-fabric-controller-declined = Controller von { $device } abgelehnt
+host-fabric-controller-stopped = Weiterleitung von { $controller } beendet
+host-fabric-media-move-cancelled = Verschieben von { $title } auf { $device } abgebrochen
+host-fabric-media-retrying = { $title } auf { $device } wird erneut versucht
+host-fabric-output-routed = Audio wird jetzt an { $output } geleitet
+host-fabric-input-selected = Aufnahme von { $input }
+host-fabric-tethering-allowed = { $device } darf die Verbindung dieses Telefons nutzen
+host-fabric-tethering-declined = Tethering für { $device } abgelehnt
+host-fabric-tethering-disconnected = Tethering mit { $device } getrennt
+host-fabric-asked-mirror = { $device } wurde gebeten, die Bildschirmspiegelung einmal zu erlauben
+host-fabric-asked-capture = { $device } wurde gebeten, einmal { $input } zu teilen
+host-fabric-asked-audio = { $device } wurde gebeten, dieses Audio einmal zu erlauben; bis zur Genehmigung bleibt die Wiedergabe lokal
+host-fabric-asked-tethering = { $device } wurde gebeten, seine Verbindung zu teilen
+host-fabric-asked-controller = { $device } wurde gebeten, diesen Controller einmal für die fokussierte App zu erlauben
+host-fabric-media-preparing = Medien für { $device } werden vorbereitet; dieses Gerät bleibt aktiv, bis sie dort geöffnet sind
+host-fabric-bluetooth-moving = { $accessory } wird auf { $device } verschoben; es bleibt hier, bis das Gerät seine Kopplung bestätigt
+host-fabric-place-left = { $device } wird nach der Bestätigung links von diesem Bildschirm angeordnet
+host-fabric-place-right = { $device } wird nach der Bestätigung rechts von diesem Bildschirm angeordnet
+host-fabric-place-above = { $device } wird nach der Bestätigung über diesem Bildschirm angeordnet
+host-fabric-place-below = { $device } wird nach der Bestätigung unter diesem Bildschirm angeordnet
+host-fabric-control-revoked = { $device } kann dieses Gerät nicht mehr steuern
+host-fabric-control-granted = { $device } darf dieses Gerät 15 Minuten lang steuern
+
+# Barrierefreiheitsbaum: Arbeitsbereich-Overlays
+a11y-workspace = Tilo-Arbeitsbereich
+a11y-member-sheet = Berechtigungsentscheidung für den Arbeitsbereich
+a11y-member-sheet-description = Wähle mit Pfeil nach oben oder unten eine klar beschriftete Berechtigung, bestätige mit Eingabe oder brich mit Escape ab. Folgenreiche Änderungen verlangen eine eigene ausdrückliche Bestätigung und bieten die Aktivität des Arbeitsbereichs zur Prüfung an.
+a11y-overview = Arbeitsbereichsübersicht
+a11y-new-workspace = Neuer Arbeitsbereich
+a11y-workspace-settings = Arbeitsbereichseinstellungen
+a11y-workspace-settings-description = Identität, Personen, Berechtigungen, Apps und Dateien des Arbeitsbereichs sowie signierte Eigentümerverwaltung.
+a11y-manage-ownership = Eigentum am Arbeitsbereich verwalten
+a11y-manage-ownership-description = Öffnet dieselben signierten Eigentumsaktionen, die auch Suche und Automatisierung anbieten. Nimmt die empfangende Person an, ist eine ausstehende Übertragung sofort abgeschlossen.
+a11y-workspace-name = Name des Arbeitsbereichs
+a11y-workspace-settings-content = Inhalt der Arbeitsbereichseinstellungen
+a11y-at-a-glance = Auf einen Blick
+
+# Barrierefreiheitsbaum: aufbewahrte Benachrichtigungen
+a11y-notifications-none = Keine aufbewahrten Benachrichtigungen.
+a11y-notifications-description = Neueste Zeilen { $first } bis { $last } von { $total }, nach App gruppiert. Mit Pfeil nach oben und unten wählst du eine Benachrichtigung, mit Bild auf und Bild ab springst du um eine Seite, mit Pos1 oder Ende zur neuesten oder ältesten aufbewahrten Benachrichtigung. Eingabe öffnet die gewählte Benachrichtigung oder klappt ihre App-Gruppe ein, Entf verwirft sie.
+a11y-notifications-list = Aufbewahrte Benachrichtigungen
+a11y-notifications-clear = Alle Benachrichtigungen löschen
+a11y-notifications-clear-description = Löscht den aufbewahrten Benachrichtigungsverlauf dieser Sitzung. Acht Sekunden lang kannst du das rückgängig machen.
+a11y-notifications-cleared = Benachrichtigungen gelöscht
+a11y-notifications-undo = Löschen der Benachrichtigungen rückgängig machen
+a11y-notifications-undo-description = Stellt die gelöschten Benachrichtigungen in ihrer ursprünglichen Reihenfolge wieder her. Drücke Eingabe oder Leertaste.
+a11y-notifications = Benachrichtigungen
+
+# Barrierefreiheitsbaum: Verlauf der Zwischenablage
+a11y-clipboard-data = Daten der Zwischenablage
+a11y-clipboard-item-description = Von { $source }; { $age }; { $bytes } Byte; { $pinned ->
+        [yes] angeheftet
+       *[no] nicht angeheftet
+    }
+a11y-clipboard-use = Eintrag verwenden
+a11y-clipboard-unpin = Eintrag lösen
+a11y-clipboard-pin = Eintrag anheften
+a11y-clipboard-remove = Eintrag entfernen
+a11y-clipboard-search = Verlauf der Zwischenablage durchsuchen
+a11y-clipboard-search-description = Tippe, um nach Vorschau, Inhaltstyp oder Quellgerät zu filtern. Rücktaste bearbeitet, Escape leert die Suche.
+a11y-clipboard = Zwischenablage
+a11y-clipboard-description = Privater Verlauf der Zwischenablage, geteilt nur mit deinen authentifizierten Geräten. Tippe zum Suchen. Wähle mit Pfeil nach oben und unten, Bild auf und Bild ab, Pos1 oder Ende einen Eintrag und verwende ihn mit Eingabe oder Leertaste.
+a11y-clipboard-list = Aufbewahrte Einträge der Zwischenablage
+
+# Barrierefreiheitsbaum: Bluetooth-Zubehör verschieben
+a11y-bluetooth-accessory = Bluetooth-Zubehör
+a11y-bluetooth-disconnect = { $accessory } von diesem Gerät trennen
+a11y-bluetooth-move-to = Zu { $device } verschieben
+a11y-bluetooth-destination-local = Das ist das aktuelle zertifizierte Gerät
+a11y-bluetooth-destination-online = Das Ziel bestätigt seine eigene lokale Kopplung, bevor dieses Gerät die Verbindung trennt
+a11y-bluetooth-destination-offline = Zertifiziertes Gerät, offline
+a11y-bluetooth-move = { $accessory } verschieben
+a11y-bluetooth-move-description = Wähle ein zertifiziertes Ziel, das bereits mit diesem Zubehör gekoppelt ist. Kopplungsschlüssel verlassen keines der Geräte. Mit Pfeil nach oben und unten, Bild auf und Bild ab, Pos1 oder Ende erreichst du jedes Ziel.
+a11y-bluetooth-destinations = Bluetooth-Ziele
+
+# Barrierefreiheitsbaum: Zeilen für Geräte und Medien
+a11y-certified-display = Zertifizierter Bildschirm
+a11y-placement-suggested = Vorgeschlagene Anordnung für { $display }
+a11y-placement-suggested-description = Aktuelle lokale Sensordaten schlagen eine umkehrbare Anordnung vor; die Nähe hat keine Identität festgestellt
+a11y-placement-apply = Diese umkehrbare Bildschirmanordnung übernehmen
+a11y-placement-dismiss = Diesen Anordnungsvorschlag verwerfen
+a11y-placement-undo = Anordnung für { $display } rückgängig machen
+a11y-display-fallback = Bildschirm
+a11y-placement-undo-description = Stellt die genaue Anordnung von vor der Kalibrierung wieder her
+a11y-speaker-join = { $group } als { $role } beitreten
+a11y-speaker-join-description = { $leader } hat gefragt; du wirst einmal gefragt und kannst jederzeit austreten
+a11y-speaker-join-allow = Dieser Lautsprechergruppe beitreten
+a11y-speaker-join-decline = Diese Lautsprechergruppe ablehnen
+a11y-speaker-playing-on = Wiedergabe auf { $group }
+a11y-speaker-session-description = Wiedergabe in der Lautsprechergruppe; aktivieren zum Beenden
+a11y-speaker-group-description = Lautsprechergruppe, { $summary }; wähle zuerst eine Quelle und aktiviere dann, um darauf abzuspielen
+a11y-speaker-setup = Lautsprecher einrichten
+a11y-speaker-setup-description = Öffnet die Einstellungen, um mehrere Geräte als Stereopaar oder Raumlautsprecher zu nutzen
+a11y-speaker-membership = { $role } in { $group }
+a11y-speaker-membership-description = Dieses Gerät spielt in dieser Lautsprechergruppe; aktivieren zum Austreten
+a11y-remote-audio-play-here = { $media } hier abspielen
+a11y-remote-audio-consent-description = Ein zertifiziertes Gerät hat eine Audioausgabe für eine Sitzung angefragt
+a11y-remote-audio-allow = Dieses entfernte Audio einmal erlauben
+a11y-remote-audio-decline = Dieses entfernte Audio ablehnen
+a11y-remote-audio-source-app = Audio der fokussierten App wählen; die Weiterleitung endet, wenn der Fokus wechselt
+a11y-remote-audio-source-system = Gesamtes Systemaudio wählen, dann ein zertifiziertes Ziel wählen
+a11y-remote-audio-route-interrupted = Entfernte Audioweiterleitung unterbrochen; aktivieren zum Verwerfen
+a11y-remote-audio-route-active = Entfernte Audioweiterleitung aktiv oder wartet auf Freigabe; aktivieren zum Beenden
+a11y-remote-capture-share = { $input } dieses Geräts mit { $app } teilen
+a11y-remote-capture-consent-description = Ein zertifiziertes Gerät hat eine private Aufnahmesitzung angefragt
+a11y-remote-capture-allow = Diese entfernte Eingabe einmal erlauben
+a11y-remote-capture-decline = Diese entfernte Eingabe ablehnen
+a11y-remote-capture-source = { $input } von einem anderen Gerät verwenden
+a11y-remote-capture-source-description = Wähle ein zertifiziertes Quellgerät; es muss die Anfrage freigeben
+a11y-remote-capture-session = Entfernte Eingabe: { $input }
+a11y-remote-capture-requesting = Warte auf die Freigabe durch das Quellgerät
+a11y-remote-capture-provisioning = Privater lokaler Endpunkt wird vorbereitet
+a11y-remote-capture-app-approval = Die lokale App muss freigegeben werden
+a11y-remote-capture-waiting-receiver = Warte auf das empfangende Gerät
+a11y-remote-capture-streaming = Private Sitzung aktiv; aktivieren zum Beenden
+a11y-remote-capture-unavailable = Entfernte Eingabe nicht verfügbar: { $input }
+a11y-remote-capture-source-unavailable = Das Quellgerät kann diese Eingabe nicht bereitstellen
+a11y-remote-capture-receiver-unavailable = Dieses Gerät kann den privaten Empfänger nicht erstellen
+a11y-remote-capture-interrupted = Die zertifizierte Verbindung wurde unterbrochen und geschlossen
+a11y-mirror-from = Bildschirm von { $source } spiegeln
+a11y-mirror-consent-description = Ein zertifiziertes Gerät hat eine private Bildschirmspiegelung nur zum Ansehen angefragt
+a11y-mirror-allow = Bildschirmspiegelung einmal erlauben
+a11y-mirror-decline = Bildschirmspiegelung ablehnen
+a11y-mirror-source = Diesen Bildschirm spiegeln
+a11y-mirror-source-description = Wähle einen zertifizierten Videobildschirm; das Ziel muss einmal zustimmen und erhält keine Eingaberechte
+a11y-mirror-with = Bildschirmspiegelung mit { $peer }
+a11y-mirror-awaiting = Warte auf Freigabe durch das Ziel; aktivieren zum Abbrechen
+a11y-mirror-starting = Privater Stream nur zum Ansehen startet; aktivieren zum Beenden
+a11y-mirror-streaming = Privater Stream nur zum Ansehen aktiv; aktivieren zum Beenden
+a11y-mirror-failed = Bildschirmspiegelung beendet: { $reason }
+a11y-mirror-stopped = Bildschirmspiegelung beendet
+a11y-call-continue = Anruf in { $room } fortsetzen
+a11y-call-consent-description = Diese eine Übergabe und die angefragten lokalen Aufnahmequellen freigeben
+a11y-call-allow = Diese Anrufübergabe einmal erlauben
+a11y-call-decline = Diese Anrufübergabe ablehnen
+a11y-call-in = Anruf in { $room }
+a11y-call-source-description = Wähle diesen laufenden Anruf und dann ein zertifiziertes Ziel
+a11y-bluetooth-pair = { $accessory } koppeln
+a11y-bluetooth-pair-description = Eine von { $source } angefragte Übergabe freigeben
+a11y-bluetooth-pair-allow = Kopplung für diese Übergabe einmal erlauben
+a11y-bluetooth-pair-decline = Diese Bluetooth-Übergabe ablehnen
+a11y-bluetooth-handoff = { $accessory } mit { $peer }
+a11y-handoff-preparing = Ziel wird authentifiziert und geprüft; aktivieren zum Abbrechen
+a11y-handoff-awaiting-approval = Warte auf Freigabe am Ziel; aktivieren zum Abbrechen
+a11y-handoff-releasing = Zubehör wird auf diesem Gerät freigegeben; aktivieren zum Abbrechen
+a11y-handoff-pairing = Kopplung am Ziel; aktivieren zum Abbrechen
+a11y-handoff-connecting = Verbindung am Ziel; aktivieren zum Abbrechen
+a11y-handoff-confirming = Verbunden; warte auf authentifizierte Bestätigung; aktivieren zum Abbrechen
+a11y-handoff-completed = Übergabe abgeschlossen
+a11y-handoff-failed-retry = Übergabe fehlgeschlagen: { $reason }; aktivieren zum Wiederholen
+a11y-handoff-failed = Übergabe fehlgeschlagen: { $reason }
+a11y-handoff-cancelled-retry = Übergabe abgebrochen; aktivieren zum Wiederholen
+a11y-handoff-cancelled = Übergabe abgebrochen
+a11y-controller-use = { $controller } verwenden
+a11y-controller-consent-description = Eine typisierte Controller-Sitzung von { $source } für { $app } freigeben
+a11y-controller-allow = Diesen Controller einmal erlauben
+a11y-controller-decline = Diesen Controller ablehnen
+a11y-controller-forwarding = Controller-Weiterleitung aktiv oder wartet auf Freigabe; aktivieren zum Beenden
+a11y-controller-local = Wähle diesen lokalen Controller und dann ein zertifiziertes Ziel
+a11y-media-handoff = { $media } auf { $target }
+a11y-media-handoff-pending = Warte, bis das Ziel öffnet; aktivieren zum Abbrechen
+a11y-media-handoff-completed = Auf dem Ziel geöffnet
+a11y-media-playing = Läuft gerade; dieses Medium zum Weiterleiten wählen
+a11y-media-paused = Pausiert; dieses Medium zum Weiterleiten wählen
+a11y-output-current = Aktueller lokaler Audioausgang
+a11y-output-route = Aktuelles und künftiges lokales Audio hierher leiten
+a11y-input-lower = Eingangspegel senken
+a11y-input-raise = Eingangspegel erhöhen
+a11y-tethering-with = Tethering mit { $peer }
+a11y-tethering-consent = Ein zertifiziertes Gerät hat eine kurzlebige Tethering-Freigabe angefragt
+a11y-tethering-active = Tethering ist aktiv; aktivieren zum Trennen
+a11y-tethering-status = Tethering-Status
+a11y-tethering-allow = Tethering einmal erlauben
+a11y-tethering-decline = Tethering ablehnen
+a11y-place-left = Bildschirm links anordnen
+a11y-place-right = Bildschirm rechts anordnen
+a11y-place-above = Bildschirm oberhalb anordnen
+a11y-place-below = Bildschirm unterhalb anordnen
+a11y-control-revoke = Steuerung dieses Geräts entziehen
+a11y-control-allow = Diesem Gerät 15 Minuten lang die Steuerung dieses Geräts erlauben
+
+# Eingebettete Berechtigungsabfrage: was eine App anfragt
+capability-filesystem-read = Lesezugriff auf { $path }
+capability-filesystem-read-write = Lese- und Schreibzugriff auf { $path }
+capability-camera = Kamerazugriff
+capability-microphone = Mikrofonzugriff
+capability-screencast = Bildschirmaufnahme
+capability-remote-desktop = Fernsteuerung (Zeiger + Tastatur)
+capability-print = Dokumente an einen Drucker senden
+capability-network-hosts = Netzwerkzugriff auf { $hosts }
+capability-network = Netzwerkzugriff
+
+# Die Hilfe-Pille in der Bildschirmecke
+help-pill = Hilfe  F1 · Super+?
+
+# Arbeitsbereichsübersicht
+overview-go-to = Wechseln zu
+overview-no-room = Kein Raum ausgewählt
+overview-you-are-here = Du bist hier
+overview-shared-out = Von hier aus geteilt
+overview-nothing-shared = Aus diesem Arbeitsbereich ist nichts nach außen geteilt
+overview-more-shares = und { $count } weitere
+overview-share-with-two = { $first } und { $second }
+overview-share-with-many = { $count ->
+        [one] { $first } und { $count } weitere Person
+       *[other] { $first } und { $count } weitere Personen
+    }
+overview-share-can-edit = { $with } · darf bearbeiten
+overview-new-workspace = Neuer Arbeitsbereich
+
+# Der Ansicht einer Person folgen
+follow-label = Du folgst { $person }
+follow-detail = Deine Ansicht · alle hier sehen das
+follow-stop = Beenden
+
+# Filterchips der Suche
+search-filter-all = Alle
+
+# Schnelleinstellungen: Benachrichtigungsverlauf
+qs-notifications-title = Benachrichtigungen
+qs-notifications-empty = Keine neuen Benachrichtigungen
+qs-notifications-cleared = Benachrichtigungen gelöscht
+qs-notifications-clear-all = Alle löschen
+qs-notifications-position = Neueste { $first }–{ $last } von { $total }
+qs-notifications-count = { $count ->
+        [one] { $count } Benachrichtigung
+       *[other] { $count } Benachrichtigungen
+    }
+qs-notifications-source-system = System
+qs-notifications-newer = ↑ Neuere
+qs-notifications-at-newest = Neueste erreicht
+qs-notifications-older = ↓ Ältere
+qs-notifications-at-oldest = Älteste erreicht
+
+# Schnelleinstellungen: Zeilen für Geräte und Medien
+qs-devices-mic-other = Mikrofon · von hier aufnehmen
+qs-devices-mic-current = Aktuelles Mikrofon
+qs-devices-mic-level = { " " }· Eingangspegel { $level } %
+qs-devices-mic-muted = { " " }· stumm
+qs-devices-this-device = Dieses Gerät · identitätszertifiziert
+qs-devices-offline = Offline · identitätszertifiziert
+qs-devices-sending = Sichere Übertragung · { $percent } % · fortsetzbar
+qs-devices-sent = Sicher übertragen
+qs-devices-transfer-failed = Übertragung fehlgeschlagen · Quelle bleibt verfügbar
+qs-devices-mutual-control = Gegenseitige Steuerung aktiv · lokale Eingaben haben immer Vorrang
+qs-devices-may-control = Darf dieses Gerät steuern · lokale Eingaben haben immer Vorrang
+qs-devices-control-granted = Steuerung erlaubt · neben diesem Bildschirm anordnen, um hinüberzuwechseln
+qs-devices-play-here = { $media } hier abspielen · direkte verschlüsselte Übergabe
+qs-devices-audio-only = Online · bei diesem Video nur Audio
+qs-devices-no-output = Online · keine Medienausgabe
+qs-devices-unavailable-media = Online · für dieses Medium nicht verfügbar
+qs-devices-online = Online · identitätszertifiziert
+qs-devices-health = { $reachability ->
+        [online] erreichbar
+        [stale] Präsenz veraltet
+       *[offline] offline
+    } · { $latency } · { $power }{ $saver ->
+        [yes] { " " }· Energiesparmodus
+       *[no] {""}
+    } · { $routes } aktive Verbindungen
+qs-devices-latency-unknown = Latenz unbekannt
+qs-devices-latency = { $ms } ms
+qs-devices-battery-unknown = Akku unbekannt
+qs-devices-external-power = Netzbetrieb
+qs-devices-charging = lädt { $percent } %
+qs-devices-battery = Akku { $percent } %
+
+# Schnelleinstellungen: Bluetooth-Zubehör verschieben
+qs-bluetooth-move-note = Das Ziel muss bereits selbst gekoppelt sein · Kopplungsschlüssel verlassen nie ein Gerät
+qs-devices-fabric-unavailable = Das persönliche Gerätenetz ist nicht verfügbar
+qs-bluetooth-this-device = Dieses Gerät
+qs-bluetooth-disconnect = { $accessory } trennen, ohne es zu vergessen
+qs-bluetooth-this-certified = Dieses zertifizierte Gerät
+qs-bluetooth-move-here = Hierher verschieben, sobald die lokale Kopplung bestätigt ist
+qs-devices-showing = { $first }–{ $last } von { $total } · scrollen für mehr
+
+# Schnelleinstellungen: Bereich Geräte und Medien
+qs-devices-header = Geräte & Medien
+qs-devices-no-identity = Richte deine persönliche Identität ein, um Geräte zu verbinden
+qs-devices-note = Direkt, wenn erreichbar · keine Hersteller-Cloud · nur zertifizierte Geräte
+qs-devices-empty = Verbundene Ausgänge und registrierte Geräte erscheinen hier
+qs-devices-place = { $display } { $side ->
+        [left] links
+        [right] rechts
+        [above] oben
+       *[below] unten
+    } anordnen
+qs-devices-place-note = Lokale Sensordaten · vor dem Übernehmen prüfen
+qs-devices-placement-undo-note = Genaue Anordnung von vor der Kalibrierung wiederherstellen
+qs-devices-speaker-join = { $group } als { $role } beitreten?
+qs-devices-speaker-join-note = { $leader } hat gefragt · einmalige Frage, jederzeit austreten
+qs-devices-speaker-join-note-output = { $leader } hat gefragt · spielt auf { $output } · einmalige Frage, jederzeit austreten
+qs-devices-speaker-for = für { $peer } · auswählen zum Beenden
+qs-devices-another-device = ein anderes Gerät
+qs-devices-speaker-connecting = { $playing } spielen, { $waiting } verbinden sich · auswählen zum Beenden
+qs-devices-speakers-playing = { $count ->
+        [one] { $count } Lautsprecher spielt · auswählen zum Beenden
+       *[other] { $count } Lautsprecher spielen · auswählen zum Beenden
+    }
+qs-devices-speaker-setup-note = Stereopaar oder Raumlautsprecher · öffnet Einstellungen → Lautsprecher
+qs-devices-speaker-membership-note = eingerichtet auf { $leader } · auswählen zum Austreten
+qs-devices-another-certified = Ein anderes zertifiziertes Gerät
+qs-devices-requested-allow-once = { $source } hat das angefragt · einmal erlauben oder ablehnen
+qs-devices-audio-app = Audio der fokussierten App · endet, wenn der Fokus wechselt
+qs-devices-audio-system = Gesamtes Systemaudio · unten ein zertifiziertes Ziel wählen
+qs-devices-certified-device = zertifiziertes Gerät
+qs-devices-audio-awaiting = wartet auf Freigabe mit { $peer } · auswählen zum Beenden
+qs-devices-audio-streaming = streamt mit { $peer } · auswählen zum Beenden
+qs-devices-audio-interrupted = unterbrochen mit { $peer } · auswählen zum Verwerfen
+qs-devices-capture-share = { $input } dieses Geräts teilen
+qs-devices-capture-requested = { $source } hat das für { $app } angefragt · einmal erlauben oder ablehnen
+qs-devices-capture-use-remote = Entfernte Eingabe verwenden: { $input }
+qs-devices-capture-source-note = Unten ein zertifiziertes Quellgerät wählen · dort ist eine Freigabe nötig
+qs-devices-capture-waiting-on = Warte auf Freigabe auf { $peer }
+qs-devices-capture-allow-app = Der fokussierten App einmal erlauben
+qs-devices-capture-waiting-ready = Warte, bis { $peer } bereit ist
+qs-devices-capture-private = Private Sitzung mit { $peer } · auswählen zum Beenden
+qs-devices-capture-source-unavailable = Die Quelle kann diese Eingabe nicht bereitstellen
+qs-devices-capture-receiver-unavailable = Privater Empfänger konnte nicht erstellt werden
+qs-devices-capture-interrupted = Zertifizierte Verbindung unterbrochen · Sitzung geschlossen
+qs-devices-mirror-allow = Bildschirmspiegelung erlauben?
+qs-devices-mirror-requested = { $source } hat einen privaten Stream nur zum Ansehen angefragt · einmal erlauben oder ablehnen
+qs-devices-mirror-source-note = Unten einen zertifizierten Videobildschirm wählen · dort ist eine Freigabe nötig
+qs-devices-mirror-awaiting = Warte auf Freigabe · auswählen zum Abbrechen
+qs-devices-mirror-starting = Stream nur zum Ansehen startet · auswählen zum Beenden
+qs-devices-mirror-streaming = Stream nur zum Ansehen aktiv · auswählen zum Beenden
+qs-devices-mirror-with = Spiegelung · { $peer }
+qs-devices-call-requested = { $source } hat das angefragt · auswählen, um einmal zu erlauben
+qs-devices-call-source-note = Läuft hier · unten ein zertifiziertes Ziel wählen
+qs-devices-bluetooth-requested = { $source } hat diese Übergabe angefragt · auswählen, um einmal freizugeben
+qs-devices-handoff-checking = { $peer } wird geprüft · auswählen zum Abbrechen
+qs-devices-handoff-awaiting = Warte auf Freigabe auf { $peer } · auswählen zum Abbrechen
+qs-devices-handoff-releasing = Wird hier freigegeben · auswählen zum Abbrechen
+qs-devices-handoff-pairing = Kopplung auf { $peer } · auswählen zum Abbrechen
+qs-devices-handoff-connecting = Verbindung auf { $peer } · auswählen zum Abbrechen
+qs-devices-handoff-confirming = Verbunden · authentifizierte Übergabe wird bestätigt
+qs-devices-handoff-connected = Jetzt mit { $peer } verbunden
+qs-devices-handoff-failed-retry = { $reason } · auswählen zum Wiederholen
+qs-devices-cancelled-retry = Abgebrochen · auswählen zum Wiederholen
+qs-devices-cancelled = Abgebrochen
+qs-devices-controller-requested = { $source } hat das für { $app } angefragt · einmal erlauben
+qs-devices-controller-local = Lokaler Controller · unten ein zertifiziertes Ziel wählen
+qs-devices-controller-forwarding = Weiterleitung an { $target } · auswählen zum Beenden
+qs-devices-controller-awaiting = Warte auf Freigabe auf { $target } · auswählen zum Abbrechen
+qs-devices-media-waiting = Warte auf das Ziel · auswählen zum Abbrechen
+qs-devices-media-opened = Auf dem Ziel geöffnet
+qs-devices-media-failed = Medium konnte nicht verschoben werden ({ $reason }) · auswählen zum Wiederholen
+qs-devices-media-playing = Läuft gerade · unten ein Ziel wählen
+qs-devices-media-paused = Pausiert · unten ein Ziel wählen
+qs-devices-output-default = Lokaler Ausgang · aktueller Standard
+qs-devices-output-route = Lokaler Ausgang · aktuelles Audio hierher leiten
+qs-devices-output-bluetooth = Bluetooth { $codec } · aktuelles Audio hierher leiten
+qs-devices-tether-requesting = Warte auf Freigabe am Telefon
+qs-devices-tether-consent = Einmal erlauben oder ablehnen
+qs-devices-tether-requester = Über dieses Telefon verbunden · auswählen zum Trennen
+qs-devices-tether-provider = Verbindung dieses Telefons wird geteilt · auswählen zum Trennen
+qs-devices-tether-denied = Am Telefon abgelehnt
+qs-devices-tether-expired = Anfrage abgelaufen
+qs-devices-tether-offline = Gerät ist offline · getrennt
+qs-devices-tether-disabled = WLAN-Kontinuität wurde deaktiviert
+qs-devices-tether-failed = Tethering konnte nicht hergestellt werden
+qs-devices-tether-disconnected = Getrennt
+qs-devices-tether-with = Tethering · { $peer }
+qs-devices-ask-phone = Dieses Telefon bitten, seine Verbindung zu teilen · dort ist eine Freigabe nötig
+qs-devices-use-controller = Gewählten Controller hier verwenden · das Ziel gibt einmal frei
+qs-devices-mirror-here = Diesen Bildschirm hier spiegeln · nur ansehen · das Ziel gibt einmal frei
+qs-devices-no-video = Dieses Gerät kann kein Video empfangen
+qs-devices-use-input = { $input } dieses Geräts verwenden · die Quelle gibt einmal frei
+qs-devices-play-audio-here = Gewähltes Audio hier abspielen · das Ziel gibt einmal frei
+qs-devices-no-audio = Dieses Gerät hat keinen Audioausgang
+qs-devices-place-this-left = Diesen Bildschirm links anordnen
+qs-devices-place-this-right = Diesen Bildschirm rechts anordnen
+qs-devices-place-this-above = Diesen Bildschirm oberhalb anordnen
+qs-devices-place-this-below = Diesen Bildschirm unterhalb anordnen
+
+# Schnelleinstellungen: Verlauf der Zwischenablage
+qs-clipboard-search-empty = Zwischenablage durchsuchen … · tippen zum Filtern
+qs-clipboard-search-matches = { $count ->
+        [one] Suche: { $query } · { $count } Treffer
+       *[other] Suche: { $query } · { $count } Treffer
+    }
+qs-clipboard-empty-hint = Kopierte Einträge erscheinen hier
+qs-clipboard-no-matches = Keine Treffer für „{ $query }“
+qs-clipboard-search-range = Zwischenablage durchsuchen … · { $first }–{ $last } von { $total }
+qs-clipboard-search-count = { $count ->
+        [one] Zwischenablage durchsuchen … · { $count } Eintrag
+       *[other] Zwischenablage durchsuchen … · { $count } Einträge
+    }
+qs-clipboard-clear = Leeren
+qs-clipboard-clear-a11y = Nicht angeheftete Einträge der Zwischenablage löschen
+qs-clipboard-use-a11y = Eintrag der Zwischenablage verwenden
+qs-clipboard-mime-bytes = { $mime } · { $bytes } Byte
+qs-clipboard-row-detail = { $source } · { $age } · { $bytes } B
+qs-clipboard-remove-a11y = Eintrag der Zwischenablage entfernen
+
+# Schnelleinstellungen: einem geschützten WLAN beitreten
+qs-wifi-protected = Dieses Netzwerk ist geschützt
+
+# Aufbewahrter Verlauf: Quellen und Schweregrade
+history-this-device = Dieses Gerät
+history-severity-info = Information
+history-severity-warning = Warnung
+history-severity-error = Fehler
+history-source-system = System
+history-notification-description = { $severity }. Von { $source }. { $time }
+history-notification-description-body = { $severity }. Von { $source }. { $time }. { $body }
+
+# Zeilen der Benachrichtigungszentrale
+notification-center-group-description = { $count } Benachrichtigungen. Eingabe zum { $expanded ->
+        [yes] Einklappen
+       *[no] Ausklappen
+    }, Entf, um alle zu verwerfen.
+notification-center-dismiss-all = Alle von { $app } verwerfen
+notification-center-dismiss = Verwerfen
+notification-center-hand-to = An { $agent } übergeben
+notification-center-hand-to-description = Übergibt diese Benachrichtigung als Aufgabe an den Agenten des Arbeitsbereichs.
+notification-center-group-count = { $count ->
+        [one] { $count } Benachrichtigung
+       *[other] { $count } Benachrichtigungen
+    }
+
+# On-screen display for the hardware keys
+osd-play = Wiedergabe
+osd-pause = Pause
+osd-next-track = Nächster Titel
+osd-previous-track = Vorheriger Titel
+osd-stop = Stopp
+osd-muted = Stummgeschaltet
+osd-volume = Lautstärke { $percent } %
+osd-brightness = Helligkeit { $percent } %
+osd-microphone-muted = Mikrofon stummgeschaltet
+osd-microphone-on = Mikrofon an
+osd-keyboard-backlight-off = Tastaturbeleuchtung aus
+osd-keyboard-backlight = Tastaturbeleuchtung { $percent } %
+osd-no-backlight = Kein regelbarer Bildschirm
+osd-airplane-mode-on = Flugmodus an
+osd-airplane-mode-off = Flugmodus aus
+osd-touchpad-on = Touchpad an
+osd-touchpad-off = Touchpad aus
+osd-magnifier-off = Bildschirmlupe aus
+osd-magnifier = Bildschirmlupe { $zoom }
+osd-pointer-held = Zeiger von App gehalten · { $chord } gibt ihn frei
+osd-pointer-released = Zeiger freigegeben
+osd-mouse-keys-on = Maustasten an
+osd-mouse-keys-off = Maustasten aus
+
+# System status, the tray's accessible summary
+status-wired = Kabelgebunden
+status-wired-named = Kabelgebunden: { $name }
+status-wifi = WLAN
+status-wifi-named = WLAN: { $name }
+status-offline = Offline
+status-muted = Stummgeschaltet
+status-volume = Lautstärke { $percent } %
+status-battery-charging = Akku { $percent } %, wird geladen
+status-battery = Akku { $percent } %
+status-summary-empty = Systemstatus
+status-other-displays-a11y = Weitere Bildschirme
+
+# Notification toasts
+notification-source-caption = { $app } · Von { $device }
+notification-lock-count = { $count ->
+    [one] 1 Benachrichtigung
+   *[other] { $count } Benachrichtigungen
+}
+notification-dnd-held = { $status } · { $count } zurückgehalten
+notification-stack-a11y = Benachrichtigungen
+notification-group-system = System
+notification-app-host-apps = Host-Apps
+notification-app-power = Energie
+notification-remote-input-stopped = Fernsteuerung beendet
+notification-remote-input-stopped-sessions = Fernsteuerungs- und Freigabesitzungen wurden beendet.
+notification-remote-input-stopped-shares = { $count ->
+    [one] Die Fernsteuerung wurde entzogen und die Freigabe beendet.
+   *[other] Die Fernsteuerung wurde { $count } Freigaben entzogen; die Freigabe wurde beendet.
+}
+
+# Media codec pack notices
+codec-hardware-ready = Hardware-H.264/HEVC ist bereit
+codec-installed = Mediencodecs installiert
+codec-installed-mesa-waiting = { $applies } Hardware-H.264/HEVC folgt, sobald RPM Fusion einen zu diesem System passenden Mesa-Build veröffentlicht.
+codec-failed = Mediencodecs konnten nicht installiert werden
+codec-failed-retry = Öffne Einstellungen, Updates, um es erneut zu versuchen.
+codec-failed-with-error = { $error } Öffne Einstellungen, Updates, um es erneut zu versuchen.
+codec-app-name = Mediencodecs
+
+# Screen capture surfaces
+capture-live-alt = Live-Aufnahme: { $title }
+capture-pinned-alt = Angehefteter Screenshot: { $title }
+capture-pinned-preview-alt = Vorschau des angehefteten Screenshots: { $title }
+capture-live-selection = Live-Auswahl
+capture-live-app = Live-App
+capture-live-screen = Live-Bildschirm
+capture-live-areas = { $count ->
+    [one] { $count } Live-Bereich
+   *[other] { $count } Live-Bereiche
+}
+capture-pinned-title = Screenshot · { $width } × { $height }
+
+# What a drag is carrying
+drag-image = Bild
+drag-video = Video
+drag-audio = Audio
+drag-pdf = PDF-Dokument
+drag-text = Text
+drag-items = { $count ->
+    [one] 1 Element
+   *[other] { $count } Elemente
+}
+
+# App-Startfehler, als Benachrichtigungen
+launch-error-provider-unavailable = Der benötigte Dienst zum Ausführen von Apps ist nicht verfügbar. Versuche es erneut, sobald er verfügbar ist.
+launch-error-not-installed = Diese App ist nicht mehr installiert. Aktualisiere die App-Liste und versuche es erneut.
+launch-error-not-gui-app = Diese App hat kein Fenster.
+launch-error-not-managed-service = Dieser Dienst kann nicht als App geöffnet werden.
+launch-error-not-authorized = Du darfst diesen Arbeitsbereichsdienst nicht starten.
+launch-error-launcher-unavailable = Der App-Starter ist nicht verfügbar. Versuche es erneut.
+launch-error-no-display = Der Desktop startet noch. Versuche es gleich noch einmal.
+launch-error-no-workspace = Wähle einen Arbeitsbereich und versuche es dann erneut.
+launch-error-shell-owned-intent = Öffne dieses Ziel über die Desktop-Steuerelemente.
+launch-error-identity-unavailable = Die Identität des Arbeitsbereichs konnte nicht geladen werden. Versuche es erneut.
+launch-error-registry-unreadable = Die App-Liste konnte nicht gelesen werden. Versuche es erneut.
+launch-error-host-app-refused = Der Desktop-Eintrag dieser App kann nicht gestartet werden.
+launch-failed-launcher-unavailable = Der App-Starter ist nicht verfügbar. Öffne „Anwendungen“ und versuche es erneut.
+launch-failed-stopped = Die App wurde beendet, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
+launch-unnamed-app = Anwendung
+launch-failure-title = { $app } konnte nicht geöffnet werden
+
+# Tab- und Fensteraktionen, die nicht ausgeführt werden konnten
+window-duplicate-no-tab = Es gibt keinen Tab zum Duplizieren.
+window-duplicate-foreign = Dieses Fenster gehört zu einer App, die der Compositor nicht hostet, daher kann es nicht kopiert werden. Öffne stattdessen über die Suche ein zweites.
+window-tab-action-no-tab = Es gibt keinen Tab für diese Aktion.
+window-tab-action-unknown-tab = Dieser Tab ist nicht mehr geöffnet.
+window-tab-action-only-tab = Das ist der einzige Tab dieses Fensters; er kann nicht abgetrennt werden.
+window-tab-action-document-refused = Das Arbeitsbereichsdokument hat die Änderung nicht angenommen, daher wurde nichts verschoben.
+
+# Tab-Kontextmenü, Arbeitsbereichsmeldungen und Platzhalterkacheln
+shell-workspace-renamed = Arbeitsbereich umbenannt
+shell-tab-menu-close = Tab schließen
+shell-tab-menu-split-right = Rechts abtrennen
+shell-tab-menu-new-group = In neue Gruppe verschieben
+shell-terminal-unavailable = Terminal: { $error }
+shell-app-unavailable = Anwendung nicht verfügbar
+shell-activity-title = Während du weg warst
+shell-activity-loading = Aktivität im Arbeitsbereich wird geladen …
+
+# Sitzungsmenü
+power-menu-title = Sitzung
+power-menu-description-switch-user = Diesen Computer sperren, abmelden, Benutzer wechseln, in Bereitschaft versetzen, neu starten oder ausschalten
+power-menu-description = Diesen Computer sperren, abmelden, in Bereitschaft versetzen, neu starten oder ausschalten
+power-lock = Sperren
+power-lock-detail = Apps laufen weiter
+power-logout = Abmelden
+power-logout-detail = Diese Sitzung beenden
+power-switch-user = Benutzer wechseln
+power-switch-user-detail = Diese Sitzung läuft weiter
+power-suspend = Bereitschaft
+power-suspend-detail = Dort weitermachen, wo du aufgehört hast
+power-restart = Neu starten
+power-restart-detail = Den Computer neu starten
+power-shut-down = Ausschalten
+power-shut-down-detail = Den Computer ausschalten
+
+# Sperrbildschirm
+lock-screen-a11y-name = Tilo-Sperrbildschirm
+lock-screen-locked = Sitzung gesperrt
+lock-screen-locked-at = Sitzung gesperrt, { $clock }
+lock-screen-locked-at-date = Sitzung gesperrt, { $clock }, { $date }
+lock-screen-password = Passwort
+lock-screen-help = Gib dein Passwort ein und drücke die Eingabetaste
+lock-screen-verifying-password = Passwort wird geprüft
+lock-screen-prompt-elsewhere = Die Passwortabfrage ist auf dem Hauptbildschirm
+lock-screen-enter-password = Passwort eingeben
+lock-screen-verifying = Wird geprüft …
+lock-screen-press-enter = Zum Entsperren Eingabetaste drücken
+lock-screen-cannot-verify = Prüfung nicht möglich · Gib dein Passwort erneut ein
+lock-screen-sign-in-failed = Anmeldung fehlgeschlagen · Gib dein Passwort erneut ein
+
+# Bluetooth-Kopplungsdialog
+bluetooth-prompt-title-confirm-passkey = Zeigt { $device } diesen Code an?
+bluetooth-prompt-title-display = Gib das auf { $device } ein
+bluetooth-prompt-title-request-passkey = Gib den auf { $device } angezeigten Code ein
+bluetooth-prompt-title-request-pin = Gib die PIN für { $device } ein
+bluetooth-prompt-title-confirm-pairing = Mit { $device } koppeln?
+bluetooth-prompt-title-authorize-service = { $device } verbinden lassen?
+bluetooth-prompt-explain-confirm-passkey = Vergleiche ihn mit dem Code auf dem anderen Gerät. Wenn sie sich unterscheiden, versucht etwas anderes, sich zu koppeln – lehne dann ab.
+bluetooth-prompt-explain-display = Gib diesen Code auf dem anderen Gerät ein, um die Kopplung abzuschließen.
+bluetooth-prompt-explain-request = Der Code wird auf dem Gerät angezeigt, das du koppelst. Viele Tastaturen verlangen, dass du ihn eintippst und die Eingabetaste drückst.
+bluetooth-prompt-explain-confirm-pairing = Dieses Gerät kann keinen Code zum Vergleichen anzeigen, es gibt also nichts zu prüfen. Fahre nur fort, wenn du diese Kopplung selbst gestartet hast.
+bluetooth-prompt-explain-authorize-service = Ein bereits gekoppeltes Gerät möchte einen neuen Dienst nutzen. Gekoppelte Geräte können Eingaben und Audio an diesen Computer senden.
+bluetooth-prompt-digits-entered = { $entered } von 6 Ziffern eingegeben
+bluetooth-prompt-service = Dienst { $uuid }
+bluetooth-prompt-pin-placeholder = PIN
+bluetooth-prompt-code-placeholder = 6-stelliger Code
+bluetooth-prompt-reject = Nicht koppeln
+bluetooth-prompt-cancel = Abbrechen
+bluetooth-prompt-accept-match = Sie stimmen überein
+bluetooth-prompt-accept-allow = Erlauben
+bluetooth-prompt-accept-pair = Koppeln
+
+# Portal-Voreinstellungen: Dateiauswahl-Schaltflächen, Standardaktion von Benachrichtigungen, unbenannte Apps, Aufnahmequellen
+portal-file-save = Speichern
+portal-file-choose-folder = Ordner auswählen
+portal-file-open = Öffnen
+portal-notification-open = Öffnen
+portal-inhibit-unnamed-app = Eine App
+portal-capture-default-microphone = Standardmikrofon
+portal-capture-default-camera = Standardkamera
+portal-capture-primary-display = Hauptbildschirm
+portal-capture-system-audio = Systemaudio
+
+# People panel, as assistive technology reads it
+a11y-shell-people = Personen
+a11y-shell-people-description = Live-Anwesenheit im Arbeitsbereich, aktuelle Tätigkeit, Absicht und Datenschutz für den Status
+a11y-shell-people-screen-visible = Jetzt sichtbarer Bildschirm: { $exposure }
+a11y-shell-people-here-now = Jetzt anwesend
+a11y-shell-people-agent = Agent
+a11y-shell-people-invited = Eingeladen, derzeit nicht anwesend
+a11y-shell-people-present = Jetzt anwesend
+a11y-shell-people-now = Jetzt: { $activity }
+a11y-shell-people-intent = Absicht: { $status }
+a11y-shell-people-intent-inferred = Absicht, abgeleitet: { $status }
+a11y-shell-status-name = Dein Zusammenarbeitsstatus
+a11y-shell-status-inferred = Auf diesem Gerät aus letzten Aktionen abgeleitet
+a11y-shell-status-set = Lege fest, woran du gerade arbeitest
+a11y-shell-status-automatic = Automatischer Status
+a11y-shell-status-manual = Nur manueller Status
+a11y-shell-status-off = Status ausblenden
+a11y-shell-status-automatic-description = Einen kurzen Status lokal aus den letzten Aktionen im Arbeitsbereich ableiten
+a11y-shell-status-manual-description = Nur selbst eingegebenen Text teilen
+a11y-shell-status-off-description = Keinen Status in diesem Arbeitsbereich veröffentlichen
+a11y-shell-follow-collaborator = Mitwirkender Person folgen
+a11y-shell-follow = { $name } folgen
+a11y-shell-follow-description = Die Live-Ansicht dieser Person im Arbeitsbereich spiegeln
+a11y-shell-people-previous = Vorherige Personen
+a11y-shell-people-previous-description = Die vorherigen Personen in diesem Arbeitsbereich anzeigen
+a11y-shell-people-next = Weitere Personen
+a11y-shell-people-next-description = Die nächsten Personen in diesem Arbeitsbereich anzeigen
+a11y-shell-invite = Personen einladen
+a11y-shell-invite-description = Eine authentifizierte Einladung in den Arbeitsbereich erstellen
+a11y-shell-join = Arbeitsbereich beitreten
+a11y-shell-join-description = Mit einer authentifizierten Einladung verbinden
+a11y-shell-workspace-activity = Aktivität im Arbeitsbereich
+a11y-shell-workspace-activity-description = Gruppierte Ergebnisse prüfen und sehen, was in deiner Abwesenheit passiert ist
+
+# Empty-workspace launchpad
+a11y-shell-launchpad-title = Gemeinsam etwas schaffen
+a11y-shell-launchpad-description = Wähle eine gemeinsame Unterhaltung, Notizen, Aufgaben, ein Meeting, eine Einladung oder die Aktivität im Arbeitsbereich.
+a11y-shell-launchpad-open-app = App öffnen
+a11y-shell-launchpad-discuss = Besprechen
+a11y-shell-launchpad-notes = Notizen
+a11y-shell-launchpad-tasks = Aufgaben
+a11y-shell-launchpad-meet = Meeting planen
+a11y-shell-launchpad-invite = Personen einladen
+a11y-shell-launchpad-activity = Auf dem Laufenden bleiben
+a11y-shell-launchpad-discuss-detail = Die gemeinsame Unterhaltung öffnen
+a11y-shell-launchpad-notes-detail = Gemeinsam Ideen aufschreiben
+a11y-shell-launchpad-tasks-detail = Arbeit im Kalender planen
+a11y-shell-launchpad-meet-detail = Chat öffnen, dann einen Sprach- oder Videoanruf starten
+a11y-shell-launchpad-invite-detail = Jemanden in diesen Arbeitsbereich holen
+a11y-shell-launchpad-activity-detail = Sehen, was sich geändert hat und warum
+
+# Workspace activity, as assistive technology reads it
+a11y-shell-activity-everyone = Alle
+a11y-shell-activity-more-people = Weitere Personen
+a11y-shell-activity-more-people-description = Weitere Filter für Mitwirkende anzeigen
+a11y-shell-activity-resume = { $target } fortsetzen
+a11y-shell-activity-resume-description = Die zuletzt bearbeitete Ressource öffnen: { $target }
+a11y-shell-activity-boundary-newer = Die letzte Aktion in die neuere Arbeitssitzung verschieben
+a11y-shell-activity-boundary-older = Die erste Aktion in die ältere Arbeitssitzung verschieben
+a11y-shell-activity-boundary-newer-description = Diese Grenze neu ziehen, indem eine Aktion in die neuere Arbeitssitzung wandert
+a11y-shell-activity-boundary-older-description = Diese Grenze neu ziehen, indem eine Aktion in die ältere Arbeitssitzung wandert
+a11y-shell-activity-more-sessions = Weitere Arbeitssitzungen
+a11y-shell-activity-more-sessions-description = Weitere Arbeitssitzungen anzeigen
+a11y-shell-activity-new-task = Neue Aufgabe
+a11y-shell-activity-new-task-description = Eine Aufgabe im Arbeitsbereich erstellen, ohne ein Modell zu benötigen
+a11y-shell-activity-create-task = Aufgabe erstellen
+a11y-shell-activity-cancel-task = Erstellen der Aufgabe abbrechen
+a11y-shell-activity-everything = Alles
+a11y-shell-activity-agent-tasks = Agent-Aufgaben
+a11y-shell-activity-unclassified = Nicht zugeordnet
+a11y-shell-activity-more-lenses = Weitere Ansichten
+a11y-shell-activity-more-lenses-description = Weitere Verlaufsansichten anzeigen
+a11y-shell-activity-history-entries = Verlaufseinträge
+a11y-shell-activity-previous-checkpoint = Vorheriger Zwischenstand
+a11y-shell-activity-next-checkpoint = Nächster Zwischenstand
+a11y-shell-activity-pause-replay = Wiedergabe pausieren
+a11y-shell-activity-play-replay = Wiedergabe abspielen
+a11y-shell-activity-history-scope = Verlaufsumfang
+a11y-shell-activity-history-view = Verlaufsansicht
+a11y-shell-activity-time-range = Zeitraum
+a11y-shell-activity-person-filter = Personenfilter
+a11y-shell-activity-brief-description = { $detail }; zuletzt geändert { $when }; { $count } { $count ->
+        [one] Änderung
+       *[other] Änderungen
+    } von { $authors }
+a11y-shell-activity-task-unassigned = nicht zugewiesen
+a11y-shell-activity-task-assigned-agent = einem Agenten zugewiesen
+a11y-shell-activity-task-no-resource = keine angehängte Ressource
+a11y-shell-activity-task-route = Ausführungsweg der Aufgabe
+a11y-shell-activity-task-composer-action = Aktion zum Erstellen der Aufgabe
+a11y-shell-activity-task-action = Aktion für die ausgewählte Aufgabe
+a11y-shell-activity-history-lens = Verlaufsansicht
+a11y-shell-activity-undo-task-description = Jeden betroffenen Eintrag dieser Agent-Aufgabe rückgängig machen; spätere Änderungen anderer bleiben erhalten
+a11y-shell-activity-history-action = Aktion für den ausgewählten Verlauf
+a11y-shell-activity-explorer-panel = Explorer-Bereich
+a11y-shell-activity-timeline-description = Verlaufseinträge; mit den Pfeiltasten navigieren
+a11y-shell-activity-checkpoints-description = Durch die Zwischenstände des Arbeitsbereichs gehen
+a11y-shell-activity-replay-description = Die Wiedergabe des Arbeitsbereichs abspielen oder pausieren
+a11y-shell-activity-view-catch-up = Eine Zusammenfassung der Ergebnisse, seit dieses Gerät den Arbeitsbereich zuletzt angesehen hat
+a11y-shell-activity-view-tasks = Dauerhafte Aufgaben im Arbeitsbereich mit Ressourcenlinks, Ausführungswegen und Prüfprotokollen
+a11y-shell-activity-view-explore = Der vollständige Verlauf des Arbeitsbereichs mit Filtern und Herkunft
+a11y-shell-activity-view-replay = Eine kausale Wiedergabe der Anordnung und der Aktivität der Beteiligten
+a11y-shell-activity-entry-author = Von { $author }
+a11y-shell-activity-tasks = Aufgaben im Arbeitsbereich
+a11y-shell-activity-selected-detail = Details zum ausgewählten Verlauf
+a11y-shell-activity-selected-detail-description = { $title }; { $count } { $count ->
+        [one] Aktion
+       *[other] Aktionen
+    }; von { $authors }
+a11y-shell-activity-agent-run-description = Anweisung: { $instruction }; zugewiesen von { $issuer }; ausgeführt von { $agent }; Begründung: { $reason }
+a11y-shell-activity-reason-not-recorded = nicht erfasst
+a11y-shell-activity-agent-step = { $app } in { $record }: { $summary }
+a11y-shell-activity-agent-review = Prüfung der Agent-Aufgabe
+a11y-shell-activity-task-description = { $status }; { $route }; { $assignee }; { $count } { $count ->
+        [one] Prüfereignis
+       *[other] Prüfereignisse
+    }
+a11y-shell-activity-task-latest = zuletzt: { $latest }
+
+# Workspace wheel
+a11y-shell-wheel = Arbeitsbereichsrad
+a11y-shell-wheel-switch = Zu { $workspace } wechseln
+a11y-shell-wheel-add = Arbeitsbereich hinzufügen

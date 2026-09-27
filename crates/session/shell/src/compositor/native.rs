@@ -2379,7 +2379,7 @@ fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) 
                         error.notification_message(),
                     )
                     .with_severity(crate::shell::notification::NotificationSeverity::Error)
-                    .with_app_name("Host Apps")
+                    .with_app_name(crate::shell::i18n::t("notification-app-host-apps"))
                     .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
                 );
                 chrome.bump();
@@ -3867,7 +3867,7 @@ fn power_notification_to_incoming(
 ) -> crate::notifications::IncomingNotification {
     crate::notifications::IncomingNotification {
         dbus_id: bridge.alloc_id(),
-        app_name: "Power".to_string(),
+        app_name: crate::shell::i18n::t("notification-app-power"),
         summary: n.summary,
         body: n.body,
         actions: Vec::new(),
