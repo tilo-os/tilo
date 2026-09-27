@@ -42,9 +42,10 @@ use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::onboarding::{
-    ACKNOWLEDGEMENT, DONE_BODY, DONE_TITLE, INTRO_BODY, INTRO_POINTS, INTRO_TITLE, MintedIdentity,
-    NO_RECOVERY_POINTS, NO_RECOVERY_TITLE, Onboarding, Screen,
+    MintedIdentity, Onboarding, Screen, acknowledgement, done_body, done_title, intro_body,
+    intro_points, intro_title, no_recovery_points, no_recovery_title,
 };
+use crate::shell::i18n::{t, t_args};
 use os_actions::codec_pack::{CodecAction, CodecPackStatus, PackState};
 
 const PANEL_MAX_WIDTH: f32 = 760.0;
@@ -269,8 +270,15 @@ pub enum OnboardingVisualState {
     CodecsFailed,
 }
 
-pub const HOST_DESKTOP_INTRO_TITLE: &str = "Set up your Tilo identity";
-pub const HOST_DESKTOP_INTRO_BODY: &str = "You are already signed in to this computer. Before the Tilo Desktop opens, it needs a local cryptographic identity for collaboration and peer invitations. This does not replace your Linux login or create an online account. Individual app edits are not all cryptographically signed yet.";
+#[must_use]
+pub fn host_desktop_intro_title() -> String {
+    t("onboarding-host-intro-title")
+}
+
+#[must_use]
+pub fn host_desktop_intro_body() -> String {
+    t("onboarding-host-intro-body")
+}
 
 pub const KEY_BEGIN: &str = "onboarding.begin";
 pub const KEY_CONNECT: &str = "onboarding.connect";
@@ -296,21 +304,36 @@ pub const KEY_CODECS_INSTALL: &str = "onboarding.codecs.install";
 pub const KEY_CODECS_SKIP: &str = "onboarding.codecs.skip";
 pub const KEY_CODECS_CONTINUE: &str = "onboarding.codecs.continue";
 
-pub const CODECS_TITLE: &str = "Install media codecs?";
-pub const CODECS_BODY: &str = "H.264 and HEVC, the formats most videos, cameras and calls use, are \
-patented and not part of Tilo. You can add them now with one click.";
+#[must_use]
+pub fn codecs_title() -> String {
+    t("onboarding-codecs-title")
+}
+
+#[must_use]
+pub fn codecs_body() -> String {
+    t("onboarding-codecs-body")
+}
+
 /// What the pack enables, in the owner's terms.
-pub const CODECS_ENABLES: &[&str] = &[
-    "Hardware-accelerated video on AMD and Intel graphics.",
-    "H.264 and HEVC playback in videos you open.",
-    "H.264 and HEVC encoding for screen sharing, recording and calls.",
-];
+#[must_use]
+pub fn codecs_enables() -> Vec<String> {
+    vec![
+        t("onboarding-codecs-enables-hardware"),
+        t("onboarding-codecs-enables-playback"),
+        t("onboarding-codecs-enables-encoding"),
+    ]
+}
+
 /// Where it comes from, and what Tilo does not do.
-pub const CODECS_SOURCE: &str = "This computer downloads them directly from RPM Fusion and from \
-Cisco (OpenH264), under those projects' own licences, and checks every package's signature. Tilo \
-does not host or distribute them. You can remove them at any time in Settings, Updates.";
-pub const CODECS_BACKGROUND: &str = "Setup can continue while the download runs. You will get a \
-notification when the codecs are ready.";
+#[must_use]
+pub fn codecs_source() -> String {
+    t("onboarding-codecs-source")
+}
+
+#[must_use]
+pub fn codecs_background() -> String {
+    t("onboarding-codecs-background")
+}
 
 /// The media codecs step's connection to the system: the helper's status and
 /// the polkit-allowed unit runner ([`os_actions::codec_pack`]). Tests and the
@@ -362,41 +385,48 @@ enum TourPage {
 // keyboard map in prose. These labels mirror `docs/shell-navigation-keyboard-map.md`
 // and the gesture contract in `compositor/backend/drm/gestures.rs`; in
 // particular, Super+W closes a tab and must never be advertised as Overview.
+/// Catalogue keys of each tour card's (title, body).
 const NAVIGATE_CARDS: &[(&str, &str)] = &[
     (
         if cfg!(target_os = "macos") {
-            "Search  ·  Command+K or Option+Space"
+            "onboarding-tour-search-title-mac"
         } else {
-            "Search  ·  Super+K or Super+Space"
+            "onboarding-tour-search-title"
         },
-        "Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.",
+        "onboarding-tour-search-body",
     ),
     (
-        "Overview  ·  Super+Tab or four-finger swipe",
-        "See every workspace and window group, then use Up, Down, and Enter to choose one.",
+        "onboarding-tour-overview-title",
+        "onboarding-tour-overview-body",
     ),
-    (
-        "Move  ·  Super+arrow keys or three-finger swipe",
-        "Up and down switch workspaces. Left and right step between tiled windows along the current strip.",
-    ),
+    ("onboarding-tour-move-title", "onboarding-tour-move-body"),
 ];
 
 const ORGANISE_CARDS: &[(&str, &str)] = &[
     (
-        "Workspace",
-        "A durable place for a project, its people, permissions, apps, and history.",
+        "onboarding-tour-workspace-title",
+        "onboarding-tour-workspace-body",
+    ),
+    ("onboarding-tour-strip-title", "onboarding-tour-strip-body"),
+    (
+        "onboarding-tour-window-group-title",
+        "onboarding-tour-window-group-body",
+    ),
+    ("onboarding-tour-tab-title", "onboarding-tour-tab-body"),
+];
+
+const COLLABORATE_CARDS: &[(&str, &str)] = &[
+    (
+        "onboarding-tour-invite-settings-title",
+        "onboarding-tour-invite-settings-body",
     ),
     (
-        "Strip",
-        "A horizontal run of window groups inside a workspace. Add another strip when work needs a second lane.",
+        "onboarding-tour-follow-title",
+        "onboarding-tour-follow-body",
     ),
     (
-        "Window group",
-        "A tiled frame for tabs that belong together. Move between groups with Super+Left or Super+Right.",
-    ),
-    (
-        "Tab",
-        "An app or document inside a window group. Drag tabs to arrange them without overlapping windows.",
+        "onboarding-tour-system-features-title",
+        "onboarding-tour-system-features-body",
     ),
 ];
 
@@ -406,22 +436,13 @@ const ORGANISE_CARDS: &[(&str, &str)] = &[
 /// labels aligned with real shell surfaces so the checklist never teaches a
 /// product that does not exist.
 const START_CARDS: &[(&str, &str)] = &[
+    ("onboarding-tour-name-title", "onboarding-tour-name-body"),
+    ("onboarding-tour-open-title", "onboarding-tour-open-body"),
     (
-        "1  Name the workspace",
-        "Open Workspace Settings from the title and choose a recognisable project name.",
+        "onboarding-tour-invite-title",
+        "onboarding-tour-invite-body",
     ),
-    (
-        "2  Open a shared starting point",
-        "Choose Notes, Calendar, or Chat, then add other apps beside it.",
-    ),
-    (
-        "3  Invite the right people",
-        "Choose Invite people in Workspace Settings and review each role before sharing.",
-    ),
-    (
-        "4  Check work and recover mistakes",
-        "Open Activity to catch up, compare versions, or undo only the change that went wrong.",
-    ),
+    ("onboarding-tour-check-title", "onboarding-tour-check-body"),
 ];
 
 impl TourPage {
@@ -824,20 +845,23 @@ impl OnboardingView {
 
     /// The media codecs page's text, in reading order (headless tests).
     pub fn codec_page_lines(&self) -> Vec<String> {
-        let mut lines = vec![CODECS_TITLE.to_string(), CODECS_BODY.to_string()];
-        lines.extend(CODECS_ENABLES.iter().map(|line| (*line).to_string()));
-        lines.push(CODECS_SOURCE.to_string());
+        let mut lines = vec![codecs_title(), codecs_body()];
+        lines.extend(codecs_enables());
+        lines.push(codecs_source());
         if let Some((title, message)) = self.codec_outcome() {
-            lines.push(title.to_string());
+            lines.push(title);
             lines.extend(message);
         }
         if let Some(fraction) = self.codec_progress() {
-            lines.push(format!("Progress: {:.0}%", fraction * 100.0));
+            lines.push(t_args(
+                "onboarding-codecs-progress",
+                &[("percent", format!("{:.0}", fraction * 100.0).into())],
+            ));
         }
         lines.extend(
             self.codec_page_buttons()
                 .into_iter()
-                .map(|(_, label, _, _)| label.to_string()),
+                .map(|(_, label, _, _)| label),
         );
         lines
     }
@@ -867,43 +891,38 @@ impl OnboardingView {
     }
 
     /// Banner title and message for what happened to the request, if any.
-    fn codec_outcome(&self) -> Option<(&'static str, Option<String>)> {
+    fn codec_outcome(&self) -> Option<(String, Option<String>)> {
         if let Some(error) = &self.codec_error {
-            return Some(("Media codecs could not be installed", Some(error.clone())));
+            return Some((t("onboarding-codecs-failed-title"), Some(error.clone())));
         }
         match self.codec_status.state {
             PackState::NotInstalled if self.codec_running.is_some() => {
-                Some(("Starting\u{2026}", Some(CODECS_BACKGROUND.to_string())))
+                Some((t("onboarding-codecs-starting"), Some(codecs_background())))
             }
             PackState::NotInstalled | PackState::Removing => None,
             PackState::Installing => Some((
-                "Installing media codecs",
-                Some(format!(
-                    "{} {CODECS_BACKGROUND}",
-                    self.codec_status.summary()
+                t("onboarding-codecs-installing-title"),
+                Some(t_args(
+                    "onboarding-codecs-installing-message",
+                    &[("status", self.codec_status.summary().into())],
                 )),
             )),
             PackState::WaitingForNetwork => Some((
-                "Media codecs will install once you are online",
-                Some(
-                    "This computer is not connected to the internet. Your choice is saved: the \
-                     codecs install automatically as soon as it is online, and you will get a \
-                     notification."
-                        .to_string(),
-                ),
+                t("onboarding-codecs-offline-title"),
+                Some(t("onboarding-codecs-offline-message")),
             )),
             PackState::Installed => Some((
-                "Media codecs installed",
+                t("onboarding-codecs-installed-title"),
                 self.codec_status.when_it_applies().map(str::to_string),
             )),
             PackState::Failed => Some((
-                "Media codecs could not be installed",
+                t("onboarding-codecs-failed-title"),
                 Some(if self.codec_status.last_error.is_empty() {
-                    "Try again, or install them later from Settings, Updates.".to_string()
+                    t("onboarding-codecs-failed-message")
                 } else {
-                    format!(
-                        "{} Try again, or install them later from Settings, Updates.",
-                        self.codec_status.last_error
+                    t_args(
+                        "onboarding-codecs-failed-message-detail",
+                        &[("error", self.codec_status.last_error.clone().into())],
                     )
                 }),
             )),
@@ -911,19 +930,19 @@ impl OnboardingView {
     }
 
     /// (id, label, key, primary) of the page's footer actions.
-    fn codec_page_buttons(&self) -> Vec<(&'static str, &'static str, &'static str, bool)> {
+    fn codec_page_buttons(&self) -> Vec<(&'static str, String, &'static str, bool)> {
         let failed = self.codec_error.is_some() || self.codec_status.state == PackState::Failed;
         if failed && self.codec_running.is_none() {
             return vec![
                 (
                     "onboarding.codecs.skip.button",
-                    "Skip",
+                    t("onboarding-codecs-skip"),
                     KEY_CODECS_SKIP,
                     false,
                 ),
                 (
                     "onboarding.codecs.install.button",
-                    "Try again",
+                    t("onboarding-codecs-retry"),
                     KEY_CODECS_INSTALL,
                     true,
                 ),
@@ -932,7 +951,7 @@ impl OnboardingView {
         if self.codec_install_requested() {
             return vec![(
                 "onboarding.codecs.continue.button",
-                "Continue",
+                t("onboarding-continue"),
                 KEY_CODECS_CONTINUE,
                 true,
             )];
@@ -940,13 +959,13 @@ impl OnboardingView {
         vec![
             (
                 "onboarding.codecs.skip.button",
-                "Not now",
+                t("onboarding-codecs-not-now"),
                 KEY_CODECS_SKIP,
                 false,
             ),
             (
                 "onboarding.codecs.install.button",
-                "Install media codecs",
+                t("onboarding-codecs-install"),
                 KEY_CODECS_INSTALL,
                 true,
             ),
@@ -987,7 +1006,10 @@ impl OnboardingView {
                 self.codec_running = Some(rx);
             }
             Err(error) => {
-                self.codec_error = Some(format!("the installer could not start: {error}"));
+                self.codec_error = Some(t_args(
+                    "onboarding-codecs-installer-failed",
+                    &[("error", error.to_string().into())],
+                ));
             }
         }
         self.invalidation.structure();
@@ -1053,6 +1075,23 @@ impl OnboardingView {
     /// person explicitly starts the tour.
     pub fn presents_desktop_context(&self) -> bool {
         self.tour_page.is_some()
+    }
+
+    /// Where this view shows a secret, if it shows one now: the restore step
+    /// (the backup's passphrase and a nearby device's pairing code) and the
+    /// backup step (the new passphrase and its confirmation). A capture draws
+    /// this as the placeholder — see [`crate::shell::capture_protection`].
+    ///
+    /// The whole view, not just its card: the card slides as a step
+    /// reveals, and the view is an opaque surface outside the tour anyway.
+    pub fn secret_rect(&self) -> Option<Rect> {
+        let shows_secret = self.tour_page.is_none()
+            && match self.flow.screen() {
+                Screen::Connect => true,
+                Screen::Done => !self.identity_ready_page,
+                Screen::Intro | Screen::NoRecovery => false,
+            };
+        (shows_secret && self.rect.area() > 0.0).then_some(self.rect)
     }
 
     /// Reset this trusted view to the existing-identity backup step. Kept in
@@ -1126,8 +1165,9 @@ impl OnboardingView {
                     PersistedStage::TourStart => Some(TourPage::Start),
                 };
                 if let Some(error) = load_error {
-                    self.progress_error = Some(format!(
-                        "The saved setup position could not be read ({error}). Your identity is safe; setup resumed at the completion step."
+                    self.progress_error = Some(t_args(
+                        "onboarding-progress-unreadable",
+                        &[("error", error.into())],
                     ));
                 }
             }
@@ -1137,8 +1177,9 @@ impl OnboardingView {
                 // restart the creation flow. Anything present-but-invalid was
                 // already rejected by normal startup and is surfaced here too.
                 if std::fs::symlink_metadata(&identity_path).is_ok() {
-                    self.progress_error = Some(format!(
-                        "Setup found unfinished progress but could not validate the existing identity: {error}"
+                    self.progress_error = Some(t_args(
+                        "onboarding-progress-invalid-identity",
+                        &[("error", error.into())],
                     ));
                 }
             }
@@ -1155,8 +1196,9 @@ impl OnboardingView {
                 true
             }
             Err(error) => {
-                self.progress_error = Some(format!(
-                    "Setup could not save its restart position: {error}. No identity action was repeated."
+                self.progress_error = Some(t_args(
+                    "onboarding-progress-save-failed",
+                    &[("error", error.to_string().into())],
                 ));
                 self.invalidation.structure();
                 false
@@ -1174,8 +1216,9 @@ impl OnboardingView {
                 true
             }
             Err(error) => {
-                self.progress_error = Some(format!(
-                    "Setup finished, but its restart marker could not be removed: {error}. Try Finish again so this screen does not return next login."
+                self.progress_error = Some(t_args(
+                    "onboarding-progress-clear-failed",
+                    &[("error", error.to_string().into())],
                 ));
                 self.invalidation.structure();
                 false
@@ -1186,7 +1229,7 @@ impl OnboardingView {
     fn progress_notice(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
         self.progress_error.as_ref().map(|error| {
             spaced_banner(
-                Banner::error("Setup progress needs attention").with_message(error.clone()),
+                Banner::error(t("onboarding-progress-attention")).with_message(error.clone()),
                 theme,
             )
         })
@@ -1224,13 +1267,13 @@ impl OnboardingView {
             OnboardingVisualState::Connect | OnboardingVisualState::RestoreError => {
                 self.flow.begin_connect();
                 if state == OnboardingVisualState::RestoreError {
-                    self.error = Some("That backup could not be opened. Check the file and passphrase, then try again.".into());
+                    self.error = Some(t("onboarding-snapshot-restore-error"));
                 }
             }
             OnboardingVisualState::Protect | OnboardingVisualState::CreateError => {
                 self.flow.begin();
                 if state == OnboardingVisualState::CreateError {
-                    self.error = Some("The identity could not be saved. Nothing was created; check available storage and try again.".into());
+                    self.error = Some(t("onboarding-snapshot-create-error"));
                 }
             }
             OnboardingVisualState::Backup
@@ -1314,12 +1357,14 @@ impl OnboardingView {
             && !theme.name.eq_ignore_ascii_case("high contrast");
         let total = self.total_steps();
         let (step, stage) = match self.flow.screen() {
-            Screen::Intro => (1, "Choose"),
-            Screen::Connect => (2, "Restore"),
-            Screen::NoRecovery => (2, "Protect"),
-            Screen::Done if self.identity_ready_page && self.codec_page => (4, "Media"),
-            Screen::Done if self.identity_ready_page => (total, "Ready"),
-            Screen::Done => (3, "Backup"),
+            Screen::Intro => (1, t("onboarding-stage-choose")),
+            Screen::Connect => (2, t("onboarding-stage-restore")),
+            Screen::NoRecovery => (2, t("onboarding-stage-protect")),
+            Screen::Done if self.identity_ready_page && self.codec_page => {
+                (4, t("onboarding-stage-media"))
+            }
+            Screen::Done if self.identity_ready_page => (total, t("onboarding-stage-ready")),
+            Screen::Done => (3, t("onboarding-stage-backup")),
         };
         let body: Box<dyn Widget> = match self.flow.screen() {
             Screen::Intro => self.intro(theme),
@@ -1346,17 +1391,24 @@ impl OnboardingView {
                 Row::new()
                     .with_padding(spacing.s3, 0.0)
                     .push(Box::new(
-                        Text::new("Tilo identity setup")
+                        Text::new(&t("onboarding-progress-eyebrow"))
                             .with_id("onboarding.progress.eyebrow")
                             .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(theme.text_dim),
                     ))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
-                        Text::new(&format!("Step {step} of {total}  ·  {stage}"))
-                            .with_id("onboarding.progress.stage")
-                            .with_role(ui::tokens::typography::TextRole::Label)
-                            .with_color(theme.text_dim),
+                        Text::new(&t_args(
+                            "onboarding-progress-stage",
+                            &[
+                                ("step", step.into()),
+                                ("total", total.into()),
+                                ("stage", stage.clone().into()),
+                            ],
+                        ))
+                        .with_id("onboarding.progress.stage")
+                        .with_role(ui::tokens::typography::TextRole::Label)
+                        .with_color(theme.text_dim),
                     )),
             ))
             .push(Box::new(
@@ -1365,7 +1417,14 @@ impl OnboardingView {
                     .with_intrinsic_height()
                     .with_vertical_padding(spacing.s2)
                     .push(Box::new(ProgressBar::new(progress_value).with_label(
-                        format!("Identity setup, step {step} of {total}: {stage}"),
+                        t_args(
+                            "onboarding-progress-a11y",
+                            &[
+                                ("step", step.into()),
+                                ("total", total.into()),
+                                ("stage", stage.into()),
+                            ],
+                        ),
                     ))),
             ));
         let mut content = Column::new().with_intrinsic_height().with_gap(spacing.s4);
@@ -1475,34 +1534,31 @@ impl OnboardingView {
     /// Keep the real recovery operation above the skip acknowledgement and
     /// outside Backup's explanatory scroller so it is present on frame one.
     fn backup_form(&self, theme: &Theme) -> Box<dyn Widget> {
-        let explanation = paragraph(
-            "Save an encrypted copy somewhere else. Keep its file and passphrase separately; together they restore this identity.",
-            theme,
-        );
+        let explanation = paragraph(&t("onboarding-backup-explanation"), theme);
         let fields = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(theme.tokens.spacing.s2)
             .push(labelled_secret_field(
                 "onboarding.backup.passphrase",
-                "New backup passphrase",
+                &t("onboarding-backup-passphrase"),
                 &self.backup_passphrase,
-                "New backup passphrase",
-                "Long, unique passphrase — 12+ characters",
+                &t("onboarding-backup-passphrase"),
+                &t("onboarding-backup-passphrase-placeholder"),
             ))
             .push(labelled_secret_field(
                 "onboarding.backup.confirmation",
-                "Confirm new backup passphrase",
+                &t("onboarding-backup-confirmation"),
                 &self.backup_confirmation,
-                "Confirm new backup passphrase",
-                "Confirm passphrase",
+                &t("onboarding-backup-confirmation"),
+                &t("onboarding-backup-confirmation-placeholder"),
             ));
         let action = Button::new(
             "onboarding.backup.button",
-            if self.backup_was_verified {
-                "Save another copy"
+            &if self.backup_was_verified {
+                t("onboarding-backup-save-another")
             } else {
-                "Choose location and save backup…"
+                t("onboarding-backup-save")
             },
             Some(KEY_BACKUP_BROWSE),
         )
@@ -1543,9 +1599,7 @@ impl OnboardingView {
                         KEY_BACKUP_SKIP_ACKNOWLEDGED,
                     )
                     .with_id("onboarding.backup.skip-acknowledged.row")
-                    .with_label(
-                        "I understand that without an encrypted backup, losing this device means losing this identity.",
-                    ),
+                    .with_label(t("onboarding-backup-skip-acknowledgement")),
                 ))
                 .push(self.identity_actions()),
         )
@@ -1556,7 +1610,7 @@ impl OnboardingView {
             Screen::NoRecovery => Some(
                 Checkbox::new("onboarding.understood.box", KEY_UNDERSTOOD)
                     .with_id("onboarding.understood.row")
-                    .with_label(ACKNOWLEDGEMENT),
+                    .with_label(acknowledgement()),
             ),
             _ => None,
         };
@@ -1590,7 +1644,7 @@ impl OnboardingView {
                 Box::new(
                     Button::new(
                         "onboarding.connect.button",
-                        "Use existing",
+                        &t("onboarding-use-existing"),
                         Some(KEY_CONNECT),
                     )
                     .fit_content(40.0)
@@ -1599,7 +1653,7 @@ impl OnboardingView {
                 Box::new(
                     Button::new(
                         "onboarding.begin.button",
-                        "Create identity",
+                        &t("onboarding-create-identity"),
                         Some(KEY_BEGIN),
                     )
                     .fit_content(40.0)
@@ -1615,7 +1669,7 @@ impl OnboardingView {
                 actions.push(Box::new(
                     Button::new(
                         "onboarding.import.button",
-                        "Restore selected backup",
+                        &t("onboarding-restore-backup"),
                         Some(KEY_IMPORT),
                     )
                     .fit_content(40.0)
@@ -1630,7 +1684,7 @@ impl OnboardingView {
                 Box::new(
                     Button::new(
                         "onboarding.create.button",
-                        "Create local identity",
+                        &t("onboarding-create-local-identity"),
                         Some(KEY_CREATE),
                     )
                     .fit_content(40.0)
@@ -1645,7 +1699,7 @@ impl OnboardingView {
                 Box::new(
                     Button::new(
                         "onboarding.backup.cancel.button",
-                        "Cancel",
+                        &t("onboarding-cancel"),
                         Some(KEY_FINISH),
                     )
                     .fit_content(40.0),
@@ -1653,7 +1707,7 @@ impl OnboardingView {
                 Box::new(
                     Button::new(
                         "onboarding.backup.done.button",
-                        "Done",
+                        &t("onboarding-done"),
                         Some(KEY_BACKUP_CONTINUE),
                     )
                     .fit_content(40.0)
@@ -1665,7 +1719,7 @@ impl OnboardingView {
                 footer_actions(vec![Box::new(
                     Button::new(
                         "onboarding.backup.continue.button",
-                        "Continue",
+                        &t("onboarding-continue"),
                         Some(KEY_BACKUP_CONTINUE),
                     )
                     .fit_content(40.0)
@@ -1676,7 +1730,7 @@ impl OnboardingView {
                 Box::new(
                     Button::new(
                         "onboarding.backup.another.button",
-                        "Save another copy",
+                        &t("onboarding-backup-save-another"),
                         Some(KEY_BACKUP_ANOTHER),
                     )
                     .fit_content(40.0),
@@ -1684,7 +1738,7 @@ impl OnboardingView {
                 Box::new(
                     Button::new(
                         "onboarding.backup.continue.button",
-                        "Continue",
+                        &t("onboarding-continue"),
                         Some(KEY_BACKUP_CONTINUE),
                     )
                     .fit_content(40.0)
@@ -1694,7 +1748,7 @@ impl OnboardingView {
             Screen::Done => footer_actions(vec![Box::new(
                 Button::new(
                     "onboarding.backup.continue.button",
-                    "Continue without backup",
+                    &t("onboarding-backup-continue-without"),
                     Some(KEY_BACKUP_CONTINUE),
                 )
                 .fit_content(40.0)
@@ -1712,10 +1766,10 @@ impl OnboardingView {
     ) -> Box<dyn Widget> {
         let number = page.number();
         let stage = match page {
-            TourPage::Navigate => "Move",
-            TourPage::Organise => "Arrange",
-            TourPage::Collaborate => "Share",
-            TourPage::Start => "Begin",
+            TourPage::Navigate => t("onboarding-tour-stage-move"),
+            TourPage::Organise => t("onboarding-tour-stage-arrange"),
+            TourPage::Collaborate => t("onboarding-tour-stage-share"),
+            TourPage::Start => t("onboarding-tour-stage-begin"),
         };
         let progress = Column::new()
             .with_no_padding()
@@ -1730,15 +1784,18 @@ impl OnboardingView {
                 Row::new()
                     .with_padding(theme.tokens.spacing.s3, 0.0)
                     .push(Box::new(
-                        Text::new("Tilo  •  DESKTOP TOUR")
+                        Text::new(&t("onboarding-tour-eyebrow"))
                             .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(theme.text_dim),
                     ))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
-                        Text::new(&format!("{stage}  ·  {number} of 4"))
-                            .with_role(ui::tokens::typography::TextRole::Label)
-                            .with_color(theme.text_dim),
+                        Text::new(&t_args(
+                            "onboarding-tour-stage",
+                            &[("stage", stage.clone().into()), ("step", number.into())],
+                        ))
+                        .with_role(ui::tokens::typography::TextRole::Label)
+                        .with_color(theme.text_dim),
                     )),
             ))
             .push(Box::new(
@@ -1747,8 +1804,10 @@ impl OnboardingView {
                     .with_intrinsic_height()
                     .with_vertical_padding(theme.tokens.spacing.s2)
                     .push(Box::new(
-                        ProgressBar::new(f32::from(number) / 4.0)
-                            .with_label(format!("Desktop tour, step {number} of 4: {stage}")),
+                        ProgressBar::new(f32::from(number) / 4.0).with_label(t_args(
+                            "onboarding-tour-progress-a11y",
+                            &[("stage", stage.into()), ("step", number.into())],
+                        )),
                     )),
             ));
         let mut content = Column::new()
@@ -1788,36 +1847,23 @@ impl OnboardingView {
     fn tour_page(theme: &Theme, page: TourPage) -> Box<dyn Widget> {
         let (title, intro, cards): (&str, &str, &[(&str, &str)]) = match page {
             TourPage::Navigate => (
-                "Everything is close at hand",
-                "Tilo keeps the desktop calm until you ask for something. Every gesture here has a keyboard route too.",
+                "onboarding-tour-navigate-title",
+                "onboarding-tour-navigate-intro",
                 NAVIGATE_CARDS,
             ),
             TourPage::Organise => (
-                "A place for each kind of work",
-                "The layout is simple once its four levels have names. Tilo remembers the arrangement for you.",
+                "onboarding-tour-organise-title",
+                "onboarding-tour-organise-intro",
                 ORGANISE_CARDS,
             ),
             TourPage::Collaborate => (
-                "Sharing stays deliberate",
-                "Collaboration is built into the workspace, not bolted onto individual apps. Nothing becomes shared merely because it is open.",
-                &[
-                    (
-                        "Invite from Workspace Settings",
-                        "Choose a role and review exactly which workspace the invitation opens.",
-                    ),
-                    (
-                        "Follow only when you choose",
-                        "People keep their own focus and view. Follow is an explicit, reversible action.",
-                    ),
-                    (
-                        "Undo and permissions are system features",
-                        "History follows authorship, and apps ask Tilo for capabilities instead of receiving ambient access.",
-                    ),
-                ],
+                "onboarding-tour-collaborate-title",
+                "onboarding-tour-collaborate-intro",
+                COLLABORATE_CARDS,
             ),
             TourPage::Start => (
-                "Your first five minutes",
-                "Start with one outcome, then let the workspace grow with the project. Find this again from Search as Desktop tour.",
+                "onboarding-tour-start-title",
+                "onboarding-tour-start-intro",
                 START_CARDS,
             ),
         };
@@ -1833,8 +1879,8 @@ impl OnboardingView {
             } else {
                 theme.tokens.spacing.s6
             })
-            .push(heading(title, theme))
-            .push(paragraph(intro, theme));
+            .push(heading(&t(title), theme))
+            .push(paragraph(&t(intro), theme));
         if page == TourPage::Start {
             let mut checklist = Column::new()
                 .with_no_padding()
@@ -1847,11 +1893,11 @@ impl OnboardingView {
                         .with_intrinsic_height()
                         .with_gap(theme.tokens.spacing.s1)
                         .push(Box::new(
-                            Text::new(card_title)
+                            Text::new(&t(card_title))
                                 .with_role(ui::tokens::typography::TextRole::Label)
                                 .with_color(theme.text_primary),
                         ))
-                        .push(paragraph(copy, theme)),
+                        .push(paragraph(&t(copy), theme)),
                 ));
             }
             // The numbered labels already provide the grouping and order. A
@@ -1861,7 +1907,10 @@ impl OnboardingView {
             body = body.push(Box::new(checklist));
         } else {
             for (card_title, copy) in cards {
-                body = body.push(Box::new(Card::titled(*card_title, paragraph(copy, theme))));
+                body = body.push(Box::new(Card::titled(
+                    t(card_title),
+                    paragraph(&t(copy), theme),
+                )));
             }
         }
         Box::new(body)
@@ -1870,27 +1919,31 @@ impl OnboardingView {
     /// Sticky tour navigation, kept outside the scrollable lesson body.
     fn tour_actions(page: TourPage) -> Box<dyn Widget> {
         let (primary_label, primary_key) = if page == TourPage::Start {
-            ("Enter Tilo", KEY_FINISH)
+            (t("onboarding-tour-enter"), KEY_FINISH)
         } else {
-            ("Continue", KEY_TOUR_NEXT)
+            (t("onboarding-continue"), KEY_TOUR_NEXT)
         };
         footer_actions(vec![
             Box::new(
                 Button::new(
                     "onboarding.tour.skip.button",
-                    "Skip tour",
+                    &t("onboarding-tour-skip"),
                     Some(KEY_TOUR_SKIP),
                 )
                 .fit_content(40.0),
             ),
             Box::new(
-                Button::new("onboarding.tour.back.button", "Back", Some(KEY_TOUR_BACK))
-                    .fit_content(40.0),
+                Button::new(
+                    "onboarding.tour.back.button",
+                    &t("onboarding-back"),
+                    Some(KEY_TOUR_BACK),
+                )
+                .fit_content(40.0),
             ),
             Box::new(
                 Button::new(
                     "onboarding.tour.next.button",
-                    primary_label,
+                    &primary_label,
                     Some(primary_key),
                 )
                 .fit_content(40.0)
@@ -1905,21 +1958,26 @@ impl OnboardingView {
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(spacing.s3);
-        for point in INTRO_POINTS {
-            list = list.push(bullet(point, theme));
+        for point in intro_points() {
+            list = list.push(bullet(&point, theme));
         }
         let (title, body) = match self.context {
-            OnboardingContext::FullSystem => (INTRO_TITLE, INTRO_BODY),
-            OnboardingContext::HostDesktop => (HOST_DESKTOP_INTRO_TITLE, HOST_DESKTOP_INTRO_BODY),
+            OnboardingContext::FullSystem => (intro_title(), intro_body()),
+            OnboardingContext::HostDesktop => {
+                (host_desktop_intro_title(), host_desktop_intro_body())
+            }
         };
         Box::new(
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
                 .with_gap(spacing.s4)
-                .push(heading(title, theme))
-                .push(paragraph(body, theme))
-                .push(Box::new(Card::titled("What it is for", Box::new(list)))),
+                .push(heading(&title, theme))
+                .push(paragraph(&body, theme))
+                .push(Box::new(Card::titled(
+                    t("onboarding-intro-card-title"),
+                    Box::new(list),
+                ))),
         )
     }
 
@@ -1932,14 +1990,14 @@ impl OnboardingView {
         let path = TextInput::new(Vec::new())
             .with_id("onboarding.connect.path.field")
             .with_on_change_path(KEY_CONNECT_PATH)
-            .with_accessible_name("Identity backup file")
-            .with_placeholder("Choose an encrypted backup or legacy identity JSON")
+            .with_accessible_name(t("onboarding-connect-file"))
+            .with_placeholder(&t("onboarding-connect-file-placeholder"))
             .with_font_size(theme.tokens.typography.scale.base);
         let passphrase = secret_input(
             "onboarding.connect.passphrase.field",
             &self.connect_passphrase,
-            "Backup passphrase",
-            "Passphrase (leave empty for legacy JSON)",
+            &t("onboarding-connect-passphrase"),
+            &t("onboarding-connect-passphrase-placeholder"),
         )
         .with_font_size(theme.tokens.typography.scale.base);
         let spacing = &theme.tokens.spacing;
@@ -1947,33 +2005,31 @@ impl OnboardingView {
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(if compact { spacing.s3 } else { spacing.s4 })
-            .push(heading("Connect an existing identity", theme));
+            .push(heading(&t("onboarding-connect-title"), theme));
         if self.recovery_only {
             body = body.push(spaced_banner(
-                Banner::warning("Your existing identity needs recovery")
-                    .with_message(
-                        "Tilo could not verify your existing identity chain. Unlock the desktop keyring and retry, or restore an encrypted backup. Tilo will not replace this identity automatically.",
-                    )
+                Banner::warning(t("onboarding-connect-recovery-title"))
+                    .with_message(t("onboarding-connect-recovery-message"))
                     .with_icon(ui::icons::Icon::Shield),
                 theme,
             ));
         }
         if let Some(error) = &self.error {
             body = body.push(spaced_banner(
-                Banner::error("That identity could not be connected").with_message(error.clone()),
+                Banner::error(t("onboarding-connect-failed")).with_message(error.clone()),
                 theme,
             ));
         }
         let nearby_action = if self.nearby_child.is_some() {
             Button::new(
                 "onboarding.connect.cancel.button",
-                "Cancel",
+                &t("onboarding-cancel"),
                 Some(KEY_CONNECT_CANCEL),
             )
         } else {
             Button::new(
                 "onboarding.connect.nearby.button",
-                "Connect a nearby device",
+                &t("onboarding-connect-nearby"),
                 Some(KEY_CONNECT_NEARBY),
             )
             .fit_content(40.0)
@@ -1983,7 +2039,7 @@ impl OnboardingView {
             .with_intrinsic_height()
             .with_gap(if compact { spacing.s2 } else { spacing.s3 })
             .push(paragraph(
-                "On the other device, open Settings → Devices & Sync → Add a personal device, then compare the six-digit code shown on both screens.",
+                &t("onboarding-connect-nearby-instructions"),
                 theme,
             ));
         if let Some(status) = &self.nearby_status {
@@ -2003,7 +2059,7 @@ impl OnboardingView {
             nearby = nearby.push(Box::new(
                 Button::new(
                     "onboarding.connect.retry.button",
-                    "Retry keyring",
+                    &t("onboarding-connect-retry-keyring"),
                     Some(KEY_CONNECT_RETRY),
                 )
                 .fit_content(40.0),
@@ -2012,7 +2068,7 @@ impl OnboardingView {
         let file_row = Row::new().push(Box::new(path)).push(Box::new(
             Button::new(
                 "onboarding.connect.browse.button",
-                "Browse…",
+                &t("onboarding-connect-browse"),
                 Some(KEY_CONNECT_BROWSE),
             )
             .with_icon(ui::icons::Icon::Folder),
@@ -2023,15 +2079,19 @@ impl OnboardingView {
             .with_gap(if compact { spacing.s2 } else { spacing.s3 })
             .push(Box::new(file_row))
             .push(Box::new(
-                Text::new("Backup passphrase").with_role(ui::tokens::typography::TextRole::Label),
+                Text::new(&t("onboarding-connect-passphrase"))
+                    .with_role(ui::tokens::typography::TextRole::Label),
             ))
             .push(Box::new(passphrase));
         Box::new(
             body.push(Box::new(Card::titled(
-                "Nearby trusted device",
+                t("onboarding-connect-nearby-card"),
                 Box::new(nearby),
             )))
-            .push(Box::new(Card::titled("Encrypted backup", Box::new(backup)))),
+            .push(Box::new(Card::titled(
+                t("onboarding-connect-backup-card"),
+                Box::new(backup),
+            ))),
         )
     }
 
@@ -2041,8 +2101,8 @@ impl OnboardingView {
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(spacing.s4);
-        for point in NO_RECOVERY_POINTS {
-            list = list.push(bullet(point, theme));
+        for point in no_recovery_points() {
+            list = list.push(bullet(&point, theme));
         }
         let mut body = Column::new()
             .with_no_padding()
@@ -2053,19 +2113,17 @@ impl OnboardingView {
                     .with_no_padding()
                     .with_intrinsic_height()
                     .with_gap(spacing.s3)
-                    .push(heading("Protect your Tilo identity", theme))
+                    .push(heading(&t("onboarding-protect-title"), theme))
                     .push(spaced_banner(
-                        Banner::warning(NO_RECOVERY_TITLE)
-                            .with_message(
-                                "There is no reset button. Create an encrypted portable backup after this step.",
-                            )
+                        Banner::warning(no_recovery_title())
+                            .with_message(t("onboarding-protect-message"))
                             .with_icon(ui::icons::Icon::Shield),
                         theme,
                     )),
             ));
         if let Some(error) = &self.error {
             body = body.push(spaced_banner(
-                Banner::error("Your identity was not created").with_message(error.clone()),
+                Banner::error(t("onboarding-create-failed")).with_message(error.clone()),
                 theme,
             ));
         }
@@ -2084,14 +2142,11 @@ impl OnboardingView {
                     .with_intrinsic_height()
                     .with_gap(theme.tokens.spacing.s6)
                     .push(spaced_banner(
-                        Banner::error("Your identity could not be created")
+                        Banner::error(t("onboarding-create-failed-title"))
                             .with_message(err.clone()),
                         theme,
                     ))
-                    .push(paragraph(
-                        "Nothing was written and the desktop is still protected. Go back and try again after checking storage and permissions.",
-                        theme,
-                    ))
+                    .push(paragraph(&t("onboarding-create-failed-message"), theme))
                     .push(actions(vec![back_button()])),
             );
         }
@@ -2099,21 +2154,21 @@ impl OnboardingView {
         let mut backup = Column::new().with_no_padding().with_intrinsic_height();
         if let Some(error) = &self.backup_error {
             backup = backup.push(spaced_banner(
-                Banner::error("The backup was not saved").with_message(error.clone()),
+                Banner::error(t("onboarding-backup-failed")).with_message(error.clone()),
                 theme,
             ));
         }
         if let Some(path) = &self.backup_saved {
             backup = backup.push(spaced_banner(
-                Banner::success("Encrypted backup verified")
+                Banner::success(t("onboarding-backup-verified"))
                     .with_message(path.display().to_string())
                     .with_icon(ui::icons::Icon::Check),
                 theme,
             ));
         } else if self.backup_was_verified {
             backup = backup.push(spaced_banner(
-                Banner::success("Encrypted backup verified")
-                    .with_message("The verified backup was saved before setup restarted.")
+                Banner::success(t("onboarding-backup-verified"))
+                    .with_message(t("onboarding-backup-verified-earlier"))
                     .with_icon(ui::icons::Icon::Check),
                 theme,
             ));
@@ -2126,9 +2181,9 @@ impl OnboardingView {
             } else {
                 theme.tokens.spacing.s4
             })
-            .push(heading("Back up your Tilo identity", theme))
+            .push(heading(&t("onboarding-backup-title"), theme))
             .push(spaced_banner(
-                Banner::success("Your local identity was created")
+                Banner::success(t("onboarding-backup-identity-created"))
                     .with_icon(ui::icons::Icon::Check),
                 theme,
             ))
@@ -2137,24 +2192,14 @@ impl OnboardingView {
     }
 
     fn done(&self, theme: &Theme, compact: bool) -> Box<dyn Widget> {
-        let system_care = match self.context {
-            OnboardingContext::FullSystem => {
-                "Tilo checks signed system updates automatically after setup when the machine is \
-                 online. You can check, stage, and roll back releases in Settings."
-            }
-            OnboardingContext::HostDesktop => {
-                "Your Linux distribution remains responsible for OS updates and system time. \
-                 This host-session package does not install or run Tilo bootc update services."
-            }
-        };
         let (title, body, ready) = match self.context {
             OnboardingContext::FullSystem => {
-                (DONE_TITLE, DONE_BODY, "Identity stored on this device")
+                (done_title(), done_body(), t("onboarding-done-ready"))
             }
             OnboardingContext::HostDesktop => (
-                "Your Tilo identity is ready",
-                "Tilo will use this local identity when you collaborate or invite peers. It remains separate from your Linux login and is not an online account.",
-                "Ready for Tilo collaboration",
+                t("onboarding-host-done-title"),
+                t("onboarding-host-done-body"),
+                t("onboarding-host-done-ready"),
             ),
         };
         let mut page = Column::new()
@@ -2169,30 +2214,27 @@ impl OnboardingView {
             } else {
                 theme.tokens.spacing.s4
             })
-            .push(heading(title, theme))
+            .push(heading(&title, theme))
             .push(spaced_banner(
                 Banner::success(ready).with_icon(ui::icons::Icon::Check),
                 theme,
             ))
-            .push(paragraph(body, theme))
+            .push(paragraph(&body, theme))
             .push(Box::new(Card::titled(
-                "What happens next",
-                paragraph(
-                    "The desktop is ready. Sharing remains off until you deliberately enable it in Settings.",
-                    theme,
-                ),
+                t("onboarding-done-next-title"),
+                paragraph(&t("onboarding-done-next-body"), theme),
             )))
             .push(Box::new(Card::titled(
                 if self.backup_was_verified {
-                    "Backup verified"
+                    t("onboarding-done-backup-verified")
                 } else {
-                    "Backup still recommended"
+                    t("onboarding-done-backup-recommended")
                 },
                 paragraph_with_id(
-                    if self.backup_was_verified {
-                        "Keep the encrypted backup file and its passphrase in separate places."
+                    &if self.backup_was_verified {
+                        t("onboarding-done-backup-verified-body")
                     } else {
-                        "Create an encrypted portable backup from Settings before relying on this identity."
+                        t("onboarding-done-backup-recommended-body")
                     },
                     theme,
                     "onboarding.done.backup-guidance",
@@ -2201,8 +2243,8 @@ impl OnboardingView {
 
         if self.context == OnboardingContext::FullSystem {
             page = page.push(Box::new(Card::titled(
-                "System care",
-                paragraph(system_care, theme),
+                t("onboarding-done-system-care-title"),
+                paragraph(&t("onboarding-done-system-care-body"), theme),
             )));
         }
         Box::new(page)
@@ -2216,8 +2258,8 @@ impl OnboardingView {
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(spacing.s3);
-        for point in CODECS_ENABLES {
-            enables = enables.push(bullet(point, theme));
+        for point in codecs_enables() {
+            enables = enables.push(bullet(&point, theme));
         }
         // Once the owner chose, the live result leads the page, above the
         // explanation, so it is visible without scrolling at every size.
@@ -2225,7 +2267,7 @@ impl OnboardingView {
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(spacing.s4)
-            .push(heading(CODECS_TITLE, theme));
+            .push(heading(&codecs_title(), theme));
         if let Some((title, message)) = self.codec_outcome() {
             let failed = self.codec_error.is_some() || self.codec_status.state == PackState::Failed;
             let banner = match self.codec_status.state {
@@ -2242,19 +2284,22 @@ impl OnboardingView {
         }
         if let Some(fraction) = self.codec_progress() {
             page = page.push(Box::new(
-                ProgressBar::new(fraction).with_label("Installing media codecs"),
+                ProgressBar::new(fraction).with_label(t("onboarding-codecs-installing-title")),
             ));
         }
         page = page
             .push(paragraph_with_id(
-                CODECS_BODY,
+                &codecs_body(),
                 theme,
                 "onboarding.codecs.body",
             ))
-            .push(Box::new(Card::titled("What it enables", Box::new(enables))))
             .push(Box::new(Card::titled(
-                "Where it comes from",
-                paragraph_with_id(CODECS_SOURCE, theme, "onboarding.codecs.source"),
+                t("onboarding-codecs-enables-title"),
+                Box::new(enables),
+            )))
+            .push(Box::new(Card::titled(
+                t("onboarding-codecs-source-title"),
+                paragraph_with_id(&codecs_source(), theme, "onboarding.codecs.source"),
             )));
         Box::new(page)
     }
@@ -2264,7 +2309,7 @@ impl OnboardingView {
             self.codec_page_buttons()
                 .into_iter()
                 .map(|(id, label, key, primary)| {
-                    let button = Button::new(id, label, Some(key)).fit_content(40.0);
+                    let button = Button::new(id, &label, Some(key)).fit_content(40.0);
                     let button = if primary {
                         button
                             .with_icon(ui::icons::Icon::ArrowRight)
@@ -2286,13 +2331,13 @@ impl OnboardingView {
         // action a new user has to decipher.
         let tour = Button::new(
             "onboarding.tour.start.button",
-            "Take a quick tour",
+            &t("onboarding-tour-take"),
             Some(KEY_TOUR_START),
         )
         .fit_content(40.0);
         let enter = Button::new(
             "onboarding.finish.button",
-            "Continue to desktop",
+            &t("onboarding-finish"),
             Some(KEY_FINISH),
         )
         .fit_content(40.0)
@@ -2344,9 +2389,13 @@ fn bullet(text: &str, _theme: &Theme) -> Box<dyn Widget> {
 
 fn back_button() -> Box<dyn Widget> {
     Box::new(
-        Button::new("onboarding.back.button", "Back", Some(KEY_BACK))
-            .fit_content(40.0)
-            .with_icon(ui::icons::Icon::ArrowLeft),
+        Button::new(
+            "onboarding.back.button",
+            &t("onboarding-back"),
+            Some(KEY_BACK),
+        )
+        .fit_content(40.0)
+        .with_icon(ui::icons::Icon::ArrowLeft),
     )
 }
 
@@ -2735,13 +2784,14 @@ impl Widget for OnboardingView {
                 let (initial, roots) = onboarding_picker_scope();
                 self.picker = Some((
                     PickerPurpose::ImportIdentity,
-                    FilePicker::new("Choose a Tilo identity", initial, roots).with_filters(vec![
-                        ui::widget::file_picker::FileFilter::new(
-                            "Tilo identity",
-                            &["tilo-identity", "tilo-identity-backup", "json"],
-                        ),
-                        ui::widget::file_picker::FileFilter::all(),
-                    ]),
+                    FilePicker::new(t("onboarding-picker-import-title"), initial, roots)
+                        .with_filters(vec![
+                            ui::widget::file_picker::FileFilter::new(
+                                t("onboarding-picker-import-filter"),
+                                &["tilo-identity", "tilo-identity-backup", "json"],
+                            ),
+                            ui::widget::file_picker::FileFilter::all(),
+                        ]),
                 ));
                 self.invalidation.focus();
             }
@@ -2796,16 +2846,18 @@ impl Widget for OnboardingView {
                         match spawn {
                             Ok(child) => {
                                 self.nearby_child = Some(child);
-                                self.nearby_status =
-                                    Some("Looking for a trusted device nearby…".into());
+                                self.nearby_status = Some(t("onboarding-nearby-searching"));
                                 self.error = None;
                             }
                             Err(error) => {
-                                self.error = Some(format!("Could not start nearby setup: {error}"));
+                                self.error = Some(t_args(
+                                    "onboarding-nearby-start-failed",
+                                    &[("error", error.into())],
+                                ));
                             }
                         }
                     }
-                    _ => self.error = Some("Nearby setup is unavailable in this session".into()),
+                    _ => self.error = Some(t("onboarding-nearby-unavailable")),
                 }
                 self.invalidation.structure();
             }
@@ -2817,8 +2869,7 @@ impl Widget for OnboardingView {
             if let Some(path) = &self.nearby_status_path {
                 let _ = std::fs::remove_file(path);
             }
-            self.nearby_status =
-                Some("Nearby setup cancelled. Choose Connect nearby to try again.".into());
+            self.nearby_status = Some(t("onboarding-nearby-cancelled"));
             self.invalidation.structure();
         }
 
@@ -2829,7 +2880,7 @@ impl Widget for OnboardingView {
                 .get("verification_code")
                 .and_then(serde_json::Value::as_str)
         {
-            let message = format!("Code {code} · waiting for approval on your trusted device");
+            let message = t_args("onboarding-nearby-code", &[("code", code.into())]);
             if self.nearby_status.as_deref() != Some(&message) {
                 self.nearby_status = Some(message);
                 self.invalidation.structure();
@@ -2861,30 +2912,40 @@ impl Widget for OnboardingView {
                 let _ = stream.read_to_string(&mut stderr);
             }
             if status.success() {
-                match serde_json::from_str::<serde_json::Value>(stdout.lines().last().unwrap_or_default()) {
+                match serde_json::from_str::<serde_json::Value>(
+                    stdout.lines().last().unwrap_or_default(),
+                ) {
                     Ok(result) => {
-                        let fingerprint = result.get("identity").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
-                        let path = result.get("record_path").and_then(serde_json::Value::as_str).map(PathBuf::from);
+                        let fingerprint = result
+                            .get("identity")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned();
+                        let path = result
+                            .get("record_path")
+                            .and_then(serde_json::Value::as_str)
+                            .map(PathBuf::from);
                         if let Some(path) = path.filter(|_| fingerprint.len() == 64) {
-                            self.flow.complete_connected(MintedIdentity { fingerprint, path });
+                            self.flow
+                                .complete_connected(MintedIdentity { fingerprint, path });
                             self.identity_ready_page = false;
                             let _ = self.persist_progress(PersistedStage::IdentityReady);
                             self.error = None;
-                            self.nearby_status = Some("Connected. Your workspaces will appear automatically.".into());
+                            self.nearby_status = Some(t("onboarding-nearby-connected"));
                         } else {
-                            self.error = Some("The trusted device returned an invalid identity. Choose Connect nearby to retry.".into());
+                            self.error = Some(t("onboarding-nearby-invalid-identity"));
                         }
                     }
-                    Err(_) => self.error = Some("The trusted device returned an invalid identity. Choose Connect nearby to retry.".into()),
+                    Err(_) => self.error = Some(t("onboarding-nearby-invalid-identity")),
                 }
             } else {
-                let detail = stderr
-                    .lines()
-                    .last()
-                    .unwrap_or("the pairing window closed or approval was cancelled");
-                self.error = Some(format!(
-                    "Nearby setup did not finish: {detail}. Choose Connect nearby to retry."
-                ));
+                self.error = Some(match stderr.lines().last() {
+                    Some(detail) => t_args(
+                        "onboarding-nearby-failed-detail",
+                        &[("detail", detail.into())],
+                    ),
+                    None => t("onboarding-nearby-failed"),
+                });
             }
             self.invalidation.structure();
         }
@@ -2912,24 +2973,23 @@ impl Widget for OnboardingView {
                     self.backup_passphrase.lock(),
                     self.backup_confirmation.lock(),
                 ) {
-                    (Ok(passphrase), Ok(_)) if passphrase.chars().count() < 12 => Some(
-                        "Use at least 12 characters. Make it long and unique; length alone does not make a common passphrase safe."
-                            .to_string(),
-                    ),
+                    (Ok(passphrase), Ok(_)) if passphrase.chars().count() < 12 => {
+                        Some(t("onboarding-passphrase-too-short"))
+                    }
                     (Ok(passphrase), Ok(confirmation)) if *passphrase != *confirmation => {
-                        Some("The two passphrases do not match.".to_string())
+                        Some(t("onboarding-passphrase-mismatch"))
                     }
                     (Ok(_), Ok(_)) => None,
-                    _ => Some("The passphrase fields are temporarily unavailable.".to_string()),
+                    _ => Some(t("onboarding-passphrase-unavailable")),
                 };
                 if self.backup_error.is_none() {
                     let (initial, roots) = onboarding_picker_scope();
                     self.picker = Some((
                         PickerPurpose::BackupIdentity,
-                        FilePicker::new("Save encrypted identity backup", initial, roots)
+                        FilePicker::new(t("onboarding-picker-backup-title"), initial, roots)
                             .with_mode(FilePickerMode::Save)
                             .with_filters(vec![ui::widget::file_picker::FileFilter::new(
-                                "Encrypted Tilo identity",
+                                t("onboarding-picker-backup-filter"),
                                 &["tilo-identity"],
                             )])
                             .with_filename("tilo-identity-backup.tilo-identity"),
@@ -3003,8 +3063,7 @@ impl Widget for OnboardingView {
             let _ = state.put(root, KEY_IMPORT, ScalarValue::Boolean(false));
             let source = PathBuf::from(read_string(state, root, KEY_CONNECT_PATH));
             if self.flow.screen() == Screen::Connect && source.as_os_str().is_empty() {
-                self.error =
-                    Some("Choose an encrypted backup or legacy identity file first.".into());
+                self.error = Some(t("onboarding-connect-choose-file-first"));
                 self.invalidation.structure();
             } else if self.flow.screen() == Screen::Connect
                 && self.persist_progress(PersistedStage::AcquiringIdentity)
@@ -3051,8 +3110,9 @@ impl Widget for OnboardingView {
                         self.invalidation.both();
                     }
                     Err(error) => {
-                        self.error = Some(format!(
-                            "The desktop keyring is still unavailable. Unlock it and retry, or restore an encrypted backup: {error}"
+                        self.error = Some(t_args(
+                            "onboarding-keyring-unavailable",
+                            &[("error", error.into())],
                         ));
                         self.invalidation.structure();
                     }
@@ -4305,7 +4365,7 @@ mod tests {
         {
             let navigation = NAVIGATE_CARDS
                 .iter()
-                .flat_map(|(title, body)| [*title, *body])
+                .flat_map(|(title, body)| [t(title), t(body)])
                 .collect::<Vec<_>>()
                 .join(" ");
 
@@ -4331,7 +4391,7 @@ mod tests {
             assert_eq!(
                 ORGANISE_CARDS
                     .iter()
-                    .map(|(title, _)| *title)
+                    .map(|(title, _)| t(title))
                     .collect::<Vec<_>>(),
                 ["Workspace", "Strip", "Window group", "Tab"],
                 "the tour must name every level of the desktop hierarchy"
@@ -4341,7 +4401,7 @@ mod tests {
         {
             let handoff = START_CARDS
                 .iter()
-                .flat_map(|(title, body)| [*title, *body])
+                .flat_map(|(title, body)| [t(title), t(body)])
                 .collect::<Vec<_>>()
                 .join(" ");
 
@@ -4402,7 +4462,7 @@ mod tests {
         }
         // Phase `host_desktop_copy_does_not_claim_to_replace_the_linux_login`.
         {
-            let copy = HOST_DESKTOP_INTRO_BODY.to_ascii_lowercase();
+            let copy = host_desktop_intro_body().to_ascii_lowercase();
             assert!(copy.contains("already signed in"));
             assert!(copy.contains("does not replace your linux login"));
             assert!(copy.contains("does not") && copy.contains("online account"));

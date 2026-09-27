@@ -65,11 +65,22 @@ pub enum ResourceKind {
     Creator,
     Video,
     Playlist,
+    /// An open tab on the desktop, as a target for window actions.
+    Tab,
+    /// Tabs sharing one window frame.
+    WindowGroup,
     /// Escape hatch for provider-specific kinds, shown verbatim in the chip strip.
     Custom(String),
 }
 
 impl ResourceKind {
+    /// Stable English name, independent of the desktop's language: the
+    /// source of the chip strip's scriptable `palette:filter:*` address and
+    /// the control socket's `kind` field. `Custom` variants carry their own.
+    pub fn id(&self) -> &str {
+        self.label()
+    }
+
     /// Human-readable label used in the filter chip strip and group
     /// headers. `Custom` variants surface their own string verbatim.
     pub fn label(&self) -> &str {
@@ -84,6 +95,8 @@ impl ResourceKind {
             ResourceKind::Creator => "Creators",
             ResourceKind::Video => "Videos",
             ResourceKind::Playlist => "Playlists",
+            ResourceKind::Tab => "Tabs",
+            ResourceKind::WindowGroup => "Window groups",
             ResourceKind::Custom(s) => s.as_str(),
         }
     }
@@ -104,7 +117,9 @@ impl ResourceKind {
             ResourceKind::Creator => (7, String::new()),
             ResourceKind::Video => (8, String::new()),
             ResourceKind::Playlist => (9, String::new()),
-            ResourceKind::Custom(s) => (10, s.clone()),
+            ResourceKind::Tab => (10, String::new()),
+            ResourceKind::WindowGroup => (11, String::new()),
+            ResourceKind::Custom(s) => (12, s.clone()),
         }
     }
 }
@@ -388,7 +403,7 @@ pub fn icon_for_kind(kind: &ResourceKind) -> crate::icons::Icon {
         K::Creator => Icon::Star,
         K::Video => Icon::Film,
         K::Playlist => Icon::List,
-        K::Custom(_) => Icon::Search,
+        K::Tab | K::WindowGroup | K::Custom(_) => Icon::Search,
     }
 }
 

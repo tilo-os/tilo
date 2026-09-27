@@ -51,6 +51,16 @@ struct Cli {
     command: Command,
 }
 
+/// Registry platform family of the artifact `entry` describes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TargetPlatform {
+    /// Native Tilo OS thin app (`x86_64` or `aarch64`).
+    #[default]
+    TiloOs,
+    /// WebAssembly side module for the browser toolkit core (`wasm32`).
+    Web,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum RegistryAction {
     Add,
@@ -105,6 +115,46 @@ enum Command {
         /// Write the thin form: signed root, manifest and payload collection
         /// only. An installer fetches the payload bytes from its store, a
         /// peer or a registry.
+        #[arg(long)]
+        thin: bool,
+    },
+    /// Pack the web build of an app (or of the toolkit core) from its
+    /// authored manifest and WebAssembly module. The module's
+    /// `tilo.runtime_abi` and `target_features` custom sections become the
+    /// signed `[target]`; nothing in the manifest is web-specific.
+    PackWeb {
+        /// The authored manifest (TOML), the same one the native build uses.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// The app's WebAssembly side module (or the toolkit core module
+        /// for `kind = "runtime"`). Packed at the payload root under its file name.
+        #[arg(long)]
+        module: PathBuf,
+        /// Extra file shipped as `assets/<file name>`; repeatable.
+        #[arg(long = "asset")]
+        assets: Vec<PathBuf>,
+        /// Directory whose files ship under `assets/`, keeping relative paths.
+        #[arg(long)]
+        asset_dir: Option<PathBuf>,
+        /// Output .tapp path.
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        /// Identity JSON; a fresh keypair is generated when absent.
+        #[arg(long)]
+        identity: Option<PathBuf>,
+        /// Canonical wasm isa, for a module without a `target_features` section.
+        #[arg(long)]
+        wasm_isa: Option<String>,
+        /// Toolkit-core ABI id, `tilo-runtime/<version>+wasm.<32 hex>`, for a
+        /// module without a `tilo.runtime_abi` section; must match the
+        /// section when both exist.
+        #[arg(long)]
+        runtime_abi: Option<String>,
+        /// For `kind = "runtime"`: the release this core must provide,
+        /// `tilo-runtime/<version>`; checked against the ABI id.
+        #[arg(long)]
+        provides: Option<String>,
+        /// Write the thin form (metadata only).
         #[arg(long)]
         thin: bool,
     },
@@ -191,8 +241,12 @@ enum Command {
         /// Publisher identity JSON that signed the tapp and signs this entry.
         #[arg(long)]
         identity: PathBuf,
-        /// Target architecture (`x86_64` or `aarch64`); inferred when the
-        /// package manifest declares exactly one architecture.
+        /// Platform family of the tapp: a native Tilo OS build or a web
+        /// build made by `pack-web`.
+        #[arg(long, value_enum, default_value_t)]
+        platform: TargetPlatform,
+        /// Target architecture: `x86_64` or `aarch64` (inferred when the
+        /// package manifest declares exactly one), or `wasm32` for web.
         #[arg(long)]
         arch: Option<String>,
         /// JSON presentation metadata: localized name, product description,
@@ -222,6 +276,31 @@ fn main() -> Result<()> {
             identity,
             thin,
         } => cmd_pack(&manifest, &payload, &output, identity.as_deref(), thin),
+        Command::PackWeb {
+            manifest,
+            module,
+            assets,
+            asset_dir,
+            output,
+            identity,
+            wasm_isa,
+            runtime_abi,
+            provides,
+            thin,
+        } => cmd_pack_web(&PackWebArgs {
+            manifest: &manifest,
+            module: &module,
+            assets: &assets,
+            asset_dir: asset_dir.as_deref(),
+            output: &output,
+            identity: identity.as_deref(),
+            options: tilo_app_package::web::WebBuildOptions {
+                isa: wasm_isa.as_deref(),
+                runtime_abi: runtime_abi.as_deref(),
+                provides: provides.as_deref(),
+            },
+            thin,
+        }),
         Command::Thin { output, file } => cmd_thin(&file, &output),
         Command::Sign { identity, file } => cmd_sign(&identity, &file),
         Command::Verify { trusted_key, file } => cmd_verify(&trusted_key, &file),
@@ -250,6 +329,7 @@ fn main() -> Result<()> {
         Command::Entry {
             url,
             identity,
+            platform,
             arch,
             metadata,
             action,
@@ -259,6 +339,7 @@ fn main() -> Result<()> {
             &file,
             &url,
             &identity,
+            platform,
             arch.as_deref(),
             metadata.as_deref(),
             action,
@@ -300,6 +381,116 @@ fn cmd_pack(
         if thin { "thin" } else { "full" },
         packed.meta.payload_hashes().len()
     );
+    Ok(())
+}
+
+struct PackWebArgs<'a> {
+    manifest: &'a Path,
+    module: &'a Path,
+    assets: &'a [PathBuf],
+    asset_dir: Option<&'a Path>,
+    output: &'a Path,
+    identity: Option<&'a Path>,
+    options: tilo_app_package::web::WebBuildOptions<'a>,
+    thin: bool,
+}
+
+fn cmd_pack_web(args: &PackWebArgs<'_>) -> Result<()> {
+    let manifest_src = std::fs::read_to_string(args.manifest)
+        .with_context(|| format!("read manifest {}", args.manifest.display()))?;
+    let mut authored = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
+    let identity = match args.identity {
+        Some(path) => load_identity(path)?,
+        None => SigningIdentity::generate(),
+    };
+    authored.publisher.identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
+
+    let module_bytes = std::fs::read(args.module)
+        .with_context(|| format!("read module {}", args.module.display()))?;
+    let module_name = args
+        .module
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            anyhow!(
+                "module path {} has no UTF-8 file name",
+                args.module.display()
+            )
+        })?;
+    let info = tilo_app_package::web::inspect_wasm_module(&module_bytes)
+        .with_context(|| format!("inspect {}", args.module.display()))?;
+    let manifest =
+        tilo_app_package::web::web_manifest(&authored, module_name, &info, &args.options)?;
+
+    let staging = tempfile::tempdir().context("create staging directory")?;
+    std::fs::write(staging.path().join(module_name), &module_bytes)
+        .context("stage WebAssembly module")?;
+    let assets_root = staging.path().join("assets");
+    for asset in args.assets {
+        let name = asset
+            .file_name()
+            .ok_or_else(|| anyhow!("asset {} has no file name", asset.display()))?;
+        std::fs::create_dir_all(&assets_root).context("create assets directory")?;
+        let destination = assets_root.join(name);
+        if destination.exists() {
+            bail!("two assets are named {}", name.to_string_lossy());
+        }
+        std::fs::copy(asset, &destination)
+            .with_context(|| format!("stage asset {}", asset.display()))?;
+    }
+    if let Some(dir) = args.asset_dir {
+        copy_regular_tree(dir, &assets_root)?;
+    }
+
+    let packed = pack(staging.path(), &manifest, &identity)
+        .map_err(|error| anyhow!("pack failed: {error}"))?;
+    let payload: Option<&dyn BlobSource> = if args.thin { None } else { Some(&packed) };
+    write_tapp(args.output, &packed.meta, payload)?;
+    let target = manifest
+        .target
+        .as_ref()
+        .ok_or_else(|| anyhow!("web manifest lost its target"))?;
+    eprintln!(
+        "packed web {} for {} ({} payload blobs)",
+        packed.id(),
+        target.runtime,
+        packed.meta.payload_hashes().len()
+    );
+    Ok(())
+}
+
+/// Copy every regular file under `from` to the same relative path under
+/// `to`. Symlinks and special files are refused: a package ships bytes.
+fn copy_regular_tree(from: &Path, to: &Path) -> Result<()> {
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        let source = from.join(&relative);
+        for entry in std::fs::read_dir(&source)
+            .with_context(|| format!("read asset directory {}", source.display()))?
+        {
+            let entry = entry.with_context(|| format!("read {}", source.display()))?;
+            let kind = entry.file_type()?;
+            let path = relative.join(entry.file_name());
+            if kind.is_dir() {
+                pending.push(path);
+            } else if kind.is_file() {
+                let destination = to.join(&path);
+                if let Some(parent) = destination.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                if destination.exists() {
+                    bail!("asset {} is given twice", path.display());
+                }
+                std::fs::copy(entry.path(), &destination)
+                    .with_context(|| format!("stage asset {}", entry.path().display()))?;
+            } else {
+                bail!(
+                    "asset {} is not a regular file or directory",
+                    entry.path().display()
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -717,16 +908,16 @@ fn registry_entry_for(
     tapp_bytes: &[u8],
     url: &str,
     signer: &SigningKey,
-    arch: Option<tilo_app_package::manifest::Arch>,
+    platform: TargetPlatform,
+    arch: Option<&str>,
     previous: Option<&registry_types::RegistryEntry>,
     metadata: Option<&EntryMetadata>,
 ) -> Result<registry_types::RegistryEntry> {
     let publisher = SigningIdentity::from_signing_key(signer.clone());
-    // Use the same trust-boundary path as `publish`: this verifies every
-    // signed blob, materialized payload limits and payload shape before any
-    // registry metadata is signed.
-    let (built, package_id) = app_registry::build_entry(tapp_bytes, &publisher, arch, None)
-        .map_err(|error| anyhow!("verify tapp for registry entry: {error}"))?;
+    let binding = match platform {
+        TargetPlatform::TiloOs => native_binding(tapp_bytes, &publisher, arch)?,
+        TargetPlatform::Web => web_binding(tapp_bytes, &publisher, arch)?,
+    };
     let meta = app_registry::tapp::load(tapp_bytes).map_err(|e| anyhow!("load tapp: {e}"))?;
     let package = &meta.manifest.package;
     let now = std::env::var("SOURCE_DATE_EPOCH")
@@ -740,16 +931,11 @@ fn registry_entry_for(
     let version = registry_types::RegistryVersion {
         version: package.version.clone(),
         tapp_url: url.to_string(),
-        tapp_root_hash_hex: package_id.to_hex(),
+        tapp_root_hash_hex: binding.package_id.to_hex(),
         tapp_size_bytes: tapp_bytes.len() as u64,
         released_at_unix: now,
-        tapp_blake3_hex: built.tapp_hash.clone(),
-        target: registry_types::RegistryTarget {
-            platform: registry_types::TILO_OS_PLATFORM.into(),
-            architecture: app_registry::index::arch_wire(built.arch).to_string(),
-            isa: built.isa,
-            runtime: built.runtime,
-        },
+        tapp_blake3_hex: binding.tapp_blake3_hex,
+        target: binding.target,
     };
     let mut artifact_exists = false;
     if let Some(previous) = previous {
@@ -767,9 +953,10 @@ fn registry_entry_for(
         {
             if !same_artifact(existing, &version) {
                 bail!(
-                    "version {} for target {} already exists with different package bytes or metadata",
+                    "version {} for target {}/{} already exists with different package bytes or metadata",
                     version.version,
-                    app_registry::index::arch_wire(built.arch),
+                    version.target.platform,
+                    version.target.architecture,
                 );
             }
             if metadata.is_none() {
@@ -795,11 +982,19 @@ fn registry_entry_for(
         package_id: package.id.clone(),
         name: previous.map_or_else(|| display_name.clone().into(), |entry| entry.name.clone()),
         description: previous.map_or_else(
-            || format!("{display_name} is a native Tilo OS application.").into(),
+            || match platform {
+                TargetPlatform::TiloOs => {
+                    format!("{display_name} is a native Tilo OS application.").into()
+                }
+                TargetPlatform::Web => format!("{display_name} is a Tilo application.").into(),
+            },
             |entry| entry.description.clone(),
         ),
         tagline: previous.map_or_else(
-            || format!("{display_name} for Tilo OS").into(),
+            || match platform {
+                TargetPlatform::TiloOs => format!("{display_name} for Tilo OS").into(),
+                TargetPlatform::Web => format!("{display_name} on Tilo").into(),
+            },
             |entry| entry.tagline.clone(),
         ),
         images: previous.map_or_else(Default::default, |entry| entry.images.clone()),
@@ -833,6 +1028,84 @@ fn registry_entry_for(
         .map_err(|error| anyhow!("invalid registry metadata: {error}"))?;
     registry_types::sign_entry(&mut entry, signer);
     Ok(entry)
+}
+
+/// What a registry version binds from the final tapp bytes.
+struct ArtifactBinding {
+    package_id: tilo_app_package::PackageId,
+    tapp_blake3_hex: String,
+    target: registry_types::RegistryTarget,
+}
+
+fn native_binding(
+    tapp_bytes: &[u8],
+    publisher: &SigningIdentity,
+    arch: Option<&str>,
+) -> Result<ArtifactBinding> {
+    let arch = match arch {
+        None => None,
+        Some("x86_64") => Some(tilo_app_package::manifest::Arch::X86_64),
+        Some("aarch64") => Some(tilo_app_package::manifest::Arch::AArch64),
+        Some(other) => bail!("unknown --arch {other:?} for tilo-os (expected x86_64 or aarch64)"),
+    };
+    // Use the same trust-boundary path as `publish`: this verifies every
+    // signed blob, materialized payload limits and payload shape before any
+    // registry metadata is signed.
+    let (built, package_id) = app_registry::build_entry(tapp_bytes, publisher, arch, None)
+        .map_err(|error| anyhow!("verify tapp for registry entry: {error}"))?;
+    Ok(ArtifactBinding {
+        package_id,
+        tapp_blake3_hex: built.tapp_hash,
+        target: registry_types::RegistryTarget {
+            platform: registry_types::TILO_OS_PLATFORM.into(),
+            architecture: app_registry::index::arch_wire(built.arch).to_string(),
+            isa: built.isa,
+            runtime: built.runtime,
+        },
+    })
+}
+
+/// A web build binds the `[target]` its signed manifest records; the tapp
+/// passes the same verification a native one does before anything is signed.
+fn web_binding(
+    tapp_bytes: &[u8],
+    publisher: &SigningIdentity,
+    arch: Option<&str>,
+) -> Result<ArtifactBinding> {
+    if arch.is_some_and(|arch| arch != registry_types::WASM32_ARCHITECTURE) {
+        bail!("web builds target --arch wasm32");
+    }
+    let meta = app_registry::tapp::load(tapp_bytes).map_err(|e| anyhow!("load tapp: {e}"))?;
+    app_registry::tapp::validate_payload_shape(&meta)
+        .map_err(|error| anyhow!("verify tapp for registry entry: {error}"))?;
+    app_registry::tapp::verify_bytes(tapp_bytes, meta.package_id, publisher.public_key_bytes())
+        .map_err(|error| anyhow!("verify tapp for registry entry: {error}"))?;
+    if !tilo_app_package::tapp_size_allowed(meta.manifest.package.kind, tapp_bytes.len() as u64) {
+        bail!(
+            "application .tapp is {} bytes; limit is {} bytes",
+            tapp_bytes.len(),
+            tilo_app_package::MAX_APP_TAPP_BYTES
+        );
+    }
+    let target = meta
+        .manifest
+        .target
+        .as_ref()
+        .ok_or_else(|| anyhow!("the tapp is not a web build; pack it with `pack-web`"))?;
+    let target = registry_types::RegistryTarget {
+        platform: target.platform.clone(),
+        architecture: target.architecture.clone(),
+        isa: target.isa.clone(),
+        runtime: Some(target.runtime.clone()),
+    };
+    if !target.is_web() {
+        bail!("the tapp's target is not a web target");
+    }
+    Ok(ArtifactBinding {
+        package_id: meta.package_id,
+        tapp_blake3_hex: blake3::hash(tapp_bytes).to_hex().to_string(),
+        target,
+    })
 }
 
 fn same_version_identity(
@@ -873,10 +1146,15 @@ fn compare_registry_versions(
     semantic.then_with(|| left.target.architecture.cmp(&right.target.architecture))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the entry subcommand's explicit CLI options are kept visible at the command boundary"
+)]
 fn cmd_entry(
     file: &Path,
     url: &str,
     identity: &Path,
+    platform: TargetPlatform,
     arch: Option<&str>,
     metadata: Option<&Path>,
     action: Option<RegistryAction>,
@@ -884,12 +1162,6 @@ fn cmd_entry(
 ) -> Result<()> {
     let tapp_bytes = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
     let signer = load_signing_key(identity)?;
-    let arch = match arch {
-        None => None,
-        Some("x86_64") => Some(tilo_app_package::manifest::Arch::X86_64),
-        Some("aarch64") => Some(tilo_app_package::manifest::Arch::AArch64),
-        Some(other) => bail!("unknown --arch {other:?} (expected x86_64 or aarch64)"),
-    };
     if matches!(action, Some(RegistryAction::Update)) && previous_entry.is_none() {
         bail!("--previous-entry is required with --action update");
     }
@@ -916,6 +1188,7 @@ fn cmd_entry(
         &tapp_bytes,
         url,
         &signer,
+        platform,
         arch,
         previous.as_ref(),
         metadata.as_ref(),

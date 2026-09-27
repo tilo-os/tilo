@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::shell::chrome_state::Chrome;
+use crate::shell::i18n::{t, t_args};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
 pub const PROVIDER_ID: &str = "session";
@@ -63,9 +64,10 @@ impl SessionActionPolicy {
             .active_reasons_for(scope)
             .into_iter()
             .next()
-            .unwrap_or_else(|| "An app has unsaved work".into());
-        Err(format!(
-            "{reason} — close the app or finish its work first."
+            .unwrap_or_else(|| t("search-session-unsaved-work"));
+        Err(t_args(
+            "search-session-inhibited",
+            &[("reason", reason.into())],
         ))
     }
 
@@ -115,6 +117,10 @@ impl SearchProvider for SessionActionsProvider {
         "Session"
     }
 
+    fn display_name(&self) -> String {
+        crate::shell::i18n::t("search-provider-session")
+    }
+
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
     }
@@ -123,8 +129,10 @@ impl SearchProvider for SessionActionsProvider {
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return Vec::new();
         }
-        let needle = ctx.needle.trim().to_ascii_lowercase();
+        let needle = ctx.needle.trim().to_lowercase();
+        let title = t("search-session-logout");
         if !needle.is_empty()
+            && !title.to_lowercase().contains(&needle)
             && !"log out".contains(&needle)
             && !"logout".contains(&needle)
             && !LOGOUT_ID.contains(&needle)
@@ -137,11 +145,9 @@ impl SearchProvider for SessionActionsProvider {
             operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: PROVIDER_ID.into(),
             id: LOGOUT_ID.into(),
-            title: "Log out of Tilo".into(),
-            subtitle: Some(
-                "End this desktop session cleanly and return to the display manager".into(),
-            ),
-            badge: Some("Session".into()),
+            title,
+            subtitle: Some(t("search-session-logout-detail")),
+            badge: Some(t("search-badge-session")),
             score: if needle.is_empty() { 0 } else { 100 },
             params: Vec::new(),
             contract: Some(logout_contract()),

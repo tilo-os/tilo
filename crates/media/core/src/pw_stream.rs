@@ -43,6 +43,7 @@ pub const S16_BYTES: usize = 2;
 
 /// This device's `CLOCK_MONOTONIC` in nanoseconds: the clock `PipeWire`
 /// timestamps its graph cycles with.
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(
     clippy::useless_conversion,
     reason = "time_t and c_long are 32 bits wide on 32-bit targets"
@@ -61,6 +62,13 @@ pub fn monotonic_now_ns() -> i64 {
     i64::from(time.tv_sec)
         .saturating_mul(NS_PER_SECOND)
         .saturating_add(i64::from(time.tv_nsec))
+}
+
+/// The browser has no `PipeWire` graph to share a clock with; like a failed
+/// `clock_gettime`, it reads as zero.
+#[cfg(target_arch = "wasm32")]
+pub fn monotonic_now_ns() -> i64 {
+    0
 }
 
 /// `frames` at `rate` as nanoseconds.

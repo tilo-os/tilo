@@ -3,7 +3,7 @@
 //! `input-method-v2` admits one input method per seat: the first instance
 //! bound receives text-input focus and every later one is told it is
 //! unavailable. Two trusted programs want that slot — the on-screen keyboard
-//! and the composing input method (Fcitx5, which provides Pinyin, Mozc and
+//! and the composing input method (Fcitx5, which provides Pinyin, Anthy and
 //! Hangul). Neither is reachable from the public app socket; each is started
 //! by the compositor on a private display whose connections carry an
 //! immutable [`TrustedInputMethod`] credential.
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn composer_runs_the_engine_on_the_private_display_without_cloud_or_chords() {
         let launch = composer_launch(
-            InputMethodEngine::Mozc,
+            InputMethodEngine::Anthy,
             "jp:kana",
             Path::new("/run/user/1000/tilo-im-1"),
             Path::new("/run/user/1000/tilo-session/input-method"),
@@ -371,7 +371,7 @@ mod tests {
                 .expect(name)
         };
         let profile = file("fcitx5/profile");
-        assert!(profile.contains("DefaultIM=mozc"));
+        assert!(profile.contains("DefaultIM=anthy"));
         assert!(profile.contains("Name=keyboard-jp-kana"));
         let config = file("fcitx5/config");
         assert!(config.contains("ActiveByDefault=True"));

@@ -266,6 +266,36 @@ fn notification_clear_deadline(now: std::time::Instant) -> std::time::Instant {
 pub use tilo_desktop::chrome::{ActiveExposure, ActivityFocus, ActivityGlance};
 pub use ui::search::system::SearchScope;
 
+/// The shell's localized and addressable view of a [`SearchScope`].
+pub trait SearchScopeText {
+    /// `ActiveApp` renders the tab's title instead of this static
+    /// string. Must not share a word with the kind-filter chips —
+    /// those name result sorts, this names places.
+    fn localized_label(self) -> String;
+
+    /// Stable, language-independent address of the scope segment
+    /// (`palette:scope:<slug>`).
+    fn slug(self) -> &'static str;
+}
+
+impl SearchScopeText for SearchScope {
+    fn localized_label(self) -> String {
+        match self {
+            SearchScope::ActiveApp => crate::shell::i18n::t("search-scope-this-app"),
+            SearchScope::Workspace => crate::shell::i18n::t("search-scope-workspace"),
+            SearchScope::All => crate::shell::i18n::t("search-scope-everywhere"),
+        }
+    }
+
+    fn slug(self) -> &'static str {
+        match self {
+            SearchScope::ActiveApp => "this-app",
+            SearchScope::Workspace => "workspace",
+            SearchScope::All => "everywhere",
+        }
+    }
+}
+
 /// Normally decided by
 /// [`crate::shell::placement::placement_for_new_window`].
 /// [`OpenTarget::Here`] is the explicit override the tab strip's "+"
@@ -282,10 +312,10 @@ pub enum OpenTarget {
 impl OpenTarget {
     /// Appended to launchable palette rows so a result says where it
     /// will land before the user commits.
-    pub fn result_hint(self) -> &'static str {
+    pub fn result_hint(self) -> String {
         match self {
-            OpenTarget::Beside => "Opens in rightmost space",
-            OpenTarget::Here(_) => "Opens here, as a tab",
+            OpenTarget::Beside => crate::shell::i18n::t("search-opens-beside"),
+            OpenTarget::Here(_) => crate::shell::i18n::t("search-opens-here"),
         }
     }
 }
@@ -1760,7 +1790,7 @@ impl ChromeState {
     }
 
     /// Read by the search-scope pill so "This app" can show the tab's
-    /// title instead of the static [`SearchScope::label`].
+    /// title instead of the static [`SearchScopeText::localized_label`].
     pub fn active_app_title(&self) -> Option<String> {
         let tab = self.active_tab_ref()?;
         let title = tab.title.trim();

@@ -1835,7 +1835,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                 serde_json::json!({
                     "provider": a.resource.provider,
                     "id": a.resource.id,
-                    "kind": a.kind.label(),
+                    "kind": a.kind.id(),
                     "operation_kind": a.operation_kind,
                     "title": a.title,
                     "subtitle": a.subtitle,
@@ -1894,7 +1894,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         Ok(serde_json::json!({
             "provider": provider,
             "id": id,
-            "kind": selected.kind().label(),
+            "kind": selected.kind().id(),
             "title": selected.title(),
             "params": params_json(selected.params()),
             "contract": selected.contract(),
@@ -6230,9 +6230,8 @@ pub fn run() {
             rt.handle(),
             "tray",
             async move {
-                let conn = zbus::connection::Builder::session()?.build().await?;
                 crate::tray::watcher::serve(
-                    conn,
+                    zbus::connection::Builder::session()?,
                     std::sync::Arc::clone(crate::tray::Tray::global()),
                 )
                 .await
@@ -7798,7 +7797,7 @@ pub fn run() {
             .map(|surface| (surface.surface_id, surface.app_id.clone(), surface.rect))
             .collect::<Vec<_>>();
         frame_builder.set_floating_surfaces(&floating_surfaces);
-        state.sync_popup_capture_protection();
+        state.sync_capture_protection();
         state.set_capture_placeholder_fill(
             crate::shell::capture_protection::placeholder_fill_rgba8(frame_builder.theme()),
         );

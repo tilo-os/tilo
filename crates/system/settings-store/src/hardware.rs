@@ -1108,8 +1108,8 @@ impl KeyboardInputSource {
 pub enum InputMethodEngine {
     /// Simplified Chinese, Pinyin.
     Pinyin,
-    /// Japanese, Mozc.
-    Mozc,
+    /// Japanese, Anthy.
+    Anthy,
     /// Korean, Hangul.
     Hangul,
 }
@@ -1119,13 +1119,13 @@ pub enum InputMethodEngine {
 pub const INPUT_METHOD_SOURCE_PREFIX: &str = "ime/";
 
 impl InputMethodEngine {
-    pub const ALL: [Self; 3] = [Self::Pinyin, Self::Mozc, Self::Hangul];
+    pub const ALL: [Self; 3] = [Self::Pinyin, Self::Anthy, Self::Hangul];
 
     /// The engine's name in the input-method framework (and in its source id).
     pub fn name(self) -> &'static str {
         match self {
             Self::Pinyin => "pinyin",
-            Self::Mozc => "mozc",
+            Self::Anthy => "anthy",
             Self::Hangul => "hangul",
         }
     }
@@ -1139,7 +1139,7 @@ impl InputMethodEngine {
     pub fn label(self) -> &'static str {
         match self {
             Self::Pinyin => "Chinese (Simplified) — Pinyin",
-            Self::Mozc => "Japanese — Mozc",
+            Self::Anthy => "Japanese — Anthy",
             Self::Hangul => "Korean — Hangul",
         }
     }
@@ -3025,7 +3025,7 @@ mod tests {
         let section = serde_json::json!({
             "keyboard_layout": "ime/pinyin",
             "keyboard_layouts": [
-                "us", "ime/pinyin", "de", "ime/pinyin", "ime/unknown", "fr", "es", "gb", "ime/mozc"
+                "us", "ime/pinyin", "de", "ime/pinyin", "ime/mozc", "fr", "es", "gb", "ime/anthy"
             ]
         })
         .as_object()
@@ -3034,7 +3034,7 @@ mod tests {
         let cfg = RichInputConfig::from_section(&section);
         assert_eq!(
             cfg.keyboard_layouts,
-            ["us", "ime/pinyin", "de", "fr", "es", "ime/mozc"],
+            ["us", "ime/pinyin", "de", "fr", "es", "ime/anthy"],
             "engines do not count against the four XKB groups; unknown engines are dropped"
         );
         assert_eq!(
@@ -3125,13 +3125,13 @@ mod tests {
     #[test]
     fn an_engine_only_list_keeps_a_layout_to_type_on() {
         let mut cfg = RichInputConfig {
-            keyboard_layout: "ime/mozc".into(),
-            keyboard_layouts: vec!["ime/mozc".into()],
+            keyboard_layout: "ime/anthy".into(),
+            keyboard_layouts: vec!["ime/anthy".into()],
             ..Default::default()
         };
         cfg.normalise_sources();
-        assert_eq!(cfg.keyboard_layouts, ["us", "ime/mozc"]);
-        assert_eq!(cfg.keyboard_layout, "ime/mozc");
+        assert_eq!(cfg.keyboard_layouts, ["us", "ime/anthy"]);
+        assert_eq!(cfg.keyboard_layout, "ime/anthy");
         assert!(
             cfg.xkb_options().is_empty(),
             "one layout needs no group toggle"

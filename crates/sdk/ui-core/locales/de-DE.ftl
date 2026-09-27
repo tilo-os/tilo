@@ -64,3 +64,10 @@ now-playing-output-local = Auf diesem Computer
 now-playing-output-device = Eines deiner Geräte
 now-playing-output-speaker-group = Eine deiner Lautsprechergruppen
 now-playing-route-gone = Dieser Wiedergabeort ist nicht mehr verfügbar
+
+# Die eingebettete Berechtigungsabfrage einer isolierten App.
+permission-prompt-allow = Erlauben
+permission-prompt-session = Diese Sitzung
+permission-prompt-always = Immer erlauben
+permission-prompt-deny = Ablehnen
+permission-prompt-requested = { $capability } – angefragt von { $app }

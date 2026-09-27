@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// handful of D-Bus or file calls at a time; queueing beyond that is fine.
 pub(crate) const APP_BLOCKING_THREADS: usize = 8;
 /// Blocking-pool bound for a daemon runtime.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const DAEMON_BLOCKING_THREADS: usize = 32;
 /// Blocking-pool bound for the short-lived [`crate::block_on`] runtime.
 pub(crate) const BLOCK_ON_BLOCKING_THREADS: usize = 4;
