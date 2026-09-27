@@ -15,6 +15,7 @@ exclude = [
     "vendor/winit",
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
+    "vendor/web-transport-quinn",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -30,6 +31,16 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/agent/control-protocol",
+    "crates/agent/control-service",
+    "crates/collab/tilo-action-broker",
+    "crates/session/desktop",
+    "crates/collab/tilo-peer-state",
+    "crates/browser/tilo-browser-runtime",
+    "crates/hosting/tilo-device-host",
+    "crates/hosting/tilo-workspace-host",
+    "crates/hosting/tilo-moq",
+    "crates/hosting/tilo-cloud-host",
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
@@ -145,8 +156,11 @@ members = [
     "crates/doc/qdoc-rich-text",
     "crates/doc/qdoc-pdf",
     "crates/doc/tilo-automerge",
+    "crates/doc/tilo-automerge-isolate",
 
     # Hosting
+    "crates/hosting/tilo-cloud-enrollment",
+    "crates/hosting/tilo-delivery-protocol",
     "crates/hosting/tilo-relay",
     "crates/hosting/tilo-relay-client",
     "crates/hosting/tilo-relay-protocol",
@@ -194,6 +208,8 @@ members = [
     "crates/session/greeter",
     "crates/session/installer",
     "crates/session/tilo-connected-protocol",
+    "crates/session/tilo-lockdown-policy",
+    "crates/session/tilo-native-media-control",
     "crates/session/tilo-unlock-helper",
 
     # System
@@ -218,12 +234,15 @@ members = [
     "crates/system/fs",
     "crates/system/fs-content",
     "crates/system/fs-native",
+    "crates/system/host-fs",
+    "crates/system/host-info",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",
     "crates/system/sandbox-core",
     "crates/system/secret-vault",
     "crates/system/settings-store",
+    "crates/system/ssh-agent-client",
     "crates/system/swipe",
     "crates/system/system-extension",
     "crates/system/tilo-bluez",
@@ -335,6 +354,7 @@ winit = "0.30.13"
 automerge = "0.12.0"
 # Every AutoCommit that takes in changes goes through its `ApplyIncoming`.
 tilo-automerge = { path = "crates/doc/tilo-automerge" }
+tilo-automerge-isolate = { path = "crates/doc/tilo-automerge-isolate" }
 pollster = "0.4.0"
 rustc-hash = "2.1"
 cosmic-text = { version = "0.19.0", default-features = false }
@@ -359,6 +379,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rcgen = "0.14"
 rustls-native-certs = "0.8"
 url = "2"
+# Media over QUIC networking (moq-lite); driven over web-transport-quinn.
+moq-net = "0.3.3"
 
 # ---------------------------------------------------------------------------
 # Serialisation and encoding
@@ -667,6 +689,12 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Preserve raw HTTP/3 routing fields before URL normalization.
+# See vendor/web-transport-proto/PROVENANCE.md.
+web-transport-proto = { path = "vendor/web-transport-proto" }
+# Adds `Request::from_parts` so one QUIC endpoint serves plain HTTP/3 delivery
+# requests and WebTransport. See vendor/web-transport-quinn/PROVENANCE.md.
+web-transport-quinn = { path = "vendor/web-transport-quinn" }
 # libspa-sys 0.10.1 lets bindgen discover newer PipeWire inline functions
 # through transitive headers, but its emitted C wrapper includes only the
 # narrower wrapper.h. Keep the missing direct includes locally until upstream
