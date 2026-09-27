@@ -14,7 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 tilo-net = { path = "../tilo-net", features = ["blocking"] }
 # The in-memory Drive server behind `fake-server`.
-md-5 = { version = "0.11", optional = true }
+md-5 = { workspace = true, optional = true }
 sha1 = { version = "0.11", optional = true }
 sha2 = { workspace = true, optional = true }
 test-http = { path = "../../dev/test-http", optional = true }

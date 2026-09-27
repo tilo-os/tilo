@@ -8062,6 +8062,7 @@ dependencies = [
  "lettre",
  "mail-builder",
  "mail-parser",
+ "md-5",
  "pim-lines",
  "qdoc-codecs",
  "qdoc-rich-text",
