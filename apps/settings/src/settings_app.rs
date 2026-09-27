@@ -1402,6 +1402,18 @@ impl SettingsApp {
                 prefs.input.touchpad_gestures = enabled;
                 "touchpad gestures updated"
             }
+            crate::actions::InputOperation::SetTouchpadEnabled { enabled } => {
+                prefs.input.touchpad_enabled = enabled;
+                if enabled {
+                    "touchpad turned on"
+                } else {
+                    "touchpad turned off"
+                }
+            }
+            crate::actions::InputOperation::SetTouchpadDisabledOnExternalMouse { enabled } => {
+                prefs.input.touchpad_disabled_on_external_mouse = enabled;
+                "touchpad mouse handoff updated"
+            }
             crate::actions::InputOperation::SetTouchpadClickMethod { method } => {
                 prefs.input.touchpad_click_method =
                     crate::panes::mouse_keyboard::click_method_for_label(&method)

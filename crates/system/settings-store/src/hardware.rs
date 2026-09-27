@@ -616,6 +616,10 @@ pub const DEFAULT_MOUSE_NATURAL_SCROLL: bool = false;
 /// the touchpad-toggle hardware key flips it and the compositor applies it
 /// to every touchpad through libinput's send-events mode.
 pub const TOUCHPAD_ENABLED_KEY: &str = "touchpad_enabled";
+/// `input` key for switching touchpads off while an external mouse is
+/// connected (libinput's disabled-on-external-mouse send-events mode). Absent
+/// means off.
+pub const TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY: &str = "touchpad_disabled_on_external_mouse";
 
 /// How a clickpad (a touchpad whose whole surface is the button) decides
 /// which button a physical press means. libinput decides per device which of

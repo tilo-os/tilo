@@ -1596,12 +1596,14 @@ impl DrmDispatchState {
         if let Some(on) = plan.left_handed {
             let _ = device.config_left_handed_set(on);
         }
-        if let Some(on) = plan.send_events {
+        if let Some(mode) = plan.send_events {
             use smithay::reexports::input::SendEventsMode;
-            let _ = device.config_send_events_set_mode(if on {
-                SendEventsMode::ENABLED
-            } else {
-                SendEventsMode::DISABLED
+            let _ = device.config_send_events_set_mode(match mode {
+                input_config::SendEvents::Enabled => SendEventsMode::ENABLED,
+                input_config::SendEvents::Disabled => SendEventsMode::DISABLED,
+                input_config::SendEvents::DisabledOnExternalMouse => {
+                    SendEventsMode::DISABLED_ON_EXTERNAL_MOUSE
+                }
             });
         }
         if let Some(flat) = plan.flat_acceleration {
@@ -3466,6 +3468,9 @@ fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
         supports_two_finger_scroll: device
             .config_scroll_methods()
             .contains(&smithay::reexports::input::ScrollMethod::TwoFinger),
+        supports_disable_on_external_mouse: device
+            .config_send_events_modes()
+            .contains(smithay::reexports::input::SendEventsMode::DISABLED_ON_EXTERNAL_MOUSE),
         supports_edge_scroll: device
             .config_scroll_methods()
             .contains(&smithay::reexports::input::ScrollMethod::Edge),
