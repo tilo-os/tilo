@@ -18,7 +18,9 @@ use std::path::PathBuf;
 
 pub use sandbox_core::seccomp::SeccompProfile;
 #[cfg(target_os = "linux")]
-pub use sandbox_core::seccomp::{SeccompError, compile_baseline, write_baseline_to};
+pub use sandbox_core::seccomp::{
+    SeccompError, compile_baseline, compile_clone3_compat, write_baseline_to,
+};
 
 /// Image-owned list of package ids that may run without
 /// write-xor-execute.
