@@ -266,6 +266,34 @@ fn rect_json(rect: vello::kurbo::Rect) -> serde_json::Value {
 
 /// What `state-dump` reports under `chrome.remark`: everything the
 /// composer shows, in the terms its actions take.
+/// Whether replaying the session under review reproduced its frames: the
+/// layer found and, for each region replay does not vouch for, where it is
+/// and why (the evidence crops stay on the device).
+fn verdict_json(verdict: &review::Verdict) -> serde_json::Value {
+    match verdict {
+        review::Verdict::Unchecked => serde_json::json!({ "state": "unchecked" }),
+        review::Verdict::Unavailable => serde_json::json!({ "state": "unavailable" }),
+        review::Verdict::Checking => serde_json::json!({ "state": "checking" }),
+        review::Verdict::Failed(reason) => {
+            serde_json::json!({ "state": "failed", "reason": reason })
+        }
+        review::Verdict::Checked(report) => serde_json::json!({
+            "state": "checked",
+            "layer": report.layer,
+            "compared": report.compared,
+            "regions": report.steps.iter().flat_map(|step| step.regions.iter().map(move |region| {
+                serde_json::json!({
+                    "at_ms": step.at.as_millis(),
+                    "app": step.route.app_id,
+                    "element": region.element,
+                    "bounds": region.bounds,
+                    "divergence": region.divergence,
+                })
+            })).collect::<Vec<_>>(),
+        }),
+    }
+}
+
 pub fn status_json(st: &crate::shell::chrome_state::ChromeState) -> serde_json::Value {
     let composer = &st.remark;
     let surfaces: Vec<serde_json::Value> = st
@@ -295,6 +323,9 @@ pub fn status_json(st: &crate::shell::chrome_state::ChromeState) -> serde_json::
             "model": review.model,
             "selected": review.selected,
             "redactions": review.redaction_count(),
+            "verdict": verdict_json(&review.verdict),
+            // The replays checked out of sight for it, and how far each got.
+            "checks": st.replay().map(|replay| replay.checks_json()),
             "steps": review.steps.iter().map(|step| serde_json::json!({
                 "step": step.index,
                 "title": review.title(step.index),

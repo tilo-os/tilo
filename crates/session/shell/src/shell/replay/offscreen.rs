@@ -71,6 +71,8 @@ pub(super) struct Check {
     frames: Vec<SurfaceFrame>,
     done: Option<Result<Vec<SurfaceFrame>, String>>,
     started: Instant,
+    /// Why the last capture of a surface failed, if one did.
+    last_error: Option<String>,
 }
 
 /// One capture the frame loop makes for a check.
@@ -187,6 +189,7 @@ impl ReplayController {
             room: Some(room),
             workspace: Some(workspace),
             apps,
+            recorded_rooms: super::recorded_rooms(&trace),
             ..Launches::default()
         });
         lock(&self.checks).insert(
@@ -201,6 +204,7 @@ impl ReplayController {
                 settling: None,
                 frames: Vec::new(),
                 done: None,
+                last_error: None,
                 started: Instant::now(),
             },
         );
@@ -215,6 +219,47 @@ impl ReplayController {
         checks.remove(&id);
         drop(checks);
         Some(done.map(|frames| CollectedFrames { frames }))
+    }
+
+    /// What `state-dump` reports of review under `checks`: each check out of
+    /// sight, the offsets it captures and how many it has, and the windows
+    /// its room holds.
+    pub fn checks_json(&self) -> serde_json::Value {
+        let checks = lock(&self.checks);
+        let tree = self.tree.read();
+        let out: Vec<serde_json::Value> = checks
+            .iter()
+            .map(|(id, check)| {
+                serde_json::json!({
+                    "check": id,
+                    "room": check.room.to_string(),
+                    "offsets_ms": check.targets.iter().map(|target| target.at.as_millis()).collect::<Vec<_>>(),
+                    "next": check.next,
+                    "settling": check.settling.is_some(),
+                    "frames": check.frames.len(),
+                    "done": check.done.as_ref().map(|done| match done {
+                        Ok(frames) => serde_json::json!({ "frames": frames.len() }),
+                        Err(reason) => serde_json::json!({ "failed": reason }),
+                    }),
+                    "windows": app_windows(&tree, check.workspace)
+                        .into_iter()
+                        .map(|(_, app, surface)| serde_json::json!({ "app": app, "surface": surface }))
+                        .collect::<Vec<_>>(),
+                    "running_ms": u64::try_from(check.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    "last_error": check.last_error,
+                })
+            })
+            .collect();
+        drop(tree);
+        drop(checks);
+        serde_json::Value::Array(out)
+    }
+
+    /// Whether a check out of sight is still running.
+    pub fn checking(&self) -> bool {
+        lock(&self.checks)
+            .values()
+            .any(|check| check.done.is_none())
     }
 
     /// Launches the checks asked for, taken once.
@@ -282,10 +327,13 @@ impl ReplayController {
                 continue;
             }
             let windows = app_windows(&tree, check.workspace);
+            // Every recorded app has a window here that has drawn: a window
+            // still waiting for its first frame has nothing to compare.
             let apps_up = check.targets.get(check.next).is_some_and(|target| {
                 target.shots.iter().all(|shot| {
-                    windows.iter().any(|(_, app, _)| {
+                    windows.iter().any(|(_, app, surface)| {
                         crate::shell::launcher::app_id_matches_package(app, &shot.route.app_id)
+                            && crate::shell::foreign::store().frame_seq(*surface) > 0
                     })
                 })
             });
@@ -366,6 +414,7 @@ impl ReplayController {
                     Ok(frame) => check.frames.push(frame),
                     Err(error) => {
                         tracing::debug!(%error, "replay check: a surface could not be captured");
+                        check.last_error = Some(error);
                     }
                 }
             }

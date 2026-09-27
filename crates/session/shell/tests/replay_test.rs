@@ -442,6 +442,24 @@ fn a_replay_room_never_reaches_peers_or_disk() {
         "an offscreen replay leaves the person where they are"
     );
     assert!(!tree.read().rooms().contains(&room), "never synced");
+    // The replayed apps see what was recorded and change nothing: the room
+    // grants them read-only participation, which the launcher turns into a
+    // sandbox without a signing identity.
+    let capabilities = tree
+        .read()
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .map(|workspace| workspace.capabilities.clone())
+        .unwrap();
+    let plan = launcher::capabilities::CapabilityPlan::for_app(APP, &capabilities, None);
+    assert_eq!(
+        plan.participation,
+        launcher::capabilities::Participation::ReadOnly,
+        "a replayed app may not author: {capabilities:?}"
+    );
+    assert!(!plan.participation.carries_identity());
     let path = dir.path().join("state.json");
     shell::shell::persist::save_tree_to(&tree.read(), &path).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();

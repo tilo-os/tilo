@@ -13586,7 +13586,9 @@ impl ShellOverlayHost {
         }) else {
             return false;
         };
-        let mut changed = replay.pump(std::time::Instant::now());
+        // A check out of sight advances as frames are made: keep making
+        // them while one runs, though nothing on screen changes.
+        let mut changed = replay.pump(std::time::Instant::now()) | replay.checking();
         let mut all = vec![replay.take_launches()];
         all.extend(replay.take_check_launches());
         for launches in all {
@@ -13636,9 +13638,22 @@ impl ShellOverlayHost {
                         crate::shell::tab_binding::Placement::IntoTab(*tab),
                     );
                 }
-                if let Err(error) =
-                    crate::shell::launcher::queue_launch_in_workspace(app, &workspace)
-                {
+                // A replayed app is shown the records of the room it was
+                // recorded in, read-only.
+                let recorded = launches
+                    .recorded_rooms
+                    .iter()
+                    .find(|(recorded, _)| {
+                        crate::shell::launcher::app_id_matches_package(recorded, &app.package_id)
+                    })
+                    .map(|(_, room)| *room);
+                let queued = match recorded {
+                    Some(room) => {
+                        crate::shell::launcher::queue_replayed_launch(app, &workspace, room)
+                    }
+                    None => crate::shell::launcher::queue_launch_in_workspace(app, &workspace),
+                };
+                if let Err(error) = queued {
                     tracing::warn!(%app_id, %error, "replay: the recorded app could not be launched");
                 }
             }

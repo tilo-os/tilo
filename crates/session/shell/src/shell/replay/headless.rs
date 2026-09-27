@@ -28,6 +28,9 @@ pub struct HeadlessOptions {
     pub apps_dir: Option<PathBuf>,
     /// The runtime bundle store packaged apps pin.
     pub runtime_bundle_dir: Option<PathBuf>,
+    /// The runtime publishers the launcher trusts, one key per line, in
+    /// place of the machine's own list.
+    pub trusted_publishers: Option<PathBuf>,
     /// Output size, `(width, height)`.
     pub size: (u32, u32),
     /// How long a replayed state may take to settle after a seek.
@@ -79,33 +82,21 @@ impl HeadlessReplay {
         }
         let socket = root.join("run").join("control.sock");
         let log = std::fs::File::create(root.join("shell.log"))?;
-        let mut command = Command::new(&options.shell);
-        command
-            .arg("--backend")
-            .arg("headless")
-            .env_remove("DISPLAY")
-            .env_remove("WAYLAND_DISPLAY")
-            .env("TILO_TEST_CONTROL", &socket)
-            .env("TILO_STATE_PATH", root.join("config").join("state.json"))
-            .env("XDG_DATA_HOME", root.join("data"))
-            .env("XDG_CACHE_HOME", root.join("cache"))
-            .env("XDG_STATE_HOME", root.join("state"))
-            .env("XDG_CONFIG_HOME", root.join("config"))
-            .env("XDG_RUNTIME_DIR", root.join("run"))
-            .env("TILO_PEER_KEY_PATH", root.join("keys").join("peer-key"))
-            .env(
-                "TILO_HEADLESS_SIZE",
-                format!("{}x{}", options.size.0, options.size.1),
-            )
-            .stdin(Stdio::null())
-            .stdout(log.try_clone()?)
-            .stderr(log);
-        if let Some(apps) = &options.apps_dir {
-            command.env("TILO_APPS_DATA_DIR", apps);
+        // The session's person, provisioned as a first boot does: apps
+        // join its rooms under the identity it certifies, and a session
+        // without one runs no collaboration for them to replay into.
+        let provisioned = session_command(options, &socket, &log)?
+            .arg("--provision-identity")
+            .status()
+            .map_err(|error| HeadlessError::Start(error.to_string()))?;
+        if !provisioned.success() {
+            return Err(HeadlessError::Start(format!(
+                "the session's identity could not be provisioned ({provisioned}); see {}",
+                root.join("shell.log").display()
+            )));
         }
-        if let Some(bundles) = &options.runtime_bundle_dir {
-            command.env("TILO_RUNTIME_BUNDLE_DIR", bundles);
-        }
+        let mut command = session_command(options, &socket, &log)?;
+        command.arg("--backend").arg("headless");
         let child = command
             .spawn()
             .map_err(|error| HeadlessError::Start(error.to_string()))?;
@@ -173,7 +164,7 @@ impl HeadlessReplay {
     ) -> Result<serde_json::Value, HeadlessError> {
         self.call(&serde_json::json!({
             "op": "actions_invoke",
-            "provider": "shell.actions",
+            "provider": crate::shell::search::providers::actions::PROVIDER_ID,
             "id": id,
             "args": args,
         }))
@@ -244,6 +235,45 @@ impl HeadlessReplay {
         }
         read_frames(&dir, &manifest)
     }
+}
+
+/// The shell run as this headless session: its private homes, socket and
+/// log, and the app store it launches from.
+fn session_command(
+    options: &HeadlessOptions,
+    socket: &Path,
+    log: &std::fs::File,
+) -> Result<Command, HeadlessError> {
+    let root = &options.root;
+    let mut command = Command::new(&options.shell);
+    command
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .env("TILO_TEST_CONTROL", socket)
+        .env("TILO_STATE_PATH", root.join("config").join("state.json"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_RUNTIME_DIR", root.join("run"))
+        .env("TILO_PEER_KEY_PATH", root.join("keys").join("peer-key"))
+        .env(
+            "TILO_HEADLESS_SIZE",
+            format!("{}x{}", options.size.0, options.size.1),
+        )
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log.try_clone()?);
+    if let Some(apps) = &options.apps_dir {
+        command.env("TILO_APPS_DATA_DIR", apps);
+    }
+    if let Some(bundles) = &options.runtime_bundle_dir {
+        command.env("TILO_RUNTIME_BUNDLE_DIR", bundles);
+    }
+    if let Some(trusted) = &options.trusted_publishers {
+        command.env("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", trusted);
+    }
+    Ok(command)
 }
 
 fn read_frames(dir: &Path, manifest: &Path) -> Result<Vec<SurfaceFrame>, HeadlessError> {

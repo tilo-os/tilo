@@ -516,6 +516,31 @@ Two things it pins that are easy to get wrong by hand:
   of you. The script measures both scopes after the app is up, where
   the difference is visible.
 
+## Replaying a session with the real app
+
+`crates/session/shell/tests/replay_headless_e2e.rs` runs the whole feedback
+replay with the real Notes binary, in `shell --backend headless`. It covers:
+
+- installing Notes from its own manifest, with a signed runtime bundle;
+- launching it through `tilo-launcher` and bubblewrap;
+- recording typing through `remark.*`;
+- replaying the session with `replay.*` until the replayed Notes shows what
+  was typed;
+- review checking the recording against its replay out of sight, which must
+  find nothing below the toolkit.
+
+It needs the `notes` and `tilo-launcher` binaries beside the shell's, so run
+it naming their packages:
+
+```bash
+rcargo test -p shell -p notes -p launcher --test it replay_headless_e2e::
+```
+
+Without them the test fails and names that command. `HeadlessReplay`
+(`shell::shell::replay::headless`) is the harness: it provisions the
+session's identity as a first boot does, starts the shell, and drives replay
+through the same shell actions a person or agent uses.
+
 ## What's still missing
 
 There is no known first-party app without the shared deterministic `--shots`

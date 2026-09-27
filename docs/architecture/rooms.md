@@ -152,6 +152,32 @@ reporter's comment on the message it travels with. A `session` record is
 only ever served as that reviewed, redacted duplicate, never as the recording
 itself.
 
+**Replaying a room's records is a view, not a way in.** A session record
+recorded in room A is replayed in an ephemeral replay room B, which is never
+synced, written or offered. The apps it recorded run in B, but what they show
+is A's records as they were. So B declares, for each replayed app, the room
+its records belong to. That scope comes from the session record the viewer
+was given, from the room each recorded route names, and never from anything
+else. It is bounded so it cannot cross the authority boundary:
+
+- Only an ephemeral or hidden replay room may declare it. The shell refuses a
+  replayed launch into any other room (`LaunchError::NotAReplayRoom`).
+- The replay room grants the replayed apps read-only participation, in the
+  room's own capability vocabulary. The launcher passes the scope
+  (`TILO_RECORD_SCOPE`) only to a read-only participant, whose sandbox holds
+  no signing identity, so it cannot author a change. The broker refuses its
+  document operations.
+- The app checks out A's records in memory. Nothing is persisted and nothing
+  outlives the process. Their routes travel only in B, where the replay peer
+  serves them. What the app shows as its save status is what the recorded
+  app showed (carried in its View, like its overlays), and until it knows,
+  that it keeps nothing.
+
+A record's creation is one change that every peer creating it makes byte for
+byte the same (a fixed actor derived from its identity, at time zero). So the
+replayed app's own start of the record and the recorded one are one record,
+not two competing roots.
+
 **Copying still exists, as a different verb.** "Duplicate here" forks a new
 record id with a provenance link to its origin. Two verbs, two names, two
 outcomes — the user is never left guessing which one a gesture did.

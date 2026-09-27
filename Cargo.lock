@@ -12916,6 +12916,7 @@ dependencies = [
  "rand_core 0.10.0",
  "rcgen",
  "reis",
+ "runtime-bundle",
  "runtime-collab",
  "runtime-fs",
  "runtime-identity",

@@ -77,6 +77,9 @@ pub struct Launches {
     pub workspace: Option<WorkspaceId>,
     /// Recorded apps to start there.
     pub apps: Vec<String>,
+    /// The room each recorded app was recorded in: the records it is shown,
+    /// read-only, in the replay room.
+    pub recorded_rooms: Vec<(String, RoomId)>,
     /// Tabs a restarted app's window goes back into, by app id: the window
     /// the person was watching keeps its place.
     pub into_tabs: Vec<(String, crate::shell::state::TabId)>,
@@ -84,6 +87,18 @@ pub struct Launches {
     pub close_surfaces: Vec<u64>,
     /// Replay rooms left behind, whose app storage is to be removed.
     pub closed: Vec<RoomId>,
+}
+
+/// The apps `trace` recorded, each with the room it was recorded in.
+fn recorded_rooms(trace: &SessionTrace) -> Vec<(String, RoomId)> {
+    let mut out: Vec<(String, RoomId)> = trace
+        .routes()
+        .into_iter()
+        .filter(|route| !route.app_id.is_empty())
+        .filter_map(|route| Some((route.app_id, RoomId::parse(&route.room)?)))
+        .collect();
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
 }
 
 /// The app windows open in `workspace`: `(tab, app id, surface)`.
@@ -332,6 +347,7 @@ impl ReplayController {
             launches.room = Some(room);
             launches.workspace = Some(workspace);
             launches.apps.clone_from(&apps);
+            launches.recorded_rooms = recorded_rooms(&trace);
         }
         *lock(&self.replay) = Some(Replay {
             record,
@@ -401,6 +417,32 @@ impl ReplayController {
                 return Err(TransportError::Room(format!(
                     "{owner} cannot admit the replay peer to its own replay room"
                 )));
+            }
+            // The replayed apps see what was recorded and change nothing:
+            // read-only participation, in the room's own vocabulary.
+            if let Some(workspace) = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|candidate| candidate.room == room)
+            {
+                for (app, _) in recorded_rooms(trace) {
+                    for capability in [
+                        CapOverride::grant(
+                            Subject::app(&app),
+                            crate::shell::state::Scope::Workspace,
+                            Verb::Read,
+                        ),
+                        CapOverride::new(
+                            Subject::app(&app),
+                            crate::shell::state::Scope::Workspace,
+                            crate::shell::state::Effect::Restrict,
+                            Verb::Read,
+                        ),
+                    ] {
+                        let _ = workspace.grant_as(owner, capability);
+                    }
+                }
             }
             if presentation == Presentation::Shown
                 && let Some(workspace) = tree
@@ -668,6 +710,7 @@ impl ReplayController {
                 launches.room = Some(room);
                 launches.workspace = Some(workspace);
                 launches.apps = apps;
+                launches.recorded_rooms = recorded_rooms(&trace);
                 for (tab, app, surface) in windows {
                     launches.into_tabs.push((app, tab));
                     launches.close_surfaces.push(surface);
