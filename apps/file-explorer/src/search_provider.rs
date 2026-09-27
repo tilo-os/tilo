@@ -556,6 +556,7 @@ mod tests {
                 label: "Personal cloud".into(),
                 host: "cloud.example".into(),
                 health: crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
+                mount: None,
             };
             let accounts = vec![account.clone()];
             let provider = RemoteAccountSearchProvider::new(&accounts);
@@ -700,6 +701,7 @@ mod tests {
                     label: format!("Shared record {index}"),
                     host: format!("host-{index}.example"),
                     health: crate::remote_accounts::RemoteAccountHealth::Healthy,
+                    mount: None,
                 })
                 .collect();
             let provider = RemoteAccountSearchProvider::new(&accounts);
