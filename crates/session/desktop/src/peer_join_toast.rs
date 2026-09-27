@@ -8,10 +8,12 @@
 //!
 //! The batcher is time-source-injectable and pure — the caller pulls
 //! ready messages via `drain_ready` on a timer and pushes them into
-//! whatever notification surface the shell prefers.
+//! whatever notification surface the host prefers.
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use ui::clock::{Duration, Instant};
+
+use crate::i18n::t_args;
 
 /// Events within this window since the first entry are folded into a
 /// single toast when drained.
@@ -142,9 +144,9 @@ impl PeerToastQueue {
 
 fn format_batch(kind: PeerEventKind, batch: &[&QueuedEvent]) -> ReadyToast {
     debug_assert!(!batch.is_empty());
-    let verb = match kind {
-        PeerEventKind::Joined => "joined",
-        PeerEventKind::Left => "left",
+    let (one, many) = match kind {
+        PeerEventKind::Joined => ("peer-toast-joined-one", "peer-toast-joined-many"),
+        PeerEventKind::Left => ("peer-toast-left-one", "peer-toast-left-many"),
     };
     // Dedup so a peer that flapped in a single window only counts once.
     let mut names: Vec<String> = batch.iter().map(|e| e.name.clone()).collect();
@@ -154,23 +156,25 @@ fn format_batch(kind: PeerEventKind, batch: &[&QueuedEvent]) -> ReadyToast {
     match names.len() {
         1 => ReadyToast {
             kind,
-            title: format!("{} {verb}", name_at(0)),
+            title: t_args(one, &[("name", name_at(0).into())]),
             body: String::new(),
         },
         n if n <= 3 => ReadyToast {
             kind,
-            title: format!("{n} peers {verb}"),
+            title: t_args(many, &[("count", n.into())]),
             body: names.join(", "),
         },
         n => ReadyToast {
             kind,
-            title: format!("{n} peers {verb}"),
-            body: format!(
-                "{}, {}, {}, +{} more",
-                name_at(0),
-                name_at(1),
-                name_at(2),
-                n.saturating_sub(3)
+            title: t_args(many, &[("count", n.into())]),
+            body: t_args(
+                "peer-toast-overflow",
+                &[
+                    ("first", name_at(0).into()),
+                    ("second", name_at(1).into()),
+                    ("third", name_at(2).into()),
+                    ("rest", n.saturating_sub(3).into()),
+                ],
             ),
         },
     }

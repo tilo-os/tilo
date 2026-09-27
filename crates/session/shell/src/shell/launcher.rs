@@ -1539,6 +1539,21 @@ pub fn revalidate_resource_claim(
         .is_ok()
 }
 
+/// This machine's applications, as the shared workspace settings name
+/// them: running under this session, installed as packages, or host apps.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ShellApps;
+
+impl tilo_desktop::workspace_settings::AppDirectory for ShellApps {
+    fn app_display_name(&self, app_id: &str) -> Option<String> {
+        Some(display_name_for_app_id(app_id).unwrap_or_else(|| display_name_for_package_id(app_id)))
+    }
+
+    fn default_app_candidates(&self) -> Vec<desktop_policy::AppCandidate> {
+        default_app_candidates()
+    }
+}
+
 pub fn default_app_candidates() -> Vec<desktop_policy::AppCandidate> {
     default_app_candidates_from(&gui_apps())
 }

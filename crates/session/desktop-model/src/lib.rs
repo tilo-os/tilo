@@ -32,6 +32,7 @@ pub mod layout;
 pub mod partition;
 pub mod projection;
 pub mod serde_ids;
+pub mod service_member;
 pub mod shared_surfaces;
 pub mod task;
 pub mod topology;

@@ -20,10 +20,10 @@ use crate::shell::quick_settings::{BtDevice, PowerProfile, QsLevel, WifiNetwork}
 use crate::shell::state::{
     AppId, Capability, GroupId, StripId, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
 };
-pub use crate::shell::workspace_settings::{GrantDraft, WsTab};
 use tilo_desktop::notifications::{
     HistoryActivation, Notification, NotificationIconKind, NotificationLog, NotificationSeverity,
 };
+pub use tilo_desktop::workspace_settings::{GrantDraft, WsTab};
 
 /// An action-owned request to initialize only this freshly minted scratch tab.
 /// It is intentionally session-local; reopening a saved tab never recreates it.
@@ -594,7 +594,7 @@ pub struct ChromeState {
     /// overlay host) so it survives a re-render, and holds picker
     /// indices rather than a resolved capability so a subject leaving
     /// the workspace can't leave a dangling reference.
-    pub ws_grant_draft: crate::shell::workspace_settings::GrantDraft,
+    pub ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft,
     /// Bumped on every tree mutation. Widgets poll this in `update` to
     /// re-sync caches — cheaper than diffing, simpler than an event bus.
     pub revision: u64,
@@ -802,7 +802,7 @@ impl ChromeState {
             pad_map: None,
             ws_settings_tab: WsTab::default(),
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
-            ws_grant_draft: crate::shell::workspace_settings::GrantDraft::default(),
+            ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
