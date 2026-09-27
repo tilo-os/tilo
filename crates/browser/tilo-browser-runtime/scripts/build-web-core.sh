@@ -51,6 +51,8 @@ rm "$build/core.stripped.wasm"
 rm -rf "$out/pkg" && mkdir -p "$out/pkg"
 wasm-bindgen --target web --keep-lld-exports --no-typescript --out-dir "$out/pkg" --out-name tilo_browser_runtime "$build/core.folded.wasm"
 rm "$build/core.folded.wasm"
+# One self-contained glue file, so a page can run a core from a verified source.
+node "$web_scripts/bundle-glue.mjs" "$out/pkg" tilo_browser_runtime.js
 core="$out/pkg/tilo_browser_runtime_bg.wasm"
 if node "$tools" imports-from "$core" __wbindgen_placeholder__ | grep .; then
   echo "wasm-bindgen left the placeholder imports above: an export still reaches a describe function (see isBindgenInternal)" >&2
