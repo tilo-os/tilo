@@ -61,7 +61,7 @@ pub use blocks::{
 };
 pub use convert::{clip_block, content_of, document_mark};
 pub use draft::Draft;
-pub use source::{Hosted, RichTextField, RichTextSource};
+pub use source::{DirectField, Hosted, RichTextField, RichTextSource};
 pub use surface::{FieldOutcome, RichTextSurface, SubmitKey};
 pub use view::RichTextView;
 

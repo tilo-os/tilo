@@ -170,6 +170,7 @@ fn scenario_outcome(
         text: text.into(),
         parent: None,
         attachment: None,
+        body: Vec::new(),
         reference: wait_for_owner.then(|| {
             tilo_reference::ResourceRef::whole(
                 "word-processor.document",
