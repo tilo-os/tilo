@@ -4217,6 +4217,7 @@ dependencies = [
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "uuid",
+ "wire-frame",
 ]
 
 [[package]]
@@ -15875,6 +15876,31 @@ dependencies = [
  "memoffset",
  "tempfile",
  "winapi",
+]
+
+[[package]]
+name = "ui-examples"
+version = "0.1.0"
+dependencies = [
+ "accesskit",
+ "atomic-file",
+ "automerge",
+ "chrono",
+ "collab-types",
+ "getrandom 0.4.1",
+ "image",
+ "pollster",
+ "qdoc",
+ "serde_json",
+ "taffy",
+ "tempfile",
+ "threshold-identity",
+ "tilo-actions",
+ "tilo-automerge",
+ "tilo-ui",
+ "vello",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]

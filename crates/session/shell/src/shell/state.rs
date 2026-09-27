@@ -4253,6 +4253,20 @@ impl WorkspaceTree {
         true
     }
 
+    /// Show `group_id` of `strip_id` on display `display` from now on,
+    /// where the person dropped it; its place among that display's groups
+    /// is the caller's reorder (see [`OutputPartition::rehome`]). `false`
+    /// when it is already there or there is no such display.
+    pub fn rehome_group(&mut self, strip_id: StripId, group_id: GroupId, display: u32) -> bool {
+        if self.desktop.outputs.display_of(group_id) == Some(display)
+            || !self.desktop.outputs.rehome(strip_id, group_id, display)
+        {
+            return false;
+        }
+        self.flush_to_disk();
+        true
+    }
+
     /// Mirror strips a partition change reordered into the collaboration
     /// document, the same as any other group reorder.
     fn mirror_partition_reorder(&mut self, strips: &[StripId]) {
