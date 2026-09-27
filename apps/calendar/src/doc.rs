@@ -1475,7 +1475,7 @@ mod tests {
                 ),
                 (BlockKind::Divider, "", 0),
                 (BlockKind::Quote, "quoted", 0),
-                (BlockKind::Paragraph, "| a | b |", 0),
+                (BlockKind::Table { visual: true }, "| a | b |", 0),
                 (BlockKind::Paragraph, "kept as a paragraph", 0),
             ]
         );

@@ -1,33 +1,15 @@
 //! Rich text as the editor's blocks: what an app that stored text in a
 //! form of its own reads and writes when it moves to rich text.
 
-use qdoc_rich_text::{RichTextAction, RichTextState};
-use ui::automerge::ObjId;
+use qdoc_rich_text::RichTextState;
+use qdoc_rich_text::action::{AttrVal, MarkVal};
+use ui::automerge::{ObjId, ScalarValue};
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::{Doc, ModelError};
 use ui::widget::BlockContent;
 
-use crate::convert::content_of;
-use crate::edit::{self, Host};
+use crate::convert::{KindSpec, char_of_byte, content_of, document_mark};
 use crate::source::FieldState;
-
-/// Edits applied straight under the field, read back incrementally.
-struct Under {
-    field: FieldState,
-}
-
-impl Host for Under {
-    fn apply(&mut self, doc: &mut Doc, action: &RichTextAction) -> Result<(), ActionError> {
-        action.apply_under(doc, &self.field.root)
-    }
-
-    fn read<T>(&mut self, doc: &mut Doc, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
-        if self.field.refresh(doc).is_err() {
-            self.field = FieldState::read(doc, self.field.root.clone(), 0).ok()?;
-        }
-        Some(read(&self.field.state))
-    }
-}
 
 fn refused(message: impl Into<String>) -> ActionError {
     ActionError::Refused(message.into())
@@ -40,6 +22,23 @@ fn shown(state: &RichTextState) -> Vec<BlockContent> {
         .filter_map(|id| state.block(id))
         .map(|view| content_of(view))
         .collect()
+}
+
+fn attr_scalar(value: AttrVal) -> ScalarValue {
+    match value {
+        AttrVal::Bool(value) => ScalarValue::Boolean(value),
+        AttrVal::Int(value) => ScalarValue::Int(value),
+        AttrVal::Float(value) => ScalarValue::F64(value),
+        AttrVal::Str(value) => ScalarValue::Str(value.into()),
+    }
+}
+
+fn mark_scalar(value: MarkVal) -> ScalarValue {
+    match value {
+        MarkVal::Bool(value) => ScalarValue::Boolean(value),
+        MarkVal::Int(value) => ScalarValue::Int(value),
+        MarkVal::Str(value) => ScalarValue::Str(value.into()),
+    }
 }
 
 /// The body under `root` as the editor shows it, a block per paragraph:
@@ -58,40 +57,67 @@ pub fn blocks_under(doc: &mut Doc, root: &ObjId) -> Result<Vec<BlockContent>, Mo
 /// code fences and inline marks are stored as the editor stores them when a
 /// person types them; block ids are the document's own.
 ///
-/// The writes are the document's own edits applied directly, for use
-/// inside the owning resource's action or a migration on load.
+/// Like an import, the blocks are written as they are: a mark the editor's
+/// own edits would not author (a link to a plain `http:` address written
+/// before) is kept, never dropped. For use inside the owning resource's
+/// action or a migration on load.
 ///
 /// # Errors
-/// Refuses rich text that already holds text, and returns the first edit
-/// refused; the edits before it stay written.
+/// Refuses rich text that already holds text.
 pub fn fill_under(doc: &mut Doc, root: &ObjId, blocks: &[BlockContent]) -> Result<(), ActionError> {
     let field = FieldState::read(doc, root.clone(), 0)
         .map_err(|error| refused(format!("no rich text to fill: {error}")))?;
     let presented = shown(&field.state);
-    let [first] = presented.as_slice() else {
+    let [empty] = presented.as_slice() else {
         return Err(refused("the rich text already holds paragraphs"));
     };
-    if !first.text.is_empty() {
+    if !empty.text.is_empty() {
         return Err(refused("the rich text already holds text"));
     }
     if blocks.is_empty() {
         return Ok(());
     }
-    // The first block takes the empty paragraph's place; the rest are new.
-    let edited: Vec<BlockContent> = blocks
-        .iter()
-        .enumerate()
-        .map(|(index, block)| BlockContent {
-            id: if index == 0 {
-                first.id.clone()
-            } else {
-                format!("\u{0}fill-{index}")
-            },
-            ..block.clone()
-        })
-        .collect();
-    let mut host = Under { field };
-    edit::commit(&mut host, doc, &presented, &edited).map(|_| ())
+    let containers = qdoc::model::open(doc, root)
+        .map_err(|error| refused(format!("no rich text to fill: {error}")))?;
+    // Clear of every id the field already holds, the empty paragraph's too.
+    let actor = doc.get_actor().to_hex_string();
+    let next = qdoc::model::next_counter_for(doc, &containers, &actor)
+        .map_err(|error| refused(error.to_string()))?;
+    let mut ids = qdoc::model::IdGen::with_counter(actor, next);
+    let mut dm = qdoc::model::DocMut {
+        doc,
+        c: &containers,
+        ids: &mut ids,
+    };
+    let mut previous: Option<String> = None;
+    for block in blocks {
+        let spec = KindSpec::of(block);
+        let id = dm.insert_block(previous.as_deref(), spec.kind);
+        if let Some(level) = spec.level {
+            dm.set_attr(&id, "level", level);
+        }
+        if let Some(ordered) = spec.ordered {
+            dm.set_attr(&id, "ordered", ordered);
+        }
+        for (key, value) in spec.attrs {
+            if let Some(value) = value {
+                dm.set_attr(&id, key, attr_scalar(value));
+            }
+        }
+        dm.splice_text(&id, 0, 0, &block.text);
+        for span in &block.marks {
+            let (name, value) = document_mark(&span.mark);
+            let start = char_of_byte(&block.text, span.range.start);
+            let end = char_of_byte(&block.text, span.range.end);
+            if start < end {
+                dm.add_mark(&id, start, end, name, mark_scalar(value));
+            }
+        }
+        previous = Some(id);
+    }
+    // The paragraph the new blocks were written after the start of.
+    dm.remove_block(&empty.id);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -144,6 +170,18 @@ mod tests {
             code,
             block(BlockKind::Divider, ""),
             block(BlockKind::Quote, "quoted"),
+            block(BlockKind::Table { visual: true }, "| a | b |\n| - | - |"),
+            block(BlockKind::Table { visual: false }, "| c |"),
+            block(BlockKind::Paragraph, "soft\nbreak"),
+            {
+                // A link the editor would not author now, kept as written.
+                let mut old = block(BlockKind::Paragraph, "old site");
+                old.marks = vec![MarkSpan::new(
+                    0..3,
+                    Mark::ExternalLink("http://example.test".into()),
+                )];
+                old
+            },
         ];
         fill_under(&mut doc, &root, &blocks).unwrap();
         let shown = blocks_under(&mut doc, &root).unwrap();
@@ -159,7 +197,7 @@ mod tests {
         assert_eq!(strip(&shown), strip(&blocks));
         assert_eq!(
             RichText::plain_text_under(&doc, &root).unwrap(),
-            "Agenda\nplain bold\nitem\ndone\nfn main() {}\n\nquoted"
+            "Agenda\nplain bold\nitem\ndone\nfn main() {}\n\nquoted\n| a | b |\n| - | - |\n| c |\nsoft\nbreak\nold site"
         );
     }
 
