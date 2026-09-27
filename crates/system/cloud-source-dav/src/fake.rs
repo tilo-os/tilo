@@ -393,6 +393,19 @@ impl State {
     }
 
     fn write(&mut self, path: &str, bytes: Vec<u8>) {
+        self.write_with(path, bytes, false);
+    }
+
+    /// A write through the files endpoint (`PUT`, or a chunked upload's
+    /// assembly). Nextcloud's scanner then keeps the file's `ETag` while its
+    /// whole-second storage mtime is unchanged, even across an overwrite.
+    /// Out-of-band writes ([`FakeDav::put`], version restores) always get a
+    /// new `ETag`, as a writer in another second would.
+    fn upload(&mut self, path: &str, bytes: Vec<u8>) {
+        self.write_with(path, bytes, true);
+    }
+
+    fn write_with(&mut self, path: &str, bytes: Vec<u8>, same_second_reuse: bool) {
         let etag = self.bump();
         let nextcloud = self.nextcloud;
         if let Some(node) = self.nodes.get_mut(path) {
@@ -405,9 +418,10 @@ impl State {
             }
             let now = SystemTime::now();
             node.bytes = bytes;
-            // Nextcloud's scanner keeps a file's ETag while its whole-second
-            // storage mtime is unchanged, even across an overwrite.
-            if !(nextcloud && whole_seconds(node.modified) == whole_seconds(now)) {
+            if !(nextcloud
+                && same_second_reuse
+                && whole_seconds(node.modified) == whole_seconds(now))
+            {
                 node.etag = etag;
             }
             node.modified = now;
@@ -718,7 +732,7 @@ fn files(state: &mut State, request: &Request, path: &str, truncate: bool) -> Re
                 return Reply::status(412);
             }
             let created = existing.is_none();
-            state.write(path, request.body.clone());
+            state.upload(path, request.body.clone());
             let etag = state
                 .nodes
                 .get(path)
@@ -910,7 +924,7 @@ fn uploads(state: &mut State, request: &Request, path: &str) -> Reply {
             let chunks = state.uploads.remove(&transfer).unwrap_or_default();
             let bytes: Vec<u8> = chunks.into_values().flatten().collect();
             let created = !state.nodes.contains_key(&to);
-            state.write(&to, bytes);
+            state.upload(&to, bytes);
             let etag = state
                 .nodes
                 .get(&to)
