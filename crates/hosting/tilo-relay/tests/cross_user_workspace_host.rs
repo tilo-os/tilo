@@ -10,6 +10,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::time::Duration;
 
@@ -47,6 +51,8 @@ async fn provider_host_serves_only_current_cross_user_members() {
                 pin: true,
                 replication: tilo_relay::ReplicationIntent::FullWorkspace,
                 admitted_users: Vec::new(),
+                shell_authority: None,
+                checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
             }],
             ..RelayConfig::default()
         };
@@ -152,6 +158,8 @@ async fn provider_host_serves_only_current_cross_user_members() {
                     pin: true,
                     replication: tilo_relay::ReplicationIntent::FullWorkspace,
                     admitted_users: Vec::new(),
+                    shell_authority: None,
+                    checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
                 }],
                 ..RelayConfig::default()
             },

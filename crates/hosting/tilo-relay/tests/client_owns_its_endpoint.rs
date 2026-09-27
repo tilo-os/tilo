@@ -47,7 +47,13 @@ async fn session_survives_the_caller_handing_over_its_only_endpoint() {
     let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
     let device = user.enrol("laptop", DeviceCapabilities::primary());
 
-    let relay = spawn_relay(&user, relay_dev, &[7], &[device.device_pubkey()]).await;
+    let relay = Box::pin(spawn_relay(
+        &user,
+        relay_dev,
+        &[7],
+        &[device.device_pubkey()],
+    ))
+    .await;
 
     // The endpoint is constructed inside the call: the test keeps no
     // handle of its own, so only the returned client can hold it open.

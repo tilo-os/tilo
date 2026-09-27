@@ -18,6 +18,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::time::Duration;
 
@@ -34,8 +38,8 @@ async fn author_never_receives_echo_through_federation() {
     let p1 = user.enrol("laptop", DeviceCapabilities::primary());
 
     let (relay_key_1, relay_key_2) = (relay_dev_1.device_pubkey(), relay_dev_2.device_pubkey());
-    let relay1 = spawn_relay(&user, relay_dev_1, &[9], &[p1.device_pubkey()]).await;
-    let relay2 = spawn_relay(&user, relay_dev_2, &[9], &[p1.device_pubkey()]).await;
+    let relay1 = Box::pin(spawn_relay(&user, relay_dev_1, &[9], &[p1.device_pubkey()])).await;
+    let relay2 = Box::pin(spawn_relay(&user, relay_dev_2, &[9], &[p1.device_pubkey()])).await;
 
     // Bidirectional federation — the ideal echo scenario. Use the
     // full EndpointAddr so tests skip iroh discovery.
