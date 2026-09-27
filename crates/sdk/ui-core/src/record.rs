@@ -2366,7 +2366,7 @@ fn genesis(
         .chain_update(workspace.as_bytes())
         .finalize();
     let actor = automerge::ActorId::from(digest.get(..16).unwrap_or_default());
-    let mut made = AutoCommit::new().with_actor(actor);
+    let mut made = AutoCommit::new().with_actor(actor.clone());
     for key in doc.keys(&ROOT).collect::<Vec<_>>() {
         if let Ok(Some((Value::Scalar(value), _))) = doc.get(&ROOT, key.as_str()) {
             made.put(&ROOT, key.as_str(), value.into_owned())
@@ -2383,6 +2383,11 @@ fn genesis(
         return Err(RecordOpenError::IdentityMismatch);
     }
     initialize(&mut made).map_err(RecordOpenError::Initialization)?;
+    // Every member must derive the same genesis, so the initializer may not
+    // author it under an actor of its own.
+    if made.get_actor() != &actor {
+        return Err(RecordOpenError::IdentityMismatch);
+    }
     made.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
     let changes = made.get_changes(&[]);
     let mut created = AutoCommit::new().with_actor(doc.get_actor().clone());
