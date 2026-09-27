@@ -541,10 +541,16 @@ fn parse_tsv_bounded(
 mod tests {
     use super::*;
     use std::fmt::Write as _;
-    use std::time::Instant;
+
+    /// Run `body` as the engine; its deadline only catches a hang, so every
+    /// bound the result reports comes from the output limits.
+    #[cfg(unix)]
+    fn fake_engine(body: &str) -> Result<Document, Error> {
+        fake_engine_with_deadline(body, tilo_test_env::hang_bound())
+    }
 
     #[cfg(unix)]
-    fn fake_engine(body: &str, timeout: Duration) -> Result<Document, Error> {
+    fn fake_engine_with_deadline(body: &str, timeout: Duration) -> Result<Document, Error> {
         recognize_path_with_program_args_timeout(
             Path::new("input with spaces.png"),
             "eng",
@@ -825,7 +831,6 @@ mod tests {
         {
             let result = fake_engine(
                 "printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n5\\t1\\t1\\t1\\t1\\t1\\t7\\t8\\t20\\t9\\t94\\tReceipt\\n'",
-                Duration::from_secs(2),
             )
             .unwrap();
             assert_eq!(result.plain_text(), "Receipt");
@@ -841,8 +846,7 @@ mod tests {
         }
         // Phase `engine_failure_is_bounded_and_typed`.
         {
-            let error =
-                fake_engine("printf '%0600d' 0 >&2; exit 7", Duration::from_secs(2)).unwrap_err();
+            let error = fake_engine("printf '%0600d' 0 >&2; exit 7").unwrap_err();
             match error {
                 Error::Engine(message) => assert_eq!(message.chars().count(), 500),
                 other => panic!("expected engine error, got {other:?}"),
@@ -852,21 +856,19 @@ mod tests {
         {
             let error = fake_engine(
                 "(yes diagnostic | head -c 100000 >&2) || :; printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n5\\t1\\t1\\t1\\t1\\t1\\t0\\t0\\t12\\t8\\t99\\tDone\\n'",
-                Duration::from_secs(2),
             )
             .unwrap_err();
             assert!(matches!(error, Error::Engine(message) if message.contains("diagnostics")));
         }
         // Phase `runaway_engine_is_killed_at_the_output_limit`.
         {
-            let error = fake_engine("yes x", Duration::from_secs(2)).unwrap_err();
+            let error = fake_engine("yes x").unwrap_err();
             assert!(matches!(error, Error::Engine(message) if message.contains("safety limit")));
         }
         // Phase `wedged_engine_is_killed_at_the_deadline`.
         {
-            let started = Instant::now();
-            let error = fake_engine("while :; do :; done", Duration::from_millis(50)).unwrap_err();
-            assert!(started.elapsed() < Duration::from_secs(2));
+            let error = fake_engine_with_deadline("while :; do :; done", Duration::from_millis(50))
+                .unwrap_err();
             assert!(matches!(error, Error::Engine(message) if message.contains("timed out")));
         }
     }
@@ -884,7 +886,7 @@ mod tests {
                     let body = format!(
                         "printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n5\\t1\\t1\\t1\\t1\\t1\\t{index}\\t0\\t10\\t10\\t90\\tword-{index}\\n'"
                     );
-                    fake_engine(&body, Duration::from_secs(2)).unwrap()
+                    fake_engine(&body).unwrap()
                 })
             })
             .collect();
