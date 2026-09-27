@@ -875,7 +875,7 @@ RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
       && rm -f /out/runtime-bundle-identity.json; \
     fi
 
-# A full WPE browser is much larger than the 5 MiB application wire limit.
+# A full WPE browser is much larger than the application wire limit.
 # Keep its executable in a separately signed runtime and package only a tiny
 # entrypoint. This leaves the canonical app-size policy intact while giving
 # the browser the same app-store and sandbox route as every other app. The
