@@ -55,7 +55,7 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame, ShotLayout};
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame, ShotLayout, ShotScenario, build_shot_scenario};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -147,17 +147,30 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new("so.tilo.tube", live_root)
             .shot_root(shot_root)
-            // `--narrow` is a complete responsive-shot preset, not merely a
-            // request to open the rail.  Keeping the render canvas narrow as
-            // well as the app's layout hint makes the screenshot deterministic
-            // and prevents a docked wide canvas from hiding the overlay case.
+            // `--narrow` / `--scenario narrow` is a complete responsive-shot
+            // preset, not merely a request to open the rail. Keeping the
+            // render canvas narrow as well as the app's layout hint makes the
+            // screenshot deterministic and prevents a docked wide canvas from
+            // hiding the overlay case.
             .shot_viewport(|args| {
-                if args.has("--narrow") && args.viewport.is_none() {
+                let narrow = args.has("--narrow")
+                    || args.scenario.as_deref() == Some("narrow");
+                if narrow && args.viewport.is_none() {
                     (560, DEFAULT_SHOTS_VIEWPORT.1)
                 } else {
                     DEFAULT_SHOTS_VIEWPORT
                 }
             })
+            .scenarios(&[
+                "home",
+                "empty",
+                "loading",
+                "device-sync",
+                "palette",
+                "play-demo",
+                "narrow",
+                "route",
+            ])
             .allowed_flags(&[
                 "--narrow",
                 "--palette",
@@ -184,32 +197,152 @@ fn configure_app(app: &mut ui::App) {
     tube::actions::register(app.action_registry_mut());
 }
 
+/// Tube's `--shots` poses. Flags remain aliases onto this table so existing
+/// scripts keep working; `--scenario NAME` is the preferred door.
+const SHOT_SCENARIOS: &[ShotScenario] = &[
+    ShotScenario {
+        name: "home",
+        build: shot_home,
+    },
+    ShotScenario {
+        name: "empty",
+        build: shot_empty,
+    },
+    ShotScenario {
+        name: "loading",
+        build: shot_loading,
+    },
+    ShotScenario {
+        name: "device-sync",
+        build: shot_device_sync,
+    },
+    ShotScenario {
+        name: "palette",
+        build: shot_palette,
+    },
+    ShotScenario {
+        name: "play-demo",
+        build: shot_play_demo,
+    },
+    ShotScenario {
+        name: "narrow",
+        build: shot_narrow,
+    },
+    ShotScenario {
+        name: "route",
+        build: shot_route,
+    },
+];
+
+fn shot_viewport_size(args: &LaunchArgs) -> (u32, u32) {
+    args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT)
+}
+
+fn shot_app(args: &LaunchArgs) -> tube::TubeApp {
+    let (vw, vh) = shot_viewport_size(args);
+    tube::TubeApp::new().with_viewport(f64::from(vw), f64::from(vh))
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::ShotFactory"
+)]
+fn shot_home(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    Ok(Box::new(shot_app(args)))
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::ShotFactory"
+)]
+fn shot_empty(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    Ok(Box::new(shot_app(args).with_empty_home_shot()))
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::ShotFactory"
+)]
+fn shot_loading(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    Ok(Box::new(shot_app(args).with_loading_home_shot()))
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::ShotFactory"
+)]
+fn shot_device_sync(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    let app = shot_app(args);
+    #[cfg(feature = "grayjay-sync")]
+    {
+        return Ok(Box::new(app.with_device_sync_shot()));
+    }
+    #[cfg(not(feature = "grayjay-sync"))]
+    {
+        let _ = app;
+        Ok(Box::new(shot_app(args)))
+    }
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::ShotFactory"
+)]
+fn shot_palette(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    Ok(Box::new(shot_app(args).with_palette_open_for_test(
+        args.value("--palette-query").unwrap_or("rust"),
+    )))
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::ShotFactory"
+)]
+fn shot_play_demo(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    Ok(Box::new(shot_app(args).with_playing_demo_for_test()))
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::ShotFactory"
+)]
+fn shot_narrow(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    Ok(Box::new(shot_app(args).with_open_sidebar_shot()))
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::ShotFactory"
+)]
+fn shot_route(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    let route = args.value("--route").unwrap_or("home");
+    Ok(Box::new(shot_app(args).with_route_shot(route_from_spec(route))))
+}
+
 #[allow(
     clippy::unnecessary_wraps,
     reason = "signature is fixed by ui::launch::ShotFactory"
 )]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    let (vw, vh) = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-    let mut app = tube::TubeApp::new().with_viewport(f64::from(vw), f64::from(vh));
-    if args.has("--empty") {
-        app = app.with_empty_home_shot();
-    } else if args.has("--loading") {
-        app = app.with_loading_home_shot();
-    } else if args.has("--device-sync") {
-        #[cfg(feature = "grayjay-sync")]
-        {
-            app = app.with_device_sync_shot();
+    let mut args = args.clone();
+    if args.scenario.is_none() {
+        if args.has("--empty") {
+            args.scenario = Some("empty".into());
+        } else if args.has("--loading") {
+            args.scenario = Some("loading".into());
+        } else if args.has("--device-sync") {
+            args.scenario = Some("device-sync".into());
+        } else if args.has("--palette") {
+            args.scenario = Some("palette".into());
+        } else if args.has("--play-demo") {
+            args.scenario = Some("play-demo".into());
+        } else if args.has("--narrow") {
+            args.scenario = Some("narrow".into());
+        } else if args.value("--route").is_some() {
+            args.scenario = Some("route".into());
         }
-    } else if args.has("--palette") {
-        app = app.with_palette_open_for_test(args.value("--palette-query").unwrap_or("rust"));
-    } else if args.has("--play-demo") {
-        app = app.with_playing_demo_for_test();
-    } else if args.has("--narrow") {
-        app = app.with_open_sidebar_shot();
-    } else if let Some(route) = args.value("--route") {
-        app = app.with_route_shot(route_from_spec(route));
     }
-    Ok(Box::new(app))
+    build_shot_scenario(&args, SHOT_SCENARIOS, shot_home)
 }
 
 /// Parse `--probe` / `--probe=<query>` / `--probe <query>`. Returns the query
