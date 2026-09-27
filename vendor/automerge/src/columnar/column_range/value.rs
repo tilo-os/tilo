@@ -81,6 +81,7 @@ impl ValueRange {
             .unwrap()
     }
 
+    #[allow(unused_assignments)]
     pub(crate) fn try_splice<'b, I, E>(
         &self,
         data: &[u8],

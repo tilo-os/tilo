@@ -16,3 +16,7 @@ The patch makes a mark event extend the previous one only when both are on the
 same object; everything else is crates.io `automerge` 0.12.0, verbatim. It is
 pinned by `crates/doc/tilo-automerge/tests/diff_marks.rs`. Upstream `main`
 has the same code; remove this copy once a release carries the fix.
+
+Three `#[allow]`s (the `log!` macro's import, `GenericColIter::try_next` and
+`ValueRange::try_splice`) silence warnings the current compiler raises in the
+upstream code, since CI builds path dependencies with `-D warnings`.

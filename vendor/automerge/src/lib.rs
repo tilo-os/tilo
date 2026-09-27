@@ -235,6 +235,7 @@
 macro_rules! log {
      ( $( $t:tt )* ) => {
           {
+            #[allow(unused_imports)]
             use $crate::__log;
             __log!( $( $t )* );
           }
