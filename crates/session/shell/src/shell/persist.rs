@@ -1635,12 +1635,17 @@ mod tests {
         // Local edits: a rename and a second workspace.
         tree.desktop.workspaces[0].name = "Launch".into();
         tree.seed_doc_from_cache();
-        tree.desktop
-            .workspaces
-            .push(crate::shell::state::Workspace::new(
-                crate::shell::state::WorkspaceId(0x7e57_0001),
-                "Research",
-            ));
+        let mut research = crate::shell::state::Workspace::new(
+            crate::shell::state::WorkspaceId(0x7e57_0001),
+            "Research",
+        );
+        // Replay draws a workspace through its strips.
+        research.strips.push(crate::shell::state::Strip {
+            id: crate::shell::state::StripId(0x7e57_0002),
+            name: "Main".into(),
+            window_groups: Vec::new(),
+        });
+        tree.desktop.workspaces.push(research);
         tree.seed_doc_from_cache();
         // A peer's edit, under the peer's own actor.
         let base = tree.current_heads();
