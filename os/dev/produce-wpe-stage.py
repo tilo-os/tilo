@@ -185,20 +185,6 @@ def main():
         inputs = vars(args) | {'jobs': 6, 'epoch': '0', 'runner_class': 'tilo-package',
                               'disk_capacity_proven': False}
         write('inputs.json', inputs)
-        pins = {}
-        for variable, filename in (('base', 'base-snapshot.env'),
-                                   ('kernel', 'kernel-snapshot.env')):
-            key = {'base': 'BASE_REF', 'kernel': 'KERNEL_RPMS_REF'}[variable]
-            values = re.findall('^' + key + r'=((?:registry|code)\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64})$',
-                                (REPO / 'os' / filename).read_text(), re.MULTILINE)
-            if len(values) != 1:
-                raise ValueError('immutable dependency parse inputs required')
-            pins[variable] = values[0]
-        rpms = subprocess.check_output([str(REPO / 'os/dev/resolve-rpm-snapshot.sh')],
-                                       text=True).strip()
-        if not re.fullmatch(r'registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}', rpms):
-            raise ValueError('immutable dependency parse inputs required')
-        pins['rpms'] = rpms
         script = artifact.read_bounded(REPO / 'os/dev/build-wpe.sh', 2 * 1024 * 1024).decode()
         archives = []
         for variable in ('LIBWPE', 'FDO', 'WPEWK'):
@@ -220,8 +206,6 @@ def main():
                     '--wpe', args.wpe, '--revision', args.revision, '--run-id', args.run_id,
                     '--attempt', args.attempt, '--cache',
                     'registry.tilo.so/tilo/tilo-development-wpe-cache-' + args.architecture]
-            for key, value in pins.items():
-                argv.extend(['--' + key, value])
             result['real_wpe_build_attempted'] = True
             output = phase('build-export', argv, environment, private, deadline, measurements)
             receipt = artifact.strict_json(artifact.read_bounded(output, 65536))
