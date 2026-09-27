@@ -666,19 +666,23 @@ tilo-app package --output dist/reading-list.tapp --force
 ```
 
 `package` runs the structural checks, builds every entrypoint declared in
-`tilo-app.toml` with Cargo's `release` profile, places the resulting binaries at
-their declared payload paths, and asks `tilo-app-package` to sign and verify the bundle.
+`tilo-app.toml` thin, places the resulting binaries at their declared payload
+paths, and signs and verifies the bundle itself; no separate packer is needed.
+A thin build uses the app's `thin` feature and the `thin-app` profile, and links
+against the toolkit and `libstd` that Tilo OS ships, so a typical app is well
+under a megabyte. `--static` links them in instead, which is useful for a local
+experiment but lands far over the application size limit.
 The verified result is published as `dist/<cargo-package>.tapp` by default.
 An existing output is never replaced unless `--force` is present, and even
 then replacement happens only after the new package verifies successfully.
 
 Files under an app-local `payload/` directory are included before the built
 entrypoints are overlaid. Symbolic links are rejected so package contents do
-not depend on files outside the app. Without `--identity`, `tilo-app-package` creates an
-ephemeral self-signing key, which is useful for local testing; use one
+not depend on files outside the app. Without `--identity`, `package` signs with an
+ephemeral key, which is useful for local testing; use one
 persistent identity for updates and publication. `--profile`, `--target`,
 `--features`, and `--no-default-features` expose the corresponding Cargo build
-choices. Set `TILO_PKG` to the executable path when `tilo-app-package` is not on `PATH`.
+choices.
 
 ## The app shape
 
