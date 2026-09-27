@@ -19108,6 +19108,7 @@ dependencies = [
  "hybrid-array",
  "hyper",
  "hyper-util",
+ "hypher",
  "icu_collections",
  "icu_locale_core",
  "icu_normalizer",

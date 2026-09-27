@@ -44,7 +44,6 @@ url.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -59,6 +58,8 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 # The browser runtime embeds this app in wasm32, where the toolkit is the
 # portable build: no native desktop runner, no broker transport, no portal.

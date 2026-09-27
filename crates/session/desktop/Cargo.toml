@@ -21,7 +21,6 @@ uuid.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-desktop-model = { path = "../desktop-model" }
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 fluent.workspace = true
@@ -34,6 +33,8 @@ workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 # The browser runtime builds the desktop in wasm32 on the portable toolkit.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
