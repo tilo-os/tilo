@@ -62,6 +62,14 @@ pub struct Output {
     pub identity: OutputIdentity,
 }
 
+/// An output driven in HDR: the sink's EDID description and where SDR white
+/// sits, cd/m².
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutputHdr {
+    pub display: crate::wayland::edid::HdrDisplayInfo,
+    pub sdr_white_nits: f32,
+}
+
 /// A presentation interval as the millihertz a `wl_output` mode carries.
 /// `None` for a zero interval, which has no rate.
 pub fn interval_to_mhz(interval: std::time::Duration) -> Option<u32> {
@@ -731,6 +739,12 @@ pub trait Backend {
     /// readiness rather than a fixed refresh deadline.
     fn adaptive_sync_active(&self) -> bool {
         false
+    }
+
+    /// The HDR signal an output is being driven with, or `None` for SDR.
+    /// Clients learn it through `wp_color_management_output_v1`.
+    fn output_hdr(&self, _output: OutputId) -> Option<OutputHdr> {
+        None
     }
 
     /// Turn the built-in panel to `rotation` because the device was turned

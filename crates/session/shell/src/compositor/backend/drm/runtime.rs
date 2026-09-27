@@ -1639,6 +1639,21 @@ impl DrmDispatchState {
         }
     }
 
+    /// The HDR signal `output` is driven with: the request the presenter
+    /// reports active.
+    pub fn output_hdr(&self, output: OutputId) -> Option<crate::compositor::backend::OutputHdr> {
+        let entry = self.live.iter().find(|entry| entry.id == output)?;
+        let active = self
+            .signal_status
+            .get(&entry.config_key)
+            .is_some_and(|status| status.hdr_active);
+        let request = entry.hdr_requested.as_ref().filter(|_| active)?;
+        Some(crate::compositor::backend::OutputHdr {
+            display: request.display.clone(),
+            sdr_white_nits: request.sdr_white_nits,
+        })
+    }
+
     /// Adaptive sync is engaged on at least one output, so frames should be
     /// paced by content rather than by a fixed refresh deadline.
     pub fn adaptive_sync_engaged(&self) -> bool {
