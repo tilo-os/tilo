@@ -69,6 +69,7 @@ pipewire-libs
 pkcs11-provider
 podman-sequoia
 python3-libs
+qt5-qtbase
 qt6-qtbase
 rpm-ostree
 rpm-sequoia
@@ -118,6 +119,7 @@ ngtcp2-crypto-ossl
 openldap
 podman-sequoia
 python3-libs
+qt5-qtbase
 qt6-qtbase
 rpm-ostree
 socat
@@ -181,6 +183,7 @@ require_parent() {
 require_parent gnutls-utils swtpm-tools
 require_parent openssh virt-viewer
 require_parent openssh-clients virt-viewer
+require_parent qt5-qtbase fcitx5-mozc
 forbidden_installed="$(grep -Fx -f <(printf '%s\n' "$forbidden_packages") \
   <<<"$installed" || true)"
 if [ -n "$forbidden_installed" ]; then
