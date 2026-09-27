@@ -2025,7 +2025,7 @@ mod tests {
             ]
         );
         let body = MailDoc::draft_body(&doc).unwrap();
-        let first = tilo_rich_text::blocks_under(&mut doc, &body).unwrap()[0]
+        let first = tilo_rich_text::blocks_under(&doc, &body).unwrap()[0]
             .id
             .clone();
         MailAction::EditDraftBody(RichTextAction::SpliceText {

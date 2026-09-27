@@ -1,6 +1,7 @@
-//! Presentation order is independent of the list owning each collaborative Text.
+//! The order a first-format page showed its blocks in: independent of the
+//! list owning each block, by the fractional rank each block stored.
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
-use ui::tilo_resource::order::bytes::{between as key_between, cmp as cmp_keys};
+use ui::tilo_resource::order::bytes::cmp as cmp_keys;
 use uuid::Uuid;
 
 pub(crate) const FIELD: &str = "notes_order";
@@ -40,70 +41,6 @@ pub(crate) fn initial(index: usize, id: Uuid) -> Vec<u8> {
     rank.extend_from_slice(id.as_bytes());
     rank.push(1);
     rank
-}
-
-/// Distinct blocks inserted into the same gap get distinct, still-subdividable
-/// fractions. Choose a short fractional cell contained in the gap, then append
-/// the UUID inside that cell. Copying complete neighboring keys would grow the
-/// position by another UUID on every insertion; appending directly to a midpoint
-/// can instead overshoot the upper bound.
-pub(crate) fn between(lo: Option<&[u8]>, hi: Option<&[u8]>, id: Uuid) -> Result<Vec<u8>, String> {
-    if let (Some(lo), Some(hi)) = (lo, hi)
-        && !cmp_keys(lo, hi).is_lt()
-    {
-        return Err("block order bounds are not distinct".into());
-    }
-    let mut rank = if hi.is_none() {
-        // Round upward at the earliest possible digit. Appending a fresh UUID
-        // after the previous key's final digit would grow every append by 17 bytes.
-        let lo = lo.unwrap_or(&[]);
-        let mut prefix = Vec::new();
-        for &digit in lo {
-            if digit < 255 {
-                prefix.push(digit + 1);
-                break;
-            }
-            prefix.push(255);
-        }
-        if prefix.len() == lo.len() && cmp_keys(&prefix, lo).is_eq() {
-            prefix.push(128);
-        }
-        prefix
-    } else if let Some(hi) = hi {
-        let midpoint = key_between(lo, Some(hi));
-        let limit = midpoint.len().max(hi.len()).max(lo.map_or(0, <[u8]>::len)) + 1;
-        let mut chosen = None;
-        for width in 1..=limit {
-            let mut prefix = midpoint.iter().copied().take(width).collect::<Vec<_>>();
-            prefix.resize(width, 0);
-            if lo.is_some_and(|lo| cmp_keys(&prefix, lo).is_lt()) {
-                continue;
-            }
-            let Some(upper) = cell_upper(&prefix) else {
-                continue;
-            };
-            if !cmp_keys(&upper, hi).is_gt() {
-                chosen = Some(prefix);
-                break;
-            }
-        }
-        chosen.ok_or("block order gap has no finite cell")?
-    } else {
-        return Err("block order upper bound is missing".into());
-    };
-    rank.extend_from_slice(id.as_bytes());
-    rank.push(1);
-    Ok(rank)
-}
-
-/// Upper edge of the base-256 cell having this prefix; None denotes 1.0.
-fn cell_upper(prefix: &[u8]) -> Option<Vec<u8>> {
-    let mut upper = prefix.to_vec();
-    let index = upper.iter().rposition(|digit| *digit < 255)?;
-    let digit = upper.get_mut(index)?;
-    *digit = digit.saturating_add(1);
-    upper.truncate(index + 1);
-    Some(upper)
 }
 
 pub(crate) fn valid(rank: &[u8]) -> bool {

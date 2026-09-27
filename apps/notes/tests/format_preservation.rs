@@ -178,14 +178,12 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
             "- Parent\n\n  **Böld** and *italic* with [site](https://example.com)\n".as_bytes(),
         );
         let checkout = imported(&f);
-        let (id, original_marks, original_text) = f
+        let (id, original_marks) = f
             .records
             .read(&checkout.id, |doc| {
-                let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
                 (
                     NotesDoc::page_block_snapshots(doc, f.child)[1].0.clone(),
                     NotesDoc::page_block_marks(doc, f.child),
-                    NotesDoc::block_text_obj(doc, &list, 1).unwrap(),
                 )
             })
             .unwrap();
@@ -203,21 +201,24 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
         live.type_text("/number");
         let before_commit = revision(&f, &checkout);
         live.key("Enter");
-        assert_eq!(revision(&f, &checkout), before_commit + 1);
+        assert_eq!(
+            revision(&f, &checkout),
+            before_commit + 2,
+            "the typed command closes, then the conversion"
+        );
         let page = f.child;
         let verify = |doc: &automerge::AutoCommit| {
             notes::notebook::validate(doc).unwrap();
-            let list = NotesDoc::page_blocks_list(doc, page).unwrap();
-            assert_eq!(NotesDoc::block_kind(doc, &list, 1), "numbered:1");
             assert_eq!(
-                NotesDoc::page_block_snapshots(doc, page)[1].1,
-                "Böld and italic with site"
+                NotesDoc::page_blocks(doc, page)[1].kind.stored(),
+                "numbered:1"
+            );
+            assert_eq!(
+                NotesDoc::page_block_snapshots(doc, page)[1],
+                (id.clone(), "Böld and italic with site".into()),
+                "the block keeps its identity"
             );
             assert_eq!(NotesDoc::page_block_marks(doc, page), original_marks);
-            assert_eq!(
-                NotesDoc::block_text_obj(doc, &list, 1).unwrap(),
-                original_text
-            );
         };
         f.records.read(&checkout.id, verify).unwrap();
         live.set_modifiers(&["ctrl".into()]);
@@ -244,14 +245,12 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
                 "**Böld** and *italic* with [site](https://example.com)\n".as_bytes(),
             );
             let checkout = imported(&f);
-            let (id, marks, text_object) = f
+            let (id, marks) = f
                 .records
                 .read(&checkout.id, |doc| {
-                    let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
                     (
                         NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone(),
                         NotesDoc::page_block_marks(doc, f.child),
-                        NotesDoc::block_text_obj(doc, &list, 0).unwrap(),
                     )
                 })
                 .unwrap();
@@ -270,21 +269,17 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
             f.records
                 .read(&checkout.id, |doc| {
                     notes::notebook::validate(doc).unwrap();
-                    let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
                     assert_eq!(
-                        NotesDoc::block_kind(doc, &list, 0),
+                        NotesDoc::page_blocks(doc, f.child)[0].kind.stored(),
                         expected_kind,
                         "{prefix}"
                     );
                     assert_eq!(
-                        NotesDoc::page_block_snapshots(doc, f.child)[0].1,
-                        "Böld and italic with site"
+                        NotesDoc::page_block_snapshots(doc, f.child)[0],
+                        (id.clone(), "Böld and italic with site".into()),
+                        "{prefix}"
                     );
                     assert_eq!(NotesDoc::page_block_marks(doc, f.child), marks, "{prefix}");
-                    assert_eq!(
-                        NotesDoc::block_text_obj(doc, &list, 0).unwrap(),
-                        text_object
-                    );
                 })
                 .unwrap();
             let image = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
