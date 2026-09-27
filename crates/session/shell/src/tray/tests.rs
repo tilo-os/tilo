@@ -199,11 +199,11 @@ async fn a_registered_item_is_reported_published_as_actions_and_reachable() {
             },
         )
         .expect("serve menu");
-    let (shell_conn, app_conn) =
-        futures_util::try_join!(shell_side.build(), app_side.build()).expect("p2p pair");
-    let _watcher = watcher::serve(shell_conn, Arc::clone(&tray))
-        .await
-        .expect("watcher served");
+    let (_watcher, app_conn) = futures_util::try_join!(
+        watcher::serve(shell_side, Arc::clone(&tray)),
+        app_side.build()
+    )
+    .expect("p2p pair with the watcher served");
 
     let watcher_proxy = zbus::proxy::Builder::<zbus::Proxy<'_>>::new(&app_conn)
         .destination(WATCHER_BUS_NAME)
