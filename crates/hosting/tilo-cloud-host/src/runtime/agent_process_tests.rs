@@ -31,7 +31,7 @@ async fn query(
             message,
         })
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             if let Some(
                 EnvelopeV2::Delivered { action, .. }
@@ -93,7 +93,7 @@ fn gateway(root: &std::path::Path) -> (Reap, PathBuf) {
             .spawn()
             .unwrap(),
     );
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     let mut stream = loop {
         match UnixStream::connect(&socket) {
             Ok(s) => break s,
@@ -107,10 +107,10 @@ fn gateway(root: &std::path::Path) -> (Reap, PathBuf) {
         }
     };
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
+        .set_write_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     tilo_model_gateway::write_frame(
         &mut stream,
@@ -307,7 +307,7 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
             }
         }
     });
-    let address = tokio::time::timeout(Duration::from_secs(20), ready_rx)
+    let address = tokio::time::timeout(tilo_test_env::hang_bound(), ready_rx)
         .await
         .unwrap()
         .unwrap();
@@ -349,27 +349,35 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
     // must never offer a Spawn: it reads agents only.
     let plain = stage.is_none();
     let mut plain_reads = 0usize;
-    let readiness = tokio::time::timeout(Duration::from_secs(if plain { 10 } else { 30 }), async {
-        loop {
-            let reply = query(
-                &client,
-                room,
-                caller.device(),
-                host,
-                A::CatalogueRefresh { scope: None },
-            )
-            .await;
-            if let A::BrokerCatalogue { catalogue, .. } = reply {
-                match serde_json::from_value::<AgentReadBinding>(catalogue["agentReadsV1"].clone())
-                {
-                    Ok(binding) => {
-                        last_catalogue = format!(
-                            "binding spawn={} message={}",
-                            binding.spawn.is_some(),
-                            binding.message.is_some()
-                        );
-                        // Capabilities are a disposable read even when spawn is absent.
-                        let reply = query(
+    let readiness =
+        tokio::time::timeout(
+            if plain {
+                Duration::from_secs(10)
+            } else {
+                tilo_test_env::hang_bound()
+            },
+            async {
+                loop {
+                    let reply = query(
+                        &client,
+                        room,
+                        caller.device(),
+                        host,
+                        A::CatalogueRefresh { scope: None },
+                    )
+                    .await;
+                    if let A::BrokerCatalogue { catalogue, .. } = reply {
+                        match serde_json::from_value::<AgentReadBinding>(
+                            catalogue["agentReadsV1"].clone(),
+                        ) {
+                            Ok(binding) => {
+                                last_catalogue = format!(
+                                    "binding spawn={} message={}",
+                                    binding.spawn.is_some(),
+                                    binding.message.is_some()
+                                );
+                                // Capabilities are a disposable read even when spawn is absent.
+                                let reply = query(
                             &client,
                             room,
                             caller.device(),
@@ -383,8 +391,8 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
                             },
                         )
                         .await;
-                        if let A::AgentReadResultV1 { response, .. } = reply {
-                            match response {
+                                if let A::AgentReadResultV1 { response, .. } = reply {
+                                    match response {
                                 tilo_agent_control_protocol::AgentResponse::Capabilities {
                                     capabilities,
                                     ..
@@ -425,24 +433,25 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
                                     )
                                 }
                             }
-                        } else {
-                            last_capabilities = readiness_reply(&reply);
+                                } else {
+                                    last_capabilities = readiness_reply(&reply);
+                                }
+                            }
+                            Err(error) => {
+                                last_catalogue = format!(
+                                    "binding decode: {}",
+                                    error.to_string().chars().take(256).collect::<String>()
+                                )
+                            }
                         }
+                    } else {
+                        last_catalogue = readiness_reply(&reply);
                     }
-                    Err(error) => {
-                        last_catalogue = format!(
-                            "binding decode: {}",
-                            error.to_string().chars().take(256).collect::<String>()
-                        )
-                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                 }
-            } else {
-                last_catalogue = readiness_reply(&reply);
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await;
+            },
+        )
+        .await;
     if plain {
         assert!(readiness.is_err(), "plain serve became spawn-ready");
         assert!(
@@ -450,7 +459,7 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
             "plain serve never answered an agent read: {last_catalogue}; {last_capabilities}"
         );
         let _ = stop_tx.send(());
-        tokio::time::timeout(Duration::from_secs(15), daemon)
+        tokio::time::timeout(tilo_test_env::hang_bound(), daemon)
             .await
             .expect("normal runtime shutdown deadline")
             .unwrap()
@@ -518,7 +527,7 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
             matches!(duplicate, A::Observation { .. }),
             "original invocation replay must observe its retained admission"
         );
-        tokio::time::timeout(Duration::from_secs(15), async {
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
             loop {
                 let events = stage_audit(dir.path(), invocation.0);
                 if events
@@ -539,7 +548,7 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
             // actual runtime. A published LaunchIntended can never be relaunched.
             tokio::time::sleep(Duration::from_millis(1300)).await;
             let _ = stop_tx.send(());
-            tokio::time::timeout(Duration::from_secs(15), daemon)
+            tokio::time::timeout(tilo_test_env::hang_bound(), daemon)
                 .await
                 .unwrap()
                 .unwrap()
@@ -576,7 +585,7 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
             return;
         }
     }
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while !gate.with_extension("observed").exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -633,7 +642,7 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
     );
     drop(before);
     let _ = stop_tx.send(());
-    tokio::time::timeout(Duration::from_secs(15), daemon)
+    tokio::time::timeout(tilo_test_env::hang_bound(), daemon)
         .await
         .expect("normal runtime shutdown deadline")
         .unwrap()
