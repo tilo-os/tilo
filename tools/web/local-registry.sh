@@ -17,7 +17,8 @@
 #   3. hosts each tapp (`import-artifact`), submits its signed entry
 #      (POST /entries), approves it (`review approve`) and signs a snapshot;
 #   4. writes registry.json ({baseUrl, ownerKeyHex, runtimeAbi, apps}) for
-#      the page and, with --check, resolves everything through
+#      the page (also into BUILD_DIR, for its registry.html) and, with
+#      --check, resolves everything through
 #      registry-client.mjs and the real verifier in Node;
 #   5. keeps serving (GET-only CORS for each --origin) until Ctrl-C, unless
 #      --check was given.
@@ -158,6 +159,8 @@ json 'const [file, baseUrl, ownerKeyHex, runtimeAbi, ...apps] = process.argv.sli
   require("node:fs").writeFileSync(file, JSON.stringify({baseUrl, ownerKeyHex, runtimeAbi: runtimeAbi || undefined, apps}, null, 2) + "\n");' \
   "$state/registry.json" "$base" "$owner_hex" "$runtime_abi" "${apps[@]}"
 cat "$state/registry.json"
+# The build's registry.html reads it next to itself.
+[[ -z $build ]] || cp "$state/registry.json" "$build/registry.json"
 
 if ((check)); then
   echo "== check"
