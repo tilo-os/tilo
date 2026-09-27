@@ -264,6 +264,91 @@ impl AccountRoot {
             tracing::warn!(target: "tilo::settings", %error, "could not recover interrupted account mutation");
         }
     }
+
+    /// What the account store file looks like on disk now: its identity,
+    /// size and modification time. Every save replaces the file atomically,
+    /// so any save changes the stamp. `None` when there is no store.
+    fn store_stamp(&self) -> Option<StoreStamp> {
+        use std::os::unix::fs::MetadataExt as _;
+        let metadata = std::fs::metadata(accounts::store_path_in(&self.path()?)).ok()?;
+        Some(StoreStamp {
+            inode: metadata.ino(),
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StoreStamp {
+    inode: u64,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+/// How often an open pane looks at the account store for a change made
+/// elsewhere.
+pub const ACCOUNT_STORE_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// An open pane's watch on the account store. Accounts are added and removed
+/// in more than one place (Settings › Accounts, the AI hub's sign-in and
+/// sign-out, resource actions, another Settings window), so every pane that
+/// shows accounts checks the store through this and re-reads it when it
+/// changed, instead of trusting what it read when it opened.
+#[derive(Clone, Debug)]
+pub struct AccountStoreWatch {
+    root: AccountRoot,
+    seen: Option<StoreStamp>,
+    next_check: std::time::Instant,
+}
+
+impl AccountStoreWatch {
+    /// Watch the store under `root`, taking its current state as seen.
+    pub fn new(root: AccountRoot) -> Self {
+        Self {
+            seen: root.store_stamp(),
+            root,
+            next_check: std::time::Instant::now() + ACCOUNT_STORE_CHECK,
+        }
+    }
+
+    /// The root this watch reads.
+    pub fn root(&self) -> &AccountRoot {
+        &self.root
+    }
+
+    /// When the pane should next wake to [`Self::changed`].
+    pub fn next_check(&self) -> std::time::Instant {
+        self.next_check
+    }
+
+    /// Take the store as it is now as seen, after the pane re-read it.
+    pub fn mark_seen(&mut self) {
+        self.seen = self.root.store_stamp();
+    }
+
+    /// Whether the store changed since it was last seen, looking at most once
+    /// per [`ACCOUNT_STORE_CHECK`]. A change is reported once.
+    pub fn changed(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        if now < self.next_check {
+            return false;
+        }
+        self.next_check = now + ACCOUNT_STORE_CHECK;
+        let stamp = self.root.store_stamp();
+        if stamp == self.seen {
+            return false;
+        }
+        self.seen = stamp;
+        true
+    }
+
+    /// Look at the store on the next [`Self::changed`] without waiting out
+    /// the interval.
+    #[cfg(test)]
+    pub fn check_now(&mut self) {
+        self.next_check = std::time::Instant::now();
+    }
 }
 
 // ---------------------------------------------------------------------------

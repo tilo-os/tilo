@@ -103,7 +103,9 @@ version 2 adds conflict alternatives and sealed Wi-Fi profile provenance.
   are added from the hub, not there. A hub provider's sign-in state is
   derived from the account store: a provider naming an account the store no
   longer holds shows "Signed out" with Sign in again, wherever the account
-  was removed. Custody reports each Azure account's health as the gateway's
+  was removed. The hub and the Accounts pane watch the account store
+  (`AccountStoreWatch`) while open, so a change made anywhere shows without
+  a reload. Custody reports each Azure account's health as the gateway's
   token requests find it. The model gateway
   reads the account's access token only through
   `Custodian::account_access_token`. No other OAuth code-flow implementation

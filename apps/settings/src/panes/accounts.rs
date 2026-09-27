@@ -172,6 +172,9 @@ impl ProbeJob {
 )]
 pub struct AccountsPane {
     account_root: AccountRoot,
+    /// The live pane's watch on the account store; `None` for a fixed
+    /// directory.
+    store_watch: Option<crate::accounts::AccountStoreWatch>,
     dir: AccountDirectory,
     sync_statuses: accounts::AccountSyncStatusStore,
     vault: accounts::SecretVault,
@@ -230,6 +233,9 @@ impl AccountsPane {
         // empty state. The deterministic `--shots`/tests use
         // `from_dir(sample_directory(), true)` for a rich still instead.
         Self {
+            store_watch: Some(crate::accounts::AccountStoreWatch::new(
+                account_root.clone(),
+            )),
             dir: AccountDirectory::load_in(&account_root),
             sync_statuses: account_root.statuses(),
             vault: account_root.vault(),
@@ -277,6 +283,7 @@ impl AccountsPane {
     /// [`Self::from_dir`] whose edits persist under `account_root`.
     pub fn from_dir_in(account_root: AccountRoot, dir: AccountDirectory, is_sample: bool) -> Self {
         Self {
+            store_watch: None,
             dir,
             sync_statuses: accounts::AccountSyncStatusStore::default(),
             vault: account_root.vault(),
@@ -1197,6 +1204,9 @@ impl AccountsPane {
         self.dir = AccountDirectory::load_in(&self.account_root);
         self.sync_statuses = self.account_root.statuses();
         self.vault = self.account_root.vault();
+        if let Some(watch) = &mut self.store_watch {
+            watch.mark_seen();
+        }
     }
 
     fn account_type(kind: AccountKind) -> &'static str {
@@ -2006,6 +2016,33 @@ pub fn build_with(dir: &AccountDirectory) -> Box<dyn Widget> {
 }
 
 impl Widget for AccountsPane {
+    /// An account added or removed elsewhere (the AI hub, a resource action,
+    /// another Settings window) shows here while the pane is open.
+    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+        if !self
+            .store_watch
+            .as_mut()
+            .is_some_and(crate::accounts::AccountStoreWatch::changed)
+        {
+            return false;
+        }
+        self.reload();
+        self.structure_dirty = true;
+        true
+    }
+
+    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+        let own = self
+            .store_watch
+            .as_ref()
+            .map(crate::accounts::AccountStoreWatch::next_check);
+        let composed = self
+            .composed
+            .as_ref()
+            .and_then(|composed| composed.next_wake_deadline());
+        own.into_iter().chain(composed).min()
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.handle_local_command();
         self.handle_add(state, root);

@@ -713,6 +713,16 @@ impl Widget for AppShell {
         self.content.sync(state, path);
     }
 
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        let search = self
+            .search
+            .as_mut()
+            .is_some_and(|search| search.update(state, path));
+        let nav = self.nav.update(state, path);
+        let content = self.content.update(state, path);
+        search || nav || content
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
