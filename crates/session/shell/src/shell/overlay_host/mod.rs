@@ -90,7 +90,6 @@ use crate::shell::capture_surface::{
     capture_mirror_origin, visible_capture_spawn,
 };
 use crate::shell::chrome_state::{Chrome, SearchScopeText as _, WsTab};
-use crate::shell::search::ResourceKindText as _;
 use crate::shell::collaborators_overlay::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay,
     collaborator_roster_rows_with_local_user,
@@ -116,6 +115,7 @@ use crate::shell::quick_settings::drill_in::{DrillInList, DrillInOutcome};
 use crate::shell::quick_settings::root::{QuickSettingsRoot, RootAction, SliderCommit};
 use crate::shell::quick_settings::vpn::{QuickSettingsVpnPane, VpnPaneOutcome};
 use crate::shell::quick_settings::wifi::QuickSettingsWifiPane;
+use crate::shell::search::ResourceKindText as _;
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
 use crate::shell::workspace_settings::{CapEdit, EXPIRY_CHOICES};
