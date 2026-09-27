@@ -4002,17 +4002,11 @@ impl ui::widget::AppWidget for NotesApp {
         let editor = self.main.editor();
         // Only blocks the note stores have a stable position; a placeholder
         // in an empty note does not.
-        let stored = self
-            .main
-            .page_id()
-            .and_then(|page| self.search_blocks.get(&page));
         let position = |index: usize, byte_offset| {
             editor
                 .blocks()
                 .get(index)
-                .filter(|block| {
-                    stored.is_some_and(|blocks| blocks.iter().any(|known| known.id == block.id))
-                })
+                .filter(|block| self.main.stores_block(&block.id))
                 .map(|block| BlockPosition {
                     block_id: block.id.clone(),
                     byte_offset,

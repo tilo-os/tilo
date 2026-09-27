@@ -108,6 +108,13 @@ impl<S: RichTextSource> RichTextSurface<S> {
         true
     }
 
+    /// Whether the editor's block `id` is a paragraph of the document, not
+    /// the empty line an empty document shows.
+    #[must_use]
+    pub fn shows_stored(&self, id: &str) -> bool {
+        self.presented.iter().any(|block| block.id == id)
+    }
+
     /// The editor, for what the surface does not configure itself.
     pub fn editor(&self) -> &BlockEditor {
         &self.editor

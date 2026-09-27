@@ -1064,7 +1064,12 @@ mod tests {
                 ui::widget::MarkSpan::new(4..10, Mark::Link(target)),
                 ui::widget::MarkSpan::new(15..33, Mark::ExternalLink("http://old.example".into())),
             ],
-            "Notes' marks come across, the author's stay behind"
+            "Notes' marks come across"
+        );
+        assert_eq!(
+            blocks[1].authors,
+            [(0..3, "someone".to_owned())],
+            "and so does who wrote what"
         );
 
         // Once is enough: a second pass writes nothing.

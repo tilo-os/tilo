@@ -28,8 +28,7 @@ fn page_value(mark: &NativeMark, prefix: &str, name: &str) -> Option<PageId> {
     page.parse().ok()
 }
 
-/// A Notes mark on the first format's text, as the editor's mark. Marks of
-/// other concerns (authorship) are not Notes' and are left behind.
+/// A Notes mark on the first format's text, as the editor's mark.
 fn editor_mark(text: &str, mark: &NativeMark) -> Option<MarkSpan> {
     let name = mark.name.strip_prefix(MARK_PREFIX)?;
     let editor = match name {
@@ -50,6 +49,18 @@ fn editor_mark(text: &str, mark: &NativeMark) -> Option<MarkSpan> {
     };
     let (start, end) = (byte_of(text, mark.start)?, byte_of(text, mark.end)?);
     (start < end).then(|| MarkSpan::new(start..end, editor))
+}
+
+/// Who wrote a run of the first format's text: its `author` mark, over bytes.
+fn author_run(text: &str, mark: &NativeMark) -> Option<(std::ops::Range<usize>, String)> {
+    if mark.name != qdoc::schema::MARK_AUTHOR {
+        return None;
+    }
+    let ScalarValue::Str(author) = &mark.value else {
+        return None;
+    };
+    let (start, end) = (byte_of(text, mark.start)?, byte_of(text, mark.end)?);
+    (start < end && !author.is_empty()).then(|| (start..end, author.to_string()))
 }
 
 fn string(doc: &AutoCommit, block: &ObjId, key: &str) -> Option<String> {
@@ -74,12 +85,17 @@ pub(crate) fn blocks(doc: &AutoCommit, list: &ObjId) -> Vec<BlockContent> {
                 .as_ref()
                 .and_then(|text| doc.text(text).ok())
                 .unwrap_or_default();
-            let mut marks: Vec<MarkSpan> = text_obj
+            let native = text_obj
                 .as_ref()
                 .and_then(|text| doc.marks(text).ok())
-                .unwrap_or_default()
+                .unwrap_or_default();
+            let mut marks: Vec<MarkSpan> = native
                 .iter()
                 .filter_map(|mark| editor_mark(&text, mark))
+                .collect();
+            let authors = native
+                .iter()
+                .filter_map(|mark| author_run(&text, mark))
                 .collect();
             marks.sort_by_key(|span| (span.range.start, span.range.end));
             let kind = string(doc, &block, "kind")
@@ -96,6 +112,7 @@ pub(crate) fn blocks(doc: &AutoCommit, list: &ObjId) -> Vec<BlockContent> {
                 marks,
                 nesting,
                 code_group: string(doc, &block, "code_group"),
+                authors,
                 ..BlockContent::paragraph("", text)
             }
         })
