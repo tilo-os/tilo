@@ -635,6 +635,21 @@ pub struct ForeignFrameStore {
     imports: AtomicU64,
     #[cfg(target_os = "linux")]
     next_capture: AtomicU64,
+    /// Which surfaces a capture must draw as a placeholder — see
+    /// [`crate::shell::capture_protection`].
+    capture_protection: Mutex<CaptureProtection>,
+}
+
+/// Capture-protection requests, kept beside the frames they withhold.
+#[derive(Default)]
+struct CaptureProtection {
+    /// Authenticated shell-ui connections that asked for their app's windows
+    /// to be protected, with the app id the launcher vouched for. Keyed by
+    /// connection so one instance closing does not expose another's windows.
+    apps: HashMap<u64, String>,
+    /// Surfaces the compositor protects on their own account, such as the
+    /// popups of a protected window.
+    surfaces: std::collections::HashSet<SurfaceId>,
 }
 
 static STORE: OnceLock<ForeignFrameStore> = OnceLock::new();
@@ -1320,8 +1335,62 @@ impl ForeignFrameStore {
         });
     }
 
+    /// Record that the app behind authenticated shell-ui `connection` does
+    /// (or no longer does) want its windows withheld from captures. Covers
+    /// windows it maps later too, so a new window is never briefly exposed.
+    pub fn request_app_capture_protection(&self, connection: u64, app_id: &str, protected: bool) {
+        let mut guard = self
+            .capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if protected {
+            guard.apps.insert(connection, app_id.to_string());
+        } else {
+            guard.apps.remove(&connection);
+        }
+    }
+
+    /// The connection closed: its request goes with it.
+    pub fn release_capture_protection(&self, connection: u64) {
+        self.capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .apps
+            .remove(&connection);
+    }
+
+    /// Protect (or stop protecting) one surface regardless of its app.
+    pub fn set_surface_capture_protected(&self, id: SurfaceId, protected: bool) {
+        let mut guard = self
+            .capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if protected {
+            guard.surfaces.insert(id);
+        } else {
+            guard.surfaces.remove(&id);
+        }
+    }
+
+    /// Whether a capture must draw surface `id`, owned by `app_id`, as a
+    /// placeholder.
+    pub fn is_capture_protected(&self, id: SurfaceId, app_id: &str) -> bool {
+        let guard = self
+            .capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.surfaces.contains(&id)
+            || guard.apps.values().any(|app| app == app_id)
+            || crate::shell::capture_protection::holds_secrets(app_id)
+    }
+
     /// Drop everything tracked for `id` on toplevel destroy — without this the frame `Vec` (a full framebuffer) would outlive the client.
     pub fn forget(&self, id: SurfaceId) {
+        self.capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .surfaces
+            .remove(&id);
         let mut guard = self
             .entries
             .lock()
@@ -1880,6 +1949,15 @@ impl ForeignSurfaceWidget {
         self.surface_id
     }
 
+    /// Where this surface is drawn, when a capture must replace it with the
+    /// placeholder; `None` when it is not protected or not laid out.
+    pub fn capture_protected_rect(&self) -> Option<Rect> {
+        (self.rect.width() > 0.0
+            && self.rect.height() > 0.0
+            && store().is_capture_protected(self.surface_id, &self.app_id))
+        .then_some(self.rect)
+    }
+
     /// Place a compositor-owned floating surface without putting it through
     /// the workspace's Taffy tree. The same placement store still drives the
     /// xdg configure handshake, so the client renders at this exact size.
@@ -2146,6 +2224,14 @@ impl Widget for ForeignSurfaceWidget {
             return;
         }
         let radius = f64::from(theme.tokens.radii.xl);
+        if crate::shell::capture_protection::painting_for_capture()
+            && self.capture_protected_rect().is_some()
+        {
+            crate::shell::capture_protection::paint_placeholder(
+                scene, transform, self.rect, radius, theme,
+            );
+            return;
+        }
         let clip = RoundedRect::from_rect(self.rect, radius);
 
         if let Some(image) = self.cached.clone()

@@ -546,6 +546,10 @@ pub struct State {
     /// absent in isolated tests and offline sessions.
     legacy_stream_publisher:
         Option<Arc<dyn Fn(crate::network::NeighbourMsg) -> bool + Send + Sync>>,
+    /// The themed placeholder colour a protected window is streamed as —
+    /// see [`crate::shell::capture_protection`]. Kept current by the frame
+    /// loop, which owns the theme.
+    capture_placeholder_fill: [u8; 4],
     /// `wp_color_manager_v1` state — advertised primaries/transfers/features
     /// plus the registered global id. HDR clients bind it, query
     /// capabilities, and attach parametric image descriptions; the
@@ -1038,6 +1042,9 @@ impl State {
             surface_handles: HashMap::new(),
             active_sessions: HashMap::new(),
             legacy_stream_publisher: None,
+            capture_placeholder_fill: crate::shell::capture_protection::placeholder_fill_rgba8(
+                &ui::theme::Theme::default(),
+            ),
             color_manager,
             fractional_scale_manager,
             viewporter,
@@ -1600,6 +1607,48 @@ impl State {
         self.surface_scales.retain(|id, _| live.contains(id));
     }
 
+    /// The theme's capture placeholder colour, for windows streamed to
+    /// collaborators while protected.
+    pub fn set_capture_placeholder_fill(&mut self, fill: [u8; 4]) {
+        self.capture_placeholder_fill = fill;
+    }
+
+    /// Whether shared window `surface` must reach its viewers as the
+    /// placeholder instead of its pixels.
+    pub fn is_surface_capture_protected(&self, surface: SurfaceId) -> bool {
+        let app_id = {
+            let tree = self.workspace_tree.read();
+            tab_binding::app_id_for_surface(&tree, surface).map(str::to_owned)
+        }
+        .or_else(|| {
+            self.floating_toplevels
+                .iter()
+                .find(|toplevel| toplevel.surface_id == surface)
+                .map(|toplevel| toplevel.app_id.clone())
+        });
+        crate::compositor::foreign::store()
+            .is_capture_protected(surface, app_id.as_deref().unwrap_or_default())
+    }
+
+    /// A share session's next frame: the window's pixels, or the themed
+    /// placeholder at the stream's size while the window is protected.
+    fn share_frame(
+        &self,
+        session: &SharedFlatpakSession,
+        surface: SurfaceId,
+        pixels: impl FnOnce() -> Option<Vec<u8>>,
+    ) -> Option<Vec<u8>> {
+        if self.is_surface_capture_protected(surface) {
+            let (width, height) = session.dimensions();
+            return Some(crate::shell::capture_protection::placeholder_rgba(
+                width,
+                height,
+                self.capture_placeholder_fill,
+            ));
+        }
+        pixels()
+    }
+
     /// Install the non-blocking network bridge used by live legacy streams.
     pub fn set_legacy_stream_publisher(
         &mut self,
@@ -1880,8 +1929,12 @@ impl State {
             }
             self.register_share_session(Arc::clone(&session));
 
-            if let Some(frame) = crate::compositor::foreign::store().snapshot(surface) {
-                session.deposit_captured_rgba(frame.rgba);
+            if let Some(rgba) = self.share_frame(&session, surface, || {
+                crate::compositor::foreign::store()
+                    .snapshot(surface)
+                    .map(|frame| frame.rgba)
+            }) {
+                session.deposit_captured_rgba(rgba);
                 if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
                     && let Some(publish) = &self.legacy_stream_publisher
                 {
@@ -2023,6 +2076,28 @@ impl State {
         let Some(session) = self.active_sessions.get(&surface_id).cloned() else {
             return false;
         };
+        if self.is_surface_capture_protected(surface_id) {
+            // Neither the client's buffer nor a readback of it leaves the
+            // machine; the commit still paces the placeholder stream.
+            let fresh = self
+                .surface_tracker
+                .take_latest_dmabuf(surface_id)
+                .is_some()
+                | self.surface_tracker.take_latest(surface_id).is_some();
+            if !fresh {
+                return false;
+            }
+            let Some(rgba) = self.share_frame(&session, surface_id, || None) else {
+                return false;
+            };
+            session.deposit_captured_rgba(rgba);
+            if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
+                && let Some(publish) = &self.legacy_stream_publisher
+            {
+                let _ = publish(frame.into_neighbour_msg());
+            }
+            return true;
+        }
         // DMABUF-direct path takes priority when the commit hook stashed a
         // Dmabuf this tick — `take_latest_dmabuf` drains it so a re-tick
         // without a fresh commit finds none. Falling back to SHM covers the mixed-mode case (a client briefly attaching SHM between DMABUF commits).
@@ -3546,6 +3621,30 @@ impl State {
                 ))
             })
             .collect()
+    }
+
+    /// A popup is part of the window that opened it: while that window is
+    /// protected from capture, so are its menus and completions.
+    pub(crate) fn sync_popup_capture_protection(&self) {
+        for popup in self.popups.iter().filter(|popup| popup.surface.alive()) {
+            let mut root = popup.parent;
+            // Nested popups chain to their toplevel; a malformed graph is
+            // bounded exactly as `popup_parent_rect` bounds it.
+            for _ in 0..16 {
+                match self
+                    .popups
+                    .iter()
+                    .find(|candidate| surface_id(candidate.surface.wl_surface()) == root)
+                {
+                    Some(parent) => root = parent.parent,
+                    None => break,
+                }
+            }
+            crate::compositor::foreign::store().set_surface_capture_protected(
+                surface_id(popup.surface.wl_surface()),
+                self.is_surface_capture_protected(root),
+            );
+        }
     }
 
     #[doc(hidden)]

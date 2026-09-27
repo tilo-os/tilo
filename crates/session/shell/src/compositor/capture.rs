@@ -346,7 +346,8 @@ impl CaptureExecutor {
             .clamp(0.0, f64::from(height.saturating_sub(1))) as usize;
         let mut renderer = OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("colour picker renderer {width}×{height}: {error}"))?;
-        let rgba = render_capture_rgba(&mut renderer, clean_screen_scene);
+        let source = frame_builder.capture_scene(clean_screen_scene);
+        let rgba = render_capture_rgba(&mut renderer, &source);
         let offset = y
             .checked_mul(width as usize)
             .and_then(|pixels| pixels.checked_add(x))
@@ -380,7 +381,8 @@ impl CaptureExecutor {
         let height = height.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
         let mut renderer = OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("screen-share renderer {width}×{height}: {error}"))?;
-        let rgba = render_capture_rgba(&mut renderer, scene);
+        let source = frame_builder.capture_scene(scene);
+        let rgba = render_capture_rgba(&mut renderer, &source);
         let expected = (width as usize)
             .checked_mul(height as usize)
             .and_then(|pixels| pixels.checked_mul(4))
@@ -1195,12 +1197,19 @@ impl CaptureExecutor {
         Ok(CaptureOutcome::Copied { width, height })
     }
 
-    fn execute_screenshot(
-        &mut self,
+    /// The pixels a screenshot of `intent` holds — straight RGBA with its
+    /// width and height — exactly as it is then saved, copied or handed to
+    /// a portal caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selected source has nothing to paint or the
+    /// capture renderer cannot be created.
+    pub fn render_screenshot(
         frame_builder: &mut FrameBuilder,
         clean_screen_scene: &Scene,
         intent: &CaptureIntent,
-    ) -> Result<CaptureOutcome, String> {
+    ) -> Result<(Vec<u8>, u32, u32), String> {
         let (source, regions) = capture_source(frame_builder, clean_screen_scene, intent);
         if regions.is_empty() {
             return Err("the selected source has no paintable pixels".into());
@@ -1208,7 +1217,17 @@ impl CaptureExecutor {
         let (composed, width, height) = compose_scene(&source, &regions, intent.pip_layout)?;
         let mut renderer = OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("capture renderer {width}×{height}: {error}"))?;
-        let rgba = render_capture_rgba(&mut renderer, &composed);
+        Ok((render_capture_rgba(&mut renderer, &composed), width, height))
+    }
+
+    fn execute_screenshot(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        clean_screen_scene: &Scene,
+        intent: &CaptureIntent,
+    ) -> Result<CaptureOutcome, String> {
+        let (rgba, width, height) =
+            Self::render_screenshot(frame_builder, clean_screen_scene, intent)?;
         let preview = capture_preview(&rgba, width, height);
         match intent.destination {
             CaptureDestination::Clipboard => {
@@ -1636,8 +1655,10 @@ fn capture_source(
         // The clean screen is the presented scene, where each display drew
         // its part of the desktop at its own scale; the regions were chosen
         // on the logical desktop.
+        // Protected windows, secret prompts and a locked session leave
+        // the display only as the placeholder.
         CaptureExtent::Visible => (
-            clean_screen_scene.clone(),
+            frame_builder.capture_scene(clean_screen_scene).into_owned(),
             intent
                 .regions
                 .iter()
