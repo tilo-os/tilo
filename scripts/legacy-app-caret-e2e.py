@@ -170,6 +170,45 @@ def terminate(process: subprocess.Popen | None) -> None:
             print(f"warning: pid {process.pid} survived SIGKILL for {DEADLINE:.0f} s", file=sys.stderr)
 
 
+def record_process_group(pgid: int, destination: Path) -> None:
+    """Write where every thread of a still-running process group is blocked.
+
+    A wait that runs out on a process that never answered is only
+    diagnosable from what it was doing: its state, the kernel function each
+    thread sleeps in, its open files, and its kernel stack where readable.
+    """
+    lines: list[str] = []
+    for proc in sorted(Path("/proc").iterdir(), key=lambda p: p.name):
+        if not proc.name.isdigit():
+            continue
+        try:
+            stat = (proc / "stat").read_text()
+            # comm may contain spaces; the fields after its closing paren are fixed.
+            fields = stat[stat.rindex(")") + 2:].split()
+            if int(fields[2]) != pgid:
+                continue
+            cmdline = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            lines.append(f"pid {proc.name} state {fields[0]} ppid {fields[1]}: {cmdline.strip()}")
+            for task in sorted((proc / "task").iterdir(), key=lambda p: int(p.name)):
+                comm = (task / "comm").read_text().strip()
+                state = (task / "stat").read_text().rsplit(")", 1)[1].split()[0]
+                wchan = (task / "wchan").read_text().strip() or "-"
+                lines.append(f"  tid {task.name} {comm} state {state} wchan {wchan}")
+                try:
+                    stack = (task / "stack").read_text().strip()
+                except OSError:
+                    stack = ""
+                lines.extend(f"    {frame}" for frame in stack.splitlines())
+            for fd in sorted((proc / "fd").iterdir(), key=lambda p: int(p.name)):
+                try:
+                    lines.append(f"  fd {fd.name} -> {os.readlink(fd)}")
+                except OSError:
+                    pass
+        except (OSError, ValueError, IndexError):
+            continue
+    destination.write_text("\n".join(lines) + "\n" if lines else f"no live process in group {pgid}\n")
+
+
 def frame_for(control: Control, app_id: str) -> dict | None:
     envelope = control.send({"op": "foreign_frames"})
     frames = envelope.get("foreign_frames", {}).get("frames", [])
@@ -491,6 +530,9 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
             }, indent=2) + "\n")
             print(f"PASS {case.name}: {expected}")
         except Exception:
+            for name, process in (("app", app), ("compositor", compositor)):
+                if process is not None and process.poll() is None:
+                    record_process_group(process.pid, case_artifacts / f"{name}-processes.txt")
             if control_path.exists():
                 try:
                     failed_control = Control(control_path)
