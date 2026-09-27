@@ -617,7 +617,7 @@ mod tests {
             application: None,
         };
         there.adopt_view(&view, INSTANCE, &carried).unwrap();
-        transfer::retire(&store, PACKAGE, HOME, &origin, Retirement::Moved).unwrap();
+        transfer::retire(&store, PACKAGE, HOME, &origin, &Retirement::Moved(None)).unwrap();
 
         env.set("TILO_WORKSPACE_ID", ELSEWHERE)
             .set("TILO_CONTINUITY_INSTANCE", INSTANCE.to_string());

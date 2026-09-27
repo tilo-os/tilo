@@ -1083,6 +1083,22 @@ impl ChannelHandle {
         Ok(())
     }
 
+    /// Answer a handoff request, or report that the shown document arrived
+    /// retired. Bound to this certified primary route like
+    /// [`Self::report_continuation`]; never relayed to peers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker request fails.
+    pub async fn handoff(&self, app_id: &str, message: &[u8]) -> Result<(), NotAvailable> {
+        let mut req = self.inner.handoff_request();
+        let mut builder = req.get();
+        builder.set_app_id(app_id);
+        builder.set_message(message);
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Clear this application's previously reported continuation projection.
     /// The broker binds the request to the certified channel route exactly as
     /// it does for [`Self::report_continuation`].
@@ -3094,6 +3110,10 @@ pub struct ChannelContext {
     /// True only on a directed broker request to publish current document
     /// state. It is not a roster update and must not replace local context.
     pub snapshot_requested: bool,
+    /// `Some` only on a session-local handoff request addressed to this
+    /// instance; the bytes are `ui::collaboration::handoff` JSON. Not a
+    /// roster update either.
+    pub handoff: Option<Vec<u8>>,
 }
 
 /// Client-pulled channel-context stream.
@@ -3157,11 +3177,17 @@ impl ContextStream {
                 .filter(|target| !target.is_empty())
                 .map(str::to_owned)
         });
+        let handoff = ctx
+            .get_handoff()
+            .ok()
+            .filter(|bytes| !bytes.is_empty())
+            .map(<[u8]>::to_vec);
         Ok(ChannelContext {
             collaborators,
             permissions,
             follow_changed,
             snapshot_requested: ctx.get_snapshot_requested(),
+            handoff,
         })
     }
 }

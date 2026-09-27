@@ -29,6 +29,7 @@ pub use transport::{
 
 #[cfg(feature = "broker-transport")]
 mod broker;
+pub mod handoff;
 mod history;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
@@ -246,6 +247,13 @@ pub enum CollabRequest {
     /// produce a safe projection.
     ClearContinuation {
         app_id: String,
+    },
+    /// Answer a handoff request, or report a retirement
+    /// ([`handoff::HandoffReport`], encoded). Session-local, on the primary
+    /// route; never relayed to peers.
+    ReportHandoff {
+        app_id: String,
+        message: Vec<u8>,
     },
     /// Private, level-triggered playback descriptors for shell-mediated
     /// same-person handoff. Never part of the room CRDT or peer fan-out.
@@ -597,6 +605,11 @@ pub enum CollabEvent {
     /// a late joiner on the same document route.
     DocumentSnapshotRequested {
         route: RouteSpec,
+    },
+    /// The shell asked this instance for a step of moving its window to
+    /// another workspace. Session-local control; never from a peer.
+    Handoff {
+        request: handoff::HandoffRequest,
     },
     RemoteCursorMoved {
         user_id: String,
