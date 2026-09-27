@@ -82,6 +82,11 @@ const NEXTCLOUD_PROPS: [PropName; 7] = [
     OC_CHECKSUMS,
 ];
 
+/// `true` when `tag` is `W/` followed by the opaque tag of `revision`.
+fn is_weak_form_of(tag: &str, revision: &Revision) -> bool {
+    tag.strip_prefix("W/") == Some(revision.as_str())
+}
+
 fn listing_limits() -> Limits {
     Limits {
         max_bytes: MAX_LISTING_BYTES,
@@ -287,6 +292,34 @@ impl DavSource {
 
     fn propfind(&self, url: Url, depth: Depth) -> Result<tilo_dav::Multistatus> {
         let response = self.check(self.client()?.propfind(url, depth, self.props()))?;
+        Self::listing(response)
+    }
+
+    /// `PROPFIND` of an item whose kind is not known yet, at its bare path.
+    /// A server that names collections with their trailing slash (Apache
+    /// `mod_dav` behind `DirectorySlash`) answers a folder's bare path with
+    /// a redirect to the slashed one; that is the same item, so it is asked
+    /// there. Any other redirect stays refused.
+    fn propfind_item(&self, id: &ItemId, depth: Depth) -> Result<tilo_dav::Multistatus> {
+        let bare = self.url(id, false)?;
+        let sent = self.client()?.propfind(bare.clone(), depth, self.props());
+        let folder = self.url(id, true)?;
+        let to_folder = sent.as_ref().is_ok_and(|response| {
+            response.status().is_redirection()
+                && response
+                    .header("location")
+                    .and_then(|location| bare.join(&location).ok())
+                    .is_some_and(|target| target == folder)
+        });
+        let response = if to_folder {
+            self.check(self.client()?.propfind(folder, depth, self.props()))?
+        } else {
+            self.check(sent)?
+        };
+        Self::listing(response)
+    }
+
+    fn listing(response: DavResponse) -> Result<tilo_dav::Multistatus> {
         response
             .multistatus(&listing_limits())
             .map_err(|error| match error {
@@ -335,7 +368,7 @@ impl DavSource {
     }
 
     fn fileid(&self, id: &ItemId) -> Result<String> {
-        let listing = self.propfind(self.url(id, false)?, Depth::Zero)?;
+        let listing = self.propfind_item(id, Depth::Zero)?;
         listing
             .responses
             .first()
@@ -377,11 +410,20 @@ impl DavSource {
         range: Option<Range<u64>>,
         expect: Option<&Revision>,
     ) -> Result<Download> {
-        let response = self.check(self.client()?.get_range(
-            url,
-            range.clone(),
-            Self::precondition(expect),
-        ))?;
+        let sent = self
+            .client()?
+            .get_range(url.clone(), range.clone(), Self::precondition(expect));
+        let response = match (sent, expect) {
+            (Ok(refused), Some(expected))
+                if refused.status() == StatusCode::PRECONDITION_FAILED
+                    && refused
+                        .etag()
+                        .is_some_and(|tag| is_weak_form_of(&tag, expected)) =>
+            {
+                self.read_freshly_written(url, range.clone(), expected)?
+            }
+            (sent, _) => self.check(sent)?,
+        };
         let revision = response.etag().map(Revision::new);
         let declared = response.content_length();
         let partial = response.status() == StatusCode::PARTIAL_CONTENT;
@@ -420,6 +462,28 @@ impl DavSource {
             total,
             revision,
         })
+    }
+
+    /// A read of `expected` that the server refused only because it still
+    /// marks that version's entity tag weak: Apache does so for a file
+    /// modified within the last second, and `If-Match` compares strongly.
+    /// The same bytes are read unconditionally and accepted only when the
+    /// server names the same version.
+    fn read_freshly_written(
+        &self,
+        url: Url,
+        range: Option<Range<u64>>,
+        expected: &Revision,
+    ) -> Result<DavResponse> {
+        let response = self.check(self.client()?.get_range(url, range, Precondition::None))?;
+        if response
+            .etag()
+            .is_some_and(|tag| tag == expected.as_str() || is_weak_form_of(&tag, expected))
+        {
+            Ok(response)
+        } else {
+            Err(Error::Conflict { current: None })
+        }
     }
 
     /// `true` when `id` exists.
@@ -483,7 +547,7 @@ impl CloudSource for DavSource {
     }
 
     fn stat(&self, id: &ItemId) -> Result<Item> {
-        let listing = self.propfind(self.url(id, false)?, Depth::Zero)?;
+        let listing = self.propfind_item(id, Depth::Zero)?;
         listing
             .responses
             .iter()

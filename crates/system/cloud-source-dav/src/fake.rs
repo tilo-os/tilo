@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use test_http::{Reply, Request, Responder};
 use tilo_dav::Url;
@@ -506,6 +506,35 @@ fn etag_matches(request: &Request, node: Option<&Node>) -> bool {
     true
 }
 
+/// A chunked upload's assembly `MOVE`, as Nextcloud evaluates it. Plain
+/// `If-Match`/`If-None-Match` test the request URI, the virtual `.file`,
+/// which exists and has no etag a client knows. The destination is tested
+/// by `Overwrite: F` and by an `If` header tagged with its URL.
+fn assembly_condition_holds(request: &Request, destination: Option<&Node>) -> bool {
+    if request.header("if-none-match") == Some("*") {
+        return false;
+    }
+    if request
+        .header("if-match")
+        .is_some_and(|expected| expected != "*")
+    {
+        return false;
+    }
+    if request.header("overwrite") == Some("F") && destination.is_some() {
+        return false;
+    }
+    match request.header("if") {
+        Some(tagged) => {
+            let expected = tagged
+                .split_once("([")
+                .and_then(|(_, rest)| rest.split_once("])"))
+                .map(|(etag, _)| etag);
+            matches!((expected, destination), (Some(etag), Some(node)) if etag == node.etag)
+        }
+        None => true,
+    }
+}
+
 fn handle(state: &mut State, request: &Request) -> Option<Reply> {
     if state.offline {
         return None;
@@ -579,6 +608,12 @@ fn files(state: &mut State, request: &Request, path: &str, truncate: bool) -> Re
             let Some(node) = state.nodes.get(path) else {
                 return Reply::status(404);
             };
+            // Like Apache `mod_dav` behind `DirectorySlash`, the plain server
+            // redirects a folder's bare path to its slashed one.
+            let target = request.target.split('?').next().unwrap_or("");
+            if !state.nextcloud && node.folder && !path.is_empty() && !target.ends_with('/') {
+                return Reply::status(301).header("Location", &format!("{target}/"));
+            }
             let mut body = state.propstat(path, node, prefix);
             if node.folder && request.header("depth") != Some("0") {
                 let children: Vec<(&String, &Node)> = state
@@ -599,11 +634,27 @@ fn files(state: &mut State, request: &Request, path: &str, truncate: bool) -> Re
             if node.folder {
                 return Reply::status(405);
             }
-            if !etag_matches(request, Some(node)) {
-                return Reply::status(412);
+            // Like Apache, the plain server marks a file's entity tag weak
+            // for the second after it changed, and `If-Match` then fails the
+            // strong comparison.
+            let fresh = !state.nextcloud
+                && !node
+                    .modified
+                    .elapsed()
+                    .is_ok_and(|age| age >= Duration::from_secs(1));
+            let etag = if fresh {
+                format!("W/{}", node.etag)
+            } else {
+                node.etag.clone()
+            };
+            let strong_match_refused = fresh
+                && request
+                    .header("if-match")
+                    .is_some_and(|expected| expected != "*");
+            if strong_match_refused || !etag_matches(request, Some(node)) {
+                return Reply::status(412).header("ETag", &etag);
             }
             let bytes = node.bytes.clone();
-            let etag = node.etag.clone();
             let total = bytes.len();
             let range = request
                 .header("range")
@@ -808,7 +859,7 @@ fn uploads(state: &mut State, request: &Request, path: &str) -> Reply {
             if !state.uploads.contains_key(&transfer) {
                 return Reply::status(404);
             }
-            if !etag_matches(request, state.nodes.get(&to)) {
+            if !assembly_condition_holds(request, state.nodes.get(&to)) {
                 return Reply::status(412);
             }
             if !state.nodes.get(parent(&to)).is_some_and(|n| n.folder) {
