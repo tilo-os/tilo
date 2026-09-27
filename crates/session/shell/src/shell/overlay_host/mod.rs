@@ -36,6 +36,7 @@ mod displays;
 mod history;
 mod notification_center;
 mod now_playing;
+mod shortcut_steps;
 mod shortcut_triggers;
 mod shortcuts;
 
@@ -15714,6 +15715,7 @@ impl Widget for ShellOverlayHost {
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
+        self.pump_shortcut_step_prompts();
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             state.sync_external_tree_revision();
@@ -20322,7 +20324,10 @@ impl ShellOverlayHost {
                     text_renderer,
                     theme,
                     name_rect,
-                    self.portal_dialogs.launcher_name().unwrap_or(editor.name),
+                    &self
+                        .portal_dialogs
+                        .field_display()
+                        .unwrap_or_else(|| editor.name.to_string()),
                     theme.tokens.typography.scale.base,
                     ui::chrome::SelectionState::active(focused),
                 );
