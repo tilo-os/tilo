@@ -220,20 +220,7 @@ them before assuming CI built the whole workspace or app fleet. Main-branch
 check receipts are recorded out of band by `tools/ci/receipt.sh`; they do not
 modify `main` and are evidence for one source SHA and run ID only. A successful
 receipt does not qualify a package, OS release, registry deployment or hardware
-target.
-
-Main check runs that are still queued when a newer one is queued are cancelled
-(`tools/ci/queue_coalesce.py`, deployed as the infrastructure repository's
-coalescer); a run that started is never cancelled. Each main run selects
-everything since the last main commit whose own check run started
-(`tools/ci/check_base.py`), so the policy is: every main commit is covered by a
-green check run of itself or of a later commit. `receipt.sh covers <sha> origin`
-answers that from the receipts, which record each run's range. A skipped
-commit's check statuses read "Has been cancelled"; that is not a failure of the
-commit. Release guards (`receipt.sh verify`, used by the desktop release) still
-require a green run of the exact commit: a later run covers a commit's changes
-but not its tree, so tag a commit that has its own receipt. Lint still runs on
-every main commit. For queue/startup regressions, preserve the run number and compare it
+target. For queue/startup regressions, preserve the run number and compare it
 with `timing_report.py` instead of estimating from the web UI.
 
 ## Preview affected applications
