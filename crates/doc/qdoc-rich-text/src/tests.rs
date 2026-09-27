@@ -241,3 +241,192 @@ fn the_outline_follows_headings() {
     assert!(outline[0].text.starts_with("Chapter: "));
     assert_eq!(outline, replica.state().unwrap().headings());
 }
+
+/// The cells of every table in the body, in order: `(table, row, col, id, text)`.
+fn table_cells(replica: &Replica<RichText>) -> Vec<(String, i64, i64, String, String)> {
+    let c = replica.state().unwrap().containers().clone();
+    model::materialize(replica.doc(), &c)
+        .blocks
+        .into_iter()
+        .filter(|block| block.kind == "cell")
+        .map(|block| {
+            let int = |key: &str| match block.attrs.get(key) {
+                Some(AttrVal::Int(value)) => *value,
+                other => panic!("{key} is {other:?}"),
+            };
+            let table = match block.attrs.get("table") {
+                Some(AttrVal::Str(table)) => table.clone(),
+                other => panic!("table is {other:?}"),
+            };
+            (table, int("row"), int("col"), block.id, block.text)
+        })
+        .collect()
+}
+
+fn team() -> Vec<Vec<String>> {
+    [
+        ["Name", "Role", "Location"],
+        ["Priya Natarajan", "Product lead", "Berlin"],
+        ["Tom Becker", "Engineering", "Hamburg"],
+    ]
+    .iter()
+    .map(|row| row.iter().map(|&text| text.to_owned()).collect())
+    .collect()
+}
+
+#[test]
+fn a_filled_table_is_laid_out_row_by_row_with_its_header_first() {
+    let mut replica = document(2);
+    let ids = body_ids(&replica.state().unwrap());
+    let action = action::insert_filled_table_action(&ids[1], team());
+    replica.apply_action(&action, "Insert table").unwrap();
+
+    let cells = table_cells(&replica);
+    assert_eq!(cells.len(), 9);
+    let table = &cells[0].0;
+    assert!(cells.iter().all(|cell| &cell.0 == table), "one table");
+    let laid_out: Vec<(i64, i64, &str)> = cells
+        .iter()
+        .map(|(_, row, col, _, text)| (*row, *col, text.as_str()))
+        .collect();
+    assert_eq!(
+        laid_out,
+        [
+            (0, 0, "Name"),
+            (0, 1, "Role"),
+            (0, 2, "Location"),
+            (1, 0, "Priya Natarajan"),
+            (1, 1, "Product lead"),
+            (1, 2, "Berlin"),
+            (2, 0, "Tom Becker"),
+            (2, 1, "Engineering"),
+            (2, 2, "Hamburg"),
+        ]
+    );
+    // In place: right after `after`, before the paragraph that followed it.
+    let body = body_ids(&replica.state().unwrap());
+    let cell_ids: Vec<&str> = cells.iter().map(|cell| cell.3.as_str()).collect();
+    assert_eq!(body[..2], ids[..2]);
+    assert_eq!(body[2..11], cell_ids[..]);
+    assert_eq!(body[11..], ids[2..]);
+    // The resource's state lists the cells as the document's objects.
+    assert_eq!(replica.state().unwrap().featured("cell").len(), 9);
+}
+
+#[test]
+fn replicas_applying_a_filled_table_mint_the_same_table() {
+    let mut origin = document(2);
+    let mut peer = origin.fork();
+    let after = origin.state().unwrap().body().id_at(1).unwrap().to_owned();
+    origin
+        .apply_action(
+            &action::insert_filled_table_action(&after, team()),
+            "Insert table",
+        )
+        .unwrap();
+    let envelope = origin.log().last().unwrap().clone();
+    peer.replay(&envelope).unwrap();
+    assert_eq!(table_cells(&origin), table_cells(&peer));
+    assert_eq!(
+        body_ids(&origin.state().unwrap()),
+        body_ids(&peer.state().unwrap())
+    );
+    assert_eq!(origin.state().unwrap(), peer.state().unwrap());
+}
+
+#[test]
+fn a_filled_table_and_the_edits_after_it_are_one_group() {
+    use tilo_resource::Invoke;
+    let mut origin = document(3);
+    let mut peer = origin.fork();
+    let ids = body_ids(&origin.state().unwrap());
+    // Replace the paragraphs after the first with a table, in one change.
+    let group = Invoke::group([
+        Invoke::<RichText>::apply(&action::insert_filled_table_action(&ids[0], team())).unwrap(),
+        Invoke::<RichText>::apply(&RichTextAction::RemoveBlocks {
+            blocks: ids[1..].to_vec(),
+        })
+        .unwrap(),
+    ]);
+    let before = origin.log().len();
+    origin.apply(group).unwrap();
+    assert_eq!(origin.log().len(), before + 1, "one change");
+    let body = body_ids(&origin.state().unwrap());
+    assert_eq!(body.len(), 10);
+    assert_eq!(body[0], ids[0]);
+    assert_eq!(table_cells(&origin)[4].4, "Product lead");
+
+    let envelope = origin.log().last().unwrap().clone();
+    peer.replay(&envelope).unwrap();
+    assert_eq!(table_cells(&origin), table_cells(&peer));
+    assert_eq!(body, body_ids(&peer.state().unwrap()));
+}
+
+#[test]
+fn an_empty_table_still_replays_as_it_always_has() {
+    // A recorded payload decodes to the same action and re-encodes to the
+    // same bytes, so the ids it mints on replay are the ones it minted then.
+    let recorded = r#"{"InsertTable":{"after":"b1","rows":2,"cols":3}}"#;
+    let action: RichTextAction = serde_json::from_str(recorded).unwrap();
+    assert_eq!(action, action::insert_table_action("b1", 2, 3));
+    assert_eq!(serde_json::to_string(&action).unwrap(), recorded);
+
+    let mut replica = document(1);
+    let after = replica.state().unwrap().body().id_at(1).unwrap().to_owned();
+    replica
+        .apply_action(&action::insert_table_action(&after, 2, 3), "Insert table")
+        .unwrap();
+    let cells = table_cells(&replica);
+    assert_eq!(cells.len(), 6);
+    assert!(cells.iter().all(|cell| cell.4.is_empty()));
+}
+
+#[test]
+fn a_filled_table_outside_the_limits_is_refused_before_it_writes() {
+    let mut replica = document(1);
+    let after = replica.state().unwrap().body().id_at(1).unwrap().to_owned();
+    let row = |cols: usize, text: &str| vec![text.to_owned(); cols];
+    let hostile = [
+        // Nothing to lay out.
+        Vec::new(),
+        vec![Vec::new()],
+        // Ragged rows.
+        vec![row(3, "a"), row(2, "b")],
+        // Past the table bounds.
+        vec![row(action::MAX_TABLE_DIMENSION + 1, "")],
+        vec![row(1, ""); action::MAX_TABLE_DIMENSION + 1],
+        // More text than one action may carry, spread over the cells.
+        vec![row(2, &"x".repeat(action::MAX_ACTION_TEXT_CHARS / 2 + 1))],
+    ];
+    let heads = replica.heads();
+    for cells in hostile {
+        let shape: Vec<usize> = cells.iter().map(Vec::len).collect();
+        let refused = replica.apply_action(
+            &action::insert_filled_table_action(&after, cells),
+            "Insert table",
+        );
+        assert!(refused.is_err(), "{shape:?} was accepted");
+    }
+    // A stale anchor.
+    assert!(
+        replica
+            .apply_action(
+                &action::insert_filled_table_action("gone", team()),
+                "Insert table"
+            )
+            .is_err()
+    );
+    assert_eq!(replica.heads(), heads, "nothing was written");
+    assert!(table_cells(&replica).is_empty());
+
+    // The largest table the bounds allow is accepted.
+    let side = action::MAX_TABLE_DIMENSION;
+    let cells = vec![row(side, "c"); side];
+    replica
+        .apply_action(
+            &action::insert_filled_table_action(&after, cells),
+            "Insert table",
+        )
+        .unwrap();
+    assert_eq!(table_cells(&replica).len(), side * side);
+}
