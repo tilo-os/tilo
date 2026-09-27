@@ -25,6 +25,7 @@ pub mod app_action_consent;
 pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
+pub mod capture_protection;
 pub(crate) mod capture_surface;
 pub mod catalogue;
 pub mod channel_encryption;
@@ -146,6 +147,8 @@ pub mod topbar;
 pub mod topbar_chrome;
 pub mod uri_open;
 pub mod window_actions;
+pub mod window_previews;
+pub mod window_switcher;
 #[cfg(target_os = "linux")]
 pub mod windows_compat;
 pub mod workspace_drop;
@@ -667,7 +670,10 @@ impl Shell {
         {
             ws.name = new_name.to_string();
         }
-        self.toasts.push("Workspace renamed", ToastKind::Info);
+        self.toasts.push(
+            crate::shell::i18n::t("shell-workspace-renamed"),
+            ToastKind::Info,
+        );
     }
 
     // Default tile context menu: "Close Tab" / separator / "Split Right" /
@@ -729,15 +735,13 @@ pub enum TabMenuAction {
 }
 
 impl TabMenuAction {
-    /// User-facing label. English literals, following every other
-    /// accessibility name in `shell/src/shell` — the shell installs no
-    /// fluent catalogue (see `compositor/macos.rs`, which only
-    /// initialises `I18nManager`), so there is no key to look up yet.
-    pub fn label(self) -> &'static str {
+    /// User-facing label, from the shell's catalogue.
+    pub fn label(self) -> String {
+        use crate::shell::i18n::t;
         match self {
-            Self::CloseTab => "Close Tab",
-            Self::SplitRight => "Split Right",
-            Self::MoveToNewGroup => "Move to New Group",
+            Self::CloseTab => t("shell-tab-menu-close"),
+            Self::SplitRight => t("shell-tab-menu-split-right"),
+            Self::MoveToNewGroup => t("shell-tab-menu-new-group"),
         }
     }
 
@@ -889,7 +893,10 @@ fn default_demo_tabs(
                 "Terminal",
                 RuntimeTile::Stub {
                     kind: UiKind::Terminal,
-                    label: format!("Terminal: {e}"),
+                    label: crate::shell::i18n::t_args(
+                        "shell-terminal-unavailable",
+                        &[("error", e.to_string().into())],
+                    ),
                 },
             ));
         }
@@ -1020,7 +1027,7 @@ pub(crate) fn to_ui_tile_with_inputs(
     match try_to_ui_tile(t, terminal::HostedProcessServices::default(), inputs) {
         Ok(tile) => tile,
         Err(error) => UiTile::Notice {
-            title: "Application unavailable".into(),
+            title: crate::shell::i18n::t("shell-app-unavailable"),
             detail: error.to_string(),
         },
     }
@@ -1038,7 +1045,7 @@ pub(crate) fn to_ui_tile_for_tab_with_inputs(
         Some(tab),
     )
     .unwrap_or_else(|error| UiTile::Notice {
-        title: "Application unavailable".into(),
+        title: crate::shell::i18n::t("shell-app-unavailable"),
         detail: error.to_string(),
     })
 }
@@ -1066,8 +1073,8 @@ fn try_to_ui_tile_for_tab(
         // index. The neutral body exists only for the first reconciliation
         // frame before that controller has its content rect.
         ShellTile::WorkspaceActivity => UiTile::Notice {
-            title: "While you were away".into(),
-            detail: "Loading workspace activity…".into(),
+            title: crate::shell::i18n::t("shell-activity-title"),
+            detail: crate::shell::i18n::t("shell-activity-loading"),
         },
         ShellTile::Stub { kind, label } => UiTile::Stub {
             kind: to_ui_kind(kind),

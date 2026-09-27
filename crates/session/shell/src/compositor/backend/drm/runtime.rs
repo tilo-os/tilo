@@ -63,7 +63,7 @@ use super::session::{SeatTick, SessionAction, SessionState};
 use crate::compositor::backend::layout;
 use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
-    TouchEvent as TiloTouchEvent,
+    TabletPhase, TouchEvent as TiloTouchEvent,
 };
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
@@ -295,6 +295,9 @@ pub struct DrmDispatchState {
     /// Where local motion may take the pointer while a client locks or
     /// confines it.
     pub pointer_constraint: crate::compositor::backend::PointerConstraintRegion,
+    /// The output a pen tablet maps onto (Settings' "Pen & tablet"), by
+    /// connector name or display settings key; `None` spans every output.
+    pub pen_output: Option<String>,
     /// Per-user xkb keymap + state translating libinput keycodes into winit
     /// `KeyboardInput` events (`FrameBuilder::dispatch_event`'s wire); `None`
     /// when the keymap couldn't compile, running pointer-only. The persisted
@@ -882,6 +885,7 @@ impl DrmDispatchState {
             hw_cursor: CursorPlanes::default(),
             pointer_image: crate::compositor::cursor::PointerImage::default(),
             pointer_constraint: crate::compositor::backend::PointerConstraintRegion::Free,
+            pen_output: load_pen_output(),
             keyboard,
             present_gate: Some(Arc::new(Mutex::new(()))),
         }
@@ -1565,66 +1569,11 @@ impl DrmDispatchState {
     }
 
     /// Apply the current input settings to one libinput device.
-    ///
-    /// Every failure is logged at debug and ignored: libinput errors on an
-    /// unsupported setting, and [`input_config::plan_for`]'s capability gates already avoid asking — anything left is a driver quirk that must not take the session down.
     fn configure_device(&self, device: &mut smithay::reexports::input::Device) {
-        let caps = device_caps(device);
-        let plan = input_config::plan_for(&self.input, &caps);
-        if let Some(on) = plan.tap {
-            let _ = device.config_tap_set_enabled(on);
-        }
-        if let Some(on) = plan.tap_drag {
-            let _ = device.config_tap_set_drag_enabled(on);
-        }
-        if let Some(on) = plan.natural_scroll {
-            let _ = device.config_scroll_set_natural_scroll_enabled(on);
-        }
-        if let Some(on) = plan.disable_while_typing {
-            let _ = device.config_dwt_set_enabled(on);
-        }
-        if let Some(on) = plan.middle_emulation {
-            let _ = device.config_middle_emulation_set_enabled(on);
-        }
-        if let Some(speed) = plan.accel_speed() {
-            let _ = device.config_accel_set_speed(speed);
-        }
-        if let Some(on) = plan.left_handed {
-            let _ = device.config_left_handed_set(on);
-        }
-        if let Some(on) = plan.send_events {
-            use smithay::reexports::input::SendEventsMode;
-            let _ = device.config_send_events_set_mode(if on {
-                SendEventsMode::ENABLED
-            } else {
-                SendEventsMode::DISABLED
-            });
-        }
-        if let Some(flat) = plan.flat_acceleration {
-            use smithay::reexports::input::AccelProfile;
-            let _ = device.config_accel_set_profile(if flat {
-                AccelProfile::Flat
-            } else {
-                AccelProfile::Adaptive
-            });
-        }
-        if let Some(method) = plan.click_method {
-            use smithay::reexports::input::ClickMethod;
-            let _ = device.config_click_set_method(match method {
-                input_config::ClickMethod::ButtonAreas => ClickMethod::ButtonAreas,
-                input_config::ClickMethod::Clickfinger => ClickMethod::Clickfinger,
-            });
-        }
-        if let Some(method) = plan.scroll_method {
-            use smithay::reexports::input::ScrollMethod;
-            let _ = device.config_scroll_set_method(match method {
-                input_config::ScrollMethod::TwoFinger => ScrollMethod::TwoFinger,
-                input_config::ScrollMethod::Edge => ScrollMethod::Edge,
-            });
-        }
+        let plan = input_config::configure(&self.input, device);
         tracing::info!(
             device = device.name(),
-            touchpad = caps.is_touchpad(),
+            kind = ?device_caps(device).kind(),
             tap = ?plan.tap,
             natural_scroll = ?plan.natural_scroll,
             accel = ?plan.accel_speed(),
@@ -1632,6 +1581,22 @@ impl DrmDispatchState {
             scroll_method = ?plan.scroll_method,
             "DRM input: configured device"
         );
+    }
+
+    /// Tell Settings which kinds of input device are attached, so it shows
+    /// only the sections that apply. Failure is benign: no runtime
+    /// directory in a test session, and the devices themselves are unaffected.
+    fn publish_input_snapshot(&self) {
+        let pid = std::process::id();
+        let snapshot = settings_store::hardware::InputHardwareSnapshot {
+            publisher_pid: pid,
+            publisher_start_ticks: settings_store::hardware::process_start_ticks(pid)
+                .unwrap_or_default(),
+            devices: self.devices.iter().map(input_device_snapshot).collect(),
+        };
+        if let Err(error) = snapshot.save() {
+            tracing::debug!(%error, "DRM input: could not publish device snapshot");
+        }
     }
 
     /// Remember libinput's output association while the device is live.
@@ -2243,9 +2208,71 @@ impl DrmDispatchState {
             | InputEvent::TouchFrame { .. } => {
                 self.handle_libinput_touch_event(event);
             }
-            // Switches (lid, tablet mode) and tablet-tool events are handled elsewhere or not at all; unlike the gestures above they were never advertised to clients, so dropping them promises nothing undelivered.
+            InputEvent::TabletToolAxis { .. }
+            | InputEvent::TabletToolProximity { .. }
+            | InputEvent::TabletToolTip { .. }
+            | InputEvent::TabletToolButton { .. } => {
+                self.handle_libinput_tablet_event(&event);
+            }
+            // Switches (lid, tablet mode) and tablet pads are handled elsewhere or not at all; unlike the tools above they were never advertised to clients, so dropping them promises nothing undelivered.
             _ => {}
         }
+    }
+
+    /// Tablet-tool half of [`Self::handle_libinput_event`]: every axis the
+    /// tool reports, mapped onto the output the pen is tied to.
+    fn handle_libinput_tablet_event(&mut self, event: &InputEvent<LibinputInputBackend>) {
+        use smithay::backend::input::{
+            ProximityState, TabletToolButtonEvent, TabletToolProximityEvent, TabletToolTipEvent,
+            TabletToolTipState,
+        };
+        let Some(target) = super::tablet::pen_target(
+            self.live.iter().map(|output| {
+                (
+                    output.connector_name.as_str(),
+                    output.config_key.as_str(),
+                    output.position,
+                    logical_output_size(output.size, output.transform),
+                )
+            }),
+            self.pen_output.as_deref(),
+        ) else {
+            return;
+        };
+        let input = match event {
+            InputEvent::TabletToolAxis { event } => {
+                super::tablet::tablet_input(event, TabletPhase::Motion, target)
+            }
+            InputEvent::TabletToolProximity { event } => super::tablet::tablet_input(
+                event,
+                match TabletToolProximityEvent::state(event) {
+                    ProximityState::In => TabletPhase::ProximityIn,
+                    ProximityState::Out => TabletPhase::ProximityOut,
+                },
+                target,
+            ),
+            InputEvent::TabletToolTip { event } => super::tablet::tablet_input(
+                event,
+                match TabletToolTipEvent::tip_state(event) {
+                    TabletToolTipState::Down => TabletPhase::TipDown,
+                    TabletToolTipState::Up => TabletPhase::TipUp,
+                },
+                target,
+            ),
+            InputEvent::TabletToolButton { event } => super::tablet::tablet_input(
+                event,
+                TabletPhase::Button {
+                    button: TabletToolButtonEvent::button(event),
+                    pressed: matches!(
+                        TabletToolButtonEvent::button_state(event),
+                        ButtonState::Pressed
+                    ),
+                },
+                target,
+            ),
+            _ => return,
+        };
+        self.push(BackendEvent::Tablet(input));
     }
 
     /// `InputEvent::DeviceAdded`/`DeviceRemoved` half of
@@ -2259,6 +2286,7 @@ impl DrmDispatchState {
                 self.configure_device(&mut device);
                 self.remember_touch_output_binding(&device);
                 self.devices.push(device);
+                self.publish_input_snapshot();
             }
             InputEvent::DeviceRemoved { device } => {
                 tracing::info!(device = device.name(), "DRM input: device removed");
@@ -2284,6 +2312,7 @@ impl DrmDispatchState {
                 }
                 self.touch_output_bindings.remove(&device.id());
                 self.devices.retain(|d| *d != device);
+                self.publish_input_snapshot();
             }
             _ => {}
         }
@@ -3105,6 +3134,7 @@ impl DrmRuntime {
             );
         }
         self.dispatch.accessibility = accessibility;
+        self.dispatch.pen_output = load_pen_output();
         if accessibility.effective_cursor_size() != previous_cursor_size {
             self.dispatch.command(ScanoutCommand::SetCursorSize(
                 accessibility.effective_cursor_size(),
@@ -3127,11 +3157,7 @@ impl DrmRuntime {
             natural_scroll: input.natural_scroll_for(true),
             ..GestureConfig::default()
         });
-        let mut devices = std::mem::take(&mut self.dispatch.devices);
-        for device in &mut devices {
-            self.dispatch.configure_device(device);
-        }
-        self.dispatch.devices = devices;
+        input_config::reconfigure_all(&self.dispatch.input, &mut self.dispatch.devices);
         let scale_override = load_display_scale_override();
         if scale_override != self.dispatch.scale_override {
             self.dispatch.scale_override = scale_override;
@@ -3369,6 +3395,97 @@ impl DrmRuntime {
 
 /// Ask one libinput device what it can be configured to do — every
 /// question is a capability query, asked before setting to keep the path free of error returns for settings a device never accepted.
+/// libinput half of [`input_config::ConfigurableDevice`].
+///
+/// Every failure is ignored: libinput errors on an unsupported setting, and
+/// [`input_config::plan_for`]'s capability gates already avoid asking —
+/// anything left is a driver quirk that must not take the session down.
+impl input_config::ConfigurableDevice for smithay::reexports::input::Device {
+    fn caps(&self) -> DeviceCaps {
+        device_caps(self)
+    }
+
+    fn apply(&mut self, plan: &input_config::DevicePlan) {
+        if let Some(on) = plan.tap {
+            let _ = self.config_tap_set_enabled(on);
+        }
+        if let Some(on) = plan.tap_drag {
+            let _ = self.config_tap_set_drag_enabled(on);
+        }
+        if let Some(on) = plan.tap_drag_lock {
+            let _ = self.config_tap_set_drag_lock_enabled(on);
+        }
+        if let Some(on) = plan.natural_scroll {
+            let _ = self.config_scroll_set_natural_scroll_enabled(on);
+        }
+        if let Some(on) = plan.disable_while_typing {
+            let _ = self.config_dwt_set_enabled(on);
+        }
+        if let Some(on) = plan.middle_emulation {
+            let _ = self.config_middle_emulation_set_enabled(on);
+        }
+        if let Some(speed) = plan.accel_speed() {
+            let _ = self.config_accel_set_speed(speed);
+        }
+        if let Some(on) = plan.left_handed {
+            let _ = self.config_left_handed_set(on);
+        }
+        if let Some(mode) = plan.send_events {
+            use smithay::reexports::input::SendEventsMode;
+            let _ = self.config_send_events_set_mode(match mode {
+                input_config::SendEvents::Enabled => SendEventsMode::ENABLED,
+                input_config::SendEvents::Disabled => SendEventsMode::DISABLED,
+                input_config::SendEvents::DisabledOnExternalMouse => {
+                    SendEventsMode::DISABLED_ON_EXTERNAL_MOUSE
+                }
+            });
+        }
+        if let Some(flat) = plan.flat_acceleration {
+            use smithay::reexports::input::AccelProfile;
+            let _ = self.config_accel_set_profile(if flat {
+                AccelProfile::Flat
+            } else {
+                AccelProfile::Adaptive
+            });
+        }
+        if let Some(method) = plan.click_method {
+            use smithay::reexports::input::ClickMethod;
+            let _ = self.config_click_set_method(match method {
+                input_config::ClickMethod::ButtonAreas => ClickMethod::ButtonAreas,
+                input_config::ClickMethod::Clickfinger => ClickMethod::Clickfinger,
+            });
+        }
+        if let Some(method) = plan.scroll_method {
+            use smithay::reexports::input::ScrollMethod;
+            let _ = self.config_scroll_set_method(match method {
+                input_config::ScrollMethod::TwoFinger => ScrollMethod::TwoFinger,
+                input_config::ScrollMethod::Edge => ScrollMethod::Edge,
+            });
+        }
+    }
+}
+
+/// One attached device as Settings sees it.
+fn input_device_snapshot(
+    device: &smithay::reexports::input::Device,
+) -> settings_store::hardware::InputDeviceSnapshot {
+    let caps = device_caps(device);
+    settings_store::hardware::InputDeviceSnapshot {
+        key: settings_store::hardware::input_device_key(
+            device.id_vendor(),
+            device.id_product(),
+            device.name(),
+        ),
+        name: device.name().to_string(),
+        kind: caps.kind(),
+        pad_buttons: if caps.is_tablet_pad {
+            u32::try_from(device.tablet_pad_number_of_buttons()).unwrap_or(0)
+        } else {
+            0
+        },
+    }
+}
+
 fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
     DeviceCaps {
         supports_tap: device.config_tap_finger_count() > 0,
@@ -3399,9 +3516,18 @@ fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
         supports_two_finger_scroll: device
             .config_scroll_methods()
             .contains(&smithay::reexports::input::ScrollMethod::TwoFinger),
+        supports_disable_on_external_mouse: device
+            .config_send_events_modes()
+            .contains(smithay::reexports::input::SendEventsMode::DISABLED_ON_EXTERNAL_MOUSE),
         supports_edge_scroll: device
             .config_scroll_methods()
             .contains(&smithay::reexports::input::ScrollMethod::Edge),
+        is_keyboard: device.has_capability(smithay::reexports::input::DeviceCapability::Keyboard),
+        is_touch: device.has_capability(smithay::reexports::input::DeviceCapability::Touch),
+        is_tablet_tool: device
+            .has_capability(smithay::reexports::input::DeviceCapability::TabletTool),
+        is_tablet_pad: device
+            .has_capability(smithay::reexports::input::DeviceCapability::TabletPad),
     }
 }
 
@@ -3548,6 +3674,14 @@ where
 }
 
 /// Build a `WindowEvent::CursorMoved` for the compositor's input wire. `device_id` is zeroed — the host path never inspects it (mirrors `native::execute_planned_action`).
+fn load_pen_output() -> Option<String> {
+    settings_store::hardware::RichInputConfig::from_section(&settings_store::load_section(
+        super::input_config::SECTION,
+    ))
+    .pen_output
+    .filter(|name| !name.is_empty())
+}
+
 fn cursor_moved_event(x: f64, y: f64) -> WindowEvent {
     WindowEvent::CursorMoved {
         device_id: unsafe { std::mem::zeroed() },

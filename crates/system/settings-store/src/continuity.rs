@@ -109,6 +109,7 @@ policies! {
         "tilo.input.key_repeat_rate_hz",
         "tilo.input.keyboard_layout",
         "tilo.input.tap_drag",
+        "tilo.input.tap_drag_lock",
         "tilo.input.disable_while_typing",
         "tilo.input.middle_emulation",
         "tilo.input.left_handed",
@@ -141,6 +142,9 @@ policies! {
         "tilo.input.pen_output",
         "tilo.input.touchpad_enabled",
         "tilo.input.host_input_migration_version",
+        // Like whether the touchpad is on, whether a mouse switches it off
+        // says nothing about another device's touchpad.
+        "tilo.input.touchpad_disabled_on_external_mouse",
         "tilo.power.auto_suspend",
         "tilo.power.suspend_minutes",
         "tilo.power.saver_suspend_minutes",

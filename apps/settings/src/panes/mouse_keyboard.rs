@@ -25,7 +25,9 @@
 //   `input.keyboard_layout`  — active source display label
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
-use settings_store::hardware::{TouchpadClickMethod, TouchpadScrollMethod};
+use settings_store::hardware::{
+    InputDeviceKind, InputHardwareSnapshot, TouchpadClickMethod, TouchpadScrollMethod,
+};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
@@ -36,9 +38,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
+use crate::i18n::t;
 use crate::input_sources::{CatalogEntry, installed_catalog};
 use crate::prefs::{InputPrefs, SystemPrefs};
-use crate::widgets::{caption, card, choice_row, rows, setting_row, setting_row_described};
+use crate::widgets::{El, caption, card, choice_row, rows, setting_row, setting_row_described};
 
 fn bool_action(id: &str) -> tilo_actions::ActionBinding<bool> {
     match crate::actions::input_bool_binding(id) {
@@ -103,46 +106,137 @@ pub const ADD_SOURCE_PICKER_KEY: &str = "input.source.add_picker";
 pub const ADD_SOURCE_KEY: &str = "input.source.add";
 pub const CHECK_SPELLING_KEY: &str = "text.check_spelling";
 
-/// Touchpad click methods as `(label, value)`, in menu order.
-pub const CLICK_METHOD_CHOICES: [(&str, TouchpadClickMethod); 3] = [
-    ("Device default", TouchpadClickMethod::Default),
-    ("Button areas", TouchpadClickMethod::Areas),
-    ("Finger count", TouchpadClickMethod::Clickfinger),
+/// Touchpad click methods as `(stable id, label key, value)`, in menu order.
+/// The id is what the dropdown and its action carry; only the label is
+/// translated.
+pub const CLICK_METHOD_CHOICES: [(&str, &str, TouchpadClickMethod); 3] = [
+    (
+        "default",
+        "input-click-method-default",
+        TouchpadClickMethod::Default,
+    ),
+    (
+        "areas",
+        "input-click-method-areas",
+        TouchpadClickMethod::Areas,
+    ),
+    (
+        "clickfinger",
+        "input-click-method-clickfinger",
+        TouchpadClickMethod::Clickfinger,
+    ),
 ];
 
-/// Touchpad scroll methods as `(label, value)`, in menu order.
-pub const SCROLL_METHOD_CHOICES: [(&str, TouchpadScrollMethod); 2] = [
-    ("Two fingers", TouchpadScrollMethod::TwoFinger),
-    ("Edge", TouchpadScrollMethod::Edge),
+/// Touchpad scroll methods as `(stable id, label key, value)`, in menu order.
+pub const SCROLL_METHOD_CHOICES: [(&str, &str, TouchpadScrollMethod); 2] = [
+    (
+        "two_finger",
+        "input-scroll-method-two-finger",
+        TouchpadScrollMethod::TwoFinger,
+    ),
+    (
+        "edge",
+        "input-scroll-method-edge",
+        TouchpadScrollMethod::Edge,
+    ),
 ];
 
-pub fn click_method_label(method: TouchpadClickMethod) -> &'static str {
+pub fn click_method_id(method: TouchpadClickMethod) -> &'static str {
     CLICK_METHOD_CHOICES
         .iter()
-        .find(|(_, value)| *value == method)
-        .map_or("Device default", |(label, _)| label)
+        .find(|(_, _, value)| *value == method)
+        .map_or("default", |(id, _, _)| id)
 }
 
-pub fn click_method_for_label(label: &str) -> Option<TouchpadClickMethod> {
+pub fn click_method_for_id(id: &str) -> Option<TouchpadClickMethod> {
     CLICK_METHOD_CHOICES
         .iter()
-        .find(|(choice, _)| *choice == label)
-        .map(|(_, value)| *value)
+        .find(|(choice, _, _)| *choice == id)
+        .map(|(_, _, value)| *value)
 }
 
-pub fn scroll_method_label(method: TouchpadScrollMethod) -> &'static str {
+pub fn scroll_method_id(method: TouchpadScrollMethod) -> &'static str {
     SCROLL_METHOD_CHOICES
         .iter()
-        .find(|(_, value)| *value == method)
-        .map_or("Two fingers", |(label, _)| label)
+        .find(|(_, _, value)| *value == method)
+        .map_or("two_finger", |(id, _, _)| id)
 }
 
-pub fn scroll_method_for_label(label: &str) -> Option<TouchpadScrollMethod> {
+pub fn scroll_method_for_id(id: &str) -> Option<TouchpadScrollMethod> {
     SCROLL_METHOD_CHOICES
         .iter()
-        .find(|(choice, _)| *choice == label)
-        .map(|(_, value)| *value)
+        .find(|(choice, _, _)| *choice == id)
+        .map(|(_, _, value)| *value)
 }
+
+/// `(id, translated label)` pairs for a dropdown over stable ids.
+fn localized_choices<T>(choices: &[(&str, &str, T)]) -> Vec<(String, String)> {
+    choices
+        .iter()
+        .map(|(id, key, _)| ((*id).to_string(), t(key)))
+        .collect()
+}
+
+/// A dropdown whose values are stable ids and whose rows are translated.
+fn id_dropdown(
+    choices: Vec<(String, String)>,
+    selected: &str,
+    action: &str,
+    test_id: &str,
+    accessible_name: &str,
+) -> Dropdown {
+    let mut dropdown = Dropdown::from_state(
+        choices.iter().map(|(id, _)| id.clone()).collect(),
+        &ui::LocalState::new(selected.to_string()),
+    )
+    .on_action(text_action(action))
+    .with_id(test_id)
+    .with_accessible_name(accessible_name);
+    dropdown.set_value_options(choices);
+    dropdown
+}
+
+/// Which pointer sections apply to the attached hardware. Without a live
+/// device snapshot (no compositor, a headless render) every section shows:
+/// hiding a setting because nobody told us about a device is worse than
+/// showing one that does nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one independent visibility flag per Settings section"
+)]
+pub struct InputSections {
+    pub touchpad: bool,
+    pub mouse: bool,
+    /// Buttons, acceleration and scroll speed: any pointer at all.
+    pub pointer: bool,
+    pub tablet: bool,
+}
+
+impl InputSections {
+    pub fn for_devices(devices: Option<&InputHardwareSnapshot>) -> Self {
+        let Some(devices) = devices else {
+            return Self {
+                touchpad: true,
+                mouse: true,
+                pointer: true,
+                tablet: true,
+            };
+        };
+        let touchpad = devices.has(InputDeviceKind::Touchpad);
+        let mouse = devices.has(InputDeviceKind::Mouse);
+        Self {
+            touchpad,
+            mouse,
+            pointer: touchpad || mouse,
+            tablet: devices.has(InputDeviceKind::Tablet) || devices.has(InputDeviceKind::TabletPad),
+        }
+    }
+}
+
+/// How often the pane re-reads the attached-device snapshot, so plugging a
+/// mouse in shows its section without reopening Settings.
+const DEVICE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 pub const AUTO_CORRECT_KEY: &str = "text.auto_correct";
 
 #[allow(
@@ -164,6 +258,12 @@ pub struct MouseKeyboardPane {
     catalog: Vec<CatalogEntry>,
     pending_add_id: Option<String>,
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
+    /// Which sections the attached devices call for.
+    sections: InputSections,
+    /// Whether the sections come from a live compositor snapshot; a pane
+    /// built without one (tests, headless renders) never polls for one.
+    poll_devices: bool,
+    next_device_poll: Option<std::time::Instant>,
     needs_seed: bool,
     structure_dirty: bool,
     commit_context_pending: bool,
@@ -234,6 +334,9 @@ impl MouseKeyboardPane {
             catalog: installed_catalog(),
             pending_add_id: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            sections: InputSections::for_devices(InputHardwareSnapshot::load().as_ref()),
+            poll_devices: true,
+            next_device_poll: None,
             needs_seed: true,
             structure_dirty: false,
             commit_context_pending: false,
@@ -256,6 +359,9 @@ impl MouseKeyboardPane {
             catalog,
             pending_add_id: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            sections: InputSections::for_devices(None),
+            poll_devices: false,
+            next_device_poll: None,
             needs_seed: true,
             structure_dirty: false,
             commit_context_pending: false,
@@ -286,194 +392,218 @@ impl MouseKeyboardPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        crate::widgets::cards(vec![
+        let mut cards = vec![
             self.keyboard_card(),
             self.spell_checker_card(),
             self.input_sources_card(),
-            self.pointer_card(),
-            self.touchpad_click_scroll_card(),
-            self.pointer_options_card(),
-            Self::pen_card(),
-        ])
+        ];
+        if self.sections.touchpad {
+            cards.push(self.touchpad_card());
+            cards.push(self.touchpad_click_scroll_card());
+        }
+        if self.sections.mouse {
+            cards.push(self.mouse_card());
+        }
+        if self.sections.pointer {
+            cards.push(self.pointer_options_card());
+        }
+        if self.sections.tablet {
+            cards.push(Self::pen_card());
+        }
+        crate::widgets::cards(cards)
     }
 
-    fn pointer_card(&self) -> Box<dyn Widget> {
+    /// Re-read the attached devices at most once per [`DEVICE_POLL_INTERVAL`]
+    /// and rebuild when a section appears or disappears.
+    fn poll_devices(&mut self) {
+        if !self.poll_devices {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self.next_device_poll.is_some_and(|next| now < next) {
+            return;
+        }
+        self.next_device_poll = Some(now + DEVICE_POLL_INTERVAL);
+        let sections = InputSections::for_devices(InputHardwareSnapshot::load().as_ref());
+        if sections != self.sections {
+            self.sections = sections;
+            self.structure_dirty = true;
+        }
+    }
+
+    fn bool_row(label: &str, description: &str, action: &str, id: &str, on: bool) -> El {
+        setting_row_described(
+            &t(label),
+            &t(description),
+            Box::new(
+                Toggle::from_state(&ui::LocalState::new(on))
+                    .on_action(bool_action(action))
+                    .with_id(id),
+            ),
+        )
+    }
+
+    /// Everything that is specific to a touchpad, starting with whether it
+    /// works at all. The touchpad key on a laptop keyboard flips the same
+    /// saved setting.
+    fn touchpad_card(&self) -> Box<dyn Widget> {
+        let last = &self.last;
         card(
-            "Pointer",
+            &t("input-touchpad-title"),
             rows(vec![
+                Self::bool_row(
+                    "input-touchpad-enabled",
+                    "input-touchpad-enabled-description",
+                    "touchpad-enabled",
+                    "input.touchpad_enabled",
+                    last.touchpad_enabled,
+                ),
+                Self::bool_row(
+                    "input-touchpad-disable-with-mouse",
+                    "input-touchpad-disable-with-mouse-description",
+                    "touchpad-disabled-with-mouse",
+                    "input.touchpad_disabled_on_external_mouse",
+                    last.touchpad_disabled_on_external_mouse,
+                ),
                 setting_row(
-                    "Touchpad speed",
+                    &t("input-touchpad-speed"),
                     Box::new(
                         Slider::from_state(&ui::LocalState::new(
-                            self.last
-                                .touchpad_pointer_speed
-                                .unwrap_or(self.last.pointer_speed),
+                            last.touchpad_pointer_speed.unwrap_or(last.pointer_speed),
                         ))
                         .on_action(number_action("touchpad-speed"))
                         .with_id("input.touchpad_pointer_speed"),
                     ),
                 ),
-                setting_row(
-                    "Mouse speed",
-                    Box::new(
-                        Slider::from_state(&ui::LocalState::new(
-                            self.last
-                                .mouse_pointer_speed
-                                .unwrap_or(self.last.pointer_speed),
-                        ))
-                        .on_action(number_action("mouse-speed"))
-                        .with_id("input.mouse_pointer_speed"),
-                    ),
+                Self::bool_row(
+                    "input-touchpad-natural-scroll",
+                    "input-touchpad-natural-scroll-description",
+                    "touchpad-natural-scroll",
+                    "input.touchpad_natural_scroll",
+                    last.touchpad_natural_scroll.unwrap_or(last.natural_scroll),
                 ),
-                setting_row_described(
-                    "Touchpad natural scrolling",
-                    "Content tracks finger movement",
-                    Box::new(
-                        Toggle::from_state(&ui::LocalState::new(
-                            self.last
-                                .touchpad_natural_scroll
-                                .unwrap_or(self.last.natural_scroll),
-                        ))
-                        .on_action(bool_action("touchpad-natural-scroll"))
-                        .with_id("input.touchpad_natural_scroll"),
-                    ),
+                Self::bool_row(
+                    "input-tap-to-click",
+                    "input-tap-to-click-description",
+                    "tap-to-click",
+                    "input.tap_click",
+                    last.tap_to_click,
                 ),
-                setting_row_described(
-                    "Mouse natural scrolling",
-                    "Content moves in the wheel direction",
-                    Box::new(
-                        Toggle::from_state(&ui::LocalState::new(
-                            self.last
-                                .mouse_natural_scroll
-                                .unwrap_or(self.last.natural_scroll),
-                        ))
-                        .on_action(bool_action("mouse-natural-scroll"))
-                        .with_id("input.mouse_natural_scroll"),
-                    ),
+                Self::bool_row(
+                    "input-tap-drag",
+                    "input-tap-drag-description",
+                    "tap-drag",
+                    "input.tap_drag",
+                    last.tap_drag,
                 ),
-                setting_row_described(
-                    "Tap to click",
-                    "Tap the touchpad to register a click",
-                    Box::new(
-                        Toggle::from_state(&ui::LocalState::new(self.last.tap_to_click))
-                            .on_action(bool_action("tap-to-click"))
-                            .with_id("input.tap_click"),
-                    ),
+                Self::bool_row(
+                    "input-tap-drag-lock",
+                    "input-tap-drag-lock-description",
+                    "tap-drag-lock",
+                    "input.tap_drag_lock",
+                    last.tap_drag_lock,
                 ),
-                setting_row_described(
-                    "Tap-and-drag",
-                    "Hold after a tap, then move to drag",
-                    Box::new(
-                        Toggle::from_state(&ui::LocalState::new(self.last.tap_drag))
-                            .on_action(bool_action("tap-drag"))
-                            .with_id("input.tap_drag"),
-                    ),
+                Self::bool_row(
+                    "input-disable-while-typing",
+                    "input-disable-while-typing-description",
+                    "disable-while-typing",
+                    "input.disable_while_typing",
+                    last.disable_while_typing,
                 ),
-                setting_row_described(
-                    "Disable while typing",
-                    "Prevents accidental palm input",
-                    Box::new(
-                        Toggle::from_state(&ui::LocalState::new(self.last.disable_while_typing))
-                            .on_action(bool_action("disable-while-typing"))
-                            .with_id("input.disable_while_typing"),
-                    ),
-                ),
-                setting_row_described(
-                    "Touchpad gestures",
-                    "Three-finger navigation; app gestures still receive other gestures",
-                    Box::new(
-                        Toggle::from_state(&ui::LocalState::new(self.last.touchpad_gestures))
-                            .on_action(bool_action("touchpad-gestures"))
-                            .with_id("input.touchpad_gestures"),
-                    ),
+                Self::bool_row(
+                    "input-touchpad-gestures",
+                    "input-touchpad-gestures-description",
+                    "touchpad-gestures",
+                    "input.touchpad_gestures",
+                    last.touchpad_gestures,
                 ),
             ]),
         )
     }
 
     /// How a touchpad turns presses and finger movement into clicks and
-    /// scrolling, plus the scroll distance shared with mouse wheels. Each
-    /// choice is applied only to devices whose libinput driver offers it.
+    /// scrolling. Each choice is applied only to devices whose libinput
+    /// driver offers it.
     fn touchpad_click_scroll_card(&self) -> Box<dyn Widget> {
-        let choices = |labels: &[&str]| labels.iter().map(|l| (*l).to_string()).collect();
         card(
-            "Clicking & scrolling",
+            &t("input-clicking-title"),
             rows(vec![
                 choice_row(
-                    "Touchpad click",
-                    Box::new(
-                        Dropdown::from_state(
-                            choices(&CLICK_METHOD_CHOICES.map(|(label, _)| label)),
-                            &ui::LocalState::new(
-                                click_method_label(self.last.touchpad_click_method).to_string(),
-                            ),
-                        )
-                        .on_action(text_action("touchpad-click-method"))
-                        .with_id("input.touchpad_click_method")
-                        .with_placeholder(click_method_label(self.initial.touchpad_click_method)),
-                    ),
+                    &t("input-click-method"),
+                    Box::new(id_dropdown(
+                        localized_choices(&CLICK_METHOD_CHOICES),
+                        click_method_id(self.last.touchpad_click_method),
+                        "touchpad-click-method",
+                        "input.touchpad_click_method",
+                        &t("input-click-method"),
+                    )),
                 ),
-                caption(
-                    "Button areas: press the bottom-right corner to right-click. Finger count: press with two fingers to right-click, three to middle-click.",
-                ),
+                caption(&t("input-click-method-caption")),
                 choice_row(
-                    "Touchpad scrolling",
-                    Box::new(
-                        Dropdown::from_state(
-                            choices(&SCROLL_METHOD_CHOICES.map(|(label, _)| label)),
-                            &ui::LocalState::new(
-                                scroll_method_label(self.last.touchpad_scroll_method).to_string(),
-                            ),
-                        )
-                        .on_action(text_action("touchpad-scroll-method"))
-                        .with_id("input.touchpad_scroll_method")
-                        .with_placeholder(scroll_method_label(self.initial.touchpad_scroll_method)),
-                    ),
-                ),
-                setting_row_described(
-                    "Scroll speed",
-                    "Distance per wheel click or finger movement",
-                    Box::new(
-                        Slider::from_state(&ui::LocalState::new(
-                            settings_store::hardware::scroll_speed_to_slider(
-                                self.last.scroll_speed,
-                            ),
-                        ))
-                        .on_action(number_action("scroll-speed"))
-                        .with_id("input.scroll_speed"),
-                    ),
+                    &t("input-scroll-method"),
+                    Box::new(id_dropdown(
+                        localized_choices(&SCROLL_METHOD_CHOICES),
+                        scroll_method_id(self.last.touchpad_scroll_method),
+                        "touchpad-scroll-method",
+                        "input.touchpad_scroll_method",
+                        &t("input-scroll-method"),
+                    )),
                 ),
             ]),
         )
     }
 
-    /// Less-common pointer choices still get a specific destination instead
-    /// of an opaque "Advanced" bucket: people and assistive agents can tell
-    /// what will be changed before opening the card.
+    /// Mice, trackballs and pointing sticks.
+    fn mouse_card(&self) -> Box<dyn Widget> {
+        let last = &self.last;
+        card(
+            &t("input-mouse-title"),
+            rows(vec![
+                setting_row(
+                    &t("input-mouse-speed"),
+                    Box::new(
+                        Slider::from_state(&ui::LocalState::new(
+                            last.mouse_pointer_speed.unwrap_or(last.pointer_speed),
+                        ))
+                        .on_action(number_action("mouse-speed"))
+                        .with_id("input.mouse_pointer_speed"),
+                    ),
+                ),
+                Self::bool_row(
+                    "input-mouse-natural-scroll",
+                    "input-mouse-natural-scroll-description",
+                    "mouse-natural-scroll",
+                    "input.mouse_natural_scroll",
+                    last.mouse_natural_scroll.unwrap_or(last.natural_scroll),
+                ),
+            ]),
+        )
+    }
+
+    /// Choices shared by every pointer, touchpad or mouse. Less-common
+    /// choices still get a specific destination instead of an opaque
+    /// "Advanced" bucket: people and assistive agents can tell what will be
+    /// changed before opening the card.
     fn pointer_options_card(&self) -> Box<dyn Widget> {
         card(
-            "Buttons & acceleration",
+            &t("input-pointer-title"),
             rows(vec![
-                setting_row_described(
-                    "Left-handed",
-                    "Swap primary and secondary buttons",
-                    Box::new(
-                        Toggle::from_state(&ui::LocalState::new(self.last.left_handed))
-                            .on_action(bool_action("left-handed"))
-                            .with_id("input.left_handed"),
-                    ),
+                Self::bool_row(
+                    "input-left-handed",
+                    "input-left-handed-description",
+                    "left-handed",
+                    "input.left_handed",
+                    self.last.left_handed,
                 ),
-                setting_row_described(
-                    "Middle-button emulation",
-                    "Press left and right together for middle-click",
-                    Box::new(
-                        Toggle::from_state(&ui::LocalState::new(self.last.middle_emulation))
-                            .on_action(bool_action("middle-emulation"))
-                            .with_id("input.middle_emulation"),
-                    ),
+                Self::bool_row(
+                    "input-middle-emulation",
+                    "input-middle-emulation-description",
+                    "middle-emulation",
+                    "input.middle_emulation",
+                    self.last.middle_emulation,
                 ),
                 choice_row(
-                    "Acceleration",
+                    &t("input-acceleration"),
                     Box::new(
                         Dropdown::from_state(
                             vec!["Adaptive".into(), "Flat".into()],
@@ -492,6 +622,19 @@ impl MouseKeyboardPane {
                                 "Adaptive"
                             },
                         ),
+                    ),
+                ),
+                setting_row_described(
+                    &t("input-scroll-speed"),
+                    &t("input-scroll-speed-description"),
+                    Box::new(
+                        Slider::from_state(&ui::LocalState::new(
+                            settings_store::hardware::scroll_speed_to_slider(
+                                self.last.scroll_speed,
+                            ),
+                        ))
+                        .on_action(number_action("scroll-speed"))
+                        .with_id("input.scroll_speed"),
                     ),
                 ),
             ]),
@@ -721,7 +864,7 @@ impl MouseKeyboardPane {
         card(
             "Pen & tablet",
             rows(vec![caption(
-                "Absolute pen and tablet mapping follows the selected display connector. Controls appear only when a tablet is attached; pressure curves and button mappings are stored per device.",
+                "A pen maps across every display, or onto the display set for it. Apps with tablet support receive pressure and tilt; other apps see the pen as a pointer, with the tip as the primary button.",
             )]),
         )
     }
@@ -1109,6 +1252,7 @@ impl MouseKeyboardPane {
 
 impl Widget for MouseKeyboardPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.poll_devices();
         self.seed_if_needed(state, root);
         self.sync_simple_fields(state, root);
         if let Some(c) = &mut self.composed {
@@ -1346,6 +1490,55 @@ mod tests {
             );
             assert_eq!(clamped.key_repeat_slider_value(), 1.0);
         }
+    }
+
+    #[test]
+    fn pointer_sections_follow_the_attached_devices() {
+        let with = |kinds: &[InputDeviceKind]| InputHardwareSnapshot {
+            devices: kinds
+                .iter()
+                .map(|kind| settings_store::hardware::InputDeviceSnapshot {
+                    kind: *kind,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let everything = InputSections::for_devices(None);
+        assert!(everything.touchpad && everything.mouse && everything.pointer);
+
+        let desktop = InputSections::for_devices(Some(&with(&[
+            InputDeviceKind::Mouse,
+            InputDeviceKind::Keyboard,
+        ])));
+        assert!(!desktop.touchpad, "no touchpad, no touchpad settings");
+        assert!(desktop.mouse && desktop.pointer);
+        assert!(!desktop.tablet);
+
+        let laptop = InputSections::for_devices(Some(&with(&[InputDeviceKind::Touchpad])));
+        assert!(laptop.touchpad && laptop.pointer && !laptop.mouse);
+
+        let keyboard_only = InputSections::for_devices(Some(&with(&[InputDeviceKind::Keyboard])));
+        assert!(
+            !keyboard_only.pointer,
+            "buttons need a pointer to belong to"
+        );
+
+        let pad_only = InputSections::for_devices(Some(&with(&[InputDeviceKind::TabletPad])));
+        assert!(pad_only.tablet);
+    }
+
+    #[test]
+    fn touchpad_choices_travel_as_stable_ids() {
+        for method in TouchpadClickMethod::ALL {
+            assert_eq!(click_method_for_id(click_method_id(method)), Some(method));
+        }
+        for method in TouchpadScrollMethod::ALL {
+            assert_eq!(scroll_method_for_id(scroll_method_id(method)), Some(method));
+        }
+        assert_eq!(click_method_for_id("Button areas"), None);
+        let labels = localized_choices(&CLICK_METHOD_CHOICES);
+        assert_eq!(labels[1], ("areas".into(), "Bottom-right corner".into()));
     }
 
     /// Document source selection, source latches and pointer speeds never drive the device.
