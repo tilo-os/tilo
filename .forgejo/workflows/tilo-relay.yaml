@@ -245,8 +245,7 @@ jobs:
     if: >-
       ${{
         always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        github.event_name != 'pull_request' &&
         true
       }}
     # Forgejo does not supply OIDC credentials to expanded reusable jobs, so
