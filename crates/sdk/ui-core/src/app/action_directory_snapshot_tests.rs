@@ -724,7 +724,7 @@ fn directory_lifecycle_publishes_once_ready_and_refreshes_on_idle() {
             "nothing rides the primary route before the broker acknowledges it"
         );
 
-        let deadline = crate::time::now() + crate::time::Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         while app.collaboration_state() == CollaborationState::Connecting {
             app.pump_collab_presence();
             if app.collaboration_state() != CollaborationState::Connecting {
