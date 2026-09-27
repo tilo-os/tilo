@@ -15512,6 +15512,7 @@ dependencies = [
  "base64",
  "bounded-command",
  "clap",
+ "getrandom 0.4.3",
  "hex",
  "serde",
  "serde_json",
