@@ -162,21 +162,21 @@ pub(crate) enum MenuAction {
 }
 
 impl MenuAction {
-    pub fn label(self) -> String {
-        crate::i18n::t(match self {
-            MenuAction::Rename => "chat-menu-rename",
-            MenuAction::Delete => "chat-menu-delete",
-            MenuAction::MoveUp => "chat-menu-move-up",
-            MenuAction::MoveDown => "chat-menu-move-down",
-            MenuAction::NewChannelHere => "chat-menu-new-text-channel",
-            MenuAction::NewVoiceChannelHere => "chat-menu-new-voice-channel",
-            MenuAction::NewCategory => "chat-menu-new-category",
-            MenuAction::ToggleCollapse => "chat-menu-toggle-collapse",
-            MenuAction::Archive => "chat-menu-archive",
-            MenuAction::EditMessage => "chat-menu-edit-message",
-            MenuAction::PinMessage => "chat-menu-pin-message",
-            MenuAction::DeleteMessage => "chat-menu-delete-message",
-        })
+    pub fn label(self) -> &'static str {
+        match self {
+            MenuAction::Rename => "Rename",
+            MenuAction::Delete => "Delete",
+            MenuAction::MoveUp => "Move up",
+            MenuAction::MoveDown => "Move down",
+            MenuAction::NewChannelHere => "New text channel",
+            MenuAction::NewVoiceChannelHere => "New voice channel",
+            MenuAction::NewCategory => "New category",
+            MenuAction::ToggleCollapse => "Collapse / expand",
+            MenuAction::Archive => "Archive / unarchive",
+            MenuAction::EditMessage => "Edit message",
+            MenuAction::PinMessage => "Pin / unpin",
+            MenuAction::DeleteMessage => "Delete message",
+        }
     }
     pub fn is_destructive(self) -> bool {
         matches!(self, MenuAction::Delete | MenuAction::DeleteMessage)
@@ -240,8 +240,6 @@ pub(crate) enum AttachmentImportResult {
     },
     Failed {
         token: u64,
-        /// A catalogue key: the worker thread has no catalogue, so the UI
-        /// thread resolves the words when it settles the result.
         reason: String,
     },
 }
@@ -255,8 +253,6 @@ pub(crate) enum AttachmentPickerResult {
     },
     Failed {
         generation: u64,
-        /// A catalogue key: the worker thread has no catalogue, so the UI
-        /// thread resolves the words when it settles the result.
         reason: String,
     },
 }
@@ -626,10 +622,6 @@ pub struct ChatApp {
     pub(crate) attachment_result_rx: Receiver<AttachmentImportResult>,
     /// A settled import outcome for the picker/status UI and accessibility.
     pub(crate) attachment_status: Option<String>,
-    /// Whether [`Self::attachment_status`] reports a failed or cancelled
-    /// attempt, so the status line is coloured by what happened rather than
-    /// by sniffing words that change with the language.
-    pub(crate) attachment_status_error: bool,
     pub(crate) attachment_picker_pending: Option<u64>,
     pub(crate) attachment_picker_generation: u64,
     pub(crate) attachment_picker_result_tx: SyncSender<AttachmentPickerResult>,
@@ -806,7 +798,7 @@ impl ChatApp {
         runtime: ChatRuntime,
     ) -> Result<Self, String> {
         if !ChatDoc::is_seeded(doc) {
-            return Err(crate::i18n::t("chat-error-no-workspace-schema"));
+            return Err("Chat record has no workspace schema".into());
         }
         // A native component keeps attachments in the app's content store;
         // any other host (the browser, tests) keeps them in memory.
@@ -826,8 +818,9 @@ impl ChatApp {
         app.context_ws.clear();
         app.active_channel.clear();
         app.thread_open = None;
-        app.media_error =
-            (!app.external_services).then(|| crate::i18n::t("chat-error-media-unsupported"));
+        app.media_error = (!app.external_services).then(|| {
+            "Calls and screen sharing are unsupported until a media transport is connected".into()
+        });
         app.reload(doc);
         if app.ensure_selection() {
             app.reload(doc);
@@ -925,7 +918,6 @@ impl ChatApp {
             attachment_result_tx,
             attachment_result_rx,
             attachment_status: None,
-            attachment_status_error: false,
             attachment_picker_pending: None,
             attachment_picker_generation: 0,
             attachment_picker_result_tx,
@@ -1056,7 +1048,7 @@ impl ChatApp {
             .get(&id)
             .filter(|label| !label.is_empty())
             .cloned()
-            .unwrap_or_else(|| crate::i18n::t("chat-default-agent"));
+            .unwrap_or_else(|| "Agent".to_owned());
         let mut ctx = self.chat_resource_ctx();
         ctx.participants.retain(|p| p.id != id);
         ctx.participants.insert(
@@ -1152,10 +1144,9 @@ impl ChatApp {
     fn message_resource_label(&self, m: &Message) -> String {
         let author = self.user_name(&m.author);
         let snippet: String = if m.text.trim().is_empty() {
-            m.attachment.as_ref().map_or_else(
-                || crate::i18n::t("chat-default-no-text"),
-                |a| a.name().to_string(),
-            )
+            m.attachment
+                .as_ref()
+                .map_or_else(|| "(no text)".to_string(), |a| a.name().to_string())
         } else {
             m.text.trim().chars().take(40).collect()
         };
@@ -1291,20 +1282,12 @@ impl ChatApp {
                 // until the worker's generation-checked reply settles.
                 self.attach_entries.clear();
                 self.attachment_picker_pending = Some(0);
-                self.show_attachment_status(crate::i18n::t("chat-attachment-loading"), false);
+                self.attachment_status = Some("Loading attachments…".into());
             }
             "attach-error" => {
                 self.seed_shot_scenario("attach");
-                self.show_attachment_status(
-                    crate::i18n::t_args(
-                        "chat-status-import-failed",
-                        &[(
-                            "reason",
-                            crate::i18n::t("chat-error-file-unavailable").into(),
-                        )],
-                    ),
-                    true,
-                );
+                self.attachment_status =
+                    Some("Attachment import failed: file is unavailable".into());
             }
             "edit" => {
                 // The inline message editor open on your own last message,
@@ -1580,31 +1563,22 @@ impl ChatApp {
             .any(|namespace| namespace == id)
         {
             let tail = id.ceil_char_boundary(id.len().saturating_sub(6));
-            return crate::i18n::t_args(
-                "chat-identity-audio-stream",
-                &[("tail", id.get(tail..).unwrap_or(id).into())],
-            );
+            return format!("Audio stream {}", id.get(tail..).unwrap_or(id));
         }
         // `is_me` rather than a bare comparison: a peer that has adopted the
         // room's address for itself still wrote its earlier lines under the
         // id it resolved at startup, and those are still its own.
         if self.is_me(id) {
-            return crate::i18n::t("chat-identity-you");
+            return "You".to_string();
         }
         if let Some(agent) = self.agent_authors.get(id) {
-            return format!(
-                "{agent} \u{b7} {}",
-                crate::i18n::t("chat-mention-agent-tag")
-            );
+            return format!("{agent} \u{b7} agent");
         }
         let named = self.display_name(id);
         if named != id && !named.trim().is_empty() {
             return named;
         }
-        crate::i18n::t_args(
-            "chat-identity-someone",
-            &[("tag", Self::unnamed_tag(id).into())],
-        )
+        format!("Someone ({})", Self::unnamed_tag(id))
     }
 
     /// Enough of an unresolved id to tell two unnamed people apart.
@@ -1919,10 +1893,8 @@ impl ChatApp {
             .channel(&self.active_channel)
             .map(|c| c.name.clone())
             .unwrap_or_default();
-        self.composer_main.set_placeholder(&crate::i18n::t_args(
-            "chat-composer-placeholder",
-            &[("channel", ch_name.into())],
-        ));
+        self.composer_main
+            .set_placeholder(&format!("Message #{ch_name}"));
         self.composer_main
             .set_local_author(Some(self.me.id.clone()));
         self.draft_thread = match self.thread_draft_key() {
@@ -1930,8 +1902,7 @@ impl ChatApp {
             None => String::new(),
         };
         self.composer_thread.set_text(&self.draft_thread);
-        self.composer_thread
-            .set_placeholder(&crate::i18n::t("chat-composer-thread-placeholder"));
+        self.composer_thread.set_placeholder("Reply…");
         self.composer_thread
             .set_local_author(Some(self.me.id.clone()));
         // `--shots` only: stage a mid-compose draft into the main composer so a
@@ -2028,7 +1999,7 @@ impl ChatApp {
 
     fn reveal_workspace_resource(&mut self, workspace: String) -> Result<(), String> {
         if !self.workspaces.iter().any(|item| item.id == workspace) {
-            return Err(crate::i18n::t("chat-error-workspace-gone"));
+            return Err("workspace no longer exists".into());
         }
         self.active_ws = workspace;
         self.active_channel.clear();
@@ -2053,7 +2024,7 @@ impl ChatApp {
             .find(|item| item.id == category && item.workspace == workspace)
             .map(|item| item.id.clone())
         else {
-            return Err(crate::i18n::t("chat-error-category-gone"));
+            return Err("category no longer exists".into());
         };
         self.active_ws = workspace;
         self.active_channel = self
@@ -2130,12 +2101,12 @@ impl ChatApp {
     /// The roster's public destination name. `People` is precise when every
     /// entry is human; once an agent is present, `Collaborators` accurately
     /// covers both and the row itself keeps the agent visibly typed.
-    pub(crate) fn roster_label(&self) -> String {
-        crate::i18n::t(if self.users.iter().any(|u| u.is_agent) {
-            "chat-identity-collaborators"
+    pub(crate) fn roster_label(&self) -> &'static str {
+        if self.users.iter().any(|u| u.is_agent) {
+            "Collaborators"
         } else {
-            "chat-identity-people"
-        })
+            "People"
+        }
     }
 
     // --- responsive flap geometry ----------------------------------------
@@ -2389,26 +2360,21 @@ impl ChatApp {
                 let (name, role, selected) = match hit {
                     Hit::Inbox => {
                         let unread: u32 = self.channels.iter().map(|channel| channel.unread).sum();
-                        (
-                            crate::i18n::t_args("chat-a11y-inbox", &[("unread", unread.into())]),
-                            Role::Tab,
-                            self.inbox_open,
-                        )
+                        let suffix = if unread == 0 {
+                            String::new()
+                        } else {
+                            format!(", {unread} unread")
+                        };
+                        (format!("Inbox{suffix}"), Role::Tab, self.inbox_open)
                     }
                     Hit::CurrentContext => {
                         let name = self
                             .workspaces
                             .iter()
                             .find(|workspace| workspace.id == self.context_ws)
-                            .map_or_else(
-                                || crate::i18n::t("chat-a11y-current-workspace"),
-                                |workspace| workspace.name.clone(),
-                            );
+                            .map_or("Current workspace", |workspace| workspace.name.as_str());
                         (
-                            crate::i18n::t_args(
-                                "chat-a11y-current-context",
-                                &[("workspace", name.into())],
-                            ),
+                            format!("{name} channels, current workspace"),
                             Role::Tab,
                             !self.inbox_open,
                         )
@@ -2419,124 +2385,67 @@ impl ChatApp {
                             .workspaces
                             .iter()
                             .find(|workspace| workspace.id == channel.workspace)
-                            .map_or_else(
-                                || crate::i18n::t("chat-a11y-fallback-workspace"),
-                                |workspace| workspace.name.clone(),
-                            );
-                        let label = if self.inbox_open {
-                            crate::i18n::t_args(
-                                "chat-a11y-channel-from",
-                                &[
-                                    ("name", channel.name.as_str().into()),
-                                    ("source", source.into()),
-                                    ("unread", channel.unread.into()),
-                                ],
-                            )
+                            .map_or("Tilo workspace", |workspace| workspace.name.as_str());
+                        let unread = if channel.unread == 0 {
+                            String::new()
                         } else {
-                            crate::i18n::t_args(
-                                "chat-a11y-channel",
-                                &[
-                                    ("name", channel.name.as_str().into()),
-                                    ("unread", channel.unread.into()),
-                                ],
-                            )
+                            format!(", {} unread", channel.unread)
+                        };
+                        let context = if self.inbox_open {
+                            format!(", from {source}")
+                        } else {
+                            String::new()
                         };
                         (
-                            format!("{} {label}", channel.kind.glyph()),
+                            format!("{} {}{context}{unread}", channel.kind.glyph(), channel.name),
                             Role::ListItem,
                             channel.id == self.active_channel,
                         )
                     }
                     Hit::CategoryToggle(id) => {
                         let category = self.categories.iter().find(|category| category.id == *id);
-                        let name = category.map_or_else(
-                            || crate::i18n::t("chat-a11y-category-fallback"),
-                            |category| category.name.clone(),
-                        );
+                        let name = category.map_or("category", |category| category.name.as_str());
                         let collapsed = category.is_some_and(|category| category.collapsed);
                         (
-                            crate::i18n::t_args(
-                                if collapsed {
-                                    "chat-a11y-category-expand"
-                                } else {
-                                    "chat-a11y-category-collapse"
-                                },
-                                &[("name", name.into())],
-                            ),
+                            format!("{} {name}", if collapsed { "Expand" } else { "Collapse" }),
                             Role::ToggleButton,
                             !collapsed,
                         )
                     }
-                    Hit::AddChannel { .. } => {
-                        (crate::i18n::t("chat-a11y-add-channel"), Role::Button, false)
-                    }
-                    Hit::AddCategory(_) => (
-                        crate::i18n::t("chat-a11y-add-category"),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::FocusRename => (
-                        crate::i18n::t("chat-a11y-rename-field"),
-                        Role::TextInput,
-                        false,
-                    ),
-                    Hit::FocusEdit => (
-                        crate::i18n::t("chat-a11y-edit-message"),
-                        Role::MultilineTextInput,
-                        false,
-                    ),
-                    Hit::FocusMain => (
-                        crate::i18n::t("chat-a11y-composer"),
-                        Role::MultilineTextInput,
-                        false,
-                    ),
+                    Hit::AddChannel { .. } => ("Add channel".into(), Role::Button, false),
+                    Hit::AddCategory(_) => ("Add category".into(), Role::Button, false),
+                    Hit::FocusRename => ("Rename field".into(), Role::TextInput, false),
+                    Hit::FocusEdit => ("Edit message".into(), Role::MultilineTextInput, false),
+                    Hit::FocusMain => ("Message composer".into(), Role::MultilineTextInput, false),
                     Hit::FocusThread => (
-                        crate::i18n::t("chat-a11y-thread-composer"),
+                        "Thread reply composer".into(),
                         Role::MultilineTextInput,
                         false,
                     ),
-                    Hit::Send => (crate::i18n::t("chat-a11y-send"), Role::Button, false),
-                    Hit::JumpToLatest => {
-                        (crate::i18n::t("chat-a11y-jump-latest"), Role::Button, false)
-                    }
+                    Hit::Send => ("Send message".into(), Role::Button, false),
+                    Hit::JumpToLatest => ("Jump to latest message".into(), Role::Button, false),
                     Hit::ComposerEmoji(_) => {
                         (crate::i18n::t("chat-emoji-insert"), Role::Button, false)
                     }
-                    Hit::Attach => (crate::i18n::t("chat-a11y-attach"), Role::Button, false),
+                    Hit::Attach => ("Attach a workspace file".into(), Role::Button, false),
                     Hit::AttachPick(path) => (
-                        crate::i18n::t_args(
-                            "chat-a11y-attach-file",
-                            &[(
-                                "file",
-                                std::path::Path::new(path)
-                                    .file_name()
-                                    .and_then(std::ffi::OsStr::to_str)
-                                    .unwrap_or(path)
-                                    .into(),
-                            )],
+                        format!(
+                            "Attach {}",
+                            std::path::Path::new(path)
+                                .file_name()
+                                .and_then(std::ffi::OsStr::to_str)
+                                .unwrap_or(path)
                         ),
                         Role::Button,
                         false,
                     ),
-                    Hit::StartCall => (crate::i18n::t("chat-a11y-start-call"), Role::Button, false),
-                    Hit::ToggleLeftFlap => (
-                        crate::i18n::t("chat-a11y-show-navigation"),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::ToggleRightFlap => (
-                        crate::i18n::t("chat-a11y-show-details"),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::OpenThread(_) => {
-                        (crate::i18n::t("chat-a11y-open-thread"), Role::Button, false)
+                    Hit::StartCall => ("Start or open call".into(), Role::Button, false),
+                    Hit::ToggleLeftFlap => {
+                        ("Show conversation navigation".into(), Role::Button, false)
                     }
-                    Hit::CloseThread => (
-                        crate::i18n::t("chat-a11y-close-thread"),
-                        Role::Button,
-                        false,
-                    ),
+                    Hit::ToggleRightFlap => ("Show people or thread".into(), Role::Button, false),
+                    Hit::OpenThread(_) => ("Open message thread".into(), Role::Button, false),
+                    Hit::CloseThread => ("Close thread".into(), Role::Button, false),
                     Hit::Reaction { msg, emoji } => {
                         let mine = self
                             .message(msg)
@@ -2593,36 +2502,28 @@ impl ChatApp {
                     Hit::FocusEmojiSearch => {
                         (crate::i18n::t("chat-emoji-search"), Role::TextInput, false)
                     }
-                    Hit::EditHistory { .. } => (
-                        crate::i18n::t("chat-a11y-edit-history"),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::EditSave => (crate::i18n::t("chat-a11y-edit-save"), Role::Button, false),
-                    Hit::EditCancel => {
-                        (crate::i18n::t("chat-a11y-edit-cancel"), Role::Button, false)
-                    }
+                    Hit::EditHistory { .. } => ("Show edit history".into(), Role::Button, false),
+                    Hit::EditSave => ("Save message edit".into(), Role::Button, false),
+                    Hit::EditCancel => ("Cancel message edit".into(), Role::Button, false),
                     Hit::CallMute => (
-                        crate::i18n::t("chat-a11y-mute-microphone"),
+                        "Mute microphone".into(),
                         Role::ToggleButton,
                         self.call.muted,
                     ),
-                    Hit::CallShareScreen => (
-                        crate::i18n::t("chat-a11y-share-screen"),
-                        Role::ToggleButton,
-                        self.call.sharing,
-                    ),
+                    Hit::CallShareScreen => {
+                        ("Share screen".into(), Role::ToggleButton, self.call.sharing)
+                    }
                     Hit::CallParticipantsToggle => (
-                        crate::i18n::t("chat-a11y-call-participants"),
+                        "Show call participants".into(),
                         Role::ToggleButton,
                         self.call.participants_expanded,
                     ),
                     Hit::CallExpand => (
-                        crate::i18n::t("chat-a11y-call-expand"),
+                        "Expand or restore call".into(),
                         Role::Button,
                         self.call.expanded,
                     ),
-                    Hit::CallLeave => (crate::i18n::t("chat-a11y-leave-call"), Role::Button, false),
+                    Hit::CallLeave => ("Leave call".into(), Role::Button, false),
                     _ => return None,
                 };
                 // The composer's pointer target is the whole box (clicking
@@ -2723,7 +2624,7 @@ fn chat_navigation_kind(kind: tilo_actions::OperationKind) -> Result<bool, Strin
         tilo_actions::OperationKind::Document => Ok(false),
         tilo_actions::OperationKind::View => Ok(true),
         tilo_actions::OperationKind::Effect => {
-            Err(crate::i18n::t("chat-error-navigation-needs-view"))
+            Err("Chat navigation requires a View operation".into())
         }
     }
 }
@@ -3569,17 +3470,16 @@ impl Widget for ChatApp {
             .iter()
             .filter(|message| message.parent.is_none())
             .map(|message| {
-                let author = self.user(&message.author).map_or_else(
-                    || crate::i18n::t("chat-identity-unknown-person"),
-                    |user| user.name.clone(),
-                );
+                let author = self
+                    .user(&message.author)
+                    .map_or("Unknown person", |user| user.name.as_str());
                 AccessNode::new(Role::ListItem)
                     .with_name(format!("{author}: {}", message.text))
                     .with_hashed_key((&message.id, "message"))
             })
             .collect();
         let conversation = AccessNode::new(Role::List)
-            .with_name(crate::i18n::t("chat-a11y-messages"))
+            .with_name("Messages")
             .with_children(conversation)
             .with_hashed_key("message-list");
 
@@ -3606,11 +3506,11 @@ impl Widget for ChatApp {
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Chat")
-                .with_description(crate::i18n::t(if self.inbox_open {
-                    "chat-a11y-inbox-description"
+                .with_description(if self.inbox_open {
+                    "Inbox: conversations across Tilo workspaces"
                 } else {
-                    "chat-a11y-channels-description"
-                }))
+                    "Channels in the current Tilo workspace"
+                })
                 .with_children(children),
         )
     }
@@ -3817,15 +3717,15 @@ impl Widget for ChatApp {
                     || !request.valid()
                     || request.intent != 0
                 {
-                    return Err(crate::i18n::t("chat-error-call-needs-effect"));
+                    return Err("Call controls require a valid local Effect".into());
                 }
             }
             crate::actions::ChatOperation::ImportAttachment { .. } => {
                 if !self.external_services {
-                    return Err(crate::i18n::t("chat-error-attachment-unsupported"));
+                    return Err("attachment import unsupported: no host asset transport".into());
                 }
                 if kind != tilo_actions::OperationKind::Effect {
-                    return Err(crate::i18n::t("chat-error-attachment-needs-effect"));
+                    return Err("attachment import requires an Effect operation".into());
                 }
             }
             _ if !chat_navigation_kind(kind)? => return Ok(false),
@@ -3844,7 +3744,7 @@ impl Widget for ChatApp {
                     .iter()
                     .any(|item| item.id == channel && item.workspace == workspace)
                 {
-                    return Err(crate::i18n::t("chat-error-conversation-gone"));
+                    return Err("conversation no longer exists".into());
                 }
                 self.active_ws = workspace;
                 self.active_channel = channel;
@@ -3871,13 +3771,13 @@ impl Widget for ChatApp {
                     .iter()
                     .any(|item| item.id == channel && item.workspace == workspace)
                 {
-                    return Err(crate::i18n::t("chat-error-conversation-gone"));
+                    return Err("conversation no longer exists".into());
                 }
                 if !ChatDoc::list_messages(doc, &channel)
                     .iter()
                     .any(|item| item.id == message)
                 {
-                    return Err(crate::i18n::t("chat-error-message-gone"));
+                    return Err("message no longer exists".into());
                 }
                 self.active_ws = workspace;
                 self.active_channel = channel;
@@ -3899,7 +3799,7 @@ impl Widget for ChatApp {
             }
             crate::actions::ChatOperation::OpenPerson { user } => {
                 if !ChatDoc::list_users(doc).iter().any(|item| item.id == user) {
-                    return Err(crate::i18n::t("chat-error-person-gone"));
+                    return Err("person no longer exists".into());
                 }
                 // Prefer the current workspace when it already evidences this
                 // person; otherwise open the first workspace where they wrote.
@@ -3929,13 +3829,13 @@ impl Widget for ChatApp {
             }
             crate::actions::ChatOperation::ImportAttachment { channel, path } => {
                 if path.is_empty() {
-                    return Err(crate::i18n::t("chat-error-attachment-path-empty"));
+                    return Err("attachment path is empty".into());
                 }
                 if !self.channels.iter().any(|item| item.id == channel) {
-                    return Err(crate::i18n::t("chat-error-conversation-gone"));
+                    return Err("conversation no longer exists".into());
                 }
                 if !self.begin_attachment_import_into(&channel, std::path::Path::new(&path)) {
-                    return Err(crate::i18n::t("chat-error-attachment-not-accepted"));
+                    return Err("attachment import was not accepted".into());
                 }
             }
         }

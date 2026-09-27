@@ -698,9 +698,9 @@ pub fn day_label(ts: i64, now: i64) -> String {
     let day = ts.div_euclid(86_400);
     let today = now.div_euclid(86_400);
     match today - day {
-        d if d <= 0 => crate::i18n::t("chat-time-today"),
-        1 => crate::i18n::t("chat-time-yesterday"),
-        d => crate::i18n::t_args("chat-time-days-ago", &[("count", d.into())]),
+        d if d <= 0 => "Today".to_string(),
+        1 => "Yesterday".to_string(),
+        d => format!("{d} days ago"),
     }
 }
 
