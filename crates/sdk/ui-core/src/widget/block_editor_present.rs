@@ -82,6 +82,31 @@ fn author_runs(content: &BlockContent) -> Vec<(usize, usize, String)> {
         .collect()
 }
 
+/// Which blocks the person may have changed, as
+/// [`BlockEditor::take_edit_scope`] reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditScope {
+    /// No block.
+    Nothing,
+    /// Only blocks at these indices.
+    Blocks(Range<usize>),
+    /// Any block, and the block list itself.
+    Anywhere,
+}
+
+impl EditScope {
+    /// Also cover what `other` covers.
+    pub fn widen(&mut self, other: Self) {
+        *self = match (std::mem::replace(self, Self::Nothing), other) {
+            (Self::Anywhere, _) | (_, Self::Anywhere) => Self::Anywhere,
+            (Self::Nothing, scope) | (scope, Self::Nothing) => scope,
+            (Self::Blocks(a), Self::Blocks(b)) => {
+                Self::Blocks(a.start.min(b.start)..a.end.max(b.end))
+            }
+        };
+    }
+}
+
 /// Maps a block id to the presence key collaborators address it by.
 pub type PresenceKeyFn = Rc<dyn Fn(&str) -> PresenceKey>;
 
@@ -230,7 +255,7 @@ impl BlockEditor {
                 .zip(&self.blocks)
                 .all(|(next, current)| next.id == current.id);
         if same_blocks {
-            return self.present_in_place(blocks);
+            return self.present_in_place(blocks.iter().enumerate());
         }
         let old_ids: Vec<String> = self.blocks.iter().map(|block| block.id.clone()).collect();
         let focused_id = self.focused.and_then(|index| old_ids.get(index)).cloned();
@@ -332,13 +357,37 @@ impl BlockEditor {
         true
     }
 
-    /// Present `blocks`, the editor's own blocks in the same order: only the
-    /// blocks whose content changed are touched, so a keystroke's read-back
-    /// costs a comparison per block and the work of the one it changed.
-    fn present_in_place(&mut self, blocks: &[BlockContent]) -> bool {
+    /// Show new content for some blocks, the rest as they are: `changed`
+    /// pairs a block's index with what it shows now, and each index must
+    /// still hold the block with that content's id. For an owning model
+    /// that knows which paragraphs an edit touched, so a keystroke's
+    /// read-back costs the blocks it changed, not the document. Returns
+    /// `None`, presenting nothing, when a pair names another block (the
+    /// order changed: present everything with [`Self::present_blocks`]),
+    /// otherwise whether anything changed.
+    pub fn present_changed(&mut self, changed: &[(usize, &BlockContent)]) -> Option<bool> {
+        let fits = changed.iter().all(|(index, content)| {
+            self.blocks
+                .get(*index)
+                .is_some_and(|block| block.id == content.id)
+        });
+        fits.then(|| {
+            self.present_in_place(changed.iter().map(|(index, content)| (*index, *content)))
+        })
+    }
+
+    /// Present new content for blocks at their indices, which hold blocks
+    /// of the same ids: only the blocks whose content changed are touched.
+    fn present_in_place<'a>(
+        &mut self,
+        blocks: impl IntoIterator<Item = (usize, &'a BlockContent)>,
+    ) -> bool {
         let mut touched = false;
         let mut reshaped = false;
-        for (content, block) in blocks.iter().zip(&mut self.blocks) {
+        for (index, content) in blocks {
+            let Some(block) = self.blocks.get_mut(index) else {
+                continue;
+            };
             if shows(block, content) {
                 continue;
             }

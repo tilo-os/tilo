@@ -377,6 +377,16 @@ impl RichTextLine {
         self.inner.set_local_author(author);
     }
 
+    /// Align the line's text within its width.
+    pub fn set_align(&mut self, align: crate::richtext::TextAlign) {
+        self.inner.set_align(align);
+    }
+
+    /// How the line's text is aligned.
+    pub fn align(&self) -> crate::richtext::TextAlign {
+        self.inner.align()
+    }
+
     pub fn author_runs(&self) -> &[(usize, usize, String)] {
         &self.author_runs
     }
@@ -456,6 +466,15 @@ impl RichTextLine {
 
     pub fn font_size(&self) -> f32 {
         self.font_size
+    }
+
+    /// Change the line's type size; its height is measured again.
+    pub fn set_size(&mut self, size: f32) {
+        if self.font_size.to_bits() != size.to_bits() {
+            self.stack_measure = None;
+            self.font_size = size;
+            self.inner.set_font_size(size);
+        }
     }
 
     pub fn marks(&self) -> &[MarkSpan] {

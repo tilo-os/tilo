@@ -44,11 +44,11 @@ serde = "1.0"
 
 [dependencies.accesskit]
 version = "0.25.0"
-path = "../../accesskit"
+path = "../accesskit-0.25.0"
 
 [dependencies.accesskit_consumer]
 version = "0.39.0"
-path = "../../accesskit_consumer"
+path = "../accesskit_consumer-0.39.0"
 
 [dependencies.atspi-common]
 version = "0.13"
