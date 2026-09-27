@@ -13,7 +13,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use settings_store::display_mode::DisplayLayoutMode;
 use std::rc::Rc;
 use tilo_clock::unix_now;
-use ui::search::{FieldWeight, RankField};
+use ui::search::{FieldWeight, ListIndex};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::{t, t_args};
@@ -1953,6 +1953,8 @@ fn quick_settings_contract_for(available: bool) -> tilo_actions::ActionContract 
 
 pub struct ActionsProvider {
     qs_actions: SharedQsActions,
+    /// The rows' searchable text, indexed while it stays the same.
+    ranker: ListIndex,
     search_preferences: Option<crate::shell::search::SearchPreferencesHandle>,
     provider_catalog: Option<crate::shell::search::SearchProviderCatalogHandle>,
 }
@@ -1966,6 +1968,7 @@ impl ActionsProvider {
                 Rc::new(crate::shell::quick_settings::actions::UnavailableQsActions),
                 crate::shell::quick_settings::actions::QsActionAvailability::default(),
             )),
+            ranker: ListIndex::default(),
         }
     }
 
@@ -1978,6 +1981,7 @@ impl ActionsProvider {
             search_preferences: Some(search_preferences),
             provider_catalog: Some(provider_catalog),
             qs_actions,
+            ranker: ListIndex::default(),
         }
     }
 
@@ -2070,8 +2074,10 @@ impl SearchProvider for ActionsProvider {
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return Vec::new();
         }
-        let needle_lower = ctx.needle.to_lowercase();
         let mut out = Vec::new();
+        // Every row is built with its searchable text; ranking them together
+        // then keeps the matches and scores them.
+        let mut candidates = ActionCandidates::default();
         for action in Action::ALL {
             // A session not running peer sync has nothing to invite into.
             if action.id.starts_with("peer.") && !ctx.chrome.peer_sync_enabled {
@@ -2090,8 +2096,9 @@ impl SearchProvider for ActionsProvider {
             let subtitle = t(action.subtitle);
             let label_lower = label.to_lowercase();
             let subtitle_lower = subtitle.to_lowercase();
-            let score = match_score(&needle_lower, &label_lower, &subtitle_lower, action.id);
-            if let Some(score) = score {
+            candidates.record(&label_lower, &subtitle_lower, action.id);
+            {
+                let score = 0;
                 let apply = action.apply;
                 let (on_open, on_begin_invoke) = if action.id == "record.bring" {
                     let on_open = Rc::new(
@@ -2266,14 +2273,12 @@ impl SearchProvider for ActionsProvider {
         );
         let view_keywords = t("search-action-workspace-view-keywords").to_lowercase();
         for descriptor in descriptors {
-            let Some(score) = match_score(
-                &needle_lower,
+            candidates.record(
                 &descriptor.label.to_lowercase(),
                 &view_keywords,
                 &descriptor.id,
-            ) else {
-                continue;
-            };
+            );
+            let score = 0;
             let request = descriptor.request;
             out.push(SearchResult {
                 kind: ResourceKind::Action,
@@ -2299,14 +2304,8 @@ impl SearchProvider for ActionsProvider {
         for &(id, label_key, subtitle_key) in QUICK_SETTINGS_ACTIONS {
             let label = t(label_key);
             let subtitle = t(subtitle_key);
-            let Some(score) = match_score(
-                &needle_lower,
-                &label.to_lowercase(),
-                &subtitle.to_lowercase(),
-                id,
-            ) else {
-                continue;
-            };
+            candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), id);
+            let score = 0;
             let actions = self.qs_actions.actions.borrow().clone();
             let available = self.qs_actions.action_available(id);
             out.push(SearchResult {
@@ -2391,12 +2390,13 @@ impl SearchProvider for ActionsProvider {
                     .description
                     .clone()
                     .unwrap_or_else(|| t("search-action-governance-subtitle"));
-                if let Some(score) = match_score(
-                    &needle_lower,
-                    &action.label.to_lowercase(),
-                    &subtitle.to_lowercase(),
-                    &action.id,
-                ) {
+                {
+                    candidates.record(
+                        &action.label.to_lowercase(),
+                        &subtitle.to_lowercase(),
+                        &action.id,
+                    );
+                    let score = 0;
                     let action_id = action.id.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
@@ -2442,14 +2442,12 @@ impl SearchProvider for ActionsProvider {
                         .description
                         .clone()
                         .unwrap_or_else(|| t("search-action-permission-roles-subtitle"));
-                    let Some(score) = match_score(
-                        &needle_lower,
+                    candidates.record(
                         &action.label.to_lowercase(),
                         &subtitle.to_lowercase(),
                         &action.id,
-                    ) else {
-                        continue;
-                    };
+                    );
+                    let score = 0;
                     let action_id = action.id.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
@@ -2479,12 +2477,9 @@ impl SearchProvider for ActionsProvider {
             let id = "search.provider.set";
             let label = t("search-action-search-provider-set");
             let subtitle = t("search-action-search-provider-set-subtitle");
-            if let Some(score) = match_score(
-                &needle_lower,
-                &label.to_lowercase(),
-                &subtitle.to_lowercase(),
-                id,
-            ) {
+            {
+                candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), id);
+                let score = 0;
                 let preferences = Rc::clone(preferences);
                 out.push(SearchResult {
                     kind: ResourceKind::Action,
@@ -2546,14 +2541,12 @@ impl SearchProvider for ActionsProvider {
                             t_args("search-action-provider-enable-subtitle", source),
                         )
                     };
-                    let Some(score) = match_score(
-                        &needle_lower,
+                    candidates.record(
                         &label.to_lowercase(),
                         &subtitle.to_lowercase(),
                         "search.provider.toggle",
-                    ) else {
-                        continue;
-                    };
+                    );
+                    let score = 0;
                     let preferences = Rc::clone(preferences);
                     let provider_id = provider_id.clone();
                     out.push(SearchResult {
@@ -2602,12 +2595,13 @@ impl SearchProvider for ActionsProvider {
                     .description
                     .clone()
                     .unwrap_or_else(|| t("search-action-governance-subtitle"));
-                if let Some(score) = match_score(
-                    &needle_lower,
-                    &action.label.to_lowercase(),
-                    &subtitle.to_lowercase(),
-                    &action.id,
-                ) {
+                {
+                    candidates.record(
+                        &action.label.to_lowercase(),
+                        &subtitle.to_lowercase(),
+                        &action.id,
+                    );
+                    let score = 0;
                     let action_id = action.id.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
@@ -2653,14 +2647,12 @@ impl SearchProvider for ActionsProvider {
                         .description
                         .clone()
                         .unwrap_or_else(|| t("search-action-permission-roles-subtitle"));
-                    let Some(score) = match_score(
-                        &needle_lower,
+                    candidates.record(
                         &action.label.to_lowercase(),
                         &subtitle.to_lowercase(),
                         &action.id,
-                    ) else {
-                        continue;
-                    };
+                    );
+                    let score = 0;
                     let action_id = action.id.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
@@ -2686,7 +2678,7 @@ impl SearchProvider for ActionsProvider {
                 }
             }
         }
-        out
+        crate::shell::search::rank_rows(&self.ranker, ctx.needle, out, &candidates.0)
     }
 }
 
@@ -2694,17 +2686,19 @@ impl SearchProvider for ActionsProvider {
 /// actions by it — so it weighs close to the label.
 pub(super) const ACTION_ID_WEIGHT: FieldWeight = FieldWeight::new(90);
 
-/// The shared ranker over an action's label, id and subtitle. An empty
-/// needle ranks everything `0`, so rows sort by kind order.
-fn match_score(needle: &str, label: &str, subtitle: &str, id: &str) -> Option<i32> {
-    crate::shell::search::rank_fields(
-        needle,
-        &[
-            RankField::new(label, FieldWeight::TITLE),
-            RankField::new(id, ACTION_ID_WEIGHT),
-            RankField::new(subtitle, FieldWeight::SUBTITLE),
-        ],
-    )
+/// Each action row's label, id and subtitle, in row order.
+#[derive(Default)]
+struct ActionCandidates(Vec<Vec<(String, FieldWeight)>>);
+
+impl ActionCandidates {
+    /// Record the searchable text of the row pushed next.
+    fn record(&mut self, label: &str, subtitle: &str, id: &str) {
+        self.0.push(vec![
+            (label.to_owned(), FieldWeight::TITLE),
+            (id.to_owned(), ACTION_ID_WEIGHT),
+            (subtitle.to_owned(), FieldWeight::SUBTITLE),
+        ]);
+    }
 }
 
 #[allow(
@@ -3043,24 +3037,27 @@ mod tests {
 
         // Phase `action_ids_and_out_of_order_terms_are_searchable`.
         {
+            let p = ActionsProvider::new();
+            let c = chrome_rc();
+            let cs = c.borrow();
+            let doc = AutoCommit::new();
+            let score = |needle: &str| {
+                p.query(SearchContext {
+                    needle,
+                    wanted: &[ResourceKind::Action],
+                    chrome: &cs,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|row| row.id == "settings.privacy.open")
+                .map(|row| row.score)
+            };
+            assert_eq!(score("settings.privacy.open"), Some(100));
             assert_eq!(
-                match_score(
-                    "settings.privacy.open",
-                    "open workspace privacy & security",
-                    "app grants and enforced access for this workspace",
-                    "settings.privacy.open",
-                ),
-                Some(100),
-            );
-            assert_eq!(
-                match_score(
-                    "security workspace",
-                    "open workspace privacy & security",
-                    "app grants and enforced access for this workspace",
-                    "settings.privacy.open",
-                ),
+                score("security workspace"),
                 Some(crate::shell::search::provider_score(
-                    ui::search::rank::SPANNING_RANK
+                    ui::search::MatchTier::Spanning.percent()
                 )),
             );
         }
@@ -3104,14 +3101,14 @@ mod tests {
             assert!(out.is_empty());
         }
 
-        // Phase `fuzzy_subsequence_matches`.
+        // Phase `a_typo_still_matches`.
         {
             let p = ActionsProvider::new();
             let c = chrome_rc();
             let cs = c.borrow();
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
-                needle: "wksttngs",
+                needle: "workspace setings",
                 wanted: &[ResourceKind::Action],
                 chrome: &cs,
                 doc: &doc,

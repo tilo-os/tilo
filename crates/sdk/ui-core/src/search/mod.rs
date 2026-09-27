@@ -26,7 +26,6 @@
 //! ```
 
 mod body;
-pub(crate) mod list_filter;
 mod provider;
 pub mod rank;
 mod registry;
@@ -40,14 +39,11 @@ pub use provider::{
     SearchCatalogError, SearchCatalogStats, SearchCursor, SearchPage, SearchProvider, SearchRecord,
     SearchResult, normalize_search_text,
 };
-pub use rank::{
-    FieldWeight, MatchTier, RankField, field_rank, fuzzy_score, relevance_fraction,
-    result_relevance,
-};
+pub use rank::{FieldWeight, MatchTier, result_relevance};
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};
 /// Fold text the way every index does: case, compatibility forms and
 /// alphabetic diacritics.
 pub use tilo_search::fold as fold_search_text;
-pub use tilo_search::{fold_char, locate};
+pub use tilo_search::{ListIndex, MAX_FIELD_RANK, Matching, fold_char, locate};
 
 pub mod system;

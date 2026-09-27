@@ -268,18 +268,13 @@ futures-util = { workspace = true, features = ["io"] }
 postcard = { workspace = true, features = ["alloc"] }
 
 # Search infrastructure.
-# `walkdir` powers the files provider's name-index walker + the tantivy
-# content indexer.
+# `walkdir` powers the files provider's name-index walker + the content
+# indexer.
 walkdir.workspace = true
 tar.workspace = true
-# tantivy is the BM25 content index behind the files provider's
-# full-text search. `mmap` avoids reading the whole segment file into
-# RAM for each query; disabling default features drops the parquet
-# writer, ICU tokenizer, and other extras we don't need for a
-# home-directory index.
-tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
-# Tilo's search layer: the providers' retained indexes.
-tilo-search = { path = "../../sdk/search" }
+# Tilo's search layer: the providers' retained indexes, and the files
+# provider's on-disk content index.
+tilo-search = { path = "../../sdk/search", features = ["disk"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
