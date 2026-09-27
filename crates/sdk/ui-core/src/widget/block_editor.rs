@@ -225,6 +225,11 @@ impl BlockKind {
         let kind = kind_from_str(stored);
         (kind_to_str(&kind) == stored).then_some(kind)
     }
+
+    /// This kind's stored spelling, the inverse of [`Self::from_stored`].
+    pub fn stored(&self) -> String {
+        kind_to_str(self)
+    }
 }
 
 pub struct Block {
