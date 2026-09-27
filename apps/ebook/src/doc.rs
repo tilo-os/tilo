@@ -4,7 +4,8 @@
 //! ```text
 //! root
 //! ├── "settings"        (Map)  font_scale(f64) line_spacing(f64) font(str) theme(str)
-//! ├── "library"         (Map keyed by book-id)  { title, author, subject, shared, added }
+//! ├── "library"         (Map keyed by book-id)  { title, author, subject, shared, added,
+//! │                                               content? }
 //! ├── "library_tombstones" (Map keyed by book-id) true
 //! ├── "progress"        (Map keyed by book-id)  { chapter, page, fraction }
 //! ├── "annotations"     (Map keyed by uuid)     { doc_id, kind, chapter, block,
@@ -440,6 +441,9 @@ impl BooksDoc {
             let _ = doc.put(&entry, "subject", e.subject.as_str());
             let _ = doc.put(&entry, "shared", was_shared || e.shared);
             let _ = doc.put(&entry, "added", added as i64);
+            if let Some(content) = &e.content {
+                let _ = doc.put(&entry, "content", content.as_str());
+            }
         }
     }
 
@@ -489,6 +493,7 @@ impl BooksDoc {
                     .filter(|&value| value > 0)
                     .min()
                     .unwrap_or(0) as u64,
+                content: Self::merged_str(doc, &entries, "content"),
             });
         }
         out.sort_by(|a, b| a.added.cmp(&b.added).then_with(|| a.id.cmp(&b.id)));
@@ -1066,6 +1071,7 @@ mod tests {
                 author: "A. Writer".into(),
                 subject: "Fiction".into(),
                 added: 1_000,
+                content: None,
             };
             BooksDoc::upsert_library_entry(&mut doc, &e);
             let back = BooksDoc::read_library_entries(&doc);
@@ -1077,6 +1083,7 @@ mod tests {
             let moved = LibraryEntry {
                 shared: true,
                 added: 9_999,
+                content: None,
                 ..e.clone()
             };
             BooksDoc::upsert_library_entry(&mut doc, &moved);
@@ -1244,6 +1251,7 @@ mod tests {
                 author: "A".into(),
                 subject: String::new(),
                 added: 1,
+                content: None,
             };
             let right_book = LibraryEntry {
                 id: "book:right".into(),
@@ -1252,6 +1260,7 @@ mod tests {
                 author: "B".into(),
                 subject: String::new(),
                 added: 2,
+                content: None,
             };
             let left_annotation = Annotation::new(&left_book.id, AnnoKind::Note, 0, 1);
             let right_annotation = Annotation::new(&right_book.id, AnnoKind::Bookmark, 0, 2);

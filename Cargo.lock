@@ -3432,6 +3432,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-clock",
+ "tilo-content",
  "tilo-test-env",
  "tracing",
  "unicode-bidi",

@@ -203,6 +203,9 @@ pub enum EbookAction {
         author: String,
         subject: String,
         added: u64,
+        /// Full content hash of bytes kept in a host content store.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
     },
     /// Replace the authored reading-preference snapshot. Every field is an
     /// absolute value, making replay independent of a receiver's UI state.
@@ -446,6 +449,7 @@ impl EbookAction {
                 author,
                 subject,
                 added,
+                content,
                 ..
             } => {
                 Self::validate_book_id(book_id)?;
@@ -454,6 +458,14 @@ impl EbookAction {
                 Self::validate_text(subject, MAX_LABEL_BYTES, "book subject")?;
                 if *added > i64::MAX as u64 {
                     return Err(Self::refused("book timestamp is invalid"));
+                }
+                if let Some(content) = content {
+                    let names_book = content
+                        .get(..32)
+                        .is_some_and(|prefix| book_id.strip_prefix("book:") == Some(prefix));
+                    if !tilo_content::valid_hash(content) || !names_book {
+                        return Err(Self::refused("book content hash is invalid"));
+                    }
                 }
             }
             Self::SetReadingSettings { before, settings } => {
@@ -939,6 +951,7 @@ impl Action for EbookAction {
                 author,
                 subject,
                 added,
+                content,
             } => {
                 BooksDoc::restore_library_entry(
                     doc,
@@ -949,6 +962,7 @@ impl Action for EbookAction {
                         author: author.clone(),
                         subject: subject.clone(),
                         added: *added,
+                        content: content.clone(),
                     },
                 );
                 Ok(())
@@ -1151,6 +1165,7 @@ pub fn restore_library_book_action(entry: &LibraryEntry) -> EbookAction {
         author: entry.author.clone(),
         subject: entry.subject.clone(),
         added: entry.added,
+        content: entry.content.clone(),
     }
 }
 
@@ -2254,6 +2269,7 @@ mod tests {
                     author: "Remote Reader".into(),
                     subject: String::new(),
                     added: 1,
+                    content: None,
                 },
             );
 
@@ -2309,6 +2325,7 @@ mod tests {
                 author: "A. Reader".into(),
                 subject: String::new(),
                 added: 7,
+                content: None,
             };
             let mut a = AutoCommit::new();
             BooksDoc::upsert_library_entry(&mut a, &entry);
@@ -2336,6 +2353,7 @@ mod tests {
                 author: "A. Reader".into(),
                 subject: "Architecture".into(),
                 added: 42,
+                content: None,
             };
             let action = restore_library_book_action(&entry);
             let encoded = encode(&action);
