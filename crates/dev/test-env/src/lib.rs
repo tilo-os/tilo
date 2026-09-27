@@ -32,6 +32,7 @@
 //! environment from a thread of its own is still racing any other test that
 //! mutates the variable without this crate.
 
+pub mod allocation;
 mod capability;
 mod desktop;
 
