@@ -17,7 +17,7 @@ use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
@@ -4834,13 +4834,29 @@ fn collect_cargo_message(
     else {
         return;
     };
-    let Some(executable) = message
+    if let Some(executable) = message
         .get("executable")
         .and_then(serde_json::Value::as_str)
+    {
+        artifacts.insert(name.to_owned(), PathBuf::from(executable));
+    }
+    let Some(files) = message
+        .get("filenames")
+        .and_then(serde_json::Value::as_array)
     else {
         return;
     };
-    artifacts.insert(name.to_owned(), PathBuf::from(executable));
+    for file in files {
+        let Some(path) = file.as_str() else {
+            continue;
+        };
+        if Path::new(path)
+            .extension()
+            .is_some_and(|extension| extension == "so")
+        {
+            artifacts.insert(format!("dylib:{name}"), PathBuf::from(path));
+        }
+    }
 }
 
 fn run_tilo_pkg_pack(
@@ -4949,9 +4965,9 @@ static DEV_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// The app and Cargo children share a dedicated process group, so every
 /// restart and Ctrl-C stops the previous application before starting another.
 /// After the initial launch, changes are compiled while the last good app
-/// remains alive; only a successful candidate replaces its process group.
-/// A failed build or structural preflight leaves both it and the watcher alive
-/// for the next edit.
+/// remains alive. An app that links the shared toolkit reloads each open
+/// window in that same process. Any other app is replaced by the new binary.
+/// A failed build leaves the running app and the watcher alive for the next edit.
 ///
 /// # Errors
 ///
@@ -4990,28 +5006,62 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    let mut child = spawn_dev_child_reported(&initial);
+    // inotify does not cross every bind mount, and a busy editor keeps the
+    // event channel from ever going idle. Stamp polls run on a timer either way.
+    let mut sources = snapshot_restart_sources(&roots).unwrap_or_default();
+    let mut next_source_poll = Instant::now();
+    // The first process has to be the prefer-dynamic host. A static binary
+    // links its own `ui`, so the library built on the next save cannot run
+    // inside those windows.
+    let mut child = if app_supports_in_place_reload(&app_dir) {
+        None
+    } else {
+        spawn_dev_child_reported(&initial)
+    };
+    if child.is_none()
+        && app_supports_in_place_reload(&app_dir)
+        && rebuild_running_dev_app(
+            &initial,
+            request,
+            &mut child,
+            &event_rx,
+            &roots,
+            &mut watcher,
+            &source_revision,
+            &mut sources,
+        )
+    {
+        stop_dev_child(&mut child);
+        eprintln!("[tilo-app] stopped");
+        return Ok(());
+    }
     'watching: while !DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
-        match event_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(Ok(event)) => {
-                watcher.observe(&event);
-                if event_requires_restart(&event, &roots)
-                    && rebuild_running_dev_app(
-                        &initial,
-                        request,
-                        &mut child,
-                        &event_rx,
-                        &roots,
-                        &mut watcher,
-                        &source_revision,
-                    )
-                {
+        match watch_tick(
+            &event_rx,
+            &roots,
+            &mut watcher,
+            &mut sources,
+            &mut next_source_poll,
+        ) {
+            WatchTick::Stop => bail!("app file watcher stopped"),
+            WatchTick::Rebuild { bump_revision } => {
+                if bump_revision {
+                    source_revision.fetch_add(1, Ordering::Release);
+                }
+                if rebuild_running_dev_app(
+                    &initial,
+                    request,
+                    &mut child,
+                    &event_rx,
+                    &roots,
+                    &mut watcher,
+                    &source_revision,
+                    &mut sources,
+                ) {
                     break 'watching;
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Ok(Err(error)) => eprintln!("[tilo-app] watch error: {error}"),
-            Err(RecvTimeoutError::Disconnected) => bail!("app file watcher stopped"),
+            WatchTick::Idle => {}
         }
         report_child_exit(&mut child);
     }
@@ -5022,6 +5072,10 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
 
 /// Rebuild until the candidate matches the newest source, or the user stops.
 /// Returns whether the watcher itself should stop.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the rebuild shares the watch loop's child, events, roots, watcher, revision and source stamps"
+)]
 fn rebuild_running_dev_app(
     plan: &CargoPlan,
     request: &DevRequest,
@@ -5030,18 +5084,33 @@ fn rebuild_running_dev_app(
     roots: &[PathBuf],
     watcher: &mut DevWatcher,
     source_revision: &AtomicU64,
+    sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
 ) -> bool {
     drain_until_quiet(events, roots, request.debounce, watcher);
     loop {
+        if let Some(next) = snapshot_restart_sources(roots) {
+            *sources = next;
+        }
         report_child_exit(child);
         eprintln!("[tilo-app] change detected; rebuilding");
         let building_revision = source_revision.load(Ordering::Acquire);
         // The startup plan already passed preflight. Re-running it shells out
         // to `capnp --version` before rustc starts. A newer edit cancels this
         // compile instead of waiting for a binary that will not be launched.
-        let candidate = build_dev_candidate_interruptible(plan, Some(events), roots, |event| {
-            watcher.observe(event);
-        });
+        let in_place = app_supports_in_place_reload(&plan.app_dir);
+        let candidate = if in_place {
+            build_in_place_dev_app(
+                plan,
+                Some(events),
+                roots,
+                |event| watcher.observe(event),
+                child.is_none(),
+            )
+        } else {
+            build_dev_candidate_interruptible(plan, Some(events), roots, |event| {
+                watcher.observe(event);
+            })
+        };
         let queued_restart = drain_pending_restart_events(events, roots, |event| {
             watcher.observe(event);
         });
@@ -5059,9 +5128,22 @@ fn rebuild_running_dev_app(
         }
         match candidate {
             Ok(DevCandidate::Built(executable)) => {
-                eprintln!("[tilo-app] build succeeded; restarting");
-                stop_dev_child(child);
-                *child = spawn_dev_binary_reported(&plan.app_dir, &executable, &request.forwarded);
+                if let Some(running) = child.as_ref()
+                    && reload_running_dev_app(running)
+                {
+                    eprintln!("[tilo-app] build succeeded; reloading the open windows");
+                } else if in_place {
+                    eprintln!("[tilo-app] build succeeded; opening the app");
+                    *child = spawn_thin_dev_binary_reported(
+                        &plan.app_dir,
+                        &executable,
+                        &request.forwarded,
+                    );
+                } else {
+                    eprintln!("[tilo-app] build succeeded; opening the app");
+                    *child =
+                        spawn_dev_binary_reported(&plan.app_dir, &executable, &request.forwarded);
+                }
             }
             Ok(DevCandidate::Superseded) => {
                 eprintln!(
@@ -5092,7 +5174,7 @@ fn drain_pending_restart_events(
     mut observe: impl FnMut(&Event),
 ) -> bool {
     let mut restart = false;
-    loop {
+    for _ in 0..DEV_EVENT_DRAIN_LIMIT {
         match events.try_recv() {
             Ok(Ok(event)) => {
                 observe(&event);
@@ -5102,12 +5184,24 @@ fn drain_pending_restart_events(
             Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => return restart,
         }
     }
+    restart
 }
 
 enum DevCandidate {
     Built(PathBuf),
     /// A source edit arrived while Cargo was running. That process was stopped.
     Superseded,
+}
+
+struct DevCargo {
+    args: Vec<OsString>,
+    pick: DevPick,
+}
+
+enum DevPick {
+    Executable(String),
+    DynamicLibrary,
+    ExitStatus,
 }
 
 #[cfg(test)]
@@ -5125,19 +5219,41 @@ fn build_dev_candidate_interruptible(
     plan: &CargoPlan,
     events: Option<&mpsc::Receiver<notify::Result<Event>>>,
     roots: &[PathBuf],
+    observe: impl FnMut(&Event),
+) -> Result<DevCandidate> {
+    let manifest = plan.app_dir.join("Cargo.toml");
+    let expected_binary = dev_binary_name(&manifest)?;
+    run_dev_cargo(
+        plan,
+        events,
+        roots,
+        observe,
+        &DevCargo {
+            args: vec![
+                OsString::from("build"),
+                OsString::from("--manifest-path"),
+                manifest.as_os_str().to_os_string(),
+                OsString::from("--bin"),
+                OsString::from(&expected_binary),
+                OsString::from("--message-format=json-render-diagnostics"),
+            ],
+            pick: DevPick::Executable(expected_binary),
+        },
+    )
+}
+
+fn run_dev_cargo(
+    plan: &CargoPlan,
+    events: Option<&mpsc::Receiver<notify::Result<Event>>>,
+    roots: &[PathBuf],
     mut observe: impl FnMut(&Event),
+    cargo: &DevCargo,
 ) -> Result<DevCandidate> {
     let manifest = plan.app_dir.join("Cargo.toml");
     let expected_manifest = manifest.canonicalize().unwrap_or_else(|_| manifest.clone());
-    let expected_binary = dev_binary_name(&manifest)?;
     let mut command = ProcessCommand::new(&plan.program);
     command
-        .arg("build")
-        .arg("--manifest-path")
-        .arg(&manifest)
-        .arg("--bin")
-        .arg(&expected_binary)
-        .arg("--message-format=json-render-diagnostics")
+        .args(&cargo.args)
         .current_dir(&plan.app_dir)
         .stdin(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -5184,12 +5300,20 @@ fn build_dev_candidate_interruptible(
                 if !status.success() {
                     bail!("Cargo development build failed with {status}");
                 }
-                let executable = artifacts.remove(&expected_binary).with_context(|| {
-                    format!(
-                        "Cargo build completed without reporting executable {expected_binary:?}; set package.default-run when the app has multiple binaries"
-                    )
-                })?;
-                return Ok(DevCandidate::Built(executable));
+                let artifact = match &cargo.pick {
+                    DevPick::ExitStatus => PathBuf::new(),
+                    DevPick::Executable(name) => artifacts.remove(name).with_context(|| {
+                        format!(
+                            "Cargo build completed without reporting executable {name:?}; set package.default-run when the app has multiple binaries"
+                        )
+                    })?,
+                    DevPick::DynamicLibrary => artifacts
+                        .into_iter()
+                        .find(|(name, _)| name.starts_with("dylib:"))
+                        .map(|(_, path)| path)
+                        .context("Cargo build completed without reporting a shared library")?,
+                };
+                return Ok(DevCandidate::Built(artifact));
             }
             Ok(None) => {}
             Err(error) => return Err(error).context("waiting for Cargo development build"),
@@ -5203,8 +5327,10 @@ fn newer_source_during_build(
     roots: &[PathBuf],
     observe: &mut impl FnMut(&Event),
 ) -> bool {
+    // A bound keeps Cargo reapable when the editor opens files faster than
+    // this loop can drain them. The next build tick sees whatever remains.
     let mut restart = false;
-    loop {
+    for _ in 0..DEV_EVENT_DRAIN_LIMIT {
         match events.try_recv() {
             Ok(Ok(event)) => {
                 restart |= event_requires_restart(&event, roots);
@@ -5411,15 +5537,107 @@ impl DevWatcher {
                 }
             }
         }
-        for path in event.paths.iter().filter(|path| {
-            path.is_dir()
-                && !ignored_watch_component(path.file_name().and_then(|name| name.to_str()))
-        }) {
+        // Opening a directory we already watch must not walk it again.
+        // `read_dir` emits another open event, and following those never ends.
+        if !event_introduces_directory(event) {
+            return;
+        }
+        for path in &event.paths {
+            if self.watched.contains(path) || !path.is_dir() {
+                continue;
+            }
+            if ignored_watch_component(path.file_name().and_then(|name| name.to_str())) {
+                continue;
+            }
             if let Err(error) = self.watch_tree(path) {
                 eprintln!("[tilo-app] cannot watch new directory: {error:#}");
             }
         }
     }
+}
+
+/// How often to compare file stamps. inotify delivery is not required.
+const SOURCE_POLL_INTERVAL: Duration = Duration::from_millis(200);
+/// Events inspected per build tick. The rest stay queued for the next tick
+/// so a flood cannot postpone reaping Cargo.
+const DEV_EVENT_DRAIN_LIMIT: usize = 128;
+
+#[derive(Debug)]
+enum WatchTick {
+    Idle,
+    /// `bump_revision` is set for a stamp poll. inotify already bumped it.
+    Rebuild {
+        bump_revision: bool,
+    },
+    Stop,
+}
+
+/// One wait on the watcher. Access traffic does not postpone the stamp poll.
+fn watch_tick(
+    events: &mpsc::Receiver<notify::Result<Event>>,
+    roots: &[PathBuf],
+    watcher: &mut DevWatcher,
+    sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
+    next_source_poll: &mut Instant,
+) -> WatchTick {
+    let timeout = next_source_poll
+        .saturating_duration_since(Instant::now())
+        .min(Duration::from_millis(100));
+    let event_restart = match events.recv_timeout(timeout) {
+        Ok(Ok(event)) => {
+            watcher.observe(&event);
+            event_requires_restart(&event, roots)
+        }
+        Err(RecvTimeoutError::Timeout) => false,
+        Ok(Err(error)) => {
+            eprintln!("[tilo-app] watch error: {error}");
+            false
+        }
+        Err(RecvTimeoutError::Disconnected) => return WatchTick::Stop,
+    };
+    if event_restart {
+        return WatchTick::Rebuild {
+            bump_revision: false,
+        };
+    }
+    if take_source_stamp_change(roots, sources, next_source_poll, Instant::now()) {
+        return WatchTick::Rebuild {
+            bump_revision: true,
+        };
+    }
+    WatchTick::Idle
+}
+
+fn take_source_stamp_change(
+    roots: &[PathBuf],
+    sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
+    next_source_poll: &mut Instant,
+    now: Instant,
+) -> bool {
+    if now < *next_source_poll {
+        return false;
+    }
+    *next_source_poll = now.checked_add(SOURCE_POLL_INTERVAL).unwrap_or(now);
+    let Some(next) = snapshot_restart_sources(roots) else {
+        return false;
+    };
+    let changed = next != *sources;
+    if !changed {
+        *sources = next;
+    }
+    changed
+}
+
+fn event_introduces_directory(event: &Event) -> bool {
+    matches!(
+        event.kind,
+        EventKind::Create(_)
+            | EventKind::Modify(notify::event::ModifyKind::Name(
+                notify::event::RenameMode::To
+                    | notify::event::RenameMode::Both
+                    | notify::event::RenameMode::Any,
+            ))
+    )
 }
 
 fn source_watch_directories(root: &Path) -> Result<Vec<PathBuf>> {
@@ -5452,6 +5670,41 @@ fn ignored_watch_path(path: &Path, root: &Path) -> bool {
 
 fn ignored_watch_component(component: Option<&str>) -> bool {
     matches!(component, Some("target" | ".git" | ".idea" | ".vscode"))
+}
+
+/// Modification time and length of every file that would restart the app.
+/// `None` when every watch root is unreadable, so a failed scan is not
+/// mistaken for a deletion. One unreadable directory is skipped.
+fn snapshot_restart_sources(roots: &[PathBuf]) -> Option<HashMap<PathBuf, (SystemTime, u64)>> {
+    let mut stamps = HashMap::new();
+    let mut saw_root = false;
+    for root in roots {
+        // One unreadable directory must not hide an edit under another root.
+        let Ok(directories) = source_watch_directories(root) else {
+            continue;
+        };
+        saw_root = true;
+        for directory in directories {
+            let Ok(entries) = std::fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !restart_path(&path, roots) {
+                    continue;
+                }
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                if metadata.is_dir() {
+                    continue;
+                }
+                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                stamps.insert(path, (modified, metadata.len()));
+            }
+        }
+    }
+    saw_root.then_some(stamps)
 }
 
 fn event_requires_restart(event: &Event, roots: &[PathBuf]) -> bool {
@@ -5627,6 +5880,235 @@ fn report_child_exit(child: &mut Option<Child>) {
             *child = None;
         }
     }
+}
+
+/// An app can reload Rust inside the windows it already has when it links the
+/// shared toolkit (`thin`) and calls `ui::dev_reload_entry!` from its library.
+fn app_supports_in_place_reload(app_dir: &Path) -> bool {
+    let Ok(manifest) = std::fs::read_to_string(app_dir.join("Cargo.toml")) else {
+        return false;
+    };
+    let has_thin = manifest.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("thin ") || line.starts_with("thin=")
+    });
+    if !has_thin {
+        return false;
+    }
+    std::fs::read_to_string(app_dir.join("src/lib.rs"))
+        .unwrap_or_default()
+        .contains("dev_reload_entry!")
+}
+
+/// Build the shared toolkit, the prefer-dynamic host, and the app library
+/// that the host will `dlopen`. Stages the library before returning the host
+/// executable. `need_host` is false when that executable is already running.
+fn build_in_place_dev_app(
+    plan: &CargoPlan,
+    events: Option<&mpsc::Receiver<notify::Result<Event>>>,
+    roots: &[PathBuf],
+    mut observe: impl FnMut(&Event),
+    need_host: bool,
+) -> Result<DevCandidate> {
+    let manifest = plan.app_dir.join("Cargo.toml");
+    let binary = dev_binary_name(&manifest)?;
+    eprintln!("[tilo-app] building the shared toolkit");
+    if let DevCandidate::Superseded = run_dev_cargo(
+        plan,
+        events,
+        roots,
+        &mut observe,
+        &DevCargo {
+            args: vec![
+                OsString::from("rustc"),
+                OsString::from("-p"),
+                OsString::from("runtime-dylib"),
+                OsString::from("--message-format=json-render-diagnostics"),
+                OsString::from("--"),
+                OsString::from("-C"),
+                OsString::from("prefer-dynamic"),
+            ],
+            pick: DevPick::ExitStatus,
+        },
+    )? {
+        return Ok(DevCandidate::Superseded);
+    }
+    let executable = if need_host {
+        eprintln!("[tilo-app] building the reload host");
+        match run_dev_cargo(
+            plan,
+            events,
+            roots,
+            &mut observe,
+            &DevCargo {
+                args: vec![
+                    OsString::from("rustc"),
+                    OsString::from("--manifest-path"),
+                    manifest.as_os_str().to_os_string(),
+                    OsString::from("--bin"),
+                    OsString::from(&binary),
+                    OsString::from("--features"),
+                    OsString::from("thin"),
+                    OsString::from("--message-format=json-render-diagnostics"),
+                    OsString::from("--"),
+                    OsString::from("-C"),
+                    OsString::from("prefer-dynamic"),
+                ],
+                pick: DevPick::Executable(binary),
+            },
+        )? {
+            DevCandidate::Superseded => return Ok(DevCandidate::Superseded),
+            DevCandidate::Built(executable) => executable,
+        }
+    } else {
+        PathBuf::new()
+    };
+    eprintln!("[tilo-app] building the reload library");
+    let library = match run_dev_cargo(
+        plan,
+        events,
+        roots,
+        &mut observe,
+        &DevCargo {
+            args: vec![
+                OsString::from("rustc"),
+                OsString::from("--manifest-path"),
+                manifest.as_os_str().to_os_string(),
+                OsString::from("--lib"),
+                OsString::from("--crate-type"),
+                OsString::from("cdylib"),
+                OsString::from("--features"),
+                OsString::from("thin"),
+                OsString::from("--message-format=json-render-diagnostics"),
+                OsString::from("--"),
+                OsString::from("-C"),
+                OsString::from("prefer-dynamic"),
+            ],
+            pick: DevPick::DynamicLibrary,
+        },
+    )? {
+        DevCandidate::Superseded => return Ok(DevCandidate::Superseded),
+        DevCandidate::Built(library) => library,
+    };
+    let staged = stage_dev_reload_library(&plan.app_dir, &library)?;
+    eprintln!("[tilo-app] reload library {}", staged.display());
+    Ok(DevCandidate::Built(executable))
+}
+
+/// Copy `library` to a new file in the dev session and point `reload.path` at
+/// it. A new path makes `dlopen` read this build rather than one already mapped.
+fn stage_dev_reload_library(app_dir: &Path, library: &Path) -> Result<PathBuf> {
+    let dir = dev_session_dir(app_dir);
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let seq_path = dir.join("reload.seq");
+    let seq = std::fs::read_to_string(&seq_path)
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+        .saturating_add(1);
+    std::fs::write(&seq_path, seq.to_string())
+        .with_context(|| format!("writing {}", seq_path.display()))?;
+    let destination = dir.join(format!("reload-{seq}.so"));
+    std::fs::copy(library, &destination)
+        .with_context(|| format!("copying {} to {}", library.display(), destination.display()))?;
+    let pointer = dir.join("reload.path");
+    std::fs::write(&pointer, format!("{}\n", destination.display()))
+        .with_context(|| format!("writing {}", pointer.display()))?;
+    Ok(destination)
+}
+
+fn spawn_thin_dev_binary_reported(
+    app_dir: &Path,
+    executable: &Path,
+    forwarded: &[OsString],
+) -> Option<Child> {
+    match spawn_thin_dev_binary(app_dir, executable, forwarded) {
+        Ok(child) => Some(child),
+        Err(error) => {
+            eprintln!("[tilo-app] {error:#}; waiting for a change");
+            None
+        }
+    }
+}
+
+fn spawn_thin_dev_binary(
+    app_dir: &Path,
+    executable: &Path,
+    forwarded: &[OsString],
+) -> Result<Child> {
+    let mut command = ProcessCommand::new(executable);
+    command.args(forwarded).current_dir(app_dir);
+    attach_live_graph_env(&mut command, app_dir);
+    attach_dev_session_env(&mut command, app_dir);
+    attach_dynamic_loader_env(&mut command, executable);
+    #[cfg(unix)]
+    command.process_group(0);
+    let child = command
+        .spawn()
+        .with_context(|| format!("starting reload host {}", executable.display()))?;
+    eprintln!("[tilo-app] started (pid {})", child.id());
+    Ok(child)
+}
+
+/// The host and the library it loads share `libstd` and `libruntime_dylib`.
+fn attach_dynamic_loader_env(command: &mut ProcessCommand, executable: &Path) {
+    let mut dirs = Vec::new();
+    if let Some(parent) = executable.parent() {
+        dirs.push(parent.to_path_buf());
+    }
+    if let Some(libdir) = rustc_target_libdir() {
+        dirs.push(libdir);
+    }
+    if let Some(existing) = std::env::var_os("LD_LIBRARY_PATH") {
+        dirs.push(PathBuf::from(existing));
+    }
+    let mut value = OsString::new();
+    for (index, dir) in dirs.iter().enumerate() {
+        if index > 0 {
+            value.push(":");
+        }
+        value.push(dir);
+    }
+    if !value.is_empty() {
+        command.env("LD_LIBRARY_PATH", value);
+    }
+}
+
+fn rustc_target_libdir() -> Option<PathBuf> {
+    let output = ProcessCommand::new("rustc")
+        .arg("--print")
+        .arg("target-libdir")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let path = PathBuf::from(text.trim());
+    path.is_dir().then_some(path)
+}
+
+/// Ask the running app to swap the contents of the windows it already has.
+///
+/// The process stays. A new process would be a new window.
+fn reload_running_dev_app(child: &Child) -> bool {
+    let Ok(pid) = i32::try_from(child.id()) else {
+        return false;
+    };
+    if child_has_exited(child) {
+        return false;
+    }
+    // SAFETY: `pid` is the dev app this loop spawned. SIGUSR1 asks it to
+    // reload in place; the app installs a handler for that signal.
+    unsafe { libc::kill(pid, libc::SIGUSR1) == 0 }
+}
+
+fn child_has_exited(child: &Child) -> bool {
+    let Ok(pid) = i32::try_from(child.id()) else {
+        return true;
+    };
+    // SAFETY: a signal of 0 only checks that the process exists.
+    unsafe { libc::kill(pid, 0) != 0 }
 }
 
 fn stop_dev_child(child: &mut Option<Child>) {
@@ -7417,13 +7899,30 @@ fn cargo_toml(spec: &AppSpec) -> String {
             repo.join("vendor/vello_shaders").to_string_lossy(),
         )
     };
+    let license = if spec.workspace_member {
+        "license.workspace = true\n"
+    } else {
+        "license = \"AGPL-3.0-only\"\n"
+    };
     let extras = format!("{lints}{patches}");
+    // CI rejects a workspace member that cargo-hakari has not been told about.
+    let workspace_hack = if spec.workspace_member {
+        "workspace-hack = { version = \"0.1\" }\n"
+    } else {
+        ""
+    };
     let sdk_path = sdk_path_for_ui(&spec.ui_path);
+    let runtime_path = sdk_path.parent().and_then(Path::parent).map_or_else(
+        || PathBuf::from("../../crates/runtime/runtime-dylib"),
+        |crates| crates.join("runtime/runtime-dylib"),
+    );
     format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ package = \"tilo-app\", path = {sdk_path:?} }}\n{lints}",
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n{license}\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[features]\nthin = [\"dep:runtime-dylib\"]\n\n[dependencies]\nui = {{ package = \"tilo-app\", path = {sdk_path:?} }}\nruntime-dylib = {{ path = {runtime:?}, optional = true }}\n{workspace_hack}{lints}",
         name = spec.package_name,
+        license = license,
         crate_name = spec.crate_name,
         sdk_path = sdk_path.to_string_lossy(),
+        runtime = runtime_path.to_string_lossy(),
         lints = extras,
     )
 }
@@ -7465,7 +7964,7 @@ fn app_lib(spec: &AppSpec) -> String {
         Template::Workspace => WORKSPACE_APP_TEMPLATE.to_owned(),
     };
     format!(
-        "//! {title} application.\n\n/// The application id.\npub const APP_ID: &str = {app_id:?};\n/// The window and launcher title.\npub const APP_TITLE: &str = {title:?};\n\n{GENERATED_LOCALE_SETUP}\n\n{application}",
+        "//! {title} application.\n\n/// The application id.\npub const APP_ID: &str = {app_id:?};\n/// The window and launcher title.\npub const APP_TITLE: &str = {title:?};\n\n{GENERATED_LOCALE_SETUP}\n\n{application}\nui::dev_reload_entry!(App);\n",
         title = spec.title,
         app_id = spec.app_id,
     )
@@ -7539,7 +8038,7 @@ workspace-share = Share\n",
 
 fn app_main(spec: &AppSpec) -> String {
     format!(
-        "//! The app's entry point: the live window, and the standard `--shots`,\n//! `--headless-drive` and `--native-audit` modes, from one declaration.\n\nfn main() {{\n    ui::framework::run::<{crate_name}::App>();\n}}\n",
+        "//! The app's entry point: the live window, and the standard `--shots`,\n//! `--headless-drive` and `--native-audit` modes, from one declaration.\n\n#[cfg(feature = \"thin\")]\nextern crate runtime_dylib;\n\nfn main() {{\n    ui::framework::run::<{crate_name}::App>();\n}}\n",
         crate_name = spec.crate_name,
     )
 }
