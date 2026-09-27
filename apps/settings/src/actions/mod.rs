@@ -5001,7 +5001,7 @@ fn shortcuts_section(doc: &AutoCommit) -> Resource {
         // table. Dots become dashes to stay within the action-id vocabulary.
         let id = key
             .strip_prefix("shortcuts.")
-            .unwrap_or(key)
+            .unwrap_or(&key)
             .replace('_', "-");
         let label = format!("Set {shortcut_label} shortcut");
         section = section.with_action(
@@ -5013,7 +5013,7 @@ fn shortcuts_section(doc: &AutoCommit) -> Resource {
                 vec![ActionParam::required("choice", ParamType::Text, "Shortcut")],
                 move |args| {
                     encode(&set_text_action(
-                        key,
+                        key.clone(),
                         args.text("choice").unwrap_or_default(),
                     ))
                 },
@@ -5879,7 +5879,7 @@ mod tests {
             for (key, label) in crate::panes::keyboard_shortcuts::resource_entries() {
                 let id = key
                     .strip_prefix("shortcuts.")
-                    .unwrap_or(key)
+                    .unwrap_or(&key)
                     .replace('_', "-");
                 assert!(
                     action_ids.contains(id.as_str()),
