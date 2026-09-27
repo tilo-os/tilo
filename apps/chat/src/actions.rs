@@ -16,7 +16,8 @@
 //! rename / delete / archive a channel, mark a channel read.
 //!
 //! **Presentation → never an action:** the compose-input buffer until Send (a
-//! per-channel draft `Text`, diff-spliced as you type — see [`crate::doc`]),
+//! per-channel rich-text draft, written directly as you type — see
+//! [`crate::doc`]),
 //! scroll position, the current selection, which channel/thread is open, typing
 //! indicators, and live presence. Nothing there replicates as a discrete
 //! mutation.
@@ -188,6 +189,11 @@ pub enum ChatAction {
         /// references still decodes.
         #[serde(default)]
         reference: Option<tilo_reference::ResourceRef>,
+        /// The body as written (paragraphs, marks, mentions marked); `text`
+        /// is its plain text. Empty for a plain message, and in a frame from
+        /// a release that predates rich bodies.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        body: Vec<qdoc_rich_text::ClipBlock>,
     },
     /// Replace a message's body, archiving the prior text into its edit history
     /// and flagging it edited. `ts` (the edit time) is minted at authoring.
@@ -196,6 +202,9 @@ pub enum ChatAction {
         id: String,
         text: String,
         ts: i64,
+        /// The new body as written; empty for a plain edit.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        body: Vec<qdoc_rich_text::ClipBlock>,
     },
     /// Delete a message row from `channel`.
     DeleteMessage {
@@ -551,6 +560,7 @@ impl ChatAction {
                 attachment,
                 mentions,
                 reference,
+                body,
             } => {
                 if !ChatDoc::accepts_message_action(
                     doc,
@@ -574,6 +584,7 @@ impl ChatAction {
                         attachment: attachment.clone(),
                         mentions: mentions.clone(),
                         reference: reference.clone(),
+                        body: body.clone(),
                         ..Default::default()
                     },
                 );
@@ -583,8 +594,9 @@ impl ChatAction {
                 id,
                 text,
                 ts,
+                body,
             } => {
-                ChatDoc::edit_message(doc, channel, id, text, *ts);
+                ChatDoc::edit_message(doc, channel, id, text, body, *ts);
             }
             ChatAction::DeleteMessage { channel, id } => {
                 ChatDoc::delete_message(doc, channel, id);
@@ -824,6 +836,21 @@ pub fn send_message_action(
         attachment,
         mentions,
         reference: None,
+        body: Vec::new(),
+    }
+}
+
+impl ChatAction {
+    /// A send or an edit carrying the body as written (`text` its plain
+    /// text); any other action unchanged.
+    #[must_use]
+    pub fn with_body(mut self, written: Vec<qdoc_rich_text::ClipBlock>) -> Self {
+        if let ChatAction::SendMessage { body, .. } | ChatAction::EditMessage { body, .. } =
+            &mut self
+        {
+            *body = written;
+        }
+        self
     }
 }
 
@@ -833,6 +860,7 @@ pub fn edit_message_action(channel: &str, id: &str, text: &str, ts: i64) -> Chat
         id: id.to_string(),
         text: text.to_string(),
         ts,
+        body: Vec::new(),
     }
 }
 
