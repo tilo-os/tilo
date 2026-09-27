@@ -5251,3 +5251,16 @@ fn seal_script(path: &Path) {
     assert!(status.success(), "install {}", path.display());
     std::fs::remove_file(&draft).unwrap();
 }
+
+/// `--ui-path` may name either SDK crate of a checkout; both resolve to the same checkout.
+#[test]
+fn ui_path_accepts_either_sdk_crate() {
+    for crate_dir in ["ui-core", "tilo-app"] {
+        let ui = Path::new("../tilo/crates/sdk").join(crate_dir);
+        assert_eq!(checkout_root_for_ui(&ui), Path::new("../tilo"));
+        assert_eq!(
+            sdk_path_for_ui(&ui),
+            Path::new("../tilo/crates/sdk/tilo-app")
+        );
+    }
+}
