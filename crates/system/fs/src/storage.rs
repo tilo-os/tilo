@@ -13,10 +13,10 @@ use runtime_fs::storage::{
     SyncStorageSnapshot, SyncedFileState,
 };
 use serde::{Serialize, de::DeserializeOwned};
-use tilo_clock::unix_now_ms;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::availability::{AvailabilityPolicy, AvailabilityRegistry, RecordAvailability};
+use crate::clock::unix_now_ms;
 use crate::eviction::{EvictionCoordinator, EvictionPlan, EvictionQueue, EvictionRequestId};
 use crate::namespace::NodeKind;
 use crate::{FileHistoryStore, Hydrator, Namespace};
@@ -381,8 +381,9 @@ impl StorageAuthority {
         let namespace = Arc::clone(&self.namespace);
         let dirty = Arc::clone(&self.dirty);
         let store = Arc::clone(&self.hydrator.store);
-        let runtime = self.hydrator.runtime_handle.clone();
-        self.coordinator()?
+        let coordinator = self.coordinator()?;
+        let runtime = coordinator.handoff_runtime();
+        coordinator
             .prepare_with_handoff(
                 record_id,
                 crate::eviction::EvictionMode::Safe,
