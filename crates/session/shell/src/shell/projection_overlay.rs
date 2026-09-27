@@ -845,7 +845,10 @@ impl ProjectionOverlay {
 
         let mut sheet = AccessNode::new(Role::Dialog)
             .with_name(t("display-sheet-title"))
-            .with_description(t("display-sheet-a11y-description"))
+            .with_description(t_args(
+                "display-sheet-a11y-description",
+                &[("chord", display_layout_chord().into())],
+            ))
             .with_bounds(self.sheet_rect())
             .with_state(AccessState::new().modal(true));
         let active = self.active_layout();
@@ -1168,7 +1171,10 @@ impl ProjectionOverlay {
         );
         text_renderer.draw_text(
             scene,
-            &t("display-sheet-subtitle"),
+            &t_args(
+                "display-sheet-subtitle",
+                &[("chord", display_layout_chord().into())],
+            ),
             type_scale.xs,
             colors.text_dim,
             transform.pre_translate((r.x0 + 20.0, r.y0 + 49.0).into()),
@@ -1823,6 +1829,12 @@ fn draw_layout_pictogram(
             );
         }
     }
+}
+
+/// The chord that opens this sheet and steps through its choices, as the
+/// active keyboard layout spells it.
+fn display_layout_chord() -> String {
+    crate::shell::keyboard_shortcuts::fixed_chord_text("fixed-display-layout")
 }
 
 #[cfg(test)]

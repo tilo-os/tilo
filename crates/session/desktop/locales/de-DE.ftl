@@ -823,7 +823,7 @@ launchpad-invite-detail = Jemanden in diesen Arbeitsbereich holen
 launchpad-activity-detail = Sehen, was sich geändert hat und warum
 
 # Empty-workspace launchpad: the keyboard hint under the cards
-launchpad-keyboard-hint = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  Super+N zeigt alle Apps
+launchpad-keyboard-hint = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  { $chord } zeigt alle Apps
 
 # Peers arriving in and leaving a workspace, batched into one toast
 peer-toast-joined-one = { $name } ist beigetreten
