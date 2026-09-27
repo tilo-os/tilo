@@ -1655,8 +1655,8 @@ pub(crate) fn collaborator_roster_rows_with_local_user(
                 color: Color::from_rgb8(red, green, blue),
                 is_agent,
                 role: agent_role
-                    .map(|role| crate::shell::state::role_label(role).to_string())
-                    .or_else(|| participant.role_id.clone()),
+                    .map(crate::shell::workspace_settings::role_label)
+                    .or_else(|| participant.role_id.as_deref().map(display_role_id)),
                 invited: participant.invited,
                 activity: participant
                     .active_tab
@@ -1677,6 +1677,15 @@ pub(crate) fn collaborator_roster_rows_with_local_user(
     // above tags it as an agent and exposes the same cursor/follow affordance
     // through truthful semantic activity rather than a fabricated cursor.
     rows
+}
+
+/// A recorded role id as people read it; an id this model does not define
+/// shows as recorded.
+fn display_role_id(id: &str) -> String {
+    crate::shell::state::role_from_id(id).map_or_else(
+        || id.to_string(),
+        crate::shell::workspace_settings::role_label,
+    )
 }
 
 fn roster_initial(name: &str) -> char {
@@ -1871,7 +1880,7 @@ mod tests {
                 rows[0].is_agent,
                 "a renamed agent must never appear as a person"
             );
-            assert_eq!(rows[0].role.as_deref(), Some("editor"));
+            assert_eq!(rows[0].role.as_deref(), Some("Editor"));
         }
 
         fn accessibility_distinguishes_live_action_from_inferred_intent() {

@@ -2271,3 +2271,16 @@ workspace-settings-stat-app-rules = { $count ->
     [one] App-Regel
    *[other] App-Regeln
 }
+
+# Übrige Shell-Hinweise: Dokumente öffnen, Herkunft von Host-Apps, Ruhestatus, Zusammenarbeit
+doc-open-failed = { $name } konnte nicht geöffnet werden
+doc-open-unnamed-file = Datei
+host-app-source-flatpak = Flatpak
+host-app-source-system = System
+new-document-unavailable = Neues Dokument nicht verfügbar: { $error }
+collab-unavailable-title = Zusammenarbeit nicht verfügbar
+collab-unavailable-body = Apps in dieser Sitzung können keine Änderungen teilen. { $reason }
+quiet-status-dnd = Bitte nicht stören
+quiet-status-dnd-presenting = Bitte nicht stören während der Präsentation
+quiet-status-dnd-sharing = Bitte nicht stören während der Bildschirmfreigabe
+quiet-status-focus-until = Fokus bis { $time }

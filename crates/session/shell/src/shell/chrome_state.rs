@@ -266,6 +266,14 @@ fn notification_clear_deadline(now: std::time::Instant) -> std::time::Instant {
 pub use tilo_desktop::chrome::{ActiveExposure, ActivityFocus, ActivityGlance};
 pub use ui::search::system::SearchScope;
 
+/// The placeholder line for a new tab whose document could not be created.
+fn new_document_unavailable(error: &impl std::fmt::Display) -> String {
+    crate::shell::i18n::t_args(
+        "new-document-unavailable",
+        &[("error", error.to_string().into())],
+    )
+}
+
 /// The shell's localized and addressable view of a [`SearchScope`].
 pub trait SearchScopeText {
     /// `ActiveApp` renders the tab's title instead of this static
@@ -1132,10 +1140,8 @@ impl ChromeState {
                     });
             }
             Err(error) => {
-                self.failed_tab_records.insert(
-                    tab,
-                    (identity, format!("New document unavailable: {error}")),
-                );
+                self.failed_tab_records
+                    .insert(tab, (identity, new_document_unavailable(&error)));
             }
         }
     }
@@ -1169,10 +1175,7 @@ impl ChromeState {
                 Err(error) => {
                     self.failed_tab_records.insert(
                         pending.identity.tab,
-                        (
-                            pending.identity,
-                            format!("New document unavailable: {error}"),
-                        ),
+                        (pending.identity, new_document_unavailable(&error)),
                     );
                     changed = true;
                 }
@@ -2040,8 +2043,11 @@ impl ChromeState {
             return;
         }
         self.push_error_notification(
-            "Collaboration unavailable",
-            format!("Apps in this session cannot share edits. {reason}"),
+            crate::shell::i18n::t("collab-unavailable-title"),
+            crate::shell::i18n::t_args(
+                "collab-unavailable-body",
+                &[("reason", reason.as_str().into())],
+            ),
         );
         self.collab_unavailable = Some(reason);
     }
@@ -2529,20 +2535,24 @@ impl ChromeState {
     /// automatic hold while presenting or sharing, or the focus schedule and
     /// when it ends. `None` when notifications show normally.
     pub fn quiet_status(&self, local_minute: u16, weekday_from_monday: u8) -> Option<String> {
+        use crate::shell::i18n::{t, t_args};
         if self.dnd() {
-            return Some("Do Not Disturb".into());
+            return Some(t("quiet-status-dnd"));
         }
         if self.notifications_auto_quiet() {
             return Some(if self.presenting {
-                "Do Not Disturb while presenting".into()
+                t("quiet-status-dnd-presenting")
             } else {
-                "Do Not Disturb while sharing".into()
+                t("quiet-status-dnd-sharing")
             });
         }
         self.notification_policy
             .focus
             .active_until(local_minute, weekday_from_monday)
-            .map(|end| format!("Focus until {:02}:{:02}", end / 60, end % 60))
+            .map(|end| {
+                let time = format!("{:02}:{:02}", end / 60, end % 60);
+                t_args("quiet-status-focus-until", &[("time", time.into())])
+            })
     }
 
     // ---------- D-Bus notification wiring ----------
