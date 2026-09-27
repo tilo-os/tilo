@@ -40,8 +40,8 @@ use std::path::{Path, PathBuf};
 
 use agent_provider_config::ModelCapability;
 use agent_provider_config::local::{
-    LocalModelRelease, ModelArtifact, PinnedArtifact, RuntimeEngine, RuntimeKind, RuntimeRelease,
-    SnapshotFile, is_snapshot_path,
+    LocalModelCatalog, LocalModelRelease, ModelArtifact, PinnedArtifact, RuntimeEngine,
+    RuntimeKind, RuntimeRelease, SnapshotFile, is_snapshot_path,
 };
 use clap::Parser;
 use ed25519_dalek::{Signer as _, SigningKey};
@@ -140,7 +140,6 @@ struct CatalogSource {
     /// never be promoted into a release image.
     production: bool,
     key_id: String,
-    recommendation: String,
     runtimes: Vec<RuntimeSource>,
     models: Vec<ModelSource>,
 }
@@ -149,9 +148,10 @@ struct CatalogSource {
 #[serde(deny_unknown_fields)]
 struct RuntimeSource {
     id: String,
-    kind: RuntimeKind,
+    /// The processors this build runs models on.
+    kinds: BTreeSet<RuntimeKind>,
     version: String,
-    #[serde(default)]
+    /// The server inside the image; the manager builds its argv.
     engine: RuntimeEngine,
     /// `registry/repository@sha256:<manifest digest>`, pulled by digest from
     /// the vendor's registry.
@@ -179,6 +179,8 @@ struct ModelSource {
     license_url: String,
     requires_acceptance: bool,
     installed_size_bytes: u64,
+    /// The engines that load this release's format.
+    engines: BTreeSet<RuntimeEngine>,
     allowed_runtimes: BTreeSet<RuntimeKind>,
     required_memory_mib: u64,
     required_accelerator_mib: u64,
@@ -189,7 +191,7 @@ struct ModelSource {
     /// separately evaluated face runtime and is never inferred from `vision`.
     #[serde(default)]
     capabilities: BTreeSet<ModelCapability>,
-    /// Share of accelerator memory, in percent, vLLM may claim.
+    /// Share of accelerator memory, in percent, the engine may claim.
     #[serde(default)]
     accelerator_memory_percent: Option<u8>,
 }
@@ -257,7 +259,6 @@ struct CatalogPayload {
     schema: u16,
     models: Vec<LocalModelRelease>,
     runtimes: Vec<SignedRuntime>,
-    recommendation: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -338,7 +339,7 @@ fn compile(
         if !runtime_ids.insert(runtime.id.clone()) {
             return Err(format!("duplicate runtime id {}", runtime.id));
         }
-        runtime_kinds.insert(runtime.kind);
+        runtime_kinds.extend(runtime.kinds.iter().copied());
         let digest = validate_oci_digest(&runtime.oci_image)?;
         let receipt = resolve_artifact(&runtime.artifact, source_dir, source.production, None)?;
         if receipt.sha256 != digest {
@@ -377,7 +378,7 @@ fn compile(
             },
             release: RuntimeRelease {
                 id: runtime.id,
-                kind: runtime.kind,
+                kinds: runtime.kinds,
                 version: runtime.version,
                 engine: runtime.engine,
                 artifact: PinnedArtifact {
@@ -442,6 +443,7 @@ fn compile(
             license_url: model.license_url,
             requires_acceptance: model.requires_acceptance,
             installed_size_bytes: model.installed_size_bytes,
+            engines: model.engines,
             allowed_runtimes: model.allowed_runtimes,
             required_memory_mib: model.required_memory_mib,
             required_accelerator_mib: model.required_accelerator_mib,
@@ -455,14 +457,22 @@ fn compile(
             .map_err(|error| format!("invalid model {}: {error}", release.id))?;
         models.push(release);
     }
-    if !model_ids.contains(&source.recommendation) {
-        return Err("recommended model is not present in catalog".into());
+    // The manager applies the same rules to what it loads: every runtime
+    // names processors its engine runs on, and every model names the engines
+    // that load its format and has a runtime here that runs it.
+    LocalModelCatalog {
+        runtimes: runtimes
+            .iter()
+            .map(|runtime| runtime.release.clone())
+            .collect(),
+        models: models.clone(),
     }
+    .validate()
+    .map_err(|error| error.to_string())?;
     let payload = CatalogPayload {
         schema: CATALOG_SCHEMA,
         models,
         runtimes,
-        recommendation: source.recommendation,
     };
     let payload_bytes = catalog_signing_bytes(&payload)?;
     let signature = signing_key.sign(&payload_bytes).to_bytes().to_vec();
@@ -791,10 +801,9 @@ mod tests {
             schema: 1,
             production: false,
             key_id: "test-release-1".into(),
-            recommendation: "example/model".into(),
             runtimes: vec![RuntimeSource {
                 id: "vllm-cpu".into(),
-                kind: RuntimeKind::Cpu,
+                kinds: BTreeSet::from([RuntimeKind::Cpu]),
                 version: "0.1.0-example".into(),
                 engine: RuntimeEngine::Vllm,
                 oci_image: format!("registry.example.invalid/tilo/vllm@sha256:{manifest_digest}"),
@@ -816,6 +825,7 @@ mod tests {
                 ),
                 requires_acceptance: true,
                 installed_size_bytes: 64,
+                engines: BTreeSet::from([RuntimeEngine::Vllm]),
                 allowed_runtimes: BTreeSet::from([RuntimeKind::Cpu]),
                 required_memory_mib: 1024,
                 required_accelerator_mib: 0,
@@ -840,7 +850,11 @@ mod tests {
             let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
             let (catalog, trust) =
                 compile(source, &fixtures, &SigningKey::from_bytes(&[11; 32])).unwrap();
-            assert_eq!(catalog.payload.recommendation, "example/tiny-model");
+            assert_eq!(catalog.payload.models[0].id, "example/tiny-model");
+            assert_eq!(
+                catalog.payload.models[0].engines,
+                BTreeSet::from([RuntimeEngine::LlamaCpp])
+            );
             assert_eq!(catalog.payload.models[0].artifact.download_bytes(), 42);
             assert_eq!(catalog.payload.runtimes[0].release.artifact.size_bytes, 44);
             assert_eq!(trust.keys.len(), 1);
@@ -997,6 +1011,87 @@ mod tests {
                 compile(source, &linked_parent, &SigningKey::from_bytes(&[3; 32])).unwrap_err();
             assert!(error.contains("could not securely open"));
         }
+    }
+
+    /// A llama.cpp runtime pack with its GGUF compiles beside the vLLM pack; the compiler refuses a
+    /// GGUF marked for vLLM, a pack naming a processor its engine does not run on, and a model no
+    /// pack of the catalogue runs.
+    #[test]
+    fn a_llama_cpp_pack_and_its_gguf_compile_beside_vllm() {
+        let temp = tempfile::tempdir().unwrap();
+        let revision = "0123456789abcdef0123456789abcdef01234567";
+        let with_llama = |dir: &Path| {
+            let mut source = source(dir);
+            let manifest: &[u8] = b"{\"schemaVersion\":2,\"llama\":true}\n";
+            let digest = hex::encode(Sha256::digest(manifest));
+            source.runtimes.push(RuntimeSource {
+                id: "llama-cpp-vulkan-b11176".into(),
+                kinds: BTreeSet::from([RuntimeKind::Vulkan, RuntimeKind::Cpu]),
+                version: "b11176".into(),
+                engine: RuntimeEngine::LlamaCpp,
+                oci_image: format!("ghcr.example.invalid/ggml-org/llama.cpp@sha256:{digest}"),
+                artifact: artifact(dir, "llama.manifest.json", manifest),
+                base_image_digest: format!("sha256:{}", "a".repeat(64)),
+                architecture: Some("x86_64".into()),
+                kernel_abi: None,
+                requires_reboot: false,
+            });
+            let mut gguf = source.models[0].clone();
+            gguf.id = "example/model-gguf".into();
+            let mut file = artifact(dir, "model.gguf", b"GGUF deterministic weights\n");
+            file.url = format!(
+                "https://huggingface.example.invalid/acme/model-gguf/resolve/{revision}/model.gguf"
+            );
+            gguf.artifact = ModelArtifactSource::Gguf(file);
+            gguf.engines = BTreeSet::from([RuntimeEngine::LlamaCpp]);
+            gguf.allowed_runtimes = BTreeSet::from([RuntimeKind::Vulkan, RuntimeKind::Cpu]);
+            source.models.push(gguf);
+            source
+        };
+        let key = SigningKey::from_bytes(&[3; 32]);
+        let (catalog, _) = compile(with_llama(temp.path()), temp.path(), &key).unwrap();
+        let llama = catalog
+            .payload
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.release.engine == RuntimeEngine::LlamaCpp)
+            .unwrap();
+        assert!(llama.validate().is_ok());
+        assert_eq!(
+            llama.release.kinds,
+            BTreeSet::from([RuntimeKind::Vulkan, RuntimeKind::Cpu])
+        );
+        let gguf = catalog
+            .payload
+            .models
+            .iter()
+            .find(|model| model.id == "example/model-gguf")
+            .unwrap();
+        assert!(matches!(gguf.artifact, ModelArtifact::Gguf(_)));
+        assert_eq!(gguf.engines, BTreeSet::from([RuntimeEngine::LlamaCpp]));
+
+        let mut for_vllm = with_llama(temp.path());
+        for_vllm.models[1].engines = BTreeSet::from([RuntimeEngine::Vllm]);
+        assert!(
+            compile(for_vllm, temp.path(), &key)
+                .unwrap_err()
+                .contains("engines that load its format")
+        );
+        let mut cuda_llama = with_llama(temp.path());
+        cuda_llama.runtimes[1].kinds.insert(RuntimeKind::NvidiaCuda);
+        assert!(
+            compile(cuda_llama, temp.path(), &key)
+                .unwrap_err()
+                .contains("processors its engine runs on")
+        );
+        let mut orphan = with_llama(temp.path());
+        orphan.runtimes.truncate(1);
+        orphan.models[1].allowed_runtimes = BTreeSet::from([RuntimeKind::Cpu]);
+        assert!(
+            compile(orphan, temp.path(), &key)
+                .unwrap_err()
+                .contains("a runtime in the catalogue that runs it")
+        );
     }
 
     /// The signing key must be private on disk, rejects symlinks and aliased inodes, and its input

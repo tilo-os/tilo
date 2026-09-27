@@ -37,12 +37,18 @@ Nothing is mirrored or repackaged; every byte is fetched from its vendor:
   private snapshot directory whose paths come only from the signed listing.
   `{"gguf": {...}}` is the single-file alternative; no model is treated as a
   single file by inference.
+- **Models** name the engines that load them (`engines`): a snapshot is
+  vLLM's, a GGUF llama.cpp's.
 - **Runtimes** are OCI images pulled from their registry by manifest digest.
   The runtime's `artifact` is the image manifest itself (its registry URL,
   SHA-256 and size), and the compiler refuses a manifest that does not hash to
   the digest `oci_image` names, so the signed extension covers exactly what the
   container engine verifies on pull. `engine` names the server inside
-  (`vllm`); the manager builds that engine's argv from signed fields.
+  (`vllm`, `llama_cpp`) and `kinds` the processors the build runs on; the
+  manager builds that engine's argv from signed fields.
+
+The catalogue names no recommended model: each device ranks every
+configuration it supports (`LocalModelCatalog::configurations`).
 
 A runtime container has no network (`--network none`). It serves its
 OpenAI-compatible API on a Unix socket in a private per-model directory, the
@@ -66,20 +72,23 @@ and are not model weights, a runtime, or approved upstream release pins.
 
 | Model | Capability | Revision | Notes |
 | --- | --- | --- | --- |
-| `qwen3-4b-awq` (`Qwen/Qwen3-4B-AWQ`) | `trace_review` | `74d4bd2b…` | Apache-2.0, 2.7 GB, 8K context, 70 % of an 8 GiB card |
+| `qwen3-4b-awq` (`Qwen/Qwen3-4B-AWQ`) | `trace_review` | `74d4bd2b…` | Apache-2.0, 2.7 GB, 8K context, 70 % of an 8 GiB card; vLLM |
+| `qwen3-4b-gguf` (`Qwen/Qwen3-4B-GGUF`, `Q4_K_M`) | `trace_review` | `bc640142…` | Apache-2.0, 2.5 GB, 8K context, 4.25 GiB on a GPU; llama.cpp |
 | `smolvlm2-500m` (`HuggingFaceTB/SmolVLM2-500M-Video-Instruct`) | `vision` | `a3992d50…` | Apache-2.0; no biometric capability |
 
 Each has `release.json` (catalog metadata) and `model-files.sha256` (every
-served file with its SHA-256). `runtimes/` pins the vLLM 0.10.1 CUDA image by
-digest. `prepare-release.py` fetches and verifies all of them and writes the
+served file with its SHA-256) and names its `format` (`hf_snapshot` or
+`gguf`). `runtimes/` pins, by digest, the vLLM 0.10.1 CUDA image and the
+llama.cpp `b11176` Vulkan server (`ghcr.io/ggml-org/llama.cpp`, its amd64
+manifest; about 310 MB, CPU backend included). `prepare-release.py` fetches and verifies all of them and writes the
 compiler source; `tests/test_prepare_release.py` checks the pins offline.
 
 ```sh
 dist/local-models/prepare-release.py \
   --output /secure/build/local-models \
   --base-image-digest "$TILO_BASE_IMAGE_DIGEST" \
-  --recommendation qwen/qwen3-4b-awq \
-  dist/local-models/qwen3-4b-awq dist/local-models/smolvlm2-500m
+  dist/local-models/qwen3-4b-awq dist/local-models/qwen3-4b-gguf \
+  dist/local-models/smolvlm2-500m
 ```
 
 It needs `curl` and `skopeo`. Then compile
@@ -104,8 +113,8 @@ cargo build --release -p local-model-service -p tilo-model-gateway
 dev=$(realpath -m ~/.local/share/tilo/dev-models)
 dist/local-models/prepare-release.py --output "$dev/inputs" \
   --base-image-digest "sha256:$(printf dev | sha256sum | cut -d' ' -f1)" \
-  --key-id tilo-dev-local-models --recommendation qwen/qwen3-4b-awq \
-  dist/local-models/qwen3-4b-awq
+  --key-id tilo-dev-local-models \
+  dist/local-models/qwen3-4b-awq dist/local-models/qwen3-4b-gguf
 
 # 3. Sign with a dev key.
 (umask 077; od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$dev/signing-key")
@@ -116,7 +125,11 @@ target/release/tilo-model-catalog --source "$dev/inputs/local-models.json" \
 # 4. Install and start through the manager: it downloads each file from
 #    Hugging Face, pulls the image by digest, and starts vLLM without network.
 manager() { target/release/tilo-model-manager --catalog "$dev/catalog.json" --keys "$dev/keys.json" "$@"; }
-manager install --model qwen/qwen3-4b-awq
+manager snapshot   # `available` ranks every configuration this machine runs
+manager install --model qwen/qwen3-4b-awq \
+  --runtime vllm-cuda-0.10.1 --on nvidia_cuda --device 0000:01:00.0
+# or llama.cpp on an integrated GPU, by the slot the snapshot names:
+#   --model qwen/qwen3-4b-gguf --runtime llama-cpp-vulkan-b11176 --on vulkan --device 0000:66:00.0
 manager snapshot   # repeat until the phase is ready with an endpoint socket
 ```
 

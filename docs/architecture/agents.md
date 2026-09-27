@@ -52,7 +52,7 @@ Agent profile / Task Center
 Tilo model gateway (per-user, secrets stay here)
            |
            +-- LiteLLM Proxy -> OpenAI, Anthropic, compatible cloud APIs
-           +-- vLLM OpenAI-compatible server -> local model
+           +-- vLLM or llama.cpp OpenAI-compatible server -> local model
            +-- compatible endpoint -> remote vLLM, LM Studio, Ollama, etc.
            |
            v
@@ -129,9 +129,11 @@ implementation Mail also uses.
 
 Local installation uses the [Hugging Face Hub download/cache
 workflow](https://huggingface.co/docs/huggingface_hub/guides/download), pinned
-to an immutable revision, and starts [vLLM's OpenAI-compatible
+to an immutable revision, and starts the configuration's engine against it:
+[vLLM's OpenAI-compatible
 server](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/)
-against that resolved snapshot. Tilo presents license, size, revision,
+on a snapshot, or llama.cpp's `llama-server` on a GGUF file. Which one, on
+which device, is ranked per device from the hardware; neither is a default. Tilo presents license, size, revision,
 download/load progress and VRAM state, then supervises the process in a
 container without network, reachable only through a private Unix socket. Downloading is an explicit management
 operation, never a side effect of an agent request.

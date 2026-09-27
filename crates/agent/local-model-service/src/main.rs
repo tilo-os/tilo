@@ -3,7 +3,8 @@
 //! It accepts only signed catalog selections, writes only its private store,
 //! downloads only pinned HTTPS URLs, and delegates process lifetime to a
 //! fixed-argv systemd user service. No subcommand accepts a URL, command, tag,
-//! model path, or arbitrary process argument.
+//! model path, or arbitrary process argument; a configuration is named by
+//! catalogue and probe identities and re-derived here before anything runs.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -16,9 +17,9 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use agent_provider_config::local::{
-    Accelerator, AcceleratorState, AcceleratorVendor, HardwareSnapshot, LocalModelCatalog,
-    LocalModelRelease, LocalModelStatus, ModelArtifact, RestartReason, RuntimeDecision,
-    RuntimeKind, expected_speed, select_runtime,
+    Accelerator, AcceleratorState, AcceleratorVendor, Configuration, HardwareSnapshot,
+    LocalModelCatalog, LocalModelRelease, LocalModelStatus, Placement, RestartReason,
+    RuntimeEngine, RuntimeKind,
 };
 use agent_provider_config::manager::{
     AcceleratorSetup, AcceleratorSetupState, AvailableModel, HardwareFit, HardwareRecommendation,
@@ -27,8 +28,8 @@ use agent_provider_config::manager::{
 use clap::{Parser, Subcommand};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use local_model_service::{
-    HttpsTransport, LocalModelService, ProcessHandle, ProcessSupervisor, RuntimeCommand,
-    ServiceError, SignedRuntime,
+    DeviceAccess, HttpsTransport, LocalModelService, ProcessHandle, ProcessSupervisor,
+    RuntimeCommand, ServiceError, SignedRuntime,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -50,17 +51,32 @@ struct Cli {
     #[command(subcommand)]
     command: Action,
 }
+
+/// A processor as the command line names it (`vulkan`, `nvidia_cuda`, ...).
+fn parse_kind(value: &str) -> Result<RuntimeKind, String> {
+    serde_json::from_value(serde_json::Value::String(value.into()))
+        .map_err(|_| format!("unknown processor {value}"))
+}
+
 #[derive(Subcommand)]
 enum Action {
     Snapshot {
         #[arg(long, default_value = "json")]
         format: String,
     },
+    /// Set up one configuration the snapshot offers: a model, the runtime
+    /// pack, the processor and, on a GPU, the device's PCI slot.
     Install {
         #[arg(long)]
         model: String,
         #[arg(long)]
         revision: Option<String>,
+        #[arg(long)]
+        runtime: String,
+        #[arg(long, value_parser = parse_kind)]
+        on: RuntimeKind,
+        #[arg(long)]
+        device: Option<String>,
         /// Explicit acknowledgement for a catalog entry that requires it.
         #[arg(long)]
         accept_license: bool,
@@ -115,6 +131,7 @@ enum RpcAction {
     Install {
         model: String,
         revision: Option<String>,
+        placement: Placement,
         accept_license: bool,
     },
     Start {
@@ -152,12 +169,13 @@ struct SignedCatalog {
     signature: Vec<u8>,
     payload: CatalogPayload,
 }
+/// No release is a default: which configuration is recommended is decided
+/// on each device from its hardware.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct CatalogPayload {
     schema: u16,
     models: Vec<LocalModelRelease>,
     runtimes: Vec<SignedRuntime>,
-    recommendation: String,
 }
 #[derive(Default, Deserialize)]
 struct KeyFile {
@@ -220,6 +238,9 @@ fn load_catalog(path: &PathBuf, keys: &PathBuf) -> Result<CatalogPayload, String
     for runtime in &signed.payload.runtimes {
         runtime.validate().map_err(|error| error.to_string())?;
     }
+    model_catalog(&signed.payload)
+        .validate()
+        .map_err(|error| error.to_string())?;
     Ok(signed.payload)
 }
 
@@ -323,39 +344,50 @@ impl HttpsTransport for ReqwestTransport {
     }
 }
 
-/// User-systemd supervision. The executable and every vLLM argument come from
-/// [`VllmCommand`], itself constructed only from a verified signed catalog.
+/// User-systemd supervision. The executable and every engine argument come
+/// from [`RuntimeCommand`], itself constructed only from a verified signed
+/// catalog and the probed device.
 struct SystemdSupervisor;
 /// The container has no network at all: the only way in or out is the API
 /// socket in its private socket directory, so what a model is sent cannot
-/// leave the device through it.
+/// leave the device through it. It is given its one configuration's device
+/// and nothing else.
 fn podman_runtime_argv(command: &RuntimeCommand) -> Vec<String> {
-    let mut argv = vec![
+    let mut argv: Vec<String> = vec![
         "run".into(),
         "--rm".into(),
         "--pull".into(),
         "never".into(),
         "--network".into(),
         "none".into(),
+    ];
+    match command.engine {
         // Nothing inside should try to reach a hub or report usage; with no
         // network it would only fail slowly.
-        "--env".into(),
-        "HF_HUB_OFFLINE=1".into(),
-        "--env".into(),
-        "VLLM_NO_USAGE_STATS=1".into(),
-    ];
-    match command.runtime_kind {
-        agent_provider_config::local::RuntimeKind::Cpu => {}
-        agent_provider_config::local::RuntimeKind::NvidiaCuda => {
+        RuntimeEngine::Vllm => argv.extend([
+            "--env".into(),
+            "HF_HUB_OFFLINE=1".into(),
+            "--env".into(),
+            "VLLM_NO_USAGE_STATS=1".into(),
+        ]),
+        // `--offline` in its argv keeps llama-server off the network.
+        RuntimeEngine::LlamaCpp => {}
+    }
+    match &command.device {
+        DeviceAccess::None => {}
+        DeviceAccess::NvidiaCdi => {
             argv.extend(["--device".into(), "nvidia.com/gpu=all".into()]);
         }
-        agent_provider_config::local::RuntimeKind::AmdRocm => {
+        DeviceAccess::AmdCompute => {
             argv.extend([
                 "--device".into(),
                 "/dev/kfd".into(),
                 "--device".into(),
                 "/dev/dri".into(),
             ]);
+        }
+        DeviceAccess::RenderNode(node) => {
+            argv.extend(["--device".into(), node.display().to_string()]);
         }
     }
     // The host object is derived exclusively from its verified SHA-256 path.
@@ -506,6 +538,218 @@ impl ProcessSupervisor for SystemdSupervisor {
     }
 }
 
+/// Where the probe reads the machine: sysfs's PCI devices and the vendor
+/// name tables the graphics stack ships.
+struct ProbeSources<'a> {
+    pci_devices: &'a Path,
+    amdgpu_ids: &'a Path,
+    pci_ids: &'a Path,
+}
+
+fn system_probe() -> ProbeSources<'static> {
+    ProbeSources {
+        pci_devices: Path::new("/sys/bus/pci/devices"),
+        amdgpu_ids: Path::new("/usr/share/libdrm/amdgpu.ids"),
+        pci_ids: Path::new("/usr/share/hwdata/pci.ids"),
+    }
+}
+
+/// One card as `nvidia-smi` reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NvidiaCard {
+    pci_slot: String,
+    name: String,
+    vram_mib: u64,
+    driver: String,
+}
+
+/// `nvidia-smi`'s `pci.bus_id` (`00000000:01:00.0`) as sysfs spells the slot
+/// (`0000:01:00.0`).
+fn sysfs_slot(bus_id: &str) -> Option<String> {
+    let (domain, rest) = bus_id.trim().split_once(':')?;
+    let domain = domain.get(domain.len().checked_sub(4)?..)?;
+    Some(format!("{domain}:{rest}").to_ascii_lowercase())
+}
+
+/// The cards in `nvidia-smi --query-gpu=pci.bus_id,name,memory.total,
+/// driver_version --format=csv,noheader,nounits` output.
+fn nvidia_cards(stdout: &[u8]) -> Vec<NvidiaCard> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut values = line.split(',').map(str::trim);
+            let pci_slot = sysfs_slot(values.next()?)?;
+            let name = values.next()?.to_owned();
+            let vram_mib = values.next()?.parse().ok()?;
+            let driver = values.next()?.to_owned();
+            Some(NvidiaCard {
+                pci_slot,
+                name,
+                vram_mib,
+                driver,
+            })
+        })
+        .collect()
+}
+
+fn read_trimmed(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_owned())
+}
+
+fn read_mib(path: &Path) -> u64 {
+    read_trimmed(path)
+        .and_then(|bytes| bytes.parse::<u64>().ok())
+        .map_or(0, |bytes| bytes / 1024 / 1024)
+}
+
+/// The marketing name libdrm's `amdgpu.ids` lists for a device id and
+/// revision (`15BF,\tC1,\tAMD Radeon 780M Graphics`).
+fn amdgpu_name(table: &str, device: &str, revision: &str) -> Option<String> {
+    table.lines().find_map(|line| {
+        let mut fields = line.split(',').map(str::trim);
+        let id = fields.next()?;
+        let rev = fields.next()?;
+        let name = fields.next()?;
+        (id.eq_ignore_ascii_case(device) && rev.eq_ignore_ascii_case(revision))
+            .then(|| name.to_owned())
+    })
+}
+
+/// The device name hwdata's `pci.ids` lists under a vendor.
+fn pci_name(table: &str, vendor: &str, device: &str) -> Option<String> {
+    let mut in_vendor = false;
+    for line in table.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        if !line.starts_with('\t') {
+            in_vendor = line
+                .get(..4)
+                .is_some_and(|id| id.eq_ignore_ascii_case(vendor));
+            continue;
+        }
+        if in_vendor && !line.starts_with("\t\t") {
+            let entry = line.trim_start_matches('\t');
+            if entry
+                .get(..4)
+                .is_some_and(|id| id.eq_ignore_ascii_case(device))
+            {
+                return entry.get(4..).map(|name| name.trim().to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Every GPU on the PCI bus, with what runs it. Sysfs names the device, its
+/// kernel driver and render node; AMD's memory counters give its VRAM and
+/// the system memory it can map (an APU keeps no VRAM vendor record, which
+/// marks its memory as shared); Intel's integrated GPU sits at `00:02.0`;
+/// `nvidia-smi` gives an NVIDIA card's memory and driver, and without it the
+/// card needs its driver.
+fn probe_accelerators(
+    sources: &ProbeSources<'_>,
+    nvidia: &[NvidiaCard],
+    nvml_mismatch: bool,
+    rocm: Option<&str>,
+    memory_mib: u64,
+) -> Vec<Accelerator> {
+    let amdgpu_ids = std::fs::read_to_string(sources.amdgpu_ids).unwrap_or_default();
+    let pci_ids = std::fs::read_to_string(sources.pci_ids).unwrap_or_default();
+    let mut slots: Vec<PathBuf> = std::fs::read_dir(sources.pci_devices)
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    slots.sort();
+    slots
+        .into_iter()
+        .filter_map(|device| {
+            // Display controllers only: VGA, 3D and other display classes.
+            if !read_trimmed(&device.join("class"))?.starts_with("0x03") {
+                return None;
+            }
+            let vendor = match read_trimmed(&device.join("vendor"))?.as_str() {
+                "0x10de" => AcceleratorVendor::Nvidia,
+                "0x1002" => AcceleratorVendor::Amd,
+                "0x8086" => AcceleratorVendor::Intel,
+                _ => return None,
+            };
+            let pci_slot = device.file_name()?.to_str()?.to_owned();
+            let device_id = read_trimmed(&device.join("device"))?;
+            let device_id = device_id.trim_start_matches("0x");
+            let kernel_driver = std::fs::read_link(device.join("driver"))
+                .ok()
+                .and_then(|driver| driver.file_name()?.to_str().map(str::to_owned))
+                .unwrap_or_default();
+            let render_node = std::fs::read_dir(device.join("drm"))
+                .ok()
+                .and_then(|nodes| {
+                    nodes.flatten().find_map(|node| {
+                        let name = node.file_name().to_str()?.to_owned();
+                        name.starts_with("renderD").then_some(name)
+                    })
+                });
+            let mut accelerator = Accelerator {
+                vendor,
+                name: String::new(),
+                pci_slot,
+                render_node,
+                kernel_driver,
+                integrated: false,
+                dedicated_mib: 0,
+                shared_mib: 0,
+                compute: None,
+                restart: None,
+            };
+            match vendor {
+                AcceleratorVendor::Nvidia => {
+                    match nvidia
+                        .iter()
+                        .find(|card| card.pci_slot == accelerator.pci_slot)
+                    {
+                        Some(card) => {
+                            accelerator.name.clone_from(&card.name);
+                            accelerator.dedicated_mib = card.vram_mib;
+                            accelerator.compute = Some(card.driver.clone());
+                        }
+                        // The card and a driver are present, but the loaded
+                        // kernel module and the installed userspace library
+                        // differ: usable after a restart.
+                        None if nvml_mismatch && accelerator.kernel_driver == "nvidia" => {
+                            accelerator.restart = Some(RestartReason::DriverLibraryMismatch);
+                        }
+                        None => {}
+                    }
+                    if accelerator.name.is_empty() {
+                        accelerator.name =
+                            pci_name(&pci_ids, "10de", device_id).unwrap_or_default();
+                    }
+                }
+                AcceleratorVendor::Amd => {
+                    let revision = read_trimmed(&device.join("revision")).unwrap_or_default();
+                    accelerator.name =
+                        amdgpu_name(&amdgpu_ids, device_id, revision.trim_start_matches("0x"))
+                            .or_else(|| pci_name(&pci_ids, "1002", device_id))
+                            .unwrap_or_default();
+                    accelerator.dedicated_mib = read_mib(&device.join("mem_info_vram_total"));
+                    accelerator.shared_mib = read_mib(&device.join("mem_info_gtt_total"));
+                    accelerator.integrated = !device.join("mem_info_vram_vendor").exists();
+                    accelerator.compute = rocm.map(str::to_owned);
+                }
+                AcceleratorVendor::Intel => {
+                    accelerator.name = pci_name(&pci_ids, "8086", device_id).unwrap_or_default();
+                    accelerator.integrated = accelerator.pci_slot.ends_with(":00:02.0");
+                    if accelerator.integrated {
+                        accelerator.shared_mib = memory_mib;
+                    }
+                }
+            }
+            Some(accelerator)
+        })
+        .collect()
+}
+
 /// What this machine offers. Free storage is measured where the model store
 /// actually lives, so a per-user store is not judged by a system path.
 fn local_hardware(store: &Path) -> HardwareSnapshot {
@@ -525,90 +769,39 @@ fn local_hardware(store: &Path) -> HardwareSnapshot {
     let memory_mib = meminfo_mib("MemTotal:");
     let available_memory_mib = meminfo_mib("MemAvailable:");
     let free_storage_mib = free_storage_mib(store).unwrap_or(0);
-    let mut accelerators = Vec::new();
     // NVIDIA's vendor tool is called with a fixed query/format, never a
-    // caller-provided argument. Sysfs discovery distinguishes an absent
-    // accelerator from an unavailable vendor tool.
+    // caller-provided argument.
     let mut nvidia = Command::new("nvidia-smi");
     nvidia.args([
-        "--query-gpu=memory.total,driver_version",
+        "--query-gpu=pci.bus_id,name,memory.total,driver_version",
         "--format=csv,noheader,nounits",
     ]);
     let nvidia = bounded_command::run_prepared(nvidia, None, 1024 * 1024, Duration::from_secs(5));
-    if let Ok(output) = &nvidia
-        && !output.status.success()
-        && nvml_reports_version_mismatch(&output.stdout, &output.stderr)
-    {
-        // The card and a driver are present, but the loaded kernel module and
-        // the installed userspace library differ: usable after a restart.
-        accelerators.push(Accelerator::RestartRequired {
-            vendor: AcceleratorVendor::Nvidia,
-            reason: RestartReason::DriverLibraryMismatch,
-        });
-    }
-    if let Ok(output) = nvidia
-        && output.status.success()
-    {
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let mut values = line.split(',').map(str::trim);
-            if let (Some(memory), Some(driver)) = (values.next(), values.next())
-                && let Ok(vram_mib) = memory.parse()
-            {
-                accelerators.push(Accelerator::Nvidia {
-                    vram_mib,
-                    driver: driver.into(),
-                });
-            }
-        }
-    }
+    let (cards, mismatch) = match &nvidia {
+        Ok(output) if output.status.success() => (nvidia_cards(&output.stdout), false),
+        Ok(output) => (
+            Vec::new(),
+            nvml_reports_version_mismatch(&output.stdout, &output.stderr),
+        ),
+        Err(_) => (Vec::new(), false),
+    };
     let rocm = std::fs::read_to_string("/opt/rocm/.info/version")
         .ok()
         .map(|version| version.trim().to_string())
         .filter(|version| !version.is_empty());
-    if let Ok(cards) = std::fs::read_dir("/sys/class/drm") {
-        for card in cards.flatten() {
-            let device = card.path().join("device");
-            let vendor = std::fs::read_to_string(device.join("vendor"))
-                .ok()
-                .map(|value| value.trim().to_string());
-            if vendor.as_deref() == Some("0x1002") {
-                let vram_mib = std::fs::read_to_string(device.join("mem_info_vram_total"))
-                    .ok()
-                    .and_then(|bytes| bytes.trim().parse::<u64>().ok())
-                    .map_or(0, |bytes| bytes / 1024 / 1024);
-                accelerators.push(Accelerator::Amd {
-                    vram_mib,
-                    rocm: rocm.clone(),
-                });
-            } else if vendor.as_deref() == Some("0x10de")
-                && !accelerators.iter().any(|item| {
-                    matches!(
-                        item,
-                        Accelerator::Nvidia { .. }
-                            | Accelerator::RestartRequired {
-                                vendor: AcceleratorVendor::Nvidia,
-                                ..
-                            }
-                    )
-                })
-            {
-                // Retain the PCI device when `nvidia-smi` is absent so policy
-                // asks for the signed driver boot pack instead of quietly
-                // launching an unsuitable CPU model.
-                accelerators.push(Accelerator::Nvidia {
-                    vram_mib: 0,
-                    driver: String::new(),
-                });
-            }
-        }
-    }
     HardwareSnapshot {
         cpu_threads: std::thread::available_parallelism()
             .map_or(1, |count| u16::try_from(count.get()).unwrap_or(u16::MAX)),
         memory_mib,
         available_memory_mib,
         free_storage_mib,
-        accelerators,
+        accelerators: probe_accelerators(
+            &system_probe(),
+            &cards,
+            mismatch,
+            rocm.as_deref(),
+            memory_mib,
+        ),
     }
 }
 
@@ -630,17 +823,9 @@ fn with_staged_driver(
 ) -> HardwareSnapshot {
     if setup.is_some_and(|setup| setup.status == AcceleratorSetupState::RestartRequired) {
         for accelerator in &mut hardware.accelerators {
-            let vendor = match accelerator {
-                Accelerator::Nvidia { driver, .. } if driver.trim().is_empty() => {
-                    AcceleratorVendor::Nvidia
-                }
-                Accelerator::Amd { rocm: None, .. } => AcceleratorVendor::Amd,
-                _ => continue,
-            };
-            *accelerator = Accelerator::RestartRequired {
-                vendor,
-                reason: RestartReason::DriverStaged,
-            };
+            if accelerator.needs_driver() {
+                accelerator.restart = Some(RestartReason::DriverStaged);
+            }
         }
     }
     hardware
@@ -662,76 +847,6 @@ fn free_storage_mib(path: &Path) -> Option<u64> {
         .checked_mul(u64::try_from(info.f_frsize).ok()?)?
         .checked_div(1024 * 1024)
 }
-/// Where a release's bytes come from, as shown before download: the file for
-/// a single object, the pinned revision's directory for a snapshot.
-fn package_source(artifact: &ModelArtifact) -> String {
-    match artifact {
-        ModelArtifact::Gguf(object) => object.url.clone(),
-        ModelArtifact::HfSnapshot { files } => files
-            .iter()
-            .find(|file| file.path == "config.json")
-            .and_then(|file| file.artifact.url.strip_suffix("/config.json"))
-            .unwrap_or_default()
-            .to_owned(),
-    }
-}
-
-fn package(model: &LocalModelRelease) -> LocalModelPackage {
-    LocalModelPackage {
-        id: model.id.clone(),
-        name: model.label.clone(),
-        description: model.description.clone(),
-        source: package_source(&model.artifact),
-        revision: model.version.clone(),
-        license: model.license_id.clone(),
-        license_url: model.license_url.clone(),
-        download_bytes: model.artifact.download_bytes(),
-        installed_bytes: model.installed_size_bytes,
-        capabilities: model.capabilities.clone(),
-        context_window: model.context_window,
-        accelerator_memory_mib: model.required_accelerator_mib,
-    }
-}
-fn runtime_kind_for(
-    hardware: &HardwareSnapshot,
-    available: impl IntoIterator<Item = RuntimeKind>,
-) -> Result<RuntimeKind, String> {
-    let kind = match select_runtime(hardware) {
-        RuntimeDecision::Ready(kind) => kind,
-        RuntimeDecision::RestartRequired { vendor, .. } => {
-            return Err(format!(
-                "Restart to finish setting up the {} graphics driver.",
-                vendor.label()
-            ));
-        }
-        RuntimeDecision::Unavailable(reason) => return Err(reason.into()),
-    };
-    if kind == RuntimeKind::Cpu
-        && hardware
-            .accelerators
-            .iter()
-            .any(|accelerator| match accelerator {
-                Accelerator::Nvidia { driver, .. } => driver.trim().is_empty(),
-                Accelerator::Amd { rocm, .. } => rocm.is_none(),
-                Accelerator::RestartRequired { .. } => true,
-            })
-    {
-        return Err(
-            "An accelerator was detected but its signed driver runtime is inactive. Install the matching signed driver boot pack and restart before local inference."
-                .into(),
-        );
-    }
-    if available.into_iter().any(|candidate| candidate == kind) {
-        Ok(kind)
-    } else if kind == RuntimeKind::Cpu {
-        Err("The signed CPU runtime is unavailable in this image.".into())
-    } else {
-        Err(format!(
-            "{} was detected, but its signed runtime is not active. Install the matching signed driver boot pack and restart before local inference.",
-            kind.label()
-        ))
-    }
-}
 
 fn model_catalog(catalog: &CatalogPayload) -> LocalModelCatalog {
     LocalModelCatalog {
@@ -744,147 +859,76 @@ fn model_catalog(catalog: &CatalogPayload) -> LocalModelCatalog {
     }
 }
 
-fn recommended_model<'a>(
-    catalog: &'a CatalogPayload,
-    hardware: &HardwareSnapshot,
-) -> Result<(&'a LocalModelRelease, RuntimeKind), String> {
-    let kind = runtime_kind_for(
-        hardware,
-        catalog.runtimes.iter().map(|runtime| runtime.release.kind),
-    )?;
-    let model_id = model_catalog(catalog)
-        .recommend(hardware, kind)
-        .map(|model| model.id.clone())
-        .ok_or_else(|| {
-            format!(
-                "No signed {} model fits the detected RAM, accelerator memory, and free storage.",
-                kind.label()
-            )
-        })?;
-    let model = catalog
-        .models
-        .iter()
-        .find(|candidate| candidate.id == model_id)
-        .ok_or_else(|| "catalog recommendation target disappeared".to_string())?;
-    Ok((model, kind))
-}
-
-/// Every signed release that honestly runs on `kind` here, best first, with
-/// its expected speed.
-fn available_models(
-    catalog: &CatalogPayload,
-    hardware: &HardwareSnapshot,
-    kind: RuntimeKind,
-) -> Vec<AvailableModel> {
-    let local = model_catalog(catalog);
-    let mut fitting: Vec<&LocalModelRelease> = local.fitting(hardware, kind).collect();
-    fitting.sort_by_key(|model| {
-        (
-            std::cmp::Reverse(model.context_window),
-            model.artifact.download_bytes(),
-        )
-    });
-    fitting
-        .into_iter()
-        .map(|model| AvailableModel {
-            package: package(model),
-            runtime: kind,
-            speed: expected_speed(hardware, kind, model),
-        })
-        .collect()
-}
-
-fn signed_runtime_for<'a>(
-    catalog: &'a CatalogPayload,
-    hardware: &HardwareSnapshot,
-    model: &LocalModelRelease,
-) -> Result<&'a SignedRuntime, String> {
-    let kind = runtime_kind_for(
-        hardware,
-        catalog.runtimes.iter().map(|runtime| runtime.release.kind),
-    )?;
+/// The signed pack a configuration runs in.
+fn signed_runtime<'a>(catalog: &'a CatalogPayload, id: &str) -> Result<&'a SignedRuntime, String> {
     catalog
         .runtimes
         .iter()
-        .filter(|runtime| runtime.release.kind == kind && model.allowed_runtimes.contains(&kind))
-        .max_by_key(|runtime| &runtime.release.version)
-        .ok_or_else(|| format!("The selected model has no signed {} runtime.", kind.label()))
+        .find(|runtime| runtime.release.id == id)
+        .ok_or_else(|| "the runtime pack is not in the signed catalog".to_string())
 }
 
+/// The configuration `placement` names for `model`, re-derived from the
+/// signed catalogue and this machine's probe; never taken on the caller's
+/// word.
+fn placed<'a>(
+    catalog: &'a LocalModelCatalog,
+    hardware: &'a HardwareSnapshot,
+    model: &str,
+    placement: &Placement,
+) -> Result<Configuration<'a>, String> {
+    catalog
+        .configuration(hardware, model, placement)
+        .ok_or_else(|| {
+            "This configuration does not run on this device now: it needs more free memory, a device that has gone, or a driver.".to_string()
+        })
+}
+
+/// The device's summary: how well the best configuration fits, or why
+/// nothing is offered.
 fn recommendation(
     hardware: &HardwareSnapshot,
-    selected: Result<RuntimeKind, String>,
-    has_model: bool,
+    best: Option<&Configuration<'_>>,
 ) -> HardwareRecommendation {
-    let gib = u16::try_from(hardware.memory_mib / 1024).unwrap_or(u16::MAX);
-    let (accelerator, accelerator_memory_gib, runtime_reason) = match selected {
-        Ok(RuntimeKind::NvidiaCuda) => {
-            let memory = hardware
-                .accelerators
-                .iter()
-                .filter_map(|item| match item {
-                    Accelerator::Nvidia { vram_mib, .. } => Some(*vram_mib),
-                    Accelerator::Amd { .. } | Accelerator::RestartRequired { .. } => None,
-                })
-                .max();
-            (
-                "NVIDIA CUDA".into(),
-                memory.map(|value| u16::try_from(value / 1024).unwrap_or(u16::MAX)),
-                "A signed CUDA runtime was selected from locally probed driver and VRAM facts."
-                    .into(),
-            )
-        }
-        Ok(RuntimeKind::AmdRocm) => {
-            let memory = hardware
-                .accelerators
-                .iter()
-                .filter_map(|item| match item {
-                    Accelerator::Amd {
-                        vram_mib,
-                        rocm: Some(_),
-                        ..
-                    } => Some(*vram_mib),
-                    _ => None,
-                })
-                .max();
-            (
-                "AMD ROCm".into(),
-                memory.map(|value| u16::try_from(value / 1024).unwrap_or(u16::MAX)),
-                "A signed ROCm runtime was selected from locally probed driver and VRAM facts."
-                    .into(),
-            )
-        }
-        Ok(RuntimeKind::Cpu) => (
-            "CPU".into(),
-            None,
-            "No compatible accelerator runtime is active; the signed CPU runtime was selected."
+    let state = hardware.accelerator_state();
+    let (fit, reason) = match (state, best) {
+        (AcceleratorState::RestartRequired { vendor, .. }, _) => (
+            HardwareFit::RestartRequired,
+            format!(
+                "Restart to finish setting up the {} graphics driver.",
+                vendor.label()
+            ),
+        ),
+        (_, Some(best)) => (
+            best.fit.into(),
+            format!(
+                "Ranked from this device's probed processors, memory and storage: {} with {} {}.",
+                best.model.label,
+                best.runtime.engine.label(),
+                best.device.map_or_else(
+                    || "on the CPU".to_string(),
+                    |device| format!("on {}", device.label())
+                ),
+            ),
+        ),
+        (AcceleratorState::NeedsDriver { vendor }, None) => (
+            HardwareFit::Unsupported,
+            format!(
+                "The {} graphics card has no working driver yet; nothing else here runs a signed model.",
+                vendor.label()
+            ),
+        ),
+        (_, None) => (
+            HardwareFit::Unsupported,
+            "No signed configuration fits this device's free memory, graphics memory and storage."
                 .into(),
         ),
-        Err(reason) => ("Unavailable".into(), None, reason),
-    };
-    let fit = if matches!(
-        hardware.accelerator_state(),
-        AcceleratorState::RestartRequired { .. }
-    ) {
-        HardwareFit::RestartRequired
-    } else if !has_model || accelerator == "Unavailable" {
-        HardwareFit::Unsupported
-    } else if gib >= 32 {
-        HardwareFit::Excellent
-    } else if gib >= 16 {
-        HardwareFit::Good
-    } else if gib >= 8 {
-        HardwareFit::Tight
-    } else {
-        HardwareFit::Unsupported
     };
     HardwareRecommendation {
         fit,
-        memory_gib: gib,
-        accelerator,
-        accelerator_memory_gib,
+        memory_gib: u16::try_from(hardware.memory_mib / 1024).unwrap_or(u16::MAX),
         free_storage_gib: Some(u16::try_from(hardware.free_storage_mib / 1024).unwrap_or(u16::MAX)),
-        reason: runtime_reason,
+        reason,
     }
 }
 fn phase(status: &LocalModelStatus) -> LocalModelPhase {
@@ -962,10 +1006,18 @@ fn rpc_action(command: &Action) -> Result<RpcAction, String> {
         Action::Install {
             model,
             revision,
+            runtime,
+            on,
+            device,
             accept_license,
         } => Ok(RpcAction::Install {
             model: model.clone(),
             revision: revision.clone(),
+            placement: Placement {
+                runtime: runtime.clone(),
+                kind: *on,
+                device: device.clone(),
+            },
             accept_license: *accept_license,
         }),
         Action::Start { model } => Ok(RpcAction::Start {
@@ -1074,10 +1126,14 @@ fn cli_for_rpc(action: RpcAction) -> Cli {
         RpcAction::Install {
             model,
             revision,
+            placement,
             accept_license,
         } => Action::Install {
             model,
             revision,
+            runtime: placement.runtime,
+            on: placement.kind,
+            device: placement.device,
             accept_license,
         },
         RpcAction::Start { model } => Action::Start { model },
@@ -1419,6 +1475,9 @@ fn run_command(
         Action::Install {
             model,
             revision,
+            runtime,
+            on,
+            device,
             accept_license,
         } => {
             let release = catalog
@@ -1431,6 +1490,15 @@ fn run_command(
                             .is_none_or(|revision| revision == &release.version)
                 })
                 .ok_or_else(|| "model/revision is not in the signed catalog".to_string())?;
+            let placement = Placement {
+                runtime,
+                kind: on,
+                device,
+            };
+            // Only a configuration this device offers now is set up.
+            let local = model_catalog(&catalog);
+            let hardware = local_hardware(&root);
+            placed(&local, &hardware, &model, &placement)?;
             if release.requires_acceptance && !accept_license {
                 return Err(
                     "this signed model release requires --accept-license before download".into(),
@@ -1442,7 +1510,7 @@ fn run_command(
                     .map_err(|error| error.to_string())?;
             }
             service
-                .queue_install(release)
+                .queue_install(release, &placement)
                 .map_err(|error| error.to_string())?;
             enqueue_worker(&root, &catalog_path, &key_path, &model, revision.as_deref())
                 .inspect_err(|error| {
@@ -1471,15 +1539,9 @@ fn run_command(
             run_install_worker(&mut service, &catalog, &model, revision.as_ref())?;
         }
         Action::WorkerStart { model } => {
-            let release = catalog
-                .models
-                .iter()
-                .find(|release| release.id == model)
-                .ok_or_else(|| "model is not in the signed catalog".to_string())?;
-            let runtime = signed_runtime_for(&catalog, &local_hardware(&root), release)?;
-            if let Err(error) = service.start(runtime, release, &runtime_socket_dir(&model)?) {
-                let _ = service.record_failure(&model, error.to_string());
-                return Err(error.to_string());
+            if let Err(error) = start_placed(&mut service, &catalog, &model) {
+                let _ = service.record_failure(&model, &error);
+                return Err(error);
             }
         }
         // The dispatcher answers these itself and never hands them over.
@@ -1488,6 +1550,29 @@ fn run_command(
         }
     }
     Ok(None)
+}
+
+/// Start `model` in the configuration it was set up for, once it is
+/// re-derived from the signed catalogue and a fresh probe.
+fn start_placed(
+    service: &mut LocalModelService<ReqwestTransport, SystemdSupervisor>,
+    catalog: &CatalogPayload,
+    model: &str,
+) -> Result<(), String> {
+    let placement = service
+        .state()
+        .models
+        .get(model)
+        .map(|managed| managed.placement.clone())
+        .ok_or_else(|| format!("model is not installed: {model}"))?;
+    let local = model_catalog(catalog);
+    let hardware = local_hardware(service.root());
+    let configuration = placed(&local, &hardware, model, &placement)?;
+    let runtime = signed_runtime(catalog, &placement.runtime)?;
+    service
+        .start(runtime, &configuration, &runtime_socket_dir(model)?)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 /// The signed catalog, this machine's recommendation and installed models,
@@ -1509,6 +1594,50 @@ fn local_snapshot(
     serde_json::to_string(&payload).map_err(|error| error.to_string())
 }
 
+/// This device's snapshot from the signed catalogue, its probed hardware and
+/// the manager's own state.
+fn snapshot_for(
+    catalog: &CatalogPayload,
+    hardware: &HardwareSnapshot,
+    state: &local_model_service::ServiceState,
+    accelerator_setup: Option<AcceleratorSetup>,
+) -> LocalModelSnapshot {
+    let local = model_catalog(catalog);
+    let configurations = local.configurations(hardware);
+    let models = state
+        .models
+        .iter()
+        .filter_map(|(id, managed)| {
+            let model = catalog.models.iter().find(|model| &model.id == id)?;
+            let engine = catalog
+                .runtimes
+                .iter()
+                .find(|runtime| runtime.release.id == managed.placement.runtime)?
+                .release
+                .engine;
+            Some(InstalledLocalModel {
+                package: LocalModelPackage::of(model),
+                placement: managed.placement.clone(),
+                engine,
+                device: managed
+                    .placement
+                    .device
+                    .as_deref()
+                    .and_then(|slot| hardware.accelerator(slot))
+                    .map(Accelerator::label),
+                phase: phase(&managed.status),
+            })
+        })
+        .collect();
+    LocalModelSnapshot {
+        hardware: recommendation(hardware, configurations.first()),
+        available: configurations.iter().map(AvailableModel::from).collect(),
+        facts: hardware.clone(),
+        models,
+        accelerator_setup,
+    }
+}
+
 /// The signed catalogue, this machine's recommendation and installed models.
 fn snapshot_of(
     root: &PathBuf,
@@ -1524,41 +1653,17 @@ fn snapshot_of(
     .map_err(|error| error.to_string())?;
     let accelerator_setup = accelerator_setup_snapshot();
     let hardware = with_staged_driver(local_hardware(root), accelerator_setup.as_ref());
-    let (recommended, runtime) = match recommended_model(&catalog, &hardware) {
-        Ok((model, kind)) => (Some(package(model)), Ok(kind)),
-        Err(reason) => (None, Err(reason)),
-    };
-    let models = service
-        .state()
-        .models
-        .iter()
-        .filter_map(|(id, managed)| {
-            catalog
-                .models
-                .iter()
-                .find(|model| &model.id == id)
-                .map(|model| InstalledLocalModel {
-                    package: package(model),
-                    phase: phase(&managed.status),
-                })
-        })
-        .collect();
-    let available = runtime.as_ref().map_or_else(
-        |_| Vec::new(),
-        |kind| available_models(&catalog, &hardware, *kind),
-    );
-    Ok(LocalModelSnapshot {
-        hardware: recommendation(&hardware, runtime, recommended.is_some()),
-        facts: hardware,
-        recommendation: recommended,
-        available,
-        models,
+    Ok(snapshot_for(
+        &catalog,
+        &hardware,
+        service.state(),
         accelerator_setup,
-    })
+    ))
 }
 
-/// Install then start one signed release in the detached worker, recording
-/// any failure in the service state Settings observes.
+/// Install then start one signed release in the configuration it was queued
+/// for, in the detached worker, recording any failure in the service state
+/// Settings observes.
 fn run_install_worker(
     service: &mut LocalModelService<ReqwestTransport, SystemdSupervisor>,
     catalog: &CatalogPayload,
@@ -1572,21 +1677,22 @@ fn run_install_worker(
             release.id == model && revision.is_none_or(|revision| revision == &release.version)
         })
         .ok_or_else(|| "model/revision is not in the signed catalog".to_string())?;
-    let runtime = signed_runtime_for(catalog, &local_hardware(service.root()), release)?;
-    if let Err(error) = service
-        .install_with_runtime_progress(runtime, release)
-        .and_then(|_| {
+    let outcome = service
+        .state()
+        .models
+        .get(model)
+        .map(|managed| managed.placement.clone())
+        .ok_or_else(|| format!("model was not queued: {model}"))
+        .and_then(|placement| {
+            let runtime = signed_runtime(catalog, &placement.runtime)?;
             service
-                .start(
-                    runtime,
-                    release,
-                    &runtime_socket_dir(model).map_err(ServiceError::Backend)?,
-                )
-                .map(|_| ())
+                .install_with_runtime_progress(runtime, release, &placement)
+                .map_err(|error| error.to_string())
         })
-    {
-        let _ = service.record_failure(model, error.to_string());
-        return Err(error.to_string());
+        .and_then(|_| start_placed(service, catalog, model));
+    if let Err(error) = outcome {
+        let _ = service.record_failure(model, &error);
+        return Err(error);
     }
     Ok(())
 }
@@ -1736,36 +1842,57 @@ mod tests {
         }
     }
 
-    /// Podman mounts only the verified model path at its container path; runtime selection prefers a
-    /// confirmed NVIDIA over CPU, uses `ROCm` only when the driver is present, reports a driver waiting
-    /// for a restart as such rather than as no GPU, and uses CPU when no supported accelerator exists.
+    fn command(engine: RuntimeEngine, kind: RuntimeKind, device: DeviceAccess) -> RuntimeCommand {
+        RuntimeCommand {
+            runtime_image: "registry.example/tilo/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            kind,
+            device,
+            engine,
+            args: vec!["serve".into(), "/models/model".into()],
+            model_path: PathBuf::from("/home/ada/.local/share/tilo/models/sha256/abc"),
+            model_container_path: "/models/model".into(),
+            socket_dir: PathBuf::from("/run/user/1000/tilo/models/0123456789abcdef"),
+            endpoint: agent_provider_config::local::LocalEndpoint {
+                socket: PathBuf::from("/run/user/1000/tilo/models/0123456789abcdef/api.sock"),
+                model_id: "tiny".into(),
+            },
+            runtime_extension_id: "runtime".into(),
+        }
+    }
+
+    fn devices(argv: &[String]) -> Vec<&str> {
+        argv.windows(2)
+            .filter(|pair| pair[0] == "--device")
+            .map(|pair| pair[1].as_str())
+            .collect()
+    }
+
+    /// Podman runs every engine without network, mounting only the verified model path at its
+    /// container path and the socket directory, and gives the container its configuration's device
+    /// alone: llama-server on the iGPU sees one render node, never the NVIDIA card.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each case keeps its original fixture and assertions"
-    )]
-    fn the_model_runtime_matches_the_verified_hardware() {
-        // Phase: podman_mounts_only_verified_model_path_and_uses_container_path.
-        {
-            let command = RuntimeCommand {
-                runtime_image: "registry.example/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-                runtime_kind: RuntimeKind::Cpu,
-                engine: agent_provider_config::local::RuntimeEngine::Vllm,
-                args: vec!["serve".into(), "/models/model".into()],
-                model_path: PathBuf::from("/home/ada/.local/share/tilo/models/sha256/abc"),
-                model_container_path: "/models/model".into(),
-                socket_dir: PathBuf::from("/run/user/1000/tilo/models/0123456789abcdef"),
-                endpoint: agent_provider_config::local::LocalEndpoint {
-                    socket: PathBuf::from("/run/user/1000/tilo/models/0123456789abcdef/api.sock"),
-                    model_id: "tiny".into(),
-                },
-                runtime_extension_id: "runtime".into(),
-            };
-            let argv = podman_runtime_argv(&command);
+    fn the_runtime_container_has_no_network_and_only_its_own_device() {
+        let vllm = podman_runtime_argv(&command(
+            RuntimeEngine::Vllm,
+            RuntimeKind::NvidiaCuda,
+            DeviceAccess::NvidiaCdi,
+        ));
+        let llama = podman_runtime_argv(&command(
+            RuntimeEngine::LlamaCpp,
+            RuntimeKind::Vulkan,
+            DeviceAccess::RenderNode("/dev/dri/renderD128".into()),
+        ));
+        let cpu = podman_runtime_argv(&command(
+            RuntimeEngine::LlamaCpp,
+            RuntimeKind::Cpu,
+            DeviceAccess::None,
+        ));
+        for argv in [&vllm, &llama, &cpu] {
             assert!(
                 argv.windows(2).any(|pair| pair == ["--network", "none"]),
                 "the runtime must have no network egress"
             );
+            assert!(argv.windows(2).any(|pair| pair == ["--pull", "never"]));
             assert!(!argv.iter().any(|arg| arg == "host"));
             assert!(argv.windows(2).any(|pair| pair
                 == [
@@ -1788,115 +1915,524 @@ mod tests {
                     .any(|arg| arg == "/home/ada/.local/share/tilo/models/sha256/abc")
             );
         }
+        assert_eq!(devices(&vllm), ["nvidia.com/gpu=all"]);
+        assert!(vllm.iter().any(|arg| arg == "VLLM_NO_USAGE_STATS=1"));
+        assert_eq!(devices(&llama), ["/dev/dri/renderD128"]);
+        assert!(!llama.iter().any(|arg| arg.starts_with("VLLM_")));
+        assert!(devices(&cpu).is_empty());
+    }
 
-        // Phase: runtime_selection_prefers_confirmed_nvidia_over_cpu.
-        {
-            let hardware = HardwareSnapshot {
-                cpu_threads: 8,
-                memory_mib: 32 * 1024,
-                available_memory_mib: 0,
-                free_storage_mib: 100 * 1024,
-                accelerators: vec![Accelerator::Nvidia {
-                    vram_mib: 12 * 1024,
-                    driver: "560.35".into(),
-                }],
-            };
-            assert_eq!(
-                runtime_kind_for(&hardware, [RuntimeKind::Cpu, RuntimeKind::NvidiaCuda]).unwrap(),
-                RuntimeKind::NvidiaCuda
-            );
-            let error = runtime_kind_for(&hardware, [RuntimeKind::Cpu]).unwrap_err();
-            assert!(error.contains("boot pack"));
+    const AMDGPU_IDS: &str = "# amdgpu.ids\n1.0.0\n15BF,\tC1,\tAMD Radeon 780M Graphics\n15BF,\tC3,\tAMD Radeon 760M Graphics\n";
+    const PCI_IDS: &str = "10de  NVIDIA Corporation\n\t2860  AD106M [GeForce RTX 4070 Max-Q / Mobile]\n8086  Intel Corporation\n\ta7a0  Raptor Lake-P [Iris Xe Graphics]\n\t\t1043 16d3  subsystem\n";
+
+    /// One fake GPU: its slot, vendor, device, kernel driver and sysfs files.
+    type Gpu<'a> = (&'a str, &'a str, &'a str, &'a str, &'a [(&'a str, &'a str)]);
+
+    /// A fake `/sys/bus/pci/devices` with `gpus` in it.
+    fn sysfs(root: &Path, gpus: &[Gpu<'_>]) -> PathBuf {
+        let devices = root.join("devices");
+        let drivers = root.join("drivers");
+        std::fs::create_dir_all(&drivers).unwrap();
+        for (slot, vendor, device, driver, files) in gpus {
+            let dir = devices.join(slot);
+            std::fs::create_dir_all(dir.join("drm")).unwrap();
+            for (name, value) in [
+                ("class", "0x030000"),
+                ("vendor", *vendor),
+                ("device", *device),
+            ]
+            .iter()
+            .chain(files.iter())
+            {
+                if name.starts_with("renderD") {
+                    std::fs::create_dir_all(dir.join("drm").join(name)).unwrap();
+                } else {
+                    std::fs::write(dir.join(name), format!("{value}\n")).unwrap();
+                }
+            }
+            if !driver.is_empty() {
+                std::fs::create_dir_all(drivers.join(driver)).unwrap();
+                std::os::unix::fs::symlink(drivers.join(driver), dir.join("driver")).unwrap();
+            }
         }
+        // Not a display controller: never a GPU.
+        let bridge = devices.join("0000:00:00.0");
+        std::fs::create_dir_all(&bridge).unwrap();
+        std::fs::write(bridge.join("class"), "0x060000\n").unwrap();
+        std::fs::write(bridge.join("vendor"), "0x1022\n").unwrap();
+        devices
+    }
 
-        // Phase: runtime_selection_uses_rocm_only_when_driver_is_present.
-        {
-            let hardware = HardwareSnapshot {
-                cpu_threads: 8,
-                memory_mib: 32 * 1024,
-                available_memory_mib: 0,
-                free_storage_mib: 100 * 1024,
-                accelerators: vec![Accelerator::Amd {
-                    vram_mib: 16 * 1024,
-                    rocm: Some("6.2".into()),
-                }],
-            };
-            assert_eq!(
-                runtime_kind_for(&hardware, [RuntimeKind::AmdRocm]).unwrap(),
-                RuntimeKind::AmdRocm
-            );
-            let mut missing_driver = hardware;
-            missing_driver.accelerators = vec![Accelerator::Amd {
-                vram_mib: 16 * 1024,
-                rocm: None,
-            }];
-            let error = runtime_kind_for(&missing_driver, [RuntimeKind::Cpu]).unwrap_err();
-            assert!(error.contains("boot pack"));
-        }
+    fn probe(
+        root: &Path,
+        gpus: &[Gpu<'_>],
+        nvidia: &[NvidiaCard],
+        mismatch: bool,
+    ) -> Vec<Accelerator> {
+        let devices = sysfs(root, gpus);
+        std::fs::write(root.join("amdgpu.ids"), AMDGPU_IDS).unwrap();
+        std::fs::write(root.join("pci.ids"), PCI_IDS).unwrap();
+        probe_accelerators(
+            &ProbeSources {
+                pci_devices: &devices,
+                amdgpu_ids: &root.join("amdgpu.ids"),
+                pci_ids: &root.join("pci.ids"),
+            },
+            nvidia,
+            mismatch,
+            None,
+            32_038,
+        )
+    }
 
-        // Phase: a_driver_waiting_for_a_restart_is_reported_as_such_not_as_no_gpu.
-        {
-            assert!(nvml_reports_version_mismatch(
-                b"Failed to initialize NVML: Driver/library version mismatch\n",
-                b""
-            ));
-            assert!(!nvml_reports_version_mismatch(
-                b"NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.",
-                b""
-            ));
-            let driverless = HardwareSnapshot {
-                cpu_threads: 8,
-                memory_mib: 32 * 1024,
-                available_memory_mib: 24 * 1024,
-                free_storage_mib: 100 * 1024,
-                accelerators: vec![Accelerator::Nvidia {
-                    vram_mib: 0,
-                    driver: String::new(),
-                }],
-            };
-            let staged = with_staged_driver(
-                driverless.clone(),
-                Some(&AcceleratorSetup {
-                    boot_pack_id: "nvidia".into(),
-                    status: AcceleratorSetupState::RestartRequired,
-                }),
-            );
-            assert_eq!(
-                staged.accelerator_state(),
-                AcceleratorState::RestartRequired {
+    const RADEON_780M: Gpu<'static> = (
+        "0000:66:00.0",
+        "0x1002",
+        "0x15bf",
+        "amdgpu",
+        &[
+            ("revision", "0xc1"),
+            ("mem_info_vram_total", "536870912"),
+            ("mem_info_gtt_total", "16403759104"),
+            ("renderD128", ""),
+        ],
+    );
+    const RTX_4070: Gpu<'static> = (
+        "0000:01:00.0",
+        "0x10de",
+        "0x2860",
+        "nvidia",
+        &[("renderD129", "")],
+    );
+
+    /// The probe finds every GPU on the PCI bus: an AMD APU with its carve-out, the system memory
+    /// it maps and its libdrm name; an NVIDIA card with what `nvidia-smi` reports; an Intel iGPU
+    /// sharing all RAM.
+    #[test]
+    fn the_probe_reports_every_gpu_with_its_memory_and_driver() {
+        let smi = nvidia_cards(
+            b"00000000:01:00.0, NVIDIA GeForce RTX 4070 Laptop GPU, 8188, 615.71.09\n",
+        );
+        assert_eq!(
+            smi,
+            [NvidiaCard {
+                pci_slot: "0000:01:00.0".into(),
+                name: "NVIDIA GeForce RTX 4070 Laptop GPU".into(),
+                vram_mib: 8188,
+                driver: "615.71.09".into(),
+            }]
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let found = probe(temp.path(), &[RADEON_780M, RTX_4070], &smi, false);
+        assert_eq!(
+            found,
+            [
+                Accelerator {
                     vendor: AcceleratorVendor::Nvidia,
-                    reason: RestartReason::DriverStaged,
-                }
-            );
-            let hint =
-                runtime_kind_for(&staged, [RuntimeKind::Cpu, RuntimeKind::NvidiaCuda]).unwrap_err();
-            assert!(hint.starts_with("Restart to finish setting up"), "{hint}");
-            assert_eq!(
-                recommendation(&staged, Err(hint), false).fit,
-                HardwareFit::RestartRequired
-            );
-            // Without a staged deployment it is a card that needs its driver.
-            assert_eq!(
-                with_staged_driver(driverless, None).accelerator_state(),
-                AcceleratorState::NeedsDriver {
-                    vendor: AcceleratorVendor::Nvidia
-                }
-            );
-        }
+                    name: "NVIDIA GeForce RTX 4070 Laptop GPU".into(),
+                    pci_slot: "0000:01:00.0".into(),
+                    render_node: Some("renderD129".into()),
+                    kernel_driver: "nvidia".into(),
+                    integrated: false,
+                    dedicated_mib: 8188,
+                    shared_mib: 0,
+                    compute: Some("615.71.09".into()),
+                    restart: None,
+                },
+                Accelerator {
+                    vendor: AcceleratorVendor::Amd,
+                    name: "AMD Radeon 780M Graphics".into(),
+                    pci_slot: "0000:66:00.0".into(),
+                    render_node: Some("renderD128".into()),
+                    kernel_driver: "amdgpu".into(),
+                    integrated: true,
+                    dedicated_mib: 512,
+                    shared_mib: 15_643,
+                    compute: None,
+                    restart: None,
+                },
+            ]
+        );
+        assert!(found.iter().all(|gpu| gpu.drives(RuntimeKind::Vulkan)));
 
-        // Phase: runtime_selection_uses_cpu_when_no_supported_accelerator_exists.
-        {
-            let hardware = HardwareSnapshot {
-                cpu_threads: 4,
-                memory_mib: 8 * 1024,
-                available_memory_mib: 0,
-                free_storage_mib: 100 * 1024,
-                accelerators: vec![],
-            };
-            assert_eq!(
-                runtime_kind_for(&hardware, [RuntimeKind::Cpu]).unwrap(),
-                RuntimeKind::Cpu
-            );
+        // A discrete AMD card keeps a VRAM vendor record.
+        let temp = tempfile::tempdir().unwrap();
+        let discrete = probe(
+            temp.path(),
+            &[(
+                "0000:03:00.0",
+                "0x1002",
+                "0x744c",
+                "amdgpu",
+                &[
+                    ("mem_info_vram_total", "25753026560"),
+                    ("mem_info_vram_vendor", "samsung"),
+                    ("renderD128", ""),
+                ],
+            )],
+            &[],
+            false,
+        );
+        assert!(!discrete[0].integrated);
+        assert_eq!(discrete[0].dedicated_mib, 24_560);
+        assert_eq!(discrete[0].label(), "AMD graphics");
+
+        let temp = tempfile::tempdir().unwrap();
+        let intel = probe(
+            temp.path(),
+            &[(
+                "0000:00:02.0",
+                "0x8086",
+                "0xa7a0",
+                "xe",
+                &[("renderD128", "")],
+            )],
+            &[],
+            false,
+        );
+        assert!(intel[0].integrated);
+        assert_eq!(intel[0].shared_mib, 32_038);
+        assert_eq!(intel[0].name, "Raptor Lake-P [Iris Xe Graphics]");
+    }
+
+    /// A card without its driver needs one, a driver/library mismatch waits for a restart, and a
+    /// staged driver turns a driverless card into one waiting for a restart.
+    #[test]
+    fn a_card_without_its_driver_needs_one_or_waits_for_a_restart() {
+        // No `nvidia-smi` answer: the card needs its driver, named from pci.ids.
+        let temp = tempfile::tempdir().unwrap();
+        let driverless = probe(
+            temp.path(),
+            &[("0000:01:00.0", "0x10de", "0x2860", "", &[])],
+            &[],
+            false,
+        );
+        assert_eq!(
+            driverless[0].name,
+            "AD106M [GeForce RTX 4070 Max-Q / Mobile]"
+        );
+        assert!(driverless[0].needs_driver());
+        let hardware = HardwareSnapshot {
+            accelerators: driverless,
+            ..HardwareSnapshot::default()
+        };
+        assert_eq!(
+            hardware.accelerator_state(),
+            AcceleratorState::NeedsDriver {
+                vendor: AcceleratorVendor::Nvidia
+            }
+        );
+        let staged = with_staged_driver(
+            hardware.clone(),
+            Some(&AcceleratorSetup {
+                boot_pack_id: "nvidia".into(),
+                status: AcceleratorSetupState::RestartRequired,
+            }),
+        );
+        assert_eq!(
+            staged.accelerator_state(),
+            AcceleratorState::RestartRequired {
+                vendor: AcceleratorVendor::Nvidia,
+                reason: RestartReason::DriverStaged,
+            }
+        );
+        assert_eq!(
+            recommendation(&staged, None).fit,
+            HardwareFit::RestartRequired
+        );
+        assert_eq!(with_staged_driver(hardware.clone(), None), hardware);
+
+        // The kernel module and the library disagree: a restart, not no GPU.
+        assert!(nvml_reports_version_mismatch(
+            b"Failed to initialize NVML: Driver/library version mismatch\n",
+            b""
+        ));
+        assert!(!nvml_reports_version_mismatch(
+            b"NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.",
+            b""
+        ));
+        let temp = tempfile::tempdir().unwrap();
+        let mismatched = probe(temp.path(), &[RTX_4070], &[], true);
+        assert_eq!(
+            mismatched[0].restart,
+            Some(RestartReason::DriverLibraryMismatch)
+        );
+    }
+
+    fn signed_runtime_fixture(
+        id: &str,
+        engine: RuntimeEngine,
+        kinds: &[RuntimeKind],
+    ) -> SignedRuntime {
+        let manifest = format!("{{\"schemaVersion\":2,\"id\":\"{id}\"}}");
+        let digest = hex::encode(Sha256::digest(manifest.as_bytes()));
+        let artifact = agent_provider_config::local::PinnedArtifact {
+            url: format!("https://registry.example.invalid/v2/{id}/manifests/sha256:{digest}"),
+            sha256: digest.clone(),
+            size_bytes: manifest.len() as u64,
+        };
+        let signed = system_extension::SignedExtensionManifest::sign(
+            system_extension::ExtensionManifest {
+                schema_version: system_extension::SCHEMA_VERSION,
+                id: id.into(),
+                kind: system_extension::ExtensionKind::LocalModelRuntime,
+                version: "1".into(),
+                artifact: system_extension::PinnedArtifact {
+                    source: artifact.url.clone(),
+                    sha256: artifact.sha256.clone(),
+                    size_bytes: artifact.size_bytes,
+                },
+                target: system_extension::ImageConstraint {
+                    base_image_digest: format!("sha256:{}", "c".repeat(64)),
+                    architecture: None,
+                    kernel_abi: None,
+                },
+                requires_reboot: false,
+            },
+            "test",
+            &ed25519_dalek::SigningKey::from_bytes(&[5; 32]),
+        )
+        .unwrap();
+        SignedRuntime {
+            accepted: system_extension::AcceptedExtension {
+                signed,
+                artifact: system_extension::ArtifactReceipt {
+                    sha256: artifact.sha256.clone(),
+                    size_bytes: artifact.size_bytes,
+                },
+                committed_revision: 1,
+            },
+            release: agent_provider_config::local::RuntimeRelease {
+                id: id.into(),
+                kinds: kinds.iter().copied().collect(),
+                version: "1".into(),
+                engine,
+                oci_image: format!("registry.example.invalid/{id}@sha256:{digest}"),
+                artifact,
+            },
         }
+    }
+
+    /// The review model as vLLM's AWQ snapshot and llama.cpp's GGUF, with both runtime packs.
+    fn review_catalog() -> CatalogPayload {
+        use agent_provider_config::local::{ModelArtifact, PinnedArtifact, SnapshotFile};
+        let pin = |name: &str, size_bytes| PinnedArtifact {
+            url: format!("https://huggingface.co/Qwen/{name}"),
+            sha256: "a".repeat(64),
+            size_bytes,
+        };
+        let release = |id: &str, label: &str, artifact: ModelArtifact, engine| LocalModelRelease {
+            id: id.into(),
+            label: label.into(),
+            description: "Reviews feedback recordings on this device.".into(),
+            version: "b".repeat(40),
+            installed_size_bytes: artifact.download_bytes(),
+            artifact,
+            license_id: "Apache-2.0".into(),
+            license_url: "https://huggingface.co/Qwen/LICENSE".into(),
+            requires_acceptance: false,
+            engines: [engine].into(),
+            allowed_runtimes: match engine {
+                RuntimeEngine::Vllm => [RuntimeKind::NvidiaCuda].into(),
+                RuntimeEngine::LlamaCpp => [RuntimeKind::Vulkan, RuntimeKind::Cpu].into(),
+            },
+            required_memory_mib: 12_288,
+            required_accelerator_mib: 6_144,
+            context_window: 8_192,
+            capabilities: [agent_provider_config::ModelCapability::TraceReview].into(),
+            accelerator_memory_percent: None,
+        };
+        let awq = release(
+            "qwen/qwen3-4b-awq",
+            "Qwen3 4B (AWQ, 4-bit)",
+            ModelArtifact::HfSnapshot {
+                files: vec![
+                    SnapshotFile {
+                        path: "config.json".into(),
+                        artifact: pin("config.json", 1_000),
+                    },
+                    SnapshotFile {
+                        path: "model.safetensors".into(),
+                        artifact: pin("model.safetensors", 2_669_000_000),
+                    },
+                ],
+            },
+            RuntimeEngine::Vllm,
+        );
+        let mut gguf = release(
+            "qwen/qwen3-4b-gguf",
+            "Qwen3 4B (GGUF, Q4_K_M)",
+            ModelArtifact::Gguf(pin("Qwen3-4B-Q4_K_M.gguf", 2_497_280_256)),
+            RuntimeEngine::LlamaCpp,
+        );
+        gguf.required_memory_mib = 5_120;
+        gguf.required_accelerator_mib = 4_096;
+        CatalogPayload {
+            schema: 1,
+            models: vec![awq, gguf],
+            runtimes: vec![
+                signed_runtime_fixture(
+                    "vllm-cuda",
+                    RuntimeEngine::Vllm,
+                    &[RuntimeKind::NvidiaCuda],
+                ),
+                signed_runtime_fixture(
+                    "llama-cpp-vulkan",
+                    RuntimeEngine::LlamaCpp,
+                    &[RuntimeKind::Vulkan, RuntimeKind::Cpu],
+                ),
+            ],
+        }
+    }
+
+    /// On this machine's hardware (an RTX 4070 Mobile beside a Radeon 780M), the snapshot
+    /// recommends vLLM on the card and lists llama.cpp on the card, on the iGPU and on the CPU as
+    /// the alternatives, each with its device and memory; an installed model names where it runs;
+    /// a placement the probe does not support is refused.
+    #[test]
+    fn the_snapshot_ranks_every_configuration_this_machine_supports() {
+        let catalog = review_catalog();
+        assert!(model_catalog(&catalog).validate().is_ok());
+        let temp = tempfile::tempdir().unwrap();
+        let smi = nvidia_cards(
+            b"00000000:01:00.0, NVIDIA GeForce RTX 4070 Laptop GPU, 8188, 615.71.09\n",
+        );
+        let hardware = HardwareSnapshot {
+            cpu_threads: 16,
+            memory_mib: 31_287,
+            available_memory_mib: 22_528,
+            free_storage_mib: 100 * 1024,
+            accelerators: probe(temp.path(), &[RADEON_780M, RTX_4070], &smi, false),
+        };
+        let mut state = local_model_service::ServiceState::default();
+        let igpu = Placement {
+            runtime: "llama-cpp-vulkan".into(),
+            kind: RuntimeKind::Vulkan,
+            device: Some("0000:66:00.0".into()),
+        };
+        state.models.insert(
+            "qwen/qwen3-4b-gguf".into(),
+            local_model_service::ManagedModel {
+                identity: "a".repeat(64),
+                placement: igpu.clone(),
+                objects: std::collections::BTreeSet::new(),
+                status: LocalModelStatus::Installed,
+                process: None,
+            },
+        );
+        let snapshot = snapshot_for(&catalog, &hardware, &state, None);
+        let ranked: Vec<(RuntimeEngine, Option<&str>, &str)> = snapshot
+            .available
+            .iter()
+            .map(|available| {
+                (
+                    available.engine,
+                    available.device.as_deref(),
+                    available.package.id.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            ranked,
+            [
+                (
+                    RuntimeEngine::Vllm,
+                    Some("NVIDIA GeForce RTX 4070 Laptop GPU"),
+                    "qwen/qwen3-4b-awq"
+                ),
+                (
+                    RuntimeEngine::LlamaCpp,
+                    Some("NVIDIA GeForce RTX 4070 Laptop GPU"),
+                    "qwen/qwen3-4b-gguf"
+                ),
+                (
+                    RuntimeEngine::LlamaCpp,
+                    Some("AMD Radeon 780M Graphics"),
+                    "qwen/qwen3-4b-gguf"
+                ),
+                (RuntimeEngine::LlamaCpp, None, "qwen/qwen3-4b-gguf"),
+            ]
+        );
+        assert_eq!(snapshot.hardware.fit, HardwareFit::Good);
+        assert!(
+            snapshot.hardware.reason.contains("vLLM"),
+            "{}",
+            snapshot.hardware.reason
+        );
+        assert!(snapshot.available[2].shared_memory);
+        assert_eq!(snapshot.models[0].placement, igpu);
+        assert_eq!(snapshot.models[0].engine, RuntimeEngine::LlamaCpp);
+        assert_eq!(
+            snapshot.models[0].device.as_deref(),
+            Some("AMD Radeon 780M Graphics")
+        );
+
+        let local = model_catalog(&catalog);
+        assert!(placed(&local, &hardware, "qwen/qwen3-4b-gguf", &igpu).is_ok());
+        let gone = Placement {
+            device: Some("0000:07:00.0".into()),
+            ..igpu
+        };
+        assert!(placed(&local, &hardware, "qwen/qwen3-4b-gguf", &gone).is_err());
+
+        // A CPU-only machine is offered llama.cpp on the CPU, labelled slow.
+        let cpu_only = HardwareSnapshot {
+            accelerators: Vec::new(),
+            ..hardware
+        };
+        let snapshot = snapshot_for(&catalog, &cpu_only, &state, None);
+        assert_eq!(snapshot.available.len(), 1);
+        assert_eq!(snapshot.available[0].placement.kind, RuntimeKind::Cpu);
+        assert_eq!(
+            snapshot.available[0].speed.class,
+            agent_provider_config::local::SpeedClass::Slow
+        );
+        assert_eq!(snapshot.models[0].device, None, "the iGPU is gone");
+    }
+
+    /// The install verb carries the configuration, and the RPC maps it back unchanged.
+    #[test]
+    fn an_install_names_its_configuration_end_to_end() {
+        let cli = Cli::try_parse_from([
+            "tilo-model-manager",
+            "install",
+            "--model",
+            "qwen/qwen3-4b-gguf",
+            "--runtime",
+            "llama-cpp-vulkan",
+            "--on",
+            "vulkan",
+            "--device",
+            "0000:66:00.0",
+            "--accept-license",
+        ])
+        .unwrap();
+        let action = rpc_action(&cli.command).unwrap();
+        let RpcAction::Install { placement, .. } = &action else {
+            panic!("an install");
+        };
+        assert_eq!(placement.kind, RuntimeKind::Vulkan);
+        assert_eq!(placement.device.as_deref(), Some("0000:66:00.0"));
+        let back = cli_for_rpc(action);
+        assert!(matches!(
+            back.command,
+            Action::Install {
+                on: RuntimeKind::Vulkan,
+                ..
+            }
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "tilo-model-manager",
+                "install",
+                "--model",
+                "m",
+                "--runtime",
+                "r",
+                "--on",
+                "gpu"
+            ])
+            .is_err()
+        );
     }
 }

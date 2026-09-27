@@ -18,10 +18,10 @@ jq -e '
   (.models | length > 0) and (.runtimes | length > 0) and
   (all(.models[]; . as $model |
     ($model.revision | test("^[0-9a-f]{40}$|^[0-9a-f]{64}$")) and
-    ($model.artifact.url | contains($model.revision)) and
+    ($model.artifact.gguf.url | contains($model.revision)) and
     ($model.license_id | length > 0) and
     ($model.license_url | startswith("https://")) and
-    ($model.installed_size_bytes >= $model.artifact.size_bytes))) and
+    ($model.installed_size_bytes >= $model.artifact.gguf.size_bytes))) and
   (all(.runtimes[];
     (.oci_image | test("@sha256:[0-9a-f]{64}$")) and
     (.base_image_digest | test("^sha256:[0-9a-f]{64}$"))))
@@ -35,7 +35,7 @@ jq -e --arg hash "$runtime_hash" --argjson size "$runtime_size" \
     '.runtimes[0].artifact.sha256 == $hash and .runtimes[0].artifact.size_bytes == $size' \
     "$source_json" >/dev/null || bad 'runtime fixture receipt drifted'
 jq -e --arg hash "$model_hash" --argjson size "$model_size" \
-    '.models[0].artifact.sha256 == $hash and .models[0].artifact.size_bytes == $size' \
+    '.models[0].artifact.gguf.sha256 == $hash and .models[0].artifact.gguf.size_bytes == $size' \
     "$source_json" >/dev/null || bad 'model fixture receipt drifted'
 
 grep -Fq 'tilo.local-model.catalog.v1' "$tool" \

@@ -4,6 +4,7 @@
   "description": "Local Apache-2.0 instruction model for reviewing feedback recordings before they are sent: it proposes redactions and writes step titles. Runs in vLLM without network access.",
   "repository": "Qwen/Qwen3-4B-AWQ",
   "revision": "74d4bd2bd4bff9cafc9345221320bffb08b406a3",
+  "format": "hf_snapshot",
   "license_id": "Apache-2.0",
   "license_file": "LICENSE",
   "requires_acceptance": false,

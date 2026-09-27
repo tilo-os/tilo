@@ -719,20 +719,35 @@ impl AiState {
         targets
     }
 
-    /// The best signed release this device can install for `task`, when no
-    /// installed model serves it yet.
+    /// Every configuration this device can set up for `task`, best first:
+    /// the recommendation, then its alternatives. A model already installed
+    /// here, in any configuration, is not offered again.
+    #[must_use]
+    pub fn installable(
+        &self,
+        task: &'static TaskSpec,
+    ) -> Vec<&agent_provider_config::manager::AvailableModel> {
+        let Ok(snapshot) = self.snapshot.as_ref() else {
+            return Vec::new();
+        };
+        snapshot
+            .matching(task.requires.capabilities)
+            .filter(|candidate| {
+                !snapshot
+                    .models
+                    .iter()
+                    .any(|model| model.package.id == candidate.package.id)
+            })
+            .collect()
+    }
+
+    /// The configuration Tilo recommends setting up for `task` here.
     #[must_use]
     pub fn installable_for(
         &self,
         task: &'static TaskSpec,
     ) -> Option<&agent_provider_config::manager::AvailableModel> {
-        let snapshot = self.snapshot.as_ref().ok()?;
-        let candidate = snapshot.best_for(task.requires.capabilities)?;
-        let installed = snapshot
-            .models
-            .iter()
-            .any(|model| model.package.id == candidate.package.id);
-        (!installed).then_some(candidate)
+        self.installable(task).into_iter().next()
     }
 }
 

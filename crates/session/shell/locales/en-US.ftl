@@ -1503,7 +1503,8 @@ remark-review-model-hosted = { $model }, { $location }
 remark-review-model-hosted-detail = Sees placeholders instead of personal details
 remark-review-model-floor = No review model
 remark-review-model-floor-detail = Titles come from action names; personal details were found on this device
-remark-review-model-setup = Set up { $model }
+# { $model } is the hub's set-up action label: it names the model, engine and device.
+remark-review-model-setup = { $model }
 remark-review-model-progress = { $progress }
 remark-review-model-setup-action = Set up on this device
 remark-review-model-failed = The review model didn't answer

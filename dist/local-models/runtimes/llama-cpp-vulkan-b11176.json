@@ -1,0 +1,9 @@
+{
+  "id": "llama-cpp-vulkan-b11176",
+  "kinds": ["vulkan", "cpu"],
+  "version": "b11176",
+  "engine": "llama_cpp",
+  "image": "ghcr.io/ggml-org/llama.cpp@sha256:38a6ee99acc228b688b0eca31bcbfc896badbb0e7b6a8f56e9e0feadf1f66d11",
+  "manifest_url": "https://ghcr.io/v2/ggml-org/llama.cpp/manifests/sha256:38a6ee99acc228b688b0eca31bcbfc896badbb0e7b6a8f56e9e0feadf1f66d11",
+  "architecture": "x86_64"
+}

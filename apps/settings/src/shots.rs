@@ -328,6 +328,26 @@ pub fn render_for_path_with_text_scale(
         );
     }
 
+    // `…ailocal.png` renders the hub on the same laptop with nothing set up:
+    // feedback review asks to set up the configuration Tilo recommends for
+    // this hardware, with its alternatives shown as "Show more" shows them.
+    // `…ailocal-igpu.png` and `…ailocal-cpu.png` are the integrated GPU
+    // alone and a machine without a GPU.
+    if fname.contains("ailocal") {
+        use crate::panes::ai::DemoMachine;
+        let machine = if fname.contains("igpu") {
+            DemoMachine::Igpu
+        } else if fname.contains("cpu") {
+            DemoMachine::Cpu
+        } else {
+            DemoMachine::CardAndIgpu
+        };
+        let pane =
+            crate::panes::ai::AiPane::for_state(crate::panes::ai::local_setup_state(machine))
+                .with_alternatives_shown(agent_provider_config::tasks::FEEDBACK_REVIEW.id);
+        return render_to_path_with_text_scale(Box::new(pane), AI_SHOTS_VIEWPORT, out, text_scale);
+    }
+
     // `…netdemo.png` renders the Network pane with a populated scan list and
     // an open inline password prompt, proving the connect flow's surface.
     if fname.contains("netdemo") {
