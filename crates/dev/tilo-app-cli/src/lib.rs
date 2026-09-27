@@ -23,6 +23,7 @@ use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 mod json;
+mod pack;
 pub mod portability;
 pub mod standalone;
 
@@ -487,7 +488,11 @@ pub struct DevRequest {
 pub struct PackageRequest {
     pub output: Option<PathBuf>,
     pub identity: Option<PathBuf>,
-    pub profile: String,
+    /// `None` picks `thin-app` for a thin build and `release` for a static one.
+    pub profile: Option<String>,
+    /// Link everything into the binary instead of against the toolkit and
+    /// `libstd` the OS ships. Static binaries are several times the size limit.
+    pub static_link: bool,
     pub target: Option<String>,
     pub features: Vec<String>,
     pub no_default_features: bool,
@@ -4558,6 +4563,7 @@ struct AppPackageSpec {
     cargo_package: String,
     manifest_path: PathBuf,
     entrypoints: Vec<(String, PathBuf)>,
+    thin_feature: bool,
 }
 
 /// Build an app's declared entrypoints, assemble its payload, sign it through
@@ -4577,8 +4583,23 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     if !report.is_ready() {
         bail!("app preflight failed\n\n{}", report.summary());
     }
-    validate_profile_name(&request.profile)?;
     let spec = load_app_package_spec(app_dir)?;
+    if !request.static_link && !spec.thin_feature {
+        bail!(
+            "{} has no `thin` feature, so it cannot link against the toolkit the OS ships; \
+             add `thin = [\"dep:runtime-dylib\"]` to [features] (as `tilo-app new` does) or pass --static",
+            spec.app_dir.join("Cargo.toml").display()
+        );
+    }
+    let profile = request.profile.clone().unwrap_or_else(|| {
+        if request.static_link {
+            "release"
+        } else {
+            "thin-app"
+        }
+        .to_owned()
+    });
+    validate_profile_name(&profile)?;
     let output = request.output.as_ref().map_or_else(
         || {
             spec.app_dir
@@ -4603,7 +4624,7 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         )
     })?;
 
-    let built = build_entrypoints(&spec, request)?;
+    let built = build_entrypoints(&spec, request, &profile)?;
     let staging = tempfile::Builder::new()
         .prefix(".tilo-app-package-")
         .tempdir_in(output_parent)
@@ -4636,15 +4657,21 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     }
 
     let staged_package = staging.path().join("package.tapp");
-    let identity = request
-        .identity
-        .as_ref()
-        .map(|path| absolute_from(&spec.app_dir, path));
-    run_tilo_pkg_pack(&spec, &payload, &staged_package, identity.as_deref())?;
-    run_tilo_pkg_verify(&spec.app_dir, &staged_package)?;
+    let identity = if let Some(path) = &request.identity {
+        pack::load_identity(&absolute_from(&spec.app_dir, path))?
+    } else {
+        eprintln!("[tilo-app] no --identity supplied; signing with an ephemeral key");
+        tilo_app_package::SigningIdentity::generate()
+    };
+    let packed = pack::pack_payload(&spec.manifest_path, &payload, &staged_package, &identity)?;
     std::fs::rename(&staged_package, &output)
         .with_context(|| format!("publishing package to {}", output.display()))?;
-    eprintln!("[tilo-app] packaged {}", output.display());
+    eprintln!(
+        "[tilo-app] packaged {} ({}, {} bytes)",
+        output.display(),
+        packed.id,
+        packed.bytes
+    );
     Ok(PackageOutcome {
         output,
         entrypoints: spec.entrypoints.into_iter().map(|(_, path)| path).collect(),
@@ -4664,6 +4691,10 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
         .and_then(toml::Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("Cargo.toml is missing [package].name"))?
         .to_owned();
+    let thin_feature = cargo
+        .get("features")
+        .and_then(|features| features.get("thin"))
+        .is_some();
 
     let manifest_path = app_dir.join("tilo-app.toml");
     let manifest_source = std::fs::read_to_string(&manifest_path)
@@ -4708,12 +4739,14 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
         cargo_package,
         manifest_path,
         entrypoints,
+        thin_feature,
     })
 }
 
 fn build_entrypoints(
     spec: &AppPackageSpec,
     request: &PackageRequest,
+    profile: &str,
 ) -> Result<HashMap<String, PathBuf>> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = ProcessCommand::new(&cargo);
@@ -4722,21 +4755,34 @@ fn build_entrypoints(
         .arg("--manifest-path")
         .arg(spec.app_dir.join("Cargo.toml"))
         .arg("--profile")
-        .arg(&request.profile)
+        .arg(profile)
         .arg("--message-format=json-render-diagnostics")
         .current_dir(&spec.app_dir)
         .stdout(Stdio::piped());
     for (cargo_bin, _) in &spec.entrypoints {
         command.arg("--bin").arg(cargo_bin);
     }
-    if let Some(target) = &request.target {
-        command.arg("--target").arg(target);
+    let mut features = request.features.clone();
+    if request.static_link {
+        if let Some(target) = &request.target {
+            command.arg("--target").arg(target);
+        }
+    } else {
+        let triple = match &request.target {
+            Some(target) => target.clone(),
+            None => host_triple(&spec.app_dir)?,
+        };
+        let (key, flags) = prefer_dynamic_rustflags(&triple);
+        command.arg("--target").arg(&triple).env(key, flags);
+        if !features.iter().any(|feature| feature == "thin") {
+            features.push("thin".to_owned());
+        }
     }
     if request.no_default_features {
         command.arg("--no-default-features");
     }
-    if !request.features.is_empty() {
-        command.arg("--features").arg(request.features.join(","));
+    if !features.is_empty() {
+        command.arg("--features").arg(features.join(","));
     }
     let mut child = command
         .spawn()
@@ -4827,62 +4873,6 @@ fn collect_cargo_message(
             artifacts.insert(format!("dylib:{name}"), PathBuf::from(path));
         }
     }
-}
-
-fn run_tilo_pkg_pack(
-    spec: &AppPackageSpec,
-    payload: &Path,
-    output: &Path,
-    identity: Option<&Path>,
-) -> Result<()> {
-    let program =
-        std::env::var_os("TILO_PKG").unwrap_or_else(|| OsString::from("tilo-app-package"));
-    let mut command = ProcessCommand::new(&program);
-    command
-        .arg("pack")
-        .arg("--manifest")
-        .arg(&spec.manifest_path)
-        .arg("--payload")
-        .arg(payload)
-        .arg("--output")
-        .arg(output)
-        .current_dir(&spec.app_dir);
-    if let Some(identity) = identity {
-        command.arg("--identity").arg(identity);
-    } else {
-        eprintln!(
-            "[tilo-app] no --identity supplied; tilo-app-package will use an ephemeral self-signing key"
-        );
-    }
-    run_package_command(&mut command, &program, "pack")
-}
-
-fn run_tilo_pkg_verify(app_dir: &Path, package: &Path) -> Result<()> {
-    let program =
-        std::env::var_os("TILO_PKG").unwrap_or_else(|| OsString::from("tilo-app-package"));
-    let mut command = ProcessCommand::new(&program);
-    command.arg("verify").arg(package).current_dir(app_dir);
-    run_package_command(&mut command, &program, "verify")
-}
-
-fn run_package_command(
-    command: &mut ProcessCommand,
-    program: &OsString,
-    operation: &str,
-) -> Result<()> {
-    let status = command.status().with_context(|| {
-        format!(
-            "starting {} {operation}; install/build tilo-app-package or set TILO_PKG",
-            program.to_string_lossy()
-        )
-    })?;
-    if !status.success() {
-        bail!(
-            "{} {operation} failed with {status}",
-            program.to_string_lossy()
-        );
-    }
-    Ok(())
 }
 
 fn copy_payload_tree(source: &Path, destination: &Path) -> Result<()> {
@@ -5933,21 +5923,10 @@ fn thin_dev_steps(
 ) -> Vec<ThinDevStep> {
     let (target_args, env) = match linkage {
         ThinDevLinkage::WorkspaceToolkit => (Vec::new(), Vec::new()),
-        ThinDevLinkage::Target(triple) => {
-            let key = format!(
-                "CARGO_TARGET_{}_RUSTFLAGS",
-                triple.to_ascii_uppercase().replace(['-', '.'], "_")
-            );
-            let mut flags = std::env::var_os(&key).unwrap_or_default();
-            if !flags.is_empty() {
-                flags.push(" ");
-            }
-            flags.push("-C prefer-dynamic");
-            (
-                vec![OsString::from("--target"), OsString::from(triple)],
-                vec![(OsString::from(key), flags)],
-            )
-        }
+        ThinDevLinkage::Target(triple) => (
+            vec![OsString::from("--target"), OsString::from(triple)],
+            vec![prefer_dynamic_rustflags(triple)],
+        ),
     };
     let app_step = |label, target: &[&str], pick| {
         let mut args = vec![
@@ -6028,6 +6007,22 @@ fn app_is_workspace_member(app_dir: &Path) -> bool {
 }
 
 /// The triple the app's own compiler builds for by default.
+/// `CARGO_TARGET_<triple>_RUSTFLAGS` with `-C prefer-dynamic` appended, so
+/// every artifact for `triple` links `libstd` and the toolkit dynamically while
+/// build scripts and proc macros, which are host artifacts, keep their flags.
+fn prefer_dynamic_rustflags(triple: &str) -> (OsString, OsString) {
+    let key = format!(
+        "CARGO_TARGET_{}_RUSTFLAGS",
+        triple.to_ascii_uppercase().replace(['-', '.'], "_")
+    );
+    let mut flags = std::env::var_os(&key).unwrap_or_default();
+    if !flags.is_empty() {
+        flags.push(" ");
+    }
+    flags.push("-C prefer-dynamic");
+    (OsString::from(key), flags)
+}
+
 fn host_triple(app_dir: &Path) -> Result<String> {
     let output = ProcessCommand::new("rustc")
         .arg("-vV")
