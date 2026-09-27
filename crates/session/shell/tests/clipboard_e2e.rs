@@ -1358,17 +1358,19 @@ impl TestClient {
     }
 
     fn read_clipboard_bytes(&mut self, mime: &str, peer: Option<&mut TestClient>) -> Vec<u8> {
+        // Successive copies each publish a new selection, and an earlier one
+        // (the text a caller copied before an image, say) can reach this
+        // client first. Wait for the offer that carries the wanted format
+        // rather than reading whichever selection happened to arrive.
         self.wait_until(
-            |s| s.clipboard_selection_seen && s.clipboard_offer.is_some(),
-            "no clipboard offer ever arrived",
-        );
-        assert!(
-            self.state
-                .clipboard_offer_mimes
-                .iter()
-                .any(|offered| offered == mime),
-            "clipboard offer did not advertise {mime}; got {:?}",
-            self.state.clipboard_offer_mimes,
+            |s| {
+                s.clipboard_selection_seen
+                    && s.clipboard_offer.is_some()
+                    && s.clipboard_offer_mimes
+                        .iter()
+                        .any(|offered| offered == mime)
+            },
+            &format!("no clipboard offer advertising {mime} ever arrived"),
         );
         self.step("clipboard offer received, requesting the bytes");
         let offer = self.state.clipboard_offer.clone().expect("clipboard offer");
