@@ -82,6 +82,7 @@ suites = [
   "os/tests/test_complete_initramfs_rebind.py",
   "os/tests/test_copy_windows_direct_final_install.py",
   "os/tests/test_create_development_disk.py",
+  "os/tests/dev_base_inputs_tree.sh",
   "os/tests/test_dev_builder_staging.py",
   "os/tests/test_development_boot.py",
   "os/tests/test_development_compile.py",
@@ -100,9 +101,11 @@ suites = [
   "os/tests/test_guest_loader_inspection.py",
   "os/tests/test_hardware_firmware_artifact.py",
   "os/tests/test_hydrate_assembly_history.py",
+  "os/tests/test_identity_public_key.py",
   "os/tests/test_initramfs_module_policy.py",
   "os/tests/test_initramfs_trust.py",
   "os/tests/test_installed_development_disk.py",
+  "os/tests/test_loop_partition_nodes.py",
   "os/tests/test_installer_bootc_helper.py",
   "os/tests/test_installer_bootc_helper_workflow.py",
   "os/tests/test_installer_cmdline_projection.py",
@@ -147,6 +150,8 @@ suites = [
   "os/tests/test_vm_install_image_proof.py",
   "os/tests/test_windows_dualboot_preflight.py",
   "os/tests/test_windows_direct_provenance.py",
+  "os/tests/test_fetch_windows_direct_manifests.py",
+  "os/tests/windows_direct_install_orchestrator_test.py",
   "os/tests/test_wpe_stage_artifact.py",
   "os/tests/vm_firmware_selection.sh",
   "os/tests/vm_release_gate_invariants.sh",
@@ -178,6 +183,13 @@ inputs = [
   "crates/media/core/src/audio.rs", "crates/media/core/src/audio_runtime.rs",
 ]
 suites = ["os/tests/test_pipewire_echo_cancel.py"]
+
+[[group]]
+name = "dev-feature-targets"
+# The dev features os/components.toml names, against the packages' manifests:
+# `pkg/feature` must reach the package, not a dependency of it named pkg.
+inputs = ["os/components.toml", "*Cargo.toml"]
+suites = ["os/tests/dev_feature_targets.py"]
 
 [[group]]
 name = "containerfile-sources"
@@ -837,6 +849,11 @@ workflow = "development-source.yml"
 [[unrequired]]
 suite = "os/tests/development_retention_native.py"
 reason = "needs the disposable root native container with Cosign and Podman"
+workflow = "development-source.yml"
+
+[[unrequired]]
+suite = "os/tests/development_rebind_native.py"
+reason = "needs the disposable root native container with Cosign, Podman and packaged-kernel dracut"
 workflow = "development-source.yml"
 
 [[unrequired]]

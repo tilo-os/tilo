@@ -1614,7 +1614,7 @@ async fn installed_https_abandoned_staging_is_reclaimed_for_a_new_upload() {
     ));
     // Abandoned stages were reclaimed; the admitted stage is removed after its
     // durable receipt (asynchronously), leaving no idle staging behind.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let idle = h.f.owner.idle_upload_stages(&work, device).unwrap();
         let remaining = idle
@@ -1626,7 +1626,7 @@ async fn installed_https_abandoned_staging_is_reclaimed_for_a_new_upload() {
             break;
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "staging left behind: {remaining:?}"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;

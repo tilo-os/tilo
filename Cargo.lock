@@ -335,6 +335,7 @@ dependencies = [
  "tilo-model-gateway",
  "tilo-reference",
  "tilo-resource",
+ "tilo-test-env",
  "tilo-user-identity",
  "tracing",
  "tracing-subscriber",
@@ -447,7 +448,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "710e8eae58854cdc1790fcb56cca04d712a17be849eeb81da2a724bf4bae2bc4"
 dependencies = [
  "anstyle",
- "unicode-width 0.2.2",
+ "unicode-width",
 ]
 
 [[package]]
@@ -521,6 +522,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-net",
+ "tilo-test-env",
  "uuid",
  "vello",
  "winit",
@@ -662,11 +664,11 @@ dependencies = [
 
 [[package]]
 name = "ar_archive_writer"
-version = "0.5.2"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4087686b4b0a3427190bae57a1d9a478dbb2d40c5dc1bd6e2b6d797913bdd348"
+checksum = "73cd58deff2140a0a8eae87e417bd01db68a33e148aa93d1e8cd837e55e312b6"
 dependencies = [
- "object 0.37.3",
+ "object",
 ]
 
 [[package]]
@@ -903,6 +905,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-test-env",
  "windows-sys 0.61.2",
 ]
 
@@ -989,7 +992,7 @@ dependencies = [
  "const-oid 0.9.6",
  "der 0.7.10",
  "digest 0.10.7",
- "object 0.39.1",
+ "object",
  "spki 0.7.3",
  "x509-cert",
 ]
@@ -1118,12 +1121,6 @@ dependencies = [
  "pbkdf2",
  "sha2 0.11.0",
 ]
-
-[[package]]
-name = "beef"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a8241f3ebb85c056b509d4327ad0358fbbba6ffb340bf388f26350aeda225b1"
 
 [[package]]
 name = "biblatex"
@@ -1563,6 +1560,7 @@ dependencies = [
  "chrono-tz",
  "mail",
  "pim-lines",
+ "qdoc-rich-text",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -1573,6 +1571,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-dav",
+ "tilo-rich-text",
  "tilo-test-env",
  "tracing",
  "url",
@@ -1641,6 +1640,7 @@ dependencies = [
  "tilo-clock",
  "tilo-content",
  "tilo-ocr",
+ "tilo-test-env",
  "vello",
  "winit",
  "workspace-hack",
@@ -2301,7 +2301,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width",
 ]
 
 [[package]]
@@ -2484,6 +2484,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-actions",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -2565,7 +2566,6 @@ dependencies = [
  "automerge",
  "blake3",
  "bounded-command",
- "containers",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -2573,6 +2573,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-test-env",
  "vello",
  "winit",
  "workspace-hack",
@@ -3064,6 +3065,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-test-env",
  "uuid",
  "vello",
  "winit",
@@ -3255,27 +3257,6 @@ dependencies = [
  "const-oid 0.10.2",
  "crypto-common 0.2.2",
  "ctutils",
-]
-
-[[package]]
-name = "dirs"
-version = "5.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
-dependencies = [
- "dirs-sys",
-]
-
-[[package]]
-name = "dirs-sys"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
-dependencies = [
- "libc",
- "option-ext",
- "redox_users",
- "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -3625,6 +3606,7 @@ checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
 name = "emoji"
 version = "0.1.0"
 dependencies = [
+ "miniz_oxide",
  "serde",
  "serde_json",
  "workspace-hack",
@@ -4497,15 +4479,15 @@ dependencies = [
 
 [[package]]
 name = "fuser"
-version = "0.17.0"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80a5eca878900c2e39e9e52fd797954b7fc39eeefc8558257114bfea6a698fcf"
+checksum = "b82b6597d216503555ead6b358f341ef748869bf5c6fbae6a0cb9dd231baecfd"
 dependencies = [
  "bitflags 2.11.0",
  "libc",
  "log",
  "memchr",
- "nix 0.30.1",
+ "nix 0.31.3",
  "num_enum",
  "page_size",
  "parking_lot",
@@ -4728,7 +4710,7 @@ dependencies = [
  "proc-macro-hack",
  "proc-macro2",
  "quote",
- "syn 1.0.109",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4887,6 +4869,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-net",
+ "tilo-test-env",
  "tokio",
  "url",
  "vello",
@@ -4971,9 +4954,9 @@ checksum = "f2e102e6eb644d3e0b186fc161e4460417880a0a0b87d235f2e5b8fb30f2e9e0"
 
 [[package]]
 name = "glifo"
-version = "0.1.1"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d99fc21d493812643aae86d53b7bbd02f376434a90317e8a790bc209fdd6605e"
+checksum = "ae9d48c6d81526ad2f9d5d6e5fddf5f6949ffbc46fcac0db0d061a6e65097019"
 dependencies = [
  "bytemuck",
  "foldhash 0.2.0",
@@ -4983,7 +4966,7 @@ dependencies = [
  "png",
  "skrifa 0.42.1",
  "smallvec",
- "vello_common 0.0.9",
+ "vello_common",
 ]
 
 [[package]]
@@ -5039,12 +5022,8 @@ dependencies = [
 [[package]]
 name = "google-cast-protocol"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14b373dd5de8238fe295be654847a14c74e9b2a5b1215897e7c5c8ebe6c33bed"
 dependencies = [
  "prost",
- "prost-build",
- "protox",
  "serde",
  "serde_json",
 ]
@@ -5986,7 +5965,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2",
  "tokio",
  "tower-service",
  "tracing",
@@ -6711,14 +6690,15 @@ checksum = "06432fb54d3be7964ecd3649233cddf80db2832f47fec34c01f65b3d9d774983"
 
 [[package]]
 name = "ipconfig"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b58db92f96b720de98181bbbe63c831e87005ab460c1bf306eb2622b4707997f"
+checksum = "4d40460c0ce33d6ce4b0630ad68ff63d6661961c48b6dba35e5a4d81cfb48222"
 dependencies = [
- "socket2 0.5.10",
+ "socket2",
  "widestring",
- "windows-sys 0.48.0",
- "winreg 0.50.0",
+ "windows-registry",
+ "windows-result 0.4.1",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6949,7 +6929,7 @@ dependencies = [
  "portable-atomic",
  "reqwest",
  "rustls",
- "rustls-platform-verifier 0.7.1",
+ "rustls-platform-verifier",
  "ryu",
  "serde",
  "tokio",
@@ -7456,6 +7436,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "launcher-macos"
+version = "0.1.0"
+dependencies = [
+ "launcher",
+ "libc",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7495,7 +7487,7 @@ dependencies = [
  "percent-encoding",
  "rustls",
  "rustls-native-certs",
- "socket2 0.6.3",
+ "socket2",
  "tokio",
  "tokio-rustls",
  "url",
@@ -7957,72 +7949,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
-name = "logos"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff472f899b4ec2d99161c51f60ff7075eeb3097069a36050d8037a6325eb8154"
-dependencies = [
- "logos-derive 0.15.1",
-]
-
-[[package]]
-name = "logos"
-version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb2c55a318a87600ea870ff8c2012148b44bf18b74fad48d0f835c38c7d07c5f"
-dependencies = [
- "logos-derive 0.16.1",
-]
-
-[[package]]
-name = "logos-codegen"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "192a3a2b90b0c05b27a0b2c43eecdb7c415e29243acc3f89cc8247a5b693045c"
-dependencies = [
- "beef",
- "fnv",
- "lazy_static",
- "proc-macro2",
- "quote",
- "regex-syntax",
- "rustc_version",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "logos-codegen"
-version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58b3ffaa284e1350d017a57d04ada118c4583cf260c8fb01e0fe28a2e9cf8970"
-dependencies = [
- "fnv",
- "proc-macro2",
- "quote",
- "regex-automata",
- "regex-syntax",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "logos-derive"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "605d9697bcd5ef3a42d38efc51541aa3d6a4a25f7ab6d1ed0da5ac632a26b470"
-dependencies = [
- "logos-codegen 0.15.1",
-]
-
-[[package]]
-name = "logos-derive"
-version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52d3a9855747c17eaf4383823f135220716ab49bea5fbea7dd42cc9a92f8aa31"
-dependencies = [
- "logos-codegen 0.16.1",
-]
-
-[[package]]
 name = "logs"
 version = "0.1.0"
 dependencies = [
@@ -8110,6 +8036,7 @@ dependencies = [
  "mail-parser",
  "pim-lines",
  "qdoc-codecs",
+ "qdoc-rich-text",
  "rcgen",
  "reqwest",
  "runtime-dylib",
@@ -8124,6 +8051,8 @@ dependencies = [
  "tilo-content",
  "tilo-net",
  "tilo-oauth",
+ "tilo-rich-text",
+ "tilo-test-env",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -8167,6 +8096,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-net",
+ "tilo-test-env",
  "tracing",
  "vello",
  "winit",
@@ -8226,7 +8156,7 @@ dependencies = [
  "log",
  "mio",
  "socket-pktinfo",
- "socket2 0.6.3",
+ "socket2",
 ]
 
 [[package]]
@@ -8297,28 +8227,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "miette"
-version = "7.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f98efec8807c63c752b5bd61f862c165c115b0a35685bdcfd9238c7aeb592b7"
-dependencies = [
- "cfg-if",
- "miette-derive",
- "unicode-width 0.1.14",
-]
-
-[[package]]
-name = "miette-derive"
-version = "7.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db5b29714e950dbb20d5e6f74f9dcec4edbcc1067bb7f8ed198c097b8c1a818b"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -8488,12 +8396,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "956787520e75e9bd233246045d19f42fb73242759cc57fba9611d940ae96d4b0"
 
 [[package]]
-name = "multimap"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
-
-[[package]]
 name = "murmurhash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8564,7 +8466,7 @@ dependencies = [
  "named_pipe",
  "pem",
  "percent-encoding",
- "socket2 0.6.3",
+ "socket2",
  "twox-hash",
  "url",
 ]
@@ -8842,7 +8744,7 @@ dependencies = [
  "objc2-system-configuration",
  "pin-project-lite",
  "serde",
- "socket2 0.6.3",
+ "socket2",
  "time",
  "tokio",
  "tokio-util",
@@ -8867,19 +8769,6 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
-dependencies = [
- "bitflags 2.11.0",
- "cfg-if",
- "cfg_aliases 0.2.2",
- "libc",
- "memoffset",
-]
-
-[[package]]
-name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
@@ -8888,6 +8777,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases 0.2.2",
  "libc",
+ "memoffset",
 ]
 
 [[package]]
@@ -8923,7 +8813,7 @@ dependencies = [
  "pin-project-lite",
  "rustc-hash 2.1.1",
  "rustls",
- "socket2 0.6.3",
+ "socket2",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -8950,7 +8840,7 @@ dependencies = [
  "rustc-hash 2.1.1",
  "rustls",
  "rustls-pki-types",
- "rustls-platform-verifier 0.7.1",
+ "rustls-platform-verifier",
  "slab",
  "sorted-index-buffer",
  "thiserror 2.0.18",
@@ -8967,7 +8857,7 @@ checksum = "bde7a5d5102f1cff03d482240f0ed20551661f63663620f4b26112ed751165e9"
 dependencies = [
  "cfg_aliases 0.2.2",
  "libc",
- "socket2 0.6.3",
+ "socket2",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -8991,6 +8881,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-test-env",
  "tracing",
  "url",
  "uuid",
@@ -9514,15 +9405,6 @@ dependencies = [
 
 [[package]]
 name = "object"
-version = "0.37.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
-dependencies = [
- "memchr",
-]
-
-[[package]]
-name = "object"
 version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
@@ -9678,12 +9560,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "option-ext"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
-
-[[package]]
 name = "option-operations"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9738,6 +9614,7 @@ dependencies = [
  "tilo-crypto",
  "tilo-power-mgmt",
  "tilo-rt",
+ "tilo-test-env",
  "tracing",
  "workspace-hack",
  "zbus",
@@ -10043,6 +9920,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-content",
  "tilo-pdf",
+ "tilo-test-env",
  "tracing",
  "uuid",
  "vello",
@@ -10133,17 +10011,6 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
-
-[[package]]
-name = "petgraph"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8701b58ea97060d5e5b155d383a69952a60943f0e6dfe30b04c287beb0b27455"
-dependencies = [
- "fixedbitset",
- "hashbrown 0.15.5",
- "indexmap",
-]
 
 [[package]]
 name = "pharos"
@@ -10311,6 +10178,7 @@ dependencies = [
  "tilo-content",
  "tilo-ocr",
  "tilo-reference",
+ "tilo-test-env",
  "tilo-vision",
  "tokio",
  "tracing",
@@ -10607,7 +10475,7 @@ dependencies = [
  "shared_library",
  "shell-words",
  "winapi",
- "winreg 0.10.1",
+ "winreg",
 ]
 
 [[package]]
@@ -10630,7 +10498,7 @@ dependencies = [
  "rand 0.10.1",
  "serde",
  "smallvec",
- "socket2 0.6.3",
+ "socket2",
  "time",
  "tokio",
  "tokio-util",
@@ -10954,25 +10822,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prost-build"
-version = "0.14.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
-dependencies = [
- "heck",
- "itertools 0.14.0",
- "log",
- "multimap",
- "petgraph",
- "prettyplease",
- "prost",
- "prost-types",
- "regex",
- "syn 2.0.117",
- "tempfile",
-]
-
-[[package]]
 name = "prost-derive"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10983,54 +10832,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "prost-reflect"
-version = "0.16.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01b80ea363c31af2de2b92e3c07ed1156628f7838c4afb4df75ee78a37fedbd1"
-dependencies = [
- "logos 0.16.1",
- "miette",
- "prost",
- "prost-types",
-]
-
-[[package]]
-name = "prost-types"
-version = "0.14.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f94967dc7688f3054c7fac87473ffae4cc4c3904800e2d9f5b857246d8963b0a"
-dependencies = [
- "prost",
-]
-
-[[package]]
-name = "protox"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f25a07a73c6717f0b9bbbd685918f5df9815f7efba450b83d9c9dea41f0e3a1"
-dependencies = [
- "bytes",
- "miette",
- "prost",
- "prost-reflect",
- "prost-types",
- "protox-parse",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "protox-parse"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "072eee358134396a4643dff81cfff1c255c9fbd3fb296be14bdb6a26f9156366"
-dependencies = [
- "logos 0.15.1",
- "miette",
- "prost-types",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -11207,7 +11008,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.1",
  "rustls",
- "socket2 0.6.3",
+ "socket2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -11230,7 +11031,7 @@ dependencies = [
  "rustc-hash 2.1.1",
  "rustls",
  "rustls-pki-types",
- "rustls-platform-verifier 0.7.1",
+ "rustls-platform-verifier",
  "slab",
  "thiserror 2.0.18",
  "tinyvec",
@@ -11247,7 +11048,7 @@ dependencies = [
  "cfg_aliases 0.2.2",
  "libc",
  "once_cell",
- "socket2 0.6.3",
+ "socket2",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -11522,17 +11323,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "redox_users"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba009ff324d1fc1b900bd1fdb31564febe58a8ccc8a6fdbb93b543d33b13ca43"
-dependencies = [
- "getrandom 0.2.17",
- "libredox",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "ref-cast"
 version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11726,6 +11516,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-callstream",
  "tilo-relay-protocol",
+ "tilo-test-env",
  "tokio",
  "uuid",
  "vello",
@@ -11743,9 +11534,9 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "reqwest"
-version = "0.13.2"
+version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab3f43e3283ab1488b624b44b0e988d0acea0b3214e694730a055cb6b2efa801"
+checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
  "base64",
  "bytes",
@@ -11764,7 +11555,7 @@ dependencies = [
  "pin-project-lite",
  "rustls",
  "rustls-pki-types",
- "rustls-platform-verifier 0.6.2",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -12419,27 +12210,6 @@ dependencies = [
 
 [[package]]
 name = "rustls-platform-verifier"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d99feebc72bae7ab76ba994bb5e121b8d83d910ca40b36e0921f53becc41784"
-dependencies = [
- "core-foundation 0.10.1",
- "core-foundation-sys",
- "jni 0.21.1",
- "log",
- "once_cell",
- "rustls",
- "rustls-native-certs",
- "rustls-platform-verifier-android 0.1.1",
- "rustls-webpki",
- "security-framework",
- "security-framework-sys",
- "webpki-root-certs",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rustls-platform-verifier"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1167586491e2b18b8bfbb293e8180ec17c201c4f076d7cb3070ca964e7598f98"
@@ -12451,19 +12221,13 @@ dependencies = [
  "once_cell",
  "rustls",
  "rustls-native-certs",
- "rustls-platform-verifier-android 0.2.0",
+ "rustls-platform-verifier-android",
  "rustls-webpki",
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "rustls-platform-verifier-android"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-platform-verifier-android"
@@ -13058,6 +12822,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-clock",
+ "tilo-test-env",
  "workspace-hack",
  "xdg-paths",
 ]
@@ -13309,6 +13074,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-clock",
  "tilo-content",
+ "tilo-copy-lint",
  "tilo-delivery-protocol",
  "tilo-desktop",
  "tilo-desktop-entry",
@@ -13324,6 +13090,7 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-resource",
  "tilo-rt",
+ "tilo-runtime",
  "tilo-seal",
  "tilo-startup-metrics",
  "tilo-test-env",
@@ -13378,6 +13145,7 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-automation",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -13515,6 +13283,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-test-env",
  "uuid",
  "vello",
  "vello_encoding",
@@ -13686,18 +13455,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "612942246d0cc239cfd83af1dfd39be47f649208a3524e5e9da651910128e0ac"
 dependencies = [
  "libc",
- "socket2 0.6.3",
+ "socket2",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "socket2"
-version = "0.5.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
-dependencies = [
- "libc",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -13863,19 +13622,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ssip-client"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5349534527378e1e24486a9b361127c0a044b0311857f778ec1ec2953c5ffbbf"
-dependencies = [
- "dirs",
- "log",
- "strum 0.26.3",
- "strum_macros 0.26.4",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13992,12 +13738,6 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
-version = "0.26.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
-
-[[package]]
-name = "strum"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
@@ -14012,19 +13752,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
 dependencies = [
  "strum_macros 0.28.0",
-]
-
-[[package]]
-name = "strum_macros"
-version = "0.26.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "rustversion",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -14094,7 +13821,7 @@ dependencies = [
  "acto",
  "hickory-proto",
  "rand 0.10.1",
- "socket2 0.6.3",
+ "socket2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -14117,17 +13844,6 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "workspace-hack",
-]
-
-[[package]]
-name = "syn"
-version = "1.0.109"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
-dependencies = [
- "proc-macro2",
- "quote",
- "unicode-ident",
 ]
 
 [[package]]
@@ -14264,6 +13980,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -14486,7 +14203,7 @@ dependencies = [
  "tilo-test-env",
  "tracing",
  "unicode-segmentation",
- "unicode-width 0.2.2",
+ "unicode-width",
  "uuid",
  "vello",
  "vte",
@@ -14664,6 +14381,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-peer-state",
  "tilo-relay",
+ "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
  "tilo-workspace-host",
@@ -14687,6 +14405,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tilo-automerge",
+ "tilo-test-env",
  "uuid",
  "web-time",
 ]
@@ -14746,6 +14465,7 @@ dependencies = [
  "tempfile",
  "tilo-app-package",
  "tilo-headless-schema",
+ "tilo-test-env",
  "tilo-ui-graph",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
@@ -14860,6 +14580,7 @@ dependencies = [
  "calculator",
  "chat",
  "collab-types",
+ "ebook",
  "ed25519-dalek 3.0.0",
  "futures",
  "iroh",
@@ -14874,6 +14595,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-agent-control-protocol",
+ "tilo-app",
  "tilo-automerge",
  "tilo-automerge-isolate",
  "tilo-cloud-enrollment",
@@ -14998,6 +14720,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-relay",
  "tilo-seal",
+ "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
  "tilo-workspace-host",
@@ -15039,6 +14762,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-copy-lint"
+version = "0.1.0"
+dependencies = [
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-crypto"
 version = "0.1.0"
 dependencies = [
@@ -15051,7 +14781,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "libc",
- "object 0.39.1",
+ "object",
  "p256 0.14.0",
  "rcgen",
  "ring",
@@ -15101,6 +14831,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-test-env",
  "tilo-user-identity",
  "tokio",
  "uuid",
@@ -15116,14 +14847,19 @@ dependencies = [
  "blake3",
  "chat",
  "collab-types",
+ "desktop-policy",
+ "ed25519-dalek 3.0.0",
+ "emoji",
  "fluent",
+ "hex",
  "notes",
- "qdoc",
  "serde",
  "serde_json",
  "taffy",
  "tilo-actions",
  "tilo-automerge",
+ "tilo-clock",
+ "tilo-copy-lint",
  "tilo-desktop-model",
  "tilo-resource",
  "tilo-ui",
@@ -15195,6 +14931,7 @@ dependencies = [
  "tilo-moq",
  "tilo-peer-state",
  "tilo-relay",
+ "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
  "tilo-workspace-host",
@@ -15246,6 +14983,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-rt",
+ "tilo-test-env",
  "tokio",
  "tracing",
  "tts",
@@ -15306,6 +15044,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.18",
+ "tilo-test-env",
  "tokio",
  "url",
  "web-transport-quinn",
@@ -15379,6 +15118,7 @@ dependencies = [
  "test-http",
  "tilo-clock",
  "tilo-net",
+ "tilo-test-env",
  "url",
  "workspace-hack",
 ]
@@ -15392,6 +15132,7 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -15486,6 +15227,7 @@ dependencies = [
  "serde_json",
  "tilo-callstream",
  "tilo-rt",
+ "tilo-test-env",
  "tokio",
  "workspace-hack",
  "xdg-paths",
@@ -15537,7 +15279,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
- "socket2 0.6.3",
+ "socket2",
  "tempfile",
  "thiserror 2.0.18",
  "tilo-actions",
@@ -15553,6 +15295,7 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-rt",
  "tilo-seal",
+ "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
  "tokio",
@@ -15627,6 +15370,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-rich-text"
+version = "0.1.0"
+dependencies = [
+ "qdoc",
+ "qdoc-rich-text",
+ "serde",
+ "tilo-app",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-rollback"
 version = "0.1.0"
 dependencies = [
@@ -15651,8 +15406,30 @@ version = "0.1.0"
 dependencies = [
  "rayon",
  "thiserror 2.0.18",
+ "tilo-test-env",
  "tokio",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-runtime"
+version = "0.1.0"
+dependencies = [
+ "advisory-lock",
+ "libc",
+ "runtime-fs",
+ "runtime-identity",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-resource",
+ "tilo-rt",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -15963,6 +15740,7 @@ dependencies = [
  "tilo-native-media-control",
  "tilo-peer-state",
  "tilo-relay",
+ "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
  "tokio",
@@ -16136,7 +15914,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
- "socket2 0.6.3",
+ "socket2",
  "tokio-macros",
  "tracing",
  "windows-sys 0.61.2",
@@ -16173,7 +15951,7 @@ dependencies = [
  "postgres-protocol",
  "postgres-types",
  "rand 0.10.1",
- "socket2 0.6.3",
+ "socket2",
  "tokio",
  "tokio-util",
  "whoami",
@@ -16561,7 +16339,6 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "rustix 1.1.4",
- "ssip-client",
  "thiserror 2.0.18",
  "tracing",
  "workspace-hack",
@@ -17189,12 +16966,6 @@ checksum = "b1d386ff53b415b7fe27b50bb44679e2cc4660272694b7b6f3326d8480823a94"
 
 [[package]]
 name = "unicode-width"
-version = "0.1.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
-
-[[package]]
-name = "unicode-width"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
@@ -17420,23 +17191,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vello_common"
-version = "0.0.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19d672facaa2d697285a786cd9d44d614cd2ce54cdc022504bf339f8fff3b750"
-dependencies = [
- "bytemuck",
- "fearless_simd",
- "guillotiere",
- "hashbrown 0.17.1",
- "log",
- "peniko",
- "png",
- "smallvec",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "vello_cpu"
 version = "0.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17446,7 +17200,7 @@ dependencies = [
  "glifo",
  "hashbrown 0.17.1",
  "png",
- "vello_common 0.0.8",
+ "vello_common",
 ]
 
 [[package]]
@@ -17530,7 +17284,6 @@ dependencies = [
  "tilo-test-env",
  "tracing",
  "vello",
- "video-player",
  "winit",
  "workspace-hack",
 ]
@@ -17807,7 +17560,7 @@ dependencies = [
  "bumpalo",
  "leb128fmt",
  "memchr",
- "unicode-width 0.2.2",
+ "unicode-width",
  "wasm-encoder",
 ]
 
@@ -17996,6 +17749,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-clock",
  "tilo-net",
+ "tilo-test-env",
  "tracing-subscriber",
  "uuid",
  "vello",
@@ -18496,6 +18250,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-registry"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
+dependencies = [
+ "windows-link",
+ "windows-result 0.4.1",
+ "windows-strings",
+]
+
+[[package]]
 name = "windows-result"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18922,16 +18687,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "winreg"
-version = "0.50.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "524e57b2c537c0f9b1e69f1965311ec12182b4122e45035b1508cd24d2adadb1"
-dependencies = [
- "cfg-if",
- "windows-sys 0.48.0",
-]
-
-[[package]]
 name = "winx"
 version = "0.36.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -19005,7 +18760,6 @@ dependencies = [
  "tilo-content",
  "tilo-resource",
  "tilo-test-env",
- "url",
  "vello",
  "winit",
  "workspace-hack",
@@ -19038,7 +18792,6 @@ dependencies = [
  "chacha20 0.10.2",
  "chacha20poly1305 0.10.1",
  "chrono",
- "cipher 0.4.4",
  "cipher 0.5.2",
  "color",
  "concurrent-queue",
@@ -19098,14 +18851,13 @@ dependencies = [
  "hashbrown 0.17.1",
  "hayro-syntax",
  "hex",
- "hickory-net",
- "hickory-resolver",
  "hmac 0.12.1",
  "hpke-rs",
  "hpke-rs-rust-crypto",
  "hybrid-array",
  "hyper",
  "hyper-util",
+ "hypher",
  "icu_collections",
  "icu_locale_core",
  "icu_normalizer",
@@ -19116,12 +18868,6 @@ dependencies = [
  "image",
  "indexmap",
  "inout 0.2.2",
- "ipnet",
- "iroh",
- "iroh-base",
- "iroh-dns",
- "iroh-metrics",
- "iroh-relay",
  "itertools 0.13.0",
  "itertools 0.14.0",
  "kurbo",
@@ -19137,15 +18883,14 @@ dependencies = [
  "ml-kem",
  "n0-error",
  "naga",
+ "nix 0.31.3",
  "nom 7.1.3",
- "noq",
- "noq-proto",
- "noq-udp",
  "notify",
  "num-bigint 0.4.6",
  "num-bigint 0.5.1",
  "num-integer",
  "num-traits",
+ "object",
  "once_cell",
  "p256 0.13.2",
  "p256 0.14.0",
@@ -19180,7 +18925,6 @@ dependencies = [
  "regex-syntax",
  "reqwest",
  "resvg",
- "ring",
  "rqrr",
  "russh",
  "rustc-hash 1.1.0",
@@ -19188,7 +18932,6 @@ dependencies = [
  "rustix 1.1.4",
  "rustls",
  "rustls-pki-types",
- "rustls-webpki",
  "scopeguard",
  "sec1 0.7.3",
  "serde",
@@ -19200,14 +18943,13 @@ dependencies = [
  "sha3 0.12.0",
  "signature 3.0.0",
  "simd-adler32",
- "simdutf8",
  "siphasher",
  "skrifa 0.42.1",
  "slab",
  "slotmap",
  "smallvec",
  "smol_str 0.3.6",
- "socket2 0.6.3",
+ "socket2",
  "spin 0.9.9",
  "spki 0.8.0",
  "stable_deref_trait",
@@ -19215,7 +18957,6 @@ dependencies = [
  "subtle",
  "syn 2.0.117",
  "syntect",
- "tempfile",
  "thiserror 2.0.18",
  "time",
  "time-macros",
@@ -19227,7 +18968,6 @@ dependencies = [
  "tokio-rustls",
  "tokio-stream",
  "tokio-util",
- "tokio-websockets",
  "toml 1.0.6+spec-1.1.0",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",

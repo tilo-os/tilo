@@ -383,9 +383,7 @@ fn settle(fb: &mut FrameBuilder) {
     let minimum = started
         .checked_add(std::time::Duration::from_millis(500))
         .unwrap_or(started);
-    let deadline = started
-        .checked_add(std::time::Duration::from_secs(3))
-        .unwrap_or(started);
+    let deadline = tilo_test_env::hang_deadline();
     let settled = |fb: &mut FrameBuilder| !fb.needs_animation_frame() || fb.any_tile_opening();
     while (std::time::Instant::now() < minimum || !settled(fb))
         && std::time::Instant::now() < deadline
@@ -395,7 +393,7 @@ fn settle(fb: &mut FrameBuilder) {
     }
     assert!(
         settled(fb),
-        "the widget tree never settled; an animation is stuck in flight"
+        "the widget tree never settled within the hang bound; an animation is stuck in flight"
     );
 }
 
@@ -405,9 +403,7 @@ fn settle(fb: &mut FrameBuilder) {
 /// so the frame right after a commit is mostly still the card — sampling
 /// there measures the dissolve, not the client's pixels.
 fn quiesce(fb: &mut FrameBuilder, surface_id: u64) {
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(3))
-        .unwrap_or_else(std::time::Instant::now);
+    let deadline = tilo_test_env::hang_deadline();
     // First wait for this exact client to latch as presented. A configure or
     // strip-layout change can delay that edge; measuring the dissolve from
     // publication would then spend the entire allowance on the opening card.

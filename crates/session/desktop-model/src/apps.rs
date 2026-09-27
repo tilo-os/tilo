@@ -95,3 +95,32 @@ pub fn bind_tab_record(
 fn child(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
     doc.get(parent, key).ok().flatten().map(|(_, id)| id)
 }
+
+/// An application a desktop can open, as launchers and "Open <App>" actions
+/// name it: its durable app id and display title.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpenableApp {
+    pub app_id: &'static str,
+    pub title: &'static str,
+}
+
+/// The applications one host can open. Each data source (the browser's
+/// bundled apps, a workspace host's checked record factories) implements it
+/// once; everything that lists, validates or titles an open asks it.
+pub trait AppCatalogue {
+    fn openable(&self) -> Vec<OpenableApp>;
+
+    /// The entry for `app`, when this host can open it.
+    fn find(&self, app: &str) -> Option<OpenableApp> {
+        self.openable()
+            .into_iter()
+            .find(|entry| entry.app_id == app)
+    }
+}
+
+/// A host that opens nothing.
+impl AppCatalogue for () {
+    fn openable(&self) -> Vec<OpenableApp> {
+        Vec::new()
+    }
+}

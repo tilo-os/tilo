@@ -500,6 +500,8 @@ mod tests {
                 atomic::{AtomicBool, Ordering},
             };
             use std::time::{Duration, Instant};
+            /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+            const HANG_BOUND: Duration = Duration::from_secs(30);
 
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
@@ -515,7 +517,7 @@ mod tests {
                     .send(validate_account_cancellable(&cfg, &worker_cancellation))
                     .unwrap();
             });
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_deadline();
             let mut stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
@@ -529,16 +531,14 @@ mod tests {
             // Windows accepted sockets inherit the listener's nonblocking mode.
             // This fixture uses bounded blocking reads to observe TLS and EOF.
             stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
+            stream.set_read_timeout(Some(HANG_BOUND)).unwrap();
             let mut hello = [0; 4096];
             assert!(
                 stream.read(&mut hello).unwrap() > 0,
                 "real TLS handshake began"
             );
             cancellation.store(true, Ordering::Relaxed);
-            let outcome = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+            let outcome = receiver.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             assert!(!outcome.persisted());
             assert!(outcome.message().contains("cancelled"), "{outcome:?}");
             let mut remaining = Vec::new();

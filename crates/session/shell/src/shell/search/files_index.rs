@@ -549,24 +549,6 @@ mod content_index_integration {
     use std::fs;
     use std::time::{Duration, Instant};
 
-    /// Indexing shares a loaded runner's disk with everything else; waits end
-    /// as soon as their condition holds, so this bound only catches a hang.
-    const INDEX_HANG_BOUND: Duration = Duration::from_secs(120);
-
-    fn wait_for<F: FnMut() -> bool>(mut cond: F, timeout: Duration) -> bool {
-        let now = Instant::now();
-        // `Instant::checked_add` can't panic; an (unreachable for a test
-        // timeout) overflow just times out immediately instead.
-        let deadline = now.checked_add(timeout).unwrap_or(now);
-        while Instant::now() < deadline {
-            if cond() {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        false
-    }
-
     #[test]
     #[serial]
     fn walking_home_indexes_documents_and_finds_content() {
@@ -637,14 +619,9 @@ mod content_index_integration {
             fs::write(home.join("binary.png"), [0u8, 1, 2, 3]).unwrap();
 
             let index = FilesIndex::open_or_create(home).expect("open index");
-            let ready = wait_for(
-                || {
-                    let hits = index.query("registry BM25", 10);
-                    !hits.is_empty()
-                },
-                INDEX_HANG_BOUND,
-            );
-            assert!(ready, "index walker didn't produce hits");
+            tilo_test_env::wait_until("the index walker to produce hits", || {
+                !index.query("registry BM25", 10).is_empty()
+            });
 
             let hits = index.query("apples", 5);
             assert!(
@@ -685,11 +662,9 @@ mod content_index_integration {
         let idx = FilesIndex::open_or_create(home).unwrap();
         // The perf assertion below kicks in only once the index is hot, so
         // a slow initial walker doesn't skew it.
-        let ready = wait_for(
-            || !idx.query("keyword", 10).is_empty(),
-            Duration::from_secs(30),
-        );
-        assert!(ready, "walker didn't populate within 30s");
+        tilo_test_env::wait_until("the walker to populate the index", || {
+            !idx.query("keyword", 10).is_empty()
+        });
 
         let miss_start = Instant::now();
         let hits = idx.query("bravo", 10);
@@ -732,19 +707,16 @@ mod content_index_integration {
             // First pass — populate the index.
             {
                 let idx = FilesIndex::open_or_create(home).unwrap();
-                let ready = wait_for(
-                    || !idx.query("alpha", 10).is_empty() && !idx.query("bravo", 10).is_empty(),
-                    INDEX_HANG_BOUND,
-                );
-                assert!(ready, "first pass didn't index");
+                tilo_test_env::wait_until("the first pass to index", || {
+                    !idx.query("alpha", 10).is_empty() && !idx.query("bravo", 10).is_empty()
+                });
             }
 
             // mtime unchanged; prove docs stay queryable, since "skipped" isn't observable.
             let idx = FilesIndex::open_or_create(home).unwrap();
-            let ready = wait_for(|| !idx.query("alpha", 10).is_empty(), INDEX_HANG_BOUND);
-            assert!(
-                ready,
-                "second-pass reader must see previously-committed docs"
+            tilo_test_env::wait_until(
+                "the second-pass reader to see previously-committed docs",
+                || !idx.query("alpha", 10).is_empty(),
             );
         }
 
@@ -761,39 +733,24 @@ mod content_index_integration {
             fs::write(&deleted_path, "uniquely retired search content").unwrap();
             {
                 let index = FilesIndex::open_or_create(home).unwrap();
-                assert!(
-                    wait_for(
-                        || !index.query("uniquely retired", 10).is_empty(),
-                        INDEX_HANG_BOUND,
-                    ),
-                    "first scan did not index the fixture"
-                );
-                assert!(
-                    wait_for(
-                        || {
-                            index
-                                ._writer_handle
-                                .read()
-                                .ok()
-                                .and_then(|handle| {
-                                    handle.as_ref().map(thread::JoinHandle::is_finished)
-                                })
-                                .unwrap_or(false)
-                        },
-                        INDEX_HANG_BOUND,
-                    ),
-                    "first scan's writer did not finish"
-                );
+                tilo_test_env::wait_until("the first scan to index the fixture", || {
+                    !index.query("uniquely retired", 10).is_empty()
+                });
+                tilo_test_env::wait_until("the first scan's writer to finish", || {
+                    index
+                        ._writer_handle
+                        .read()
+                        .ok()
+                        .and_then(|handle| handle.as_ref().map(thread::JoinHandle::is_finished))
+                        .unwrap_or(false)
+                });
             }
 
             fs::remove_file(&deleted_path).unwrap();
             let index = FilesIndex::open_or_create(home).unwrap();
-            assert!(
-                wait_for(
-                    || index.query("uniquely retired", 10).is_empty(),
-                    INDEX_HANG_BOUND,
-                ),
-                "a deleted file remained searchable after a complete reconciliation"
+            tilo_test_env::wait_until(
+                "a complete reconciliation to drop the deleted file from search",
+                || index.query("uniquely retired", 10).is_empty(),
             );
         }
     }

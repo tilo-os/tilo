@@ -97,8 +97,9 @@ impl SystemProjectionBackend {
         }
         bounded_command::run_prepared(command, None, PROJECTOR_OUTPUT_LIMIT, PROJECTOR_TIMEOUT)
             .map_err(|e| {
-                format!(
-                    "Projection service is unavailable ({e}). Check the Tilo projector service."
+                crate::shell::i18n::t_args(
+                    "projection-service-unavailable-detail",
+                    &[("error", e.to_string().into())],
                 )
             })
     }
@@ -123,7 +124,10 @@ impl SystemProjectionBackend {
                 .collect::<String>();
             let message = message.trim();
             Err(if message.is_empty() {
-                format!("Projection service exited with {}", out.status)
+                crate::shell::i18n::t_args(
+                    "projection-service-exited",
+                    &[("status", out.status.to_string().into())],
+                )
             } else {
                 message.to_owned()
             })
@@ -134,8 +138,13 @@ impl SystemProjectionBackend {
 impl ProjectionBackend for SystemProjectionBackend {
     fn discover(&mut self) -> Result<Vec<ProjectionDevice>, String> {
         let out = self.checked(&["discover", "--json"])?;
-        let mut devices: Vec<ProjectionDevice> = serde_json::from_slice(&out.stdout)
-            .map_err(|e| format!("Projection service returned invalid discovery data: {e}"))?;
+        let mut devices: Vec<ProjectionDevice> =
+            serde_json::from_slice(&out.stdout).map_err(|e| {
+                crate::shell::i18n::t_args(
+                    "projection-service-invalid-discovery",
+                    &[("error", e.to_string().into())],
+                )
+            })?;
         // A receiver advertised on two interfaces must be one row. Sorting also
         // makes refreshes stable instead of visually shuffling the picker.
         devices.sort_by(|a, b| {
@@ -154,10 +163,12 @@ impl ProjectionBackend for SystemProjectionBackend {
         options: ProjectionOptions,
     ) -> Result<(), String> {
         if !device.supports(options.mode) {
-            return Err(format!(
-                "{} does not support {} mode",
-                device.name,
-                options.mode.label()
+            return Err(crate::shell::i18n::t_args(
+                "projection-mode-unsupported",
+                &[
+                    ("device", device.name.as_str().into()),
+                    ("mode", options.mode.label().into()),
+                ],
             ));
         }
         let protocol = serde_json::to_value(device.protocol)
@@ -315,7 +326,9 @@ impl ProjectionController {
             tx: None,
             rx,
             devices: Vec::new(),
-            status: ProjectionStatus::Error("Projection service is unavailable".into()),
+            status: ProjectionStatus::Error(crate::shell::i18n::t(
+                "projection-service-unavailable",
+            )),
             options: ProjectionOptions::default(),
             selected: 0,
         }
@@ -323,7 +336,8 @@ impl ProjectionController {
 
     fn available_sender(&mut self) -> Option<&Sender<WorkerCommand>> {
         if self.tx.is_none() {
-            self.status = ProjectionStatus::Error("Projection service is unavailable".into());
+            self.status =
+                ProjectionStatus::Error(crate::shell::i18n::t("projection-service-unavailable"));
         }
         self.tx.as_ref()
     }
@@ -335,7 +349,8 @@ impl ProjectionController {
         if tx.send(WorkerCommand::Discover).is_ok() {
             self.status = ProjectionStatus::Scanning;
         } else {
-            self.status = ProjectionStatus::Error("Projection service stopped".into());
+            self.status =
+                ProjectionStatus::Error(crate::shell::i18n::t("projection-service-stopped"));
         }
     }
 
@@ -449,7 +464,7 @@ impl ProjectionController {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     #[derive(Default)]
     struct FakeBackend {
@@ -490,9 +505,7 @@ mod tests {
     }
 
     fn settle(controller: &mut ProjectionController) {
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(1))
-            .unwrap_or_else(Instant::now);
+        let deadline = tilo_test_env::hang_deadline();
         while !controller.poll() && Instant::now() < deadline {
             std::thread::yield_now();
         }

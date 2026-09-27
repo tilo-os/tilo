@@ -356,7 +356,7 @@ mod tests {
     /// Answer queued requests on this thread, as the UI thread would.
     fn answer_until(server: &ConsoleServer, count: usize) -> Vec<String> {
         let mut seen = Vec::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         while seen.len() < count && std::time::Instant::now() < deadline {
             for pending in server.take_pending() {
                 seen.push(pending.line().to_owned());

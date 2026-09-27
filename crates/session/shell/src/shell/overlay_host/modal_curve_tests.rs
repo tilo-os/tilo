@@ -1,11 +1,11 @@
 //! Guards the shared ease-out-cubic curve used by the workspace-settings
-//! modal and the command palette (`modal_transition_curve`, which both
+//! modal and the command palette (`ui::Transition::modal_curve`, which both
 //! draw paths call) — keeps the *source* honest so a later refactor
 //! can't silently regress the rest state or the animation's start scale.
 
 use super::*;
 
-/// A transition that has just begun opening, so `modal_transition_curve`
+/// A transition that has just begun opening, so `ui::Transition::modal_curve`
 /// can be sampled anywhere across the enter window.
 fn opening() -> ui::Transition {
     let mut t = ui::Transition::closed();
@@ -21,7 +21,7 @@ fn opening() -> ui::Transition {
 fn modal_curve_rests_starts_and_settles_on_schedule() {
     fn modal_curve_is_at_rest_when_fully_open() {
         let t = ui::Transition::open();
-        let (alpha, dy, scale) = modal_transition_curve(&t, Instant::now(), 0.95);
+        let (alpha, dy, scale) = t.modal_curve(Instant::now(), 0.95);
         assert_eq!(alpha, 1.0);
         assert_eq!(dy, 0.0);
         assert_eq!(scale, 1.0);
@@ -32,7 +32,7 @@ fn modal_curve_rests_starts_and_settles_on_schedule() {
         // scale — otherwise it pops in rather than animating.
         let start = Instant::now();
         let t = opening();
-        let (alpha, dy, scale) = modal_transition_curve(&t, start, 0.9);
+        let (alpha, dy, scale) = t.modal_curve(start, 0.9);
         assert!(alpha < 0.05, "alpha at t=0 should be ~0, got {alpha}");
         assert!(
             (dy - 20.0).abs() < 0.5,
@@ -48,7 +48,7 @@ fn modal_curve_rests_starts_and_settles_on_schedule() {
         let start = Instant::now();
         let t = opening();
         let past = start + Duration::from_millis(MODAL_OPEN_ANIM_MS + 50);
-        let (alpha, dy, scale) = modal_transition_curve(&t, past, 0.95);
+        let (alpha, dy, scale) = t.modal_curve(past, 0.95);
         assert_eq!(alpha, 1.0);
         assert_eq!(dy, 0.0);
         assert_eq!(scale, 1.0);

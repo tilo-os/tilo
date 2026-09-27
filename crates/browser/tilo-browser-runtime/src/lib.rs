@@ -1,11 +1,21 @@
 //! Actual Tilo component renderer. Authentication/state transport are installed by the peer layer.
+//!
+//! In wasm32 the certified peer, its transports and the Automerge admission
+//! check belong to the `cloud` feature; host tests always cover them.
+#![cfg_attr(
+    all(target_arch = "wasm32", not(feature = "cloud")),
+    allow(
+        dead_code,
+        reason = "without the Cloud peer the canonical desktop and live paths stay compiled but unreachable"
+    )
+)]
 #[cfg(target_arch = "wasm32")]
 mod browser;
 
 #[cfg(target_arch = "wasm32")]
 mod clipboard;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "cloud"))]
 mod automerge_check;
 
 #[cfg(test)]
@@ -14,7 +24,7 @@ tilo_automerge_isolate::test_worker!();
 #[cfg(any(target_arch = "wasm32", test))]
 mod close_recovery;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "cloud"))]
 mod peer;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -25,7 +35,7 @@ pub use fixture::{fixture_seed, fixture_writer_insert};
 #[cfg(any(target_arch = "wasm32", test))]
 mod admitted_records;
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
 mod admission_health;
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -42,41 +52,48 @@ mod revision_wire_tests {
     }
 }
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
 mod identity;
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
 mod peer_cloud;
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
 mod peer_invitation;
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
 mod peer_onboarding;
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
 mod peer_onboarding_custody;
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
 mod peer_journal;
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
 mod peer_delivery;
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
 mod peer_delivery_auth;
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
 mod peer_delivery_cursor;
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
 mod peer_storage_batch;
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
 mod peer_media;
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
 mod peer_live;
 
 #[cfg(test)]
 mod post_ready_repair;
 
+mod catalog;
 mod desktop;
+#[cfg(all(target_arch = "wasm32", feature = "dylink"))]
+mod side_module;
+// Side modules link against the SDK facade and its resource layer, which the
+// core itself never names; rustc links only crates that are referenced.
+#[cfg(all(target_arch = "wasm32", feature = "dylink"))]
+extern crate tilo_app as _;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod desktop_activity;
@@ -84,6 +101,10 @@ mod desktop_activity;
 mod desktop_host;
 #[cfg(any(target_arch = "wasm32", test))]
 mod desktop_navigation;
+#[cfg(any(target_arch = "wasm32", test))]
+mod desktop_notifications;
+#[cfg(any(target_arch = "wasm32", test))]
+mod desktop_overlays;
 #[cfg(any(target_arch = "wasm32", test))]
 mod live_view;
 #[cfg(any(target_arch = "wasm32", test))]

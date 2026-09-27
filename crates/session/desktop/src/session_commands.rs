@@ -1,12 +1,75 @@
-//! Bind widget-index intents to the identities of the admitted source
-//! topology, synchronously, before any asynchronous dispatch. The owner still
-//! validates current ownership and admission when it applies the command.
-use crate::intents::SessionIntent;
+//! One path from widget requests to the desktop's owner.
+//!
+//! Widget-index intents are bound to the identities of the admitted source
+//! topology synchronously, before any asynchronous dispatch, and handed to
+//! the host's [`DesktopCommandSink`]. The owner still validates current
+//! ownership and admission when it applies the command.
+use crate::intents::{DesktopIntent, LocalViewIntent, SessionIntent};
 use tilo_desktop_model::apps::canonical_app_id;
 use tilo_desktop_model::commands::{
     BoundCommand, CommandSource, DesktopCommand, TabLocation, TabPlacement,
 };
-use tilo_desktop_model::{DesktopTree, Strip, TileContent, WindowGroup};
+use tilo_desktop_model::{DesktopTree, GroupId, RoomId, Strip, TileContent, WindowGroup};
+
+/// Where a desktop's requests go. Each host implements it once: the native
+/// sink commits through its device owner at once, the browser sink
+/// speculates and queues for the owner it reaches over the network.
+pub trait DesktopCommandSink {
+    /// Run `read` over the desktop the widgets render.
+    fn with_tree<R>(&self, read: impl FnOnce(&DesktopTree) -> R) -> R;
+    /// The admitted revision a command against `room` binds to.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the host has no revision to bind to.
+    fn source(&mut self, room: RoomId) -> Result<CommandSource, String>;
+    /// Apply a per-device view change. It never changes the topology.
+    fn apply_local(&mut self, intent: LocalViewIntent);
+    /// Hand a bound command to the owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the owner refuses or the host cannot
+    /// carry the command.
+    fn submit(&mut self, command: BoundCommand) -> Result<(), String>;
+}
+
+/// The room holding `group` in `tree`.
+fn group_room(tree: &DesktopTree, group: GroupId) -> Option<RoomId> {
+    tree.workspaces
+        .iter()
+        .find(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .any(|strip| strip.window_groups.iter().any(|g| g.id == group))
+        })
+        .map(|workspace| workspace.room)
+}
+
+/// Route one widget intent: view changes stay on this device, session
+/// changes are bound to identities and submitted to the owner.
+///
+/// # Errors
+///
+/// Returns a description when the intent no longer binds, or the sink
+/// refuses it.
+pub fn dispatch(sink: &mut impl DesktopCommandSink, intent: DesktopIntent) -> Result<(), String> {
+    match intent {
+        DesktopIntent::Local(intent) => {
+            sink.apply_local(intent);
+            Ok(())
+        }
+        DesktopIntent::Session(intent) => {
+            let room = sink
+                .with_tree(|tree| group_room(tree, intent.group()))
+                .ok_or("source group is no longer present")?;
+            let source = sink.source(room)?;
+            let command = sink.with_tree(|tree| bind_intent(tree, source, intent))?;
+            sink.submit(command)
+        }
+    }
+}
 
 /// Duplicate the group's selected application tab right after it.
 fn duplicate_active_tab(strip: &Strip, group: &WindowGroup) -> Result<DesktopCommand, String> {
@@ -36,8 +99,8 @@ fn duplicate_active_tab(strip: &Strip, group: &WindowGroup) -> Result<DesktopCom
 ///
 /// # Errors
 ///
-/// Returns a description when the source has no revision or the intent's
-/// room, group, tab or index is no longer present.
+/// Returns a description when the intent's room, group, tab or index is no
+/// longer present.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "public signature the browser desktop host calls with an owned intent"
@@ -47,20 +110,12 @@ pub fn bind_intent(
     source: CommandSource,
     intent: SessionIntent,
 ) -> Result<BoundCommand, String> {
-    if source.heads.is_empty() {
-        return Err("desktop command has no admitted source revision".into());
-    }
     let workspace = tree
         .workspaces
         .iter()
         .find(|workspace| workspace.room.to_string() == source.room)
         .ok_or("source room is not present in the rendered desktop")?;
-    let group_id = match intent {
-        SessionIntent::CloseTab { group, .. }
-        | SessionIntent::ReorderTab { group, .. }
-        | SessionIntent::ReorderGroup { group, .. }
-        | SessionIntent::OpenTab { group, .. } => group,
-    };
+    let group_id = intent.group();
     let (strip, group) = workspace
         .strips
         .iter()

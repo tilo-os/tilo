@@ -813,6 +813,67 @@ mod tests {
         }
     }
 
+    /// Each `org.bluez.Agent1` method raises exactly its prompt, and the
+    /// answer comes back in the shape that method returns.
+    #[tokio::test]
+    async fn every_agent1_method_maps_to_its_prompt() {
+        const UUID: &str = "0000110b-0000-1000-8000-00805f9b34fb";
+        let (a, mut rx) = agent();
+        let ui = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for _ in 0..5 {
+                let Some(AgentEvent::Ask { request, reply }) = rx.recv().await else {
+                    panic!("every asking method raises a prompt")
+                };
+                let answer = match request.prompt {
+                    PairingPrompt::RequestPinCode => PairingReply::PinCode("0000".into()),
+                    PairingPrompt::RequestPasskey => PairingReply::Passkey(123_456),
+                    _ => PairingReply::Accept,
+                };
+                seen.push(request.prompt);
+                reply.send(answer).unwrap();
+            }
+            (seen, rx)
+        });
+        assert_eq!(a.request_pin_code(dev()).await.unwrap(), "0000");
+        assert_eq!(a.request_passkey(dev()).await.unwrap(), 123_456);
+        a.request_confirmation(dev(), 424_242).await.unwrap();
+        a.request_authorization(dev()).await.unwrap();
+        a.authorize_service(dev(), UUID.into()).await.unwrap();
+        let (seen, mut rx) = ui.await.unwrap();
+        assert_eq!(
+            seen,
+            vec![
+                PairingPrompt::RequestPinCode,
+                PairingPrompt::RequestPasskey,
+                PairingPrompt::ConfirmPasskey { passkey: 424_242 },
+                PairingPrompt::ConfirmPairing,
+                PairingPrompt::AuthorizeService { uuid: UUID.into() },
+            ]
+        );
+
+        // The display methods return at once, carrying the code to show.
+        a.display_passkey(dev(), 42, 2);
+        a.display_pin_code(dev(), "1234".into());
+        for expected in [
+            PairingPrompt::DisplayPasskey {
+                passkey: 42,
+                entered: 2,
+            },
+            PairingPrompt::DisplayPinCode { pin: "1234".into() },
+        ] {
+            let Some(AgentEvent::Ask { request, .. }) = rx.recv().await else {
+                panic!("a display method notifies the UI")
+            };
+            assert_eq!(request.prompt, expected);
+            assert!(!request.prompt.expects_answer());
+        }
+
+        // `Cancel` withdraws whatever is on screen.
+        a.cancel();
+        assert!(matches!(rx.recv().await, Some(AgentEvent::Cancelled)));
+    }
+
     #[tokio::test]
     async fn unanswered_dismissed_or_mismatched_prompts_refuse_pairing() {
         // Phase `an_unanswered_prompt_times_out_as_canceled`.

@@ -1539,6 +1539,21 @@ pub fn revalidate_resource_claim(
         .is_ok()
 }
 
+/// This machine's applications, as the shared workspace settings name
+/// them: running under this session, installed as packages, or host apps.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ShellApps;
+
+impl tilo_desktop::workspace_settings::AppDirectory for ShellApps {
+    fn app_display_name(&self, app_id: &str) -> Option<String> {
+        Some(display_name_for_app_id(app_id).unwrap_or_else(|| display_name_for_package_id(app_id)))
+    }
+
+    fn default_app_candidates(&self) -> Vec<desktop_policy::AppCandidate> {
+        default_app_candidates()
+    }
+}
+
 pub fn default_app_candidates() -> Vec<desktop_policy::AppCandidate> {
     default_app_candidates_from(&gui_apps())
 }
@@ -2747,9 +2762,8 @@ fn start_launch(
             command.service_identity.is_some(),
         );
         mark_launch_spawned(&app.package_id, child.id());
-        // The child cannot exec the launcher (and therefore cannot reach the
-        // public Wayland socket) until both registries above are complete.
-        let _ = launch_gate.write_all(&[1]);
+        // Recorded before the gate opens, so the session learns of the start
+        // before the app can do anything a start explains.
         events.push(LaunchEvent {
             package_id: app.package_id.clone(),
             display_name: app.display_name.clone(),
@@ -2757,6 +2771,9 @@ fn start_launch(
             managed_workspace_id: app.managed_workspace_id.clone(),
             kind: LaunchEventKind::Started { pid: child.id() },
         });
+        // The child cannot exec the launcher (and therefore cannot reach the
+        // public Wayland socket) until both registries above are complete.
+        let _ = launch_gate.write_all(&[1]);
 
         // Drain both pipes concurrently. A GUI normally keeps both streams
         // open for its entire lifetime, so reading either one to EOF before
@@ -3839,7 +3856,7 @@ mod tests {
         )
         .unwrap();
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         let mut saw_started = false;
         let mut saw_exit = false;
         while Instant::now() < deadline && !saw_exit {
@@ -4561,7 +4578,7 @@ mod tests {
             assert_eq!(app.display_name, "Hello");
 
             // wait for the worker to report the child's exit
-            let deadline = Instant::now() + Duration::from_secs(20);
+            let deadline = tilo_test_env::hang_deadline();
             let mut failed = None;
             let mut saw_started = false;
             while Instant::now() < deadline && failed.is_none() {
@@ -4844,7 +4861,7 @@ mod tests {
             spawn_launch("org.example.Flatpak".into(), "Example".into(), command)
                 .expect("launch worker");
 
-            let deadline = Instant::now() + Duration::from_secs(2);
+            let deadline = tilo_test_env::hang_deadline();
             let launcher_pid = loop {
                 let started = drain_events().into_iter().find_map(|event| {
                     (event.package_id == "org.example.Flatpak")

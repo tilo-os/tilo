@@ -958,11 +958,12 @@ impl PlayerApp {
         }
     }
 
-    /// Construct the real root type from inert prepared inputs. This is kept
-    /// behind test support so launch-composition tests can exercise the
-    /// production widget without reading settings, registering MPRIS, opening
-    /// a decoder/provider, or attaching collaboration.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Construct the real root type from inert prepared inputs, so the
+    /// binary's launch-composition tests can exercise the production widget
+    /// without reading settings, registering MPRIS, opening a
+    /// decoder/provider, or attaching collaboration. Not feature-gated: the
+    /// binary's tests cannot switch on a library feature without a self
+    /// dev-dependency, which would claim `--features video-player/thin`.
     #[doc(hidden)]
     pub fn history_test_root() -> Self {
         let preferences = PlaybackPreferences {

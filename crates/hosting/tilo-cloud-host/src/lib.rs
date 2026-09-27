@@ -566,6 +566,82 @@ thread_local! {
 pub(crate) fn take_test_audit_events() -> Vec<(String, serde_json::Value)> {
     TEST_AUDIT_EVENTS.with(|events| std::mem::take(&mut *events.borrow_mut()))
 }
+/// Store roots whose whole directory chain this process already created or
+/// admitted and barriered (`provision_directory` fsyncs every node from the
+/// root up to `/`). Every Cloud component opens its own Store per turn, so
+/// repeating those barriers cost one fsync per path component on every turn
+/// while changing nothing: a directory barrier makes that directory's entries
+/// durable, and the entries naming this chain are the ones already barriered
+/// as long as each path component still names the same directory. The held
+/// root handle pins its inode, so a removed and recreated root can never
+/// match; any other difference provisions (and barriers) again.
+#[cfg(unix)]
+mod provisioned {
+    use std::{os::unix::fs::MetadataExt, path::Path, sync::Mutex};
+    struct Entry {
+        root: std::path::PathBuf,
+        /// Held so the root inode cannot be reused while remembered.
+        _directory: atomic_file::StorageDirectory,
+        identity: atomic_file::FileIdentity,
+        /// `(dev, ino)` of the root and every ancestor, root first.
+        chain: Vec<(u64, u64)>,
+    }
+    #[cfg(not(test))]
+    const ENTRIES: usize = 4;
+    #[cfg(test)]
+    const ENTRIES: usize = 64;
+    static PROVISIONED: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
+
+    fn chain(root: &Path) -> Option<Vec<(u64, u64)>> {
+        let root = root.canonicalize().ok()?;
+        root.ancestors()
+            .map(|path| {
+                std::fs::metadata(path)
+                    .ok()
+                    .filter(std::fs::Metadata::is_dir)
+                    .map(|m| (m.dev(), m.ino()))
+            })
+            .collect()
+    }
+    fn named_identity(root: &Path) -> Option<atomic_file::FileIdentity> {
+        atomic_file::FileIdentity::of(&std::fs::File::open(root).ok()?).ok()
+    }
+    /// Whether `root` still names exactly a chain this process barriered.
+    pub(super) fn current(root: &Path) -> bool {
+        let (Some(observed), Some(named)) = (chain(root), named_identity(root)) else {
+            return false;
+        };
+        let Ok(entries) = PROVISIONED.lock() else {
+            return false;
+        };
+        entries
+            .iter()
+            .any(|entry| entry.root == root && entry.chain == observed && entry.identity == named)
+    }
+    /// After `provision_directory(root)` returned `directory`, fully barriered.
+    pub(super) fn remember(root: &Path, directory: atomic_file::StorageDirectory) {
+        let (Some(chain), Some(named), Ok(identity)) =
+            (chain(root), named_identity(root), directory.identity())
+        else {
+            return;
+        };
+        if named != identity {
+            return;
+        }
+        if let Ok(mut entries) = PROVISIONED.lock() {
+            entries.retain(|entry| entry.root != root);
+            if entries.len() >= ENTRIES {
+                entries.remove(0);
+            }
+            entries.push(Entry {
+                root: root.to_owned(),
+                _directory: directory,
+                identity,
+                chain,
+            });
+        }
+    }
+}
 impl Store {
     /// The Store for one turn: the daemon's long-lived Store when this
     /// process owns `root`, otherwise one opened from disk for this turn.
@@ -613,7 +689,11 @@ impl Store {
             // Preserve the existing host's root privacy repair, then commit the
             // whole chain; directory creation alone is not a durability barrier.
             std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
-            atomic_file::provision_directory(root, atomic_file::Privacy::OwnerOnly)?;
+            if !provisioned::current(root) {
+                let directory =
+                    atomic_file::provision_directory(root, atomic_file::Privacy::OwnerOnly)?;
+                provisioned::remember(root, directory);
+            }
         }
         #[cfg(not(unix))]
         bail!("cloud Store durability requires qualified Unix storage");

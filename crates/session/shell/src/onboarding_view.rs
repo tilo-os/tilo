@@ -3669,7 +3669,7 @@ mod tests {
         terminate_nearby_pairing(&mut child);
 
         assert!(child.is_none());
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             // A killed grandchild can remain as a zombie until the host's PID
             // 1 reaps it. `kill(-pgid, 0)` reports that inert bookkeeping
